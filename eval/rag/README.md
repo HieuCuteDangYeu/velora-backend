@@ -30,6 +30,7 @@ pnpm eval:rag:live --dataset rag-frozen-ami-v1 --variant production \
 pnpm eval:rag:report --run <run-id>
 pnpm eval:rag:compare --baseline <run-a> --candidate <run-b>
 pnpm eval:rag:persist --run <completed-run-id>
+pnpm eval:rag:reranker
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
 ```
@@ -74,6 +75,13 @@ context. It requires `RAG_EVAL_PERSIST_CONFIRM=YES` and an explicit
 `REEL_INDEXING_DATABASE_URL`; it does not fall back to another database
 variable. Repeating an identical artifact is an idempotent no-op, while a
 different artifact for an existing `benchmarkRunId` is rejected.
+
+The provider-free reranker qualification uses the versioned safe fixture set
+`rag-reranker-generalization-v1`. Run `pnpm eval:rag:reranker` only when the
+profile-gated local TEI reranker is available; the harness disables the
+reranker fallback so a passing result always represents the actual MiniLM
+resource. Its two-case result is a small qualification gate, not a statistical
+reliability claim.
 
 Capacity check makes exactly one cheap production-model request and never launches a benchmark. It requires explicit confirmation and Cloudflare credentials. Do not repeat it while an account-limit response is already known.
 

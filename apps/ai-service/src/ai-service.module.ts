@@ -135,6 +135,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     EvidenceDiversitySelector,
     HybridRetrievalScorer,
     SimpleRerankerAdapter,
+    TeiRerankerAdapter,
     GroqTextClient,
 
     StreamChatUseCase,
@@ -212,7 +213,16 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IRerankerService',
-      useClass: TeiRerankerAdapter,
+      inject: [ConfigService, TeiRerankerAdapter, SimpleRerankerAdapter],
+      useFactory: (
+        config: ConfigService,
+        neural: TeiRerankerAdapter,
+        fallback: SimpleRerankerAdapter,
+      ) =>
+        config.get<string>('AI_RERANKER_PROVIDER')?.trim().toLowerCase() ===
+        'simple'
+          ? fallback
+          : neural,
     },
     {
       provide: 'IReelSemanticIndexService',

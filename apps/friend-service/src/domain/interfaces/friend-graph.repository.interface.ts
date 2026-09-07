@@ -9,6 +9,5 @@ export interface IFriendGraphRepository {
 
   findTwoHopCandidates(
     userId: string,
-    limit: number,
   ): Promise<TwoHopFriendCandidateEvidence[]>;
 }

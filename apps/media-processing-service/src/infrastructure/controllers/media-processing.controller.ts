@@ -53,6 +53,7 @@ export class MediaProcessingController {
         retryNumber,
         allowReclaim: message.fields.redelivered,
         allowRetry: nextRetryNumber !== undefined,
+        edit: job.edit,
       });
 
       if (result.status === 'RETRY' && nextRetryNumber !== undefined) {

@@ -2,6 +2,8 @@ import type { IRerankerService } from '@ai/domain/interfaces/reranker.service.in
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EvidenceDiversitySelector } from './evidence-diversity-selector';
+import type { ScoredRerankCandidate } from './hybrid-retrieval-scorer';
 import { SimpleRerankerAdapter } from './simple-reranker.adapter';
 
 interface TeiScore {
@@ -16,6 +18,9 @@ export class TeiRerankerAdapter implements IRerankerService {
   constructor(
     private readonly config: ConfigService,
     private readonly fallback: SimpleRerankerAdapter,
+    private readonly diversitySelector: EvidenceDiversitySelector = new EvidenceDiversitySelector(
+      config,
+    ),
   ) {}
 
   async rerank(input: {
@@ -42,7 +47,7 @@ export class TeiRerankerAdapter implements IRerankerService {
       );
       const response = await this.request(input.queryText, candidates);
       const seen = new Set<number>();
-      const ranked = response
+      const scored = response
         .map((item) => {
           const index = Number(item.index);
           const score = Number(item.score);
@@ -55,22 +60,15 @@ export class TeiRerankerAdapter implements IRerankerService {
           )
             return null;
           seen.add(index);
-          return { candidate: candidates[index], score };
+          return {
+            candidate: candidates[index],
+            relevanceScore: score,
+          } satisfies ScoredRerankCandidate;
         })
-        .filter(
-          (
-            item,
-          ): item is { candidate: ReelContextSearchResult; score: number } =>
-            Boolean(item),
-        )
-        .sort((left, right) => right.score - left.score)
-        .slice(0, limit);
-      if (!ranked.length)
+        .filter((item): item is ScoredRerankCandidate => Boolean(item));
+      if (!scored.length)
         throw new Error('TEI reranker returned no usable candidates');
-      return ranked.map(({ candidate, score }) => ({
-        ...candidate,
-        rerankScore: score,
-      }));
+      return this.diversitySelector.select(scored, limit);
     } catch (error: unknown) {
       this.logger.warn(
         `TEI reranker unavailable; using deterministic fallback: ${error instanceof Error ? error.message : String(error)}`,

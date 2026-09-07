@@ -1,4 +1,5 @@
 import type { Reel } from '@content/domain/entities/reel.entity';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type {
   RecommendationCandidateEvidence,
   RecommendationCandidateQuery,
@@ -36,6 +37,8 @@ const REEL_SELECT = {
   processingErrorDetail: true,
   mediaAttemptId: true,
   indexAttemptId: true,
+  mediaEdit: true,
+  outputDurationMs: true,
   sourceDurationMs: true,
   sourceWidth: true,
   sourceHeight: true,
@@ -1304,6 +1307,8 @@ export class RecommendationRepository implements IRecommendationRepository {
       processingErrorDetail: record.processingErrorDetail ?? undefined,
       mediaAttemptId: record.mediaAttemptId ?? undefined,
       indexAttemptId: record.indexAttemptId ?? undefined,
+      mediaEdit: (record.mediaEdit as ReelMediaEdit | null) ?? undefined,
+      outputDurationMs: record.outputDurationMs ?? undefined,
       sourceDurationMs: record.sourceDurationMs ?? undefined,
       sourceWidth: record.sourceWidth ?? undefined,
       sourceHeight: record.sourceHeight ?? undefined,

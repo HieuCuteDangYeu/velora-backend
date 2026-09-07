@@ -1,6 +1,7 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import type { CompleteReelIndexCommand } from '@common/processing/interfaces/complete-reel-index.interface';
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import {
   REEL_INDEX_JOB_EVENT_TYPE,
   REEL_INDEX_JOB_SCHEMA_VERSION,
@@ -83,6 +84,8 @@ export class ContentRepository
     hlsMasterKey: true,
     transcriptionAudioManifestKey: true,
     mediaOutput: true,
+    mediaEdit: true,
+    outputDurationMs: true,
     processingStage: true,
     processingMessage: true,
     processingProgress: true,
@@ -160,6 +163,9 @@ export class ContentRepository
       (record['transcriptionAudioManifestKey'] as string | null) ?? undefined;
     reel.mediaOutput =
       (record['mediaOutput'] as ReelMediaOutput | null) ?? undefined;
+    reel.mediaEdit = (record['mediaEdit'] as ReelMediaEdit | null) ?? undefined;
+    reel.outputDurationMs =
+      (record['outputDurationMs'] as number | null) ?? undefined;
     reel.processingStage =
       (record['processingStage'] as string | null) ?? undefined;
     reel.processingMessage =
@@ -240,6 +246,7 @@ export class ContentRepository
 
     for (const key of [
       'sourceDurationMs',
+      'outputDurationMs',
       'sourceWidth',
       'sourceHeight',
       'sourceFps',
@@ -291,6 +298,8 @@ export class ContentRepository
           processingErrorDetail: reel.processingErrorDetail,
           mediaAttemptId: reel.mediaAttemptId,
           indexAttemptId: reel.indexAttemptId,
+          mediaEdit: reel.mediaEdit as unknown as Prisma.InputJsonValue,
+          outputDurationMs: reel.outputDurationMs,
           sourceDurationMs: reel.sourceDurationMs,
           sourceWidth: reel.sourceWidth,
           sourceHeight: reel.sourceHeight,
@@ -460,6 +469,9 @@ export class ContentRepository
         transcriptionAudioManifestKey:
           input.mediaOutput.transcriptionAudioManifestKey,
         sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
+        outputDurationMs:
+          input.mediaMetadata.outputDurationMs ??
+          input.mediaMetadata.sourceDurationMs!,
         sourceHasAudio: input.mediaOutput.sourceHasAudio,
         sourceOrientation: input.mediaMetadata.sourceOrientation!,
         sourceLengthClass: input.mediaOutput.sourceLengthClass,
@@ -716,6 +728,7 @@ export class ContentRepository
         transcriptionAudioManifestKey:
           reel.transcriptionAudioManifestKey ?? undefined,
         sourceDurationMs: reel.sourceDurationMs,
+        outputDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
         sourceHasAudio: reel.sourceHasAudio ?? undefined,
         sourceOrientation: reel.sourceOrientation,
         sourceLengthClass: reel.sourceLengthClass,

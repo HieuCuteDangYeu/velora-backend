@@ -1,0 +1,2 @@
+ALTER TABLE "Reel"
+ADD COLUMN "mediaEdit" JSONB;

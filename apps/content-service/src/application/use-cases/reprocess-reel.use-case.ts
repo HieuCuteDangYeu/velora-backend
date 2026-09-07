@@ -59,10 +59,11 @@ export class ReprocessReelUseCase {
       userId: reel.userId,
       mediaKey: reel.mediaKey,
       mediaAttemptId,
-      clientObservedDurationMs: reel.sourceDurationMs,
+      clientObservedDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
       title: reel.title,
       description: reel.description,
       tags: reel.tags,
+      edit: reel.mediaEdit,
     });
 
     const queuedReel =

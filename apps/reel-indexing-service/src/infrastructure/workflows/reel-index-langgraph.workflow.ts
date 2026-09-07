@@ -363,7 +363,7 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
     return {
       route: routeIndexing({
         hasAudio,
-        durationMs: state.job.sourceDurationMs,
+        durationMs: state.job.outputDurationMs ?? state.job.sourceDurationMs,
         sourceLengthClass: state.job.sourceLengthClass,
         shortMaximumSeconds: this.positiveNumber(
           'MEDIA_SHORT_MAX_DURATION_SECONDS',

@@ -2,6 +2,10 @@ import type {
   ExtractedVisualFrame,
   IVisualFrameExtractionService,
 } from '@processing/domain/interfaces/visual-frame-extraction.service.interface';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import { formatReelPixelCropFilter } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
+import { buildTemporalTrimArguments } from './ffmpeg-arguments';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { spawn } from 'node:child_process';
@@ -10,6 +14,24 @@ import * as path from 'node:path';
 
 interface ProcessResult {
   stderr: string;
+}
+
+export function buildVisualFrameFilter(input: {
+  mode: 'periodic' | 'scene';
+  intervalSeconds?: number;
+  sceneThreshold?: number;
+  crop?: ReelPixelCrop;
+  trim?: ReelMediaTrim;
+}): string {
+  const cropFilter = input.crop
+    ? `${formatReelPixelCropFilter(input.crop)},`
+    : '';
+
+  if (input.mode === 'periodic') {
+    return `${cropFilter}fps=1/${input.intervalSeconds}:start_time=0,scale='min(1280,iw)':-2`;
+  }
+
+  return `${cropFilter}select='gt(scene,${input.sceneThreshold})',showinfo,scale='min(1280,iw)':-2`;
 }
 
 @Injectable()
@@ -26,6 +48,8 @@ export class FfmpegVisualFrameExtractionService implements IVisualFrameExtractio
     totalDurationMs: number;
     periodicIntervalMs: number;
     sceneThreshold: number;
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }): Promise<ExtractedVisualFrame[]> {
     const periodicDir = path.join(input.outputDir, 'periodic');
     const sceneDir = path.join(input.outputDir, 'scene');
@@ -47,6 +71,8 @@ export class FfmpegVisualFrameExtractionService implements IVisualFrameExtractio
     outputDir: string;
     totalDurationMs: number;
     periodicIntervalMs: number;
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }): Promise<ExtractedVisualFrame[]> {
     const intervalSeconds = Math.max(0.25, input.periodicIntervalMs / 1000);
     const pattern = path.join(input.outputDir, 'periodic_%06d.jpg');
@@ -56,8 +82,13 @@ export class FfmpegVisualFrameExtractionService implements IVisualFrameExtractio
       'warning',
       '-i',
       input.inputPath,
+      ...buildTemporalTrimArguments(input.trim),
       '-vf',
-      `fps=1/${intervalSeconds}:start_time=0,scale='min(1280,iw)':-2`,
+      buildVisualFrameFilter({
+        mode: 'periodic',
+        intervalSeconds,
+        crop: input.crop,
+      }),
       '-q:v',
       '3',
       '-an',
@@ -80,6 +111,8 @@ export class FfmpegVisualFrameExtractionService implements IVisualFrameExtractio
     outputDir: string;
     totalDurationMs: number;
     sceneThreshold: number;
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }): Promise<ExtractedVisualFrame[]> {
     const pattern = path.join(input.outputDir, 'scene_%06d.jpg');
     const result = await this.run([
@@ -88,8 +121,13 @@ export class FfmpegVisualFrameExtractionService implements IVisualFrameExtractio
       'info',
       '-i',
       input.inputPath,
+      ...buildTemporalTrimArguments(input.trim),
       '-vf',
-      `select='gt(scene,${input.sceneThreshold})',showinfo,scale='min(1280,iw)':-2`,
+      buildVisualFrameFilter({
+        mode: 'scene',
+        sceneThreshold: input.sceneThreshold,
+        crop: input.crop,
+      }),
       '-vsync',
       'vfr',
       '-q:v',

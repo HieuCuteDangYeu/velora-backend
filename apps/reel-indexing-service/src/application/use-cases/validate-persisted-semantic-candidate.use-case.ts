@@ -84,7 +84,7 @@ export class ValidatePersistedSemanticCandidateUseCase {
     return {
       reelId: job.reelId,
       sourceLengthClass: job.sourceLengthClass,
-      durationMs: job.sourceDurationMs,
+      durationMs: job.outputDurationMs ?? job.sourceDurationMs,
       title: job.title,
       description: job.description,
       tags: job.tags,

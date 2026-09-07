@@ -36,6 +36,7 @@ import { CloudflareVisionAdapter } from '@ai/infrastructure/adapters/cloudflare-
 import { ContentServiceAdapter } from '@ai/infrastructure/adapters/content-service.adapter';
 import { ConversationTokenPublisherAdapter } from '@ai/infrastructure/adapters/conversation-token-publisher.adapter';
 import { DeterministicRetrievalEngineAdapter } from '@ai/infrastructure/adapters/deterministic-retrieval-engine.adapter';
+import { EvidenceDiversitySelector } from '@ai/infrastructure/adapters/evidence-diversity-selector';
 import { GroqConversationSummarizerAdapter } from '@ai/infrastructure/adapters/groq-conversation-summarizer.adapter';
 import { GroqLlmAdapter } from '@ai/infrastructure/adapters/groq-llm.adapter';
 import { GroqMemoryExtractorAdapter } from '@ai/infrastructure/adapters/groq-memory-extractor.adapter';
@@ -44,6 +45,7 @@ import { GroqTextClient } from '@ai/infrastructure/adapters/groq-text.client';
 import { GroqToolCallingLlmAdapter } from '@ai/infrastructure/adapters/groq-tool-calling-llm.adapter';
 import { GroqTranscriptionAdapter } from '@ai/infrastructure/adapters/groq-transcription.adapter';
 import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
+import { HybridRetrievalScorer } from '@ai/infrastructure/adapters/hybrid-retrieval-scorer';
 import { OllamaVisionAdapter } from '@ai/infrastructure/adapters/ollama-vision.adapter';
 import { ReelSemanticIndexAdapter } from '@ai/infrastructure/adapters/reel-semantic-index.adapter';
 import { RetrievalAgentPolicyAdapter } from '@ai/infrastructure/adapters/retrieval-agent-policy.adapter';
@@ -130,7 +132,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
   controllers: [AiController, IndexQualityAgentController],
   providers: [
     PrismaService,
+    EvidenceDiversitySelector,
+    HybridRetrievalScorer,
     SimpleRerankerAdapter,
+    TeiRerankerAdapter,
     GroqTextClient,
 
     StreamChatUseCase,
@@ -208,7 +213,16 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IRerankerService',
-      useClass: TeiRerankerAdapter,
+      inject: [ConfigService, TeiRerankerAdapter, SimpleRerankerAdapter],
+      useFactory: (
+        config: ConfigService,
+        neural: TeiRerankerAdapter,
+        fallback: SimpleRerankerAdapter,
+      ) =>
+        config.get<string>('AI_RERANKER_PROVIDER')?.trim().toLowerCase() ===
+        'simple'
+          ? fallback
+          : neural,
     },
     {
       provide: 'IReelSemanticIndexService',

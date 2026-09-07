@@ -1,3 +1,6 @@
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
+
 export interface ExtractedVisualFrame {
   outputPath: string;
   timestampMs: number;
@@ -11,5 +14,7 @@ export interface IVisualFrameExtractionService {
     totalDurationMs: number;
     periodicIntervalMs: number;
     sceneThreshold: number;
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }): Promise<ExtractedVisualFrame[]>;
 }

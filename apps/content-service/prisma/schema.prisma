@@ -88,6 +88,8 @@ model Reel {
   hlsMasterKey                  String?
   transcriptionAudioManifestKey String?
   mediaOutput                   Json?
+  mediaEdit                     Json?
+  outputDurationMs              Int?
   processingStage               String?
   processingMessage             String?          @db.Text
   processingProgress            Int?

@@ -9,6 +9,7 @@ import type {
 import { ReelVisibility } from '@common/content/schemas/reel-visibility.schema';
 import type { RecommendationMetadata } from '@common/recommendation/interfaces/recommendation-metadata.interface';
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 
 export class Reel {
   id: string;
@@ -29,6 +30,8 @@ export class Reel {
   hlsMasterKey?: string;
   transcriptionAudioManifestKey?: string;
   mediaOutput?: ReelMediaOutput;
+  mediaEdit?: ReelMediaEdit;
+  outputDurationMs?: number;
   processingStage?: string;
   processingMessage?: string;
   processingProgress?: number;

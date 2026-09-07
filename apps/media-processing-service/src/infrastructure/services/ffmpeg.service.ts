@@ -10,6 +10,8 @@ import type {
   VideoProcessExecutionOptions,
 } from '@processing/domain/interfaces/video-processing.service.interface';
 import type { TranscriptionAudioFormat } from '@common/processing/interfaces/transcription-audio-manifest.interface';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -306,7 +308,10 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
     inputPath: string,
     outputPath: string,
     timestampSeconds = 2,
-    options: VideoProcessExecutionOptions = {},
+    options: VideoProcessExecutionOptions & {
+      crop?: ReelPixelCrop;
+      trim?: ReelMediaTrim;
+    } = {},
   ): Promise<void> {
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
@@ -317,6 +322,8 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
         inputPath,
         outputPath,
         timestampSeconds: Math.max(0, timestampSeconds),
+        crop: options.crop,
+        trim: options.trim,
       }),
       {
         signal: options.signal,

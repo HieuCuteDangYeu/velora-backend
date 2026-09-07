@@ -46,9 +46,7 @@ describe('GetGraphFriendRecommendationsUseCase', () => {
     ]);
     const graphRepository = createGraphRepository({
       findTwoHopCandidates,
-      listRelationshipUserIds: jest
-        .fn()
-        .mockResolvedValue(['pending-user']),
+      listRelationshipUserIds: jest.fn().mockResolvedValue(['pending-user']),
     });
     const blockRepository = createBlockRepository(['blocked-user']);
 

@@ -16,3 +16,8 @@ scrape_configs:
     static_configs:
       - targets:
           - monitoring-service:3016
+
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100

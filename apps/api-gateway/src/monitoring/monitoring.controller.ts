@@ -22,6 +22,11 @@ const ALLOWED_METRICS = new Set([
   'error_rate',
   'p95_rpc_latency',
   'event_loop_p99',
+  'host_cpu',
+  'host_memory',
+  'host_swap',
+  'host_disk',
+  'host_load1',
 ]);
 
 @ApiTags('Monitoring')

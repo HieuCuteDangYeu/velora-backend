@@ -1,4 +1,5 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
+import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
 import { TrackReelEventPayload } from '@common/content/dtos/track-reel-events.dto';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
@@ -107,7 +108,8 @@ export class ContentController {
       processingStage: reel.processingStage,
       processingMessage: reel.processingMessage,
       processingProgress: reel.processingProgress,
-      durationMs: reel.sourceDurationMs,
+      durationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
+      outputDurationMs: reel.outputDurationMs,
       transcript: reel.transcript,
       transcriptVtt: reel.transcriptVtt,
       transcriptSegments: reel.transcriptSegments,
@@ -120,6 +122,7 @@ export class ContentController {
       processingErrorCode: reel.processingErrorCode,
       mediaAttemptId: reel.mediaAttemptId,
       indexAttemptId: reel.indexAttemptId,
+      mediaEdit: reel.mediaEdit,
       sourceDurationMs: reel.sourceDurationMs,
       sourceWidth: reel.sourceWidth,
       sourceHeight: reel.sourceHeight,
@@ -129,11 +132,11 @@ export class ContentController {
       sourceRotation: reel.sourceRotation,
       sourceOrientation: reel.sourceOrientation,
       sourceLengthClass: reel.sourceLengthClass,
-      playbackPresentation:
-        reel.sourceOrientation === 'LANDSCAPE' &&
-        reel.sourceLengthClass === 'LONG'
-          ? 'FIT_WITH_LETTERBOX'
-          : 'PORTRAIT_COVER',
+      playbackPresentation: resolveReelPlaybackPresentation({
+        mediaEdit: reel.mediaEdit,
+        sourceOrientation: reel.sourceOrientation,
+        sourceLengthClass: reel.sourceLengthClass,
+      }),
       sourceAspectRatio: reel.sourceAspectRatio,
       sourceEffectiveWidth: reel.sourceEffectiveWidth,
       sourceEffectiveHeight: reel.sourceEffectiveHeight,

@@ -69,7 +69,8 @@ export class ValidateEvidenceIndexCandidateUseCase {
         document.endTime !== undefined &&
         (document.startTime < 0 ||
           document.endTime < document.startTime ||
-          document.endTime * 1000 > job.sourceDurationMs + 1_000)
+          document.endTime * 1000 >
+            (job.outputDurationMs ?? job.sourceDurationMs) + 1_000)
       ) {
         throw new Error(`Document ${document.id} has invalid timestamps`);
       }

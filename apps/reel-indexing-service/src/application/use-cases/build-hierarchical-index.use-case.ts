@@ -72,7 +72,9 @@ export class BuildHierarchicalIndexUseCase {
         ? [
             {
               start: 0,
-              end: input.job.sourceDurationMs / 1000,
+              end:
+                (input.job.outputDurationMs ?? input.job.sourceDurationMs) /
+                1000,
               text: normalizedTranscript,
               sourceSegmentId: `transcript:${this.hash(normalizedTranscript)}`,
             },

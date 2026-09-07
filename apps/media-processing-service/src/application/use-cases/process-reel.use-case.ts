@@ -1,4 +1,5 @@
 import type { ReelMediaLengthClass } from '@common/processing/interfaces/reel-media-job.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -56,6 +57,7 @@ export class ProcessReelUseCase {
     retryNumber?: number;
     allowReclaim?: boolean;
     allowRetry?: boolean;
+    edit?: ReelMediaEdit;
   }): Promise<ProcessReelResult> {
     return await this.jobConcurrencyLimiter.runExclusive(async () => {
       const { reelId, mediaKey, processingAttemptId } = data;
@@ -135,6 +137,7 @@ export class ProcessReelUseCase {
           audioOutputDir: workspace.audioOutputDir,
           thumbnailPath: workspace.thumbnailPath,
           metricsContext,
+          edit: data.edit,
         });
 
         currentProgress = 96;
@@ -160,8 +163,12 @@ export class ProcessReelUseCase {
             outputDir: path.join(workspace.workDir, 'visual-frames'),
             storagePrefix: mediaKey.replace(/\.[^.]+$/, ''),
             metadata: {
-              durationMs: mediaResult.mediaMetadata.sourceDurationMs,
+              durationMs:
+                mediaResult.mediaMetadata.outputDurationMs ??
+                mediaResult.mediaMetadata.sourceDurationMs,
             },
+            crop: mediaResult.crop,
+            trim: mediaResult.trim,
           },
         );
         visualTimer.succeed({

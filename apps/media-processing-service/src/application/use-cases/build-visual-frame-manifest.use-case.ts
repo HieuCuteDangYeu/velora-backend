@@ -1,4 +1,6 @@
 import type { VisualFrameManifest } from '@common/processing/interfaces/visual-frame-manifest.interface';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import type { IMediaStorageService } from '@processing/domain/interfaces/media-storage.service.interface';
 import type { ITempFileService } from '@processing/domain/interfaces/temp-file.service.interface';
 import type {
@@ -38,6 +40,8 @@ export class BuildVisualFrameManifestUseCase {
     outputDir: string;
     storagePrefix: string;
     metadata: { durationMs?: number };
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }): Promise<VisualFrameManifestResult> {
     const totalDurationMs = Math.max(0, input.metadata.durationMs ?? 0);
     const periodicIntervalMs =
@@ -69,6 +73,8 @@ export class BuildVisualFrameManifestUseCase {
             totalDurationMs,
             periodicIntervalMs,
             sceneThreshold,
+            crop: input.crop,
+            trim: input.trim,
           })
         : [];
     const selected = this.limitFrames(

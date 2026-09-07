@@ -1,4 +1,7 @@
 import type { ReelSourceOrientation } from '@common/content/interfaces/reel-state.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
+import { resolveReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
@@ -70,11 +73,20 @@ const BITRATES: Record<
 export class SelectReelEncodingProfileUseCase {
   constructor(private readonly configService: ConfigService) {}
 
-  execute(metadata: VideoMetadata): ReelEncodingProfile {
+  execute(
+    metadata: VideoMetadata,
+    edit?: ReelMediaEdit,
+    processingDurationMs?: number,
+    trim?: ReelMediaTrim,
+  ): ReelEncodingProfile {
     const profileName = this.getQualityProfile();
-    const { width: sourceWidth, height: sourceHeight } =
-      this.getEffectiveDimensions(metadata);
-    const orientation = this.getOrientation(sourceWidth, sourceHeight);
+    const sourceDimensions = this.getEffectiveDimensions(metadata);
+    const crop = resolveReelPixelCrop(edit, metadata);
+    const sourceWidth = crop?.width ?? sourceDimensions.width;
+    const sourceHeight = crop?.height ?? sourceDimensions.height;
+    const orientation = crop
+      ? 'PORTRAIT'
+      : this.getOrientation(sourceWidth, sourceHeight);
     const allow1080p = this.getBoolean('MEDIA_ALLOW_1080P', false);
     const maxVariants = Math.min(
       this.getPositiveInt(
@@ -103,7 +115,8 @@ export class SelectReelEncodingProfileUseCase {
     const shortMaxDurationMs =
       this.getPositiveInt('MEDIA_SHORT_MAX_DURATION_SECONDS', 180, 1, 86_400) *
       1000;
-    const isLong = (metadata.durationMs ?? 0) > shortMaxDurationMs;
+    const durationMs = processingDurationMs ?? metadata.durationMs;
+    const isLong = (durationMs ?? 0) > shortMaxDurationMs;
     const segmentSeconds = isLong
       ? this.getPositiveInt('MEDIA_LONG_HLS_SEGMENT_SECONDS', 4, 2, 20)
       : this.getPositiveInt('MEDIA_SHORT_HLS_SEGMENT_SECONDS', 2, 1, 10);
@@ -125,8 +138,10 @@ export class SelectReelEncodingProfileUseCase {
         1,
         16,
       ),
-      timeoutMs: this.getTranscodeTimeoutMs(metadata.durationMs),
+      timeoutMs: this.getTranscodeTimeoutMs(durationMs),
       hasAudio: metadata.hasAudio === true,
+      ...(crop ? { crop } : {}),
+      ...(trim ? { trim } : {}),
       variants,
     };
   }

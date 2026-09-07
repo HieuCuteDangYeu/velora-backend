@@ -2,6 +2,8 @@ import type {
   ReelEncodingQuality,
   ReelEncodingVariantOutput,
 } from '@common/processing/interfaces/reel-encoding-variant.interface';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import type { TranscriptionAudioFormat } from '@common/processing/interfaces/transcription-audio-manifest.interface';
 
 export interface VideoMetadata {
@@ -37,6 +39,8 @@ export interface ReelEncodingProfile {
   threadsPerVariant: number;
   timeoutMs: number;
   hasAudio: boolean;
+  crop?: ReelPixelCrop;
+  trim?: ReelMediaTrim;
   variants: ReelEncodingVariant[];
 }
 
@@ -89,6 +93,9 @@ export interface IVideoProcessingService {
     inputPath: string,
     outputPath: string,
     timestampSeconds?: number,
-    options?: VideoProcessExecutionOptions,
+    options?: VideoProcessExecutionOptions & {
+      crop?: ReelPixelCrop;
+      trim?: ReelMediaTrim;
+    },
   ): Promise<void>;
 }

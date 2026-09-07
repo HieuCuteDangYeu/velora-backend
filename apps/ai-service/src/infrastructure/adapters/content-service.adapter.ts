@@ -36,6 +36,7 @@ interface RawContentReel {
   streamUrl?: string;
   durationMs?: number;
   sourceDurationMs?: number;
+  outputDurationMs?: number;
   sourceOrientation?: 'PORTRAIT' | 'LANDSCAPE' | 'SQUARE';
   sourceLengthClass?: 'SHORT' | 'LONG';
   playbackPresentation?: 'PORTRAIT_COVER' | 'FIT_WITH_LETTERBOX';
@@ -176,7 +177,8 @@ export class ContentServiceAdapter implements IContentService {
       thumbnailKey: reel.thumbnailKey,
       thumbnailUrl,
       streamUrl,
-      durationMs: reel.durationMs ?? reel.sourceDurationMs,
+      durationMs:
+        reel.durationMs ?? reel.outputDurationMs ?? reel.sourceDurationMs,
       sourceOrientation: reel.sourceOrientation,
       sourceLengthClass: reel.sourceLengthClass,
       playbackPresentation:

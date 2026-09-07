@@ -1,4 +1,7 @@
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -104,9 +107,12 @@ export class PrepareReelMediaUseCase {
     audioOutputDir: string;
     thumbnailPath: string;
     metricsContext: ReelPipelineMetricContext;
+    edit?: ReelMediaEdit;
   }): Promise<{
     mediaMetadata: ReelProcessingMediaMetadata;
     mediaOutput: ReelMediaOutput;
+    crop?: ReelPixelCrop;
+    trim?: ReelMediaTrim;
   }> {
     let currentProgress = 10;
     let currentStage = 'DOWNLOADING';
@@ -114,6 +120,8 @@ export class PrepareReelMediaUseCase {
     let currentErrorCode = 'PROCESSING_FAILED';
     let mediaMetadata: ReelProcessingMediaMetadata | undefined;
     let classification: ReelMediaClassification | undefined;
+    let processingClassification: ReelMediaClassification | undefined;
+    let processingTrim: ReelMediaTrim | undefined;
     const totalMediaTimer = this.processingMetrics.startStage(
       data.metricsContext,
       'TOTAL_MEDIA',
@@ -176,14 +184,39 @@ export class PrepareReelMediaUseCase {
         sourceBytes: sourceStats.totalBytes,
       });
 
+      currentStage = 'VALIDATING_TRIM';
+      currentErrorCode = 'VIDEO_TRIM_INVALID';
+      processingTrim = this.validateReelSourceMediaUseCase.resolveTrim(
+        data.edit,
+        sourceMetadata.durationMs!,
+      );
+      processingClassification = this.classifyReelMediaUseCase.execute({
+        ...sourceMetadata,
+        durationMs: processingTrim.outputDurationMs,
+      });
+      data.metricsContext.mediaClass = processingClassification.mediaClass;
+      mediaMetadata = {
+        ...mediaMetadata,
+        outputDurationMs: processingTrim.outputDurationMs,
+      };
+      const ffmpegTrim = data.edit?.trim ? processingTrim : undefined;
+      const processingMetadata = {
+        ...sourceMetadata,
+        durationMs: processingTrim.outputDurationMs,
+      };
+
       const profileTimer = this.processingMetrics.startStage(
         data.metricsContext,
         'PROFILE_SELECTION',
       );
-      const encodingProfile =
-        this.selectReelEncodingProfileUseCase.execute(sourceMetadata);
-      const estimatedAdditionalTempBytes = this.estimateAdditionalTempBytes(
+      const encodingProfile = this.selectReelEncodingProfileUseCase.execute(
         sourceMetadata,
+        data.edit,
+        processingTrim.outputDurationMs,
+        ffmpegTrim,
+      );
+      const estimatedAdditionalTempBytes = this.estimateAdditionalTempBytes(
+        processingMetadata,
         encodingProfile,
       );
       const availableTempBytes = this.tempFileService.getAvailableBytes(
@@ -290,12 +323,14 @@ export class PrepareReelMediaUseCase {
       const thumbnailKey = `${storagePrefix}/thumbnail.jpg`;
       const thumbnailTimestampSeconds = this.resolveThumbnailTimestampSeconds(
         sourceMetadata,
-        classification,
+        processingClassification,
+        processingTrim.outputDurationMs,
       );
       await this.videoProcessingService.extractThumbnail(
         data.inputPath,
         data.thumbnailPath,
         thumbnailTimestampSeconds,
+        { crop: encodingProfile.crop, trim: encodingProfile.trim },
       );
       const thumbnailChecksum = await this.tempFileService.getFileChecksum(
         data.thumbnailPath,
@@ -333,6 +368,7 @@ export class PrepareReelMediaUseCase {
           outputDir: data.audioOutputDir,
           storagePrefix,
           metadata: sourceMetadata,
+          trim: data.edit?.trim ? processingTrim : undefined,
         });
       audioTimer.succeed({
         audioArtifactCount: audioResult.manifest.artifacts.length,
@@ -366,8 +402,8 @@ export class PrepareReelMediaUseCase {
       validationStreamTimer.succeed();
 
       if (
-        classification.mediaClass !== 'SHORT' &&
-        classification.mediaClass !== 'LONG'
+        processingClassification.mediaClass !== 'SHORT' &&
+        processingClassification.mediaClass !== 'LONG'
       ) {
         throw new Error('Validated media has no length classification');
       }
@@ -377,7 +413,7 @@ export class PrepareReelMediaUseCase {
         thumbnailKey,
         transcriptionAudioManifestKey: audioResult.manifestKey,
         sourceHasAudio: sourceMetadata.hasAudio === true,
-        sourceLengthClass: classification.mediaClass,
+        sourceLengthClass: processingClassification.mediaClass,
         variants: transcodeResult.variants,
         hlsObjectCount: hlsStats.fileCount,
         hlsTotalBytes: hlsStats.totalBytes,
@@ -396,7 +432,12 @@ export class PrepareReelMediaUseCase {
         audioArtifactCount: audioResult.manifest.artifacts.length,
       });
 
-      return { mediaMetadata, mediaOutput };
+      return {
+        mediaMetadata,
+        mediaOutput,
+        crop: encodingProfile.crop,
+        trim: encodingProfile.trim,
+      };
     } catch (error: unknown) {
       totalMediaTimer.fail(
         error instanceof ReelSourceMediaValidationError
@@ -460,8 +501,9 @@ export class PrepareReelMediaUseCase {
   private resolveThumbnailTimestampSeconds(
     metadata: VideoMetadata,
     classification: ReelMediaClassification,
+    durationMs = metadata.durationMs,
   ): number {
-    const durationSeconds = Math.max(0, (metadata.durationMs ?? 0) / 1000);
+    const durationSeconds = Math.max(0, (durationMs ?? 0) / 1000);
 
     if (durationSeconds <= 0.4) return 0;
 

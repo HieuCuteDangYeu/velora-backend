@@ -1,4 +1,5 @@
 import { isRpcError } from '@common/constants/rpc-error.types';
+import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { CreateReelShareLinkDto } from '@common/content/dtos/create-reel-share-link.dto';
 import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
 import { FriendsReelsQueryDto } from '@common/content/dtos/friends-reels-query.dto';
@@ -570,14 +571,16 @@ export class ContentController {
       processingStage: reel.processingStage,
       processingMessage: reel.processingMessage,
       processingProgress: reel.processingProgress,
-      durationMs: reel.sourceDurationMs,
+      durationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
+      outputDurationMs: reel.outputDurationMs,
       sourceOrientation: reel.sourceOrientation,
       sourceLengthClass: reel.sourceLengthClass,
-      playbackPresentation:
-        reel.sourceOrientation === 'LANDSCAPE' &&
-        reel.sourceLengthClass === 'LONG'
-          ? 'FIT_WITH_LETTERBOX'
-          : 'PORTRAIT_COVER',
+      edit: reel.mediaEdit,
+      playbackPresentation: resolveReelPlaybackPresentation({
+        mediaEdit: reel.mediaEdit,
+        sourceOrientation: reel.sourceOrientation,
+        sourceLengthClass: reel.sourceLengthClass,
+      }),
       sourceAspectRatio: reel.sourceAspectRatio,
       sourceEffectiveWidth: reel.sourceEffectiveWidth,
       sourceEffectiveHeight: reel.sourceEffectiveHeight,

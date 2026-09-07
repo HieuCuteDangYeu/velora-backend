@@ -7,6 +7,7 @@ import type { ReelPipelineMetricContext } from '@common/processing/interfaces/re
 
 export interface ReelProcessingMediaMetadata {
   sourceDurationMs?: number;
+  outputDurationMs?: number;
   sourceWidth?: number;
   sourceHeight?: number;
   sourceFps?: number;

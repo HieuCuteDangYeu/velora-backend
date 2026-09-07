@@ -19,6 +19,7 @@ import { Reel } from '../entities/reel.entity';
 
 export interface ReelProcessingMediaMetadata {
   sourceDurationMs?: number;
+  outputDurationMs?: number;
   sourceWidth?: number;
   sourceHeight?: number;
   sourceFps?: number;

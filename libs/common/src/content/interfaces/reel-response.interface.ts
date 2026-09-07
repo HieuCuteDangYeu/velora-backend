@@ -1,4 +1,5 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type {
   LegacyReelStatus,
   ReelIndexStatus,
@@ -38,8 +39,10 @@ export interface ReelListItem {
   processingMessage?: string;
   processingProgress?: number;
   durationMs?: number;
+  outputDurationMs?: number;
   sourceOrientation?: ReelSourceOrientation;
   sourceLengthClass?: ReelSourceLengthClass;
+  edit?: ReelMediaEdit;
   playbackPresentation?: ReelPlaybackPresentation;
   sourceAspectRatio?: number;
   sourceEffectiveWidth?: number;

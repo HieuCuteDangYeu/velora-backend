@@ -1,0 +1,79 @@
+import { Role, Roles } from '@gateway/auth/decorators/roles.decorator';
+import type { AuthenticatedRequest } from '@gateway/auth/guards/jwt-auth.guard';
+import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
+import { RolesGuard } from '@gateway/auth/guards/roles.guard';
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  Inject,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import { ClientProxy } from '@nestjs/microservices';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { lastValueFrom, timeout } from 'rxjs';
+
+const ALLOWED_METRICS = new Set([
+  'memory',
+  'heap',
+  'cpu',
+  'rpc_rate',
+  'error_rate',
+  'p95_rpc_latency',
+  'event_loop_p99',
+]);
+
+@ApiTags('Monitoring')
+@Controller('monitoring')
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(Role.ADMIN)
+@ApiBearerAuth()
+export class MonitoringController {
+  constructor(
+    @Inject('MONITORING_SERVICE')
+    private readonly monitoringClient: ClientProxy,
+  ) {}
+
+  @Get('overview')
+  @ApiOperation({ summary: 'Get Prometheus-backed monitoring overview' })
+  overview() {
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.metrics.overview', {})
+        .pipe(timeout(5000)),
+    );
+  }
+
+  @Get('timeseries')
+  @ApiOperation({ summary: 'Get a bounded monitoring timeseries' })
+  timeseries(@Req() request: AuthenticatedRequest) {
+    const query = request.query as {
+      metric?: string;
+      from?: string;
+      to?: string;
+      stepSeconds?: string;
+    };
+
+    if (!query.metric || !ALLOWED_METRICS.has(query.metric)) {
+      throw new BadRequestException(
+        `metric must be one of: ${Array.from(ALLOWED_METRICS).join(', ')}`,
+      );
+    }
+
+    if (!query.from || !query.to) {
+      throw new BadRequestException('from and to are required');
+    }
+
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.metrics.timeseries', {
+          metric: query.metric,
+          from: query.from,
+          to: query.to,
+          stepSeconds: query.stepSeconds ? Number(query.stepSeconds) : 60,
+        })
+        .pipe(timeout(7000)),
+    );
+  }
+}

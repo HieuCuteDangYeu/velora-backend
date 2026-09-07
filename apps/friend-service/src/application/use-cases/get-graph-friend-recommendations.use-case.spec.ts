@@ -1,4 +1,24 @@
+import type { IFriendGraphRepository } from '@friend/domain/interfaces/friend-graph.repository.interface';
+import type { IUserBlockRepository } from '@friend/domain/interfaces/user-block.repository.interface';
 import { GetGraphFriendRecommendationsUseCase } from './get-graph-friend-recommendations.use-case';
+
+const createGraphRepository = (
+  overrides: Partial<IFriendGraphRepository> = {},
+): IFriendGraphRepository => ({
+  findTwoHopCandidates: jest.fn().mockResolvedValue([]),
+  listRelationshipUserIds: jest.fn().mockResolvedValue([]),
+  ...overrides,
+});
+
+const createBlockRepository = (
+  excludedUserIds: string[] = [],
+): IUserBlockRepository => ({
+  blockAndRemoveRelationship: jest.fn(),
+  unblock: jest.fn(),
+  isBlockedBetween: jest.fn(),
+  listExcludedUserIds: jest.fn().mockResolvedValue(excludedUserIds),
+  listBlocked: jest.fn(),
+});
 
 describe('GetGraphFriendRecommendationsUseCase', () => {
   it('filters existing relationships and blocks before ranking two-hop candidates', async () => {
@@ -24,22 +44,22 @@ describe('GetGraphFriendRecommendationsUseCase', () => {
         adamicAdarScore: 3,
       },
     ]);
-    const listRelationshipUserIds = jest
-      .fn()
-      .mockResolvedValue(['pending-user']);
-    const listExcludedUserIds = jest.fn().mockResolvedValue(['blocked-user']);
+    const graphRepository = createGraphRepository({
+      findTwoHopCandidates,
+      listRelationshipUserIds: jest
+        .fn()
+        .mockResolvedValue(['pending-user']),
+    });
+    const blockRepository = createBlockRepository(['blocked-user']);
 
     const useCase = new GetGraphFriendRecommendationsUseCase(
-      {
-        findTwoHopCandidates,
-        listRelationshipUserIds,
-      } as any,
-      { listExcludedUserIds } as any,
+      graphRepository,
+      blockRepository,
     );
 
     const result = await useCase.execute('viewer', 2);
 
-    expect(findTwoHopCandidates).toHaveBeenCalledWith('viewer', 50);
+    expect(findTwoHopCandidates).toHaveBeenCalledWith('viewer');
     expect(result.excludedUserIds).toEqual([
       'viewer',
       'pending-user',
@@ -59,23 +79,24 @@ describe('GetGraphFriendRecommendationsUseCase', () => {
   });
 
   it('uses Adamic-Adar to penalize candidates connected through high-degree mutuals', async () => {
+    const graphRepository = createGraphRepository({
+      findTwoHopCandidates: jest.fn().mockResolvedValue([
+        {
+          userId: 'strong-neighborhood',
+          mutualFriendCount: 2,
+          adamicAdarScore: 1,
+        },
+        {
+          userId: 'weak-neighborhood',
+          mutualFriendCount: 2,
+          adamicAdarScore: 0.2,
+        },
+      ]),
+    });
+
     const useCase = new GetGraphFriendRecommendationsUseCase(
-      {
-        findTwoHopCandidates: jest.fn().mockResolvedValue([
-          {
-            userId: 'strong-neighborhood',
-            mutualFriendCount: 2,
-            adamicAdarScore: 1,
-          },
-          {
-            userId: 'weak-neighborhood',
-            mutualFriendCount: 2,
-            adamicAdarScore: 0.2,
-          },
-        ]),
-        listRelationshipUserIds: jest.fn().mockResolvedValue([]),
-      } as any,
-      { listExcludedUserIds: jest.fn().mockResolvedValue([]) } as any,
+      graphRepository,
+      createBlockRepository(),
     );
 
     const result = await useCase.execute('viewer', 20);
@@ -87,5 +108,36 @@ describe('GetGraphFriendRecommendationsUseCase', () => {
     expect(result.candidates[0].graphScore).toBeGreaterThan(
       result.candidates[1].graphScore,
     );
+  });
+
+  it('sorts using full precision before rounding serialized scores', async () => {
+    const graphRepository = createGraphRepository({
+      findTwoHopCandidates: jest.fn().mockResolvedValue([
+        {
+          userId: 'a-weaker',
+          mutualFriendCount: 2,
+          adamicAdarScore: 0.9999995,
+        },
+        {
+          userId: 'z-stronger',
+          mutualFriendCount: 2,
+          adamicAdarScore: 1,
+        },
+      ]),
+    });
+
+    const useCase = new GetGraphFriendRecommendationsUseCase(
+      graphRepository,
+      createBlockRepository(),
+    );
+
+    const result = await useCase.execute('viewer', 2);
+
+    expect(result.candidates.map((candidate) => candidate.userId)).toEqual([
+      'z-stronger',
+      'a-weaker',
+    ]);
+    expect(result.candidates[0].graphScore).toBe(1);
+    expect(result.candidates[1].graphScore).toBe(1);
   });
 });

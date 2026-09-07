@@ -14,7 +14,7 @@ export class RecommendationConfigService implements IRecommendationConfig {
   constructor(private readonly configService: ConfigService) {
     this.algorithmVersion = this.readVersion(
       'USER_RECOMMENDATION_VERSION',
-      'public-user-fallback-v1',
+      'graph-friend-recommendation-v2',
     );
 
     this.telemetryEnabled = this.readBoolean(
@@ -33,11 +33,12 @@ export class RecommendationConfigService implements IRecommendationConfig {
   }
 
   getCandidateSource(): string {
-    return 'PUBLIC_USER_FALLBACK';
+    return 'GRAPH_TWO_HOP';
   }
 
   getFeatureFlags(): RecommendationFeatureFlags {
     return {
+      graphCandidates: true,
       interestPool: this.interestPoolEnabled,
     };
   }

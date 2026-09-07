@@ -6,11 +6,26 @@ existing application topology stays unchanged.
 
 ## Start
 
-Set non-default Grafana credentials in your shell or `.env`:
+Set Grafana credentials in your shell or `.env`. The password is required so the
+stack cannot silently start with `admin/admin`:
 
 ```bash
 export GRAFANA_ADMIN_USER=admin
 export GRAFANA_ADMIN_PASSWORD='change-me'
+```
+
+The 8 GB self-host profile also applies conservative memory caps by default:
+
+```text
+Prometheus: 512 MiB
+Grafana:    256 MiB
+```
+
+Override them only after measuring the host:
+
+```bash
+export PROMETHEUS_MEMORY_LIMIT=768m
+export GRAFANA_MEMORY_LIMIT=384m
 ```
 
 Then start the existing stack together with the monitoring overlay:

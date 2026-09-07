@@ -37,6 +37,7 @@ jobs:
             DOCKERHUB_USERNAME=ci-placeholder \
             RABBITMQ_USER=ci \
             RABBITMQ_PASSWORD=ci \
+            GRAFANA_ADMIN_PASSWORD=ci-placeholder \
             docker compose \
               -f docker-compose.yml \
               -f infra/monitoring/docker-compose.monitoring.yml \

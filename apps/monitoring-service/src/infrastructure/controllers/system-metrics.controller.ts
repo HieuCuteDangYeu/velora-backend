@@ -26,6 +26,7 @@ const RANGE_QUERIES = {
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
+type ScalarMetric = number | null;
 
 type TimeseriesPayload = {
   metric?: unknown;
@@ -33,6 +34,28 @@ type TimeseriesPayload = {
   to?: unknown;
   stepSeconds?: unknown;
 };
+
+const subtractMetric = (
+  total: ScalarMetric,
+  available: ScalarMetric,
+): ScalarMetric => {
+  if (total === null || available === null) {
+    return null;
+  }
+
+  return Math.max(0, total - available);
+};
+
+const usageRatio = (used: ScalarMetric, total: ScalarMetric): ScalarMetric => {
+  if (used === null || total === null) {
+    return null;
+  }
+
+  return total > 0 ? used / total : 0;
+};
+
+const targetStatus = (value: ScalarMetric): boolean | null =>
+  value === null ? null : value > 0;
 
 @Controller()
 export class SystemMetricsController {
@@ -85,47 +108,45 @@ export class SystemMetricsController {
           this.prometheus.scalar('max(time() - node_boot_time_seconds{job="node-exporter"})'),
         ]);
 
-        const hostMemoryUsedBytes = Math.max(
-          0,
-          hostMemoryTotalBytes - hostMemoryAvailableBytes,
+        const hostMemoryUsedBytes = subtractMetric(
+          hostMemoryTotalBytes,
+          hostMemoryAvailableBytes,
         );
-        const hostSwapUsedBytes = Math.max(
-          0,
-          hostSwapTotalBytes - hostSwapFreeBytes,
+        const hostSwapUsedBytes = subtractMetric(
+          hostSwapTotalBytes,
+          hostSwapFreeBytes,
         );
-        const hostDiskUsedBytes = Math.max(
-          0,
-          hostDiskTotalBytes - hostDiskAvailableBytes,
+        const hostDiskUsedBytes = subtractMetric(
+          hostDiskTotalBytes,
+          hostDiskAvailableBytes,
         );
 
         return {
           generatedAt: new Date().toISOString(),
           source: 'prometheus' as const,
           host: {
-            up: hostUp > 0,
+            up: targetStatus(hostUp),
             cpuUsageRatio: hostCpuUsageRatio,
             memoryTotalBytes: hostMemoryTotalBytes,
             memoryAvailableBytes: hostMemoryAvailableBytes,
             memoryUsedBytes: hostMemoryUsedBytes,
-            memoryUsageRatio:
-              hostMemoryTotalBytes > 0
-                ? hostMemoryUsedBytes / hostMemoryTotalBytes
-                : 0,
+            memoryUsageRatio: usageRatio(
+              hostMemoryUsedBytes,
+              hostMemoryTotalBytes,
+            ),
             swapTotalBytes: hostSwapTotalBytes,
             swapFreeBytes: hostSwapFreeBytes,
             swapUsedBytes: hostSwapUsedBytes,
-            swapUsageRatio:
-              hostSwapTotalBytes > 0 ? hostSwapUsedBytes / hostSwapTotalBytes : 0,
+            swapUsageRatio: usageRatio(hostSwapUsedBytes, hostSwapTotalBytes),
             diskTotalBytes: hostDiskTotalBytes,
             diskAvailableBytes: hostDiskAvailableBytes,
             diskUsedBytes: hostDiskUsedBytes,
-            diskUsageRatio:
-              hostDiskTotalBytes > 0 ? hostDiskUsedBytes / hostDiskTotalBytes : 0,
+            diskUsageRatio: usageRatio(hostDiskUsedBytes, hostDiskTotalBytes),
             load1: hostLoad1,
             uptimeSeconds: hostUptimeSeconds,
           },
           service: {
-            up: serviceUp > 0,
+            up: targetStatus(serviceUp),
           },
           process: {
             residentMemoryBytes,

@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
+import {
+  resolveReelMediaTrim,
+  type ReelMediaTrim,
+} from '@common/processing/reel-media-trim';
 import { VideoMetadata } from '../../domain/interfaces/video-processing.service.interface';
 
 export class ReelSourceMediaValidationError extends Error {
@@ -16,6 +21,21 @@ export class ReelSourceMediaValidationError extends Error {
 @Injectable()
 export class ValidateReelSourceMediaUseCase {
   constructor(private readonly configService: ConfigService) {}
+
+  resolveTrim(
+    edit: ReelMediaEdit | undefined,
+    sourceDurationMs: number,
+  ): ReelMediaTrim {
+    try {
+      return resolveReelMediaTrim(edit, sourceDurationMs);
+    } catch (error: unknown) {
+      throw new ReelSourceMediaValidationError(
+        'VIDEO_TRIM_INVALID',
+        'The selected trim interval is invalid for this video.',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
 
   execute(
     metadata: VideoMetadata,

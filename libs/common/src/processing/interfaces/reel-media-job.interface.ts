@@ -1,3 +1,6 @@
+import { ReelMediaEditSchema } from '@common/content/schemas/reel-edit.schema';
+import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
+
 export type ReelMediaLengthClass = 'SHORT' | 'LONG' | 'UNKNOWN';
 
 export interface ReelMediaJob {
@@ -10,6 +13,7 @@ export interface ReelMediaJob {
   title?: string;
   description?: string;
   tags: string[];
+  edit?: ReelMediaEdit;
   createdAt: string;
   schemaVersion: 1;
 }
@@ -41,6 +45,8 @@ export function isReelMediaJob(value: unknown): value is ReelMediaJob {
     ) &&
     Array.isArray(record['tags']) &&
     record['tags'].every((tag) => typeof tag === 'string') &&
+    (record['edit'] === undefined ||
+      ReelMediaEditSchema.safeParse(record['edit']).success) &&
     typeof record['createdAt'] === 'string' &&
     Number.isFinite(Date.parse(record['createdAt'])) &&
     record['schemaVersion'] === REEL_MEDIA_JOB_SCHEMA_VERSION

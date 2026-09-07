@@ -3,9 +3,23 @@ import type {
   ReelEncodingProfile,
   TranscriptionAudioSegmentRequest,
 } from '@processing/domain/interfaces/video-processing.service.interface';
+import type { ReelPixelCrop } from '@common/processing/reel-media-crop';
+import { formatReelPixelCropFilter } from '@common/processing/reel-media-crop';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 import * as path from 'node:path';
 
 const toKbps = (value: number): string => `${value}k`;
+
+export function buildTemporalTrimArguments(trim?: ReelMediaTrim): string[] {
+  if (!trim) return [];
+
+  return [
+    '-ss',
+    (trim.sourceStartMs / 1000).toFixed(3),
+    '-t',
+    (trim.outputDurationMs / 1000).toFixed(3),
+  ];
+}
 
 export function buildFfprobeArguments(inputPath: string): string[] {
   return [
@@ -27,13 +41,19 @@ export function buildHlsTranscodeArguments(input: {
   const { inputPath, outputDir, profile } = input;
   const variants = profile.variants;
   const gopSize = profile.outputFps * profile.segmentSeconds;
+  const sourceFilter = profile.crop
+    ? `[0:v:0]${formatReelPixelCropFilter(profile.crop)},split=${variants.length}${variants
+        .map((_, index) => `[v${index}src]`)
+        .join('')}`
+    : `[0:v:0]split=${variants.length}${variants
+        .map((_, index) => `[v${index}src]`)
+        .join('')}`;
   const filterComplex = [
-    `[0:v:0]split=${variants.length}${variants
-      .map((_, index) => `[v${index}src]`)
-      .join('')}`,
-    ...variants.map(
-      (variant, index) =>
-        `[v${index}src]scale=${variant.width}:${variant.height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${variant.width}:${variant.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v${index}]`,
+    sourceFilter,
+    ...variants.map((variant, index) =>
+      profile.crop
+        ? `[v${index}src]scale=${variant.width}:${variant.height}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${variant.width}:${variant.height},setsar=1[v${index}]`
+        : `[v${index}src]scale=${variant.width}:${variant.height}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=${variant.width}:${variant.height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v${index}]`,
     ),
   ].join(';');
   const args = [
@@ -42,6 +62,7 @@ export function buildHlsTranscodeArguments(input: {
     '-y',
     '-i',
     inputPath,
+    ...buildTemporalTrimArguments(profile.trim),
     '-filter_complex',
     filterComplex,
   ];
@@ -135,19 +156,27 @@ export function buildThumbnailArguments(input: {
   inputPath: string;
   outputPath: string;
   timestampSeconds: number;
+  crop?: ReelPixelCrop;
+  trim?: ReelMediaTrim;
 }): string[] {
+  const videoFilter = input.crop
+    ? `${formatReelPixelCropFilter(input.crop)},scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`
+    : 'scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1';
+
   return [
     '-hide_banner',
     '-nostdin',
     '-y',
     '-ss',
-    input.timestampSeconds.toFixed(3),
+    (input.timestampSeconds + (input.trim?.sourceStartMs ?? 0) / 1000).toFixed(
+      3,
+    ),
     '-i',
     input.inputPath,
     '-frames:v',
     '1',
     '-vf',
-    'scale=480:480:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1',
+    videoFilter,
     '-q:v',
     '3',
     input.outputPath,

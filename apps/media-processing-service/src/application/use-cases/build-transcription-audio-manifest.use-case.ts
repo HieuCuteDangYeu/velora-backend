@@ -13,6 +13,7 @@ import type {
   TranscriptionAudioSegmentRequest,
   VideoMetadata,
 } from '../../domain/interfaces/video-processing.service.interface';
+import type { ReelMediaTrim } from '@common/processing/reel-media-trim';
 
 export interface TranscriptionAudioManifestResult {
   manifest: TranscriptionAudioManifest;
@@ -40,17 +41,30 @@ export class BuildTranscriptionAudioManifestUseCase {
     outputDir: string;
     storagePrefix: string;
     metadata: VideoMetadata;
+    trim?: ReelMediaTrim;
   }): Promise<TranscriptionAudioManifestResult> {
     const format = this.getAudioFormat();
-    const totalDurationMs = Math.max(0, input.metadata.durationMs ?? 0);
+    const totalDurationMs = Math.max(
+      0,
+      input.trim?.outputDurationMs ?? input.metadata.durationMs ?? 0,
+    );
     const plannedSegments = input.metadata.hasAudio
       ? this.planSegments(totalDurationMs, input.outputDir, format)
       : [];
+    const extractionSegments = plannedSegments.map((segment) =>
+      input.trim
+        ? {
+            ...segment,
+            startMs: segment.startMs + input.trim.sourceStartMs,
+            endMs: segment.endMs + input.trim.sourceStartMs,
+          }
+        : segment,
+    );
     const extracted =
-      plannedSegments.length > 0
+      extractionSegments.length > 0
         ? await this.videoProcessingService.extractTranscriptionAudioSegments(
             input.inputPath,
-            plannedSegments,
+            extractionSegments,
             format,
           )
         : [];
@@ -59,6 +73,7 @@ export class BuildTranscriptionAudioManifestUseCase {
 
     for (let index = 0; index < extracted.length; index += 1) {
       const segment = extracted[index];
+      const plannedSegment = plannedSegments[index];
       const key = `${artifactPrefix}/audio_${index
         .toString()
         .padStart(6, '0')}.${format}`;
@@ -73,9 +88,9 @@ export class BuildTranscriptionAudioManifestUseCase {
 
       artifacts.push({
         key: uploaded.key,
-        startMs: segment.startMs,
-        endMs: segment.endMs,
-        overlapBeforeMs: segment.overlapBeforeMs,
+        startMs: plannedSegment.startMs,
+        endMs: plannedSegment.endMs,
+        overlapBeforeMs: plannedSegment.overlapBeforeMs,
         checksum,
         byteLength: uploaded.byteLength,
       });

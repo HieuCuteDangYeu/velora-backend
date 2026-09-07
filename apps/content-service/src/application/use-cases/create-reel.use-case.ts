@@ -41,6 +41,7 @@ export class CreateReelUseCase {
       title: payload.title,
       description: payload.description,
       tags: payload.tags,
+      edit: payload.edit,
     });
 
     const reel = await this.contentRepository.createReelWithMediaJob(
@@ -61,6 +62,7 @@ export class CreateReelUseCase {
         processingAttemptId: mediaAttemptId,
         mediaAttemptId,
         indexAttemptId,
+        mediaEdit: payload.edit,
       },
       {
         id: mediaJob.jobId,

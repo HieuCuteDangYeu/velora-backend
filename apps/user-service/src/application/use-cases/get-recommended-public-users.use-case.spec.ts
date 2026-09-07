@@ -1,38 +1,80 @@
+import type { FriendGraphRecommendationCandidate } from '@common/friend/interfaces/friend-recommendation.interface';
+import { User } from '@user/domain/entities/user.entity';
+import type { IFriendDiscoveryService } from '@user/domain/interfaces/friend-discovery.service.interface';
+import type { IRecommendationConfig } from '@user/domain/interfaces/recommendation-config.interface';
+import type { IRecommendationTelemetryService } from '@user/domain/interfaces/recommendation-telemetry-service.interface';
+import type { IUserRepository } from '@user/domain/interfaces/user.repository.interface';
 import { GetRecommendedPublicUsersUseCase } from './get-recommended-public-users.use-case';
 
-describe('GetRecommendedPublicUsersUseCase', () => {
-  const graphCandidate = (
-    userId: string,
-    mutualFriendCount: number,
-    graphScore: number,
-  ) => ({
-    userId,
-    mutualFriendCount,
-    adamicAdarScore: graphScore,
-    graphScore,
-    candidateSources: ['MUTUAL_FRIENDS', 'ADAMIC_ADAR'] as const,
-  });
+const graphCandidate = (
+  userId: string,
+  mutualFriendCount: number,
+  graphScore: number,
+): FriendGraphRecommendationCandidate => ({
+  userId,
+  mutualFriendCount,
+  adamicAdarScore: graphScore,
+  graphScore,
+  candidateSources: ['MUTUAL_FRIENDS', 'ADAMIC_ADAR'],
+});
 
-  const user = (id: string, username = id) => ({
+const user = (id: string, username = id): User =>
+  new User(
     id,
-    email: `${id}@example.com`,
-    fullName: `User ${id}`,
+    `${id}@example.com`,
+    `User ${id}`,
     username,
-    password: null,
-    isVerified: false,
-    createdAt: new Date('2026-09-01T00:00:00.000Z'),
-    picture: null,
-    provider: null,
-    providerId: null,
-  });
+    null,
+    false,
+    new Date('2026-09-01T00:00:00.000Z'),
+    null,
+    null,
+    null,
+  );
 
-  const config = {
-    getAlgorithmVersion: jest.fn().mockReturnValue('graph-friend-recommendation-v2'),
-    getCandidateSource: jest.fn().mockReturnValue('GRAPH_TWO_HOP'),
-    getFeatureFlags: jest.fn().mockReturnValue({ graphCandidates: true }),
-    isTelemetryEnabled: jest.fn().mockReturnValue(true),
-  };
+const createUserRepository = (
+  overrides: Partial<IUserRepository> = {},
+): IUserRepository => ({
+  save: jest.fn(),
+  findByEmail: jest.fn(),
+  findById: jest.fn(),
+  findByUsername: jest.fn(),
+  findByIds: jest.fn().mockResolvedValue([]),
+  findAll: jest.fn(),
+  searchPublicUsers: jest.fn(),
+  findRecommendedPublicUsers: jest.fn().mockResolvedValue([]),
+  isUsernameAvailable: jest.fn(),
+  update: jest.fn(),
+  delete: jest.fn(),
+  countUsersByIds: jest.fn(),
+  ...overrides,
+});
 
+const createFriendDiscoveryService = (
+  overrides: Partial<IFriendDiscoveryService> = {},
+): IFriendDiscoveryService => ({
+  getAudience: jest.fn(),
+  getGraphRecommendations: jest.fn().mockResolvedValue({
+    candidates: [],
+    excludedUserIds: ['viewer'],
+  }),
+  ...overrides,
+});
+
+const config: IRecommendationConfig = {
+  getAlgorithmVersion: jest
+    .fn()
+    .mockReturnValue('graph-friend-recommendation-v2'),
+  getCandidateSource: jest.fn().mockReturnValue('GRAPH_TWO_HOP'),
+  getFeatureFlags: jest.fn().mockReturnValue({ graphCandidates: true }),
+  isTelemetryEnabled: jest.fn().mockReturnValue(true),
+};
+
+const createTelemetryService = (
+  publish: jest.Mock = jest.fn(),
+): IRecommendationTelemetryService => ({ publish });
+
+describe('GetRecommendedPublicUsersUseCase', () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -54,10 +96,10 @@ describe('GetRecommendedPublicUsersUseCase', () => {
     });
 
     const useCase = new GetRecommendedPublicUsersUseCase(
-      { findByIds, findRecommendedPublicUsers } as any,
-      { getGraphRecommendations } as any,
-      config as any,
-      { publish } as any,
+      createUserRepository({ findByIds, findRecommendedPublicUsers }),
+      createFriendDiscoveryService({ getGraphRecommendations }),
+      config,
+      createTelemetryService(publish),
     );
 
     const result = await useCase.execute({
@@ -122,15 +164,15 @@ describe('GetRecommendedPublicUsersUseCase', () => {
       .mockResolvedValue([user('fallback-a'), user('fallback-b')]);
 
     const useCase = new GetRecommendedPublicUsersUseCase(
-      { findByIds, findRecommendedPublicUsers } as any,
-      {
+      createUserRepository({ findByIds, findRecommendedPublicUsers }),
+      createFriendDiscoveryService({
         getGraphRecommendations: jest.fn().mockResolvedValue({
           candidates: [],
           excludedUserIds: ['viewer', 'blocked-z'],
         }),
-      } as any,
-      config as any,
-      { publish } as any,
+      }),
+      config,
+      createTelemetryService(publish),
     );
 
     const result = await useCase.execute({ viewerId: 'viewer', limit: 2 });
@@ -146,5 +188,60 @@ describe('GetRecommendedPublicUsersUseCase', () => {
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ candidateSource: 'PUBLIC_USER_FALLBACK' }),
     );
+  });
+
+  it('skips missing graph profiles and backfills the remaining slot', async () => {
+    const findRecommendedPublicUsers = jest
+      .fn()
+      .mockResolvedValue([user('fallback-a')]);
+
+    const useCase = new GetRecommendedPublicUsersUseCase(
+      createUserRepository({
+        findByIds: jest.fn().mockResolvedValue([user('graph-a')]),
+        findRecommendedPublicUsers,
+      }),
+      createFriendDiscoveryService({
+        getGraphRecommendations: jest.fn().mockResolvedValue({
+          candidates: [
+            graphCandidate('graph-a', 3, 0.9),
+            graphCandidate('deleted-user', 2, 0.8),
+          ],
+          excludedUserIds: ['viewer'],
+        }),
+      }),
+      config,
+      createTelemetryService(),
+    );
+
+    const result = await useCase.execute({ viewerId: 'viewer', limit: 2 });
+
+    expect(result.map((item) => item.id)).toEqual(['graph-a', 'fallback-a']);
+    expect(findRecommendedPublicUsers).toHaveBeenCalledWith({
+      limit: 1,
+      excludedUserIds: ['viewer', 'graph-a', 'deleted-user'],
+    });
+  });
+
+  it('clamps the public endpoint limit to 30', async () => {
+    const getGraphRecommendations = jest.fn().mockResolvedValue({
+      candidates: [],
+      excludedUserIds: ['viewer'],
+    });
+    const findRecommendedPublicUsers = jest.fn().mockResolvedValue([]);
+
+    const useCase = new GetRecommendedPublicUsersUseCase(
+      createUserRepository({ findRecommendedPublicUsers }),
+      createFriendDiscoveryService({ getGraphRecommendations }),
+      config,
+      createTelemetryService(),
+    );
+
+    await useCase.execute({ viewerId: 'viewer', limit: 100 });
+
+    expect(getGraphRecommendations).toHaveBeenCalledWith('viewer', 100);
+    expect(findRecommendedPublicUsers).toHaveBeenCalledWith({
+      limit: 30,
+      excludedUserIds: ['viewer'],
+    });
   });
 });

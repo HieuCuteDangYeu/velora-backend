@@ -105,6 +105,7 @@
     "eval:rag:live": "node scripts/ops/run-rag-eval.cjs live",
     "eval:rag:report": "node scripts/ops/run-rag-eval.cjs report",
     "eval:rag:compare": "node scripts/ops/run-rag-eval.cjs compare",
+    "eval:rag:persist": "node scripts/ops/persist-rag-eval.cjs",
     "eval:rag:test": "node scripts/ops/run-rag-eval.cjs test",
     "eval:rag:capacity-check": "node scripts/ops/run-rag-eval.cjs capacity-check",
     "eval:rag:control-plane": "node scripts/ops/run-rag-eval.cjs control-plane"

@@ -23,7 +23,8 @@ RUN apt-get update \
 WORKDIR /usr/src/app
 COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
+COPY --from=builder --chown=node:node /usr/src/app/apps/reel-indexing-service/prisma ./apps/reel-indexing-service/prisma
 
 USER node
 
-CMD ["node", "dist/apps/reel-indexing-service/main.js"]
+CMD ["/bin/sh", "-c", "node_modules/.bin/prisma migrate deploy --schema=apps/reel-indexing-service/prisma/schema.prisma && node dist/apps/reel-indexing-service/main.js"]

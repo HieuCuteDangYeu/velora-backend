@@ -20,14 +20,10 @@ export class GetGraphFriendRecommendationsUseCase {
     requestedLimit = 20,
   ): Promise<FriendGraphRecommendationResponse> {
     const limit = Math.min(Math.max(requestedLimit, 1), 100);
-    const candidatePoolSize = Math.min(Math.max(limit * 4, 50), 200);
 
     const [rawCandidates, relationshipUserIds, blockedUserIds] =
       await Promise.all([
-        this.friendGraphRepository.findTwoHopCandidates(
-          userId,
-          candidatePoolSize,
-        ),
+        this.friendGraphRepository.findTwoHopCandidates(userId),
         this.friendGraphRepository.listRelationshipUserIds(userId),
         this.userBlockRepository.listExcludedUserIds(userId),
       ]);
@@ -55,31 +51,52 @@ export class GetGraphFriendRecommendationsUseCase {
       'ADAMIC_ADAR',
     ];
 
-    const candidates = eligible
-      .map((candidate) => {
-        const mutualScore =
-          candidate.mutualFriendCount / maxMutualFriendCount;
-        const adamicAdarScore =
-          candidate.adamicAdarScore / maxAdamicAdarScore;
+    const ranked = eligible
+      .map((candidate) => ({
+        candidate,
+        graphScore:
+          0.6 *
+            (candidate.mutualFriendCount / maxMutualFriendCount) +
+          0.4 * (candidate.adamicAdarScore / maxAdamicAdarScore),
+      }))
+      .sort((left, right) => {
+        if (right.graphScore !== left.graphScore) {
+          return right.graphScore - left.graphScore;
+        }
 
-        return {
-          userId: candidate.userId,
-          mutualFriendCount: candidate.mutualFriendCount,
-          adamicAdarScore: Number(candidate.adamicAdarScore.toFixed(6)),
-          graphScore: Number(
-            (0.6 * mutualScore + 0.4 * adamicAdarScore).toFixed(6),
-          ),
-          candidateSources,
-        };
+        if (
+          right.candidate.mutualFriendCount !==
+          left.candidate.mutualFriendCount
+        ) {
+          return (
+            right.candidate.mutualFriendCount -
+            left.candidate.mutualFriendCount
+          );
+        }
+
+        if (
+          right.candidate.adamicAdarScore !== left.candidate.adamicAdarScore
+        ) {
+          return (
+            right.candidate.adamicAdarScore - left.candidate.adamicAdarScore
+          );
+        }
+
+        return left.candidate.userId < right.candidate.userId
+          ? -1
+          : left.candidate.userId > right.candidate.userId
+            ? 1
+            : 0;
       })
-      .sort(
-        (left, right) =>
-          right.graphScore - left.graphScore ||
-          right.mutualFriendCount - left.mutualFriendCount ||
-          right.adamicAdarScore - left.adamicAdarScore ||
-          left.userId.localeCompare(right.userId),
-      )
       .slice(0, limit);
+
+    const candidates = ranked.map(({ candidate, graphScore }) => ({
+      userId: candidate.userId,
+      mutualFriendCount: candidate.mutualFriendCount,
+      adamicAdarScore: Number(candidate.adamicAdarScore.toFixed(6)),
+      graphScore: Number(graphScore.toFixed(6)),
+      candidateSources,
+    }));
 
     return {
       candidates,

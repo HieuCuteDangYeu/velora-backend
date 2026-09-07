@@ -319,11 +319,11 @@ services:
       - local-reranker
     command:
       - --model-id
-      - BAAI/bge-reranker-v2-m3
+      - cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
       - --port
       - '80'
       - --max-concurrent-requests
-      - '2'
+      - '8'
       - --max-batch-tokens
       - '1024'
     restart: 'no'

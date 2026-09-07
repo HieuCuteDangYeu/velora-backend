@@ -41,18 +41,18 @@ export class PrometheusQueryService {
         : 4000;
   }
 
-  async scalar(query: string): Promise<number> {
+  async scalar(query: string): Promise<number | null> {
     const payload = await this.request<PrometheusInstantResult>(
       '/api/v1/query',
       new URLSearchParams({ query }),
     );
     const rawValue = payload.result[0]?.value?.[1];
     if (rawValue === undefined) {
-      return 0;
+      return null;
     }
 
     const value = Number(rawValue);
-    return Number.isFinite(value) ? value : 0;
+    return Number.isFinite(value) ? value : null;
   }
 
   async range(

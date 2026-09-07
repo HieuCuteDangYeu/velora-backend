@@ -14,6 +14,15 @@ const RANGE_QUERIES = {
     'histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[5m])))',
   event_loop_p99:
     'max(velora_nodejs_event_loop_lag_p99_seconds{service="monitoring-service"})',
+  host_cpu:
+    '1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m]))',
+  host_memory:
+    '1 - (max(node_memory_MemAvailable_bytes{job="node-exporter"}) / clamp_min(max(node_memory_MemTotal_bytes{job="node-exporter"}), 1))',
+  host_swap:
+    '(max(node_memory_SwapTotal_bytes{job="node-exporter"}) - max(node_memory_SwapFree_bytes{job="node-exporter"})) / clamp_min(max(node_memory_SwapTotal_bytes{job="node-exporter"}), 1)',
+  host_disk:
+    '1 - (max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) / clamp_min(max(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}), 1))',
+  host_load1: 'max(node_load1{job="node-exporter"})',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
@@ -45,6 +54,16 @@ export class SystemMetricsController {
           requestsPerSecond,
           errorRate,
           p95LatencySeconds,
+          hostUp,
+          hostCpuUsageRatio,
+          hostMemoryTotalBytes,
+          hostMemoryAvailableBytes,
+          hostSwapTotalBytes,
+          hostSwapFreeBytes,
+          hostDiskTotalBytes,
+          hostDiskAvailableBytes,
+          hostLoad1,
+          hostUptimeSeconds,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -54,11 +73,57 @@ export class SystemMetricsController {
           this.prometheus.scalar(RANGE_QUERIES.rpc_rate),
           this.prometheus.scalar(RANGE_QUERIES.error_rate),
           this.prometheus.scalar(RANGE_QUERIES.p95_rpc_latency),
+          this.prometheus.scalar('max(up{job="node-exporter"})'),
+          this.prometheus.scalar(RANGE_QUERIES.host_cpu),
+          this.prometheus.scalar('max(node_memory_MemTotal_bytes{job="node-exporter"})'),
+          this.prometheus.scalar('max(node_memory_MemAvailable_bytes{job="node-exporter"})'),
+          this.prometheus.scalar('max(node_memory_SwapTotal_bytes{job="node-exporter"})'),
+          this.prometheus.scalar('max(node_memory_SwapFree_bytes{job="node-exporter"})'),
+          this.prometheus.scalar('max(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})'),
+          this.prometheus.scalar('max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})'),
+          this.prometheus.scalar(RANGE_QUERIES.host_load1),
+          this.prometheus.scalar('max(time() - node_boot_time_seconds{job="node-exporter"})'),
         ]);
+
+        const hostMemoryUsedBytes = Math.max(
+          0,
+          hostMemoryTotalBytes - hostMemoryAvailableBytes,
+        );
+        const hostSwapUsedBytes = Math.max(
+          0,
+          hostSwapTotalBytes - hostSwapFreeBytes,
+        );
+        const hostDiskUsedBytes = Math.max(
+          0,
+          hostDiskTotalBytes - hostDiskAvailableBytes,
+        );
 
         return {
           generatedAt: new Date().toISOString(),
           source: 'prometheus' as const,
+          host: {
+            up: hostUp > 0,
+            cpuUsageRatio: hostCpuUsageRatio,
+            memoryTotalBytes: hostMemoryTotalBytes,
+            memoryAvailableBytes: hostMemoryAvailableBytes,
+            memoryUsedBytes: hostMemoryUsedBytes,
+            memoryUsageRatio:
+              hostMemoryTotalBytes > 0
+                ? hostMemoryUsedBytes / hostMemoryTotalBytes
+                : 0,
+            swapTotalBytes: hostSwapTotalBytes,
+            swapFreeBytes: hostSwapFreeBytes,
+            swapUsedBytes: hostSwapUsedBytes,
+            swapUsageRatio:
+              hostSwapTotalBytes > 0 ? hostSwapUsedBytes / hostSwapTotalBytes : 0,
+            diskTotalBytes: hostDiskTotalBytes,
+            diskAvailableBytes: hostDiskAvailableBytes,
+            diskUsedBytes: hostDiskUsedBytes,
+            diskUsageRatio:
+              hostDiskTotalBytes > 0 ? hostDiskUsedBytes / hostDiskTotalBytes : 0,
+            load1: hostLoad1,
+            uptimeSeconds: hostUptimeSeconds,
+          },
           service: {
             up: serviceUp > 0,
           },

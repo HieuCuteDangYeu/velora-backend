@@ -8,7 +8,7 @@ describe('TeiEmbeddingAdapter', () => {
     const vector = Array.from({ length: 1024 }, (_, index) =>
       index === 0 ? 1 : 0,
     );
-    jest
+    const fetchMock = jest
       .spyOn(global, 'fetch')
       .mockResolvedValue(
         new Response(JSON.stringify([vector]), { status: 200 }),
@@ -35,6 +35,12 @@ describe('TeiEmbeddingAdapter', () => {
       'http://rag-embedding:80/embed',
       expect.objectContaining({ method: 'POST' }),
     );
+    const requestInit = fetchMock.mock.calls[0]?.[1];
+    expect(typeof requestInit?.body).toBe('string');
+    expect(JSON.parse(requestInit?.body as string)).toEqual({
+      inputs: ['hello'],
+      normalize: true,
+    });
   });
 
   it('fails closed on an incompatible vector dimension', async () => {

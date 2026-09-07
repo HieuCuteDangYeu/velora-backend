@@ -16,7 +16,7 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
     const text = input.text.trim();
     if (!text) throw new Error('Embedding input text cannot be empty');
     const dimensions = this.dimensions();
-    const response = await this.fetchEmbedding(text, input.taskType);
+    const response = await this.fetchEmbedding(text);
     const values = this.extractVector(response);
     if (
       values.length !== dimensions ||
@@ -44,10 +44,7 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
     );
   }
 
-  private async fetchEmbedding(
-    text: string,
-    taskType?: string,
-  ): Promise<unknown> {
+  private async fetchEmbedding(text: string): Promise<unknown> {
     const controller = new AbortController();
     const timeoutMs = this.positiveInt('AI_EMBEDDING_TIMEOUT_MS', 120_000);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -59,7 +56,6 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
         body: JSON.stringify({
           inputs: [text],
           normalize: true,
-          ...(taskType === 'RETRIEVAL_QUERY' ? { prompt_name: 'query' } : {}),
         }),
         signal: controller.signal,
       });

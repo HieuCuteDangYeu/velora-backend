@@ -9,6 +9,7 @@ services:
   prometheus:
     image: prom/prometheus:latest
     restart: unless-stopped
+    mem_limit: ${PROMETHEUS_MEMORY_LIMIT:-512m}
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -25,9 +26,10 @@ services:
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
+    mem_limit: ${GRAFANA_MEMORY_LIMIT:-256m}
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
       GF_USERS_ALLOW_SIGN_UP: 'false'
     volumes:
       - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

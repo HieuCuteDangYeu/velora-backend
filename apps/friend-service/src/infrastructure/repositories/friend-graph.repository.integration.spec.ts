@@ -17,7 +17,10 @@ const HUB_USERS = [
   '88888888-8888-4888-8888-888888888885',
 ];
 
-describe('FriendGraphRepository integration', () => {
+const describeWithDatabase =
+  process.env.FRIEND_GRAPH_INTEGRATION_TEST === '1' ? describe : describe.skip;
+
+describeWithDatabase('FriendGraphRepository integration', () => {
   const prisma = new PrismaService();
   const repository = new FriendGraphRepository(prisma);
 

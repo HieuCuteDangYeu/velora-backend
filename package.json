@@ -94,6 +94,8 @@
     "ops:reindex:status": "node scripts/ops/reindex-status.cjs",
     "ops:rag:benchmark": "node scripts/ops/rag-hierarchy-benchmark.cjs",
     "ops:rag:readiness": "node scripts/ops/rag-production-readiness.cjs",
+    "ops:local-ai:capacity": "bash scripts/ops/check-local-ai-capacity.sh",
+    "ops:local-ai:report": "bash scripts/ops/check-local-ai-capacity.sh --report",
     "ops:reels:prepare": "node scripts/ops/reel-integration-load.cjs --mode=prepare",
     "ops:reels:load": "node scripts/ops/reel-integration-load.cjs --mode=run",
     "ops:reels:all": "node scripts/ops/reel-integration-load.cjs --mode=all",

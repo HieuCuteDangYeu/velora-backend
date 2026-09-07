@@ -297,7 +297,7 @@ services:
   rag-embedding:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
     profiles:
-      - local-ai
+      - local-embedding
     command:
       - --model-id
       - BAAI/bge-m3
@@ -307,7 +307,7 @@ services:
       - '2'
       - --max-batch-tokens
       - '1024'
-    restart: unless-stopped
+    restart: 'no'
     volumes:
       - rag_embedding_cache:/data
     networks:
@@ -316,7 +316,7 @@ services:
   rag-reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
     profiles:
-      - local-ai
+      - local-reranker
     command:
       - --model-id
       - BAAI/bge-reranker-v2-m3
@@ -326,7 +326,7 @@ services:
       - '2'
       - --max-batch-tokens
       - '1024'
-    restart: unless-stopped
+    restart: 'no'
     volumes:
       - rag_reranker_cache:/data
     networks:
@@ -335,8 +335,8 @@ services:
   rag-vision:
     image: ollama/ollama:latest
     profiles:
-      - local-ai
-    restart: unless-stopped
+      - local-vision
+    restart: 'no'
     volumes:
       - rag_vision_cache:/root/.ollama
     networks:

@@ -55,8 +55,7 @@ export class GetGraphFriendRecommendationsUseCase {
       .map((candidate) => ({
         candidate,
         graphScore:
-          0.6 *
-            (candidate.mutualFriendCount / maxMutualFriendCount) +
+          0.6 * (candidate.mutualFriendCount / maxMutualFriendCount) +
           0.4 * (candidate.adamicAdarScore / maxAdamicAdarScore),
       }))
       .sort((left, right) => {
@@ -65,12 +64,10 @@ export class GetGraphFriendRecommendationsUseCase {
         }
 
         if (
-          right.candidate.mutualFriendCount !==
-          left.candidate.mutualFriendCount
+          right.candidate.mutualFriendCount !== left.candidate.mutualFriendCount
         ) {
           return (
-            right.candidate.mutualFriendCount -
-            left.candidate.mutualFriendCount
+            right.candidate.mutualFriendCount - left.candidate.mutualFriendCount
           );
         }
 

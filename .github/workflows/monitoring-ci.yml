@@ -5,6 +5,7 @@ on:
     branches:
       - master
     paths:
+      - '.env.example'
       - 'apps/monitoring-service/**'
       - 'apps/api-gateway/src/monitoring/**'
       - 'apps/api-gateway/src/api-gateway.module.ts'

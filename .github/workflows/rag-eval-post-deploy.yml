@@ -1,0 +1,166 @@
+name: RAG Post-Deploy Gate
+
+on:
+  repository_dispatch:
+    types:
+      - homelab-deployed
+  workflow_dispatch:
+    inputs:
+      production_sha:
+        description: Exact SHA confirmed deployed on the homelab
+        required: true
+        type: string
+      evaluator_sha:
+        description: Evaluator image SHA; defaults to production_sha
+        required: false
+        type: string
+      deployment_healthy:
+        description: Operator attests the homelab deployment is healthy
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Receipts for the same production target are serialized. This workflow never
+# performs a live/frozen benchmark and never receives provider credentials.
+concurrency:
+  group: rag-post-deploy-${{ github.event.client_payload.production_sha || inputs.production_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  evaluator-precheck:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate deployment receipt
+        id: receipt
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PRODUCTION_SHA: ${{ github.event.client_payload.production_sha }}
+          DISPATCH_EVALUATOR_SHA: ${{ github.event.client_payload.evaluator_sha }}
+          DISPATCH_STATUS: ${{ github.event.client_payload.status }}
+          INPUT_PRODUCTION_SHA: ${{ inputs.production_sha }}
+          INPUT_EVALUATOR_SHA: ${{ inputs.evaluator_sha }}
+          INPUT_DEPLOYMENT_HEALTHY: ${{ inputs.deployment_healthy }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = 'repository_dispatch' ]; then
+            production_sha="$DISPATCH_PRODUCTION_SHA"
+            evaluator_sha="${DISPATCH_EVALUATOR_SHA:-$production_sha}"
+            if [ "$DISPATCH_STATUS" != 'healthy' ]; then
+              echo "Homelab receipt status must be healthy, got: ${DISPATCH_STATUS:-missing}" >&2
+              exit 1
+            fi
+          else
+            production_sha="$INPUT_PRODUCTION_SHA"
+            evaluator_sha="${INPUT_EVALUATOR_SHA:-$production_sha}"
+            if [ "$INPUT_DEPLOYMENT_HEALTHY" != 'true' ]; then
+              echo 'Manual post-deploy precheck requires a healthy deployment attestation.' >&2
+              exit 1
+            fi
+          fi
+
+          sha_pattern='^[0-9a-f]{40}$'
+          if ! [[ "$production_sha" =~ $sha_pattern ]]; then
+            echo "Invalid production SHA: $production_sha" >&2
+            exit 1
+          fi
+          if ! [[ "$evaluator_sha" =~ $sha_pattern ]]; then
+            echo "Invalid evaluator SHA: $evaluator_sha" >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin \
+            '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
+          promoted_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
+          if [ "$promoted_sha" != "$production_sha" ]; then
+            echo "Deployment receipt SHA $production_sha does not match promoted homelab-deploy $promoted_sha" >&2
+            exit 1
+          fi
+
+          {
+            printf 'production_sha=%s\n' "$production_sha"
+            printf 'evaluator_sha=%s\n' "$evaluator_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull exact evaluator image
+        id: image
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          EVALUATOR_SHA: ${{ steps.receipt.outputs.evaluator_sha }}
+        run: |
+          set -euo pipefail
+          image="${DOCKERHUB_USERNAME}/rag-eval:${EVALUATOR_SHA}"
+          docker pull "$image"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
+      - name: Verify evaluator provenance labels
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          EXPECTED_EVALUATOR_SHA: ${{ steps.receipt.outputs.evaluator_sha }}
+          EXPECTED_PRODUCTION_SHA: ${{ steps.receipt.outputs.production_sha }}
+        run: |
+          set -euo pipefail
+          evaluator_label="$(docker inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          production_label="$(docker inspect "$IMAGE" --format '{{ index .Config.Labels "io.velora.production-sha" }}')"
+
+          if [ "$evaluator_label" != "$EXPECTED_EVALUATOR_SHA" ]; then
+            echo "Evaluator image revision mismatch: expected=$EXPECTED_EVALUATOR_SHA actual=$evaluator_label" >&2
+            exit 1
+          fi
+          if [ "$production_label" != "$EXPECTED_PRODUCTION_SHA" ]; then
+            echo "Evaluator target production SHA mismatch: expected=$EXPECTED_PRODUCTION_SHA actual=$production_label" >&2
+            exit 1
+          fi
+
+      - name: Re-run evaluator unit and contract tests from published image
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE" pnpm eval:rag:test
+
+      - name: Re-run zero-provider offline generalization from published image
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm "$IMAGE" \
+            pnpm eval:rag:offline --dataset rag-generalization-v1
+
+      - name: Write gate summary
+        shell: bash
+        env:
+          PRODUCTION_SHA: ${{ steps.receipt.outputs.production_sha }}
+          EVALUATOR_SHA: ${{ steps.receipt.outputs.evaluator_sha }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          {
+            echo '## RAG post-deploy precheck'
+            echo
+            echo "- Production SHA: \`$PRODUCTION_SHA\`"
+            echo "- Evaluator SHA: \`$EVALUATOR_SHA\`"
+            echo "- Evaluator image: \`$IMAGE\`"
+            echo '- Provider calls: 0'
+            echo '- Frozen primary executions: 0'
+            echo '- RAGAS judge calls: 0'
+            echo '- Result: published evaluator provenance + offline gate passed'
+          } >> "$GITHUB_STEP_SUMMARY"

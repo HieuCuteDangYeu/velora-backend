@@ -49,10 +49,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # These are the application services that own a Docker build in
-          # docker-compose.yml. The two *-long worker services intentionally do
-          # not appear here: they have no build stanza and share the image of
-          # media-processing-service or reel-indexing-service respectively.
+          # These are application services that own a normal production Docker
+          # build. The profile-gated rag-eval image is built and validated by a
+          # dedicated job below, so it is deliberately excluded from this matrix.
+          # The two *-long worker services intentionally do not appear here: they
+          # share the media-processing-service or reel-indexing-service image.
           all_services=(
             api-gateway
             user-service
@@ -169,8 +170,8 @@ jobs:
                   ;;
               esac
 
-              # All Dockerfiles copy the monorepo root. These inputs can alter
-              # dependency installation or compilation for every application.
+              # All application Dockerfiles copy the monorepo root. These inputs
+              # can alter dependency installation or compilation for every app.
               case "$changed_file" in
                 package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|libs/*|scripts/*|Dockerfile|Dockerfile.*|docker/*|infra/docker/*)
                   build_all=true
@@ -187,8 +188,8 @@ jobs:
                 fi
               done
 
-              # Unknown tracked files are conservative: build every image
-              # rather than risk missing a shared build dependency.
+              # Unknown tracked files are conservative: build every application
+              # image rather than risk missing a shared build dependency.
               if [ "$matched_service" = false ]; then
                 build_all=true
                 break
@@ -202,10 +203,8 @@ jobs:
           fi
 
           # Resolve Dockerfile, build context, and image repository from the
-          # actual Compose model. The placeholder is safe and is never logged;
-          # --no-env-resolution prevents service env_file values from being read.
-          # Compose still checks that service-level env_file paths exist, so
-          # provide an empty, runner-local file without touching real config.
+          # actual Compose model. rag-eval is a separate profile-gated artifact
+          # with its own CI/CD job and therefore must not enter this app matrix.
           temporary_env_file='.env'
           if [ -e "$temporary_env_file" ]; then
             echo "Refusing to overwrite existing $temporary_env_file in CI workspace." >&2
@@ -225,7 +224,7 @@ jobs:
                     [
                       .services
                       | to_entries[]
-                      | select(.value.build != null)
+                      | select(.value.build != null and .key != "rag-eval")
                       | {
                           service: .key,
                           context: .value.build.context,
@@ -384,8 +383,47 @@ jobs:
         if: needs.detect-changes.outputs.call_regression_required == 'true'
         run: pnpm exec jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts
 
-  build-images:
+  rag-evaluator-ci:
     needs: [detect-changes, validate]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
+
+      - name: Build isolated RAG evaluator image
+        env:
+          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --file eval/rag/Dockerfile \
+            --build-arg "EVALUATOR_SHA=$CHECKOUT_SHA" \
+            --build-arg PRODUCTION_SHA=ci-not-deployed \
+            --tag "velora-rag-eval-ci:$CHECKOUT_SHA" \
+            .
+
+      - name: Run evaluator tests with zero provider calls
+        env:
+          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            "velora-rag-eval-ci:$CHECKOUT_SHA" \
+            pnpm eval:rag:test
+
+      - name: Run offline RAG generalization gate
+        env:
+          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            "velora-rag-eval-ci:$CHECKOUT_SHA" \
+            pnpm eval:rag:offline --dataset rag-generalization-v1
+
+  build-images:
+    needs: [detect-changes, validate, rag-evaluator-ci]
     if: >-
       needs.detect-changes.outputs.build_matrix_json != '[]' &&
       needs.detect-changes.outputs.is_production != 'true'
@@ -415,7 +453,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
 
   build-and-push-images:
-    needs: [detect-changes, validate]
+    needs: [detect-changes, validate, rag-evaluator-ci]
     if: >-
       needs.detect-changes.outputs.build_matrix_json != '[]' &&
       needs.detect-changes.outputs.is_production == 'true'
@@ -453,13 +491,55 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}-arm64
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
 
+  build-and-push-rag-eval:
+    needs: [detect-changes, validate, rag-evaluator-ci]
+    if: needs.detect-changes.outputs.is_production == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push versioned ARM64 RAG evaluator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: eval/rag/Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            EVALUATOR_SHA=${{ needs.detect-changes.outputs.checkout_sha }}
+            PRODUCTION_SHA=${{ needs.detect-changes.outputs.checkout_sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:${{ needs.detect-changes.outputs.checkout_sha }}
+          cache-from: type=gha,scope=rag-eval-arm64
+          cache-to: type=gha,mode=max,scope=rag-eval-arm64
+
   promote-homelab:
-    needs: [detect-changes, validate, build-and-push-images]
+    needs:
+      - detect-changes
+      - validate
+      - rag-evaluator-ci
+      - build-and-push-images
+      - build-and-push-rag-eval
     if: >-
       always() &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.is_production == 'true' &&
       needs.validate.result == 'success' &&
+      needs.rag-evaluator-ci.result == 'success' &&
+      needs.build-and-push-rag-eval.result == 'success' &&
       (needs.build-and-push-images.result == 'success' || needs.build-and-push-images.result == 'skipped')
     runs-on: ubuntu-24.04
     permissions:
@@ -477,6 +557,6 @@ jobs:
           APPROVED_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
         run: |
           set -euo pipefail
-          # This creates the branch on its first run and otherwise only
-          # fast-forwards it to the approved commit; it never creates a deploy commit.
+          # The deployment branch can advance only after both application-image
+          # publication and the matching evaluator image + offline gate succeed.
           git push origin "${APPROVED_SHA}:refs/heads/homelab-deploy"

@@ -1158,7 +1158,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       ...(this.optionalString(record.errorCode)
         ? { errorCode: this.optionalString(record.errorCode) }
         : {}),
-      ...(typeof record.providerCode === 'number'
+      ...(typeof record.providerCode === 'number' ||
+      typeof record.providerCode === 'string'
         ? { providerCode: record.providerCode }
         : {}),
       ...(this.structuredProviderCategory(record.providerCategory)
@@ -1170,6 +1171,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         : {}),
       ...(typeof record.retryAfterMs === 'number'
         ? { retryAfterMs: record.retryAfterMs }
+        : {}),
+      ...(this.safeRateLimit(record.rateLimit)
+        ? { rateLimit: this.safeRateLimit(record.rateLimit) }
         : {}),
       ...(typeof record.transient === 'boolean'
         ? { transient: record.transient }
@@ -1230,6 +1234,27 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return Object.keys(usage).length > 0 ? usage : undefined;
   }
 
+  private safeRateLimit(
+    value: unknown,
+  ): RagStructuredCallFailureDiagnostic['rateLimit'] | undefined {
+    const record = this.asRecord(value);
+    const keys = [
+      'retryAfter',
+      'limitRequests',
+      'limitTokens',
+      'remainingRequests',
+      'remainingTokens',
+      'resetRequests',
+      'resetTokens',
+    ] as const;
+    const result = Object.fromEntries(
+      keys
+        .map((key) => [key, this.optionalString(record[key])] as const)
+        .filter(([, item]) => item !== undefined),
+    ) as NonNullable<RagStructuredCallFailureDiagnostic['rateLimit']>;
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
   private errorRecord(error: unknown): Record<string, unknown> {
     return this.asRecord(error);
   }
@@ -1263,8 +1288,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   ): RagStructuredCallFailureDiagnostic['providerCategory'] | undefined {
     return typeof value === 'string' &&
       [
+        'AUTH_OR_CONFIGURATION_FAILURE',
         'ACCOUNT_LIMITED',
         'OUT_OF_CAPACITY',
+        'PERMANENT_PROVIDER_FAILURE',
         'RATE_LIMITED',
         'TRANSIENT_PROVIDER_FAILURE',
         'UNKNOWN_PROVIDER_FAILURE',

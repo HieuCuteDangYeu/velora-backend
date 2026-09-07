@@ -1,4 +1,3 @@
-import type { FriendGraphRecommendationCandidate } from '@common/friend/interfaces/friend-recommendation.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import type { IFriendDiscoveryService } from '@user/domain/interfaces/friend-discovery.service.interface';
 import type { IRecommendationConfig } from '@user/domain/interfaces/recommendation-config.interface';
@@ -60,18 +59,15 @@ export class GetRecommendedPublicUsersUseCase {
       );
 
       const graphRankedUsers = graphResponse.candidates
-        .map((candidate) => ({
-          candidate,
-          user: usersById.get(candidate.userId),
-        }))
-        .filter(
-          (
-            item,
-          ): item is {
-            candidate: FriendGraphRecommendationCandidate;
-            user: NonNullable<typeof item.user>;
-          } => Boolean(item.user?.username),
-        )
+        .flatMap((candidate) => {
+          const user = usersById.get(candidate.userId);
+
+          if (!user?.username) {
+            return [];
+          }
+
+          return [{ candidate, user }];
+        })
         .slice(0, limit);
 
       const remaining = Math.max(0, limit - graphRankedUsers.length);

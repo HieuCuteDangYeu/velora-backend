@@ -17,14 +17,6 @@ export interface CreateOrFindFriendshipResult {
   created: boolean;
 }
 
-// Kept as a compatibility type for the existing concrete repository while
-// graph recommendation behavior is consumed through IFriendGraphRepository.
-export interface TwoHopFriendCandidateEvidence {
-  userId: string;
-  mutualFriendCount: number;
-  adamicAdarScore: number;
-}
-
 export type AcceptFriendRequestResult =
   | {
       outcome: 'accepted';

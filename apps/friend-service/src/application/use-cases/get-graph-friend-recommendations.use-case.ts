@@ -1,4 +1,7 @@
-import type { FriendGraphRecommendationResponse } from '@common/friend/interfaces/friend-recommendation.interface';
+import type {
+  FriendGraphCandidateSource,
+  FriendGraphRecommendationResponse,
+} from '@common/friend/interfaces/friend-recommendation.interface';
 import type { IFriendRepository } from '@friend/domain/interfaces/friend.repository.interface';
 import type { IUserBlockRepository } from '@friend/domain/interfaces/user-block.repository.interface';
 import { Inject, Injectable } from '@nestjs/common';
@@ -44,6 +47,11 @@ export class GetGraphFriendRecommendationsUseCase {
       ...eligible.map((candidate) => candidate.adamicAdarScore),
     );
 
+    const candidateSources: FriendGraphCandidateSource[] = [
+      'MUTUAL_FRIENDS',
+      'ADAMIC_ADAR',
+    ];
+
     const candidates = eligible
       .map((candidate) => {
         const mutualScore =
@@ -58,7 +66,7 @@ export class GetGraphFriendRecommendationsUseCase {
           graphScore: Number(
             (0.6 * mutualScore + 0.4 * adamicAdarScore).toFixed(6),
           ),
-          candidateSources: ['MUTUAL_FRIENDS', 'ADAMIC_ADAR'] as const,
+          candidateSources,
         };
       })
       .sort(

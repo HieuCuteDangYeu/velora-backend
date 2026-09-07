@@ -249,11 +249,53 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
     expose:
       - '3016'
     depends_on:
       rabbitmq:
         condition: service_healthy
+      prometheus:
+        condition: service_started
+    networks:
+      - microservices-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    mem_limit: ${PROMETHEUS_MEMORY_LIMIT:-512m}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - '127.0.0.1:9090:9090'
+    networks:
+      - microservices-net
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    mem_limit: ${GRAFANA_MEMORY_LIMIT:-256m}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # Production homelab deployments set this in .env. Keeping interpolation
+      # non-fatal lets CI validate the root Compose model without real secrets.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '127.0.0.1:3001:3000'
+    depends_on:
+      - prometheus
     networks:
       - microservices-net
 
@@ -416,6 +458,8 @@ networks:
 
 volumes:
   rabbitmq_data:
+  prometheus_data:
+  grafana_data:
   rag_embedding_cache:
   rag_reranker_cache:
   rag_vision_cache:

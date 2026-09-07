@@ -158,7 +158,7 @@ export class PrometheusMetricsService implements OnModuleDestroy {
     this.metricHeader(
       lines,
       'velora_nodejs_event_loop_lag_seconds',
-      'Mean Node.js event-loop delay observed by the monitoring service in seconds.',
+      'Mean Node.js event-loop delay observed since the previous metrics scrape in seconds.',
       'gauge',
     );
     lines.push(
@@ -168,7 +168,7 @@ export class PrometheusMetricsService implements OnModuleDestroy {
     this.metricHeader(
       lines,
       'velora_nodejs_event_loop_lag_p99_seconds',
-      'p99 Node.js event-loop delay observed by the monitoring service in seconds.',
+      'p99 Node.js event-loop delay observed since the previous metrics scrape in seconds.',
       'gauge',
     );
     lines.push(
@@ -229,6 +229,10 @@ export class PrometheusMetricsService implements OnModuleDestroy {
         `velora_monitoring_telemetry_events_total${this.labels({ service: this.serviceName, type })} ${count}`,
       );
     }
+
+    // Event-loop delay should describe the current scrape window instead of the
+    // full process lifetime; otherwise one old spike keeps p99 elevated forever.
+    this.eventLoopDelay.reset();
 
     return `${lines.join('\n')}\n`;
   }

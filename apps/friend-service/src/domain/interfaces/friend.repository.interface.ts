@@ -17,6 +17,12 @@ export interface CreateOrFindFriendshipResult {
   created: boolean;
 }
 
+export interface TwoHopFriendCandidateEvidence {
+  userId: string;
+  mutualFriendCount: number;
+  adamicAdarScore: number;
+}
+
 export type AcceptFriendRequestResult =
   | {
       outcome: 'accepted';
@@ -96,4 +102,11 @@ export interface IFriendRepository {
   ): Promise<PaginatedFriendships>;
 
   listAcceptedUserIds(userId: string): Promise<string[]>;
+
+  listRelationshipUserIds(userId: string): Promise<string[]>;
+
+  findTwoHopCandidates(
+    userId: string,
+    limit: number,
+  ): Promise<TwoHopFriendCandidateEvidence[]>;
 }

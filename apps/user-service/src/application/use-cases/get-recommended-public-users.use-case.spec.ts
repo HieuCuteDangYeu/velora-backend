@@ -178,10 +178,7 @@ describe('GetRecommendedPublicUsersUseCase', () => {
     const result = await useCase.execute({ viewerId: 'viewer', limit: 2 });
 
     expect(findByIds).not.toHaveBeenCalled();
-    expect(result.map((item) => item.id)).toEqual([
-      'fallback-a',
-      'fallback-b',
-    ]);
+    expect(result.map((item) => item.id)).toEqual(['fallback-a', 'fallback-b']);
     expect(result.every((item) => item.mutualFriendCount === undefined)).toBe(
       true,
     );

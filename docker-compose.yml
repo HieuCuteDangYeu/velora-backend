@@ -465,6 +465,11 @@ services:
       CLOUDFLARE_AI_GATEWAY_BACKOFF: ${CLOUDFLARE_AI_GATEWAY_BACKOFF:-}
       CLOUDFLARE_STRUCTURED_REASONING_EFFORT: ${CLOUDFLARE_STRUCTURED_REASONING_EFFORT:-}
       CLOUDFLARE_ROUTER_OUTPUT_CONTRACT: ${CLOUDFLARE_ROUTER_OUTPUT_CONTRACT:-}
+      # Evaluation-result persistence is opt-in and targets only the
+      # reel-indexing database. The confirmation flag is disabled by default
+      # so ordinary evaluator runs cannot write to a database.
+      REEL_INDEXING_DATABASE_URL: ${REEL_INDEXING_DATABASE_URL:-}
+      RAG_EVAL_PERSIST_CONFIRM: ${RAG_EVAL_PERSIST_CONFIRM:-NO}
       CLOUDFLARE_STRUCTURED_MAX_TOKENS_PARAMETER: ${CLOUDFLARE_STRUCTURED_MAX_TOKENS_PARAMETER:-}
     volumes:
       - ${RAG_EVAL_RESULTS_DIR:-./eval/rag/results}:/workspace/eval/rag/results

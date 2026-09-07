@@ -51,6 +51,13 @@ const advisoryPolicy = {
   maxDocuments: 36,
 };
 
+const qualityReviews = { persist: jest.fn().mockResolvedValue(undefined) };
+const config = {
+  get: jest.fn((key: string) =>
+    key === 'AI_INDEX_QUALITY_MODEL' ? 'openai/gpt-oss-20b' : undefined,
+  ),
+};
+
 describe('ValidatePersistedSemanticCandidateUseCase', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -85,10 +92,52 @@ describe('ValidatePersistedSemanticCandidateUseCase', () => {
       validator,
       ai as never,
       advisoryPolicy,
+      qualityReviews,
+      config as never,
     );
 
     await expect(useCase.execute(input)).resolves.toBeUndefined();
     expect(callOrder).toEqual(['validator', 'reviewer']);
+    expect(qualityReviews.persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reelId: 'reel-1',
+        indexAttemptId: 'attempt-1',
+        embeddingProvider: 'test',
+        embeddingModel: 'test',
+        embeddingDimensions: 2,
+        embeddingVersion: 'v1',
+        reviewProvider: 'groq',
+        reviewModel: 'openai/gpt-oss-20b',
+        reviewVersion: 'index-quality-review-v1',
+        review: expect.objectContaining({ acceptable: false }),
+      }),
+    );
+  });
+
+  it('persists an accepted semantic review before activation continues', async () => {
+    const validator = { execute: jest.fn().mockResolvedValue(undefined) };
+    const ai = {
+      reviewIndexQuality: jest.fn().mockResolvedValue({
+        acceptable: true,
+        confidence: 0.98,
+        summary: 'The index is usable.',
+        issues: [],
+      }),
+    };
+    const useCase = new ValidatePersistedSemanticCandidateUseCase(
+      validator,
+      ai as never,
+      advisoryPolicy,
+      qualityReviews,
+      config as never,
+    );
+
+    await expect(useCase.execute(input)).resolves.toBeUndefined();
+    expect(qualityReviews.persist).toHaveBeenCalledWith(
+      expect.objectContaining({
+        review: expect.objectContaining({ acceptable: true, issues: [] }),
+      }),
+    );
   });
 
   it('never runs semantic review when deterministic validation fails', async () => {
@@ -100,6 +149,8 @@ describe('ValidatePersistedSemanticCandidateUseCase', () => {
       validator,
       ai as never,
       advisoryPolicy,
+      qualityReviews,
+      config as never,
     );
 
     await expect(useCase.execute(input)).rejects.toThrow('integrity mismatch');
@@ -127,11 +178,33 @@ describe('ValidatePersistedSemanticCandidateUseCase', () => {
       validator,
       ai as never,
       { ...advisoryPolicy, enforced: true },
+      qualityReviews,
+      config as never,
     );
 
     await expect(useCase.execute(input)).rejects.toThrow(
       'Semantic quality agent rejected inactive index candidate',
     );
+    expect(qualityReviews.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fabricate a review when an advisory agent is unavailable', async () => {
+    const validator = { execute: jest.fn().mockResolvedValue(undefined) };
+    const ai = {
+      reviewIndexQuality: jest
+        .fn()
+        .mockRejectedValue(new Error('agent unavailable')),
+    };
+    const useCase = new ValidatePersistedSemanticCandidateUseCase(
+      validator,
+      ai as never,
+      advisoryPolicy,
+      qualityReviews,
+      config as never,
+    );
+
+    await expect(useCase.execute(input)).resolves.toBeUndefined();
+    expect(qualityReviews.persist).not.toHaveBeenCalled();
   });
 
   it('skips semantic review when the policy is disabled', async () => {
@@ -141,10 +214,13 @@ describe('ValidatePersistedSemanticCandidateUseCase', () => {
       validator,
       ai as never,
       { ...advisoryPolicy, enabled: false },
+      qualityReviews,
+      config as never,
     );
 
     await expect(useCase.execute(input)).resolves.toBeUndefined();
     expect(validator.execute).toHaveBeenCalledTimes(1);
     expect(ai.reviewIndexQuality).not.toHaveBeenCalled();
+    expect(qualityReviews.persist).not.toHaveBeenCalled();
   });
 });

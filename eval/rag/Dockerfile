@@ -20,7 +20,8 @@ COPY scripts ./scripts
 
 RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm run prisma:generate:conversation \
-  && pnpm run prisma:generate:ai
+  && pnpm run prisma:generate:ai \
+  && pnpm run prisma:generate:reel-indexing
 RUN pnpm run build:ai
 
 FROM python:3.12-slim-bookworm AS runtime

@@ -31,6 +31,7 @@ import { PrismaLangGraphCheckpointSaver } from './infrastructure/repositories/pr
 import { PrismaSemanticCandidateInspector } from './infrastructure/repositories/prisma-semantic-candidate-inspector';
 import { PrismaSemanticCandidateLifecycle } from './infrastructure/repositories/prisma-semantic-candidate-lifecycle';
 import { PrismaSemanticIndexRepository } from './infrastructure/repositories/prisma-semantic-index.repository';
+import { PrismaIndexQualityReviewRepository } from './infrastructure/repositories/prisma-index-quality-review.repository';
 import { ReelIndexLangGraphWorkflow } from './infrastructure/workflows/reel-index-langgraph.workflow';
 
 const rabbitClient = (name: string, queue: string) => ({
@@ -108,8 +109,13 @@ const rabbitClient = (name: string, queue: string) => ({
     PrismaSemanticIndexRepository,
     PrismaSemanticCandidateInspector,
     PrismaSemanticCandidateLifecycle,
+    PrismaIndexQualityReviewRepository,
     { provide: 'IIndexingAiService', useExisting: AiServiceAdapter },
     { provide: 'IIndexingContentService', useExisting: ContentServiceAdapter },
+    {
+      provide: 'IIndexQualityReviewRepository',
+      useExisting: PrismaIndexQualityReviewRepository,
+    },
     { provide: 'IArtifactStorage', useExisting: R2ArtifactStorageAdapter },
     {
       provide: 'IReelIndexRetryPublisher',

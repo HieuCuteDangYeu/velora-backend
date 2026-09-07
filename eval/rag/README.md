@@ -29,6 +29,7 @@ pnpm eval:rag:live --dataset rag-frozen-ami-v1 --variant production \
   --definitions-report <safe-definitions.json> --confirm-live
 pnpm eval:rag:report --run <run-id>
 pnpm eval:rag:compare --baseline <run-a> --candidate <run-b>
+pnpm eval:rag:persist --run <completed-run-id>
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
 ```
@@ -64,6 +65,15 @@ operator-observed `--runtime-config-snapshot`, a matching `--production-sha`,
 and `CONFIG_MATCH=YES` before any provider call.
 
 Offline mode uses explicit `FIXTURE` normalized results and never creates provider clients. Live mode is opt-in, invokes the existing TypeScript runner, refuses unsupported datasets, and evaluates only completed/reconciled rows. A failed or missing response remains in the denominator with a failure status; semantic metrics may be null.
+
+Completed evaluation artifacts can be imported after a separately authorized
+run with `pnpm eval:rag:persist --run <run-id>`. The importer reads only the
+canonical `summary.json` and `cases.jsonl`, verifies the dataset bytes, stores
+sanitized metrics/provenance, and never stores questions, answers, or retrieved
+context. It requires `RAG_EVAL_PERSIST_CONFIRM=YES` and an explicit
+`REEL_INDEXING_DATABASE_URL`; it does not fall back to another database
+variable. Repeating an identical artifact is an idempotent no-op, while a
+different artifact for an existing `benchmarkRunId` is rejected.
 
 Capacity check makes exactly one cheap production-model request and never launches a benchmark. It requires explicit confirmation and Cloudflare credentials. Do not repeat it while an account-limit response is already known.
 

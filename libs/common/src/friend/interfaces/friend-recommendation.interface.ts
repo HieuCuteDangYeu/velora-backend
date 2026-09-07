@@ -1,6 +1,4 @@
-export type FriendGraphCandidateSource =
-  | 'MUTUAL_FRIENDS'
-  | 'ADAMIC_ADAR';
+export type FriendGraphCandidateSource = 'MUTUAL_FRIENDS' | 'ADAMIC_ADAR';
 
 export interface FriendGraphRecommendationCandidate {
   userId: string;

@@ -25,10 +25,12 @@ import { ChatMediaServiceAdapter } from 'apps/conversation-service/src/infrastru
 import { ConversationRealtimePublisherAdapter } from 'apps/conversation-service/src/infrastructure/adapters/conversation-realtime-publisher.adapter';
 import { NotificationServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/notification-service.adapter';
 import { UserServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/user-service.adapter';
+import { ConversationMetricsController } from 'apps/conversation-service/src/infrastructure/controllers/conversation-metrics.controller';
 import { ConversationMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/conversation.controller';
 import { GroupMembersMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/group-members.controller';
 import { KeyMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/key.controller';
 import { ReactionDetailsMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/reaction-details.controller';
+import { ConversationPrometheusMetricsService } from 'apps/conversation-service/src/infrastructure/metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from 'apps/conversation-service/src/infrastructure/prisma/prisma.service';
 import { AesEncryptionRepository } from 'apps/conversation-service/src/infrastructure/repositories/aes-encryption.repository';
 import { PrismaConversationChatRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-conversation-chat.repository';
@@ -109,6 +111,7 @@ import { ChatGateway } from './infrastructure/gateways/chat.gateway';
   ],
   controllers: [
     ConversationMicroserviceController,
+    ConversationMetricsController,
     GroupMembersMicroserviceController,
     ReactionDetailsMicroserviceController,
     KeyMicroserviceController,
@@ -116,6 +119,7 @@ import { ChatGateway } from './infrastructure/gateways/chat.gateway';
   providers: [
     PrismaService,
     ChatGateway,
+    ConversationPrometheusMetricsService,
 
     // --- Use Cases / application services ---
     SendMessageUseCase,

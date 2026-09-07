@@ -34,10 +34,7 @@ export class FriendGraphRepository implements IFriendGraphRepository {
 
   async findTwoHopCandidates(
     userId: string,
-    limit: number,
   ): Promise<TwoHopFriendCandidateEvidence[]> {
-    const take = Math.min(Math.max(limit, 1), 200);
-
     const rows = await this.prisma.$queryRaw<
       Array<{
         userId: string;
@@ -45,49 +42,57 @@ export class FriendGraphRepository implements IFriendGraphRepository {
         adamicAdarScore: number;
       }>
     >(Prisma.sql`
-      WITH accepted_edges AS (
-        SELECT "userOneId" AS "sourceId", "userTwoId" AS "targetId"
+      WITH viewer_neighbors AS (
+        SELECT "userTwoId" AS "mutualId"
         FROM "Friendship"
         WHERE "status" = 'ACCEPTED'
+          AND "userOneId" = ${userId}
         UNION ALL
-        SELECT "userTwoId" AS "sourceId", "userOneId" AS "targetId"
+        SELECT "userOneId" AS "mutualId"
         FROM "Friendship"
         WHERE "status" = 'ACCEPTED'
+          AND "userTwoId" = ${userId}
       ),
-      degrees AS (
-        SELECT "sourceId", COUNT(*)::int AS degree
-        FROM accepted_edges
-        GROUP BY "sourceId"
+      mutual_edges AS (
+        SELECT
+          viewer_neighbors."mutualId",
+          friendship."userTwoId" AS "candidateId"
+        FROM viewer_neighbors
+        INNER JOIN "Friendship" AS friendship
+          ON friendship."status" = 'ACCEPTED'
+          AND friendship."userOneId" = viewer_neighbors."mutualId"
+        UNION ALL
+        SELECT
+          viewer_neighbors."mutualId",
+          friendship."userOneId" AS "candidateId"
+        FROM viewer_neighbors
+        INNER JOIN "Friendship" AS friendship
+          ON friendship."status" = 'ACCEPTED'
+          AND friendship."userTwoId" = viewer_neighbors."mutualId"
       ),
-      viewer_neighbors AS (
-        SELECT "targetId" AS "mutualId"
-        FROM accepted_edges
-        WHERE "sourceId" = ${userId}
+      mutual_degrees AS (
+        SELECT "mutualId", COUNT(*)::int AS degree
+        FROM mutual_edges
+        GROUP BY "mutualId"
       )
       SELECT
-        second_hop."targetId" AS "userId",
-        COUNT(DISTINCT second_hop."sourceId")::int AS "mutualFriendCount",
+        mutual_edges."candidateId" AS "userId",
+        COUNT(DISTINCT mutual_edges."mutualId")::int AS "mutualFriendCount",
         SUM(
-          1.0 / LN(GREATEST(degrees.degree, 2))
+          1.0 / LN(GREATEST(mutual_degrees.degree, 2))
         )::double precision AS "adamicAdarScore"
-      FROM viewer_neighbors
-      INNER JOIN accepted_edges AS second_hop
-        ON second_hop."sourceId" = viewer_neighbors."mutualId"
-      INNER JOIN degrees
-        ON degrees."sourceId" = viewer_neighbors."mutualId"
-      WHERE second_hop."targetId" <> ${userId}
+      FROM mutual_edges
+      INNER JOIN mutual_degrees
+        ON mutual_degrees."mutualId" = mutual_edges."mutualId"
+      WHERE mutual_edges."candidateId" <> ${userId}
         AND NOT EXISTS (
           SELECT 1
           FROM "Friendship" AS existing
-          WHERE existing."userOneId" = LEAST(${userId}, second_hop."targetId")
-            AND existing."userTwoId" = GREATEST(${userId}, second_hop."targetId")
+          WHERE existing."userOneId" = LEAST(${userId}, mutual_edges."candidateId")
+            AND existing."userTwoId" = GREATEST(${userId}, mutual_edges."candidateId")
         )
-      GROUP BY second_hop."targetId"
-      ORDER BY
-        "mutualFriendCount" DESC,
-        "adamicAdarScore" DESC,
-        "userId" ASC
-      LIMIT ${take}
+      GROUP BY mutual_edges."candidateId"
+      ORDER BY mutual_edges."candidateId" ASC
     `);
 
     return rows.map((row) => ({

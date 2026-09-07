@@ -1,0 +1,58 @@
+name: Monitoring Config CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - '.env.example'
+      - 'apps/monitoring-service/**'
+      - 'apps/api-gateway/src/monitoring/**'
+      - 'apps/api-gateway/src/api-gateway.module.ts'
+      - 'infra/monitoring/**'
+      - '.github/workflows/monitoring-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitoring-config-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-monitoring-config:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate monitoring Compose overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null .env
+          trap 'rm -f -- .env' EXIT
+
+          COMPOSE_DISABLE_ENV_FILE=1 \
+            DOCKERHUB_USERNAME=ci-placeholder \
+            RABBITMQ_USER=ci \
+            RABBITMQ_PASSWORD=ci \
+            GRAFANA_ADMIN_PASSWORD=ci-placeholder \
+            docker compose \
+              -f docker-compose.yml \
+              -f infra/monitoring/docker-compose.monitoring.yml \
+              config --no-env-resolution --quiet
+
+      - name: Validate Prometheus configuration and rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --entrypoint /bin/promtool \
+            -v "$PWD/infra/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:latest \
+            check config /etc/prometheus/prometheus.yml
+
+      - name: Validate Grafana dashboard JSON
+        run: jq -e . infra/monitoring/grafana/dashboards/velora-monitoring.json >/dev/null

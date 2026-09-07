@@ -1,0 +1,48 @@
+groups:
+  - name: velora-monitoring-service
+    rules:
+      - alert: VeloraMonitoringServiceDown
+        expr: up{job="monitoring-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: monitoring-service is unavailable
+          description: Prometheus has not been able to scrape monitoring-service for at least one minute.
+
+      - alert: VeloraMonitoringHighRpcErrorRate
+        expr: |
+          sum(rate(velora_monitoring_rpc_requests_total{status="error"}[5m]))
+          /
+          clamp_min(sum(rate(velora_monitoring_rpc_requests_total[5m])), 0.000001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: monitoring-service RPC error rate is above 5 percent
+          description: More than 5 percent of monitoring-service RPC/event operations have failed during the last five minutes.
+
+      - alert: VeloraMonitoringHighRpcP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(velora_monitoring_rpc_duration_seconds_bucket[5m])
+            )
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: monitoring-service p95 RPC latency is above one second
+          description: p95 monitoring-service RPC/event latency has remained above one second for five minutes.
+
+      - alert: VeloraMonitoringHighResidentMemory
+        expr: velora_process_resident_memory_bytes{service="monitoring-service"} > 536870912
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: monitoring-service resident memory is above 512 MiB
+          description: monitoring-service has used more than 512 MiB of resident memory for ten minutes.

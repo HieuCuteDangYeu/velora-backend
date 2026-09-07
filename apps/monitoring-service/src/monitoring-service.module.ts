@@ -10,13 +10,17 @@ import { RemoveExpiredRecommendationTelemetryUseCase } from '@monitoring/applica
 import { CallTelemetryTokenVerifierAdapter } from '@monitoring/infrastructure/adapters/call-telemetry-token-verifier.adapter';
 import { CallTelemetryController } from '@monitoring/infrastructure/controllers/call-telemetry.controller';
 import { MonitoringHealthController } from '@monitoring/infrastructure/controllers/health.controller';
+import { MetricsController } from '@monitoring/infrastructure/controllers/metrics.controller';
 import { RecommendationTelemetryController } from '@monitoring/infrastructure/controllers/recommendation-telemetry.controller';
+import { SystemMetricsController } from '@monitoring/infrastructure/controllers/system-metrics.controller';
 import { CallTelemetryRetentionJob } from '@monitoring/infrastructure/jobs/call-telemetry-retention.job';
 import { RecommendationTelemetryCleanupJob } from '@monitoring/infrastructure/jobs/recommendation-telemetry-cleanup.job';
+import { PrometheusMetricsService } from '@monitoring/infrastructure/metrics/prometheus-metrics.service';
 import { MonitoringPrismaService } from '@monitoring/infrastructure/prisma/monitoring-prisma.service';
 import { PrismaService } from '@monitoring/infrastructure/prisma/prisma.service';
 import { PrismaCallTelemetryRepository } from '@monitoring/infrastructure/repositories/prisma-call-telemetry.repository';
 import { RecommendationTelemetryRepository } from '@monitoring/infrastructure/repositories/recommendation-telemetry.repository';
+import { PrometheusQueryService } from '@monitoring/infrastructure/services/prometheus-query.service';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -33,8 +37,12 @@ import { ScheduleModule } from '@nestjs/schedule';
     CallTelemetryController,
     RecommendationTelemetryController,
     MonitoringHealthController,
+    MetricsController,
+    SystemMetricsController,
   ],
   providers: [
+    PrometheusMetricsService,
+    PrometheusQueryService,
     CallTelemetryTokenService,
     PrismaService,
     MonitoringPrismaService,

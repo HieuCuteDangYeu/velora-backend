@@ -28,7 +28,8 @@ RUN apt-get update \
 WORKDIR /usr/src/app
 COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
+COPY --from=builder --chown=node:node /usr/src/app/apps/ai-service/prisma ./apps/ai-service/prisma
 
 USER node
 
-CMD ["node", "dist/apps/ai-service/apps/ai-service/src/main.js"]
+CMD ["/bin/sh", "-c", "node_modules/.bin/prisma migrate deploy --schema=apps/ai-service/prisma/schema.prisma && node dist/apps/ai-service/apps/ai-service/src/main.js"]

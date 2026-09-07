@@ -39,6 +39,7 @@ jobs:
 
     env:
       FRIEND_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/friend_recommendation_ci?schema=public
+      FRIEND_GRAPH_INTEGRATION_TEST: '1'
 
     steps:
       - name: Checkout repository

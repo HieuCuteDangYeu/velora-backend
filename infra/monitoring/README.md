@@ -24,7 +24,20 @@ docker compose \
 
 ## Verify
 
-The application exporter remains internal to the Docker network:
+Run the end-to-end smoke check from the repository root:
+
+```bash
+bash scripts/ops/check-monitoring-stack.sh
+```
+
+It verifies:
+
+1. Prometheus readiness.
+2. `up{job="monitoring-service"} == 1`.
+3. Grafana database health.
+
+For exporter-level inspection, the application endpoint remains internal to the
+Docker network:
 
 ```bash
 docker compose \
@@ -58,6 +71,24 @@ http://127.0.0.1:3001
 
 The Prometheus datasource and the **Velora / Monitoring Service** dashboard are
 provisioned automatically.
+
+## Velora admin web
+
+The browser does not talk to Prometheus directly. The data path is:
+
+```text
+Velora frontend -> /api/monitoring/* -> API Gateway -> monitoring-service -> Prometheus
+```
+
+The API Gateway requires an authenticated `ADMIN` user. The available endpoints are:
+
+```text
+GET /api/monitoring/overview
+GET /api/monitoring/timeseries
+```
+
+The timeseries endpoint accepts only the server-side metric whitelist and a bounded
+range; clients cannot submit arbitrary PromQL.
 
 ## Retention and scrape interval
 

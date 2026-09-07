@@ -1,0 +1,117 @@
+name: Friend Recommendation CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'apps/friend-service/**'
+      - 'apps/user-service/**'
+      - 'libs/common/src/friend/**'
+      - 'libs/common/src/recommendation/**'
+      - 'libs/common/src/user/**'
+      - '.github/workflows/friend-recommendation-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: friend-recommendation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: friend_recommendation_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d friend_recommendation_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      FRIEND_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/friend_recommendation_ci?schema=public
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies without postinstall
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Generate recommendation Prisma clients
+        run: |
+          pnpm run prisma:generate:friend
+          pnpm run prisma:generate:user
+
+      - name: Create friend-service CI schema
+        run: pnpm exec prisma db push --schema=apps/friend-service/prisma/schema.prisma --skip-generate
+
+      - name: Check recommendation formatting
+        run: >-
+          pnpm exec prettier --check
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+          libs/common/src/friend/interfaces/friend-recommendation.interface.ts
+          libs/common/src/friend/schemas/friend-recommendation.schema.ts
+
+      - name: Lint recommendation changes
+        run: >-
+          pnpm exec eslint
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+          libs/common/src/friend/interfaces/friend-recommendation.interface.ts
+          libs/common/src/friend/schemas/friend-recommendation.schema.ts
+
+      - name: Run recommendation regression tests
+        run: >-
+          pnpm exec jest --runInBand
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+
+      - name: Build affected applications
+        run: |
+          pnpm run build:friend
+          pnpm run build:user
+          pnpm run build:gateway

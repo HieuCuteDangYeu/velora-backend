@@ -68,28 +68,22 @@ jobs:
       - name: Create friend-service CI schema
         run: pnpm exec prisma db push --schema=apps/friend-service/prisma/schema.prisma --skip-generate
 
-      - name: Emit recommendation formatting patch
-        run: |
-          pnpm exec prettier --write \
-            apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts \
-            apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts \
-            apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts \
-            apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts \
-            apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts \
-            apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts \
-            apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts \
-            apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts \
-            apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts \
-            apps/user-service/src/infrastructure/services/recommendation-config.service.ts \
-            apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts \
-            libs/common/src/friend/interfaces/friend-recommendation.interface.ts \
-            libs/common/src/friend/schemas/friend-recommendation.schema.ts
-          git diff -- \
-            apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts \
-            apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts \
-            apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts \
-            libs/common/src/friend/interfaces/friend-recommendation.interface.ts
-          exit 1
+      - name: Check recommendation formatting
+        run: >-
+          pnpm exec prettier --check
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+          libs/common/src/friend/interfaces/friend-recommendation.interface.ts
+          libs/common/src/friend/schemas/friend-recommendation.schema.ts
 
       - name: Lint recommendation changes
         run: >-

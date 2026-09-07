@@ -11,6 +11,7 @@ import { GetCallTimelineUseCase } from '../../application/use-cases/get-call-tim
 import { IngestCallTelemetryUseCase } from '../../application/use-cases/ingest-call-telemetry.use-case';
 import { ListRecentCallLegsUseCase } from '../../application/use-cases/list-recent-call-legs.use-case';
 import { InvalidTelemetryTokenError } from '../../domain/errors/invalid-telemetry-token.error';
+import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
 
 @Controller()
 export class CallTelemetryController {
@@ -19,41 +20,64 @@ export class CallTelemetryController {
     private readonly getSummary: GetCallTelemetrySummaryUseCase,
     private readonly getTimeline: GetCallTimelineUseCase,
     private readonly listRecentLegs: ListRecentCallLegsUseCase,
+    private readonly metrics: PrometheusMetricsService,
   ) {}
 
   @MessagePattern('call.telemetry.ingest')
   async ingest(@Payload() payload: unknown) {
-    const { events } = this.parse(TrackCallTelemetrySchema, payload);
+    return this.measure('call.telemetry.ingest', async () => {
+      const { events } = this.parse(TrackCallTelemetrySchema, payload);
 
-    try {
-      return await this.ingestTelemetry.execute(events);
-    } catch (error) {
-      if (error instanceof InvalidTelemetryTokenError) {
-        throw new RpcException({ statusCode: 400, message: error.message });
+      try {
+        const result = await this.ingestTelemetry.execute(events);
+        this.metrics.addTelemetryEvents('call', events.length);
+        return result;
+      } catch (error) {
+        if (error instanceof InvalidTelemetryTokenError) {
+          throw new RpcException({ statusCode: 400, message: error.message });
+        }
+
+        throw error;
       }
-
-      throw error;
-    }
+    });
   }
 
   @MessagePattern('call.telemetry.summary')
   async summary(@Payload() payload: unknown) {
-    return this.getSummary.execute(
-      this.parse(CallTelemetryQuerySchema, payload),
+    return this.measure('call.telemetry.summary', () =>
+      this.getSummary.execute(this.parse(CallTelemetryQuerySchema, payload)),
     );
   }
 
   @MessagePattern('call.telemetry.timeline')
   async timeline(@Payload() payload: unknown) {
-    const { callId } = this.parse(CallTelemetryTimelineSchema, payload);
-    return this.getTimeline.execute(callId);
+    return this.measure('call.telemetry.timeline', () => {
+      const { callId } = this.parse(CallTelemetryTimelineSchema, payload);
+      return this.getTimeline.execute(callId);
+    });
   }
 
   @MessagePattern('call.telemetry.recent')
   async recent(@Payload() payload: unknown) {
-    return this.listRecentLegs.execute(
-      this.parse(CallTelemetryQuerySchema, payload),
+    return this.measure('call.telemetry.recent', () =>
+      this.listRecentLegs.execute(this.parse(CallTelemetryQuerySchema, payload)),
     );
+  }
+
+  private async measure<T>(pattern: string, operation: () => Promise<T>): Promise<T> {
+    const startedAt = process.hrtime.bigint();
+    let status: 'success' | 'error' = 'success';
+
+    try {
+      return await operation();
+    } catch (error) {
+      status = 'error';
+      throw error;
+    } finally {
+      const durationSeconds =
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+      this.metrics.recordRpc(pattern, status, durationSeconds);
+    }
   }
 
   private parse<T>(schema: ZodType<T>, payload: unknown): T {

@@ -2,15 +2,15 @@ import type {
   FriendGraphCandidateSource,
   FriendGraphRecommendationResponse,
 } from '@common/friend/interfaces/friend-recommendation.interface';
-import type { IFriendRepository } from '@friend/domain/interfaces/friend.repository.interface';
+import type { IFriendGraphRepository } from '@friend/domain/interfaces/friend-graph.repository.interface';
 import type { IUserBlockRepository } from '@friend/domain/interfaces/user-block.repository.interface';
 import { Inject, Injectable } from '@nestjs/common';
 
 @Injectable()
 export class GetGraphFriendRecommendationsUseCase {
   constructor(
-    @Inject('IFriendRepository')
-    private readonly friendRepository: IFriendRepository,
+    @Inject('IFriendGraphRepository')
+    private readonly friendGraphRepository: IFriendGraphRepository,
     @Inject('IUserBlockRepository')
     private readonly userBlockRepository: IUserBlockRepository,
   ) {}
@@ -24,8 +24,11 @@ export class GetGraphFriendRecommendationsUseCase {
 
     const [rawCandidates, relationshipUserIds, blockedUserIds] =
       await Promise.all([
-        this.friendRepository.findTwoHopCandidates(userId, candidatePoolSize),
-        this.friendRepository.listRelationshipUserIds(userId),
+        this.friendGraphRepository.findTwoHopCandidates(
+          userId,
+          candidatePoolSize,
+        ),
+        this.friendGraphRepository.listRelationshipUserIds(userId),
         this.userBlockRepository.listExcludedUserIds(userId),
       ]);
 

@@ -1,4 +1,6 @@
+import { GetGraphFriendRecommendationsUseCase } from '@friend/application/use-cases/get-graph-friend-recommendations.use-case';
 import { PrismaService } from '@friend/infrastructure/prisma/prisma.service';
+import { UserBlockRepository } from '@friend/infrastructure/repositories/user-block.repository';
 import { FriendGraphRepository } from './friend-graph.repository';
 
 const A = '11111111-1111-4111-8111-111111111111';
@@ -23,6 +25,11 @@ const describeWithDatabase =
 describeWithDatabase('FriendGraphRepository integration', () => {
   const prisma = new PrismaService();
   const repository = new FriendGraphRepository(prisma);
+  const blockRepository = new UserBlockRepository(prisma);
+  const recommendationUseCase = new GetGraphFriendRecommendationsUseCase(
+    repository,
+    blockRepository,
+  );
 
   beforeAll(async () => {
     await prisma.$connect();
@@ -135,13 +142,41 @@ describeWithDatabase('FriendGraphRepository integration', () => {
     expect(candidates).toEqual([]);
   });
 
-  it('Graph F: excludes an existing pending relationship in either direction', async () => {
-    await createRelationship(A, B);
-    await createRelationship(B, C);
-    await createRelationship(C, A, 'PENDING');
+  it.each([
+    ['outgoing', A, C],
+    ['incoming', C, A],
+  ])(
+    'Graph F: excludes an existing %s pending relationship',
+    async (_direction, requesterId, recipientId) => {
+      await createRelationship(A, B);
+      await createRelationship(B, C);
+      await createRelationship(requesterId, recipientId, 'PENDING');
 
-    const candidates = await repository.findTwoHopCandidates(A);
+      const candidates = await repository.findTwoHopCandidates(A);
 
-    expect(candidates).toEqual([]);
-  });
+      expect(candidates).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['viewer blocks candidate', A, C],
+    ['candidate blocks viewer', C, A],
+  ])(
+    'excludes a graph candidate when %s',
+    async (_direction, blockerId, blockedUserId) => {
+      await createRelationship(A, B);
+      await createRelationship(B, C);
+      await prisma.userBlock.create({
+        data: {
+          blockerId,
+          blockedUserId,
+        },
+      });
+
+      const result = await recommendationUseCase.execute(A, 20);
+
+      expect(result.candidates).toEqual([]);
+      expect(result.excludedUserIds).toContain(C);
+    },
+  );
 });

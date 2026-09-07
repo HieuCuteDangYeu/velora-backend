@@ -19,6 +19,7 @@ import { UserServiceAdapter } from '@friend/infrastructure/adapters/user-service
 import { FriendRecommendationController } from '@friend/infrastructure/controllers/friend-recommendation.controller';
 import { FriendController } from '@friend/infrastructure/controllers/friend.controller';
 import { PrismaService } from '@friend/infrastructure/prisma/prisma.service';
+import { FriendGraphRepository } from '@friend/infrastructure/repositories/friend-graph.repository';
 import { FriendRepository } from '@friend/infrastructure/repositories/friend.repository';
 import { UserBlockRepository } from '@friend/infrastructure/repositories/user-block.repository';
 import { Module } from '@nestjs/common';
@@ -84,6 +85,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     {
       provide: 'IFriendRepository',
       useClass: FriendRepository,
+    },
+    {
+      provide: 'IFriendGraphRepository',
+      useClass: FriendGraphRepository,
     },
     {
       provide: 'IUserService',

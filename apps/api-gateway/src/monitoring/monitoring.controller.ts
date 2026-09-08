@@ -27,6 +27,16 @@ const ALLOWED_METRICS = new Set([
   'host_swap',
   'host_disk',
   'host_load1',
+  'conversation_cpu',
+  'conversation_memory',
+  'conversation_event_loop_p99',
+  'conversation_sockets',
+  'conversation_message_rate',
+  'conversation_send_rate',
+  'conversation_success_rate',
+  'conversation_reject_rate',
+  'conversation_error_rate',
+  'conversation_p95_send_latency',
 ]);
 
 @ApiTags('Monitoring')

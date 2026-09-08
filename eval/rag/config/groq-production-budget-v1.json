@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "rag-groq-production-budget-v1",
+  "source": "effective-production-role-partition",
+  "providerCalls": 0,
+  "roleBuckets": {
+    "QWEN_NORMAL": 4057,
+    "QWEN_WITH_ANSWER_REVISION": 5741,
+    "GPT20_NORMAL_WITHOUT_RETRIEVAL_TOOL": 4763,
+    "GPT20_NORMAL_WITH_RETRIEVAL_TOOL_OUTPUT_CEILING": 6263,
+    "GPT120_NORMAL": 6382
+  },
+  "retrievalToolPolicy": {
+    "enabled": true,
+    "maxSteps": 3,
+    "maxParallelCalls": 2,
+    "maxCompletionTokens": 500,
+    "timeoutMs": 8000,
+    "maxOutputTokensPerLogicalRequest": 1500
+  },
+  "notes": [
+    "The retrieval-tool value is a bounded output ceiling, not provider-observed usage.",
+    "The normal GPT-20B bucket adds three 500-token tool completions to the prior 4763-token estimate.",
+    "Conditional verifier escalation plus retrieval-tool output can exceed the provisional 8000-token window and remains a separate capacity risk."
+  ]
+}

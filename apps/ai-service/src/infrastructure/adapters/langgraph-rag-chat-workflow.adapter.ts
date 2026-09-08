@@ -33,6 +33,11 @@ import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod/v4';
+import {
+  boundRecentMessages,
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 const RagChatStateSchema = new StateSchema({
   userId: z.string(),
@@ -496,7 +501,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.memoryAgentUseCase.execute({
           userId: state.userId,
           conversationId: state.conversationId,
-          message: state.userMessage,
+          message: boundPromptText(
+            state.userMessage,
+            readRagPromptBounds(this.config).maxUserMessageChars,
+          ),
           route,
           memory: state.memory,
         }),
@@ -1318,7 +1326,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private formatRecentHistory(state: RagChatWorkflowState): string {
-    const messages = state.memory?.recentMessages ?? [];
+    const messages = boundRecentMessages(
+      state.memory?.recentMessages ?? [],
+      readRagPromptBounds(this.config),
+    );
 
     if (messages.length === 0) {
       return '';
@@ -1330,17 +1341,25 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private buildRouterReferentContext(state: RagChatWorkflowState) {
-    const eventTypes = (state.memory?.recentMessages ?? [])
+    const bounds = readRagPromptBounds(this.config);
+    const allEventTypes = (state.memory?.recentMessages ?? [])
       .map((message) => message.eventType)
       .filter(
         (eventType): eventType is 'TEXT' | 'REEL_SHARE' =>
           eventType === 'TEXT' || eventType === 'REEL_SHARE',
       );
-    const recentShareIndex = eventTypes.lastIndexOf('REEL_SHARE');
+    const recentShareIndex = allEventTypes.lastIndexOf('REEL_SHARE');
+    const recentEventTypes = allEventTypes.slice(-bounds.maxRouterEventTypes);
+    if (
+      recentShareIndex >= 0 &&
+      recentShareIndex < allEventTypes.length - bounds.maxRouterEventTypes
+    ) {
+      recentEventTypes.unshift('REEL_SHARE');
+    }
     const turnsSinceRecentShare =
       recentShareIndex < 0
         ? undefined
-        : eventTypes.length - recentShareIndex - 1;
+        : allEventTypes.length - recentShareIndex - 1;
 
     return {
       conversationHasSharedReelContext: state.hasSharedReelContext ?? false,
@@ -1348,7 +1367,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       recentShareEvent:
         turnsSinceRecentShare !== undefined && turnsSinceRecentShare <= 2,
       turnsSinceRecentShare,
-      recentEventTypes: eventTypes,
+      recentEventTypes,
     };
   }
 

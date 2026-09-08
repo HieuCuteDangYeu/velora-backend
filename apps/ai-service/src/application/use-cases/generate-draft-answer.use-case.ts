@@ -10,6 +10,11 @@ import type {
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable } from '@nestjs/common';
+import {
+  boundEvidence,
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawDraftAnswer {
   answer?: unknown;
@@ -36,7 +41,9 @@ export class GenerateDraftAnswerUseCase {
 
   async execute(state: RagChatWorkflowState): Promise<RagDraftAnswer> {
     const diagnostics: StructuredLlmCallDiagnostics[] = [];
-    const authorizedEvidence = state.rerankedChunks.map((chunk, index) => ({
+    const bounds = readRagPromptBounds(this.config);
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds);
+    const authorizedEvidence = boundedChunks.map((chunk, index) => ({
       evidenceId: `e${index}`,
       evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
       evidenceText:
@@ -55,7 +62,10 @@ export class GenerateDraftAnswerUseCase {
         'Normal conversational statements that do not depend on reel evidence may have no claims.',
       ].join('\n\n'),
       userPrompt: JSON.stringify({
-        currentQuestion: state.userMessage,
+        currentQuestion: boundPromptText(
+          state.userMessage,
+          bounds.maxUserMessageChars,
+        ),
         authorizedEvidence,
       }),
       jsonSchema: this.schema(),
@@ -67,7 +77,10 @@ export class GenerateDraftAnswerUseCase {
       onDiagnostics: (call) => diagnostics.push(call),
     });
 
-    return { ...this.normalize(raw, state), diagnostics };
+    return {
+      ...this.normalize(raw, state, boundedChunks.length),
+      diagnostics,
+    };
   }
 
   private schema(): StructuredLlmJsonSchema {
@@ -110,12 +123,13 @@ export class GenerateDraftAnswerUseCase {
   private normalize(
     raw: RawDraftAnswer,
     state: RagChatWorkflowState,
+    allowedEvidenceCount: number,
   ): RagDraftAnswer {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
     if (!answer) throw new Error('Answer model returned an empty answer');
 
     const allowedIds = new Set(
-      state.rerankedChunks.map((_chunk, index) => `e${index}`),
+      Array.from({ length: allowedEvidenceCount }, (_, index) => `e${index}`),
     );
     const claims = Array.isArray(raw.claims)
       ? raw.claims.map((value) => this.normalizeClaim(value, allowedIds))

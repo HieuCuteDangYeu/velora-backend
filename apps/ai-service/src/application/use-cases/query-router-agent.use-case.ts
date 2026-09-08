@@ -16,6 +16,10 @@ import type {
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawRouteDecision {
   intent?: unknown;
@@ -115,7 +119,8 @@ export class QueryRouterAgentUseCase {
     sharedReelCount?: number;
     referentContext?: RagRouterReferentContext;
   }): Promise<RagChatRouteDecision> {
-    if (!input.message.trim()) {
+    const boundedInput = this.boundInput(input);
+    if (!boundedInput.message.trim()) {
       return {
         ...this.createNormalChatRoute(
           'Empty or whitespace message treated as normal chat.',
@@ -134,16 +139,16 @@ export class QueryRouterAgentUseCase {
     try {
       const result = this.normalize(
         await this.routeWithPrimaryAttempts({
-          input,
+          input: boundedInput,
           model: primaryModel,
           semanticCalls,
         }),
-        input,
+        boundedInput,
       );
 
-      if (this.needsReferentReconciliation(result, input)) {
+      if (this.needsReferentReconciliation(result, boundedInput)) {
         return await this.routeWithFallback({
-          input,
+          input: boundedInput,
           semanticCalls,
           primaryResult: result,
           primaryAttemptCount: this.primaryAttemptCount(
@@ -174,7 +179,7 @@ export class QueryRouterAgentUseCase {
       }
 
       return await this.routeWithFallback({
-        input,
+        input: boundedInput,
         semanticCalls,
         primaryAttemptCount: this.primaryAttemptCount(
           semanticCalls,
@@ -188,6 +193,28 @@ export class QueryRouterAgentUseCase {
             : 'PRIMARY_PROVIDER_FAILURE',
       });
     }
+  }
+
+  private boundInput(
+    input: Parameters<QueryRouterAgentUseCase['execute']>[0],
+  ): Parameters<QueryRouterAgentUseCase['execute']>[0] {
+    const bounds = readRagPromptBounds(this.config);
+    return {
+      ...input,
+      message: boundPromptText(input.message, bounds.maxUserMessageChars),
+      recentHistory: boundPromptText(
+        input.recentHistory,
+        bounds.maxRecentTotalChars,
+      ),
+      referentContext: input.referentContext
+        ? {
+            ...input.referentContext,
+            recentEventTypes: input.referentContext.recentEventTypes?.slice(
+              -bounds.maxRecentMessages,
+            ),
+          }
+        : input.referentContext,
+    };
   }
 
   private async routeWithFallback(input: {

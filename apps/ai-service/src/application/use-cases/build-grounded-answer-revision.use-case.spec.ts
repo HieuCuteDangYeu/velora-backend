@@ -107,10 +107,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     ).rejects.toThrow('unknown evidence IDs');
   });
 
-  it('bounds revision context to eight reranked evidence items', async () => {
+  it('bounds revision context to the shared evidence budget', async () => {
     structuredLlm.generateObject.mockResolvedValueOnce({
-      answer: 'The answer uses the eighth item.',
-      evidenceIds: ['e7'],
+      answer: 'The answer uses the fifth item.',
+      evidenceIds: ['e4'],
     });
     await useCase.executeWithProvenance(
       state({
@@ -120,7 +120,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     );
 
     const request = structuredLlm.generateObject.mock.calls[0][0];
-    expect(JSON.parse(request.userPrompt).evidence).toHaveLength(8);
+    const payload = JSON.parse(request.userPrompt as string) as {
+      evidence?: unknown[];
+    };
+    expect(payload.evidence).toHaveLength(5);
   });
 
   it('does not call the model outside a verifier revision', async () => {

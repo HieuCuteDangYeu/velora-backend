@@ -11,6 +11,12 @@ import type { IStructuredLlmService } from '@ai/domain/interfaces/structured-llm
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  boundClaimMappings,
+  boundPromptText,
+  boundTextItems,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawClaimAssessment {
   claim?: unknown;
@@ -51,11 +57,29 @@ export class CloudflareCitationAttributionAdapter implements ICitationAttributio
       0,
       1,
     );
+    const bounds = readRagPromptBounds(this.config);
     const maxCandidates = Math.round(
-      this.number('AI_RAG_CITATION_CANDIDATE_LIMIT', 8, 1, 20),
+      this.number(
+        'AI_RAG_CITATION_CANDIDATE_LIMIT',
+        bounds.maxEvidenceItems,
+        1,
+        20,
+      ),
     );
     const timeoutMs = this.config.timeoutMs('CITATION_ATTRIBUTION');
-    const candidates = input.candidates.slice(0, maxCandidates);
+    const candidates = boundTextItems(
+      input.candidates.slice(0, maxCandidates),
+      (candidate) => candidate.evidenceText,
+      (candidate, evidenceText) => ({ ...candidate, evidenceText }),
+      bounds.maxEvidenceItems,
+      bounds.maxEvidenceTextChars,
+      bounds.maxEvidenceTotalChars,
+    ).map((candidate) => ({
+      ...candidate,
+      title: candidate.title
+        ? boundPromptText(candidate.title, bounds.maxEvidenceTitleChars)
+        : candidate.title,
+    }));
 
     const semanticCalls: RagStructuredCallFailureDiagnostic[] = [];
     let result: RawCitationAttributionResult;
@@ -219,6 +243,7 @@ export class CloudflareCitationAttributionAdapter implements ICitationAttributio
     candidates: CitationAttributionCandidate[];
     maxCitations: number;
   }): string {
+    const bounds = readRagPromptBounds(this.config);
     const evidence = input.candidates
       .map((candidate) =>
         [
@@ -240,9 +265,9 @@ export class CloudflareCitationAttributionAdapter implements ICitationAttributio
       .join('\n\n---\n\n');
 
     return [
-      `QUESTION:\n${input.question.trim()}`,
-      `FINAL ANSWER:\n${input.answer.trim()}`,
-      `ANSWER MODEL PROPOSED CLAIM MAPPINGS (untrusted; verify independently):\n${JSON.stringify(input.proposedClaims ?? [])}`,
+      `QUESTION:\n${boundPromptText(input.question, bounds.maxUserMessageChars)}`,
+      `FINAL ANSWER:\n${boundPromptText(input.answer, bounds.maxAnswerChars)}`,
+      `ANSWER MODEL PROPOSED CLAIM MAPPINGS (untrusted; verify independently):\n${JSON.stringify(boundClaimMappings(input.proposedClaims ?? [], bounds))}`,
       `MAX FINAL CITATIONS: ${input.maxCitations}`,
       `CANDIDATE EVIDENCE:\n${evidence}`,
     ].join('\n\n');

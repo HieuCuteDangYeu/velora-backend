@@ -2,31 +2,49 @@ import type { IChatPromptBuilder } from '@ai/domain/interfaces/chat-prompt-build
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import {
+  boundEvidence,
+  boundPromptText,
+  boundRecentMessages,
+  boundTextItems,
+  readRagPromptBounds,
+  truncatePromptText,
+  type RagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 @Injectable()
 export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
+  constructor(private readonly config?: ConfigService) {}
+
   build(
     state: RagChatWorkflowState,
     options?: { includeRetrievedEvidence?: boolean },
   ): string {
+    const bounds = readRagPromptBounds(this.config);
     const longTermMemory = state.memorySelection?.includeUserMemory
-      ? this.formatUserMemories(state)
+      ? this.formatUserMemories(state, bounds)
       : 'Long-term user memory was not selected for this request.';
     const conversationSummary = state.memorySelection
       ?.includeConversationSummary
-      ? this.formatConversationMemory(state)
+      ? this.formatConversationMemory(state, bounds)
       : 'Conversation summary was not selected for this request.';
     const recentHistory = state.memorySelection?.includeRecentHistory
-      ? this.formatRecentHistory(state)
+      ? this.formatRecentHistory(state, bounds)
       : 'Recent chat history was not selected for this request.';
     const reelContext =
       options?.includeRetrievedEvidence === false
         ? 'Authorized reel evidence is supplied separately with stable evidence IDs.'
         : state.memorySelection?.includeRetrievedChunks
-          ? this.formatRetrievedReelEvidence(state.rerankedChunks)
+          ? this.formatRetrievedReelEvidence(state.rerankedChunks, bounds)
           : 'Retrieved reel evidence was not selected for this request.';
-    const routeContext = this.formatRouteContext(state);
-    const revisionInstruction = state.verification?.revisedInstruction?.trim();
+    const routeContext = this.formatRouteContext(state, bounds);
+    const revisionInstruction = state.verification?.revisedInstruction
+      ? boundPromptText(
+          state.verification.revisedInstruction,
+          bounds.maxClaimChars,
+        )
+      : undefined;
 
     return `
 You are Velora AI, an intelligent assistant for the Velora platform.
@@ -91,11 +109,14 @@ RETRIEVED SHARED REEL EVIDENCE:
 ${reelContext}
 
 CURRENT USER QUESTION:
-${state.userMessage}
+${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
 `.trim();
   }
 
-  private formatRouteContext(state: RagChatWorkflowState): string {
+  private formatRouteContext(
+    state: RagChatWorkflowState,
+    bounds: RagPromptBounds,
+  ): string {
     if (!state.route) return 'No route decision available.';
     return [
       `Intent: ${state.route.intent}`,
@@ -103,12 +124,22 @@ ${state.userMessage}
       `Required evidence: ${state.route.requiredEvidence.join(', ')}`,
       `Needs retrieval: ${state.route.needsRetrieval}`,
       `Needs verification: ${state.route.needsVerification}`,
-      `Reason: ${state.route.reason}`,
+      `Reason: ${boundPromptText(state.route.reason, bounds.maxClaimChars)}`,
     ].join('\n');
   }
 
-  private formatUserMemories(state: RagChatWorkflowState): string {
-    const memories = state.userMemories?.memories ?? [];
+  private formatUserMemories(
+    state: RagChatWorkflowState,
+    bounds: RagPromptBounds,
+  ): string {
+    const memories = boundTextItems(
+      state.userMemories?.memories ?? [],
+      (item) => item.content,
+      (item, content) => ({ ...item, content }),
+      bounds.maxMemories,
+      bounds.maxMemoryItemChars,
+      bounds.maxMemoryTotalChars,
+    );
     if (memories.length === 0) return 'No long-term user memory available.';
     return memories
       .map(
@@ -118,13 +149,24 @@ ${state.userMessage}
       .join('\n');
   }
 
-  private formatConversationMemory(state: RagChatWorkflowState): string {
+  private formatConversationMemory(
+    state: RagChatWorkflowState,
+    bounds: RagPromptBounds,
+  ): string {
     const summary = state.conversationMemory?.summary?.trim();
-    return summary || 'No conversation summary available.';
+    return summary
+      ? truncatePromptText(summary, bounds.maxSummaryChars)
+      : 'No conversation summary available.';
   }
 
-  private formatRecentHistory(state: RagChatWorkflowState): string {
-    const messages = state.memory?.recentMessages ?? [];
+  private formatRecentHistory(
+    state: RagChatWorkflowState,
+    bounds: RagPromptBounds,
+  ): string {
+    const messages = boundRecentMessages(
+      state.memory?.recentMessages ?? [],
+      bounds,
+    );
     if (messages.length === 0) return 'No recent conversation context.';
     return messages
       .map((message) => {
@@ -136,12 +178,13 @@ ${state.userMessage}
 
   private formatRetrievedReelEvidence(
     chunks: ReelContextSearchResult[],
+    bounds: RagPromptBounds,
   ): string {
     if (chunks.length === 0) {
       return 'No relevant shared reel evidence found in this conversation.';
     }
 
-    return this.selectPromptEvidence(chunks)
+    return this.selectPromptEvidence(boundEvidence(chunks, bounds))
       .map((match, index) => {
         const evidenceType = match.evidenceType ?? 'TRANSCRIPT';
         const evidenceLabel =

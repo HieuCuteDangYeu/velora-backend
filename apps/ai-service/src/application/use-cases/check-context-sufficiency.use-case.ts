@@ -9,6 +9,11 @@ import type {
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  boundEvidence,
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawContextSufficiencyResult {
   sufficient?: unknown;
@@ -180,6 +185,8 @@ Rules:
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
+    const bounds = readRagPromptBounds(this.config);
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds);
     return `
 Route decision:
 ${JSON.stringify({
@@ -189,14 +196,14 @@ ${JSON.stringify({
 })}
 
 User question:
-${state.userMessage}
+${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
 
 Available evidence modalities:
 ${JSON.stringify(this.getAvailableEvidence(state))}
 
 Retrieved reel evidence:
 ${JSON.stringify(
-  state.rerankedChunks.map((chunk, index) => ({
+  boundedChunks.map((chunk, index) => ({
     evidenceId: `e${index}`,
     evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
     title: chunk.title,

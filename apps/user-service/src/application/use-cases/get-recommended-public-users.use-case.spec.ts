@@ -161,7 +161,9 @@ describe('GetRecommendedPublicUsersUseCase', () => {
     const findRecommendedPublicUsers = jest.fn();
     const getGraphRecommendations = jest
       .fn()
-      .mockRejectedValue(new Error('Invalid graph friend recommendation response'));
+      .mockRejectedValue(
+        new Error('Invalid graph friend recommendation response'),
+      );
 
     const useCase = new GetRecommendedPublicUsersUseCase(
       createUserRepository({ findByIds, findRecommendedPublicUsers }),

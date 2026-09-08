@@ -108,8 +108,7 @@
     "eval:rag:persist": "node scripts/ops/persist-rag-eval.cjs",
     "eval:rag:reranker": "node scripts/ops/qualify-reranker.cjs",
     "eval:rag:test": "node scripts/ops/run-rag-eval.cjs test",
-    "eval:rag:capacity-check": "node scripts/ops/run-rag-eval.cjs capacity-check",
-    "eval:rag:control-plane": "node scripts/ops/run-rag-eval.cjs control-plane"
+    "eval:rag:capacity-check": "node scripts/ops/run-rag-eval.cjs capacity-check"
   },
   "packageManager": "pnpm@9.15.0",
   "overrides": {

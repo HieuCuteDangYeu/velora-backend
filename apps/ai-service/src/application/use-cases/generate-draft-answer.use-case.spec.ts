@@ -4,7 +4,7 @@ import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/answer'),
+    model: jest.fn(() => 'test/test/answer'),
     timeoutMs: jest.fn(() => 10_000),
     maxCompletionTokens: jest.fn(() => 1_536),
   } as unknown as IAiApplicationConfig;
@@ -53,7 +53,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: '@cf/test/answer',
+        model: 'test/test/answer',
         timeoutMs: 10_000,
         maxTokens: 1_536,
         temperature: 0,

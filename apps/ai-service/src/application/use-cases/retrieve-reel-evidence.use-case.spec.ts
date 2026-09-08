@@ -41,7 +41,7 @@ const match = {
 
 const enabledPolicy = {
   enabled: true,
-  model: '@cf/test/tool-model',
+  model: 'test/test/tool-model',
   maxSteps: 3,
   maxParallelCalls: 2,
   callTimeoutMs: 8_000,

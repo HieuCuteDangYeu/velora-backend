@@ -37,7 +37,6 @@ const commands = {
   compare: ['run', 'rag-eval', 'compare'],
   test: ['run', 'pytest', '-q'],
   'capacity-check': ['run', 'rag-eval', 'capacity-check', '--confirm-one-call'],
-  'control-plane': ['run', 'rag-eval', 'control-plane'],
 };
 const command = commands[mode];
 if (!command) {

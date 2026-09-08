@@ -4,7 +4,7 @@ import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revi
 describe('BuildGroundedAnswerRevisionUseCase', () => {
   const structuredLlm = { generateObject: jest.fn() };
   const config = {
-    model: jest.fn().mockReturnValue('@cf/test/answer-revision'),
+    model: jest.fn().mockReturnValue('test/test/answer-revision'),
     timeoutMs: jest.fn().mockReturnValue(1_000),
     maxCompletionTokens: jest.fn().mockReturnValue(768),
   };

@@ -29,7 +29,7 @@ const { routerMultiturnCases } =
 
 describe('generic multi-turn semantic router cohort', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/router'),
+    model: jest.fn(() => 'test/test/router'),
     timeoutMs: jest.fn(() => 7_000),
     maxCompletionTokens: jest.fn(() => 384),
     get: jest.fn().mockReturnValue(undefined),

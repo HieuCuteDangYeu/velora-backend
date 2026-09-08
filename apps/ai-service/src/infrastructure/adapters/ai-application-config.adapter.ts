@@ -62,7 +62,7 @@ const MAX_COMPLETION_TOKENS_BY_ROLE: Record<
     key: 'AI_ANSWER_REVISION_MAX_TOKENS',
     fallback: 768,
   },
-  VERIFIER: { key: 'AI_VERIFIER_MAX_TOKENS', fallback: 650 },
+  VERIFIER: { key: 'AI_VERIFIER_MAX_TOKENS', fallback: 1_024 },
   VERIFIER_ESCALATION: {
     key: 'AI_VERIFIER_ESCALATION_MAX_TOKENS',
     fallback: 1_024,

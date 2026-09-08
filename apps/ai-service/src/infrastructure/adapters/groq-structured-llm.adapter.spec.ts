@@ -65,6 +65,40 @@ describe('GroqStructuredLlmAdapter', () => {
     expect(diagnostics[0]).not.toHaveProperty('requestId');
   });
 
+  it('forwards the configured low reasoning effort to Qwen 3.8', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: { content: JSON.stringify({ answer: 'ok' }) },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    const qwenConfig = new ConfigService({
+      GROQ_API_KEY: 'test-key',
+      GROQ_BASE_URL: 'https://groq.test/openai/v1',
+      GROQ_STRUCTURED_STRICT: 'false',
+      GROQ_REASONING_EFFORT: 'low',
+    });
+
+    await new GroqStructuredLlmAdapter(qwenConfig).generateObject({
+      model: 'qwen/qwen3.8-27b',
+      modelRole: 'CONTEXT_SUFFICIENCY',
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Hello',
+      jsonSchema: schema,
+      maxTokens: 128,
+    });
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(request.reasoning_effort).toBe('low');
+  });
+
   it.each([
     [401, 'provider failure', 'AUTH_OR_CONFIGURATION_FAILURE', false],
     [403, 'provider failure', 'AUTH_OR_CONFIGURATION_FAILURE', false],

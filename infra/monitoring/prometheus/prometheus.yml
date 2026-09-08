@@ -23,6 +23,12 @@ scrape_configs:
       - targets:
           - conversation-service:3005
 
+  - job_name: call-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - call-service:3007
+
   - job_name: node-exporter
     static_configs:
       - targets:

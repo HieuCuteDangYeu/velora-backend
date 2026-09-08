@@ -20,7 +20,7 @@ const { verifierCases } =
 
 describe('production-shaped generic verifier contract', () => {
   const config = {
-    model: jest.fn((role: string) => `@cf/test/${role.toLowerCase()}`),
+    model: jest.fn((role: string) => `test/test/${role.toLowerCase()}`),
     timeoutMs: jest.fn(() => 20_000),
     maxCompletionTokens: jest.fn(() => 650),
     boolean: jest.fn(() => true),

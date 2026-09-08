@@ -31,7 +31,6 @@ import { UpsertUserMemoriesUseCase } from '@ai/application/use-cases/upsert-user
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
 import { AiApplicationConfigAdapter } from '@ai/infrastructure/adapters/ai-application-config.adapter';
 import { ChatPromptBuilderAdapter } from '@ai/infrastructure/adapters/chat-prompt-builder.adapter';
-import { CloudflareCitationAttributionAdapter } from '@ai/infrastructure/adapters/cloudflare-citation-attribution.adapter';
 import { CloudflareVisionAdapter } from '@ai/infrastructure/adapters/cloudflare-vision.adapter';
 import { ContentServiceAdapter } from '@ai/infrastructure/adapters/content-service.adapter';
 import { ConversationTokenPublisherAdapter } from '@ai/infrastructure/adapters/conversation-token-publisher.adapter';
@@ -50,6 +49,7 @@ import { OllamaVisionAdapter } from '@ai/infrastructure/adapters/ollama-vision.a
 import { ReelSemanticIndexAdapter } from '@ai/infrastructure/adapters/reel-semantic-index.adapter';
 import { RetrievalAgentPolicyAdapter } from '@ai/infrastructure/adapters/retrieval-agent-policy.adapter';
 import { SimpleRerankerAdapter } from '@ai/infrastructure/adapters/simple-reranker.adapter';
+import { StructuredLlmCitationAttributionAdapter } from '@ai/infrastructure/adapters/structured-llm-citation-attribution.adapter';
 import { TeiEmbeddingAdapter } from '@ai/infrastructure/adapters/tei-embedding.adapter';
 import { TeiRerankerAdapter } from '@ai/infrastructure/adapters/tei-reranker.adapter';
 import { AiController } from '@ai/infrastructure/controller/ai.controller';
@@ -266,7 +266,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'ICitationAttributionService',
-      useClass: CloudflareCitationAttributionAdapter,
+      useClass: StructuredLlmCitationAttributionAdapter,
     },
     {
       provide: 'IChatPromptBuilder',

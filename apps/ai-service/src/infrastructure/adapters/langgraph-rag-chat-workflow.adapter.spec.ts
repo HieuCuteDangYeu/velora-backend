@@ -369,7 +369,7 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
           semanticCalls: [
             {
               modelRole: 'CITATION_ATTRIBUTION',
-              model: '@cf/test/citation',
+              model: 'test/test/citation',
               providerStatus: 'TIMEOUT',
               latencyMs: 4_000,
               configuredTimeoutMs: 4_000,
@@ -615,7 +615,7 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
         semanticCalls: [
           {
             modelRole: 'ROUTER',
-            model: '@cf/test/router',
+            model: 'test/test/router',
             providerStatus: 200,
             latencyMs: 12,
             configuredTimeoutMs: 30_000,
@@ -678,7 +678,7 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
             },
             semanticCalls: [
               expect.objectContaining({
-                model: '@cf/test/router',
+                model: 'test/test/router',
                 providerStatus: 200,
                 endpointContract: 'CHAT_JSON_SCHEMA',
               }),

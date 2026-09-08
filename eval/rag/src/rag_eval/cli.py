@@ -24,7 +24,6 @@ from rag_eval.adapters.runner_output import (
 )
 from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
-from rag_eval.control_plane import run_control_plane
 from rag_eval.dataset import ROOT, is_supported_live_dataset, load_dataset
 from rag_eval.experiment import rag_experiment
 from rag_eval.pricing import load_pricing
@@ -102,9 +101,7 @@ def _definition_reel_ids(definition: dict[str, Any]) -> list[str]:
     return expected if isinstance(expected, list) else []
 
 
-def validate_definitions_report(
-    path: str, rows: dict[str, EvaluationRow]
-) -> None:
+def validate_definitions_report(path: str, rows: dict[str, EvaluationRow]) -> None:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     definitions = payload.get("ragBenchmark", {}).get("cases")
     if not isinstance(definitions, list) or len(definitions) != len(rows):
@@ -118,22 +115,16 @@ def validate_definitions_report(
             raise ValueError(f"definitions report question mismatch for {case_id}")
         if definition.get("referenceAnswerText") != row.referenceAnswer:
             raise ValueError(f"definitions report reference mismatch for {case_id}")
-        if sorted(set(_definition_reel_ids(definition))) != sorted(
-            set(row.expectedReelIds)
-        ):
+        if sorted(set(_definition_reel_ids(definition))) != sorted(set(row.expectedReelIds)):
             raise ValueError(f"definitions report reel mismatch for {case_id}")
         if (
             row.expectedEvidenceTypes
-            and definition.get("expectedEvidenceType")
-            != row.expectedEvidenceTypes[0]
+            and definition.get("expectedEvidenceType") != row.expectedEvidenceTypes[0]
         ):
             raise ValueError(f"definitions report evidence type mismatch for {case_id}")
-        if (
-            definition.get("referenceStartSec")
-            != row.metadata.get("referenceStartSec")
-            or definition.get("referenceEndSec")
-            != row.metadata.get("referenceEndSec")
-        ):
+        if definition.get("referenceStartSec") != row.metadata.get(
+            "referenceStartSec"
+        ) or definition.get("referenceEndSec") != row.metadata.get("referenceEndSec"):
             raise ValueError(f"definitions report reference window mismatch for {case_id}")
 
 
@@ -169,13 +160,9 @@ async def run_live(args: argparse.Namespace) -> Path:
     definitions_path = _repo_path(args.definitions_report)
     validate_definitions_report(str(definitions_path), rows)
     snapshot_path = (
-        str(_repo_path(args.runtime_config_snapshot))
-        if args.runtime_config_snapshot
-        else None
+        str(_repo_path(args.runtime_config_snapshot)) if args.runtime_config_snapshot else None
     )
-    snapshot = load_runtime_snapshot(
-        snapshot_path, args.production_sha, args.dataset
-    )
+    snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, args.dataset)
     run_id, runner_args = _build_live_runner_args(args, definitions_path)
     report_path = invoke_typescript_runner(runner_args)
     executions = load_runner_report(
@@ -335,30 +322,6 @@ def parser() -> argparse.ArgumentParser:
     compare.add_argument("--candidate", required=True)
     capacity = commands.add_parser("capacity-check")
     capacity.add_argument("--confirm-one-call", action="store_true")
-    control_plane = commands.add_parser("control-plane")
-    control_plane.add_argument("--mode", required=True)
-    control_plane.add_argument("--model")
-    control_plane.add_argument("--config", required=True)
-    control_plane.add_argument(
-        "--subset",
-        choices=[
-            "harness",
-            "latency",
-            "fallback-timeout",
-            "fallback-semantic",
-            "fallback20",
-            "stress",
-            "contract-diagnostic",
-            "contract-additional",
-            "sufficiency-bounded",
-            "verifier-bounded",
-        ],
-    )
-    control_plane.add_argument("--router-timeout-ms", type=int)
-    control_plane.add_argument("--router-max-completion-tokens", type=int)
-    control_plane.add_argument("--env-file", default=".env.test.local")
-    control_plane.add_argument("--run-id")
-    control_plane.add_argument("--confirm-provider-calls", action="store_true")
     return root
 
 
@@ -375,18 +338,4 @@ def main() -> None:
     elif args.command == "capacity-check":
         asyncio.run(run_capacity_check(args))
     else:
-        directory, summary = asyncio.run(
-            run_control_plane(
-                args.mode,
-                args.model,
-                args.env_file,
-                args.run_id,
-                args.config,
-                args.subset,
-                args.router_timeout_ms,
-                args.router_max_completion_tokens,
-                args.confirm_provider_calls,
-            )
-        )
-        print(json.dumps(summary, sort_keys=True))
-        print(f"CONTROL_PLANE_RAGAS_REPORT_PATH={directory}")
+        raise ValueError(f"Unsupported rag-eval command: {args.command}")

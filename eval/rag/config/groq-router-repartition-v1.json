@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "rag-groq-router-repartition-v1",
+  "variantName": "groq-router-repartition-v1",
+  "datasetVersion": "rag-generalization-v1",
+  "status": "QUALIFIED_CANDIDATE_NOT_DEPLOYED",
+  "productionMutation": false,
+  "roleModels": {
+    "ROUTER": "qwen/qwen3.8-27b",
+    "RETRIEVAL_PLANNER": "qwen/qwen3.8-27b",
+    "ANSWER_REVISION": "qwen/qwen3.8-27b",
+    "CONTEXT_SUFFICIENCY": "openai/gpt-oss-20b",
+    "CITATION_ATTRIBUTION": "openai/gpt-oss-20b",
+    "VERIFIER_ESCALATION": "openai/gpt-oss-20b",
+    "ANSWER": "openai/gpt-oss-120b",
+    "VERIFIER": "openai/gpt-oss-120b"
+  },
+  "normalBuckets": {
+    "qwen/qwen3.8-27b": {
+      "roles": ["ROUTER", "RETRIEVAL_PLANNER"],
+      "estimatedTokens60s": 4057
+    },
+    "openai/gpt-oss-20b": {
+      "roles": ["CONTEXT_SUFFICIENCY", "CITATION_ATTRIBUTION"],
+      "estimatedTokens60s": 4763
+    },
+    "openai/gpt-oss-120b": {
+      "roles": ["ANSWER", "VERIFIER"],
+      "estimatedTokens60s": 6382
+    }
+  },
+  "conditionalBuckets": {
+    "qwen/qwen3.8-27b": {
+      "roles": ["ANSWER_REVISION"],
+      "estimatedTokens60s": 5741
+    },
+    "openai/gpt-oss-20b": {
+      "roles": ["VERIFIER_ESCALATION"],
+      "estimatedTokens60s": 7139
+    }
+  },
+  "routerContract": {
+    "reasoningEffort": "low",
+    "timeoutMs": 30000,
+    "maxCompletionTokens": 512,
+    "responseFormat": "CHAT_JSON_SCHEMA",
+    "strictSchema": false,
+    "systemPromptHash": "cc1e2ea2beba6fd2599d10a73063307ff0d6321d1190a6a834ae64e0e7b4406e",
+    "jsonSchemaHash": "d24f06601ebc6fa30ae91eb856cf201d3c2b668a5d2c657a87134402811a4424"
+  },
+  "qualificationEvidence": {
+    "statisticalClaim": false,
+    "ROUTER": "6/6 semantic pass; 0 critical failures",
+    "RETRIEVAL_PLANNER": "3/3 semantic pass",
+    "ANSWER_REVISION": "3/3 semantic pass",
+    "CONTEXT_SUFFICIENCY": "2/3 semantic pass; REJECTED_FOR_QWEN",
+    "VERIFIER_ESCALATION": "1/3 semantic pass; REJECTED_FOR_QWEN",
+    "rejectionReason": "Qwen false-positive acceptance of unsupported or insufficient evidence",
+    "productionApproval": "NO"
+  },
+  "qualificationCases": [
+    { "caseId": "normal-01", "coverage": "normal non-reel chat" },
+    { "caseId": "explicit-01", "coverage": "direct reel retrieval and transcript evidence" },
+    { "caseId": "explicit-02", "coverage": "visual/reel evidence requirement" },
+    { "caseId": "explicit-05", "coverage": "transcript question with expired recent-share signal" },
+    { "caseId": "implicit-01", "coverage": "follow-up/referent resolution" },
+    { "caseId": "conversation-01", "coverage": "negative reel-scope control" }
+  ],
+  "qualificationLimits": {
+    "routerCalls": 6,
+    "privateData": false,
+    "stopOnStructuralFailure": true,
+    "statisticalClaim": false
+  }
+}

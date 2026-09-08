@@ -3,11 +3,11 @@ import type {
   IStructuredLlmService,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import type { ConfigService } from '@nestjs/config';
-import { CloudflareCitationAttributionAdapter } from './cloudflare-citation-attribution.adapter';
+import { StructuredLlmCitationAttributionAdapter } from './structured-llm-citation-attribution.adapter';
 
-describe('CloudflareCitationAttributionAdapter', () => {
+describe('StructuredLlmCitationAttributionAdapter', () => {
   const aiConfig = {
-    model: jest.fn(() => '@cf/test/citation'),
+    model: jest.fn(() => 'test/test/citation'),
     timeoutMs: jest.fn(() => 4_000),
     maxCompletionTokens: jest.fn(() => 768),
   };
@@ -16,7 +16,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
       get: jest.fn((key: string) => values[key]),
       getOrThrow: jest.fn((key: string) => {
         if (key === 'AI_CITATION_ATTRIBUTION_MODEL') {
-          return values[key] ?? '@cf/test/citation';
+          return values[key] ?? 'test/test/citation';
         }
         const value = values[key];
         if (!value) throw new Error(`Missing ${key}`);
@@ -43,7 +43,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
         ],
       }),
     };
-    const adapter = new CloudflareCitationAttributionAdapter(
+    const adapter = new StructuredLlmCitationAttributionAdapter(
       structuredLlmService,
       createConfig(),
       aiConfig as never,
@@ -91,14 +91,14 @@ describe('CloudflareCitationAttributionAdapter', () => {
       coverage: 0,
       diagnostics: {
         modelRole: 'CITATION_ATTRIBUTION',
-        model: '@cf/test/citation',
+        model: 'test/test/citation',
         providerStatus: 'SUCCESS',
       },
     });
 
     expect(structuredLlmService.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: '@cf/test/citation',
+        model: 'test/test/citation',
         temperature: 0,
         timeoutMs: 4_000,
       }),
@@ -109,7 +109,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
     const structuredLlmService: IStructuredLlmService = {
       generateObject: jest.fn().mockResolvedValue({ claims: [] }),
     };
-    const adapter = new CloudflareCitationAttributionAdapter(
+    const adapter = new StructuredLlmCitationAttributionAdapter(
       structuredLlmService,
       createConfig(),
       aiConfig as never,
@@ -137,7 +137,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
       coverage: 1,
       diagnostics: {
         modelRole: 'CITATION_ATTRIBUTION',
-        model: '@cf/test/citation',
+        model: 'test/test/citation',
         providerStatus: 'SUCCESS',
       },
     });
@@ -150,7 +150,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
         .mockImplementation((input: GenerateStructuredObjectInput) => {
           input.onDiagnostics?.({
             modelRole: 'CITATION_ATTRIBUTION',
-            model: '@cf/test/citation',
+            model: 'test/test/citation',
             providerStatus: 429,
             latencyMs: 4_000,
             configuredTimeoutMs: 4_000,
@@ -163,7 +163,7 @@ describe('CloudflareCitationAttributionAdapter', () => {
           return Promise.reject(new Error('provider failed'));
         }),
     };
-    const adapter = new CloudflareCitationAttributionAdapter(
+    const adapter = new StructuredLlmCitationAttributionAdapter(
       structuredLlmService,
       createConfig(),
       aiConfig as never,

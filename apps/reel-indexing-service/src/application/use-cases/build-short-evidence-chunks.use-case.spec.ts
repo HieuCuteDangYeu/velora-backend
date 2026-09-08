@@ -8,14 +8,14 @@ const applicationConfig = (
 ): IIndexingApplicationConfig => ({
   get: <T = string>(key: string) => config[key] as T | undefined,
   transcriptionIdentity: () => ({
-    provider: 'cloudflare-workers-ai',
-    model: '@cf/openai/whisper-large-v3-turbo',
-    version: 'cf-whisper-v1',
+    provider: 'groq',
+    model: 'whisper-large-v3-turbo',
+    version: 'groq-whisper-v3-turbo-v1',
   }),
   embeddingIdentity: () => ({
-    model: config['AI_EMBEDDING_MODEL'] || '@cf/baai/bge-m3',
+    model: config['AI_EMBEDDING_MODEL'] || 'BAAI/bge-m3',
     dimensions: Number(config['AI_EMBEDDING_DIMENSIONS'] || 1024),
-    version: config['AI_EMBEDDING_VERSION'] || 'cf-bge-m3-v1',
+    version: config['AI_EMBEDDING_VERSION'] || 'bge-m3-tei-v1',
   }),
 });
 
@@ -182,10 +182,10 @@ describe('BuildShortEvidenceChunksUseCase', () => {
       chunkingVersion: '1',
       summaryVersion: '1',
       indexVersion: '1',
-      embeddingProvider: 'cloudflare-workers-ai',
-      embeddingModel: '@cf/baai/bge-m3',
+      embeddingProvider: 'self-hosted-tei',
+      embeddingModel: 'BAAI/bge-m3',
       embeddingDimensions: 1024,
-      embeddingVersion: 'cf-bge-m3-v1',
+      embeddingVersion: 'bge-m3-tei-v1',
       embeddingInputHash: 'input',
       embedding: Array(1024).fill(0.1),
       tokenCount: 1,

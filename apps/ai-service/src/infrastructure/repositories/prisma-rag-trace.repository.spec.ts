@@ -46,7 +46,7 @@ describe('PrismaRagTraceRepository', () => {
         diagnostics: {
           route: {
             modelRole: 'ROUTER',
-            model: '@cf/test/router',
+            model: 'test/test/router',
             providerStatus: 'SUCCESS',
             decisionSource: 'LLM',
             requestId: 'must-not-persist',

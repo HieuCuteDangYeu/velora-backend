@@ -77,7 +77,7 @@ describe('BuildRagCitationsUseCase', () => {
           semanticCalls: [
             {
               modelRole: 'CITATION_ATTRIBUTION',
-              model: '@cf/test/citation',
+              model: 'test/test/citation',
               providerStatus: 200,
               latencyMs: 7,
               configuredTimeoutMs: 4_000,
@@ -161,7 +161,7 @@ describe('BuildRagCitationsUseCase', () => {
     const failure = new CitationAttributionProviderError([
       {
         modelRole: 'CITATION_ATTRIBUTION',
-        model: '@cf/test/citation',
+        model: 'test/test/citation',
         providerStatus: 'TIMEOUT',
         latencyMs: 4_000,
         configuredTimeoutMs: 4_000,

@@ -6,8 +6,8 @@ describe('VerifierAgentUseCase', () => {
   const config = {
     model: jest.fn((role: string) =>
       role === 'VERIFIER'
-        ? '@cf/openai/gpt-oss-20b'
-        : '@cf/openai/gpt-oss-120b',
+        ? 'test/openai/gpt-oss-20b'
+        : 'test/openai/gpt-oss-120b',
     ),
     timeoutMs: jest.fn(() => 8_000),
     maxCompletionTokens: jest.fn((role: string) =>
@@ -97,7 +97,7 @@ describe('VerifierAgentUseCase', () => {
     });
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: '@cf/openai/gpt-oss-20b',
+        model: 'test/openai/gpt-oss-20b',
         maxTokens: 650,
         timeoutMs: 8_000,
         temperature: 0,
@@ -138,13 +138,13 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledTimes(2);
     expect(service.generateObject.mock.calls[0][0]).toEqual(
       expect.objectContaining({
-        model: '@cf/openai/gpt-oss-20b',
+        model: 'test/openai/gpt-oss-20b',
         maxTokens: 650,
       }),
     );
     expect(service.generateObject.mock.calls[1][0]).toEqual(
       expect.objectContaining({
-        model: '@cf/openai/gpt-oss-120b',
+        model: 'test/openai/gpt-oss-120b',
         maxTokens: 1_024,
       }),
     );

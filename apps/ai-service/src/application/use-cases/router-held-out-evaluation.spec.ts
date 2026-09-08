@@ -29,11 +29,11 @@ const { routerCases } =
 
 describe('generic held-out semantic router corpus', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/primary'),
+    model: jest.fn(() => 'test/test/primary'),
     timeoutMs: jest.fn(() => 10_000),
     maxCompletionTokens: jest.fn(() => 1_024),
     get: jest.fn((key: string) =>
-      key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/secondary' : undefined,
+      key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/secondary' : undefined,
     ),
     number: jest.fn((_key: string, fallback: number) => fallback),
   } as unknown as IAiApplicationConfig;

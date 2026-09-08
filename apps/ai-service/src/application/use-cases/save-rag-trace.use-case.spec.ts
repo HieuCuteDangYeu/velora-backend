@@ -31,11 +31,11 @@ describe('SaveRagTraceUseCase', () => {
           ],
           deterministicSupportingEvidenceIds: [],
           providerStatus: 200,
-          model: '@cf/test/citation',
+          model: 'test/test/citation',
           semanticCalls: [
             {
               modelRole: 'CITATION_ATTRIBUTION',
-              model: '@cf/test/citation',
+              model: 'test/test/citation',
               providerStatus: 200,
               latencyMs: 10,
               configuredTimeoutMs: 12_000,
@@ -54,7 +54,7 @@ describe('SaveRagTraceUseCase', () => {
         causeCode: 'ROUTER_SEMANTIC_INCONSISTENT',
         semanticCalls: [
           {
-            model: '@cf/test/router',
+            model: 'test/test/router',
             providerStatus: 200,
             latencyMs: 10,
             configuredTimeoutMs: 30_000,
@@ -79,7 +79,7 @@ describe('SaveRagTraceUseCase', () => {
         reason: 'The question asks about shared reel transcript content.',
         diagnostics: {
           modelRole: 'ROUTER',
-          model: '@cf/test/router',
+          model: 'test/test/router',
           providerStatus: 'SUCCESS',
           decisionSource: 'LLM',
         },
@@ -95,13 +95,13 @@ describe('SaveRagTraceUseCase', () => {
         reason: 'Focused transcript search.',
         diagnostics: {
           modelRole: 'RETRIEVAL_PLANNER',
-          model: '@cf/test/planner',
+          model: 'test/test/planner',
           providerStatus: 'SUCCESS',
           decisionSource: 'LLM',
           semanticCalls: [
             {
               modelRole: 'RETRIEVAL_PLANNER',
-              model: '@cf/test/planner',
+              model: 'test/test/planner',
               providerStatus: 200,
               latencyMs: 10,
               configuredTimeoutMs: 8_000,
@@ -151,7 +151,7 @@ describe('SaveRagTraceUseCase', () => {
           providerStatus: 'NOT_CALLED',
           decisionSource: 'LLM',
           modelRole: 'CONTEXT_SUFFICIENCY',
-          model: '@cf/test/sufficiency',
+          model: 'test/test/sufficiency',
         },
       },
       citationCoverage: {
@@ -174,7 +174,7 @@ describe('SaveRagTraceUseCase', () => {
           semanticCalls: [
             {
               modelRole: 'CITATION_ATTRIBUTION',
-              model: '@cf/test/citation',
+              model: 'test/test/citation',
               providerStatus: 200,
               latencyMs: 10,
               configuredTimeoutMs: 12_000,

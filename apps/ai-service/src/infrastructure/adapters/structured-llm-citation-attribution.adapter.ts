@@ -30,7 +30,7 @@ interface RawCitationAttributionResult {
 }
 
 @Injectable()
-export class CloudflareCitationAttributionAdapter implements ICitationAttributionService {
+export class StructuredLlmCitationAttributionAdapter implements ICitationAttributionService {
   constructor(
     @Inject('IStructuredLlmService')
     private readonly structuredLlmService: IStructuredLlmService,

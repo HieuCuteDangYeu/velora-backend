@@ -379,7 +379,9 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   }
 
   private reasoningEffort(model: string): string | undefined {
-    if (!model.startsWith('openai/gpt-oss-')) return undefined;
+    if (!model.startsWith('openai/gpt-oss-') && model !== 'qwen/qwen3.8-27b') {
+      return undefined;
+    }
     const value = this.config
       .get<string>('GROQ_REASONING_EFFORT')
       ?.trim()

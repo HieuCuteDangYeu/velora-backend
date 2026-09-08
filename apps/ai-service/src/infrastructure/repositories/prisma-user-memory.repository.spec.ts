@@ -8,7 +8,7 @@ const rawMemory = {
   normalizedContent: 'the user deploys postgresql with pgvector.',
   confidence: 0.9,
   sourceConversationId: 'conversation-1',
-  embeddingModel: '@cf/baai/bge-m3',
+  embeddingModel: 'test/baai/bge-m3',
   embeddingDimensions: 1024,
   embeddingVersion: 'cf-bge-m3-v1',
   semanticScore: 0.92,
@@ -107,7 +107,7 @@ describe('PrismaUserMemoryRepository', () => {
       expect.objectContaining({
         id: 'memory-1',
         content: rawMemory.content,
-        embeddingModel: '@cf/baai/bge-m3',
+        embeddingModel: 'test/baai/bge-m3',
         embeddingDimensions: 1024,
         embeddingVersion: 'cf-bge-m3-v1',
         semanticScore: 0.92,

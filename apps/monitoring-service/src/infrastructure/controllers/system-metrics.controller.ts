@@ -23,6 +23,26 @@ const RANGE_QUERIES = {
   host_disk:
     '1 - (max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) / clamp_min(max(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}), 1))',
   host_load1: 'max(node_load1{job="node-exporter"})',
+  conversation_cpu:
+    'sum(rate(velora_process_cpu_user_seconds_total{service="conversation-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="conversation-service"}[5m]))',
+  conversation_memory:
+    'sum(velora_process_resident_memory_bytes{service="conversation-service"})',
+  conversation_event_loop_p99:
+    'max(velora_nodejs_event_loop_lag_p99_seconds{service="conversation-service"})',
+  conversation_sockets:
+    'sum(velora_conversation_socket_connections{service="conversation-service"})',
+  conversation_message_rate:
+    'sum(rate(velora_conversation_messages_created_total{service="conversation-service"}[5m]))',
+  conversation_send_rate:
+    'sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m]))',
+  conversation_success_rate:
+    '(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service",status="success"}[5m])) / clamp_min(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])), 0.000001)) and on() (sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])) > 0)',
+  conversation_reject_rate:
+    '(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service",status="rejected"}[5m])) / clamp_min(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])), 0.000001)) and on() (sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])) > 0)',
+  conversation_error_rate:
+    '(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service",status="error"}[5m])) / clamp_min(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])), 0.000001)) and on() (sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])) > 0)',
+  conversation_p95_send_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_conversation_send_message_duration_seconds_bucket{service="conversation-service",status="success"}[5m])))',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
@@ -87,6 +107,17 @@ export class SystemMetricsController {
           hostDiskAvailableBytes,
           hostLoad1,
           hostUptimeSeconds,
+          conversationUp,
+          conversationCpuSecondsPerSecond,
+          conversationResidentMemoryBytes,
+          conversationEventLoopP99Seconds,
+          conversationSocketConnections,
+          conversationMessagesPerSecond,
+          conversationSendRequestsPerSecond,
+          conversationSuccessRate,
+          conversationRejectRate,
+          conversationErrorRate,
+          conversationP95SendLatencySeconds,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -106,6 +137,17 @@ export class SystemMetricsController {
           this.prometheus.scalar('max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})'),
           this.prometheus.scalar(RANGE_QUERIES.host_load1),
           this.prometheus.scalar('max(time() - node_boot_time_seconds{job="node-exporter"})'),
+          this.prometheus.scalar('max(up{job="conversation-service"})'),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_cpu),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_memory),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_event_loop_p99),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_sockets),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_message_rate),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_send_rate),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_success_rate),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_reject_rate),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_error_rate),
+          this.prometheus.scalar(RANGE_QUERIES.conversation_p95_send_latency),
         ]);
 
         const hostMemoryUsedBytes = subtractMetric(
@@ -158,6 +200,19 @@ export class SystemMetricsController {
             requestsPerSecond,
             errorRate,
             p95LatencySeconds,
+          },
+          conversation: {
+            up: targetStatus(conversationUp),
+            residentMemoryBytes: conversationResidentMemoryBytes,
+            cpuSecondsPerSecond: conversationCpuSecondsPerSecond,
+            eventLoopP99Seconds: conversationEventLoopP99Seconds,
+            socketConnections: conversationSocketConnections,
+            messagesPerSecond: conversationMessagesPerSecond,
+            sendRequestsPerSecond: conversationSendRequestsPerSecond,
+            successRate: conversationSuccessRate,
+            rejectRate: conversationRejectRate,
+            errorRate: conversationErrorRate,
+            p95SendLatencySeconds: conversationP95SendLatencySeconds,
           },
         };
       } catch (error) {

@@ -18,12 +18,14 @@ import { RestartIceUseCase } from './application/use-cases/restart-ice.use-case'
 import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
 import { CallGateway } from './infrastructure/gateways/call.gateway';
 import { CallStateController } from './infrastructure/controllers/call-state.controller';
+import { CallMetricsController } from './infrastructure/controllers/call-metrics.controller';
 import { RedisCallStateRepository } from './infrastructure/repositories/redis-call-state.repository';
 import { RedisCallSessionRepository } from './infrastructure/repositories/redis-call-session.repository';
 import { RabbitCallEventPublisher } from './infrastructure/publishers/rabbit-call-event.publisher';
 import { MediasoupCallMediaEngine } from './infrastructure/engines/mediasoup-call.engine';
 import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.subscriber';
 import { NotificationServiceAdapter } from './infrastructure/adapters/notification-service.adapter';
+import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prometheus-metrics.service';
 
 @Module({
   imports: [
@@ -76,9 +78,10 @@ import { NotificationServiceAdapter } from './infrastructure/adapters/notificati
       },
     ]),
   ],
-  controllers: [CallEventsSubscriber, CallStateController],
+  controllers: [CallEventsSubscriber, CallStateController, CallMetricsController],
   providers: [
     CallGateway,
+    CallPrometheusMetricsService,
     InitiateCallUseCase,
     JoinCallUseCase,
     CreateTransportUseCase,

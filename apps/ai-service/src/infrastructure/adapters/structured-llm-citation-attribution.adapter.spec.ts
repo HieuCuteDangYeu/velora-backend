@@ -143,6 +143,68 @@ describe('StructuredLlmCitationAttributionAdapter', () => {
     });
   });
 
+  it('uses a strict-compatible citation schema', async () => {
+    const generateObject = jest.fn().mockResolvedValue({ claims: [] });
+    const structuredLlmService: IStructuredLlmService = { generateObject };
+    const adapter = new StructuredLlmCitationAttributionAdapter(
+      structuredLlmService,
+      createConfig(),
+      aiConfig as never,
+    );
+
+    await adapter.attribute({
+      question: 'What is visible?',
+      answer: 'A laptop is visible.',
+      maxCitations: 3,
+      candidates: [
+        {
+          evidenceId: 'e0',
+          reelId: 'r1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'A laptop is visible.',
+        },
+      ],
+    });
+
+    const request = generateObject.mock
+      .calls[0][0] as GenerateStructuredObjectInput;
+    const validateStrictSchema = (schema: unknown, path: string): void => {
+      expect(schema).toBeDefined();
+      expect(schema).toEqual(
+        expect.objectContaining({ type: expect.any(String) }),
+      );
+      const record = schema as Record<string, unknown>;
+      const type = record.type;
+      expect(['object', 'array', 'string', 'boolean', 'number']).toContain(
+        type,
+      );
+
+      if (type === 'object') {
+        const properties = (record.properties ?? {}) as Record<string, unknown>;
+        const required = Array.isArray(record.required)
+          ? (record.required as string[])
+          : [];
+        expect(record.additionalProperties).toBe(false);
+        expect(new Set(required)).toEqual(new Set(Object.keys(properties)));
+        for (const [key, propertySchema] of Object.entries(properties)) {
+          validateStrictSchema(propertySchema, `${path}.${key}`);
+        }
+      }
+
+      if (type === 'array' && record.items) {
+        validateStrictSchema(record.items, `${path}[]`);
+      }
+    };
+
+    validateStrictSchema(request.jsonSchema, '$');
+    expect(request.modelRole).toBe('CITATION_ATTRIBUTION');
+    expect(request.jsonSchema).toMatchObject({
+      type: 'object',
+      required: ['claims'],
+      additionalProperties: false,
+    });
+  });
+
   it('preserves safe structured-call diagnostics when attribution fails', async () => {
     const structuredLlmService: IStructuredLlmService = {
       generateObject: jest

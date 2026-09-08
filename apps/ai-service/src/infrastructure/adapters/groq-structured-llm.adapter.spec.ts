@@ -12,12 +12,46 @@ describe('GroqStructuredLlmAdapter', () => {
     additionalProperties: false,
   };
 
-  const config = () =>
+  const config = (values: Record<string, string> = {}) =>
     new ConfigService({
       GROQ_API_KEY: 'test-key',
       GROQ_BASE_URL: 'https://groq.test/openai/v1',
       GROQ_STRUCTURED_STRICT: 'false',
+      ...values,
     });
+
+  const requestBody = async (
+    values: Record<string, string>,
+    modelRole: string,
+  ) => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: { content: JSON.stringify({ answer: 'ok' }) },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await new GroqStructuredLlmAdapter(config(values)).generateObject({
+      model: 'openai/gpt-oss-20b',
+      modelRole,
+      systemPrompt: 'Return JSON.',
+      userPrompt: 'Hello',
+      jsonSchema: schema,
+    });
+
+    return JSON.parse(fetchMock.mock.calls[0][1]?.body as string) as {
+      response_format: {
+        json_schema: { strict: boolean };
+      };
+    };
+  };
 
   afterEach(() => jest.restoreAllMocks());
 
@@ -63,6 +97,51 @@ describe('GroqStructuredLlmAdapter', () => {
       expect.objectContaining({ providerStatus: 200, attempt: 1 }),
     );
     expect(diagnostics[0]).not.toHaveProperty('requestId');
+  });
+
+  it('uses the citation role strict override without changing the global default', async () => {
+    const request = await requestBody(
+      {
+        GROQ_STRUCTURED_STRICT: 'false',
+        GROQ_STRUCTURED_STRICT_CITATION_ATTRIBUTION: 'true',
+      },
+      'CITATION_ATTRIBUTION',
+    );
+
+    expect(request.response_format.json_schema.strict).toBe(true);
+  });
+
+  it('keeps unrelated roles on the global strict setting', async () => {
+    const request = await requestBody(
+      {
+        GROQ_STRUCTURED_STRICT: 'false',
+        GROQ_STRUCTURED_STRICT_CITATION_ATTRIBUTION: 'true',
+      },
+      'ROUTER',
+    );
+
+    expect(request.response_format.json_schema.strict).toBe(false);
+  });
+
+  it('falls back to the global setting when the citation override is absent', async () => {
+    const request = await requestBody(
+      { GROQ_STRUCTURED_STRICT: 'true' },
+      'CITATION_ATTRIBUTION',
+    );
+
+    expect(request.response_format.json_schema.strict).toBe(true);
+  });
+
+  it('honors an explicit false citation override over a true global setting', async () => {
+    const request = await requestBody(
+      {
+        GROQ_STRUCTURED_STRICT: 'true',
+        GROQ_STRUCTURED_STRICT_CITATION_ATTRIBUTION: 'false',
+      },
+      'CITATION_ATTRIBUTION',
+    );
+
+    expect(request.response_format.json_schema.strict).toBe(false);
   });
 
   it('forwards the configured low reasoning effort to Qwen 3.8', async () => {

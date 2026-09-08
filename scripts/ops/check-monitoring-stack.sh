@@ -45,20 +45,23 @@ wait_for_prometheus_target() {
 require_command curl
 require_command jq
 
-echo "[1/5] Checking Prometheus readiness..."
+echo "[1/6] Checking Prometheus readiness..."
 curl --fail --silent --show-error "${PROMETHEUS_URL}/-/ready" >/dev/null
 echo "      Prometheus is ready"
 
-echo "[2/5] Checking monitoring-service scrape target..."
+echo "[2/6] Checking monitoring-service scrape target..."
 wait_for_prometheus_target "monitoring-service" "monitoring-service"
 
-echo "[3/5] Checking conversation-service scrape target..."
+echo "[3/6] Checking conversation-service scrape target..."
 wait_for_prometheus_target "conversation-service" "conversation-service"
 
-echo "[4/5] Checking host node-exporter scrape target..."
+echo "[4/6] Checking call-service scrape target..."
+wait_for_prometheus_target "call-service" "call-service"
+
+echo "[5/6] Checking host node-exporter scrape target..."
 wait_for_prometheus_target "node-exporter" "node-exporter"
 
-echo "[5/5] Checking Grafana health..."
+echo "[6/6] Checking Grafana health..."
 grafana_response="$(curl --fail --silent --show-error "${GRAFANA_URL}/api/health")"
 database_status="$(jq -r '.database // "unknown"' <<<"$grafana_response")"
 if [ "$database_status" != "ok" ]; then
@@ -69,5 +72,5 @@ fi
 echo "      Grafana is healthy"
 
 echo
-printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nNode exporter:        UP\nGrafana:              %s\n' \
+printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\nGrafana:              %s\n' \
   "$PROMETHEUS_URL" "$GRAFANA_URL"

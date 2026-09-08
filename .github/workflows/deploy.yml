@@ -218,8 +218,10 @@ jobs:
           compose_build_matrix="$(
             COMPOSE_DISABLE_ENV_FILE=1 \
               DOCKERHUB_USERNAME="$dockerhub_placeholder" \
-              RABBITMQ_USER=ci \
-              RABBITMQ_PASSWORD=ci \
+              RABBITMQ_DEFAULT_USER=ci \
+              RABBITMQ_DEFAULT_PASS=ci \
+              RABBITMQ_DEFAULT_VHOST=/ \
+              RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
               docker compose config --no-env-resolution --no-path-resolution --format json \
                 | jq -ce --arg prefix "${dockerhub_placeholder}/" '
                     [
@@ -358,10 +360,20 @@ jobs:
           install -m 600 /dev/null "$temporary_env_file"
           trap 'rm -f -- "$temporary_env_file"' EXIT
 
+          cat > "$temporary_env_file" <<'EOF'
+          RABBITMQ_DEFAULT_USER=ci
+          RABBITMQ_DEFAULT_PASS=ci
+          RABBITMQ_DEFAULT_VHOST=/
+          RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/
+          EOF
+          node scripts/ops/validate-rabbitmq-config.cjs --env-file "$temporary_env_file"
+
           COMPOSE_DISABLE_ENV_FILE=1 \
             DOCKERHUB_USERNAME=ci-placeholder \
-            RABBITMQ_USER=ci \
-            RABBITMQ_PASSWORD=ci \
+            RABBITMQ_DEFAULT_USER=ci \
+            RABBITMQ_DEFAULT_PASS=ci \
+            RABBITMQ_DEFAULT_VHOST=/ \
+            RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
             docker compose config --no-env-resolution --quiet
 
       - name: Validate Nginx configuration

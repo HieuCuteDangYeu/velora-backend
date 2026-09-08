@@ -156,6 +156,28 @@ describe('GetRecommendedPublicUsersUseCase', () => {
     );
   });
 
+  it('fails closed before fallback when graph recommendation validation fails', async () => {
+    const findByIds = jest.fn();
+    const findRecommendedPublicUsers = jest.fn();
+    const getGraphRecommendations = jest
+      .fn()
+      .mockRejectedValue(new Error('Invalid graph friend recommendation response'));
+
+    const useCase = new GetRecommendedPublicUsersUseCase(
+      createUserRepository({ findByIds, findRecommendedPublicUsers }),
+      createFriendDiscoveryService({ getGraphRecommendations }),
+      config,
+      createTelemetryService(),
+    );
+
+    await expect(
+      useCase.execute({ viewerId: 'viewer', limit: 20 }),
+    ).rejects.toThrow('Invalid graph friend recommendation response');
+
+    expect(findByIds).not.toHaveBeenCalled();
+    expect(findRecommendedPublicUsers).not.toHaveBeenCalled();
+  });
+
   it('uses only the public fallback when the viewer has no two-hop candidates', async () => {
     const publish = jest.fn();
     const findByIds = jest.fn();

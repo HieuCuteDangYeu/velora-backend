@@ -37,7 +37,9 @@ export class BuildGroundedAnswerRevisionUseCase {
     state: RagChatWorkflowState,
   ): Promise<GroundedAnswerRevision | undefined> {
     if (
-      state.nextDraftSource !== 'VERIFIER_REVISION' ||
+      !['VERIFIER_REVISION', 'CITATION_REVISION'].includes(
+        state.nextDraftSource,
+      ) ||
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
       !state.verification?.requiresRevision
     ) {

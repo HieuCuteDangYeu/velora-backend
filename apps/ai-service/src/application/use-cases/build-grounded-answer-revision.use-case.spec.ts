@@ -132,4 +132,24 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     await expect(useCase.execute(input)).resolves.toBeUndefined();
     expect(structuredLlm.generateObject).not.toHaveBeenCalled();
   });
+
+  it('uses ANSWER_REVISION for a citation revision', async () => {
+    const input = state({
+      question: 'What happened?',
+      evidence: ['The speaker describes the project.'],
+    });
+    input.nextDraftSource = 'CITATION_REVISION';
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: 'The speaker describes the project.',
+      evidenceIds: ['e0'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      modelRole: 'ANSWER_REVISION',
+      evidenceIds: ['e0'],
+    });
+    expect(structuredLlm.generateObject).toHaveBeenCalledWith(
+      expect.objectContaining({ modelRole: 'ANSWER_REVISION' }),
+    );
+  });
 });

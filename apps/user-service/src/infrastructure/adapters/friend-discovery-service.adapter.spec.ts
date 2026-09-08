@@ -50,6 +50,17 @@ describe('FriendDiscoveryServiceAdapter graph recommendation contract', () => {
     ).rejects.toThrow('Incomplete graph friend recommendation exclusions');
   });
 
+  it('fails closed when exclusion IDs are duplicated', async () => {
+    const { adapter } = createAdapter({
+      ...validResponse(),
+      excludedUserIds: [VIEWER_ID, VIEWER_ID],
+    });
+
+    await expect(
+      adapter.getGraphRecommendations(VIEWER_ID, 20),
+    ).rejects.toThrow('Invalid graph friend recommendation exclusions');
+  });
+
   it('fails closed when graph candidate IDs are duplicated', async () => {
     const candidate = validResponse().candidates[0];
     const { adapter } = createAdapter({

@@ -37,6 +37,10 @@ const ALLOWED_METRICS = new Set([
   'conversation_reject_rate',
   'conversation_error_rate',
   'conversation_p95_send_latency',
+  'call_cpu',
+  'call_memory',
+  'call_event_loop_p99',
+  'call_sockets',
 ]);
 
 @ApiTags('Monitoring')

@@ -43,6 +43,14 @@ const RANGE_QUERIES = {
     '(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service",status="error"}[5m])) / clamp_min(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])), 0.000001)) and on() (sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])) > 0)',
   conversation_p95_send_latency:
     'histogram_quantile(0.95, sum by (le) (rate(velora_conversation_send_message_duration_seconds_bucket{service="conversation-service",status="success"}[5m])))',
+  call_cpu:
+    'sum(rate(velora_process_cpu_user_seconds_total{service="call-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="call-service"}[5m]))',
+  call_memory:
+    'sum(velora_process_resident_memory_bytes{service="call-service"})',
+  call_event_loop_p99:
+    'max(velora_nodejs_event_loop_lag_p99_seconds{service="call-service"})',
+  call_sockets:
+    'sum(velora_call_socket_connections{service="call-service"})',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
@@ -118,6 +126,11 @@ export class SystemMetricsController {
           conversationRejectRate,
           conversationErrorRate,
           conversationP95SendLatencySeconds,
+          callUp,
+          callCpuSecondsPerSecond,
+          callResidentMemoryBytes,
+          callEventLoopP99Seconds,
+          callSocketConnections,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -148,6 +161,11 @@ export class SystemMetricsController {
           this.prometheus.scalar(RANGE_QUERIES.conversation_reject_rate),
           this.prometheus.scalar(RANGE_QUERIES.conversation_error_rate),
           this.prometheus.scalar(RANGE_QUERIES.conversation_p95_send_latency),
+          this.prometheus.scalar('max(up{job="call-service"})'),
+          this.prometheus.scalar(RANGE_QUERIES.call_cpu),
+          this.prometheus.scalar(RANGE_QUERIES.call_memory),
+          this.prometheus.scalar(RANGE_QUERIES.call_event_loop_p99),
+          this.prometheus.scalar(RANGE_QUERIES.call_sockets),
         ]);
 
         const hostMemoryUsedBytes = subtractMetric(
@@ -213,6 +231,13 @@ export class SystemMetricsController {
             rejectRate: conversationRejectRate,
             errorRate: conversationErrorRate,
             p95SendLatencySeconds: conversationP95SendLatencySeconds,
+          },
+          call: {
+            up: targetStatus(callUp),
+            residentMemoryBytes: callResidentMemoryBytes,
+            cpuSecondsPerSecond: callCpuSecondsPerSecond,
+            eventLoopP99Seconds: callEventLoopP99Seconds,
+            socketConnections: callSocketConnections,
           },
         };
       } catch (error) {
@@ -306,14 +331,18 @@ export class SystemMetricsController {
   }
 
   private prometheusError(error: unknown) {
-    const message = error instanceof Error ? error.message : 'Prometheus query failed';
+    const message =
+      error instanceof Error ? error.message : 'Prometheus query failed';
     return new RpcException({
       statusCode: 503,
       message,
     });
   }
 
-  private async measure<T>(pattern: string, operation: () => Promise<T>): Promise<T> {
+  private async measure<T>(
+    pattern: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const startedAt = process.hrtime.bigint();
     let status: 'success' | 'error' = 'success';
 

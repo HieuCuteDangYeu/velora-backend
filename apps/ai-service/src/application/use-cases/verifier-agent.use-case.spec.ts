@@ -1,5 +1,6 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import type { GenerateStructuredObjectInput } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { VerifierAgentUseCase } from './verifier-agent.use-case';
 
 describe('VerifierAgentUseCase', () => {
@@ -10,9 +11,7 @@ describe('VerifierAgentUseCase', () => {
         : 'test/openai/gpt-oss-120b',
     ),
     timeoutMs: jest.fn(() => 8_000),
-    maxCompletionTokens: jest.fn((role: string) =>
-      role === 'VERIFIER' ? 650 : 1_024,
-    ),
+    maxCompletionTokens: jest.fn(() => 1_024),
     boolean: jest.fn(() => true),
     number: jest.fn((key: string) =>
       key === 'AI_VERIFIER_MAX_ATTEMPTS' ? 2 : 0.8,
@@ -98,7 +97,7 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'test/openai/gpt-oss-20b',
-        maxTokens: 650,
+        maxTokens: 1_024,
         timeoutMs: 8_000,
         temperature: 0,
       }),
@@ -107,20 +106,22 @@ describe('VerifierAgentUseCase', () => {
 
   it('persists safe primary verifier call diagnostics', async () => {
     const service = {
-      generateObject: jest.fn().mockImplementation((input) => {
-        input.onDiagnostics?.({
-          modelRole: 'VERIFIER',
-          model: 'test/openai/gpt-oss-120b',
-          providerStatus: 200,
-          latencyMs: 42,
-          configuredTimeoutMs: 8_000,
-          configuredMaxCompletionTokens: 650,
-          attempt: 1,
-          usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
-          requestId: 'must-not-persist',
-        });
-        return Promise.resolve(result());
-      }),
+      generateObject: jest
+        .fn()
+        .mockImplementation((input: GenerateStructuredObjectInput) => {
+          input.onDiagnostics?.({
+            modelRole: 'VERIFIER',
+            model: 'test/openai/gpt-oss-120b',
+            providerStatus: 200,
+            latencyMs: 42,
+            configuredTimeoutMs: 8_000,
+            configuredMaxCompletionTokens: 1_024,
+            attempt: 1,
+            usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+            requestId: 'must-not-persist',
+          });
+          return Promise.resolve(result());
+        }),
     };
 
     const verification = await new VerifierAgentUseCase(
@@ -142,28 +143,31 @@ describe('VerifierAgentUseCase', () => {
 
   it('persists safe diagnostics when verifier provider execution fails', async () => {
     const service = {
-      generateObject: jest.fn().mockImplementation((input) => {
-        input.onDiagnostics?.({
-          modelRole: 'VERIFIER',
-          model: 'test/openai/gpt-oss-120b',
-          providerStatus: 503,
-          latencyMs: 25,
-          configuredTimeoutMs: 8_000,
-          configuredMaxCompletionTokens: 650,
-          attempt: 1,
-          errorCode: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
-          providerCategory: 'TRANSIENT_PROVIDER_FAILURE',
-        });
-        return Promise.reject(new Error('provider unavailable'));
-      }),
+      generateObject: jest
+        .fn()
+        .mockImplementation((input: GenerateStructuredObjectInput) => {
+          input.onDiagnostics?.({
+            modelRole: 'VERIFIER',
+            model: 'test/openai/gpt-oss-120b',
+            providerStatus: 503,
+            latencyMs: 25,
+            configuredTimeoutMs: 8_000,
+            configuredMaxCompletionTokens: 1_024,
+            attempt: 1,
+            errorCode: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+            providerCategory: 'TRANSIENT_PROVIDER_FAILURE',
+          });
+          return Promise.reject(new Error('provider unavailable'));
+        }),
     };
 
+    const noEscalationConfig: IAiApplicationConfig = {
+      ...config,
+      boolean: jest.fn(() => false),
+    };
     const verification = await new VerifierAgentUseCase(
       service as never,
-      {
-        ...config,
-        boolean: jest.fn(() => false),
-      } as unknown as IAiApplicationConfig,
+      noEscalationConfig,
     ).execute(state({ evidenceText: 'Potential evidence.' }));
 
     expect(verification).toMatchObject({
@@ -216,7 +220,7 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject.mock.calls[0][0]).toEqual(
       expect.objectContaining({
         model: 'test/openai/gpt-oss-20b',
-        maxTokens: 650,
+        maxTokens: 1_024,
       }),
     );
     expect(service.generateObject.mock.calls[1][0]).toEqual(
@@ -260,6 +264,24 @@ describe('VerifierAgentUseCase', () => {
       providerCode: 3036,
     });
     const service = { generateObject: jest.fn().mockRejectedValue(limited) };
+
+    await expect(
+      new VerifierAgentUseCase(service as never, config).execute(
+        state({ evidenceText: 'Potential evidence.' }),
+      ),
+    ).resolves.toMatchObject({
+      passed: false,
+      diagnostics: { decisionSource: 'FAIL_CLOSED' },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not escalate deterministic completion truncation', async () => {
+    const truncated = Object.assign(
+      new Error('structured completion truncated'),
+      { code: 'STRUCTURED_COMPLETION_TRUNCATED' },
+    );
+    const service = { generateObject: jest.fn().mockRejectedValue(truncated) };
 
     await expect(
       new VerifierAgentUseCase(service as never, config).execute(

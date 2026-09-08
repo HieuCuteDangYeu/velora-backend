@@ -8,7 +8,7 @@ describe('AiApplicationConfigAdapter completion budgets', () => {
     expect(adapter.maxCompletionTokens('ROUTER')).toBe(2_048);
     expect(adapter.maxCompletionTokens('RETRIEVAL_PLANNER')).toBe(512);
     expect(adapter.maxCompletionTokens('ANSWER')).toBe(1_536);
-    expect(adapter.maxCompletionTokens('VERIFIER')).toBe(650);
+    expect(adapter.maxCompletionTokens('VERIFIER')).toBe(1_024);
     expect(adapter.maxCompletionTokens('VERIFIER_ESCALATION')).toBe(1_024);
   });
 

@@ -9,6 +9,12 @@ import type {
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  boundClaimMappings,
+  boundEvidence,
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 
 interface RawVerificationResult {
@@ -255,12 +261,15 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
+    const bounds = readRagPromptBounds(this.config);
+    const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds);
+    const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({
-      question: state.userMessage,
+      question: boundPromptText(state.userMessage, bounds.maxUserMessageChars),
       requiredEvidence: state.route?.requiredEvidence ?? [],
-      answer: state.answer ?? '',
-      proposedClaims: state.answerClaims ?? [],
-      evidence: (state.rerankedChunks ?? []).map((chunk, index) => ({
+      answer: boundPromptText(state.answer ?? '', bounds.maxAnswerChars),
+      proposedClaims,
+      evidence: boundedChunks.map((chunk, index) => ({
         evidenceId: `e${index}`,
         reelId: chunk.reelId,
         evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
@@ -329,8 +338,11 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     raw: RawVerificationResult,
     state: RagChatWorkflowState,
   ): RagVerificationResult {
+    const bounds = readRagPromptBounds(this.config);
     const allowedIds = new Set(
-      (state.rerankedChunks ?? []).map((_chunk, index) => `e${index}`),
+      boundEvidence(state.rerankedChunks ?? [], bounds).map(
+        (_chunk, index) => `e${index}`,
+      ),
     );
     const rawMappings = Array.isArray(raw.supportedClaimMappings)
       ? raw.supportedClaimMappings

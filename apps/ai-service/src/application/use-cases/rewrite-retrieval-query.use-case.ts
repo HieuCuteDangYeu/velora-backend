@@ -1,6 +1,11 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { IStructuredLlmService } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  boundPromptText,
+  boundTextItems,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawRewriteResult {
   query?: unknown;
@@ -18,6 +23,20 @@ export class RewriteRetrievalQueryUseCase {
   ) {}
 
   async execute(state: RagChatWorkflowState): Promise<string> {
+    const bounds = readRagPromptBounds(this.config);
+    const previousQueries = boundTextItems(
+      (
+        state.retrievalPlan?.queries ?? [
+          state.retrievalPlan?.rewrittenQuery,
+          state.retrievalPlan?.query,
+        ]
+      ).filter((value): value is string => Boolean(value)),
+      (value) => value,
+      (_value, text) => text,
+      3,
+      bounds.maxUserMessageChars,
+      bounds.maxClaimsTotalChars,
+    );
     try {
       const result =
         await this.structuredLlmService.generateObject<RawRewriteResult>({
@@ -29,10 +48,10 @@ export class RewriteRetrievalQueryUseCase {
             'Do not answer the user.',
           ].join(' '),
           userPrompt: [
-            `USER QUESTION:\n${state.userMessage}`,
+            `USER QUESTION:\n${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}`,
             `REQUIRED EVIDENCE:\n${state.route?.requiredEvidence.join(', ') || 'UNKNOWN'}`,
-            `PREVIOUS QUERIES:\n${(state.retrievalPlan?.queries ?? [state.retrievalPlan?.rewrittenQuery, state.retrievalPlan?.query]).filter(Boolean).join(' | ')}`,
-            `SUFFICIENCY FAILURE:\n${state.contextSufficiency?.reason ?? 'Retrieved evidence was insufficient.'}`,
+            `PREVIOUS QUERIES:\n${previousQueries.join(' | ')}`,
+            `SUFFICIENCY FAILURE:\n${boundPromptText(state.contextSufficiency?.reason ?? 'Retrieved evidence was insufficient.', bounds.maxClaimChars)}`,
             `MISSING EVIDENCE:\n${state.contextSufficiency?.missingEvidence.join(', ') || 'NONE'}`,
           ].join('\n\n'),
           jsonSchema: {
@@ -58,7 +77,10 @@ export class RewriteRetrievalQueryUseCase {
       this.logger.warn(`[RetrievalRepair] query rewrite failed: ${message}`);
     }
 
-    return state.userMessage.trim();
+    return boundPromptText(
+      state.userMessage,
+      bounds.maxUserMessageChars,
+    ).trim();
   }
 }
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';

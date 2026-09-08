@@ -1104,4 +1104,20 @@ describe('QueryRouterAgentUseCase', () => {
       expect(service.generateObject).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('bounds direct query and history inputs before routing', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(response()),
+    };
+
+    await new QueryRouterAgentUseCase(service as never, config).execute({
+      message: `question ${'x '.repeat(2_000)} query-tail`,
+      recentHistory: `history ${'y '.repeat(2_000)} history-tail`,
+    });
+
+    const request = service.generateObject.mock.calls[0][0];
+    expect(request.userPrompt.length).toBeLessThan(3_500);
+    expect(request.userPrompt).not.toContain('query-tail');
+    expect(request.userPrompt).not.toContain('history-tail');
+  });
 });

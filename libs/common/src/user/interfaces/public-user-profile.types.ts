@@ -9,5 +9,6 @@ export interface PublicUserProfile {
 }
 
 export interface RecommendedPublicUserProfile extends PublicUserProfile {
+  mutualFriendCount?: number;
   recommendation: RecommendationMetadata;
 }

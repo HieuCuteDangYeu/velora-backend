@@ -47,6 +47,17 @@ describe('SaveRagTraceUseCase', () => {
       ],
       nextDraftSource: 'INITIAL',
       finalFailureSource: 'NO_CONTEXT',
+      answerDiagnostics: [
+        {
+          modelRole: 'ANSWER',
+          model: 'test/openai/gpt-oss-120b',
+          providerStatus: 200,
+          latencyMs: 12,
+          configuredTimeoutMs: 45_000,
+          configuredMaxCompletionTokens: 1_536,
+          attempt: 1,
+        },
+      ],
       failureDiagnostics: {
         failedNode: 'queryRouterNode',
         errorName: 'RouterUnavailableError',
@@ -233,6 +244,7 @@ describe('SaveRagTraceUseCase', () => {
             failure: state.failureDiagnostics,
             citationAttempts: state.citationAttempts,
             citationDiagnostics: state.citationCoverage?.diagnostics,
+            answerCalls: state.answerDiagnostics,
             retrievalPlanActual: {
               mode: 'REEL_HYBRID',
               query: 'spoken project',

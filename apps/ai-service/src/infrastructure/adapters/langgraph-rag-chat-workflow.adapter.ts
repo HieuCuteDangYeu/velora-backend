@@ -67,6 +67,7 @@ const RagChatStateSchema = new StateSchema({
   memoryReady: z.boolean().default(false),
 
   answer: z.string().optional(),
+  answerDiagnostics: z.array(z.any()).default([]),
   verification: z.any().optional(),
   citations: z.array(z.any()).default([]),
   citationCoverage: z.any().optional(),
@@ -142,6 +143,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       recommendedReels: [],
       suggestedQueries: [],
       memoryReady: false,
+      answerDiagnostics: [],
       citations: [],
       retryCount: 0,
       retrievalRetryCount: 0,

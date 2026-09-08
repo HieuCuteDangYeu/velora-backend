@@ -221,6 +221,7 @@ export interface RagVerificationDiagnostics {
   revisedInstruction?: string;
   supportedClaimMappings?: RagSupportedClaimMapping[];
   contradictions?: string[];
+  semanticCalls?: RagStructuredCallFailureDiagnostic[];
   exactProvenance: {
     supported: boolean;
     supportingEvidenceIndexes: number[];

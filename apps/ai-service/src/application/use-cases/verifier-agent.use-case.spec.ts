@@ -105,6 +105,83 @@ describe('VerifierAgentUseCase', () => {
     );
   });
 
+  it('persists safe primary verifier call diagnostics', async () => {
+    const service = {
+      generateObject: jest.fn().mockImplementation((input) => {
+        input.onDiagnostics?.({
+          modelRole: 'VERIFIER',
+          model: 'test/openai/gpt-oss-120b',
+          providerStatus: 200,
+          latencyMs: 42,
+          configuredTimeoutMs: 8_000,
+          configuredMaxCompletionTokens: 650,
+          attempt: 1,
+          usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+          requestId: 'must-not-persist',
+        });
+        return Promise.resolve(result());
+      }),
+    };
+
+    const verification = await new VerifierAgentUseCase(
+      service as never,
+      config,
+    ).execute(state({ evidenceText: 'The zorb is linked to the quasar.' }));
+
+    expect(verification.diagnostics?.semanticCalls).toEqual([
+      expect.objectContaining({
+        modelRole: 'VERIFIER',
+        model: 'test/openai/gpt-oss-120b',
+        providerStatus: 200,
+        latencyMs: 42,
+        usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 },
+      }),
+    ]);
+    expect(JSON.stringify(verification)).not.toContain('must-not-persist');
+  });
+
+  it('persists safe diagnostics when verifier provider execution fails', async () => {
+    const service = {
+      generateObject: jest.fn().mockImplementation((input) => {
+        input.onDiagnostics?.({
+          modelRole: 'VERIFIER',
+          model: 'test/openai/gpt-oss-120b',
+          providerStatus: 503,
+          latencyMs: 25,
+          configuredTimeoutMs: 8_000,
+          configuredMaxCompletionTokens: 650,
+          attempt: 1,
+          errorCode: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+          providerCategory: 'TRANSIENT_PROVIDER_FAILURE',
+        });
+        return Promise.reject(new Error('provider unavailable'));
+      }),
+    };
+
+    const verification = await new VerifierAgentUseCase(
+      service as never,
+      {
+        ...config,
+        boolean: jest.fn(() => false),
+      } as unknown as IAiApplicationConfig,
+    ).execute(state({ evidenceText: 'Potential evidence.' }));
+
+    expect(verification).toMatchObject({
+      passed: false,
+      diagnostics: {
+        providerStatus: 'ERROR',
+        decisionSource: 'FAIL_CLOSED',
+        semanticCalls: [
+          expect.objectContaining({
+            providerStatus: 503,
+            errorCode: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+            providerCategory: 'TRANSIENT_PROVIDER_FAILURE',
+          }),
+        ],
+      },
+    });
+  });
+
   it('escalates exactly once after a primary semantic rejection', async () => {
     const service = {
       generateObject: jest

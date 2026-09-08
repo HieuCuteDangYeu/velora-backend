@@ -3,10 +3,12 @@ import type {
   RagChatWorkflowState,
   RagVerificationResult,
   RagSupportedClaimMapping,
+  RagStructuredCallFailureDiagnostic,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type {
   IStructuredLlmService,
   StructuredLlmJsonSchema,
+  StructuredLlmCallDiagnostics,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
@@ -71,6 +73,7 @@ export class VerifierAgentUseCase {
     try {
       primary = await this.verifyWithRole(state, 'VERIFIER');
     } catch (primaryError: unknown) {
+      const primarySemanticCalls = this.semanticCallsFromError(primaryError);
       if (escalationEnabled && this.isTransientProviderFailure(primaryError)) {
         try {
           const escalated = await this.verifyWithRole(
@@ -83,12 +86,29 @@ export class VerifierAgentUseCase {
             escalated: true,
             escalationReason: 'PRIMARY_PROVIDER_FAILURE',
             state,
+            semanticCalls: [
+              ...primarySemanticCalls,
+              ...(escalated.diagnostics?.semanticCalls ?? []),
+            ],
           });
         } catch (escalationError: unknown) {
-          return this.providerFailureResult(escalationError, state);
+          return this.providerFailureResult(
+            escalationError,
+            state,
+            'VERIFIER_ESCALATION',
+            [
+              ...primarySemanticCalls,
+              ...this.semanticCallsFromError(escalationError),
+            ],
+          );
         }
       }
-      return this.providerFailureResult(primaryError, state);
+      return this.providerFailureResult(
+        primaryError,
+        state,
+        'VERIFIER',
+        primarySemanticCalls,
+      );
     }
 
     try {
@@ -115,7 +135,12 @@ export class VerifierAgentUseCase {
         state,
       });
     } catch (error: unknown) {
-      return this.providerFailureResult(error, state);
+      return this.providerFailureResult(
+        error,
+        state,
+        'VERIFIER',
+        this.semanticCallsFromError(error),
+      );
     }
   }
 
@@ -133,6 +158,8 @@ export class VerifierAgentUseCase {
   private providerFailureResult(
     error: unknown,
     state: RagChatWorkflowState,
+    role: 'VERIFIER' | 'VERIFIER_ESCALATION',
+    semanticCalls: RagStructuredCallFailureDiagnostic[] = [],
   ): RagVerificationResult {
     const message = error instanceof Error ? error.message : String(error);
     this.logger.warn(
@@ -158,6 +185,9 @@ export class VerifierAgentUseCase {
           issues: [],
           requiresRevision: false,
           escalated: false,
+          modelRole: role,
+          model: this.config.model(role),
+          semanticCalls,
           exactProvenance,
         },
       };
@@ -178,6 +208,9 @@ export class VerifierAgentUseCase {
         issues: ['Required semantic answer verification was unavailable.'],
         requiresRevision: false,
         escalated: false,
+        modelRole: role,
+        model: this.config.model(role),
+        semanticCalls,
         exactProvenance,
       },
     };
@@ -187,18 +220,62 @@ export class VerifierAgentUseCase {
     state: RagChatWorkflowState,
     role: 'VERIFIER' | 'VERIFIER_ESCALATION',
   ): Promise<RagVerificationResult> {
-    const raw =
-      await this.structuredLlmService.generateObject<RawVerificationResult>({
-        systemPrompt: this.buildSystemPrompt(),
-        userPrompt: this.buildUserPrompt(state),
-        jsonSchema: this.getJsonSchema(),
-        maxTokens: this.config.maxCompletionTokens(role),
-        modelRole: role,
-        temperature: 0,
-        model: this.config.model(role),
-        timeoutMs: this.config.timeoutMs(role),
-      });
-    return this.normalize(raw, state);
+    const semanticCalls: StructuredLlmCallDiagnostics[] = [];
+    try {
+      const raw =
+        await this.structuredLlmService.generateObject<RawVerificationResult>({
+          systemPrompt: this.buildSystemPrompt(),
+          userPrompt: this.buildUserPrompt(state),
+          jsonSchema: this.getJsonSchema(),
+          maxTokens: this.config.maxCompletionTokens(role),
+          modelRole: role,
+          temperature: 0,
+          model: this.config.model(role),
+          timeoutMs: this.config.timeoutMs(role),
+          onDiagnostics: (call) => semanticCalls.push(call),
+        });
+      const result = this.normalize(raw, state);
+      return {
+        ...result,
+        diagnostics: {
+          providerStatus: 'SUCCESS',
+          decisionSource:
+            role === 'VERIFIER' ? 'LLM_PRIMARY' : 'LLM_ESCALATION',
+          modelRole: role,
+          model: this.config.model(role),
+          providerPassed: result.passed,
+          finalPassed: result.passed,
+          confidence: result.confidence,
+          issues: result.issues,
+          requiresRevision: result.requiresRevision,
+          supportedClaimMappings: result.supportedClaimMappings ?? [],
+          contradictions: result.contradictions ?? [],
+          semanticCalls: semanticCalls.map(
+            ({ requestId: _requestId, ...call }) => call,
+          ),
+          exactProvenance: this.exactProvenance(state),
+        },
+      };
+    } catch (error: unknown) {
+      if (error && typeof error === 'object') {
+        Object.assign(error, {
+          semanticCalls: semanticCalls.map(
+            ({ requestId: _requestId, ...call }) => call,
+          ),
+        });
+      }
+      throw error;
+    }
+  }
+
+  private semanticCallsFromError(
+    error: unknown,
+  ): RagStructuredCallFailureDiagnostic[] {
+    if (!error || typeof error !== 'object') return [];
+    const calls = (error as { semanticCalls?: unknown }).semanticCalls;
+    return Array.isArray(calls)
+      ? (calls as RagStructuredCallFailureDiagnostic[])
+      : [];
   }
 
   private escalationReason(
@@ -226,6 +303,7 @@ export class VerifierAgentUseCase {
       escalated: boolean;
       escalationReason?: string;
       state: RagChatWorkflowState;
+      semanticCalls?: RagStructuredCallFailureDiagnostic[];
     },
   ): RagVerificationResult {
     return {
@@ -245,6 +323,8 @@ export class VerifierAgentUseCase {
         revisedInstruction: result.revisedInstruction,
         supportedClaimMappings: result.supportedClaimMappings ?? [],
         contradictions: result.contradictions ?? [],
+        semanticCalls:
+          input.semanticCalls ?? result.diagnostics?.semanticCalls ?? [],
         exactProvenance: this.exactProvenance(input.state),
       },
     };

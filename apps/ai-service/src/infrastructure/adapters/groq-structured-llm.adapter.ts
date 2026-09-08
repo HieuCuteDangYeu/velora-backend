@@ -254,7 +254,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
             type: 'json_schema',
             json_schema: {
               name: this.schemaName(input.schemaVersion),
-              strict: this.boolean('GROQ_STRUCTURED_STRICT', false),
+              strict: this.structuredStrict(input.modelRole),
               schema: input.jsonSchema,
             },
           },
@@ -587,6 +587,18 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     if (value === 'true') return true;
     if (value === 'false') return false;
     return fallback;
+  }
+
+  private structuredStrict(modelRole?: string): boolean {
+    if (modelRole === 'CITATION_ATTRIBUTION') {
+      const citationOverride = this.config
+        .get<string>('GROQ_STRUCTURED_STRICT_CITATION_ATTRIBUTION')
+        ?.trim()
+        .toLowerCase();
+      if (citationOverride === 'true') return true;
+      if (citationOverride === 'false') return false;
+    }
+    return this.boolean('GROQ_STRUCTURED_STRICT', false);
   }
 
   private required(key: string): string {

@@ -103,6 +103,7 @@
     "eval:rag": "node scripts/ops/run-rag-eval.cjs offline",
     "eval:rag:offline": "node scripts/ops/run-rag-eval.cjs offline",
     "eval:rag:live": "node scripts/ops/run-rag-eval.cjs live",
+    "eval:rag:trace-export": "node scripts/ops/export-rag-traces.cjs",
     "eval:rag:report": "node scripts/ops/run-rag-eval.cjs report",
     "eval:rag:compare": "node scripts/ops/run-rag-eval.cjs compare",
     "eval:rag:persist": "node scripts/ops/persist-rag-eval.cjs",

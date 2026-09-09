@@ -42,6 +42,40 @@ wait_for_prometheus_target() {
   return 1
 }
 
+wait_for_grafana_health() {
+  local attempt response database_status
+
+  for ((attempt = 1; attempt <= TARGET_RETRY_ATTEMPTS; attempt += 1)); do
+    response="$(
+      curl --fail --silent --show-error \
+        --connect-timeout 3 \
+        --max-time 5 \
+        "${GRAFANA_URL}/api/health" 2>/dev/null || true
+    )"
+
+    database_status="unknown"
+    if [ -n "$response" ]; then
+      database_status="$(jq -r '.database // "unknown"' <<<"$response" 2>/dev/null || printf 'unknown')"
+    fi
+
+    if [ "$database_status" = "ok" ]; then
+      echo "      Grafana is healthy"
+      return 0
+    fi
+
+    if (( attempt < TARGET_RETRY_ATTEMPTS )); then
+      echo "      Grafana is not ready yet (${database_status}); retrying in ${TARGET_RETRY_DELAY_SECONDS}s (${attempt}/${TARGET_RETRY_ATTEMPTS})..."
+      sleep "$TARGET_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  echo "      Grafana did not become healthy after ${TARGET_RETRY_ATTEMPTS} attempts" >&2
+  if [ -n "$response" ]; then
+    jq . <<<"$response" >&2 2>/dev/null || printf '%s\n' "$response" >&2
+  fi
+  return 1
+}
+
 require_command curl
 require_command jq
 
@@ -62,14 +96,7 @@ echo "[5/6] Checking host node-exporter scrape target..."
 wait_for_prometheus_target "node-exporter" "node-exporter"
 
 echo "[6/6] Checking Grafana health..."
-grafana_response="$(curl --fail --silent --show-error "${GRAFANA_URL}/api/health")"
-database_status="$(jq -r '.database // "unknown"' <<<"$grafana_response")"
-if [ "$database_status" != "ok" ]; then
-  echo "      Grafana database health is ${database_status}" >&2
-  jq . <<<"$grafana_response" >&2
-  exit 1
-fi
-echo "      Grafana is healthy"
+wait_for_grafana_health
 
 echo
 printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\nGrafana:              %s\n' \

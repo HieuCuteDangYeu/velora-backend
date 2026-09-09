@@ -5,6 +5,7 @@ import {
   type CreateMessageResult,
   IChatRepository,
 } from '../../domain/interfaces/chat.repository.interface';
+import type { IConversationMetrics } from '../ports/conversation-metrics.port';
 
 @Injectable()
 export class SendMessageUseCase {
@@ -12,12 +13,15 @@ export class SendMessageUseCase {
 
   constructor(
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
+    @Inject('IConversationMetrics')
+    private readonly metrics: IConversationMetrics,
   ) {}
 
   async execute(
     dto: CreateMessageDto,
     senderId: string,
   ): Promise<CreateMessageResult> {
+    const startedAt = process.hrtime.bigint();
     const newMessage = new Message({
       id: '',
       conversationId: dto.conversationId,
@@ -31,15 +35,30 @@ export class SendMessageUseCase {
       replyToId: dto.replyToId,
     });
 
-    const result =
-      await this.chatRepository.createMessageIdempotently(newMessage);
+    try {
+      const result =
+        await this.chatRepository.createMessageIdempotently(newMessage);
 
-    this.logger.debug(
-      result.created
-        ? `Message ${result.message.id} saved to conversation ${dto.conversationId}`
-        : `Message ${result.message.id} returned for idempotent retry in conversation ${dto.conversationId}`,
-    );
+      this.metrics.recordSend(
+        'success',
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+        result.created,
+      );
 
-    return result;
+      this.logger.debug(
+        result.created
+          ? `Message ${result.message.id} saved to conversation ${dto.conversationId}`
+          : `Message ${result.message.id} returned for idempotent retry in conversation ${dto.conversationId}`,
+      );
+
+      return result;
+    } catch (error) {
+      this.metrics.recordSend(
+        'error',
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000_000,
+        false,
+      );
+      throw error;
+    }
   }
 }

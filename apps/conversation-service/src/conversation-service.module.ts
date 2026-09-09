@@ -28,7 +28,9 @@ import { UserServiceAdapter } from 'apps/conversation-service/src/infrastructure
 import { ConversationMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/conversation.controller';
 import { GroupMembersMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/group-members.controller';
 import { KeyMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/key.controller';
+import { ConversationMetricsController } from 'apps/conversation-service/src/infrastructure/controllers/metrics.controller';
 import { ReactionDetailsMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/reaction-details.controller';
+import { ConversationRuntimeMetricsService } from 'apps/conversation-service/src/infrastructure/metrics/conversation-runtime-metrics.service';
 import { PrismaService } from 'apps/conversation-service/src/infrastructure/prisma/prisma.service';
 import { AesEncryptionRepository } from 'apps/conversation-service/src/infrastructure/repositories/aes-encryption.repository';
 import { PrismaConversationChatRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-conversation-chat.repository';
@@ -112,10 +114,12 @@ import { ChatGateway } from './infrastructure/gateways/chat.gateway';
     GroupMembersMicroserviceController,
     ReactionDetailsMicroserviceController,
     KeyMicroserviceController,
+    ConversationMetricsController,
   ],
   providers: [
     PrismaService,
     ChatGateway,
+    ConversationRuntimeMetricsService,
 
     // --- Use Cases / application services ---
     SendMessageUseCase,
@@ -166,6 +170,10 @@ import { ChatGateway } from './infrastructure/gateways/chat.gateway';
     {
       provide: 'IConversationRealtimePublisher',
       useExisting: ConversationRealtimePublisherAdapter,
+    },
+    {
+      provide: 'IConversationMetrics',
+      useExisting: ConversationRuntimeMetricsService,
     },
     {
       provide: 'IEncryptionRepository',

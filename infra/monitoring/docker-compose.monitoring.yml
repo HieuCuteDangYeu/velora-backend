@@ -26,6 +26,17 @@ services:
     networks:
       - microservices-net
 
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    mem_limit: ${NODE_EXPORTER_MEMORY_LIMIT:-64m}
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro
+    networks:
+      - microservices-net
+
   loki:
     image: grafana/loki:latest
     restart: unless-stopped

@@ -15,24 +15,35 @@ require_command() {
 require_command curl
 require_command jq
 
+check_prometheus_target() {
+  local job="$1"
+  local response
+  local value
+
+  response="$(
+    curl --fail --silent --show-error --get \
+      --data-urlencode "query=up{job=\"${job}\"}" \
+      "${PROMETHEUS_URL}/api/v1/query"
+  )"
+  value="$(jq -r '.data.result[0].value[1] // "0"' <<<"$response")"
+
+  if [ "$value" != "1" ]; then
+    echo "      ${job} target is not UP" >&2
+    jq '.data.result' <<<"$response" >&2
+    exit 1
+  fi
+
+  echo "      ${job} target is UP"
+}
+
 echo "[1/4] Checking Prometheus readiness..."
 curl --fail --silent --show-error "${PROMETHEUS_URL}/-/ready" >/dev/null
 echo "      Prometheus is ready"
 
-echo "[2/4] Checking monitoring-service scrape target..."
-target_response="$(
-  curl --fail --silent --show-error --get \
-    --data-urlencode 'query=up{job="monitoring-service"}' \
-    "${PROMETHEUS_URL}/api/v1/query"
-)"
-
-target_value="$(jq -r '.data.result[0].value[1] // "0"' <<<"$target_response")"
-if [ "$target_value" != "1" ]; then
-  echo "      monitoring-service target is not UP" >&2
-  jq '.data.result' <<<"$target_response" >&2
-  exit 1
-fi
-echo "      monitoring-service target is UP"
+echo "[2/4] Checking Prometheus scrape targets..."
+for job in node-exporter monitoring-service conversation-service call-service; do
+  check_prometheus_target "$job"
+done
 
 echo "[3/4] Checking Loki readiness..."
 curl --fail --silent --show-error "${LOKI_URL}/ready" >/dev/null

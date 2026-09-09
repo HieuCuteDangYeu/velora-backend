@@ -6,6 +6,7 @@ existing application topology stays unchanged.
 
 Prometheus stores metrics, Loki stores Docker service logs, Grafana can inspect both,
 and Grafana Alloy discovers Compose containers and forwards their stdout/stderr to Loki.
+Node Exporter supplies host CPU, memory, swap, filesystem, load, and uptime metrics.
 Promtail is intentionally not used because it reached end of life in 2026.
 
 ## Start
@@ -21,13 +22,14 @@ export GRAFANA_ADMIN_PASSWORD='change-me'
 The 8 GB self-host profile applies conservative memory caps by default:
 
 ```text
-Prometheus: 512 MiB
-Loki:       384 MiB
-Alloy:      192 MiB
-Grafana:    256 MiB
+Prometheus:    512 MiB
+Node Exporter:  64 MiB
+Loki:          384 MiB
+Alloy:         192 MiB
+Grafana:       256 MiB
 ```
 
-Override them only after measuring the host:
+Override the monitoring components only after measuring the host:
 
 ```bash
 export PROMETHEUS_MEMORY_LIMIT=768m
@@ -36,13 +38,16 @@ export ALLOY_MEMORY_LIMIT=256m
 export GRAFANA_MEMORY_LIMIT=384m
 ```
 
-Then start the existing stack together with the monitoring overlay:
+Start the application services together with the monitoring overlay. Conversation and
+Call now expose lightweight `/metrics` endpoints on their existing HTTP ports; no
+extra metrics process is created inside either service.
 
 ```bash
 docker compose \
   -f docker-compose.yml \
   -f infra/monitoring/docker-compose.monitoring.yml \
-  up -d monitoring-service prometheus loki alloy grafana
+  up -d conversation-service call-service monitoring-service \
+    node-exporter prometheus loki alloy grafana
 ```
 
 Alloy reads Docker metadata and stdout/stderr through the Docker socket. Keep Alloy
@@ -50,7 +55,8 @@ internal to the host and do not expose its control plane publicly.
 
 ## Verify
 
-Run the end-to-end smoke check from the repository root:
+Run the end-to-end smoke check from the repository root after the application services
+are healthy:
 
 ```bash
 bash scripts/ops/check-monitoring-stack.sh
@@ -59,19 +65,18 @@ bash scripts/ops/check-monitoring-stack.sh
 It verifies:
 
 1. Prometheus readiness.
-2. `up{job="monitoring-service"} == 1`.
+2. Node Exporter, monitoring-service, conversation-service, and call-service scrape targets.
 3. Loki readiness.
 4. Grafana database health.
 
-For exporter-level inspection, the application endpoint remains internal to the
-Docker network:
+For exporter-level inspection, the application endpoints remain internal to the Docker
+network. Prometheus scrapes:
 
-```bash
-docker compose \
-  -f docker-compose.yml \
-  -f infra/monitoring/docker-compose.monitoring.yml \
-  exec monitoring-service \
-  node -e "require('http').get('http://127.0.0.1:3016/metrics',r=>{r.pipe(process.stdout);r.on('end',()=>process.exit(r.statusCode===200?0:1))}).on('error',()=>process.exit(1))"
+```text
+node-exporter:9100/metrics
+monitoring-service:3016/metrics
+conversation-service:3005/metrics
+call-service:3007/metrics
 ```
 
 Prometheus is bound to localhost only at `http://127.0.0.1:9090`.
@@ -104,6 +109,17 @@ Metric queries use a server-side whitelist and bounded time range; clients canno
 submit arbitrary PromQL. Log queries are also bounded to known Velora Compose
 services, a maximum 24-hour range, a maximum 500 returned lines, and an optional
 200-character text search. Clients cannot submit arbitrary LogQL.
+
+Host metrics come from Node Exporter. Monitoring, Conversation, and Call process
+metrics are emitted directly by their existing Node.js processes using the Prometheus
+text format, so the runtime overhead stays small. Conversation additionally records
+message persistence rate, send attempt result, and send persistence latency at the
+`SendMessageUseCase` boundary.
+
+A rejected `send_message` can happen in the WebSocket gateway before that use case
+(for example an invalid client message id or a membership rejection). That rejection
+rate is deliberately returned as unavailable until the gateway itself is instrumented;
+the monitoring API does not manufacture a zero value for a metric that is not measured.
 
 ## Retention and resource scope
 

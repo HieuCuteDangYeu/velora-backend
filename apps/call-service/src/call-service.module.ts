@@ -1,29 +1,30 @@
-import { Module } from '@nestjs/common';
-import { ClientsModule, Transport } from '@nestjs/microservices';
-import { ConfigModule, ConfigService } from '@nestjs/config';
 import { CallTelemetryTokenService } from '@common/calls/call-telemetry-token.service';
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ClientsModule, Transport } from '@nestjs/microservices';
 import Redis from 'ioredis';
-
+import { AnswerCallUseCase } from './application/use-cases/answer-call.use-case';
+import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
+import { ConnectTransportUseCase } from './application/use-cases/connect-transport.use-case';
+import { ConsumeUseCase } from './application/use-cases/consume.use-case';
+import { CreateTransportUseCase } from './application/use-cases/create-transport.use-case';
 import { InitiateCallUseCase } from './application/use-cases/initiate-call.use-case';
 import { JoinCallUseCase } from './application/use-cases/join-call.use-case';
-import { CreateTransportUseCase } from './application/use-cases/create-transport.use-case';
-import { ConnectTransportUseCase } from './application/use-cases/connect-transport.use-case';
-import { ProduceUseCase } from './application/use-cases/produce.use-case';
-import { ConsumeUseCase } from './application/use-cases/consume.use-case';
 import { LeaveCallUseCase } from './application/use-cases/leave-call.use-case';
+import { ProduceUseCase } from './application/use-cases/produce.use-case';
 import { RejectCallUseCase } from './application/use-cases/reject-call.use-case';
-import { AnswerCallUseCase } from './application/use-cases/answer-call.use-case';
-import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
 import { RestartIceUseCase } from './application/use-cases/restart-ice.use-case';
-import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
-import { CallGateway } from './infrastructure/gateways/call.gateway';
-import { CallStateController } from './infrastructure/controllers/call-state.controller';
-import { RedisCallStateRepository } from './infrastructure/repositories/redis-call-state.repository';
-import { RedisCallSessionRepository } from './infrastructure/repositories/redis-call-session.repository';
-import { RabbitCallEventPublisher } from './infrastructure/publishers/rabbit-call-event.publisher';
-import { MediasoupCallMediaEngine } from './infrastructure/engines/mediasoup-call.engine';
-import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.subscriber';
+import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
 import { NotificationServiceAdapter } from './infrastructure/adapters/notification-service.adapter';
+import { CallMetricsController } from './infrastructure/controllers/metrics.controller';
+import { CallStateController } from './infrastructure/controllers/call-state.controller';
+import { MediasoupCallMediaEngine } from './infrastructure/engines/mediasoup-call.engine';
+import { CallGateway } from './infrastructure/gateways/call.gateway';
+import { CallRuntimeMetricsService } from './infrastructure/metrics/call-runtime-metrics.service';
+import { RabbitCallEventPublisher } from './infrastructure/publishers/rabbit-call-event.publisher';
+import { RedisCallSessionRepository } from './infrastructure/repositories/redis-call-session.repository';
+import { RedisCallStateRepository } from './infrastructure/repositories/redis-call-state.repository';
+import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.subscriber';
 
 @Module({
   imports: [
@@ -76,9 +77,10 @@ import { NotificationServiceAdapter } from './infrastructure/adapters/notificati
       },
     ]),
   ],
-  controllers: [CallEventsSubscriber, CallStateController],
+  controllers: [CallEventsSubscriber, CallStateController, CallMetricsController],
   providers: [
     CallGateway,
+    CallRuntimeMetricsService,
     InitiateCallUseCase,
     JoinCallUseCase,
     CreateTransportUseCase,

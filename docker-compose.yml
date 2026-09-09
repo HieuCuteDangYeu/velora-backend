@@ -1,6 +1,6 @@
 services:
   api-gateway:
-    image: ${DOCKERHUB_USERNAME}/api-gateway:latest
+    image: ${DOCKERHUB_USERNAME}/api-gateway:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/api-gateway/Dockerfile
@@ -28,7 +28,7 @@ services:
       - microservices-net
 
   user-service:
-    image: ${DOCKERHUB_USERNAME}/user-service:latest
+    image: ${DOCKERHUB_USERNAME}/user-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/user-service/Dockerfile
@@ -44,7 +44,7 @@ services:
       - microservices-net
 
   friend-service:
-    image: ${DOCKERHUB_USERNAME}/friend-service:latest
+    image: ${DOCKERHUB_USERNAME}/friend-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/friend-service/Dockerfile
@@ -60,7 +60,7 @@ services:
       - microservices-net
 
   auth-service:
-    image: ${DOCKERHUB_USERNAME}/auth-service:latest
+    image: ${DOCKERHUB_USERNAME}/auth-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/auth-service/Dockerfile
@@ -76,7 +76,7 @@ services:
       - microservices-net
 
   media-service:
-    image: ${DOCKERHUB_USERNAME}/media-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/media-service/Dockerfile
@@ -92,7 +92,7 @@ services:
       - microservices-net
 
   media-processing-service:
-    image: ${DOCKERHUB_USERNAME}/media-processing-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-processing-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/media-processing-service/Dockerfile
@@ -109,7 +109,7 @@ services:
       - microservices-net
 
   media-processing-long-service:
-    image: ${DOCKERHUB_USERNAME}/media-processing-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-processing-service:${VELORA_IMAGE_TAG:-latest}
     restart: always
     env_file:
       - .env
@@ -123,7 +123,7 @@ services:
       - microservices-net
 
   reel-indexing-service:
-    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:latest
+    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/reel-indexing-service/Dockerfile
@@ -140,7 +140,7 @@ services:
       - microservices-net
 
   reel-indexing-long-service:
-    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:latest
+    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:${VELORA_IMAGE_TAG:-latest}
     restart: always
     env_file:
       - .env
@@ -154,7 +154,7 @@ services:
       - microservices-net
 
   content-service:
-    image: ${DOCKERHUB_USERNAME}/content-service:latest
+    image: ${DOCKERHUB_USERNAME}/content-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/content-service/Dockerfile
@@ -170,7 +170,7 @@ services:
       - microservices-net
 
   payment-service:
-    image: ${DOCKERHUB_USERNAME}/payment-service:latest
+    image: ${DOCKERHUB_USERNAME}/payment-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/payment-service/Dockerfile
@@ -188,7 +188,7 @@ services:
       - microservices-net
 
   mail-service:
-    image: ${DOCKERHUB_USERNAME}/mail-service:latest
+    image: ${DOCKERHUB_USERNAME}/mail-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/mail-service/Dockerfile
@@ -202,7 +202,7 @@ services:
       - microservices-net
 
   conversation-service:
-    image: ${DOCKERHUB_USERNAME}/conversation-service:latest
+    image: ${DOCKERHUB_USERNAME}/conversation-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/conversation-service/Dockerfile
@@ -220,7 +220,7 @@ services:
       - microservices-net
 
   call-service:
-    image: ${DOCKERHUB_USERNAME}/call-service:latest
+    image: ${DOCKERHUB_USERNAME}/call-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/call-service/Dockerfile
@@ -238,7 +238,7 @@ services:
       - microservices-net
 
   monitoring-service:
-    image: ${DOCKERHUB_USERNAME}/monitoring-service:latest
+    image: ${DOCKERHUB_USERNAME}/monitoring-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/monitoring-service/Dockerfile
@@ -316,7 +316,7 @@ services:
       - microservices-net
 
   notification-service:
-    image: ${DOCKERHUB_USERNAME}/notification-service:latest
+    image: ${DOCKERHUB_USERNAME}/notification-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/notification-service/Dockerfile
@@ -337,7 +337,7 @@ services:
       - microservices-net
 
   ai-service:
-    image: ${DOCKERHUB_USERNAME}/ai-service:latest
+    image: ${DOCKERHUB_USERNAME}/ai-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/ai-service/Dockerfile

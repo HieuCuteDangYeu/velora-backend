@@ -796,6 +796,12 @@ plan_from_changed_files() {
         add_unique grafana INFRA_RECONCILE_SERVICES
         ;;
 
+      infra/monitoring/alloy/*|infra/monitoring/loki/*|infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)
+        # Loki/Alloy are deployed through the optional monitoring overlay, and
+        # the smoke-check script changes verification only. Neither changes a
+        # Velora application image or requires application reconciliation.
+        ;;
+
       docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml)
         # Service-level Compose differences are handled by compare_compose_models.
         ;;

@@ -67,6 +67,28 @@ describe('BuildShortEvidenceChunksUseCase', () => {
     );
   });
 
+  it('retains a final post-pause tail smaller than the overlap', () => {
+    const source = [
+      segment(
+        0,
+        4,
+        'one two three four five six seven eight nine ten eleven twelve.',
+        'a',
+      ),
+      segment(6, 7, 'thirteen.', 'b'),
+    ];
+
+    const chunks = makeBuilder(baseConfig).execute(source);
+
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toMatchObject({
+      evidenceText:
+        'one two three four five six seven eight nine ten eleven twelve. thirteen.',
+      sourceSegmentIds: ['a', 'b'],
+      endTime: 7,
+    });
+  });
+
   it('removes only real leading overlap when merging a normal overlapped tail', () => {
     const source = [
       segment(0, 1, 'one two three four five.', 'a'),

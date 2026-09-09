@@ -42,7 +42,7 @@ loki.source.docker "velora" {
 }
 
 loki.process "velora" {
-  stage.docker {}
+  stage.decolorize {}
   forward_to = [loki.write.local.receiver]
 }
 

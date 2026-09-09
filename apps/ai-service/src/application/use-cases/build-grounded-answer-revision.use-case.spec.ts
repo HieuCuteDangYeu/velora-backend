@@ -91,6 +91,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       answer: fixture.answer,
       evidenceIds: fixture.evidenceIds,
       modelRole: 'ANSWER_REVISION',
+      diagnostics: [],
     });
   });
 

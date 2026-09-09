@@ -148,76 +148,155 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
 
     const timeoutMs = this.resolveTimeout(input.timeoutMs);
     const maxTokens = input.maxTokens ?? 500;
-    const startedAt = Date.now();
-    const state: CallState = { providerStatus: 'NETWORK_ERROR' };
+    const deadline = Date.now() + timeoutMs;
+    const maxAttempts = input.modelRole === 'ROUTER' ? 1 : 2;
 
-    try {
-      return await this.request<T>(input, model, timeoutMs, maxTokens, state);
-    } catch (error: unknown) {
-      state.errorCode =
-        error && typeof error === 'object' && 'code' in error
-          ? String(error.code)
-          : 'STRUCTURED_COMPLETION_UNKNOWN_ERROR';
-      if (error instanceof GroqStructuredCompletionTimeoutError) {
-        state.providerStatus = 'TIMEOUT';
-        state.transient = true;
-        state.providerCategory = 'TRANSIENT_PROVIDER_FAILURE';
-      }
-      if (error instanceof GroqStructuredCompletionProviderError) {
-        state.providerCode = error.providerCode;
-        state.retryAfterMs = error.retryAfterMs;
-        state.transient = error.transient;
-        state.providerCategory = error.providerCategory;
-      }
-      if (error instanceof GroqStructuredCompletionSchemaError) {
-        state.schemaPath = error.path;
-        state.schemaConstraint = error.constraint;
-        state.schemaVersion = error.schemaVersion;
-        state.expectedType = error.expectedType;
-        state.actualJsonType = error.actualJsonType;
-      }
-      throw error;
-    } finally {
-      const diagnostics = {
-        modelRole: input.modelRole,
-        model,
-        providerStatus: state.providerStatus,
-        latencyMs: Date.now() - startedAt,
-        configuredTimeoutMs: timeoutMs,
-        configuredMaxCompletionTokens: maxTokens,
-        finishReason: state.finishReason,
-        endpointContract: 'CHAT_JSON_SCHEMA',
-        responseContentType: state.responseContentType,
-        contentPresent: state.contentPresent,
-        toolCallsPresent: false,
-        attempt: input.attempt ?? 1,
-        usage: state.usage
-          ? {
-              inputTokens: state.usage.prompt_tokens,
-              outputTokens: state.usage.completion_tokens,
-              totalTokens: state.usage.total_tokens,
-              reasoningTokens: this.reasoningTokens(state.usage),
-            }
-          : undefined,
-        errorCode: state.errorCode,
-        providerCode: state.providerCode,
-        providerCategory: state.providerCategory,
-        retryAfterMs: state.retryAfterMs,
-        rateLimit: state.rateLimit,
-        transient: state.transient,
-        schemaPath: state.schemaPath,
-        schemaConstraint: state.schemaConstraint,
-        schemaVersion: state.schemaVersion ?? input.schemaVersion,
-        expectedType: state.expectedType,
-        actualJsonType: state.actualJsonType,
-      };
-      this.logger.debug(`[GroqStructuredCall] ${JSON.stringify(diagnostics)}`);
+    for (let retry = 0; retry < maxAttempts; retry += 1) {
+      const attempt = (input.attempt ?? 1) + retry;
+      const state: CallState = { providerStatus: 'NETWORK_ERROR' };
+      const startedAt = Date.now();
+      let diagnosticsEmitted = false;
+
       try {
-        input.onDiagnostics?.(diagnostics);
-      } catch {
-        this.logger.warn('Groq structured diagnostics callback failed');
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0)
+          throw new GroqStructuredCompletionTimeoutError(model, timeoutMs);
+        return await this.request<T>(
+          input,
+          model,
+          Math.max(1, Math.min(timeoutMs, remainingMs)),
+          maxTokens,
+          state,
+        );
+      } catch (error: unknown) {
+        this.captureErrorState(state, error);
+        this.emitDiagnostics(
+          input,
+          model,
+          timeoutMs,
+          maxTokens,
+          attempt,
+          startedAt,
+          state,
+        );
+        diagnosticsEmitted = true;
+
+        if (
+          !this.shouldRetry(error, input.modelRole) ||
+          retry + 1 >= maxAttempts
+        )
+          throw error;
+
+        const delayMs = this.retryDelayMs(error);
+        if (Date.now() + delayMs >= deadline) throw error;
+        if (delayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+      } finally {
+        if (!diagnosticsEmitted)
+          this.emitDiagnostics(
+            input,
+            model,
+            timeoutMs,
+            maxTokens,
+            attempt,
+            startedAt,
+            state,
+          );
       }
     }
+
+    throw new Error('Structured completion exhausted its bounded attempts');
+  }
+
+  private captureErrorState(state: CallState, error: unknown): void {
+    state.errorCode =
+      error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : 'STRUCTURED_COMPLETION_UNKNOWN_ERROR';
+    if (error instanceof GroqStructuredCompletionTimeoutError) {
+      state.providerStatus = 'TIMEOUT';
+      state.transient = true;
+      state.providerCategory = 'TRANSIENT_PROVIDER_FAILURE';
+    }
+    if (error instanceof GroqStructuredCompletionProviderError) {
+      state.providerCode = error.providerCode;
+      state.retryAfterMs = error.retryAfterMs;
+      state.transient = error.transient;
+      state.providerCategory = error.providerCategory;
+    }
+    if (error instanceof GroqStructuredCompletionSchemaError) {
+      state.schemaPath = error.path;
+      state.schemaConstraint = error.constraint;
+      state.schemaVersion = error.schemaVersion;
+      state.expectedType = error.expectedType;
+      state.actualJsonType = error.actualJsonType;
+    }
+  }
+
+  private emitDiagnostics(
+    input: GenerateStructuredObjectInput,
+    model: string,
+    timeoutMs: number,
+    maxTokens: number,
+    attempt: number,
+    startedAt: number,
+    state: CallState,
+  ): void {
+    const diagnostics = {
+      modelRole: input.modelRole,
+      model,
+      providerStatus: state.providerStatus,
+      latencyMs: Date.now() - startedAt,
+      configuredTimeoutMs: timeoutMs,
+      configuredMaxCompletionTokens: maxTokens,
+      finishReason: state.finishReason,
+      endpointContract: 'CHAT_JSON_SCHEMA',
+      responseContentType: state.responseContentType,
+      contentPresent: state.contentPresent,
+      toolCallsPresent: false,
+      attempt,
+      usage: state.usage
+        ? {
+            inputTokens: state.usage.prompt_tokens,
+            outputTokens: state.usage.completion_tokens,
+            totalTokens: state.usage.total_tokens,
+            reasoningTokens: this.reasoningTokens(state.usage),
+          }
+        : undefined,
+      errorCode: state.errorCode,
+      providerCode: state.providerCode,
+      providerCategory: state.providerCategory,
+      retryAfterMs: state.retryAfterMs,
+      rateLimit: state.rateLimit,
+      transient: state.transient,
+      schemaPath: state.schemaPath,
+      schemaConstraint: state.schemaConstraint,
+      schemaVersion: state.schemaVersion ?? input.schemaVersion,
+      expectedType: state.expectedType,
+      actualJsonType: state.actualJsonType,
+    };
+    this.logger.debug(`[GroqStructuredCall] ${JSON.stringify(diagnostics)}`);
+    try {
+      input.onDiagnostics?.(diagnostics);
+    } catch {
+      this.logger.warn('Groq structured diagnostics callback failed');
+    }
+  }
+
+  private shouldRetry(error: unknown, modelRole?: string): boolean {
+    if (modelRole === 'ROUTER') return false;
+    return (
+      error instanceof GroqStructuredCompletionProviderError &&
+      error.transient === true &&
+      (error.providerCategory === 'RATE_LIMITED' ||
+        error.providerCategory === 'TRANSIENT_PROVIDER_FAILURE')
+    );
+  }
+
+  private retryDelayMs(error: unknown): number {
+    return error instanceof GroqStructuredCompletionProviderError
+      ? (error.retryAfterMs ?? 0)
+      : 0;
   }
 
   private async request<T>(

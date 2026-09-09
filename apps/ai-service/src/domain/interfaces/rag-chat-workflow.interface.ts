@@ -392,6 +392,7 @@ export interface RagChatWorkflowState {
   groundedRevision?: {
     evidenceIds: string[];
     modelRole: 'ANSWER_REVISION';
+    diagnostics?: StructuredLlmCallDiagnostics[];
   };
   draftHistory: RagDraftHistoryEntry[];
   draftRevision: number;

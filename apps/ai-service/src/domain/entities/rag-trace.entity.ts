@@ -37,6 +37,23 @@ export interface RagWorkflowTraceMetrics {
     verification?: unknown;
     citationDiagnostics?: RagCitationDiagnostics;
     citationAttempts?: unknown[];
+    finalization?: {
+      draftAnswerExecuted: boolean;
+      draftAnswerProviderStatus?: number | string;
+      verifierExecuted: boolean;
+      verifierProviderStatus?: number | string;
+      verifierDecision: 'PASS' | 'FAIL' | 'NOT_EXECUTED';
+      verifierEscalationExecuted: boolean;
+      verifierEscalationProviderStatus?: number | string;
+      answerRevisionExecuted: boolean;
+      answerRevisionProviderStatus?: number | string;
+      citationExecuted: boolean;
+      citationProviderStatus?: number | string;
+      citationCoverageResult?: number;
+      citationRevisionExecuted: boolean;
+      finalSource: string;
+      finalFailureSource: string;
+    };
     finalFailureSource?: string;
     failure?: RagWorkflowFailureDiagnostics;
   };

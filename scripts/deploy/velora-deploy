@@ -410,16 +410,28 @@ load_state() {
 }
 
 preflight_resources() {
-  local free_gb ram_mb
+  local free_gb ram_mb preserve_target=true
+
+  # Reclaim stale immutable application images before checking disk headroom.
+  # Keep a non-blocked target SHA so partially/pre-pulled images are reusable;
+  # a blocked target is intentionally reclaimable unless the operator explicitly
+  # requested --retry-failed. Running/stopped container images and the exact
+  # previous-release rollback snapshot are always protected by the cleanup.
+  if [[ "$DRY_RUN" != true ]]; then
+    if [[ -f "$(blocked_marker "$TARGET_SHA")" && "$RETRY_FAILED" != true ]]; then
+      preserve_target=false
+    fi
+    reclaim_unused_docker_images "$preserve_target"
+  fi
 
   free_gb="$(free_root_gb)"
   log "Root disk free : ${free_gb} GB"
   if (( free_gb < MIN_FREE_GB )); then
     if [[ "$DRY_RUN" == true ]]; then
-      fail "only ${free_gb} GB root disk free; a real deployment would attempt dangling-image cleanup but dry-run will not mutate Docker"
+      fail "only ${free_gb} GB root disk free; dry-run will not mutate Docker"
     fi
-    log "Free disk is below ${MIN_FREE_GB} GB; pruning dangling images only..."
-    docker image prune -f >/dev/null || warn "pre-deploy dangling-image prune failed"
+    log "Free disk is below ${MIN_FREE_GB} GB; pruning Docker build cache..."
+    docker builder prune -af >/dev/null || warn "pre-deploy build-cache prune failed"
     free_gb="$(free_root_gb)"
     log "Root disk after cleanup: ${free_gb} GB"
     if (( free_gb < MIN_FREE_GB )); then
@@ -898,7 +910,6 @@ print_plan() {
   printf '======================================\n\n'
 }
 
-
 prepull_target_images() {
   local service image attempt
   (( ${#PULL_SERVICES[@]} > 0 )) || return 0
@@ -1337,7 +1348,6 @@ save_local_deployment_receipt() {
   chmod 600 "$file"
 }
 
-
 preserve_failed_snapshot() {
   [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" ]] || return 0
   local destination="$BLOCKED_DIR/${TARGET_SHA}.rollback.json"
@@ -1381,7 +1391,6 @@ send_deployment_receipt() {
   fi
 }
 
-
 cleanup_stale_failed_snapshots() {
   local snapshot sha
   shopt -s nullglob
@@ -1394,11 +1403,10 @@ cleanup_stale_failed_snapshots() {
   shopt -u nullglob
 }
 
-post_success_cleanup() {
+cleanup_unused_velora_application_sha_tags() {
+  local preserve_target="${1:-false}"
   local dockerhub_username service repo ref image_id
   local keep_ids_file
-
-  cleanup_stale_failed_snapshots
 
   dockerhub_username="$(read_env_value DOCKERHUB_USERNAME)"
   keep_ids_file="$(mktemp)"
@@ -1408,7 +1416,9 @@ post_success_cleanup() {
   while IFS= read -r image_id; do
     [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
   done < <(
-    docker ps -aq       | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null       | sort -u
+    docker ps -aq \
+      | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null \
+      | sort -u
   )
 
   # Preserve the exact previous-release images kept for one-step rollback.
@@ -1419,10 +1429,21 @@ post_success_cleanup() {
       [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
     done < <(jq -r '.services[]' "$PREVIOUS_RELEASE_FILE")
   fi
+
+  # Preserve a non-blocked/retry target so already pulled immutable images can
+  # be reused. A failed target that was automatically rolled back is not kept.
+  if [[ "$preserve_target" == true && -n "$dockerhub_username" && -n "$TARGET_SHA" ]]; then
+    for service in "${APP_SERVICES[@]}"; do
+      ref="${dockerhub_username}/${service}:${TARGET_SHA}"
+      image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
+      [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
+    done
+  fi
+
   sort -u -o "$keep_ids_file" "$keep_ids_file"
 
   # Remove stale immutable application SHA tags only when their image is neither
-  # used by a container nor retained by the previous-release rollback snapshot.
+  # in use, retained by rollback, nor deliberately retained as the current target.
   if [[ -n "$dockerhub_username" ]]; then
     log "==> Removing stale unused Velora application SHA tags..."
     for service in "${APP_SERVICES[@]}"; do
@@ -1440,9 +1461,20 @@ post_success_cleanup() {
   fi
 
   rm -f -- "$keep_ids_file"
+}
+
+reclaim_unused_docker_images() {
+  local preserve_target="${1:-false}"
+
+  cleanup_unused_velora_application_sha_tags "$preserve_target"
 
   log "==> Pruning dangling Docker images..."
   docker image prune -f >/dev/null || warn "failed to prune dangling Docker images"
+}
+
+post_success_cleanup() {
+  cleanup_stale_failed_snapshots
+  reclaim_unused_docker_images false
 }
 
 already_deployed_path() {
@@ -1523,6 +1555,7 @@ manual_rollback() {
       printf '%s\n' "$(env_hash)" >"$ENV_HASH_FILE"
       ROLLBACK_RESULT="manual-failed-release-recovery-success"
       TARGET_SHA="$current_sha"
+      reclaim_unused_docker_images false
       save_local_deployment_receipt "manual-failed-release-recovery-success"
       log "Failed runtime was restored to healthy SHA $current_sha."
       return 0
@@ -1563,6 +1596,7 @@ manual_rollback() {
 
     ROLLBACK_RESULT="manual-success"
     TARGET_SHA="$restore_sha"
+    reclaim_unused_docker_images false
     save_local_deployment_receipt "manual-rollback-success"
     log "Manual rollback succeeded. Current healthy SHA: $restore_sha"
     return 0
@@ -1668,6 +1702,7 @@ perform_deployment() {
       remove_snapshot_tags "$TEMP_SNAPSHOT"
       rm -f -- "$TEMP_SNAPSHOT"
       TEMP_SNAPSHOT=""
+      reclaim_unused_docker_images false
       save_local_deployment_receipt "failed-rolled-back"
       fail "target release failed health verification and was rolled back; SHA is now blocked"
     fi

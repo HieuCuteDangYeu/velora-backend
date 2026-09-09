@@ -16,7 +16,7 @@ No evaluation dependency is a production dependency. `pnpm eval:rag:test` and of
 
 ## Datasets
 
-- `rag-frozen-ami-v1` and `rag-frozen-ami-v2`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records new production reel and index provenance.
+- `rag-frozen-ami-v1`, `rag-frozen-ami-v2`, and `rag-frozen-ami-v3`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records the prior production reel/index provenance and v3 records the canonical self-hosted BGE-M3 production index provenance.
 - `rag-generalization-v1`: 65 router, 20 sufficiency, 15 verifier, and four generic retrieval/citation/access/provider rows. Tags are analysis metadata only.
 
 The JSONL files under `datasets/` are the source of truth. Existing contract tests read their fixture payloads from the same generic dataset. To add a case, add safe, non-production fixture data, increment the dataset version when semantics change, update the declared count, and add contract tests. Never place credentials, private production text, or benchmark answers in runtime code.

@@ -1,0 +1,195 @@
+{
+  "schemaVersion": "rag-frozen-ami-index-snapshot-v1",
+  "datasetVersion": "rag-frozen-ami-v3",
+  "productionSha": "6d781cae89790e56a437edc780e883e6943c5469",
+  "indexIdentity": {
+    "provider": "self-hosted-tei",
+    "model": "BAAI/bge-m3",
+    "version": "bge-m3-tei-v1",
+    "dimensions": 1024,
+    "indexVersion": "reel-index-v2"
+  },
+  "reels": {
+    "IN1001": {
+      "reelId": "b9b6a990-7cea-4beb-8626-90aba0a231d8",
+      "sourceFixtureId": "ami-in1001-75-150",
+      "indexAttemptId": "03cca2f6-7b2c-43a7-90d9-b6206fafc825",
+      "activeCounts": {
+        "ReelDocument": 1,
+        "ReelSection": 0,
+        "ReelChunk": 2,
+        "ReelVisualScene": 19
+      },
+      "inactiveCounts": {
+        "ReelDocument": 0,
+        "ReelSection": 0,
+        "ReelChunk": 0,
+        "ReelVisualScene": 0
+      },
+      "evidence": [
+        {
+          "id": "reel:b9b6a990-7cea-4beb-8626-90aba0a231d8:chunk:0",
+          "reelId": "b9b6a990-7cea-4beb-8626-90aba0a231d8",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 0,
+          "endTime": 44.69857142857143,
+          "indexAttemptId": "03cca2f6-7b2c-43a7-90d9-b6206fafc825",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        },
+        {
+          "id": "reel:b9b6a990-7cea-4beb-8626-90aba0a231d8:chunk:1",
+          "reelId": "b9b6a990-7cea-4beb-8626-90aba0a231d8",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 28.02,
+          "endTime": 75,
+          "indexAttemptId": "03cca2f6-7b2c-43a7-90d9-b6206fafc825",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        }
+      ]
+    },
+    "IN1002": {
+      "reelId": "1c45016a-38f7-44e2-aba7-e0f967ef2e47",
+      "sourceFixtureId": "ami-IN1002-short-001",
+      "indexAttemptId": "44db1eec-0dc2-41f2-ac19-6f7a41869fed",
+      "activeCounts": {
+        "ReelDocument": 1,
+        "ReelSection": 0,
+        "ReelChunk": 2,
+        "ReelVisualScene": 23
+      },
+      "inactiveCounts": {
+        "ReelDocument": 0,
+        "ReelSection": 0,
+        "ReelChunk": 0,
+        "ReelVisualScene": 0
+      },
+      "evidence": [
+        {
+          "id": "reel:1c45016a-38f7-44e2-aba7-e0f967ef2e47:chunk:0",
+          "reelId": "1c45016a-38f7-44e2-aba7-e0f967ef2e47",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 0,
+          "endTime": 44.81818181818182,
+          "indexAttemptId": "44db1eec-0dc2-41f2-ac19-6f7a41869fed",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        },
+        {
+          "id": "reel:1c45016a-38f7-44e2-aba7-e0f967ef2e47:chunk:1",
+          "reelId": "1c45016a-38f7-44e2-aba7-e0f967ef2e47",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 33.33333333333334,
+          "endTime": 90,
+          "indexAttemptId": "44db1eec-0dc2-41f2-ac19-6f7a41869fed",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        }
+      ]
+    },
+    "IN1005": {
+      "reelId": "c7d1339e-892c-4b2e-9806-b81b2c12e400",
+      "sourceFixtureId": "ami-IN1005-short-001",
+      "indexAttemptId": "b5d37d62-1eb7-4f06-9b2d-c1e521bddb6f",
+      "activeCounts": {
+        "ReelDocument": 1,
+        "ReelSection": 0,
+        "ReelChunk": 2,
+        "ReelVisualScene": 23
+      },
+      "inactiveCounts": {
+        "ReelDocument": 0,
+        "ReelSection": 0,
+        "ReelChunk": 0,
+        "ReelVisualScene": 0
+      },
+      "evidence": [
+        {
+          "id": "reel:c7d1339e-892c-4b2e-9806-b81b2c12e400:chunk:0",
+          "reelId": "c7d1339e-892c-4b2e-9806-b81b2c12e400",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 0,
+          "endTime": 44.90909090909091,
+          "indexAttemptId": "b5d37d62-1eb7-4f06-9b2d-c1e521bddb6f",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        },
+        {
+          "id": "reel:c7d1339e-892c-4b2e-9806-b81b2c12e400:chunk:1",
+          "reelId": "c7d1339e-892c-4b2e-9806-b81b2c12e400",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 33.58490566037736,
+          "endTime": 90,
+          "indexAttemptId": "b5d37d62-1eb7-4f06-9b2d-c1e521bddb6f",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        }
+      ]
+    },
+    "IN1007": {
+      "reelId": "06b42bcc-14c8-468a-910a-ba2cef94106c",
+      "sourceFixtureId": "ami-IN1007-short-001",
+      "indexAttemptId": "e3253bd6-2b32-4e0c-821d-7f3d79d0021f",
+      "activeCounts": {
+        "ReelDocument": 1,
+        "ReelSection": 0,
+        "ReelChunk": 2,
+        "ReelVisualScene": 23
+      },
+      "inactiveCounts": {
+        "ReelDocument": 0,
+        "ReelSection": 0,
+        "ReelChunk": 0,
+        "ReelVisualScene": 0
+      },
+      "evidence": [
+        {
+          "id": "reel:06b42bcc-14c8-468a-910a-ba2cef94106c:chunk:1",
+          "reelId": "06b42bcc-14c8-468a-910a-ba2cef94106c",
+          "type": "TRANSCRIPT",
+          "active": true,
+          "evidenceQuality": "VERIFIED",
+          "startTime": 30,
+          "endTime": 90,
+          "indexAttemptId": "e3253bd6-2b32-4e0c-821d-7f3d79d0021f",
+          "indexVersion": "reel-index-v2",
+          "embeddingProvider": "self-hosted-tei",
+          "embeddingModel": "BAAI/bge-m3",
+          "embeddingVersion": "bge-m3-tei-v1",
+          "embeddingDimensions": 1024
+        }
+      ]
+    }
+  }
+}

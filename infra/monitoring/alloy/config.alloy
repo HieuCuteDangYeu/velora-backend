@@ -1,0 +1,53 @@
+logging {
+  level  = "warn"
+  format = "logfmt"
+}
+
+discovery.docker "velora" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "velora" {
+  targets = discovery.docker.velora.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = ".+"
+    action        = "keep"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+}
+
+loki.source.docker "velora" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.velora.output
+  labels           = { environment = "production" }
+  refresh_interval = "15s"
+  forward_to       = [loki.process.velora.receiver]
+}
+
+loki.process "velora" {
+  stage.decolorize {}
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

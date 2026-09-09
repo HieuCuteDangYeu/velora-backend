@@ -84,7 +84,9 @@ export class BuildShortEvidenceChunksUseCase {
       current.push(token);
       if (current.length >= target && token.sentenceEnd) flush();
     }
-    if (current.length > overlap || chunks.length === 0) flush();
+    if (current.length - leadingOverlapTokens > 0 || chunks.length === 0) {
+      flush();
+    }
 
     if (chunks.length > 1) {
       const last = chunks.at(-1)!;

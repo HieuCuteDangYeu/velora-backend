@@ -366,7 +366,11 @@ def normalize_runner_case(
 
 
 def load_runner_report(
-    report_path: Path, rows: dict[str, EvaluationRow], traces_path: Path | None = None
+    report_path: Path,
+    rows: dict[str, EvaluationRow],
+    traces_path: Path | None = None,
+    *,
+    require_trace: bool = False,
 ) -> dict[str, NormalizedExecutionResult]:
     report = load_json(report_path)
     if not isinstance(report, dict):
@@ -374,7 +378,24 @@ def load_runner_report(
     traces = {}
     if traces_path:
         trace_rows = load_json_or_jsonl(traces_path)
+        trace_keys = [item.get("caseId") for item in trace_rows]
+        if require_trace:
+            expected = set(rows)
+            if any(not isinstance(key, str) for key in trace_keys):
+                raise ValueError(
+                    "TRACE_PROVENANCE=INCOMPLETE: every trace row needs caseId"
+                )
+            if len(trace_keys) != len(set(trace_keys)):
+                raise ValueError("TRACE_PROVENANCE=AMBIGUOUS: duplicate trace caseId")
+            actual = set(trace_keys)
+            if actual != expected:
+                raise ValueError(
+                    "TRACE_PROVENANCE=INCOMPLETE: "
+                    f"missing={sorted(expected - actual)} extra={sorted(actual - expected)}"
+                )
         traces = {item.get("caseId", item.get("message")): item for item in trace_rows}
+    elif require_trace:
+        raise ValueError("TRACE_PROVENANCE=MISSING: trace file is required")
     output = {}
     for case in report.get("cases", []):
         case_id = case.get("caseId")
@@ -382,6 +403,22 @@ def load_runner_report(
             case["runId"] = report.get("runId")
             output[case_id] = normalize_runner_case(rows[case_id], case, traces.get(case_id))
     return output
+
+
+def validate_trace_provenance(traces_path: Path, case_ids: set[str]) -> str:
+    """Validate the one-trace-per-completed-case contract."""
+
+    trace_rows = load_json_or_jsonl(traces_path)
+    trace_ids = [item.get("caseId") for item in trace_rows]
+    if any(not isinstance(value, str) for value in trace_ids):
+        raise ValueError("TRACE_PROVENANCE=INCOMPLETE: every trace row needs caseId")
+    if len(trace_ids) != len(set(trace_ids)):
+        raise ValueError("TRACE_PROVENANCE=AMBIGUOUS: duplicate trace caseId")
+    if set(trace_ids) != case_ids:
+        raise ValueError(
+            "TRACE_PROVENANCE=INCOMPLETE: trace case IDs do not match cases"
+        )
+    return "COMPLETE"
 
 
 def invoke_typescript_runner(arguments: list[str]) -> Path:

@@ -65,6 +65,51 @@ def test_load_runner_report_accepts_jsonl_trace_rows(tmp_path):
     assert result["C-1"].trace["ragTraceId"] == "trace-1"
 
 
+@pytest.mark.parametrize(
+    ("trace_rows", "message"),
+    [
+        ([], "TRACE_PROVENANCE=INCOMPLETE"),
+        ([{"caseId": "C-1"}, {"caseId": "C-1"}], "TRACE_PROVENANCE=AMBIGUOUS"),
+    ],
+)
+def test_live_trace_provenance_rejects_missing_or_ambiguous_rows(
+    tmp_path, trace_rows, message
+):
+    traces = tmp_path / "traces.jsonl"
+    traces.write_text("\n".join(json.dumps(row) for row in trace_rows))
+
+    with pytest.raises(ValueError, match=message):
+        runner_output.validate_trace_provenance(traces, {"C-1"})
+
+
+def test_live_trace_provenance_accepts_exactly_one_trace_per_case(tmp_path):
+    traces = tmp_path / "traces.jsonl"
+    traces.write_text('{"caseId":"C-1"}\n{"caseId":"C-2"}\n')
+
+    assert runner_output.validate_trace_provenance(traces, {"C-1", "C-2"}) == "COMPLETE"
+
+
+def test_live_load_requires_trace_provenance(tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text(
+        '{"runId":"run","cases":[{"caseId":"C-1","status":"EVALUATED",'
+        '"finalAnswer":"Actual","citations":[]}]}'
+    )
+    from rag_eval.schemas import EvaluationRow
+
+    row = EvaluationRow(
+        id="C-1",
+        datasetVersion="test",
+        question="Question?",
+        referenceAnswer="Actual",
+        category="test",
+        fixtureGroup="test",
+    )
+
+    with pytest.raises(ValueError, match="TRACE_PROVENANCE=MISSING"):
+        runner_output.load_runner_report(report, {row.id: row}, require_trace=True)
+
+
 def test_load_runner_report_normalizes_canonical_chunk_ids_for_citations(tmp_path):
     report = tmp_path / "report.json"
     report.write_text(

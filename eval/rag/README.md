@@ -63,7 +63,9 @@ The default `eval/rag/eval.env.example` contains no credentials. For live work,
 set `RAG_EVAL_ENV_FILE` to a server-side evaluator env file for additional
 evaluation-only values. Provider diagnostics still require the explicit
 operator-observed `--runtime-config-snapshot`, a matching `--production-sha`,
-and `CONFIG_MATCH=YES` before any provider call.
+and `CONFIG_MATCH=YES` before any provider call. Live frozen runs automatically
+export a sanitized, read-only RagTrace artifact and fail closed unless exactly
+one trace exists for every completed case.
 
 Offline mode uses explicit `FIXTURE` normalized results and never creates provider clients. Live mode is opt-in, invokes the existing TypeScript runner, refuses unsupported datasets, and evaluates only completed/reconciled rows. A failed or missing response remains in the denominator with a failure status; semantic metrics may be null.
 

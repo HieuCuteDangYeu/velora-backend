@@ -21,6 +21,7 @@ from rag_eval.adapters.runner_output import (
     fixture_execution,
     invoke_typescript_runner,
     load_runner_report,
+    validate_trace_provenance,
 )
 from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
@@ -76,6 +77,34 @@ def _variant(args: argparse.Namespace) -> dict[str, Any]:
 def _repo_path(value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else ROOT.parents[1] / path
+
+
+def _export_trace_artifact(
+    report_path: Path, output_path: Path, env_file: str | None
+) -> None:
+    if not env_file:
+        raise SystemExit(
+            "LIVE frozen evaluation requires --env-file for automatic trace export"
+        )
+    exporter = ROOT.parents[1] / "scripts/ops/export-rag-traces.cjs"
+    completed = subprocess.run(
+        [
+            "node",
+            str(exporter),
+            "--runner-report",
+            str(report_path),
+            "--output",
+            str(output_path),
+            "--env-file",
+            str(_repo_path(env_file)),
+        ],
+        cwd=ROOT.parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if "TRACE_PROVENANCE=COMPLETE" not in completed.stdout:
+        raise RuntimeError("trace exporter completed without complete provenance")
 
 
 def _build_live_runner_args(
@@ -165,8 +194,16 @@ async def run_live(args: argparse.Namespace) -> Path:
     snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, args.dataset)
     run_id, runner_args = _build_live_runner_args(args, definitions_path)
     report_path = invoke_typescript_runner(runner_args)
+    trace_path = (
+        _repo_path(args.trace_file)
+        if args.trace_file
+        else RESULTS / f"{run_id}-traces.jsonl"
+    )
+    if not args.trace_file:
+        _export_trace_artifact(report_path, trace_path, args.env_file)
+    validate_trace_provenance(trace_path, set(rows))
     executions = load_runner_report(
-        report_path, rows, _repo_path(args.trace_file) if args.trace_file else None
+        report_path, rows, trace_path, require_trace=True
     )
     missing = set(rows) - set(executions)
     if missing:
@@ -174,6 +211,7 @@ async def run_live(args: argparse.Namespace) -> Path:
     variant = _variant(args)
     variant["configSnapshot"] = snapshot
     variant["variantName"] = snapshot["variantName"]
+    variant["traceProvenance"] = "COMPLETE"
     result = await rag_experiment.arun(
         dataset,
         name=run_id,

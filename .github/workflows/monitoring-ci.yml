@@ -54,5 +54,24 @@ jobs:
             prom/prometheus:latest \
             check config /etc/prometheus/prometheus.yml
 
+      - name: Validate Loki configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/infra/monitoring/loki:/etc/loki:ro" \
+            grafana/loki:latest \
+            -config.file=/etc/loki/loki-config.yml \
+            -verify-config
+
+      - name: Validate Alloy configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$PWD/infra/monitoring/alloy:/etc/alloy:ro" \
+            grafana/alloy:latest \
+            validate /etc/alloy/config.alloy
+
       - name: Validate Grafana dashboard JSON
         run: jq -e . infra/monitoring/grafana/dashboards/velora-monitoring.json >/dev/null

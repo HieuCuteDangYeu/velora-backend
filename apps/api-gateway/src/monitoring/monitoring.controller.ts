@@ -24,6 +24,8 @@ const ALLOWED_METRICS = new Set([
   'event_loop_p99',
 ]);
 
+const ALLOWED_LOG_LEVELS = new Set(['all', 'error', 'warn', 'info', 'debug']);
+
 @ApiTags('Monitoring')
 @Controller('monitoring')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -72,6 +74,59 @@ export class MonitoringController {
           from: query.from,
           to: query.to,
           stepSeconds: query.stepSeconds ? Number(query.stepSeconds) : 60,
+        })
+        .pipe(timeout(7000)),
+    );
+  }
+
+  @Get('logs')
+  @ApiOperation({ summary: 'Query bounded Docker service logs from Loki' })
+  logs(@Req() request: AuthenticatedRequest) {
+    const query = request.query as {
+      service?: string;
+      level?: string;
+      search?: string;
+      from?: string;
+      to?: string;
+      limit?: string;
+    };
+
+    const service = query.service?.trim() || 'all';
+    const level = query.level?.trim() || 'all';
+    const search = query.search?.trim() || '';
+    const limit = query.limit ? Number(query.limit) : 200;
+
+    if (!/^(all|[a-z0-9][a-z0-9_.-]{0,79})$/i.test(service)) {
+      throw new BadRequestException('service is invalid');
+    }
+
+    if (!ALLOWED_LOG_LEVELS.has(level)) {
+      throw new BadRequestException(
+        `level must be one of: ${Array.from(ALLOWED_LOG_LEVELS).join(', ')}`,
+      );
+    }
+
+    if (search.length > 200) {
+      throw new BadRequestException('search cannot exceed 200 characters');
+    }
+
+    if (!query.from || !query.to) {
+      throw new BadRequestException('from and to are required');
+    }
+
+    if (!Number.isInteger(limit) || limit < 20 || limit > 500) {
+      throw new BadRequestException('limit must be an integer between 20 and 500');
+    }
+
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.logs.query', {
+          service,
+          level,
+          search,
+          from: query.from,
+          to: query.to,
+          limit,
         })
         .pipe(timeout(7000)),
     );

@@ -12,6 +12,7 @@ import { CallTelemetryController } from '@monitoring/infrastructure/controllers/
 import { MonitoringHealthController } from '@monitoring/infrastructure/controllers/health.controller';
 import { MetricsController } from '@monitoring/infrastructure/controllers/metrics.controller';
 import { RecommendationTelemetryController } from '@monitoring/infrastructure/controllers/recommendation-telemetry.controller';
+import { SystemLogsController } from '@monitoring/infrastructure/controllers/system-logs.controller';
 import { SystemMetricsController } from '@monitoring/infrastructure/controllers/system-metrics.controller';
 import { CallTelemetryRetentionJob } from '@monitoring/infrastructure/jobs/call-telemetry-retention.job';
 import { RecommendationTelemetryCleanupJob } from '@monitoring/infrastructure/jobs/recommendation-telemetry-cleanup.job';
@@ -20,6 +21,7 @@ import { MonitoringPrismaService } from '@monitoring/infrastructure/prisma/monit
 import { PrismaService } from '@monitoring/infrastructure/prisma/prisma.service';
 import { PrismaCallTelemetryRepository } from '@monitoring/infrastructure/repositories/prisma-call-telemetry.repository';
 import { RecommendationTelemetryRepository } from '@monitoring/infrastructure/repositories/recommendation-telemetry.repository';
+import { LokiQueryService } from '@monitoring/infrastructure/services/loki-query.service';
 import { PrometheusQueryService } from '@monitoring/infrastructure/services/prometheus-query.service';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
@@ -39,10 +41,12 @@ import { ScheduleModule } from '@nestjs/schedule';
     MonitoringHealthController,
     MetricsController,
     SystemMetricsController,
+    SystemLogsController,
   ],
   providers: [
     PrometheusMetricsService,
     PrometheusQueryService,
+    LokiQueryService,
     CallTelemetryTokenService,
     PrismaService,
     MonitoringPrismaService,

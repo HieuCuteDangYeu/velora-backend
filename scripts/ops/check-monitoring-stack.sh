@@ -13,6 +13,42 @@ require_command() {
   fi
 }
 
+capture_grafana_diagnostics() {
+  local container_id
+
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "      Grafana diagnostics skipped: docker command is unavailable" >&2
+    return 0
+  fi
+
+  container_id="$(docker compose ps -aq grafana 2>/dev/null | head -n 1 || true)"
+  if [ -z "$container_id" ]; then
+    echo "      Grafana diagnostics: no Compose container found" >&2
+    docker compose ps grafana >&2 2>/dev/null || true
+    return 0
+  fi
+
+  echo "      ===== Grafana diagnostics before rollback =====" >&2
+  echo "      Container: $container_id" >&2
+
+  docker inspect --format \
+    'State={{json .State}} Image={{.Image}} RestartCount={{.RestartCount}}' \
+    "$container_id" >&2 2>/dev/null || true
+
+  echo "      Mounts:" >&2
+  docker inspect --format '{{json .Mounts}}' "$container_id" >&2 2>/dev/null || true
+
+  echo "      Networks:" >&2
+  docker inspect --format '{{json .NetworkSettings.Networks}}' "$container_id" >&2 2>/dev/null || true
+
+  echo "      Stats:" >&2
+  docker stats --no-stream "$container_id" >&2 2>/dev/null || true
+
+  echo "      Last 300 Grafana log lines:" >&2
+  docker logs --tail 300 "$container_id" >&2 2>/dev/null || true
+  echo "      ===== End Grafana diagnostics =====" >&2
+}
+
 wait_for_prometheus_target() {
   local job="$1"
   local display_name="$2"
@@ -73,6 +109,7 @@ wait_for_grafana_health() {
   if [ -n "$response" ]; then
     jq . <<<"$response" >&2 2>/dev/null || printf '%s\n' "$response" >&2
   fi
+  capture_grafana_diagnostics
   return 1
 }
 

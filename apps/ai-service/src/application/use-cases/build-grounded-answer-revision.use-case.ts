@@ -1,6 +1,9 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
-import type { IStructuredLlmService } from '@ai/domain/interfaces/structured-llm.service.interface';
+import type {
+  IStructuredLlmService,
+  StructuredLlmCallDiagnostics,
+} from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import {
   boundEvidence,
@@ -18,6 +21,7 @@ export interface GroundedAnswerRevision {
   answer: string;
   evidenceIds: string[];
   modelRole: 'ANSWER_REVISION';
+  diagnostics: StructuredLlmCallDiagnostics[];
 }
 
 @Injectable()
@@ -77,6 +81,7 @@ export class BuildGroundedAnswerRevisionUseCase {
     );
     if (evidence.length === 0) return undefined;
 
+    const diagnostics: StructuredLlmCallDiagnostics[] = [];
     const raw =
       await this.structuredLlm.generateObject<RawGroundedAnswerRevision>({
         model: this.config.model('ANSWER_REVISION'),
@@ -84,6 +89,7 @@ export class BuildGroundedAnswerRevisionUseCase {
         temperature: 0.1,
         maxTokens: this.config.maxCompletionTokens('ANSWER_REVISION'),
         modelRole: 'ANSWER_REVISION',
+        onDiagnostics: (call) => diagnostics.push(call),
         systemPrompt: [
           'Revise a rejected reel RAG answer using only the supplied authorized evidence.',
           'Answer the exact relation requested by the user, including noisy or punctuation-free ASR when the evidence semantically supports it.',
@@ -142,6 +148,11 @@ export class BuildGroundedAnswerRevisionUseCase {
       );
     }
 
-    return { answer, evidenceIds, modelRole: 'ANSWER_REVISION' };
+    return {
+      answer,
+      evidenceIds,
+      modelRole: 'ANSWER_REVISION',
+      diagnostics,
+    };
   }
 }

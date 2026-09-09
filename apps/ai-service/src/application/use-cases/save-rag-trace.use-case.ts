@@ -127,6 +127,7 @@ export class SaveRagTraceUseCase {
               input.state.citationDiagnostics ??
               input.state.citationCoverage?.diagnostics,
             citationAttempts: input.state.citationAttempts,
+            finalization: this.finalizationDiagnostics(input.state),
             finalFailureSource: input.state.finalFailureSource,
             failure: input.state.failureDiagnostics,
           },
@@ -136,6 +137,99 @@ export class SaveRagTraceUseCase {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[RagTrace] save failed: ${message}`);
     }
+  }
+
+  private finalizationDiagnostics(state: RagChatWorkflowState) {
+    const answerCalls = Array.isArray(state.answerDiagnostics)
+      ? state.answerDiagnostics
+      : [];
+    const verificationDiagnostics = this.asRecord(
+      state.verification?.diagnostics,
+    );
+    const verificationCalls = this.semanticCalls(verificationDiagnostics);
+    const answerRevisionCalls = this.semanticCalls(
+      state.groundedRevision?.diagnostics,
+    );
+    const citationAttempts = state.citationAttempts ?? [];
+    const citationCall = citationAttempts.at(-1);
+    const citationCalls = this.semanticCalls(citationCall);
+    const verifierExecuted = state.verification !== undefined;
+    const answerRevisionExecuted = Boolean(
+      state.groundedRevision ||
+      state.draftHistory.some(
+        ({ source }) =>
+          source === 'VERIFIER_REVISION' || source === 'CITATION_REVISION',
+      ),
+    );
+    const verifierDecision: 'PASS' | 'FAIL' | 'NOT_EXECUTED' = !verifierExecuted
+      ? 'NOT_EXECUTED'
+      : state.verification?.passed
+        ? 'PASS'
+        : 'FAIL';
+
+    return {
+      draftAnswerExecuted: state.draftHistory.length > 0,
+      draftAnswerProviderStatus: this.lastProviderStatus(answerCalls),
+      verifierExecuted,
+      verifierProviderStatus: this.lastProviderStatus(verificationCalls),
+      verifierDecision,
+      verifierEscalationExecuted: verificationCalls.some(
+        (call) => call.modelRole === 'VERIFIER_ESCALATION',
+      ),
+      verifierEscalationProviderStatus: this.lastProviderStatus(
+        verificationCalls.filter(
+          (call) => call.modelRole === 'VERIFIER_ESCALATION',
+        ),
+      ),
+      answerRevisionExecuted,
+      answerRevisionProviderStatus:
+        this.lastProviderStatus(answerRevisionCalls),
+      citationExecuted: citationAttempts.length > 0,
+      citationProviderStatus: this.lastProviderStatus(citationCalls),
+      citationCoverageResult:
+        typeof state.citationCoverage?.coverage === 'number'
+          ? state.citationCoverage.coverage
+          : undefined,
+      citationRevisionExecuted:
+        citationAttempts.length > 1 ||
+        state.draftHistory.some(({ source }) => source === 'CITATION_REVISION'),
+      finalSource:
+        state.finalFailureSource === 'NONE'
+          ? state.groundedRevision
+            ? 'ANSWER_REVISION'
+            : 'ANSWER'
+          : 'FAILURE_FALLBACK',
+      finalFailureSource: state.finalFailureSource,
+    };
+  }
+
+  private semanticCalls(value: unknown): Array<Record<string, unknown>> {
+    if (Array.isArray(value)) {
+      return value.filter((call): call is Record<string, unknown> =>
+        Boolean(call && typeof call === 'object'),
+      );
+    }
+    const record = this.asRecord(value);
+    return Array.isArray(record?.semanticCalls)
+      ? record.semanticCalls.filter((call): call is Record<string, unknown> =>
+          Boolean(call && typeof call === 'object'),
+        )
+      : [];
+  }
+
+  private lastProviderStatus(
+    calls: Array<{ providerStatus?: unknown }>,
+  ): number | string | undefined {
+    const status = calls.at(-1)?.providerStatus;
+    return typeof status === 'number' || typeof status === 'string'
+      ? status
+      : undefined;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
   }
 
   private toPersistedRetrievalPlan(plan: RagRetrievalPlan) {

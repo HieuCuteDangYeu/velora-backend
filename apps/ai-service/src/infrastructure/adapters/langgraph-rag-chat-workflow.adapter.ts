@@ -67,10 +67,12 @@ const RagChatStateSchema = new StateSchema({
   memoryReady: z.boolean().default(false),
 
   answer: z.string().optional(),
+  answerClaims: z.array(z.any()).optional(),
   answerDiagnostics: z.array(z.any()).default([]),
   verification: z.any().optional(),
   citations: z.array(z.any()).default([]),
   citationCoverage: z.any().optional(),
+  citationDiagnostics: z.any().optional(),
   groundedRevision: z.any().optional(),
   draftHistory: z.array(z.any()).default([]),
   draftRevision: z.number().default(0),
@@ -554,6 +556,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           ? {
               evidenceIds: groundedRevision.evidenceIds,
               modelRole: groundedRevision.modelRole,
+              diagnostics: groundedRevision.diagnostics,
             }
           : undefined,
         draftHistory: [

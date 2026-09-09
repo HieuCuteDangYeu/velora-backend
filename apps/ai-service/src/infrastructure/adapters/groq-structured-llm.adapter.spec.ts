@@ -187,11 +187,13 @@ describe('GroqStructuredLlmAdapter', () => {
   ])(
     'classifies status %s conservatively',
     async (status, message, category, transient) => {
-      jest.spyOn(global, 'fetch').mockResolvedValue(
-        new Response(JSON.stringify({ error: { message } }), {
-          status,
-        }),
-      );
+      jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response(JSON.stringify({ error: { message } }), { status }),
+          ),
+        );
       await expect(
         new GroqStructuredLlmAdapter(config()).generateObject({
           model: 'openai/gpt-oss-20b',
@@ -255,23 +257,28 @@ describe('GroqStructuredLlmAdapter', () => {
   });
 
   it('preserves string provider codes and sanitized retry/rate-limit metadata', async () => {
-    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          error: { code: 'rate_limit_exceeded', message: 'rate limit reached' },
-        }),
-        {
-          status: 429,
-          headers: {
-            'retry-after': '2',
-            'x-ratelimit-limit-requests': '100',
-            'x-ratelimit-limit-tokens': '10000',
-            'x-ratelimit-remaining-requests': '0',
-            'x-ratelimit-remaining-tokens': '0',
-            'x-ratelimit-reset-requests': '2s',
-            'x-ratelimit-reset-tokens': '2s',
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'rate_limit_exceeded',
+              message: 'rate limit reached',
+            },
+          }),
+          {
+            status: 429,
+            headers: {
+              'retry-after': '2',
+              'x-ratelimit-limit-requests': '100',
+              'x-ratelimit-limit-tokens': '10000',
+              'x-ratelimit-remaining-requests': '0',
+              'x-ratelimit-remaining-tokens': '0',
+              'x-ratelimit-reset-requests': '2s',
+              'x-ratelimit-reset-tokens': '2s',
+            },
           },
-        },
+        ),
       ),
     );
     const diagnostics: unknown[] = [];
@@ -291,7 +298,7 @@ describe('GroqStructuredLlmAdapter', () => {
       transient: true,
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(diagnostics[0]).toEqual(
       expect.objectContaining({
         providerCode: 'rate_limit_exceeded',
@@ -309,5 +316,142 @@ describe('GroqStructuredLlmAdapter', () => {
         },
       }),
     );
+  });
+
+  it('retries one transient rate-limited non-router call and preserves both attempts', async () => {
+    let calls = 0;
+    const diagnostics: unknown[] = [];
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(() => {
+      calls += 1;
+      if (calls === 1)
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: 'rate limit reached' } }),
+            {
+              status: 429,
+              headers: {
+                'retry-after': '0',
+                'x-ratelimit-remaining-requests': '0',
+              },
+            },
+          ),
+        );
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ answer: 'ok' }) },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'CITATION_ATTRIBUTION',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+        onDiagnostics: (value) => diagnostics.push(value),
+      }),
+    ).resolves.toEqual({ answer: 'ok' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(diagnostics).toHaveLength(2);
+    expect(
+      diagnostics.map((item) => (item as { attempt: number }).attempt),
+    ).toEqual([1, 2]);
+    expect(
+      diagnostics.map(
+        (item) => (item as { providerStatus: unknown }).providerStatus,
+      ),
+    ).toEqual([429, 200]);
+  });
+
+  it('retries one transient 5xx call but never exceeds two attempts', async () => {
+    const diagnostics: unknown[] = [];
+    const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: { message: 'upstream unavailable' },
+          }),
+          { status: 503 },
+        ),
+      ),
+    );
+
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'CONTEXT_SUFFICIENCY',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+        onDiagnostics: (value) => diagnostics.push(value),
+      }),
+    ).rejects.toMatchObject({ providerCategory: 'TRANSIENT_PROVIDER_FAILURE' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      diagnostics.map((item) => (item as { attempt: number }).attempt),
+    ).toEqual([1, 2]);
+  });
+
+  it('does not add an adapter retry to the Router role owned by the Router agent', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { message: 'upstream unavailable' } }),
+        {
+          status: 503,
+        },
+      ),
+    );
+
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'qwen/qwen3.8-27b',
+        modelRole: 'ROUTER',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+      }),
+    ).rejects.toMatchObject({ providerCategory: 'TRANSIENT_PROVIDER_FAILURE' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry when Retry-After exceeds the remaining operation deadline', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({ error: { message: 'rate limit reached' } }),
+        {
+          status: 429,
+          headers: {
+            'retry-after': '2',
+            'x-ratelimit-remaining-requests': '0',
+          },
+        },
+      ),
+    );
+
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'CITATION_ATTRIBUTION',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+        timeoutMs: 500,
+      }),
+    ).rejects.toMatchObject({ providerCategory: 'RATE_LIMITED' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

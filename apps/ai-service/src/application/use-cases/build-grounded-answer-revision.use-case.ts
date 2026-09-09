@@ -2,6 +2,12 @@ import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { IStructuredLlmService } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Inject, Injectable } from '@nestjs/common';
+import {
+  boundEvidence,
+  boundPromptText,
+  boundTextItems,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawGroundedAnswerRevision {
   answer?: unknown;
@@ -16,8 +22,6 @@ export interface GroundedAnswerRevision {
 
 @Injectable()
 export class BuildGroundedAnswerRevisionUseCase {
-  private readonly maxRerankedEvidence = 8;
-
   constructor(
     @Inject('IStructuredLlmService')
     private readonly structuredLlm: IStructuredLlmService,
@@ -33,16 +37,26 @@ export class BuildGroundedAnswerRevisionUseCase {
     state: RagChatWorkflowState,
   ): Promise<GroundedAnswerRevision | undefined> {
     if (
-      state.nextDraftSource !== 'VERIFIER_REVISION' ||
+      !['VERIFIER_REVISION', 'CITATION_REVISION'].includes(
+        state.nextDraftSource,
+      ) ||
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
       !state.verification?.requiresRevision
     ) {
       return undefined;
     }
 
-    const evidence = state.rerankedChunks
-      .slice(0, this.maxRerankedEvidence)
-      .flatMap((chunk, index) => {
+    const bounds = readRagPromptBounds(this.config);
+    const verifierIssues = boundTextItems(
+      state.verification.issues ?? [],
+      (issue) => issue,
+      (_issue, text) => text,
+      bounds.maxClaims,
+      bounds.maxClaimChars,
+      bounds.maxClaimsTotalChars,
+    );
+    const evidence = boundEvidence(state.rerankedChunks, bounds).flatMap(
+      (chunk, index) => {
         const evidenceText =
           chunk.evidenceText?.trim() ||
           (chunk.evidenceType === 'METADATA'
@@ -59,7 +73,8 @@ export class BuildGroundedAnswerRevisionUseCase {
             endTime: chunk.endTime,
           },
         ];
-      });
+      },
+    );
     if (evidence.length === 0) return undefined;
 
     const raw =
@@ -77,10 +92,19 @@ export class BuildGroundedAnswerRevisionUseCase {
           'Never invent an evidence ID. Return only JSON matching the schema.',
         ].join(' '),
         userPrompt: JSON.stringify({
-          question: state.userMessage,
-          currentAnswer: state.answer ?? '',
-          verifierIssues: state.verification.issues,
-          verifierInstruction: state.verification.revisedInstruction,
+          question: boundPromptText(
+            state.userMessage,
+            bounds.maxUserMessageChars,
+          ),
+          currentAnswer: boundPromptText(
+            state.answer ?? '',
+            bounds.maxAnswerChars,
+          ),
+          verifierIssues,
+          verifierInstruction: boundPromptText(
+            state.verification.revisedInstruction ?? '',
+            bounds.maxClaimChars,
+          ),
           evidence,
         }),
         jsonSchema: {

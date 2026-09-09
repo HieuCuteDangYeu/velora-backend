@@ -34,9 +34,10 @@ describe('semantic pipeline clean architecture', () => {
   });
 
   it('keeps provider model IDs out of semantic application use cases', () => {
+    const legacyWorkersAiPrefix = ['@', 'cf/'].join('');
     const violations = applicationRoots.flatMap((directory) =>
       productionTypescriptFiles(directory).filter((file) =>
-        readFileSync(file, 'utf8').includes('@cf/'),
+        readFileSync(file, 'utf8').includes(legacyWorkersAiPrefix),
       ),
     );
     expect(violations).toEqual([]);

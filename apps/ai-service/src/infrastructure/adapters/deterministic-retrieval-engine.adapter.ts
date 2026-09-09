@@ -29,6 +29,10 @@ import type {
 } from '@common/processing/interfaces/semantic-index.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawRetrievalPlan {
   mode?: unknown;
@@ -663,10 +667,14 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     message: string;
     route: RagChatRouteDecision;
   }): Promise<RagRetrievalPlan> {
+    const message = boundPromptText(
+      input.message,
+      readRagPromptBounds(this.config).maxUserMessageChars,
+    );
     if (!input.route.needsRetrieval) {
       return {
         mode: 'NONE',
-        query: input.message,
+        query: message,
         queries: [],
         searchLimit: 0,
         rerankLimit: 0,
@@ -684,7 +692,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       const raw =
         await this.structuredLlmService.generateObject<RawRetrievalPlan>({
           systemPrompt: this.buildSystemPrompt(),
-          userPrompt: this.buildUserPrompt(input.message, input.route),
+          userPrompt: this.buildUserPrompt(message, input.route),
           jsonSchema: this.getJsonSchema(),
           maxTokens:
             this.applicationConfig.maxCompletionTokens('RETRIEVAL_PLANNER'),
@@ -702,7 +710,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           },
         });
       return {
-        ...this.normalize(raw, input.message),
+        ...this.normalize(raw, message),
         diagnostics: {
           modelRole: 'RETRIEVAL_PLANNER',
           model: this.config.getOrThrow<string>('AI_RETRIEVAL_PLANNER_MODEL'),
@@ -718,7 +726,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       );
       return {
         mode: 'NONE',
-        query: input.message,
+        query: message,
         queries: [],
         searchLimit: 0,
         rerankLimit: 0,

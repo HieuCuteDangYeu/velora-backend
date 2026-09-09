@@ -35,11 +35,19 @@ def test_v2_definitions_must_come_from_the_selected_dataset(tmp_path):
     validate_definitions_report(str(path), {row.id: row for row in dataset})
 
 
+def test_v3_definitions_use_the_normal_selected_dataset_contract(tmp_path):
+    dataset = list(load_dataset("rag-frozen-ami-v3"))
+    path = tmp_path / "definitions-v3.json"
+    path.write_text(json.dumps(_definitions_for(dataset)))
+
+    validate_definitions_report(str(path), {row.id: row for row in dataset})
+
+
 def test_live_dataset_contract_accepts_supported_frozen_versions_only():
     assert is_supported_live_dataset("rag-frozen-ami-v1")
     assert is_supported_live_dataset("rag-frozen-ami-v2")
+    assert is_supported_live_dataset("rag-frozen-ami-v3")
     assert not is_supported_live_dataset("rag-generalization-v1")
-    assert not is_supported_live_dataset("rag-frozen-ami-v3")
 
 
 def test_definitions_reel_mismatch_is_rejected(tmp_path):

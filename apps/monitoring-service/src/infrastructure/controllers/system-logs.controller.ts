@@ -31,6 +31,7 @@ const ALLOWED_LOG_SERVICES = new Set([
   'rag-eval',
   'rabbitmq',
   'prometheus',
+  'node-exporter',
   'grafana',
   'loki',
   'alloy',

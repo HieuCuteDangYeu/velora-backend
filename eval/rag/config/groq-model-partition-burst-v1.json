@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "rag-groq-model-partition-v1",
+  "variantName": "groq-model-partition-burst-v1",
+  "datasetVersion": "rag-generalization-v1",
+  "status": "QUALIFICATION_FAILED_SEMANTIC_REGRESSION",
+  "source": "Provider-free PR58 bounded role estimates; no production environment mutation",
+  "provider": "groq",
+  "rateLimitAssumption": {
+    "publishedScope": "organization-enforced model-ID buckets with shared organization ceilings",
+    "modelSpecificTpm": true,
+    "observedTpmLimit": 8000,
+    "safetyTargetTpm": 6400,
+    "projectEffectiveLimit": "UNKNOWN"
+  },
+  "roleModels": {
+    "ROUTER": "openai/gpt-oss-20b",
+    "RETRIEVAL_PLANNER": "qwen/qwen3.8-27b",
+    "CONTEXT_SUFFICIENCY": "qwen/qwen3.8-27b",
+    "ANSWER": "openai/gpt-oss-120b",
+    "ANSWER_REVISION": "qwen/qwen3.8-27b",
+    "VERIFIER": "openai/gpt-oss-120b",
+    "VERIFIER_ESCALATION": "qwen/qwen3.8-27b",
+    "CITATION_ATTRIBUTION": "openai/gpt-oss-20b"
+  },
+  "normalPath": {
+    "roles": ["ROUTER", "RETRIEVAL_PLANNER", "CONTEXT_SUFFICIENCY", "ANSWER", "VERIFIER", "CITATION_ATTRIBUTION"],
+    "estimatedTotalTokens": 15202,
+    "models": {
+      "openai/gpt-oss-20b": { "roles": ["ROUTER", "CITATION_ATTRIBUTION"], "estimatedTokens60s": 5165, "headroomToSafetyTarget": 1235 },
+      "openai/gpt-oss-120b": { "roles": ["ANSWER", "VERIFIER"], "estimatedTokens60s": 6382, "headroomToSafetyTarget": 18 },
+      "qwen/qwen3.8-27b": { "roles": ["RETRIEVAL_PLANNER", "CONTEXT_SUFFICIENCY"], "estimatedTokens60s": 3655, "headroomToSafetyTarget": 2745 }
+    }
+  },
+  "conditionalPaths": {
+    "revision": { "additionalRole": "ANSWER_REVISION", "model": "qwen/qwen3.8-27b", "estimatedBucketWithNormalRoles": 5339, "headroomToSafetyTarget": 1061 },
+    "escalation": { "additionalRole": "VERIFIER_ESCALATION", "model": "qwen/qwen3.8-27b", "estimatedBucketWithNormalRoles": 6031, "headroomToSafetyTarget": 369 }
+  },
+  "reasoningContract": {
+    "currentConfiguredEffort": "low",
+    "gptOss": "current adapter sends low for GPT-OSS models",
+    "qwen38": "candidate adapter forwards the configured low effort; provider-free request-contract test covers this",
+    "qualificationStatus": "PENDING_MODEL_QUALITY_QUALIFICATION"
+  },
+  "capabilityContract": {
+    "structuredJsonSchema": "documented_for_qwen38_and_gpt_oss",
+    "freeFormText": "documented_for_qwen38_and_gpt_oss",
+    "toolUseRequiredByNormalPath": false,
+    "qualityEquivalence": "UNQUALIFIED_WITHOUT_LIVE_MODEL_SAMPLE"
+  },
+  "providerFreeGates": {
+    "staticPartition": "PASS",
+    "roleConfigurationSupport": "PASS",
+    "promptAndSchemaTests": "PASS_REQUIRED_BEFORE_QUALIFICATION",
+    "modelQuality": "NOT_EVALUABLE_WITHOUT_PROVIDER_CALLS"
+  },
+  "minimumLiveQualification": {
+    "dataset": "rag-generalization-v1",
+    "privateData": false,
+    "primaryRequests": 0,
+    "minimumRoleSmokeCalls": 4,
+    "recommendedCalls": "three bounded structural/semantic samples per moved role, then stop on first structural failure",
+    "estimatedQualificationCalls": 12
+  },
+  "lastQualification": {
+    "model": "qwen/qwen3.8-27b",
+    "providerCalls": 12,
+    "statisticalClaim": false,
+    "structuralPass": "12/12",
+    "semanticPassByRole": { "RETRIEVAL_PLANNER": "3/3", "CONTEXT_SUFFICIENCY": "2/3", "ANSWER_REVISION": "3/3", "VERIFIER_ESCALATION": "1/3" },
+    "productionApproval": "NO"
+  }
+}

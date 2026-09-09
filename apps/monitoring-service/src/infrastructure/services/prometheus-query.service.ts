@@ -59,17 +59,16 @@ export class PrometheusQueryService {
         : 4000;
   }
 
-  async scalar(query: string): Promise<number> {
-    return (await this.scalarNullable(query)) ?? 0;
-  }
-
-  async scalarNullable(query: string): Promise<number | null> {
+  async scalar(query: string): Promise<number | null> {
     const payload = await this.request<PrometheusInstantResult>(
       '/api/v1/query',
       new URLSearchParams({ query }),
     );
     const rawValue = payload.result[0]?.value?.[1];
-    if (rawValue === undefined) return null;
+    if (rawValue === undefined) {
+      return null;
+    }
+
     const value = Number(rawValue);
     return Number.isFinite(value) ? value : null;
   }
@@ -143,6 +142,7 @@ export class PrometheusQueryService {
         `Prometheus query failed: ${envelope.error ?? envelope.errorType ?? 'unknown error'}`,
       );
     }
+
     return envelope.data;
   }
 }

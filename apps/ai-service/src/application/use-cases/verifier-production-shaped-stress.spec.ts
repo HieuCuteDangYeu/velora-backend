@@ -20,9 +20,9 @@ const { verifierCases } =
 
 describe('production-shaped generic verifier contract', () => {
   const config = {
-    model: jest.fn((role: string) => `@cf/test/${role.toLowerCase()}`),
+    model: jest.fn((role: string) => `test/test/${role.toLowerCase()}`),
     timeoutMs: jest.fn(() => 20_000),
-    maxCompletionTokens: jest.fn(() => 650),
+    maxCompletionTokens: jest.fn(() => 1_024),
     boolean: jest.fn(() => true),
     number: jest.fn((key: string) =>
       key === 'AI_VERIFIER_MAX_ATTEMPTS' ? 2 : 0.8,
@@ -98,6 +98,7 @@ describe('production-shaped generic verifier contract', () => {
         expect.objectContaining({
           modelRole: 'VERIFIER',
           temperature: 0,
+          maxTokens: 1_024,
           timeoutMs: 20_000,
         }),
       );

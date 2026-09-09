@@ -4,7 +4,7 @@ import { CheckContextSufficiencyUseCase } from './check-context-sufficiency.use-
 
 describe('CheckContextSufficiencyUseCase', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/sufficiency'),
+    model: jest.fn(() => 'test/test/sufficiency'),
     timeoutMs: jest.fn(() => 6_000),
     maxCompletionTokens: jest.fn(() => 512),
   } as unknown as IAiApplicationConfig;
@@ -107,7 +107,7 @@ describe('CheckContextSufficiencyUseCase', () => {
       });
       expect(service.generateObject).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: '@cf/test/sufficiency',
+          model: 'test/test/sufficiency',
           timeoutMs: 6_000,
           temperature: 0,
           schemaVersion: 'context-sufficiency-v2',

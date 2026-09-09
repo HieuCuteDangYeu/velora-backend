@@ -132,7 +132,7 @@ const buildAdapter = (configValues: Record<string, string>) => {
   const embeddingService: IEmbeddingService = {
     generateVector: jest.fn().mockResolvedValue({
       values: Array.from({ length: 1024 }, () => 0.01),
-      model: '@cf/baai/bge-m3',
+      model: 'test/baai/bge-m3',
       dimensions: 1024,
       provider: 'cloudflare-workers-ai',
       version: 'cf-bge-m3-v1',
@@ -204,7 +204,7 @@ const emptyRetrievalDiagnostics = (): RagRetrievalExecutionDiagnostics => ({
 describe('DeterministicRetrievalEngineAdapter', () => {
   it('uses an explicit bounded contract for semantic retrieval planning', async () => {
     const { adapter, generateObject } = buildAdapter({
-      AI_RETRIEVAL_PLANNER_MODEL: '@cf/openai/gpt-oss-20b',
+      AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',
       AI_RETRIEVAL_PLANNER_TIMEOUT_MS: '8000',
     });
 
@@ -223,7 +223,7 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     const request = generateObject.mock.calls[0]?.[0];
     expect(request).toEqual(
       expect.objectContaining({
-        model: '@cf/openai/gpt-oss-20b',
+        model: 'test/openai/gpt-oss-20b',
         modelRole: 'RETRIEVAL_PLANNER',
         maxTokens: 512,
         timeoutMs: 8_000,
@@ -243,14 +243,14 @@ describe('DeterministicRetrievalEngineAdapter', () => {
 
   it('persists safe planner structured-call diagnostics on success', async () => {
     const { adapter, generateObject } = buildAdapter({
-      AI_RETRIEVAL_PLANNER_MODEL: '@cf/openai/gpt-oss-20b',
+      AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',
       AI_RETRIEVAL_PLANNER_TIMEOUT_MS: '8000',
     });
     generateObject.mockImplementationOnce(
       (input: GenerateStructuredObjectInput) => {
         input.onDiagnostics?.({
           modelRole: 'RETRIEVAL_PLANNER',
-          model: '@cf/openai/gpt-oss-20b',
+          model: 'test/openai/gpt-oss-20b',
           providerStatus: 200,
           latencyMs: 12,
           configuredTimeoutMs: 8000,
@@ -293,14 +293,14 @@ describe('DeterministicRetrievalEngineAdapter', () => {
 
   it('persists safe failed planner diagnostics on fail-closed planning', async () => {
     const { adapter, generateObject } = buildAdapter({
-      AI_RETRIEVAL_PLANNER_MODEL: '@cf/openai/gpt-oss-20b',
+      AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',
       AI_RETRIEVAL_PLANNER_TIMEOUT_MS: '8000',
     });
     generateObject.mockImplementationOnce(
       (input: GenerateStructuredObjectInput) => {
         input.onDiagnostics?.({
           modelRole: 'RETRIEVAL_PLANNER',
-          model: '@cf/openai/gpt-oss-20b',
+          model: 'test/openai/gpt-oss-20b',
           providerStatus: 429,
           latencyMs: 20,
           configuredTimeoutMs: 8000,

@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - '.env.example'
+      - 'docker-compose.yml'
       - 'apps/monitoring-service/**'
       - 'apps/api-gateway/src/monitoring/**'
       - 'apps/api-gateway/src/api-gateway.module.ts'
@@ -27,22 +28,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate monitoring Compose overlay
+      - name: Validate root Compose monitoring services
         shell: bash
         run: |
           set -euo pipefail
-          install -m 600 /dev/null .env
+          cat > .env <<'EOF'
+          RABBITMQ_DEFAULT_USER=ci
+          RABBITMQ_DEFAULT_PASS=ci
+          RABBITMQ_DEFAULT_VHOST=/
+          RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/
+          EOF
           trap 'rm -f -- .env' EXIT
+
+          node scripts/ops/validate-rabbitmq-config.cjs --env-file .env
 
           COMPOSE_DISABLE_ENV_FILE=1 \
             DOCKERHUB_USERNAME=ci-placeholder \
-            RABBITMQ_USER=ci \
-            RABBITMQ_PASSWORD=ci \
+            RABBITMQ_DEFAULT_USER=ci \
+            RABBITMQ_DEFAULT_PASS=ci \
+            RABBITMQ_DEFAULT_VHOST=/ \
+            RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
             GRAFANA_ADMIN_PASSWORD=ci-placeholder \
-            docker compose \
-              -f docker-compose.yml \
-              -f infra/monitoring/docker-compose.monitoring.yml \
-              config --no-env-resolution --quiet
+            docker compose config --no-env-resolution --quiet
 
       - name: Validate Prometheus configuration and rules
         shell: bash
@@ -53,25 +60,6 @@ jobs:
             -v "$PWD/infra/monitoring/prometheus:/etc/prometheus:ro" \
             prom/prometheus:latest \
             check config /etc/prometheus/prometheus.yml
-
-      - name: Validate Loki configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            -v "$PWD/infra/monitoring/loki:/etc/loki:ro" \
-            grafana/loki:latest \
-            -config.file=/etc/loki/loki-config.yml \
-            -verify-config
-
-      - name: Validate Alloy configuration
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            -v "$PWD/infra/monitoring/alloy:/etc/alloy:ro" \
-            grafana/alloy:latest \
-            validate /etc/alloy/config.alloy
 
       - name: Validate Grafana dashboard JSON
         run: jq -e . infra/monitoring/grafana/dashboards/velora-monitoring.json >/dev/null

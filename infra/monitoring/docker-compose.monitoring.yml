@@ -4,38 +4,8 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
     depends_on:
-      prometheus:
-        condition: service_started
       loki:
         condition: service_started
-
-  prometheus:
-    image: prom/prometheus:latest
-    restart: unless-stopped
-    mem_limit: ${PROMETHEUS_MEMORY_LIMIT:-512m}
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --storage.tsdb.retention.time=3d
-    volumes:
-      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./infra/monitoring/prometheus/rules:/etc/prometheus/rules:ro
-      - prometheus_data:/prometheus
-    ports:
-      - '127.0.0.1:9090:9090'
-    networks:
-      - microservices-net
-
-  node-exporter:
-    image: prom/node-exporter:latest
-    restart: unless-stopped
-    mem_limit: ${NODE_EXPORTER_MEMORY_LIMIT:-64m}
-    command:
-      - --path.rootfs=/host
-    volumes:
-      - /:/host:ro
-    networks:
-      - microservices-net
 
   loki:
     image: grafana/loki:latest
@@ -70,27 +40,12 @@ services:
       - microservices-net
 
   grafana:
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    mem_limit: ${GRAFANA_MEMORY_LIMIT:-256m}
     environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
-      GF_USERS_ALLOW_SIGN_UP: 'false'
-    volumes:
-      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - '127.0.0.1:3001:3000'
+      GF_PLUGINS_DISABLE_PLUGINS: elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-metricsdrilldown-app,grafana-advisor-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-lokiexplore-app
     depends_on:
       - prometheus
       - loki
-    networks:
-      - microservices-net
 
 volumes:
-  prometheus_data:
   loki_data:
   alloy_data:
-  grafana_data:

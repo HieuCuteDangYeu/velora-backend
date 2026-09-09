@@ -33,6 +33,11 @@ import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod/v4';
+import {
+  boundRecentMessages,
+  boundPromptText,
+  readRagPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 
 const RagChatStateSchema = new StateSchema({
   userId: z.string(),
@@ -62,6 +67,7 @@ const RagChatStateSchema = new StateSchema({
   memoryReady: z.boolean().default(false),
 
   answer: z.string().optional(),
+  answerDiagnostics: z.array(z.any()).default([]),
   verification: z.any().optional(),
   citations: z.array(z.any()).default([]),
   citationCoverage: z.any().optional(),
@@ -137,6 +143,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       recommendedReels: [],
       suggestedQueries: [],
       memoryReady: false,
+      answerDiagnostics: [],
       citations: [],
       retryCount: 0,
       retrievalRetryCount: 0,
@@ -496,7 +503,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.memoryAgentUseCase.execute({
           userId: state.userId,
           conversationId: state.conversationId,
-          message: state.userMessage,
+          message: boundPromptText(
+            state.userMessage,
+            readRagPromptBounds(this.config).maxUserMessageChars,
+          ),
           route,
           memory: state.memory,
         }),
@@ -1158,7 +1168,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       ...(this.optionalString(record.errorCode)
         ? { errorCode: this.optionalString(record.errorCode) }
         : {}),
-      ...(typeof record.providerCode === 'number'
+      ...(typeof record.providerCode === 'number' ||
+      typeof record.providerCode === 'string'
         ? { providerCode: record.providerCode }
         : {}),
       ...(this.structuredProviderCategory(record.providerCategory)
@@ -1170,6 +1181,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         : {}),
       ...(typeof record.retryAfterMs === 'number'
         ? { retryAfterMs: record.retryAfterMs }
+        : {}),
+      ...(this.safeRateLimit(record.rateLimit)
+        ? { rateLimit: this.safeRateLimit(record.rateLimit) }
         : {}),
       ...(typeof record.transient === 'boolean'
         ? { transient: record.transient }
@@ -1230,6 +1244,27 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return Object.keys(usage).length > 0 ? usage : undefined;
   }
 
+  private safeRateLimit(
+    value: unknown,
+  ): RagStructuredCallFailureDiagnostic['rateLimit'] | undefined {
+    const record = this.asRecord(value);
+    const keys = [
+      'retryAfter',
+      'limitRequests',
+      'limitTokens',
+      'remainingRequests',
+      'remainingTokens',
+      'resetRequests',
+      'resetTokens',
+    ] as const;
+    const result = Object.fromEntries(
+      keys
+        .map((key) => [key, this.optionalString(record[key])] as const)
+        .filter(([, item]) => item !== undefined),
+    ) as NonNullable<RagStructuredCallFailureDiagnostic['rateLimit']>;
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
   private errorRecord(error: unknown): Record<string, unknown> {
     return this.asRecord(error);
   }
@@ -1263,8 +1298,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   ): RagStructuredCallFailureDiagnostic['providerCategory'] | undefined {
     return typeof value === 'string' &&
       [
+        'AUTH_OR_CONFIGURATION_FAILURE',
         'ACCOUNT_LIMITED',
         'OUT_OF_CAPACITY',
+        'PERMANENT_PROVIDER_FAILURE',
         'RATE_LIMITED',
         'TRANSIENT_PROVIDER_FAILURE',
         'UNKNOWN_PROVIDER_FAILURE',
@@ -1291,7 +1328,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private formatRecentHistory(state: RagChatWorkflowState): string {
-    const messages = state.memory?.recentMessages ?? [];
+    const messages = boundRecentMessages(
+      state.memory?.recentMessages ?? [],
+      readRagPromptBounds(this.config),
+    );
 
     if (messages.length === 0) {
       return '';
@@ -1303,17 +1343,25 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private buildRouterReferentContext(state: RagChatWorkflowState) {
-    const eventTypes = (state.memory?.recentMessages ?? [])
+    const bounds = readRagPromptBounds(this.config);
+    const allEventTypes = (state.memory?.recentMessages ?? [])
       .map((message) => message.eventType)
       .filter(
         (eventType): eventType is 'TEXT' | 'REEL_SHARE' =>
           eventType === 'TEXT' || eventType === 'REEL_SHARE',
       );
-    const recentShareIndex = eventTypes.lastIndexOf('REEL_SHARE');
+    const recentShareIndex = allEventTypes.lastIndexOf('REEL_SHARE');
+    const recentEventTypes = allEventTypes.slice(-bounds.maxRouterEventTypes);
+    if (
+      recentShareIndex >= 0 &&
+      recentShareIndex < allEventTypes.length - bounds.maxRouterEventTypes
+    ) {
+      recentEventTypes.unshift('REEL_SHARE');
+    }
     const turnsSinceRecentShare =
       recentShareIndex < 0
         ? undefined
-        : eventTypes.length - recentShareIndex - 1;
+        : allEventTypes.length - recentShareIndex - 1;
 
     return {
       conversationHasSharedReelContext: state.hasSharedReelContext ?? false,
@@ -1321,7 +1369,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       recentShareEvent:
         turnsSinceRecentShare !== undefined && turnsSinceRecentShare <= 2,
       turnsSinceRecentShare,
-      recentEventTypes: eventTypes,
+      recentEventTypes,
     };
   }
 

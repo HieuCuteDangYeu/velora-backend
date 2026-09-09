@@ -14,6 +14,16 @@ export type StructuredProviderFailureCategory =
   | 'TRANSIENT_PROVIDER_FAILURE'
   | 'UNKNOWN_PROVIDER_FAILURE';
 
+export interface StructuredRateLimitDiagnostics {
+  retryAfter?: string;
+  limitRequests?: string;
+  limitTokens?: string;
+  remainingRequests?: string;
+  remainingTokens?: string;
+  resetRequests?: string;
+  resetTokens?: string;
+}
+
 export type StructuredJsonType =
   | 'string'
   | 'array'
@@ -43,9 +53,10 @@ export interface StructuredLlmCallDiagnostics {
     reasoningTokens?: number;
   };
   errorCode?: string;
-  providerCode?: number;
+  providerCode?: number | string;
   providerCategory?: StructuredProviderFailureCategory;
   retryAfterMs?: number;
+  rateLimit?: StructuredRateLimitDiagnostics;
   requestId?: string;
   networkErrorName?: string;
   networkErrorCode?: string;

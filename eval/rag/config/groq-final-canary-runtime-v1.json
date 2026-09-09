@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "rag-final-canary-runtime-v1",
+  "variantName": "qualified-groq-free-tier-partition",
+  "productionMutation": false,
+  "providerCutover": false,
+  "roles": {
+    "ROUTER": "qwen/qwen3.8-27b",
+    "RETRIEVAL_PLANNER": "qwen/qwen3.8-27b",
+    "ANSWER_REVISION": "qwen/qwen3.8-27b",
+    "CONTEXT_SUFFICIENCY": "openai/gpt-oss-20b",
+    "CITATION_ATTRIBUTION": "openai/gpt-oss-20b",
+    "VERIFIER_ESCALATION": "openai/gpt-oss-20b",
+    "ANSWER": "openai/gpt-oss-120b",
+    "VERIFIER": "openai/gpt-oss-120b"
+  },
+  "qwenReasoningEffort": "low",
+  "embedding": {
+    "provider": "self-hosted-tei",
+    "model": "BAAI/bge-m3",
+    "dimensions": 1024,
+    "version": "bge-m3-tei-v1"
+  },
+  "reranker": {
+    "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+    "deterministicDiversity": true
+  },
+  "routerContract": {
+    "timeoutMs": 30000,
+    "maxCompletionTokens": 512,
+    "responseFormat": "CHAT_JSON_SCHEMA",
+    "strictSchema": false,
+    "promptHash": "cc1e2ea2beba6fd2599d10a73063307ff0d6321d1190a6a834ae64e0e7b4406e",
+    "schemaHash": "d24f06601ebc6fa30ae91eb856cf201d3c2b668a5d2c657a87134402811a4424"
+  },
+  "configSha256": "274f7a3764ca34739ce85c88e6986a3cfe4d562048dbf133cd48dfe295a279fd"
+}

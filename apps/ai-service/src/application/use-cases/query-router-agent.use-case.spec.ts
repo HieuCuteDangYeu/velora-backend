@@ -9,7 +9,7 @@ import {
 
 describe('QueryRouterAgentUseCase', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/router'),
+    model: jest.fn(() => 'test/test/router'),
     timeoutMs: jest.fn(() => 7_000),
     maxCompletionTokens: jest.fn(() => 384),
     get: jest.fn().mockReturnValue(undefined),
@@ -28,7 +28,7 @@ describe('QueryRouterAgentUseCase', () => {
 
   const routerDiagnostic = (attempt: number, overrides = {}) => ({
     modelRole: 'ROUTER',
-    model: '@cf/test/router',
+    model: 'test/test/router',
     providerStatus: 503 as const,
     latencyMs: 10,
     configuredTimeoutMs: 7_000,
@@ -129,7 +129,7 @@ describe('QueryRouterAgentUseCase', () => {
       });
       expect(structuredLlmService.generateObject).toHaveBeenCalledWith(
         expect.objectContaining({
-          model: '@cf/test/router',
+          model: 'test/test/router',
           timeoutMs: 7_000,
           maxTokens: 384,
           temperature: 0,
@@ -493,7 +493,7 @@ describe('QueryRouterAgentUseCase', () => {
     const bounded = {
       ...config,
       get: jest.fn((key: string) =>
-        key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/secondary' : undefined,
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/secondary' : undefined,
       ),
       number: jest.fn((key: string, fallback: number) =>
         key === 'AI_ROUTER_FALLBACK_TIMEOUT_MS'
@@ -539,7 +539,7 @@ describe('QueryRouterAgentUseCase', () => {
       ...config,
       get: jest.fn((key: string) =>
         key === 'AI_ROUTER_FALLBACK_MODEL'
-          ? '@cf/openai/gpt-oss-20b'
+          ? 'test/openai/gpt-oss-20b'
           : undefined,
       ),
     } as unknown as IAiApplicationConfig;
@@ -556,13 +556,13 @@ describe('QueryRouterAgentUseCase', () => {
     ).resolves.toMatchObject({
       intent: 'REEL_VIDEO_QUESTION',
       diagnostics: {
-        model: '@cf/openai/gpt-oss-20b',
+        model: 'test/openai/gpt-oss-20b',
         decisionSource: 'LLM_FALLBACK',
       },
     });
     expect(service.generateObject).toHaveBeenCalledTimes(2);
     expect(service.generateObject.mock.calls[1]?.[0]).toMatchObject({
-      model: '@cf/openai/gpt-oss-20b',
+      model: 'test/openai/gpt-oss-20b',
       attempt: 2,
       timeoutMs: 30_000,
     });
@@ -578,7 +578,7 @@ describe('QueryRouterAgentUseCase', () => {
     const fallbackConfig = {
       ...config,
       get: jest.fn((key: string) =>
-        key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/fallback' : undefined,
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/fallback' : undefined,
       ),
     } as unknown as IAiApplicationConfig;
 
@@ -609,7 +609,7 @@ describe('QueryRouterAgentUseCase', () => {
     const fallbackConfig = {
       ...config,
       get: jest.fn((key: string) =>
-        key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/secondary' : undefined,
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/secondary' : undefined,
       ),
     } as unknown as IAiApplicationConfig;
 
@@ -641,7 +641,7 @@ describe('QueryRouterAgentUseCase', () => {
     const fallbackConfig = {
       ...config,
       get: jest.fn((key: string) =>
-        key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/secondary' : undefined,
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/secondary' : undefined,
       ),
     } as unknown as IAiApplicationConfig;
 
@@ -736,8 +736,8 @@ describe('QueryRouterAgentUseCase', () => {
     expect(result.intent).toBe('NORMAL_CHAT');
     expect(service.generateObject).toHaveBeenCalledTimes(2);
     expect(requests.map((input) => input.model)).toEqual([
-      '@cf/test/router',
-      '@cf/test/router',
+      'test/test/router',
+      'test/test/router',
     ]);
     expect(
       result.diagnostics?.semanticCalls?.map((call) => call.attempt),
@@ -826,7 +826,7 @@ describe('QueryRouterAgentUseCase', () => {
           requests.push(input);
           input.onDiagnostics?.({
             ...routerDiagnostic(3),
-            model: '@cf/test/fallback',
+            model: 'test/test/fallback',
             providerStatus: 200,
             providerCategory: undefined,
             transient: undefined,
@@ -837,7 +837,7 @@ describe('QueryRouterAgentUseCase', () => {
     const fallbackConfig = {
       ...primaryAttemptsConfig(2),
       get: jest.fn((key: string) =>
-        key === 'AI_ROUTER_FALLBACK_MODEL' ? '@cf/test/fallback' : undefined,
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/fallback' : undefined,
       ),
     } as unknown as IAiApplicationConfig;
 
@@ -886,7 +886,7 @@ describe('QueryRouterAgentUseCase', () => {
       code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
     });
     const diagnostics = {
-      model: '@cf/test/router',
+      model: 'test/test/router',
       providerStatus: 503 as const,
       latencyMs: 10,
       configuredTimeoutMs: 1_000,
@@ -1104,4 +1104,20 @@ describe('QueryRouterAgentUseCase', () => {
       expect(service.generateObject).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('bounds direct query and history inputs before routing', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(response()),
+    };
+
+    await new QueryRouterAgentUseCase(service as never, config).execute({
+      message: `question ${'x '.repeat(2_000)} query-tail`,
+      recentHistory: `history ${'y '.repeat(2_000)} history-tail`,
+    });
+
+    const request = service.generateObject.mock.calls[0][0];
+    expect(request.userPrompt.length).toBeLessThan(3_500);
+    expect(request.userPrompt).not.toContain('query-tail');
+    expect(request.userPrompt).not.toContain('history-tail');
+  });
 });

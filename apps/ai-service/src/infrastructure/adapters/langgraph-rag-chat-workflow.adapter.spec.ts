@@ -369,7 +369,7 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
           semanticCalls: [
             {
               modelRole: 'CITATION_ATTRIBUTION',
-              model: '@cf/test/citation',
+              model: 'test/test/citation',
               providerStatus: 'TIMEOUT',
               latencyMs: 4_000,
               configuredTimeoutMs: 4_000,
@@ -544,6 +544,56 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
     expect(groundedRevision.executeWithProvenance).toHaveBeenCalledTimes(1);
   });
 
+  it('routes citation revisions through the grounded ANSWER_REVISION path', async () => {
+    const groundedRevision = {
+      executeWithProvenance: jest.fn().mockResolvedValue({
+        answer: 'A grounded citation revision.',
+        evidenceIds: ['e0'],
+        modelRole: 'ANSWER_REVISION',
+      }),
+    };
+    const draft = { execute: jest.fn() };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      draft as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+      groundedRevision as never,
+    ) as unknown as DiagnosticWorkflow;
+
+    const result = await workflow.createDraftAnswerNode({})({
+      ...base(),
+      nextDraftSource: 'CITATION_REVISION',
+      verification: {
+        passed: false,
+        confidence: 0,
+        issues: ['Citation coverage failed.'],
+        requiresRevision: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      answer: 'A grounded citation revision.',
+      groundedRevision: { evidenceIds: ['e0'], modelRole: 'ANSWER_REVISION' },
+      draftHistory: [
+        expect.objectContaining({ source: 'GROUNDED_VERIFIER_REVISION' }),
+      ],
+    });
+    expect(groundedRevision.executeWithProvenance).toHaveBeenCalledTimes(1);
+    expect(draft.execute).not.toHaveBeenCalled();
+  });
+
   it('bounds graph-generated draft history at configured revision capacity', async () => {
     const workflow = makeWorkflow();
     const draft = workflow.createDraftAnswerNode({});
@@ -615,7 +665,7 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
         semanticCalls: [
           {
             modelRole: 'ROUTER',
-            model: '@cf/test/router',
+            model: 'test/test/router',
             providerStatus: 200,
             latencyMs: 12,
             configuredTimeoutMs: 30_000,
@@ -678,7 +728,7 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
             },
             semanticCalls: [
               expect.objectContaining({
-                model: '@cf/test/router',
+                model: 'test/test/router',
                 providerStatus: 200,
                 endpointContract: 'CHAT_JSON_SCHEMA',
               }),

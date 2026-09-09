@@ -3,8 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// The versioned evaluation dataset is the source of truth. Jest/control-plane
-// tests consume the exact same generic fixtures through this compatibility view.
+// The versioned evaluation dataset is the source of truth. Contract tests
+// consume the exact same generic fixtures through this compatibility view.
 const datasetPath = path.resolve(
   __dirname,
   '../../eval/rag/datasets/rag-generalization-v1.jsonl',

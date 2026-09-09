@@ -16,10 +16,10 @@ No evaluation dependency is a production dependency. `pnpm eval:rag:test` and of
 
 ## Datasets
 
-- `rag-frozen-ami-v1` and `rag-frozen-ami-v2`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records new production reel and index provenance.
+- `rag-frozen-ami-v1`, `rag-frozen-ami-v2`, and `rag-frozen-ami-v3`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records the prior production reel/index provenance and v3 records the canonical self-hosted BGE-M3 production index provenance.
 - `rag-generalization-v1`: 65 router, 20 sufficiency, 15 verifier, and four generic retrieval/citation/access/provider rows. Tags are analysis metadata only.
 
-The JSONL files under `datasets/` are the source of truth. Existing Jest control-plane tests read their fixture payloads from the same generic dataset. To add a case, add safe, non-production fixture data, increment the dataset version when semantics change, update the declared count, and add contract tests. Never place credentials, private production text, or benchmark answers in runtime code.
+The JSONL files under `datasets/` are the source of truth. Existing contract tests read their fixture payloads from the same generic dataset. To add a case, add safe, non-production fixture data, increment the dataset version when semantics change, update the declared count, and add contract tests. Never place credentials, private production text, or benchmark answers in runtime code.
 
 ## Commands
 
@@ -29,6 +29,8 @@ pnpm eval:rag:live --dataset rag-frozen-ami-v1 --variant production \
   --definitions-report <safe-definitions.json> --confirm-live
 pnpm eval:rag:report --run <run-id>
 pnpm eval:rag:compare --baseline <run-a> --candidate <run-b>
+pnpm eval:rag:persist --run <completed-run-id>
+pnpm eval:rag:reranker
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
 ```
@@ -65,6 +67,22 @@ and `CONFIG_MATCH=YES` before any provider call.
 
 Offline mode uses explicit `FIXTURE` normalized results and never creates provider clients. Live mode is opt-in, invokes the existing TypeScript runner, refuses unsupported datasets, and evaluates only completed/reconciled rows. A failed or missing response remains in the denominator with a failure status; semantic metrics may be null.
 
+Completed evaluation artifacts can be imported after a separately authorized
+run with `pnpm eval:rag:persist --run <run-id>`. The importer reads only the
+canonical `summary.json` and `cases.jsonl`, verifies the dataset bytes, stores
+sanitized metrics/provenance, and never stores questions, answers, or retrieved
+context. It requires `RAG_EVAL_PERSIST_CONFIRM=YES` and an explicit
+`REEL_INDEXING_DATABASE_URL`; it does not fall back to another database
+variable. Repeating an identical artifact is an idempotent no-op, while a
+different artifact for an existing `benchmarkRunId` is rejected.
+
+The provider-free reranker qualification uses the versioned safe fixture set
+`rag-reranker-generalization-v1`. Run `pnpm eval:rag:reranker` only when the
+profile-gated local TEI reranker is available; the harness disables the
+reranker fallback so a passing result always represents the actual MiniLM
+resource. Its two-case result is a small qualification gate, not a statistical
+reliability claim.
+
 Capacity check makes exactly one cheap production-model request and never launches a benchmark. It requires explicit confirmation and Cloudflare credentials. Do not repeat it while an account-limit response is already known.
 
 The capacity check uses `RAG_EVAL_CAPACITY_MODEL` (default `@cf/openai/gpt-oss-20b`) through a separate no-retry client. It does not construct the Ragas judge, invoke the judge model, or call embeddings. Run production-model deterministic gates and persist normalized frozen execution results before invoking semantic judge metrics.
@@ -97,50 +115,23 @@ Each run writes one schema family: `summary.json`, `cases.jsonl`, and `summary.m
 
 Live benchmark reconciliation remains TypeScript-owned. If a case is `IN_FLIGHT`, inspect/reconcile it through the runner; never resend it from Python. Once Workers capacity is restored, use the Ragas datasets and live command for model comparison, sufficiency/verifier gates, and a new frozen-eight run rather than returning to the legacy scorer.
 
-# Live configuration provenance and router calibration
+# Live configuration provenance
 
-Control-plane runs require `--config` pointing to a versioned candidate JSON.
-The candidate values override the selected credential env and inherited env
-without mutating `process.env`. Runtime `AiApplicationConfigAdapter` resolves
-the same values consumed by the actual use case and Cloudflare adapter. Missing
-role timeout/model/budget is rejected before requests, not defaulted by Ragas.
-Reports and atomic per-case `observations.json` retain the effective snapshot,
-Git SHA, dataset/config hashes, candidate roles, execution overrides, and subset.
-Existing run directories are never resent automatically after interruption.
+Historical model-calibration artifacts remain versioned for provenance; they
+are not part of the production evaluation path. Live evaluation requires an
+operator-supplied runtime snapshot whose `gitSha` matches the explicit
+`--production-sha`, whose dataset version matches the requested dataset, and
+which records every role's model, timeout, and completion budget. This is an
+attestation of the deployed configuration, not a claim that the local
+evaluator can observe a remote process directly.
 
-The previous `router-gpt-oss-20b-20260826` and `router-glm-4-7-flash-20260826`
-runs are `INVALID_CONFIG_TIMEOUT_8000`, not model-quality baselines. Their
-credential env `.env.test.local` omitted router timeout; no inherited value was
-present, so the runtime adapter supplied its 8000 ms default. `.env` (GLM, 8s,
-no fallback) and `.env.example` (GPT20, GLM fallback, 45s/60s) were not loaded.
-Model CLI overrides were the executed model; they did not select runtime roles.
+The TypeScript runner owns backend execution, exactly-once state, and
+reconciliation. It records the effective snapshot, Git SHA, dataset/config
+hashes, candidate roles, and execution overrides in the run artifacts. Existing
+run directories are never resent automatically after interruption.
 
-Candidate `config/router-calibration-v1.json` explicitly records the tracked
-45s/60s, GPT20/GLM candidate without editing runtime env or deployed roles. Each
-comparison overrides only the executed model, disables fallback, and uses the
-direct provider (gateway disabled) for exactly one request per case. These
-transport/fallback overrides are visible and are not production-chain validation.
-
-From the repository root, after offline checks and one successful capacity check:
-
-```sh
-pnpm eval:rag:control-plane --mode ROUTER --model @cf/openai/gpt-oss-20b --config eval/rag/config/router-calibration-v1.json --subset harness --run-id UNIQUE-ID
-```
-
-Repeat with GLM on the same six versioned generic cases. Only if all calls
-complete structurally proceed to the separate ten-case `latency` subset for
-each model. Its predeclared comfort bound is p95 and max < 36000 ms (80% of
-45000 ms). These are harness/latency checks, not production timeout selection
-from six cases, and their outputs are not reused in a full comparison. Omit
-`--subset` for the 65-case comparison only after both calibration gates pass.
-`--router-timeout-ms` is an explicit, recorded override for parity tests or an
-authorized experiment. Do not increase timeout automatically after failure.
-
-`eval:rag:live` uses public backend APIs, not the local structured-LLM runner.
-Local env cannot configure a remote deployment. It therefore requires an
-operator-supplied `--runtime-config-snapshot` whose `gitSha` matches explicit
-`--production-sha`, whose `datasetVersion` matches the requested dataset, and
-which includes the router snapshot fields and a `roles` map with each role's
-model/timeoutMs/maxCompletionTokens. This is labeled operator attestation, not
-claimed as remotely observed config. Deterministic outputs are saved before
-any optional semantic judge, which is forbidden on a failed gate.
+The evaluation judge remains isolated from production RAG. Its Cloudflare
+adapter is used only when a separately authorized semantic evaluation is run;
+it is not imported by the AI service. Deterministic results are persisted
+before any optional judge metrics, and a failed deterministic hard gate forbids
+judge execution.

@@ -1,6 +1,6 @@
 services:
   api-gateway:
-    image: ${DOCKERHUB_USERNAME}/api-gateway:latest
+    image: ${DOCKERHUB_USERNAME}/api-gateway:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/api-gateway/Dockerfile
@@ -28,7 +28,7 @@ services:
       - microservices-net
 
   user-service:
-    image: ${DOCKERHUB_USERNAME}/user-service:latest
+    image: ${DOCKERHUB_USERNAME}/user-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/user-service/Dockerfile
@@ -44,7 +44,7 @@ services:
       - microservices-net
 
   friend-service:
-    image: ${DOCKERHUB_USERNAME}/friend-service:latest
+    image: ${DOCKERHUB_USERNAME}/friend-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/friend-service/Dockerfile
@@ -60,7 +60,7 @@ services:
       - microservices-net
 
   auth-service:
-    image: ${DOCKERHUB_USERNAME}/auth-service:latest
+    image: ${DOCKERHUB_USERNAME}/auth-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/auth-service/Dockerfile
@@ -76,7 +76,7 @@ services:
       - microservices-net
 
   media-service:
-    image: ${DOCKERHUB_USERNAME}/media-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/media-service/Dockerfile
@@ -92,7 +92,7 @@ services:
       - microservices-net
 
   media-processing-service:
-    image: ${DOCKERHUB_USERNAME}/media-processing-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-processing-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/media-processing-service/Dockerfile
@@ -109,7 +109,7 @@ services:
       - microservices-net
 
   media-processing-long-service:
-    image: ${DOCKERHUB_USERNAME}/media-processing-service:latest
+    image: ${DOCKERHUB_USERNAME}/media-processing-service:${VELORA_IMAGE_TAG:-latest}
     restart: always
     env_file:
       - .env
@@ -123,7 +123,7 @@ services:
       - microservices-net
 
   reel-indexing-service:
-    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:latest
+    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/reel-indexing-service/Dockerfile
@@ -140,7 +140,7 @@ services:
       - microservices-net
 
   reel-indexing-long-service:
-    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:latest
+    image: ${DOCKERHUB_USERNAME}/reel-indexing-service:${VELORA_IMAGE_TAG:-latest}
     restart: always
     env_file:
       - .env
@@ -154,7 +154,7 @@ services:
       - microservices-net
 
   content-service:
-    image: ${DOCKERHUB_USERNAME}/content-service:latest
+    image: ${DOCKERHUB_USERNAME}/content-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/content-service/Dockerfile
@@ -170,7 +170,7 @@ services:
       - microservices-net
 
   payment-service:
-    image: ${DOCKERHUB_USERNAME}/payment-service:latest
+    image: ${DOCKERHUB_USERNAME}/payment-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/payment-service/Dockerfile
@@ -188,7 +188,7 @@ services:
       - microservices-net
 
   mail-service:
-    image: ${DOCKERHUB_USERNAME}/mail-service:latest
+    image: ${DOCKERHUB_USERNAME}/mail-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/mail-service/Dockerfile
@@ -202,7 +202,7 @@ services:
       - microservices-net
 
   conversation-service:
-    image: ${DOCKERHUB_USERNAME}/conversation-service:latest
+    image: ${DOCKERHUB_USERNAME}/conversation-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/conversation-service/Dockerfile
@@ -220,7 +220,7 @@ services:
       - microservices-net
 
   call-service:
-    image: ${DOCKERHUB_USERNAME}/call-service:latest
+    image: ${DOCKERHUB_USERNAME}/call-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/call-service/Dockerfile
@@ -229,8 +229,6 @@ services:
       - '3007'
     ports:
       - '40000-40100:40000-40100/udp'
-    environment:
-      NODE_ENV: production
     env_file:
       - .env
     depends_on:
@@ -240,7 +238,7 @@ services:
       - microservices-net
 
   monitoring-service:
-    image: ${DOCKERHUB_USERNAME}/monitoring-service:latest
+    image: ${DOCKERHUB_USERNAME}/monitoring-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/monitoring-service/Dockerfile
@@ -254,11 +252,71 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      prometheus:
+        condition: service_started
+    networks:
+      - microservices-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    mem_limit: ${PROMETHEUS_MEMORY_LIMIT:-512m}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=3d
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - '127.0.0.1:9090:9090'
+    depends_on:
+      - node-exporter
+    networks:
+      - microservices-net
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    restart: unless-stopped
+    mem_limit: ${NODE_EXPORTER_MEMORY_LIMIT:-64m}
+    pid: host
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/.+)($|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+    expose:
+      - '9100'
+    networks:
+      - microservices-net
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    # Velora uses Grafana only as a lightweight Prometheus dashboard. Keep a
+    # little memory headroom while avoiding backend plugins and background
+    # services that are not part of the homelab observability path.
+    mem_limit: ${GRAFANA_MEMORY_LIMIT:-384m}
+    env_file:
+      - .env
+    volumes:
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - '127.0.0.1:3001:3000'
+    depends_on:
+      - prometheus
     networks:
       - microservices-net
 
   notification-service:
-    image: ${DOCKERHUB_USERNAME}/notification-service:latest
+    image: ${DOCKERHUB_USERNAME}/notification-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/notification-service/Dockerfile
@@ -279,7 +337,7 @@ services:
       - microservices-net
 
   ai-service:
-    image: ${DOCKERHUB_USERNAME}/ai-service:latest
+    image: ${DOCKERHUB_USERNAME}/ai-service:${VELORA_IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ./apps/ai-service/Dockerfile
@@ -289,25 +347,33 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      rag-embedding:
+        condition: service_healthy
+      rag-reranker:
+        condition: service_healthy
     networks:
       - microservices-net
 
-  # Local retrieval-model services are profile-gated during migration so the
-  # host can be benchmarked before they become production dependencies.
   rag-embedding:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
-    profiles:
-      - local-embedding
+    env_file:
+      - .env
     command:
       - --model-id
-      - BAAI/bge-m3
+      - ${TEI_EMBEDDING_MODEL:-BAAI/bge-m3}
       - --port
       - '80'
       - --max-concurrent-requests
-      - '8'
+      - ${TEI_EMBEDDING_MAX_CONCURRENT_REQUESTS:-8}
       - --max-batch-tokens
-      - '1024'
-    restart: 'no'
+      - ${TEI_EMBEDDING_MAX_BATCH_TOKENS:-1024}
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:80/health']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     volumes:
       - rag_embedding_cache:/data
     networks:
@@ -315,18 +381,24 @@ services:
 
   rag-reranker:
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
-    profiles:
-      - local-reranker
+    env_file:
+      - .env
     command:
       - --model-id
-      - cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+      - ${TEI_RERANKER_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
       - --port
       - '80'
       - --max-concurrent-requests
-      - '8'
+      - ${TEI_RERANKER_MAX_CONCURRENT_REQUESTS:-8}
       - --max-batch-tokens
-      - '1024'
-    restart: 'no'
+      - ${TEI_RERANKER_MAX_BATCH_TOKENS:-1024}
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:80/health']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
     volumes:
       - rag_reranker_cache:/data
     networks:
@@ -353,33 +425,6 @@ services:
     profiles:
       - eval
     restart: 'no'
-    env_file:
-      - ${RAG_EVAL_ENV_FILE:-./eval/rag/eval.env.example}
-    environment:
-      # Provider credentials are read from the server-side deployment env at
-      # run time; they are never copied into the image or committed.
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
-      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
-      CLOUDFLARE_AI_GATEWAY_ID: ${CLOUDFLARE_AI_GATEWAY_ID:-}
-      AI_ROUTER_MODEL: ${AI_ROUTER_MODEL:-}
-      AI_ROUTER_TIMEOUT_MS: ${AI_ROUTER_TIMEOUT_MS:-}
-      AI_ROUTER_MAX_TOKENS: ${AI_ROUTER_MAX_TOKENS:-}
-      AI_RETRIEVAL_PLANNER_MODEL: ${AI_RETRIEVAL_PLANNER_MODEL:-}
-      AI_RETRIEVAL_PLANNER_TIMEOUT_MS: ${AI_RETRIEVAL_PLANNER_TIMEOUT_MS:-}
-      AI_RETRIEVAL_PLANNER_MAX_TOKENS: ${AI_RETRIEVAL_PLANNER_MAX_TOKENS:-}
-      AI_VERIFIER_MODEL: ${AI_VERIFIER_MODEL:-}
-      AI_VERIFIER_TIMEOUT_MS: ${AI_VERIFIER_TIMEOUT_MS:-}
-      AI_VERIFIER_MAX_TOKENS: ${AI_VERIFIER_MAX_TOKENS:-}
-      AI_CITATION_ATTRIBUTION_MODEL: ${AI_CITATION_ATTRIBUTION_MODEL:-}
-      AI_CITATION_TIMEOUT_MS: ${AI_CITATION_TIMEOUT_MS:-}
-      AI_CITATION_MAX_TOKENS: ${AI_CITATION_MAX_TOKENS:-}
-      CLOUDFLARE_AI_GATEWAY_ENABLED: ${CLOUDFLARE_AI_GATEWAY_ENABLED:-}
-      CLOUDFLARE_AI_GATEWAY_MAX_ATTEMPTS: ${CLOUDFLARE_AI_GATEWAY_MAX_ATTEMPTS:-}
-      CLOUDFLARE_AI_GATEWAY_RETRY_DELAY_MS: ${CLOUDFLARE_AI_GATEWAY_RETRY_DELAY_MS:-}
-      CLOUDFLARE_AI_GATEWAY_BACKOFF: ${CLOUDFLARE_AI_GATEWAY_BACKOFF:-}
-      CLOUDFLARE_STRUCTURED_REASONING_EFFORT: ${CLOUDFLARE_STRUCTURED_REASONING_EFFORT:-}
-      CLOUDFLARE_ROUTER_OUTPUT_CONTRACT: ${CLOUDFLARE_ROUTER_OUTPUT_CONTRACT:-}
-      CLOUDFLARE_STRUCTURED_MAX_TOKENS_PARAMETER: ${CLOUDFLARE_STRUCTURED_MAX_TOKENS_PARAMETER:-}
     volumes:
       - ${RAG_EVAL_RESULTS_DIR:-./eval/rag/results}:/workspace/eval/rag/results
       - ${RAG_EVAL_EXPERIMENTS_DIR:-./eval/rag/experiments}:/workspace/eval/rag/experiments
@@ -390,10 +435,8 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management
     restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
-      RABBITMQ_DEFAULT_VHOST: /
+    env_file:
+      - .env
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     ports:
@@ -402,11 +445,15 @@ services:
     expose:
       - '5672'
     healthcheck:
-      test: ['CMD', 'rabbitmq-diagnostics', 'ping']
+      test:
+        [
+          'CMD-SHELL',
+          'rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity',
+        ]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 20s
+      retries: 20
+      start_period: 30s
     networks:
       - microservices-net
 
@@ -416,6 +463,8 @@ networks:
 
 volumes:
   rabbitmq_data:
+  prometheus_data:
+  grafana_data:
   rag_embedding_cache:
   rag_reranker_cache:
   rag_vision_cache:

@@ -4,6 +4,8 @@ import type {
   IndexQualityReviewResult,
 } from '@indexing/domain/interfaces/ai-service.interface';
 import type { IIndexQualityAgentPolicy } from '@indexing/domain/interfaces/index-quality-agent-policy.interface';
+import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
+import type { IIndexQualityReviewRepository } from '@indexing/domain/interfaces/index-quality-review.repository.interface';
 import type { IPersistedSemanticCandidateValidator } from '@indexing/domain/interfaces/persisted-semantic-candidate-validator.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
@@ -25,6 +27,10 @@ export class ValidatePersistedSemanticCandidateUseCase {
     private readonly ai: IIndexingAiService,
     @Inject('IIndexQualityAgentPolicy')
     private readonly policy: IIndexQualityAgentPolicy,
+    @Inject('IIndexQualityReviewRepository')
+    private readonly qualityReviews: IIndexQualityReviewRepository,
+    @Inject('IIndexingApplicationConfig')
+    private readonly config: IIndexingApplicationConfig,
   ) {}
 
   async execute(input: PersistedCandidateInput): Promise<void> {
@@ -51,6 +57,32 @@ export class ValidatePersistedSemanticCandidateUseCase {
     this.logger.log(
       `[IndexQualityAgent] reelId=${input.job.reelId} acceptable=${review.acceptable} confidence=${review.confidence.toFixed(2)} issues=${issueSummary || 'none'}`,
     );
+
+    const reelDocument = input.documents.find(
+      (document) => document.kind === 'REEL',
+    );
+    if (!reelDocument) {
+      throw new Error('Semantic quality review requires a Reel document');
+    }
+
+    await this.qualityReviews.persist({
+      reelId: input.job.reelId,
+      indexAttemptId: input.job.indexAttemptId,
+      indexVersion: input.job.indexVersion,
+      embeddingProvider: reelDocument.embeddingProvider,
+      embeddingModel: reelDocument.embeddingModel,
+      embeddingDimensions: reelDocument.embeddingDimensions,
+      embeddingVersion: reelDocument.embeddingVersion,
+      reviewProvider:
+        this.config.get<string>('INDEX_QUALITY_REVIEW_PROVIDER')?.trim() ||
+        'groq',
+      reviewModel:
+        this.config.get<string>('AI_INDEX_QUALITY_MODEL')?.trim() || 'unknown',
+      reviewVersion:
+        this.config.get<string>('INDEX_QUALITY_REVIEW_VERSION')?.trim() ||
+        'index-quality-review-v1',
+      review,
+    });
 
     if (!review.acceptable && this.policy.enforced) {
       const details = review.issues

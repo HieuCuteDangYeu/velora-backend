@@ -4,7 +4,7 @@ import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revi
 describe('BuildGroundedAnswerRevisionUseCase', () => {
   const structuredLlm = { generateObject: jest.fn() };
   const config = {
-    model: jest.fn().mockReturnValue('@cf/test/answer-revision'),
+    model: jest.fn().mockReturnValue('test/test/answer-revision'),
     timeoutMs: jest.fn().mockReturnValue(1_000),
     maxCompletionTokens: jest.fn().mockReturnValue(768),
   };
@@ -107,10 +107,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     ).rejects.toThrow('unknown evidence IDs');
   });
 
-  it('bounds revision context to eight reranked evidence items', async () => {
+  it('bounds revision context to the shared evidence budget', async () => {
     structuredLlm.generateObject.mockResolvedValueOnce({
-      answer: 'The answer uses the eighth item.',
-      evidenceIds: ['e7'],
+      answer: 'The answer uses the fifth item.',
+      evidenceIds: ['e4'],
     });
     await useCase.executeWithProvenance(
       state({
@@ -120,7 +120,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     );
 
     const request = structuredLlm.generateObject.mock.calls[0][0];
-    expect(JSON.parse(request.userPrompt).evidence).toHaveLength(8);
+    const payload = JSON.parse(request.userPrompt as string) as {
+      evidence?: unknown[];
+    };
+    expect(payload.evidence).toHaveLength(5);
   });
 
   it('does not call the model outside a verifier revision', async () => {
@@ -128,5 +131,25 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     input.nextDraftSource = 'INITIAL';
     await expect(useCase.execute(input)).resolves.toBeUndefined();
     expect(structuredLlm.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('uses ANSWER_REVISION for a citation revision', async () => {
+    const input = state({
+      question: 'What happened?',
+      evidence: ['The speaker describes the project.'],
+    });
+    input.nextDraftSource = 'CITATION_REVISION';
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: 'The speaker describes the project.',
+      evidenceIds: ['e0'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      modelRole: 'ANSWER_REVISION',
+      evidenceIds: ['e0'],
+    });
+    expect(structuredLlm.generateObject).toHaveBeenCalledWith(
+      expect.objectContaining({ modelRole: 'ANSWER_REVISION' }),
+    );
   });
 });

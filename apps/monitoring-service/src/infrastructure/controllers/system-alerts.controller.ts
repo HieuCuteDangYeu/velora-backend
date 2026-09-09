@@ -38,12 +38,8 @@ export class SystemAlertsController {
             total: alerts.length,
             firing: alerts.filter((alert) => alert.state === 'firing').length,
             pending: alerts.filter((alert) => alert.state === 'pending').length,
-            critical: alerts.filter(
-              (alert) => alert.severity === 'critical',
-            ).length,
-            warning: alerts.filter(
-              (alert) => alert.severity === 'warning',
-            ).length,
+            critical: alerts.filter((alert) => alert.severity === 'critical').length,
+            warning: alerts.filter((alert) => alert.severity === 'warning').length,
           },
           alerts,
         };

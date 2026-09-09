@@ -364,3 +364,87 @@ model TranscriptionSegment {
   @@unique([indexAttemptId, ordinal])
   @@index([reelId, indexAttemptId])
 }
+
+model ReelIndexQualityReview {
+  id                  String   @id @default(uuid())
+  reelId              String
+  indexAttemptId      String
+  indexVersion        String
+  embeddingProvider   String
+  embeddingModel      String
+  embeddingDimensions Int
+  embeddingVersion    String
+  acceptable          Boolean
+  confidence          Float
+  summary             String   @db.Text
+  issues              Json
+  reviewProvider      String
+  reviewModel         String
+  reviewVersion       String
+  createdAt           DateTime @default(now())
+
+  @@unique([reelId, indexAttemptId])
+  @@index([reelId, createdAt])
+  @@index([indexAttemptId])
+}
+
+model RagEvaluationRun {
+  benchmarkRunId String    @id
+  datasetName    String
+  datasetVersion String
+  datasetHash    String
+  productionSha  String
+  configHash     String
+  providerConfig Json
+  status         String
+  hardGatePass   Boolean?
+  ragasRun       Boolean   @default(false)
+  summaryMetrics Json
+  artifactHash   String
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+
+  cases RagEvaluationCase[]
+
+  @@index([datasetName, datasetVersion, createdAt])
+}
+
+model RagEvaluationCase {
+  id                 String   @id @default(uuid())
+  benchmarkRunId     String
+  caseId             String
+  reelId             String?
+  indexAttemptId     String?
+  traceId            String?
+  status             String
+  recallAt1          Float?
+  recallAt3          Float?
+  recallAt5          Float?
+  recallAt10         Float?
+  mrr                Float?
+  ndcgAt5            Float?
+  ndcgAt10           Float?
+  evidenceHit        Float?
+  citationPrecision  Float?
+  citationRecall     Float?
+  wrongReel          Boolean?
+  wrongModality      Boolean?
+  accessViolation    Boolean?
+  answerCorrect      Float?
+  grounded           Float?
+  faithfulness       Float?
+  factualCorrectness Float?
+  responseRelevancy  Float?
+  contextPrecision   Float?
+  contextRecall      Float?
+  failureCategory    String?
+  metrics            Json
+  createdAt          DateTime @default(now())
+
+  run RagEvaluationRun @relation(fields: [benchmarkRunId], references: [benchmarkRunId], onDelete: Restrict)
+
+  @@unique([benchmarkRunId, caseId])
+  @@index([caseId])
+  @@index([reelId, indexAttemptId])
+}

@@ -67,10 +67,7 @@ describe('EvidenceDiversitySelector', () => {
       ],
       2,
     );
-    expect(result.map((item) => item.chunkId)).toEqual([
-      'first',
-      'other-reel',
-    ]);
+    expect(result.map((item) => item.chunkId)).toEqual(['first', 'other-reel']);
   });
 
   it('uses temporal-overlap penalty independently of same-reel penalty', () => {
@@ -117,10 +114,7 @@ describe('EvidenceDiversitySelector', () => {
       ],
       2,
     );
-    expect(result.map((item) => item.chunkId)).toEqual([
-      'first',
-      'chunk-3',
-    ]);
+    expect(result.map((item) => item.chunkId)).toEqual(['first', 'chunk-3']);
   });
 
   it('preserves metadata, access metadata, and neural score provenance', () => {

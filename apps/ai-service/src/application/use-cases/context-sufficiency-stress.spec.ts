@@ -20,7 +20,7 @@ const { sufficiencyCases } =
 
 describe('generic context sufficiency stress corpus', () => {
   const config = {
-    model: jest.fn(() => '@cf/test/sufficiency'),
+    model: jest.fn(() => 'test/test/sufficiency'),
     timeoutMs: jest.fn(() => 15_000),
     maxCompletionTokens: jest.fn(() => 512),
   } as unknown as IAiApplicationConfig;

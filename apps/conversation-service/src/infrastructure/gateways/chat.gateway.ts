@@ -29,6 +29,7 @@ import {
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
+import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { ChatMapper } from '../repositories/chat.mapper';
 
 interface PresencePayload {
@@ -49,6 +50,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly sendMessageUseCase: SendMessageUseCase,
     private readonly triggerBotReplyUseCase: TriggerBotReplyUseCase,
     private readonly notificationService: NotificationServiceAdapter,
+    private readonly prometheusMetrics: ConversationPrometheusMetricsService,
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     @Inject('AUTH_SERVICE_RMQ') private readonly authClient: ClientProxy,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
@@ -222,14 +224,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() payload: CreateMessageDto,
     @ConnectedSocket() client: Socket,
   ) {
+    const startedAt = process.hrtime.bigint();
     const senderId = await this.resolveUserId(client);
-    if (!senderId) return;
+    if (!senderId) {
+      this.recordSendMessageOutcome(startedAt, 'rejected');
+      return;
+    }
 
     if (!payload.clientMessageId?.trim()) {
       client.emit('message_failed', {
         conversationId: payload.conversationId,
         clientMessageId: payload.clientMessageId,
       });
+      this.recordSendMessageOutcome(startedAt, 'rejected');
       return;
     }
 
@@ -246,6 +253,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         conversationId: payload.conversationId,
         clientMessageId: payload.clientMessageId,
       });
+      this.recordSendMessageOutcome(startedAt, 'rejected');
       return;
     }
 
@@ -254,11 +262,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const savedMessage = result.message;
       const savedMessageDto = ChatMapper.toDto(savedMessage);
 
+      if (result.created) {
+        this.prometheusMetrics.recordMessageCreated();
+      }
+
       // Always reconcile the sending socket. For an idempotent retry this is
       // the only event: all fan-out must happen exactly once.
       client.emit('message_synced', savedMessageDto);
 
       if (!result.created) {
+        this.recordSendMessageOutcome(startedAt, 'success');
         return;
       }
 
@@ -334,7 +347,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           });
         },
       );
+
+      this.recordSendMessageOutcome(startedAt, 'success');
     } catch {
+      this.recordSendMessageOutcome(startedAt, 'error');
       this.server.to(client.id).emit('message_failed', {
         conversationId: payload.conversationId,
         clientMessageId: payload.clientMessageId,
@@ -499,6 +515,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   // --- PRIVATE HELPERS ---
+  private recordSendMessageOutcome(
+    startedAt: bigint,
+    status: 'success' | 'rejected' | 'error',
+  ): void {
+    const durationSeconds =
+      Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+    this.prometheusMetrics.recordSendMessage(status, durationSeconds);
+  }
+
   // Stage 1 keeps the legacy raw room and adds the namespaced room. Once all
   // conversation-service instances have this code, a later rollout can switch
   // readers/emitters to namespaced-only and finally remove the raw room.

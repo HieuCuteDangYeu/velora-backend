@@ -20,8 +20,9 @@ on:
 permissions:
   contents: read
 
-# Production runs publish mutable :latest tags and move the deployment branch,
-# so they must run in order. PRs have independent, cancelable validation queues.
+# Production publishes both immutable commit-SHA tags and convenience :latest
+# tags, then moves the deployment branch. Production runs must stay serialized;
+# PRs keep independent, cancelable validation queues.
 concurrency:
   group: homelab-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,6 +34,7 @@ jobs:
       build_matrix_json: ${{ steps.detect.outputs.build_matrix_json }}
       build_services_list: ${{ steps.detect.outputs.build_services_list }}
       call_regression_required: ${{ steps.detect.outputs.call_regression_required }}
+      friend_recommendation_required: ${{ steps.detect.outputs.friend_recommendation_required }}
       comparison_base: ${{ steps.detect.outputs.comparison_base }}
       checkout_sha: ${{ steps.detect.outputs.checkout_sha }}
       is_production: ${{ steps.detect.outputs.is_production }}
@@ -197,7 +199,10 @@ jobs:
             done <<< "$changed_files"
           fi
 
-          if [ "$build_all" = true ]; then
+          # PRs keep affected-image builds. Every production commit publishes a
+          # complete immutable image set so homelab deploy/rollback never depends
+          # on mutable :latest tags.
+          if [ "$build_all" = true ] || [ "$is_production" = true ]; then
             build_services=("${all_services[@]}")
             build_service_count="${#all_services[@]}"
           fi
@@ -217,8 +222,10 @@ jobs:
           compose_build_matrix="$(
             COMPOSE_DISABLE_ENV_FILE=1 \
               DOCKERHUB_USERNAME="$dockerhub_placeholder" \
-              RABBITMQ_USER=ci \
-              RABBITMQ_PASSWORD=ci \
+              RABBITMQ_DEFAULT_USER=ci \
+              RABBITMQ_DEFAULT_PASS=ci \
+              RABBITMQ_DEFAULT_VHOST=/ \
+              RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
               docker compose config --no-env-resolution --no-path-resolution --format json \
                 | jq -ce --arg prefix "${dockerhub_placeholder}/" '
                     [
@@ -279,12 +286,19 @@ jobs:
             call_regression_required=true
           fi
 
+          friend_recommendation_required=false
+          if [ "$build_all" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(apps/(friend-service|user-service)/|libs/common/src/(friend|recommendation|user)/|\.github/workflows/deploy\.yml$|package\.json$|pnpm-lock\.yaml$|jest\.config\.cjs$|eslint\.config\.mjs$|\.prettierrc$)'; then
+            friend_recommendation_required=true
+          fi
+
           echo "Build services: ${build_services_list:-none}"
           echo "Call regression required: $call_regression_required"
+          echo "Friend recommendation regression required: $friend_recommendation_required"
           {
             printf 'build_matrix_json=%s\n' "$build_matrix_json"
             printf 'build_services_list=%s\n' "$build_services_list"
             printf 'call_regression_required=%s\n' "$call_regression_required"
+            printf 'friend_recommendation_required=%s\n' "$friend_recommendation_required"
             printf 'comparison_base=%s\n' "$comparison_base"
             printf 'checkout_sha=%s\n' "$head_sha"
             printf 'is_production=%s\n' "$is_production"
@@ -350,10 +364,20 @@ jobs:
           install -m 600 /dev/null "$temporary_env_file"
           trap 'rm -f -- "$temporary_env_file"' EXIT
 
+          cat > "$temporary_env_file" <<'EOF'
+          RABBITMQ_DEFAULT_USER=ci
+          RABBITMQ_DEFAULT_PASS=ci
+          RABBITMQ_DEFAULT_VHOST=/
+          RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/
+          EOF
+          node scripts/ops/validate-rabbitmq-config.cjs --env-file "$temporary_env_file"
+
           COMPOSE_DISABLE_ENV_FILE=1 \
             DOCKERHUB_USERNAME=ci-placeholder \
-            RABBITMQ_USER=ci \
-            RABBITMQ_PASSWORD=ci \
+            RABBITMQ_DEFAULT_USER=ci \
+            RABBITMQ_DEFAULT_PASS=ci \
+            RABBITMQ_DEFAULT_VHOST=/ \
+            RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
             docker compose config --no-env-resolution --quiet
 
       - name: Validate Nginx configuration
@@ -372,6 +396,84 @@ jobs:
       - name: Generate Prisma clients
         run: pnpm run prisma:generate:all
 
+      - name: Check friend recommendation formatting
+        if: needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        run: >-
+          pnpm exec prettier --check
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+          libs/common/src/friend/interfaces/friend-recommendation.interface.ts
+          libs/common/src/friend/schemas/friend-recommendation.schema.ts
+
+      - name: Lint friend recommendation changes
+        if: needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        run: >-
+          pnpm exec eslint
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/domain/interfaces/friend-graph.repository.interface.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+          libs/common/src/friend/interfaces/friend-recommendation.interface.ts
+          libs/common/src/friend/schemas/friend-recommendation.schema.ts
+
+      - name: Start friend recommendation PostgreSQL
+        if: needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        run: |
+          set -euo pipefail
+          docker run --detach --name friend-recommendation-postgres \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_PASSWORD=postgres \
+            --env POSTGRES_DB=friend_recommendation_ci \
+            --publish 5432:5432 \
+            postgres:16
+
+          for attempt in {1..30}; do
+            if docker exec friend-recommendation-postgres \
+              pg_isready -U postgres -d friend_recommendation_ci >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          docker logs friend-recommendation-postgres
+          echo 'Friend recommendation PostgreSQL did not become ready.' >&2
+          exit 1
+
+      - name: Create friend recommendation CI schema
+        if: needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        env:
+          FRIEND_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/friend_recommendation_ci?schema=public
+        run: pnpm exec prisma db push --schema=apps/friend-service/prisma/schema.prisma --skip-generate
+
+      - name: Run friend recommendation regression tests
+        if: needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        env:
+          FRIEND_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/friend_recommendation_ci?schema=public
+          FRIEND_GRAPH_INTEGRATION_TEST: '1'
+        run: >-
+          pnpm exec jest --runInBand
+          apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.spec.ts
+          apps/friend-service/src/infrastructure/repositories/friend-graph.repository.integration.spec.ts
+          apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.spec.ts
+          apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.spec.ts
+          apps/user-service/src/infrastructure/services/recommendation-config.service.spec.ts
+
       - name: Build all Nest applications
         run: pnpm run build:all
 
@@ -382,6 +484,10 @@ jobs:
       - name: Run call E2E regression test
         if: needs.detect-changes.outputs.call_regression_required == 'true'
         run: pnpm exec jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts
+
+      - name: Stop friend recommendation PostgreSQL
+        if: always() && needs.detect-changes.outputs.friend_recommendation_required == 'true'
+        run: docker rm --force friend-recommendation-postgres || true
 
   rag-evaluator-ci:
     needs: [detect-changes, validate]

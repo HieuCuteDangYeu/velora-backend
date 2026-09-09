@@ -12,5 +12,6 @@ export interface RecommendedPublicUserProfile {
   username: string | null;
   picture: string | null;
   isVerified: boolean;
+  mutualFriendCount?: number;
   recommendation: RecommendationMetadata;
 }

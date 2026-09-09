@@ -3,6 +3,7 @@ import type {
   IStructuredLlmService,
   StructuredJsonType,
   StructuredProviderFailureCategory,
+  StructuredRateLimitDiagnostics,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -26,9 +27,10 @@ interface CallState {
   finishReason?: string;
   usage?: GroqCompletionResponse['usage'];
   errorCode?: string;
-  providerCode?: number;
+  providerCode?: number | string;
   providerCategory?: StructuredProviderFailureCategory;
   retryAfterMs?: number;
+  rateLimit?: StructuredRateLimitDiagnostics;
   transient?: boolean;
   schemaPath?: string;
   schemaConstraint?: string;
@@ -106,7 +108,7 @@ export class GroqStructuredCompletionProviderError extends Error {
   constructor(
     readonly model: string,
     readonly status?: number,
-    readonly providerCode?: number,
+    readonly providerCode?: number | string,
     readonly retryAfterMs?: number,
     readonly transient = false,
     readonly providerCategory: StructuredProviderFailureCategory = 'UNKNOWN_PROVIDER_FAILURE',
@@ -201,6 +203,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         providerCode: state.providerCode,
         providerCategory: state.providerCategory,
         retryAfterMs: state.retryAfterMs,
+        rateLimit: state.rateLimit,
         transient: state.transient,
         schemaPath: state.schemaPath,
         schemaConstraint: state.schemaConstraint,
@@ -251,7 +254,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
             type: 'json_schema',
             json_schema: {
               name: this.schemaName(input.schemaVersion),
-              strict: this.boolean('GROQ_STRUCTURED_STRICT', false),
+              strict: this.structuredStrict(input.modelRole),
               schema: input.jsonSchema,
             },
           },
@@ -274,6 +277,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     }
 
     state.providerStatus = response.status;
+    state.rateLimit = this.readRateLimitHeaders(response.headers);
     state.retryAfterMs = this.parseRetryAfter(
       response.headers.get('retry-after'),
     );
@@ -283,29 +287,31 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     try {
       payload = JSON.parse(raw) as GroqCompletionResponse;
     } catch {
+      const category = this.classifyFailure(response.status, undefined, raw);
       throw new GroqStructuredCompletionProviderError(
         model,
         response.status,
         undefined,
         state.retryAfterMs,
-        this.isTransientStatus(response.status),
-        this.classifyFailure(response.status, undefined, raw),
+        this.isTransientStatus(response.status, category, state.rateLimit),
+        category,
       );
     }
 
     if (!response.ok) {
       const code = this.providerCode(payload);
+      const category = this.classifyFailure(
+        response.status,
+        code,
+        this.providerMessage(payload),
+      );
       throw new GroqStructuredCompletionProviderError(
         model,
         response.status,
         code,
         state.retryAfterMs,
-        this.isTransientStatus(response.status),
-        this.classifyFailure(
-          response.status,
-          code,
-          this.providerMessage(payload),
-        ),
+        this.isTransientStatus(response.status, category, state.rateLimit),
+        category,
       );
     }
 
@@ -373,7 +379,9 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   }
 
   private reasoningEffort(model: string): string | undefined {
-    if (!model.startsWith('openai/gpt-oss-')) return undefined;
+    if (!model.startsWith('openai/gpt-oss-') && model !== 'qwen/qwen3.8-27b') {
+      return undefined;
+    }
     const value = this.config
       .get<string>('GROQ_REASONING_EFFORT')
       ?.trim()
@@ -385,13 +393,18 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
 
   private classifyFailure(
     status: number,
-    providerCode?: number,
+    providerCode?: number | string,
     message?: string,
   ): StructuredProviderFailureCategory {
-    const text = (message || '').toLowerCase();
+    const text = [
+      message || '',
+      typeof providerCode === 'string' ? providerCode : '',
+    ]
+      .join(' ')
+      .toLowerCase();
     if (status === 401 || status === 403)
       return 'AUTH_OR_CONFIGURATION_FAILURE';
-    if (status === 429 && /(quota|usage|account|billing|limit)/.test(text))
+    if (status === 429 && this.hasAccountExhaustionEvidence(text))
       return 'ACCOUNT_LIMITED';
     if (status === 429) return 'RATE_LIMITED';
     if (status >= 500) return 'TRANSIENT_PROVIDER_FAILURE';
@@ -403,14 +416,31 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     return 'UNKNOWN_PROVIDER_FAILURE';
   }
 
-  private isTransientStatus(status: number): boolean {
-    return status >= 500;
+  private hasAccountExhaustionEvidence(text: string): boolean {
+    return [
+      /\b(?:billing|account|spend)\b[\s\S]{0,80}\b(?:quota|allocation|limit|exhaust(?:ed|ion)?|deplet(?:ed|ion)?|used\s+up)\b[\s\S]{0,80}\b(?:exhausted|depleted|reached|exceeded|used\s+up)\b/,
+      /\b(?:hard[-\s]?quota|daily[-\s]?allocation)\b[\s\S]{0,80}\b(?:exhausted|depleted|reached|exceeded|used\s+up)\b/,
+      /\b(?:quota|allocation)\b[\s\S]{0,40}\b(?:exhausted|depleted|used\s+up)\b/,
+    ].some((pattern) => pattern.test(text));
   }
 
-  private providerCode(payload: GroqCompletionResponse): number | undefined {
+  private isTransientStatus(
+    status: number,
+    category?: StructuredProviderFailureCategory,
+    rateLimit?: StructuredRateLimitDiagnostics,
+  ): boolean {
+    if (status >= 500) return true;
+    if (status !== 429 || category !== 'RATE_LIMITED') return false;
+    return Boolean(rateLimit && Object.keys(rateLimit).length > 0);
+  }
+
+  private providerCode(
+    payload: GroqCompletionResponse,
+  ): number | string | undefined {
     const value = payload.error?.code;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    return undefined;
   }
 
   private providerMessage(payload: GroqCompletionResponse): string | undefined {
@@ -420,9 +450,34 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   private parseRetryAfter(value: string | null): number | undefined {
     if (!value) return undefined;
     const seconds = Number(value);
-    return Number.isFinite(seconds) && seconds >= 0
-      ? Math.round(seconds * 1_000)
+    if (Number.isFinite(seconds) && seconds >= 0)
+      return Math.min(Math.round(seconds * 1_000), 86_400_000);
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp)
+      ? Math.min(Math.max(timestamp - Date.now(), 0), 86_400_000)
       : undefined;
+  }
+
+  private readRateLimitHeaders(
+    headers: Headers,
+  ): StructuredRateLimitDiagnostics | undefined {
+    const read = (name: string): string | undefined => {
+      const value = headers.get(name)?.trim();
+      return value ? value.slice(0, 128) : undefined;
+    };
+    const rateLimit: StructuredRateLimitDiagnostics = {
+      retryAfter: read('retry-after'),
+      limitRequests: read('x-ratelimit-limit-requests'),
+      limitTokens: read('x-ratelimit-limit-tokens'),
+      remainingRequests: read('x-ratelimit-remaining-requests'),
+      remainingTokens: read('x-ratelimit-remaining-tokens'),
+      resetRequests: read('x-ratelimit-reset-requests'),
+      resetTokens: read('x-ratelimit-reset-tokens'),
+    };
+    const present = Object.fromEntries(
+      Object.entries(rateLimit).filter(([, value]) => value !== undefined),
+    ) as StructuredRateLimitDiagnostics;
+    return Object.keys(present).length > 0 ? present : undefined;
   }
 
   private jsonType(value: unknown): StructuredJsonType {
@@ -532,6 +587,18 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     if (value === 'true') return true;
     if (value === 'false') return false;
     return fallback;
+  }
+
+  private structuredStrict(modelRole?: string): boolean {
+    if (modelRole === 'CITATION_ATTRIBUTION') {
+      const citationOverride = this.config
+        .get<string>('GROQ_STRUCTURED_STRICT_CITATION_ATTRIBUTION')
+        ?.trim()
+        .toLowerCase();
+      if (citationOverride === 'true') return true;
+      if (citationOverride === 'false') return false;
+    }
+    return this.boolean('GROQ_STRUCTURED_STRICT', false);
   }
 
   private required(key: string): string {

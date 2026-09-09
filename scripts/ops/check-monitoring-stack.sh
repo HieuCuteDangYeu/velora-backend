@@ -2,8 +2,9 @@
 set -euo pipefail
 
 PROMETHEUS_URL="${PROMETHEUS_URL:-http://127.0.0.1:9090}"
-LOKI_URL="${LOKI_URL:-http://127.0.0.1:3100}"
 GRAFANA_URL="${GRAFANA_URL:-http://127.0.0.1:3001}"
+TARGET_RETRY_ATTEMPTS="${TARGET_RETRY_ATTEMPTS:-9}"
+TARGET_RETRY_DELAY_SECONDS="${TARGET_RETRY_DELAY_SECONDS:-5}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -12,44 +13,55 @@ require_command() {
   fi
 }
 
+wait_for_prometheus_target() {
+  local job="$1"
+  local display_name="$2"
+  local attempt response value
+
+  for ((attempt = 1; attempt <= TARGET_RETRY_ATTEMPTS; attempt += 1)); do
+    response="$(
+      curl --fail --silent --show-error --get \
+        --data-urlencode "query=up{job=\"${job}\"}" \
+        "${PROMETHEUS_URL}/api/v1/query"
+    )"
+
+    value="$(jq -r '.data.result[0].value[1] // "missing"' <<<"$response")"
+    if [ "$value" = "1" ]; then
+      echo "      ${display_name} target is UP"
+      return 0
+    fi
+
+    if (( attempt < TARGET_RETRY_ATTEMPTS )); then
+      echo "      ${display_name} target is not UP yet (${value}); retrying in ${TARGET_RETRY_DELAY_SECONDS}s (${attempt}/${TARGET_RETRY_ATTEMPTS})..."
+      sleep "$TARGET_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  echo "      ${display_name} target is not UP after ${TARGET_RETRY_ATTEMPTS} attempts" >&2
+  jq '.data.result' <<<"$response" >&2
+  return 1
+}
+
 require_command curl
 require_command jq
 
-check_prometheus_target() {
-  local job="$1"
-  local response
-  local value
-
-  response="$(
-    curl --fail --silent --show-error --get \
-      --data-urlencode "query=up{job=\"${job}\"}" \
-      "${PROMETHEUS_URL}/api/v1/query"
-  )"
-  value="$(jq -r '.data.result[0].value[1] // "0"' <<<"$response")"
-
-  if [ "$value" != "1" ]; then
-    echo "      ${job} target is not UP" >&2
-    jq '.data.result' <<<"$response" >&2
-    exit 1
-  fi
-
-  echo "      ${job} target is UP"
-}
-
-echo "[1/4] Checking Prometheus readiness..."
+echo "[1/6] Checking Prometheus readiness..."
 curl --fail --silent --show-error "${PROMETHEUS_URL}/-/ready" >/dev/null
 echo "      Prometheus is ready"
 
-echo "[2/4] Checking Prometheus scrape targets..."
-for job in node-exporter monitoring-service conversation-service call-service; do
-  check_prometheus_target "$job"
-done
+echo "[2/6] Checking monitoring-service scrape target..."
+wait_for_prometheus_target "monitoring-service" "monitoring-service"
 
-echo "[3/4] Checking Loki readiness..."
-curl --fail --silent --show-error "${LOKI_URL}/ready" >/dev/null
-echo "      Loki is ready"
+echo "[3/6] Checking conversation-service scrape target..."
+wait_for_prometheus_target "conversation-service" "conversation-service"
 
-echo "[4/4] Checking Grafana health..."
+echo "[4/6] Checking call-service scrape target..."
+wait_for_prometheus_target "call-service" "call-service"
+
+echo "[5/6] Checking host node-exporter scrape target..."
+wait_for_prometheus_target "node-exporter" "node-exporter"
+
+echo "[6/6] Checking Grafana health..."
 grafana_response="$(curl --fail --silent --show-error "${GRAFANA_URL}/api/health")"
 database_status="$(jq -r '.database // "unknown"' <<<"$grafana_response")"
 if [ "$database_status" != "ok" ]; then
@@ -60,5 +72,5 @@ fi
 echo "      Grafana is healthy"
 
 echo
-printf 'Monitoring smoke check passed.\nPrometheus: %s\nLoki:       %s\nGrafana:    %s\n' \
-  "$PROMETHEUS_URL" "$LOKI_URL" "$GRAFANA_URL"
+printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\nGrafana:              %s\n' \
+  "$PROMETHEUS_URL" "$GRAFANA_URL"

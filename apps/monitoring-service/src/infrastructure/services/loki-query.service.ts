@@ -42,9 +42,13 @@ export class LokiQueryService {
     this.baseUrl = (
       configService.get<string>('LOKI_URL') || 'http://loki:3100'
     ).replace(/\/$/, '');
-    this.timeoutMs = Number(
-      configService.get<string>('LOKI_QUERY_TIMEOUT_MS') || 4000,
+    const configuredTimeout = Number(
+      configService.get<string>('LOKI_QUERY_TIMEOUT_MS') || '4000',
     );
+    this.timeoutMs =
+      Number.isFinite(configuredTimeout) && configuredTimeout > 0
+        ? configuredTimeout
+        : 4000;
   }
 
   async range(

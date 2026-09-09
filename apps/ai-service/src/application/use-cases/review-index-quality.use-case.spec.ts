@@ -25,7 +25,7 @@ describe('ReviewIndexQualityUseCase', () => {
     const useCase = new ReviewIndexQualityUseCase(
       structuredLlm as never,
       {
-        model: jest.fn(() => '@cf/test/index-quality'),
+        model: jest.fn(() => 'test/test/index-quality'),
         timeoutMs: jest.fn(() => 8_000),
         maxCompletionTokens: jest.fn(() => 768),
       } as never,

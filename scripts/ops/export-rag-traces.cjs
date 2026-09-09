@@ -33,6 +33,7 @@ const SAFE_STRING_KEYS = new Set([
   'providerCode',
   'providerStatus',
   'referenceTarget',
+  'requiredEvidence',
   'reelQuestionType',
   'recommendationActionType',
   'responseContentType',

@@ -12,6 +12,7 @@ import { CallTelemetryController } from '@monitoring/infrastructure/controllers/
 import { MonitoringHealthController } from '@monitoring/infrastructure/controllers/health.controller';
 import { MetricsController } from '@monitoring/infrastructure/controllers/metrics.controller';
 import { RecommendationTelemetryController } from '@monitoring/infrastructure/controllers/recommendation-telemetry.controller';
+import { SystemAlertsController } from '@monitoring/infrastructure/controllers/system-alerts.controller';
 import { SystemLogsController } from '@monitoring/infrastructure/controllers/system-logs.controller';
 import { SystemMetricsController } from '@monitoring/infrastructure/controllers/system-metrics.controller';
 import { CallTelemetryRetentionJob } from '@monitoring/infrastructure/jobs/call-telemetry-retention.job';
@@ -42,6 +43,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     MetricsController,
     SystemMetricsController,
     SystemLogsController,
+    SystemAlertsController,
   ],
   providers: [
     PrometheusMetricsService,

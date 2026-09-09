@@ -98,6 +98,16 @@ export class MonitoringController {
     );
   }
 
+  @Get('alerts')
+  @ApiOperation({ summary: 'List active Prometheus alerts' })
+  alerts() {
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.alerts.list', {})
+        .pipe(timeout(5000)),
+    );
+  }
+
   @Get('logs')
   @ApiOperation({ summary: 'Query bounded Docker service logs from Loki' })
   logs(@Req() request: AuthenticatedRequest) {

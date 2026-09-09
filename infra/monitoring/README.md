@@ -4,8 +4,9 @@ This directory contains the local Prometheus + Grafana + Loki stack for Velora o
 It is intentionally an overlay for the repository root `docker-compose.yml` so the
 existing application topology stays unchanged.
 
-Prometheus stores metrics, Loki stores Docker service logs, Grafana can inspect both,
-and Grafana Alloy discovers Compose containers and forwards their stdout/stderr to Loki.
+Prometheus stores metrics, evaluates active alert rules, and exposes their current
+pending/firing state. Loki stores Docker service logs, Grafana can inspect both, and
+Grafana Alloy discovers Compose containers and forwards their stdout/stderr to Loki.
 Node Exporter supplies host CPU, memory, swap, filesystem, load, and uptime metrics.
 Promtail is intentionally not used because it reached end of life in 2026.
 
@@ -39,8 +40,8 @@ export GRAFANA_MEMORY_LIMIT=384m
 ```
 
 Start the application services together with the monitoring overlay. Conversation and
-Call now expose lightweight `/metrics` endpoints on their existing HTTP ports; no
-extra metrics process is created inside either service.
+Call expose lightweight `/metrics` endpoints on their existing HTTP ports; no extra
+metrics process is created inside either service.
 
 ```bash
 docker compose \
@@ -69,8 +70,7 @@ It verifies:
 3. Loki readiness.
 4. Grafana database health.
 
-For exporter-level inspection, the application endpoints remain internal to the Docker
-network. Prometheus scrapes:
+For exporter-level inspection, Prometheus scrapes:
 
 ```text
 node-exporter:9100/metrics
@@ -93,6 +93,7 @@ access:
 
 ```text
 Metrics: Velora frontend -> /api/monitoring/* -> API Gateway -> monitoring-service -> Prometheus
+Alerts:  Velora frontend -> /api/monitoring/alerts -> API Gateway -> monitoring-service -> Prometheus
 Logs:    Velora frontend -> /api/monitoring/logs -> API Gateway -> monitoring-service -> Loki
 ```
 
@@ -102,11 +103,13 @@ endpoints are:
 ```text
 GET /api/monitoring/overview
 GET /api/monitoring/timeseries
+GET /api/monitoring/alerts
 GET /api/monitoring/logs?service=call-service&level=error&from=...&to=...&limit=200
 ```
 
 Metric queries use a server-side whitelist and bounded time range; clients cannot
-submit arbitrary PromQL. Log queries are also bounded to known Velora Compose
+submit arbitrary PromQL. The alert endpoint exposes only Prometheus's currently active
+pending/firing rule instances. Log queries are also bounded to known Velora Compose
 services, a maximum 24-hour range, a maximum 500 returned lines, and an optional
 200-character text search. Clients cannot submit arbitrary LogQL.
 
@@ -120,6 +123,17 @@ A rejected `send_message` can happen in the WebSocket gateway before that use ca
 (for example an invalid client message id or a membership rejection). That rejection
 rate is deliberately returned as unavailable until the gateway itself is instrumented;
 the monitoring API does not manufacture a zero value for a metric that is not measured.
+
+## Alerts
+
+Prometheus evaluates alert rules locally; there is no Alertmanager process in this
+lightweight profile. The admin web can show active pending/firing alerts, but this stack
+does not send email, Slack, or push notifications yet. Add Alertmanager later only if
+external notification routing, silences, grouping, or inhibition become necessary.
+
+Rules currently cover node-exporter availability, sustained host CPU/memory/disk
+pressure, Conversation/Call scrape availability and event-loop delay, Conversation
+message persistence error/latency, and monitoring-service availability/RPC health.
 
 ## Retention and resource scope
 

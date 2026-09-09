@@ -15,11 +15,29 @@ type PrometheusRangeResult = {
   }>;
 };
 
+type PrometheusAlertsResult = {
+  alerts: Array<{
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+    state?: string;
+    activeAt?: string;
+    value?: string;
+  }>;
+};
+
 type PrometheusEnvelope<T> = {
   status: 'success' | 'error';
   data?: T;
   errorType?: string;
   error?: string;
+};
+
+export type PrometheusActiveAlert = {
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  state: 'pending' | 'firing';
+  activeAt: string | null;
+  value: number | null;
 };
 
 @Injectable()
@@ -64,7 +82,12 @@ export class PrometheusQueryService {
   ): Promise<Array<{ timestamp: number; value: number }>> {
     const payload = await this.request<PrometheusRangeResult>(
       '/api/v1/query_range',
-      new URLSearchParams({ query, start: from, end: to, step: String(stepSeconds) }),
+      new URLSearchParams({
+        query,
+        start: from,
+        end: to,
+        step: String(stepSeconds),
+      }),
     );
 
     return (payload.result[0]?.values ?? []).flatMap(([timestamp, rawValue]) => {
@@ -73,8 +96,31 @@ export class PrometheusQueryService {
     });
   }
 
+  async activeAlerts(): Promise<PrometheusActiveAlert[]> {
+    const payload = await this.request<PrometheusAlertsResult>(
+      '/api/v1/alerts',
+      new URLSearchParams(),
+    );
+
+    return payload.alerts.flatMap((alert) => {
+      if (alert.state !== 'pending' && alert.state !== 'firing') return [];
+      const numericValue = Number(alert.value);
+
+      return [
+        {
+          labels: alert.labels ?? {},
+          annotations: alert.annotations ?? {},
+          state: alert.state,
+          activeAt: alert.activeAt || null,
+          value: Number.isFinite(numericValue) ? numericValue : null,
+        },
+      ];
+    });
+  }
+
   private async request<T>(path: string, searchParams: URLSearchParams): Promise<T> {
-    const url = `${this.baseUrl}${path}?${searchParams.toString()}`;
+    const query = searchParams.toString();
+    const url = `${this.baseUrl}${path}${query ? `?${query}` : ''}`;
     let response: Response;
 
     try {
@@ -87,11 +133,15 @@ export class PrometheusQueryService {
       throw new Error(`Prometheus request failed: ${message}`);
     }
 
-    if (!response.ok) throw new Error(`Prometheus returned HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(`Prometheus returned HTTP ${response.status}`);
+    }
 
     const envelope = (await response.json()) as PrometheusEnvelope<T>;
     if (envelope.status !== 'success' || envelope.data === undefined) {
-      throw new Error(`Prometheus query failed: ${envelope.error ?? envelope.errorType ?? 'unknown error'}`);
+      throw new Error(
+        `Prometheus query failed: ${envelope.error ?? envelope.errorType ?? 'unknown error'}`,
+      );
     }
     return envelope.data;
   }

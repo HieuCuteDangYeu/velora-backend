@@ -1,4 +1,127 @@
 groups:
+  - name: velora-infrastructure
+    rules:
+      - alert: VeloraNodeExporterDown
+        expr: up{job="node-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: Ubuntu host metrics are unavailable
+          description: Prometheus has not been able to scrape node-exporter for two minutes.
+
+      - alert: VeloraHostHighCpu
+        expr: 1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m])) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host CPU usage is above 90 percent
+          description: The Ubuntu host has sustained more than 90 percent CPU usage for ten minutes.
+
+      - alert: VeloraHostHighMemory
+        expr: 1 - (node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"}) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: Host memory usage is above 90 percent
+          description: Available memory has remained below 10 percent for ten minutes.
+
+      - alert: VeloraHostRootDiskNearlyFull
+        expr: |
+          (
+            node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}
+            - node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}
+          )
+          /
+          clamp_min(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}, 1)
+          > 0.92
+        for: 5m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: Host root filesystem is more than 92 percent full
+          description: The Ubuntu root filesystem has remained above the critical disk threshold for five minutes.
+
+  - name: velora-realtime-services
+    rules:
+      - alert: VeloraConversationServiceDown
+        expr: up{job="conversation-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: conversation-service
+        annotations:
+          summary: conversation-service is unavailable
+          description: Prometheus has not been able to scrape conversation-service for at least one minute.
+
+      - alert: VeloraConversationHighPersistenceErrorRate
+        expr: |
+          sum(rate(velora_conversation_send_requests_total{service="conversation-service",status="error"}[5m]))
+          /
+          clamp_min(sum(rate(velora_conversation_send_requests_total{service="conversation-service"}[5m])), 0.000001)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: conversation-service
+        annotations:
+          summary: Conversation persistence error rate is above 5 percent
+          description: More than 5 percent of measured validated message persistence attempts have failed for five minutes.
+
+      - alert: VeloraConversationHighPersistenceLatency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(velora_conversation_send_duration_seconds_bucket{service="conversation-service"}[5m])
+            )
+          ) > 0.75
+          and
+          sum(rate(velora_conversation_send_requests_total{service="conversation-service"}[5m])) > 0.001
+        for: 5m
+        labels:
+          severity: warning
+          service: conversation-service
+        annotations:
+          summary: Conversation message persistence p95 is above 750 milliseconds
+          description: Validated message persistence latency has remained elevated while the service has traffic.
+
+      - alert: VeloraConversationEventLoopDelayed
+        expr: max(velora_nodejs_event_loop_lag_p99_seconds{service="conversation-service"}) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          service: conversation-service
+        annotations:
+          summary: conversation-service event loop p99 is above 250 milliseconds
+          description: The realtime chat process has sustained elevated event-loop delay for five minutes.
+
+      - alert: VeloraCallServiceDown
+        expr: up{job="call-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: call-service
+        annotations:
+          summary: call-service is unavailable
+          description: Prometheus has not been able to scrape call-service for at least one minute.
+
+      - alert: VeloraCallEventLoopDelayed
+        expr: max(velora_nodejs_event_loop_lag_p99_seconds{service="call-service"}) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          service: call-service
+        annotations:
+          summary: call-service event loop p99 is above 250 milliseconds
+          description: The call signaling process has sustained elevated event-loop delay for five minutes.
+
   - name: velora-monitoring-service
     rules:
       - alert: VeloraMonitoringServiceDown
@@ -6,6 +129,7 @@ groups:
         for: 1m
         labels:
           severity: critical
+          service: monitoring-service
         annotations:
           summary: monitoring-service is unavailable
           description: Prometheus has not been able to scrape monitoring-service for at least one minute.
@@ -19,6 +143,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service RPC error rate is above 5 percent
           description: More than 5 percent of monitoring-service RPC/event operations have failed during the last five minutes.
@@ -34,6 +159,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service p95 RPC latency is above one second
           description: p95 monitoring-service RPC/event latency has remained above one second for five minutes.
@@ -43,6 +169,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service resident memory is above 512 MiB
           description: monitoring-service has used more than 512 MiB of resident memory for ten minutes.

@@ -20,8 +20,9 @@ on:
 permissions:
   contents: read
 
-# Production runs publish mutable :latest tags and move the deployment branch,
-# so they must run in order. PRs have independent, cancelable validation queues.
+# Production publishes both immutable commit-SHA tags and convenience :latest
+# tags, then moves the deployment branch. Production runs must stay serialized;
+# PRs keep independent, cancelable validation queues.
 concurrency:
   group: homelab-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -198,7 +199,10 @@ jobs:
             done <<< "$changed_files"
           fi
 
-          if [ "$build_all" = true ]; then
+          # PRs keep affected-image builds. Every production commit publishes a
+          # complete immutable image set so homelab deploy/rollback never depends
+          # on mutable :latest tags.
+          if [ "$build_all" = true ] || [ "$is_production" = true ]; then
             build_services=("${all_services[@]}")
             build_service_count="${#all_services[@]}"
           fi

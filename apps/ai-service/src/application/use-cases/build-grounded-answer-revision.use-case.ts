@@ -102,6 +102,7 @@ export class BuildGroundedAnswerRevisionUseCase {
         systemPrompt: [
           'Revise a rejected reel RAG answer using only the supplied authorized evidence.',
           'Answer the exact relation requested by the user, including noisy or punctuation-free ASR when the evidence semantically supports it.',
+          'Reuse distinctive source wording, names, values, and relations when they directly answer the question; do not paraphrase away the decisive fact.',
           'Do not construct arbitrary source substrings and do not invent facts.',
           'Return a concise revised answer and the smallest supporting evidence ID set.',
           'Never invent an evidence ID. Return only JSON matching the schema.',

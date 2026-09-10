@@ -48,6 +48,15 @@ const SAFE_STRING_KEYS = new Set([
   'embeddingProvider',
   'embeddingModel',
   'embeddingVersion',
+  'finalFailureSource',
+  'finalSource',
+  'verifierDecision',
+]);
+
+const SAFE_DIAGNOSTIC_KEYS = new Set([
+  'answerCalls',
+  'answerRevisionExecuted',
+  'draftAnswerExecuted',
 ]);
 
 function isSafeStringKey(key) {
@@ -55,7 +64,11 @@ function isSafeStringKey(key) {
 }
 
 function sanitize(value, key = '') {
-  if (PRIVATE_KEY.test(key) || key === 'requestId') return undefined;
+  if (
+    (PRIVATE_KEY.test(key) && !SAFE_DIAGNOSTIC_KEYS.has(key)) ||
+    key === 'requestId'
+  )
+    return undefined;
   if (value === null || typeof value === 'number' || typeof value === 'boolean')
     return value;
   if (typeof value === 'string')

@@ -55,3 +55,34 @@ test('sanitizes private fields while retaining safe IDs and diagnostics', () => 
     /private answer|private prompt|private evidence|private-request-id/,
   );
 });
+
+test('retains safe answer and finalization diagnostics without private text', () => {
+  const output = JSON.stringify(
+    sanitize({
+      answer: 'private answer',
+      answerCalls: [
+        {
+          modelRole: 'ANSWER',
+          providerStatus: 200,
+          attempt: 1,
+          prompt: 'private prompt',
+        },
+      ],
+      finalization: {
+        draftAnswerExecuted: true,
+        draftAnswerProviderStatus: 200,
+        verifierDecision: 'PASS',
+        answerRevisionExecuted: false,
+        finalSource: 'ANSWER',
+        finalFailureSource: 'NONE',
+      },
+    }),
+  );
+
+  assert.match(output, /answerCalls/);
+  assert.match(output, /draftAnswerExecuted/);
+  assert.match(output, /answerRevisionExecuted/);
+  assert.match(output, /verifierDecision/);
+  assert.match(output, /finalSource/);
+  assert.doesNotMatch(output, /private answer|private prompt/);
+});

@@ -1,9 +1,11 @@
 import json
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from rag_eval import cli
 from rag_eval.cli import _build_live_runner_args, validate_definitions_report
 from rag_eval.dataset import is_supported_live_dataset, load_dataset
 
@@ -100,3 +102,22 @@ def test_live_rejects_ambiguous_run_id_and_resume():
         _build_live_runner_args(
             _runner_args(run_id="run-a", resume="run-b"), Path("/tmp/definitions.json")
         )
+
+
+def test_trace_export_accepts_structured_completion_marker(tmp_path, monkeypatch):
+    report_path = tmp_path / "runner-report.json"
+    report_path.write_text("{}")
+    env_path = tmp_path / "eval.env"
+    env_path.write_text("")
+
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stdout='{"TRACE_PROVENANCE":"COMPLETE","TRACE_ROWS_EXPORTED":8}\n'
+        ),
+    )
+
+    cli._export_trace_artifact(
+        report_path, tmp_path / "traces.jsonl", str(env_path)
+    )

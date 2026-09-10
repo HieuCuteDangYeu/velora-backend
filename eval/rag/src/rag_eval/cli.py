@@ -31,7 +31,7 @@ from rag_eval.pricing import load_pricing
 from rag_eval.reports import build_summary, load_cases, write_report
 from rag_eval.schemas import EvaluationRow
 
-RESULTS = ROOT / "results"
+RESULTS = Path(os.getenv("RAG_EVAL_RESULTS_DIR", str(ROOT / "results")))
 
 
 def _rows(dataset: Any) -> dict[str, EvaluationRow]:
@@ -103,8 +103,21 @@ def _export_trace_artifact(
         capture_output=True,
         text=True,
     )
-    if "TRACE_PROVENANCE=COMPLETE" not in completed.stdout:
+    if not _trace_export_completed(completed.stdout):
         raise RuntimeError("trace exporter completed without complete provenance")
+
+
+def _trace_export_completed(stdout: str) -> bool:
+    if "TRACE_PROVENANCE=COMPLETE" in stdout:
+        return True
+    for line in stdout.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and payload.get("TRACE_PROVENANCE") == "COMPLETE":
+            return True
+    return False
 
 
 def _build_live_runner_args(

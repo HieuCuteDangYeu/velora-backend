@@ -67,6 +67,9 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(request.jsonSchema.properties.claims).toMatchObject({
       maxItems: 12,
     });
+    expect(
+      request.jsonSchema.properties.claims.items.properties.evidenceIds,
+    ).toMatchObject({ minItems: 1, maxItems: 3 });
     expect(request.systemPrompt).toContain(
       'exhaustive grounding audit of every independently checkable factual reel assertion',
     );
@@ -106,11 +109,6 @@ describe('GenerateDraftAnswerUseCase', () => {
       },
       /unknown evidence ID/,
     ],
-    [
-      'missing claim mapping',
-      { answer: 'Unmapped.', claims: [] },
-      /no grounded claim mappings/,
-    ],
     ['empty answer', { answer: '', claims: [] }, /empty answer/],
   ])('rejects %s', async (_name, response, error) => {
     const useCase = new GenerateDraftAnswerUseCase(
@@ -121,14 +119,33 @@ describe('GenerateDraftAnswerUseCase', () => {
     await expect(useCase.execute(state)).rejects.toThrow(error);
   });
 
-  it('allows normal chat to contain no reel claim mappings', async () => {
+  it('passes a non-empty answer to the verifier when the provider omits optional claim mappings', async () => {
     const useCase = new GenerateDraftAnswerUseCase(
       {
         generateObject: jest.fn().mockResolvedValue({
-          answer: 'Hello!',
+          answer: 'The zorb is coupled to the quasar.',
           claims: [],
         }),
       } as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      answer: 'The zorb is coupled to the quasar.',
+      claims: [],
+    });
+  });
+
+  it('allows normal chat to contain no reel claim mappings', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'Hello!',
+        claims: [],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
       promptBuilder,
       config,
     );
@@ -139,6 +156,10 @@ describe('GenerateDraftAnswerUseCase', () => {
         rerankedChunks: [],
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({ answer: 'Hello!', claims: [] });
+    const request = service.generateObject.mock.calls[0]?.[0] as {
+      jsonSchema: { properties: { claims: { minItems?: number } } };
+    };
+    expect(request.jsonSchema.properties.claims).not.toHaveProperty('minItems');
   });
 
   it('narrows answer evidence to the sufficiency-selected IDs without renumbering them', async () => {
@@ -196,8 +217,13 @@ describe('GenerateDraftAnswerUseCase', () => {
       generateObject: jest
         .fn()
         .mockResolvedValueOnce({
-          answer: 'A response without a grounded claim mapping.',
-          claims: [],
+          answer: 'A response with an invalid grounded claim mapping.',
+          claims: [
+            {
+              claim: 'An invalid mapping.',
+              evidenceIds: ['e8'],
+            },
+          ],
         })
         .mockResolvedValueOnce({
           answer: 'The zorb is coupled to the quasar.',

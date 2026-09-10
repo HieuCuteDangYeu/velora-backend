@@ -214,6 +214,7 @@ Rules:
     const bounds = readRagPromptBounds(this.config);
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
+      focusText: state.userMessage,
     });
     return `
 Route decision:

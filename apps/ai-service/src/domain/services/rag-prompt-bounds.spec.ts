@@ -79,6 +79,19 @@ describe('rag prompt bounds', () => {
     expect(value).toContain('bands');
   });
 
+  it('preserves question-matched evidence from the omitted middle of a long window', () => {
+    const value = truncateEvidenceText(
+      `${'context '.repeat(80)}blue label used for the bag ${'tail '.repeat(80)}`,
+      500,
+      'What label is used for the bag?',
+    );
+
+    expect(value.length).toBeLessThanOrEqual(500);
+    expect(value).toContain('blue');
+    expect(value).toContain('label');
+    expect(value).toContain('bag');
+  });
+
   it('bounds evidence metadata without changing finite match labels', () => {
     const [bounded] = boundEvidence(
       [

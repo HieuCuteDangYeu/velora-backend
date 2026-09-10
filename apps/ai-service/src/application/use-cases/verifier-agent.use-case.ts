@@ -352,6 +352,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     const bounds = readRagPromptBounds(this.config);
     const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveTail: true,
+      focusText: state.userMessage,
     });
     const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({

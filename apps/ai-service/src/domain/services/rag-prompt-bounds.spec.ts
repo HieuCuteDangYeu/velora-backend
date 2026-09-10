@@ -3,6 +3,7 @@ import {
   boundTextItems,
   boundEvidence,
   DEFAULT_RAG_PROMPT_BOUNDS,
+  selectRagAnswerEvidenceIds,
   truncateEvidenceText,
   truncatePromptText,
 } from './rag-prompt-bounds';
@@ -100,5 +101,52 @@ describe('rag prompt bounds', () => {
       ),
     ).toBe(true);
     expect(bounded.matchedBy).toBe('HYBRID');
+  });
+
+  it('focuses advisory answer prompts on the top required-evidence reel', () => {
+    const candidates = [
+      {
+        chunkId: 'chunk-a-0',
+        reelId: 'reel-a',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'a0',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'chunk-b-0',
+        reelId: 'reel-b',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'b0',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'chunk-a-1',
+        reelId: 'reel-a',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'a1',
+        tags: [],
+        distance: 0,
+      },
+    ];
+
+    expect(
+      [
+        ...selectRagAnswerEvidenceIds(
+          candidates,
+          {
+            sufficient: false,
+            confidence: 0.2,
+            availableEvidence: ['TRANSCRIPT'],
+            missingEvidence: ['TRANSCRIPT'],
+            recommendedAction: 'REFUSE_NO_CONTEXT',
+            reason: 'advisory negative',
+            diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+          },
+          { requiredEvidence: ['TRANSCRIPT'] },
+        ),
+      ].sort(),
+    ).toEqual(['e0', 'e2']);
   });
 });

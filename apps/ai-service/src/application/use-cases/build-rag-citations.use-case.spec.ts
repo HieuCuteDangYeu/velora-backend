@@ -399,4 +399,52 @@ describe('BuildRagCitationsUseCase', () => {
     });
     expect(attributionService.attribute).toHaveBeenCalledTimes(1);
   });
+
+  it('falls back to verifier-supported evidence when attribution returns no usable selection', async () => {
+    const attributionService: ICitationAttributionService = {
+      attribute: jest.fn().mockResolvedValue({
+        selections: [],
+        claims: [
+          {
+            claim: 'The visible error is supported.',
+            supported: false,
+            evidenceIds: [],
+          },
+        ],
+        factualClaimCount: 1,
+        supportedClaimCount: 0,
+        coverage: 0,
+      }),
+    };
+    const useCase = new BuildRagCitationsUseCase(attributionService);
+    const state = buildState();
+    state.verification = {
+      passed: true,
+      confidence: 0.95,
+      issues: [],
+      requiresRevision: false,
+      supportedClaimMappings: [
+        {
+          claim: 'The visible error is supported.',
+          evidenceIds: ['e0'],
+        },
+      ],
+      contradictions: [],
+    };
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      citations: [expect.objectContaining({ reelId: 'r1' })],
+      coverage: {
+        mode: 'FALLBACK',
+        coverage: 1,
+        factualClaimCount: 1,
+        supportedClaimCount: 1,
+        diagnostics: {
+          decisionSource: 'FALLBACK',
+          selectedEvidenceIds: ['e0'],
+          providerStatus: 'SUCCESS',
+        },
+      },
+    });
+  });
 });

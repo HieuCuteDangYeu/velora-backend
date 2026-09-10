@@ -251,7 +251,10 @@ export class VerifierAgentUseCase {
           supportedClaimMappings: result.supportedClaimMappings ?? [],
           contradictions: result.contradictions ?? [],
           semanticCalls: semanticCalls.map(
-            ({ requestId: _requestId, ...call }) => call,
+            ({ requestId: _requestId, ...call }) => {
+              void _requestId;
+              return call;
+            },
           ),
           exactProvenance: this.exactProvenance(state),
         },
@@ -260,7 +263,10 @@ export class VerifierAgentUseCase {
       if (error && typeof error === 'object') {
         Object.assign(error, {
           semanticCalls: semanticCalls.map(
-            ({ requestId: _requestId, ...call }) => call,
+            ({ requestId: _requestId, ...call }) => {
+              void _requestId;
+              return call;
+            },
           ),
         });
       }
@@ -335,6 +341,8 @@ export class VerifierAgentUseCase {
 You are the semantic verifier for a production reel RAG answer.
 
 Check every factual claim against the authorized evidence and requested relation/modality. Reject unsupported additions, contradictions, substitutions, and visual claims inferred between sampled frames.
+
+Do not accept an answer merely because a claim points to an evidence ID. Compare each claim's proposition with the evidence and requested value, name, number, unit, relation, and direction. Every independently checkable factual assertion must be represented in supportedClaimMappings. If any assertion is not directly entailed or you are uncertain, return passed=false and requiresRevision=true.
 
 Return only compact JSON matching the schema. Keep issues, contradictions, claims, and any revision instruction brief. Use only evidence IDs; do not repeat evidence text, rewrite the answer, invent IDs, or expose reasoning.
 `.trim();

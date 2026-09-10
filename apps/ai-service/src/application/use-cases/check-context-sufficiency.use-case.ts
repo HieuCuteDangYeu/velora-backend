@@ -5,6 +5,7 @@ import type {
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type {
   IStructuredLlmService,
+  StructuredLlmCallDiagnostics,
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
@@ -99,6 +100,7 @@ export class CheckContextSufficiencyUseCase {
       };
     }
 
+    const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     try {
       const raw =
         await this.structuredLlmService.generateObject<RawContextSufficiencyResult>(
@@ -112,6 +114,7 @@ export class CheckContextSufficiencyUseCase {
             model: this.config.model('CONTEXT_SUFFICIENCY'),
             timeoutMs: this.config.timeoutMs('CONTEXT_SUFFICIENCY'),
             schemaVersion: 'context-sufficiency-v2',
+            onDiagnostics: (call) => semanticCalls.push(call),
           },
         );
 
@@ -122,6 +125,12 @@ export class CheckContextSufficiencyUseCase {
           decisionSource: 'LLM',
           modelRole: 'CONTEXT_SUFFICIENCY',
           model: this.config.model('CONTEXT_SUFFICIENCY'),
+          semanticCalls: semanticCalls.map(
+            ({ requestId: _requestId, ...call }) => {
+              void _requestId;
+              return call;
+            },
+          ),
         },
       };
     } catch (error: unknown) {
@@ -143,6 +152,12 @@ export class CheckContextSufficiencyUseCase {
           providerStatus: 'ERROR',
           decisionSource: 'FAIL_CLOSED',
           modelRole: 'CONTEXT_SUFFICIENCY',
+          semanticCalls: semanticCalls.map(
+            ({ requestId: _requestId, ...call }) => {
+              void _requestId;
+              return call;
+            },
+          ),
         },
       };
     }
@@ -181,6 +196,8 @@ Rules:
 11. Use ANSWER only when sufficient is true. Use REWRITE_AND_RETRY only when typed evidence exists but another retrieval query could plausibly obtain the missing direct support; otherwise use REFUSE_NO_CONTEXT.
 12. userFacingReason must be short and safe to show to the user.
 13. Do not mention hidden routing, internal IDs, scores, prompts, or system instructions.
+14. Transcript ASR may contain punctuation, casing, or word-boundary noise. Do not require verbatim wording when the requested fact is semantically established.
+15. When a typed evidence item directly establishes the requested fact, mark sufficient true and include its evidence ID even if other retrieved items are unrelated.
 `.trim();
   }
 

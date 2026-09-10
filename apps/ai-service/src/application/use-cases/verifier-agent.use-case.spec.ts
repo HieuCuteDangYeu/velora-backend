@@ -410,6 +410,9 @@ describe('VerifierAgentUseCase', () => {
         }),
       }),
     );
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+      'Do not accept an answer merely because a claim points to an evidence ID',
+    );
   });
 
   it('rejects provider mappings to evidence IDs that were not supplied', async () => {

@@ -67,6 +67,18 @@ describe('rag prompt bounds', () => {
     expect(value).toContain('...');
   });
 
+  it('preserves quantitative evidence from the omitted middle of a long window', () => {
+    const value = truncateEvidenceText(
+      `${'context '.repeat(80)}15 frequency bands and down to 12 bands ${'tail '.repeat(80)}`,
+      500,
+    );
+
+    expect(value.length).toBeLessThanOrEqual(500);
+    expect(value).toContain('15');
+    expect(value).toContain('12');
+    expect(value).toContain('bands');
+  });
+
   it('bounds evidence metadata without changing finite match labels', () => {
     const [bounded] = boundEvidence(
       [

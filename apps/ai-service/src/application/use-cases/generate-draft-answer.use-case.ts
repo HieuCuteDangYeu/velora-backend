@@ -83,6 +83,7 @@ export class GenerateDraftAnswerUseCase {
       'Split compound answer sentences into atomic claims when they contain multiple independently checkable facts. Each factual claim must be stated in answer exactly once; do not add factual claims that answer does not state.',
       'For every claim, declare only the authorized evidence IDs that directly support that exact assertion and requested relation or modality. Multiple claims may cite the same evidence ID, and one claim may cite multiple evidence IDs when combined support is genuinely required.',
       'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
+      'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
       'Normal conversational statements that do not depend on reel evidence may have no claims.',
     ].join('\n\n');
     const userPrompt = JSON.stringify({
@@ -146,6 +147,7 @@ export class GenerateDraftAnswerUseCase {
                 type: 'array',
                 description:
                   'Authorized evidence IDs that directly support this exact claim.',
+                minItems: 1,
                 maxItems: 3,
                 items: { type: 'string', maxLength: 64 },
               },
@@ -172,12 +174,6 @@ export class GenerateDraftAnswerUseCase {
           this.normalizeClaim(value, allowedEvidenceIds),
         )
       : [];
-    if (state.route?.intent === 'REEL_VIDEO_QUESTION' && claims.length === 0) {
-      throw new DraftAnswerContractError(
-        'Reel answer model returned no grounded claim mappings',
-      );
-    }
-
     return { answer, claims, modelRole: 'ANSWER', diagnostics: [] };
   }
 

@@ -7,6 +7,9 @@ interface CandidateWithTokens extends ScoredRerankCandidate {
   tokens: Set<string>;
 }
 
+const COMPLEMENTARY_RELEVANCE_RATIO = 0.35;
+const MAX_COMPLEMENTARY_OVERLAP_RATIO = 0.25;
+
 @Injectable()
 export class EvidenceDiversitySelector {
   constructor(private readonly configService: ConfigService) {}
@@ -37,6 +40,7 @@ export class EvidenceDiversitySelector {
       tokens: this.tokenize(this.context(item.candidate)),
     }));
     const selected: CandidateWithTokens[] = [];
+    let complementaryWindowAdded = false;
 
     while (remaining.length > 0 && selected.length < limit) {
       let bestIndex = 0;
@@ -63,12 +67,103 @@ export class EvidenceDiversitySelector {
 
       const [chosen] = remaining.splice(bestIndex, 1);
       selected.push(chosen);
+
+      // Adjacent transcript windows often split one fact across an overlap.
+      // Preserve one such complementary window before MMR trades it for a
+      // different reel, while retaining the requested result limit.
+      if (
+        selected.length === 1 &&
+        selected.length < limit &&
+        !complementaryWindowAdded
+      ) {
+        const companionIndex = this.findComplementaryWindow(remaining, chosen);
+        if (companionIndex >= 0) {
+          const [companion] = remaining.splice(companionIndex, 1);
+          selected.push(companion);
+          complementaryWindowAdded = true;
+        }
+      }
     }
 
     return selected.map(({ candidate, relevanceScore }) => ({
       ...candidate,
       rerankScore: relevanceScore,
     }));
+  }
+
+  private findComplementaryWindow(
+    remaining: CandidateWithTokens[],
+    primary: CandidateWithTokens,
+  ): number {
+    const minimumRelevance =
+      primary.relevanceScore * COMPLEMENTARY_RELEVANCE_RATIO;
+    let bestIndex = -1;
+    let bestRelevance = Number.NEGATIVE_INFINITY;
+
+    for (let index = 0; index < remaining.length; index += 1) {
+      const item = remaining[index];
+      if (item.relevanceScore < minimumRelevance) continue;
+      if (
+        !this.isComplementaryTemporalEvidence(item.candidate, primary.candidate)
+      ) {
+        continue;
+      }
+      if (item.relevanceScore > bestRelevance) {
+        bestIndex = index;
+        bestRelevance = item.relevanceScore;
+      }
+    }
+
+    return bestIndex;
+  }
+
+  private isComplementaryTemporalEvidence(
+    left: ReelContextSearchResult,
+    right: ReelContextSearchResult,
+  ): boolean {
+    if (left.reelId !== right.reelId) return false;
+    if (
+      (left.evidenceType ?? 'TRANSCRIPT') !==
+      (right.evidenceType ?? 'TRANSCRIPT')
+    ) {
+      return false;
+    }
+    if (!this.hasValidWindow(left) || !this.hasValidWindow(right)) {
+      return false;
+    }
+
+    const leftDuration = left.endTime - left.startTime;
+    const rightDuration = right.endTime - right.startTime;
+    const unionStart = Math.min(left.startTime, right.startTime);
+    const unionEnd = Math.max(left.endTime, right.endTime);
+    const unionDuration = unionEnd - unionStart;
+    const intersection = Math.max(
+      0,
+      Math.min(left.endTime, right.endTime) -
+        Math.max(left.startTime, right.startTime),
+    );
+    const overlapRatio = unionDuration > 0 ? intersection / unionDuration : 1;
+
+    return (
+      unionDuration > Math.max(leftDuration, rightDuration) &&
+      overlapRatio <= MAX_COMPLEMENTARY_OVERLAP_RATIO &&
+      (left.startTime < right.startTime || left.endTime > right.endTime)
+    );
+  }
+
+  private hasValidWindow(
+    candidate: ReelContextSearchResult,
+  ): candidate is ReelContextSearchResult & {
+    startTime: number;
+    endTime: number;
+  } {
+    return (
+      typeof candidate.startTime === 'number' &&
+      Number.isFinite(candidate.startTime) &&
+      typeof candidate.endTime === 'number' &&
+      Number.isFinite(candidate.endTime) &&
+      candidate.endTime > candidate.startTime
+    );
   }
 
   private context(candidate: ReelContextSearchResult): string {

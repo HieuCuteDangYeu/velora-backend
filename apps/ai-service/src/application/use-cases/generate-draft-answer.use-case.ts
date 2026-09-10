@@ -22,6 +22,67 @@ interface RawDraftAnswer {
   claims?: unknown;
 }
 
+const QUANTITY_QUESTION_PATTERN =
+  /\b(?:how many|how much|how low|how high|how long|how old|number of|what (?:number|percentage|percent|year|date))\b/i;
+
+const NUMBER_WORD_VALUES = new Map<string, string>([
+  ['zero', '0'],
+  ['one', '1'],
+  ['two', '2'],
+  ['three', '3'],
+  ['four', '4'],
+  ['five', '5'],
+  ['six', '6'],
+  ['seven', '7'],
+  ['eight', '8'],
+  ['nine', '9'],
+  ['ten', '10'],
+  ['eleven', '11'],
+  ['twelve', '12'],
+  ['thirteen', '13'],
+  ['fourteen', '14'],
+  ['fifteen', '15'],
+  ['sixteen', '16'],
+  ['seventeen', '17'],
+  ['eighteen', '18'],
+  ['nineteen', '19'],
+  ['twenty', '20'],
+  ['thirty', '30'],
+  ['forty', '40'],
+  ['fifty', '50'],
+  ['sixty', '60'],
+  ['seventy', '70'],
+  ['eighty', '80'],
+  ['ninety', '90'],
+  ['hundred', '100'],
+  ['thousand', '1000'],
+]);
+
+function quantityTokens(value: string): Set<string> {
+  const tokens: string[] =
+    value.toLowerCase().match(/[a-z]+|\d+(?:[.,]\d+)?/g) ?? [];
+  return new Set<string>(
+    tokens.flatMap((token) => {
+      const wordValue = NUMBER_WORD_VALUES.get(token);
+      if (wordValue) return [wordValue];
+      if (/^\d/.test(token)) return [token.replace(/,/g, '')];
+      return [];
+    }),
+  );
+}
+
+function hasSupportedQuantity(
+  question: string,
+  evidence: string[],
+  answer: string,
+): boolean {
+  if (!QUANTITY_QUESTION_PATTERN.test(question)) return true;
+  const evidenceQuantities = quantityTokens(evidence.join(' '));
+  if (evidenceQuantities.size === 0) return true;
+  const answerQuantities = quantityTokens(answer);
+  return [...answerQuantities].some((value) => evidenceQuantities.has(value));
+}
+
 class DraftAnswerContractError extends Error {
   constructor(message: string) {
     super(message);
@@ -70,6 +131,9 @@ export class GenerateDraftAnswerUseCase {
         chunk.evidenceText?.trim() ||
         (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : ''),
     }));
+    const authorizedEvidenceText = authorizedEvidence.map(
+      (item) => item.evidenceText,
+    );
     const allowedEvidenceIds = new Set(
       answerEvidence.map(({ evidenceId }) => evidenceId),
     );
@@ -82,6 +146,7 @@ export class GenerateDraftAnswerUseCase {
       'Split compound answer sentences into atomic claims when they contain multiple independently checkable facts. Each factual claim must be stated in answer exactly once; do not add factual claims that answer does not state.',
       'For every claim, declare only the authorized evidence IDs that directly support that exact assertion and requested relation or modality. Multiple claims may cite the same evidence ID, and one claim may cite multiple evidence IDs when combined support is genuinely required.',
       'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
+      'For quantity, count, measurement, threshold, date, duration, or age questions, state the directly supported value and unit or relation explicitly. If evidence uses digits, preserve them or spell them out; never replace a supported quantity with a vague phrase.',
       'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
       'Normal conversational statements that do not depend on reel evidence may have no claims.',
     ].join('\n\n');
@@ -108,15 +173,26 @@ export class GenerateDraftAnswerUseCase {
     let raw: RawDraftAnswer;
     try {
       raw = await request(systemPrompt);
-      return { ...this.normalize(raw, state, allowedEvidenceIds), diagnostics };
+      return {
+        ...this.normalize(
+          raw,
+          state,
+          allowedEvidenceIds,
+          authorizedEvidenceText,
+        ),
+        diagnostics,
+      };
     } catch (error: unknown) {
       if (!(error instanceof DraftAnswerContractError)) throw error;
       raw = await request(
-        `${systemPrompt}\n\nThe previous response violated the local grounding contract. Return a concise answer with a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
+        `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation with the supported value stated explicitly, then return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
       );
     }
 
-    return { ...this.normalize(raw, state, allowedEvidenceIds), diagnostics };
+    return {
+      ...this.normalize(raw, state, allowedEvidenceIds, authorizedEvidenceText),
+      diagnostics,
+    };
   }
 
   private schema(): StructuredLlmJsonSchema {
@@ -161,12 +237,20 @@ export class GenerateDraftAnswerUseCase {
     raw: RawDraftAnswer,
     state: RagChatWorkflowState,
     allowedEvidenceIds: Set<string>,
+    authorizedEvidenceText: string[],
   ): RagDraftAnswer {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
     if (!answer)
       throw new DraftAnswerContractError(
         'Answer model returned an empty answer',
       );
+    if (
+      !hasSupportedQuantity(state.userMessage, authorizedEvidenceText, answer)
+    ) {
+      throw new DraftAnswerContractError(
+        'Answer model omitted a directly supported quantity',
+      );
+    }
 
     const claims = Array.isArray(raw.claims)
       ? raw.claims.map((value) =>

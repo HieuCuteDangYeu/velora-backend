@@ -70,6 +70,40 @@ describe('EvidenceDiversitySelector', () => {
     expect(result.map((item) => item.chunkId)).toEqual(['first', 'other-reel']);
   });
 
+  it('retains one complementary same-reel window before cross-reel diversification', () => {
+    const selector = new EvidenceDiversitySelector(new ConfigService());
+    const result = selector.select(
+      [
+        scored(candidate({ id: 'primary', startTime: 0, endTime: 45 }), 0.95),
+        scored(
+          candidate({
+            id: 'companion',
+            chunkId: 'chunk-2',
+            startTime: 30,
+            endTime: 90,
+            chunkText: 'companion transcript evidence',
+            retrievalText: 'companion transcript evidence',
+            evidenceText: 'companion transcript evidence',
+          }),
+          0.6,
+        ),
+        scored(
+          candidate({
+            id: 'other-reel',
+            reelId: 'reel-2',
+            chunkText: 'unrelated transcript evidence',
+            retrievalText: 'unrelated transcript evidence',
+            evidenceText: 'unrelated transcript evidence',
+          }),
+          0.85,
+        ),
+      ],
+      2,
+    );
+
+    expect(result.map((item) => item.chunkId)).toEqual(['primary', 'chunk-2']);
+  });
+
   it('uses temporal-overlap penalty independently of same-reel penalty', () => {
     const selector = new EvidenceDiversitySelector(
       new ConfigService({

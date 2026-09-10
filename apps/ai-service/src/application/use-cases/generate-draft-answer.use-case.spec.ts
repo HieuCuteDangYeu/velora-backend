@@ -283,6 +283,51 @@ describe('GenerateDraftAnswerUseCase', () => {
     ]);
   });
 
+  it('retries a quantity answer that omits the supported value', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValueOnce({
+          answer: 'It is lower than the current setting.',
+          claims: [
+            {
+              claim: 'It is lower than the current setting.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          answer: 'Twelve bands.',
+          claims: [{ claim: 'Twelve bands.', evidenceIds: ['e0'] }],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'How low can the number of bands go?',
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The number can go down to 12 bands.',
+            chunkText: 'The number can go down to 12 bands.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({ answer: 'Twelve bands.' });
+
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject.mock.calls[1][0].systemPrompt).toContain(
+      'explicit-quantity requirement',
+    );
+  });
+
   it('retries once when a successful answer violates the local claim contract', async () => {
     const service = {
       generateObject: jest

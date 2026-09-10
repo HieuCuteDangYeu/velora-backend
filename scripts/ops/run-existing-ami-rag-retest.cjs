@@ -181,6 +181,28 @@ function buildReconciliationEvidence(input) {
   };
 }
 
+function reconciledResult(definition, progress) {
+  if (
+    progress?.status !== 'FAILED_RECONCILED' ||
+    !progress.conversationId ||
+    !progress.userMessageId
+  ) {
+    fail(`reconciled case ${definition.caseId} is missing request identifiers`);
+  }
+
+  return {
+    ...definition,
+    status: 'FAILED_RECONCILED',
+    conversationId: progress.conversationId,
+    userMessageId: progress.userMessageId,
+    reconciledAt: progress.reconciledAt,
+    latencyMs: null,
+    finalAnswer: '',
+    citations: [],
+    reconciliationReason: progress.reconciliationReason,
+  };
+}
+
 async function reconcileInFlight(runId) {
   const caseId = arg('--case-id');
   const conversationId = arg('--conversation-id');
@@ -419,6 +441,10 @@ async function main() {
         resultCases.push(progress.result);
         continue;
       }
+      if (progress.status === 'FAILED_RECONCILED') {
+        resultCases.push(reconciledResult(definition, progress));
+        continue;
+      }
       if (progress.status !== 'PENDING') pendingCases(state, [definition]);
       markCaseInFlight(state, definition.caseId, (nextState) =>
         writeJsonAtomically(statePath(benchmarkRunId), nextState),
@@ -581,6 +607,7 @@ module.exports = {
   lockRun,
   markCaseInFlight,
   pendingCases,
+  reconciledResult,
   extractDistinctReelIds,
   readState,
   statePath,

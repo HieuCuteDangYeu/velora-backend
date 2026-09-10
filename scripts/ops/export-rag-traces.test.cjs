@@ -36,6 +36,29 @@ test('requires exactly one matching trace', () => {
   assert.equal(rows[0].traceId, 'trace-1');
 });
 
+test('accepts one trace for a reconciled failure without an assistant identifier', () => {
+  const rows = buildTraceRows(
+    [
+      {
+        caseId: 'C-RECONCILED',
+        status: 'FAILED_RECONCILED',
+        conversationId: 'conversation-1',
+        userMessageId: 'user-message-1',
+      },
+    ],
+    [
+      {
+        id: 'trace-1',
+        conversationId: 'conversation-1',
+        workflowMetrics: { diagnostics: { finalFailureSource: 'NO_CONTEXT' } },
+      },
+    ],
+  );
+
+  assert.equal(rows[0].caseId, 'C-RECONCILED');
+  assert.equal(rows[0].traceId, 'trace-1');
+});
+
 test('sanitizes private fields while retaining safe IDs and diagnostics', () => {
   const output = JSON.stringify(
     sanitize({

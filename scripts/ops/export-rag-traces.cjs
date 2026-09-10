@@ -120,7 +120,14 @@ function buildTraceRows(cases, traces) {
     byConversation.set(trace.conversationId, rows);
   }
   return [...expected].map(([caseId, item]) => {
-    if (!item.conversationId || !item.userMessageId || !item.assistantMessageId)
+    const isReconciledFailure =
+      item.status === 'FAILED_RECONCILED' ||
+      item.status === 'RECONCILED_FAILURE';
+    if (
+      !item.conversationId ||
+      !item.userMessageId ||
+      (!isReconciledFailure && !item.assistantMessageId)
+    )
       throw new Error(`case ${caseId} is missing request identifiers`);
     const matches = byConversation.get(item.conversationId) || [];
     if (matches.length === 0)

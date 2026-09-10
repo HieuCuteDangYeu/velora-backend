@@ -43,8 +43,20 @@ export class GenerateDraftAnswerUseCase {
     const diagnostics: StructuredLlmCallDiagnostics[] = [];
     const bounds = readRagPromptBounds(this.config);
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds);
-    const authorizedEvidence = boundedChunks.map((chunk, index) => ({
-      evidenceId: `e${index}`,
+    const supportedEvidenceIds = new Set(
+      state.contextSufficiency?.sufficient
+        ? (state.contextSufficiency.supportedEvidenceIds ?? []).filter(
+            (value): value is string => typeof value === 'string',
+          )
+        : [],
+    );
+    const answerEvidence = boundedChunks.flatMap((chunk, index) =>
+      supportedEvidenceIds.size === 0 || supportedEvidenceIds.has(`e${index}`)
+        ? [{ chunk, evidenceId: `e${index}` }]
+        : [],
+    );
+    const authorizedEvidence = answerEvidence.map(({ chunk, evidenceId }) => ({
+      evidenceId,
       evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
       evidenceText:
         chunk.evidenceText?.trim() ||
@@ -59,6 +71,7 @@ export class GenerateDraftAnswerUseCase {
         'Treat claims as an exhaustive grounding audit of every independently checkable factual reel assertion actually stated in answer; do not omit any such assertion.',
         'Split compound answer sentences into atomic claims when they contain multiple independently checkable facts. Each factual claim must be stated in answer exactly once; do not add factual claims that answer does not state.',
         'For every claim, declare only the authorized evidence IDs that directly support that exact assertion and requested relation or modality. Multiple claims may cite the same evidence ID, and one claim may cite multiple evidence IDs when combined support is genuinely required.',
+        'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
         'Normal conversational statements that do not depend on reel evidence may have no claims.',
       ].join('\n\n'),
       userPrompt: JSON.stringify({
@@ -78,7 +91,11 @@ export class GenerateDraftAnswerUseCase {
     });
 
     return {
-      ...this.normalize(raw, state, boundedChunks.length),
+      ...this.normalize(
+        raw,
+        state,
+        new Set(answerEvidence.map(({ evidenceId }) => evidenceId)),
+      ),
       diagnostics,
     };
   }
@@ -123,16 +140,15 @@ export class GenerateDraftAnswerUseCase {
   private normalize(
     raw: RawDraftAnswer,
     state: RagChatWorkflowState,
-    allowedEvidenceCount: number,
+    allowedEvidenceIds: Set<string>,
   ): RagDraftAnswer {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
     if (!answer) throw new Error('Answer model returned an empty answer');
 
-    const allowedIds = new Set(
-      Array.from({ length: allowedEvidenceCount }, (_, index) => `e${index}`),
-    );
     const claims = Array.isArray(raw.claims)
-      ? raw.claims.map((value) => this.normalizeClaim(value, allowedIds))
+      ? raw.claims.map((value) =>
+          this.normalizeClaim(value, allowedEvidenceIds),
+        )
       : [];
     if (state.route?.intent === 'REEL_VIDEO_QUESTION' && claims.length === 0) {
       throw new Error('Reel answer model returned no grounded claim mappings');

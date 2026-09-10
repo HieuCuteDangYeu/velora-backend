@@ -129,8 +129,53 @@ describe('CheckContextSufficiencyUseCase', () => {
       expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
         'Use REWRITE_AND_RETRY only when typed evidence exists',
       );
+      expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+        'Transcript ASR may contain punctuation',
+      );
     },
   );
+
+  it('persists safe structured-call diagnostics from the sufficiency provider', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockImplementation(
+          (input: { onDiagnostics?: (value: unknown) => void }) => {
+            input.onDiagnostics?.({
+              modelRole: 'CONTEXT_SUFFICIENCY',
+              model: 'test/test/sufficiency',
+              providerStatus: 200,
+              attempt: 1,
+            });
+            return Promise.resolve({
+              sufficient: true,
+              confidence: 0.9,
+              supportedEvidenceIds: ['e0'],
+              reason: 'Supported.',
+              recommendedAction: 'ANSWER',
+            });
+          },
+        ),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute(state({ evidenceText: 'Authorized evidence.' })),
+    ).resolves.toMatchObject({
+      diagnostics: {
+        semanticCalls: [
+          expect.objectContaining({
+            modelRole: 'CONTEXT_SUFFICIENCY',
+            providerStatus: 200,
+            attempt: 1,
+          }),
+        ],
+      },
+    });
+  });
 
   it('filters provider evidence IDs that were not supplied', async () => {
     const service = {

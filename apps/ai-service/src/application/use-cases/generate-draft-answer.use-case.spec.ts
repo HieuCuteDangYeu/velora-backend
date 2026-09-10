@@ -140,4 +140,54 @@ describe('GenerateDraftAnswerUseCase', () => {
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({ answer: 'Hello!', claims: [] });
   });
+
+  it('narrows answer evidence to the sufficiency-selected IDs without renumbering them', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The zorb is coupled to the quasar.',
+        claims: [
+          {
+            claim: 'The zorb is coupled to the quasar.',
+            evidenceIds: ['e1'],
+          },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e1'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Unrelated distractor.',
+            chunkText: 'Unrelated distractor.',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The zorb is coupled to the quasar.',
+            chunkText: 'The zorb is coupled to the quasar.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({ claims: [{ evidenceIds: ['e1'] }] });
+
+    const request = service.generateObject.mock.calls[0]?.[0] as {
+      userPrompt: string;
+    };
+    expect(JSON.parse(request.userPrompt).authorizedEvidence).toEqual([
+      expect.objectContaining({ evidenceId: 'e1' }),
+    ]);
+  });
 });

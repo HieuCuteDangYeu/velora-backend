@@ -254,6 +254,7 @@ export interface RagContextSufficiencyDiagnostics {
     | 'UNKNOWN';
   modelRole?: 'CONTEXT_SUFFICIENCY';
   model?: string;
+  semanticCalls?: StructuredLlmCallDiagnostics[];
 }
 
 export interface RagCitationCoverageResult {

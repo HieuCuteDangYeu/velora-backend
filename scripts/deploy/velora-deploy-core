@@ -384,7 +384,9 @@ init() {
 
 fetch_release_refs() {
   log "==> Fetching master and homelab-deploy..."
-  git fetch --prune origin master homelab-deploy
+  git fetch --prune origin \
+    '+refs/heads/master:refs/remotes/origin/master' \
+    '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
 }
 
 validate_promoted_sha() {

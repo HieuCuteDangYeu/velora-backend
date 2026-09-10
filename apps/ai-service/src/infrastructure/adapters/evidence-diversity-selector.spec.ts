@@ -85,7 +85,7 @@ describe('EvidenceDiversitySelector', () => {
             retrievalText: 'companion transcript evidence',
             evidenceText: 'companion transcript evidence',
           }),
-          0.6,
+          0.01,
         ),
         scored(
           candidate({

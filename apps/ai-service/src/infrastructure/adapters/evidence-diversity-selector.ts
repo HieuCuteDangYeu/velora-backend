@@ -7,7 +7,6 @@ interface CandidateWithTokens extends ScoredRerankCandidate {
   tokens: Set<string>;
 }
 
-const COMPLEMENTARY_RELEVANCE_RATIO = 0.35;
 const MAX_COMPLEMENTARY_OVERLAP_RATIO = 0.25;
 
 @Injectable()
@@ -95,14 +94,11 @@ export class EvidenceDiversitySelector {
     remaining: CandidateWithTokens[],
     primary: CandidateWithTokens,
   ): number {
-    const minimumRelevance =
-      primary.relevanceScore * COMPLEMENTARY_RELEVANCE_RATIO;
     let bestIndex = -1;
     let bestRelevance = Number.NEGATIVE_INFINITY;
 
     for (let index = 0; index < remaining.length; index += 1) {
       const item = remaining[index];
-      if (item.relevanceScore < minimumRelevance) continue;
       if (
         !this.isComplementaryTemporalEvidence(item.candidate, primary.candidate)
       ) {

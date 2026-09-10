@@ -193,6 +193,31 @@ export function truncatePromptText(value: string, maxChars: number): string {
   return `${normalized.slice(0, boundary > Math.floor(budget * 0.6) ? boundary : budget).trim()}...`;
 }
 
+/**
+ * Keep both ends of long evidence windows because a transcript fact may be
+ * introduced near the beginning and qualified near the end of a chunk.
+ */
+export function truncateEvidenceText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxChars) return normalized;
+
+  const marker = '...';
+  const contentBudget = Math.max(2, maxChars - marker.length);
+  const headBudget = Math.ceil(contentBudget * 0.6);
+  const tailBudget = contentBudget - headBudget;
+  const headCandidate = normalized.slice(0, headBudget);
+  const headBoundary = headCandidate.lastIndexOf(' ');
+  const head = (
+    headBoundary > 0 ? headCandidate.slice(0, headBoundary) : headCandidate
+  ).trimEnd();
+  const tailCandidate = normalized.slice(-tailBudget);
+  const tailBoundary = tailCandidate.indexOf(' ');
+  const tail = (
+    tailBoundary >= 0 ? tailCandidate.slice(tailBoundary + 1) : tailCandidate
+  ).trimStart();
+  return `${head}${marker}${tail}`;
+}
+
 export function boundPromptText(value: unknown, maxChars: number): string {
   return truncatePromptText(typeof value === 'string' ? value : '', maxChars);
 }
@@ -250,16 +275,17 @@ export function boundTextItems<T>(
   maxItems: number,
   maxItemChars: number,
   maxTotalChars: number,
+  truncate: (value: string, maxChars: number) => string = truncatePromptText,
 ): T[] {
   const output: T[] = [];
   let totalChars = 0;
   for (const item of items.slice(0, maxItems)) {
-    const text = truncatePromptText(getText(item), maxItemChars);
+    const text = truncate(getText(item), maxItemChars);
     const separatorChars = output.length > 0 ? 1 : 0;
     if (totalChars + separatorChars + text.length > maxTotalChars) {
       const remaining = maxTotalChars - totalChars - separatorChars;
       if (remaining < 80) break;
-      output.push(setText(item, truncatePromptText(text, remaining)));
+      output.push(setText(item, truncate(text, remaining)));
       break;
     }
     output.push(setText(item, text));
@@ -271,6 +297,7 @@ export function boundTextItems<T>(
 export function boundEvidence(
   candidates: ReelContextSearchResult[],
   bounds: RagPromptBounds,
+  options: { preserveTail?: boolean } = {},
 ): ReelContextSearchResult[] {
   const bounded = boundTextItems(
     candidates,
@@ -288,6 +315,7 @@ export function boundEvidence(
     bounds.maxEvidenceItems,
     bounds.maxEvidenceTextChars,
     bounds.maxEvidenceTotalChars,
+    options.preserveTail ? truncateEvidenceText : truncatePromptText,
   );
   return bounded.map((candidate) => ({
     ...candidate,

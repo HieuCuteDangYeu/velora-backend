@@ -350,7 +350,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
     const bounds = readRagPromptBounds(this.config);
-    const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds);
+    const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds, {
+      preserveTail: true,
+    });
     const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({
       question: boundPromptText(state.userMessage, bounds.maxUserMessageChars),

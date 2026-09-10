@@ -42,7 +42,9 @@ export class GenerateDraftAnswerUseCase {
   async execute(state: RagChatWorkflowState): Promise<RagDraftAnswer> {
     const diagnostics: StructuredLlmCallDiagnostics[] = [];
     const bounds = readRagPromptBounds(this.config);
-    const boundedChunks = boundEvidence(state.rerankedChunks, bounds);
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
+      preserveTail: true,
+    });
     const supportedEvidenceIds = new Set(
       state.contextSufficiency?.sufficient
         ? (state.contextSufficiency.supportedEvidenceIds ?? []).filter(

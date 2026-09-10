@@ -3,6 +3,7 @@ import {
   boundTextItems,
   boundEvidence,
   DEFAULT_RAG_PROMPT_BOUNDS,
+  truncateEvidenceText,
   truncatePromptText,
 } from './rag-prompt-bounds';
 
@@ -51,6 +52,18 @@ describe('rag prompt bounds', () => {
     const value = truncatePromptText('alpha beta gamma delta epsilon', 16);
     expect(value.endsWith('...')).toBe(true);
     expect(value).not.toContain('epsilon');
+  });
+
+  it('preserves evidence tails when a fact may occur near the chunk end', () => {
+    const value = truncateEvidenceText(
+      'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega',
+      36,
+    );
+
+    expect(value.length).toBeLessThanOrEqual(36);
+    expect(value.startsWith('alpha')).toBe(true);
+    expect(value.endsWith('omega')).toBe(true);
+    expect(value).toContain('...');
   });
 
   it('bounds evidence metadata without changing finite match labels', () => {

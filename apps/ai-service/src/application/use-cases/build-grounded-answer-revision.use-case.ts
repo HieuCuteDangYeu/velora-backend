@@ -59,26 +59,26 @@ export class BuildGroundedAnswerRevisionUseCase {
       bounds.maxClaimChars,
       bounds.maxClaimsTotalChars,
     );
-    const evidence = boundEvidence(state.rerankedChunks, bounds).flatMap(
-      (chunk, index) => {
-        const evidenceText =
-          chunk.evidenceText?.trim() ||
-          (chunk.evidenceType === 'METADATA'
-            ? chunk.chunkText.trim()
-            : undefined);
-        if (!evidenceText) return [];
-        return [
-          {
-            evidenceId: `e${index}`,
-            reelId: chunk.reelId,
-            evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
-            evidenceText,
-            startTime: chunk.startTime,
-            endTime: chunk.endTime,
-          },
-        ];
-      },
-    );
+    const evidence = boundEvidence(state.rerankedChunks, bounds, {
+      preserveTail: true,
+    }).flatMap((chunk, index) => {
+      const evidenceText =
+        chunk.evidenceText?.trim() ||
+        (chunk.evidenceType === 'METADATA'
+          ? chunk.chunkText.trim()
+          : undefined);
+      if (!evidenceText) return [];
+      return [
+        {
+          evidenceId: `e${index}`,
+          reelId: chunk.reelId,
+          evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+          evidenceText,
+          startTime: chunk.startTime,
+          endTime: chunk.endTime,
+        },
+      ];
+    });
     if (evidence.length === 0) return undefined;
 
     const diagnostics: StructuredLlmCallDiagnostics[] = [];

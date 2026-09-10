@@ -177,43 +177,6 @@ describe('CheckContextSufficiencyUseCase', () => {
     });
   });
 
-  it('rechecks a semantic refusal against focused typed evidence once', async () => {
-    const service = {
-      generateObject: jest
-        .fn()
-        .mockResolvedValueOnce({
-          sufficient: false,
-          confidence: 0.8,
-          supportedEvidenceIds: [],
-          reason: 'The first pass was uncertain.',
-          recommendedAction: 'REFUSE_NO_CONTEXT',
-        })
-        .mockResolvedValueOnce({
-          sufficient: true,
-          confidence: 0.9,
-          supportedEvidenceIds: ['e0'],
-          reason: 'The focused evidence directly supports the question.',
-          recommendedAction: 'ANSWER',
-        }),
-    };
-    const useCase = new CheckContextSufficiencyUseCase(
-      service as never,
-      config,
-    );
-
-    await expect(
-      useCase.execute(state({ evidenceText: 'Focused authorized evidence.' })),
-    ).resolves.toMatchObject({
-      sufficient: true,
-      supportedEvidenceIds: ['e0'],
-      diagnostics: { providerStatus: 'SUCCESS' },
-    });
-    expect(service.generateObject).toHaveBeenCalledTimes(2);
-    expect(service.generateObject.mock.calls[1][0].systemPrompt).toContain(
-      'Recheck the highest-ranked evidence carefully before refusing',
-    );
-  });
-
   it('filters provider evidence IDs that were not supplied', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({

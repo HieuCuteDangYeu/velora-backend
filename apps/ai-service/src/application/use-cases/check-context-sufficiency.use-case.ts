@@ -102,38 +102,10 @@ export class CheckContextSufficiencyUseCase {
 
     const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     try {
-      const raw = await this.generateSemanticDecision(state, semanticCalls);
-      let result = this.normalize(raw, state);
-
-      if (
-        !result.sufficient &&
-        result.recommendedAction === 'REFUSE_NO_CONTEXT'
-      ) {
-        const focusedState = {
-          ...state,
-          rerankedChunks: state.rerankedChunks.slice(0, 3),
-        };
-        try {
-          const focusedRaw = await this.generateSemanticDecision(
-            focusedState,
-            semanticCalls,
-            'A previous check returned insufficient despite the presence of the required typed evidence. Recheck the highest-ranked evidence carefully before refusing. If it directly establishes the exact fact, return sufficient true with its minimal evidence IDs; otherwise preserve the refusal.',
-          );
-          const focusedResult = this.normalize(focusedRaw, focusedState);
-          if (
-            focusedResult.sufficient &&
-            (focusedResult.supportedEvidenceIds?.length ?? 0) > 0
-          ) {
-            result = focusedResult;
-          }
-        } catch (error: unknown) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          this.logger.warn(
-            `[ContextSufficiency] focused recheck unavailable; preserving the original refusal: ${message}`,
-          );
-        }
-      }
+      const result = this.normalize(
+        await this.generateSemanticDecision(state, semanticCalls),
+        state,
+      );
 
       return {
         ...result,
@@ -183,13 +155,10 @@ export class CheckContextSufficiencyUseCase {
   private async generateSemanticDecision(
     state: RagChatWorkflowState,
     semanticCalls: StructuredLlmCallDiagnostics[],
-    additionalInstruction?: string,
   ): Promise<RawContextSufficiencyResult> {
     return await this.structuredLlmService.generateObject<RawContextSufficiencyResult>(
       {
-        systemPrompt: [this.buildSystemPrompt(), additionalInstruction]
-          .filter(Boolean)
-          .join('\n\n'),
+        systemPrompt: this.buildSystemPrompt(),
         userPrompt: this.buildUserPrompt(state),
         jsonSchema: this.getJsonSchema(),
         maxTokens: this.config.maxCompletionTokens('CONTEXT_SUFFICIENCY'),

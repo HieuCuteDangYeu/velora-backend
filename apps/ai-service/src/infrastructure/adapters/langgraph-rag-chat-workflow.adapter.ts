@@ -38,6 +38,7 @@ import {
   boundPromptText,
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 
 const RagChatStateSchema = new StateSchema({
   userId: z.string(),
@@ -864,7 +865,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     const context = state.contextSufficiency;
     if (!context) return 'markRetrievalReadyNode';
 
-    if (context.sufficient && context.recommendedAction === 'ANSWER') {
+    if (allowsGroundedGeneration(context, state.route)) {
       return 'markRetrievalReadyNode';
     }
 

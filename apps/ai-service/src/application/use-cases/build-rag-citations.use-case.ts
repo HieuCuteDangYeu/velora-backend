@@ -10,6 +10,7 @@ import type {
   RagCitationCoverageResult,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 
 interface GroundedCitationCandidate {
   attribution: CitationAttributionCandidate;
@@ -35,7 +36,7 @@ export class BuildRagCitationsUseCase {
   async execute(state: RagChatWorkflowState): Promise<RagCitationAssessment> {
     if (
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
-      state.contextSufficiency?.sufficient === false
+      !allowsGroundedGeneration(state.contextSufficiency, state.route)
     ) {
       return this.notRequired();
     }

@@ -49,7 +49,45 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
-  it('ends unanswered voice calls after the no-answer timeout', async () => {
+  it('does not start the durable expiry worker without the runtime lease', async () => {
+    const runtimeLease = {
+      acquire: jest.fn().mockResolvedValue(undefined),
+      assertHeld: jest.fn(() => {
+        throw new Error('Call runtime lease is not held');
+      }),
+    };
+    const gateway = createGateway({ runtimeLease });
+
+    await expect(gateway.onModuleInit()).rejects.toThrow('lease is not held');
+    expect(runtimeLease.acquire).toHaveBeenCalledTimes(1);
+    expect(runtimeLease.assertHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an established socket request after the runtime lease is lost', async () => {
+    const initiateCallUseCase = { execute: jest.fn() };
+    const runtimeLease = {
+      acquire: jest.fn().mockResolvedValue(undefined),
+      assertHeld: jest.fn(() => {
+        throw new Error('Call runtime lease is not held');
+      }),
+    };
+    const gateway = createGateway({ initiateCallUseCase, runtimeLease });
+
+    await expect(
+      gateway.handleInitiateCall(
+        {
+          conversationId: 'conv-1',
+          targetUserId: 'user-b',
+          callType: 'VOICE',
+        },
+        createSocket({ id: 'socket-1', userId: 'user-a', callIds: [] }),
+      ),
+    ).rejects.toThrow('lease is not held');
+
+    expect(initiateCallUseCase.execute).not.toHaveBeenCalled();
+  });
+
+  it('uses the durable expiration transition after the no-answer timeout', async () => {
     const initiateCallUseCase = {
       execute: jest.fn().mockResolvedValue({
         role: 'host',
@@ -57,22 +95,18 @@ describe('CallGateway reconnect recovery', () => {
         rtpCapabilities: { codecs: [], headerExtensions: [] },
       }),
     };
-    const leaveCallUseCase = {
-      execute: jest.fn().mockResolvedValue({
-        session: initiatedVoiceSession,
-        endedReason: 'no_answer',
-        shouldEmitPeerLeft: false,
-      }),
-    };
-    const sessionRepository = {
-      findByCallId: jest.fn().mockResolvedValue(initiatedVoiceSession),
+    const expireDueCallsUseCase = {
+      execute: jest
+        .fn()
+        .mockResolvedValue([
+          { session: initiatedVoiceSession, reason: 'no_answer' },
+        ]),
     };
     const callEmitter = { emit: jest.fn() };
     const userEmitter = { emit: jest.fn() };
     const gateway = createGateway({
       initiateCallUseCase,
-      leaveCallUseCase,
-      sessionRepository,
+      expireDueCallsUseCase,
     });
     gateway.server = {
       to: jest.fn().mockImplementation((roomId: string) => {
@@ -119,10 +153,8 @@ describe('CallGateway reconnect recovery', () => {
 
     await jest.advanceTimersByTimeAsync(30000);
 
-    expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
-      initiatedVoiceSession.callId,
-      initiatedVoiceSession.initiatorId,
-      'no_answer',
+    expect(expireDueCallsUseCase.execute).toHaveBeenCalledWith(
+      expect.any(Date),
     );
     expect(callEmitter.emit).toHaveBeenCalledWith('call_ended', {
       callId: initiatedVoiceSession.callId,
@@ -138,16 +170,28 @@ describe('CallGateway reconnect recovery', () => {
         rtpCapabilities: { codecs: [], headerExtensions: [] },
       }),
     };
-    const answerCallUseCase = {
-      execute: jest.fn().mockResolvedValue(undefined),
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({ outcome: 'accepted' }),
     };
     const leaveCallUseCase = {
       execute: jest.fn(),
     };
     const gateway = createGateway({
       initiateCallUseCase,
-      answerCallUseCase,
+      acceptIncomingCallUseCase,
       leaveCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(
+          new CallSession({
+            ...initiatedVoiceSession,
+            status: 'ringing',
+            participantIds: [
+              initiatedVoiceSession.initiatorId,
+              initiatedVoiceSession.targetUserId,
+            ],
+          }),
+        ),
+      },
     });
     gateway.server = {
       to: jest.fn().mockReturnValue({ emit: jest.fn() }),
@@ -176,11 +220,113 @@ describe('CallGateway reconnect recovery', () => {
     );
     await jest.advanceTimersByTimeAsync(30000);
 
-    expect(answerCallUseCase.execute).toHaveBeenCalledWith(
+    expect(acceptIncomingCallUseCase.execute).toHaveBeenCalledWith(
       initiatedVoiceSession.callId,
       initiatedVoiceSession.targetUserId,
+      'socket-1',
+      'legacy:socket-1',
     );
     expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+  });
+
+  it('preserves a rollback client native action id through legacy answer_call', async () => {
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({ outcome: 'accepted' }),
+    };
+    const gateway = createGateway({
+      acceptIncomingCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(
+          new CallSession({
+            ...initiatedVoiceSession,
+            status: 'ringing',
+            participantIds: [
+              initiatedVoiceSession.initiatorId,
+              initiatedVoiceSession.targetUserId,
+            ],
+          }),
+        ),
+      },
+    });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+
+    await gateway.handleAnswerCall(
+      {
+        callId: initiatedVoiceSession.callId,
+        actionId: 'native-answer-action-1',
+      },
+      createSocket({
+        id: 'socket-1',
+        userId: initiatedVoiceSession.targetUserId,
+        callIds: [initiatedVoiceSession.callId],
+      }),
+    );
+
+    expect(acceptIncomingCallUseCase.execute).toHaveBeenCalledWith(
+      initiatedVoiceSession.callId,
+      initiatedVoiceSession.targetUserId,
+      'socket-1',
+      'native-answer-action-1',
+    );
+    expect(roomEmitter.emit).toHaveBeenCalledWith('call_answered', {
+      callId: initiatedVoiceSession.callId,
+      userId: initiatedVoiceSession.targetUserId,
+      answerActionId: 'native-answer-action-1',
+    });
+  });
+
+  it('routes a rollback action retry through the atomic lifecycle after its ACK was lost', async () => {
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        outcome: 'already_accepted_same_attempt',
+        role: 'guest',
+        session: new CallSession({
+          ...initiatedVoiceSession,
+          status: 'active',
+          answerActionId: 'native-answer-action-1',
+        }),
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+      }),
+    };
+    const gateway = createGateway({
+      acceptIncomingCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(
+          new CallSession({
+            ...initiatedVoiceSession,
+            status: 'active',
+            answerActionId: 'native-answer-action-1',
+          }),
+        ),
+      },
+    });
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+    } as never;
+
+    await expect(
+      gateway.handleAnswerCall(
+        {
+          callId: initiatedVoiceSession.callId,
+          actionId: 'native-answer-action-1',
+        },
+        createSocket({
+          id: 'socket-2',
+          userId: initiatedVoiceSession.targetUserId,
+          callIds: [],
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(acceptIncomingCallUseCase.execute).toHaveBeenCalledWith(
+      initiatedVoiceSession.callId,
+      initiatedVoiceSession.targetUserId,
+      'socket-2',
+      'native-answer-action-1',
+    );
   });
 
   it('defers active-call teardown until the reconnect grace window expires', async () => {
@@ -434,6 +580,204 @@ describe('CallGateway reconnect recovery', () => {
     ).rejects.toThrow('Reconnect window expired');
     expect(joinCallUseCase.execute).not.toHaveBeenCalled();
   });
+  it('acknowledges an atomic native answer before broadcasting it to the call and callee-user rooms', async () => {
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        outcome: 'accepted',
+        role: 'guest',
+        session: activeSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        activeProducers: [],
+      }),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const calleeUserEmitter = { emit: jest.fn() };
+    const gateway = createGateway({ acceptIncomingCallUseCase });
+    gateway.server = {
+      to: jest
+        .fn()
+        .mockImplementation((roomId: string) =>
+          roomId === activeSession.targetUserId
+            ? calleeUserEmitter
+            : roomEmitter,
+        ),
+    } as never;
+    const callee = createSocket({
+      id: 'socket-2',
+      userId: activeSession.targetUserId,
+      callIds: [],
+      emit: jest.fn(),
+    });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: activeSession.callId, actionId: 'callkit-answer-1' },
+      callee,
+    );
+
+    expect(acceptIncomingCallUseCase.execute).toHaveBeenCalledWith(
+      activeSession.callId,
+      activeSession.targetUserId,
+      'socket-2',
+      'callkit-answer-1',
+    );
+    expect(callee.join).toHaveBeenCalledWith(activeSession.callId);
+    expect(callee.emit).toHaveBeenCalledWith(
+      'incoming_call_acceptance',
+      expect.objectContaining({
+        callId: activeSession.callId,
+        outcome: 'accepted',
+        role: 'guest',
+      }),
+    );
+    expect(roomEmitter.emit).toHaveBeenCalledWith('call_answered', {
+      callId: activeSession.callId,
+      userId: activeSession.targetUserId,
+      answerActionId: 'callkit-answer-1',
+    });
+    expect(calleeUserEmitter.emit).toHaveBeenCalledWith('call_answered', {
+      callId: activeSession.callId,
+      userId: activeSession.targetUserId,
+      answerActionId: 'callkit-answer-1',
+    });
+  });
+
+  it('reconciles an accepted native answer when the socket drops before room attachment', async () => {
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        outcome: 'accepted',
+        role: 'guest',
+        session: activeSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        activeProducers: [],
+      }),
+    };
+    const participant = new CallParticipant({
+      userId: activeSession.targetUserId,
+      callId: activeSession.callId,
+      role: 'guest',
+      socketId: 'socket-2',
+      socketIds: ['socket-2'],
+      isConnected: true,
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const stateRepository = {
+      getParticipant: jest.fn().mockResolvedValue(participant),
+      upsertParticipant: jest.fn(),
+      removeParticipant: jest.fn(),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const gateway = createGateway({
+      acceptIncomingCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(activeSession),
+      },
+      stateRepository,
+    });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+    const callee = createSocket({
+      id: 'socket-2',
+      userId: activeSession.targetUserId,
+      callIds: [],
+      disconnected: true,
+      emit: jest.fn(),
+    });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: activeSession.callId, actionId: 'callkit-answer-1' },
+      callee,
+    );
+
+    expect(acceptIncomingCallUseCase.execute).toHaveBeenCalledWith(
+      activeSession.callId,
+      activeSession.targetUserId,
+      'socket-2',
+      'callkit-answer-1',
+    );
+    expect(callee.join).not.toHaveBeenCalled();
+    expect(callee.emit).not.toHaveBeenCalled();
+    expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: activeSession.callId,
+        userId: activeSession.targetUserId,
+        socketIds: [],
+        isConnected: false,
+        reconnectDeadlineAt: new Date('2026-01-01T00:00:15.000Z'),
+      }),
+    );
+    expect(roomEmitter.emit).toHaveBeenCalledWith(
+      'peer_reconnecting',
+      expect.objectContaining({
+        callId: activeSession.callId,
+        userId: activeSession.targetUserId,
+        reconnectDeadlineAt: '2026-01-01T00:00:15.000Z',
+      }),
+    );
+    expect(roomEmitter.emit).not.toHaveBeenCalledWith(
+      'call_answered',
+      expect.anything(),
+    );
+  });
+
+  it('rejects a missing native action id before it can mutate call state', async () => {
+    const acceptIncomingCallUseCase = { execute: jest.fn() };
+    const gateway = createGateway({ acceptIncomingCallUseCase });
+
+    await expect(
+      gateway.handleAcceptIncomingCall(
+        { callId: activeSession.callId, actionId: '   ' },
+        createSocket({
+          id: 'socket-2',
+          userId: activeSession.targetUserId,
+          callIds: [],
+        }),
+      ),
+    ).rejects.toThrow('A call action id is required');
+    expect(acceptIncomingCallUseCase.execute).not.toHaveBeenCalled();
+  });
+
+  it('normalizes an invalid persisted expiry before emitting an incoming call', async () => {
+    const corruptExpirySession = new CallSession({
+      ...initiatedVoiceSession,
+      ringTimeoutMs: 1250,
+      expiresAt: new Date('invalid'),
+    });
+    const initiateCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'host',
+        session: corruptExpirySession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+      }),
+    };
+    const recipientEmitter = { emit: jest.fn() };
+    const gateway = createGateway({ initiateCallUseCase });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(recipientEmitter),
+    } as never;
+
+    await gateway.handleInitiateCall(
+      {
+        conversationId: corruptExpirySession.conversationId,
+        targetUserId: corruptExpirySession.targetUserId,
+        callType: 'VOICE',
+      },
+      createSocket({
+        id: 'socket-1',
+        userId: corruptExpirySession.initiatorId,
+        callIds: [],
+      }),
+    );
+
+    const incomingPayload = recipientEmitter.emit.mock.calls.find(
+      ([event]) => event === 'incoming_call',
+    )?.[1];
+    expect(incomingPayload).toEqual(
+      expect.objectContaining({ ringTimeoutMs: 1250 }),
+    );
+    expect(Date.parse(incomingPayload.expiresAt)).not.toBeNaN();
+    gateway.onModuleDestroy();
+  });
 });
 
 function createGateway(overrides?: {
@@ -441,7 +785,10 @@ function createGateway(overrides?: {
   joinCallUseCase?: { execute: jest.Mock };
   leaveCallUseCase?: { execute: jest.Mock };
   rejectCallUseCase?: { execute: jest.Mock };
-  answerCallUseCase?: { execute: jest.Mock };
+  acceptIncomingCallUseCase?: { execute: jest.Mock };
+  expireDueCallsUseCase?: { execute: jest.Mock };
+  recoverActiveCallsAfterMediaRestartUseCase?: { execute: jest.Mock };
+  runtimeLease?: { acquire: jest.Mock; assertHeld: jest.Mock };
   mediaEngine?: { listActiveProducers: jest.Mock };
   sessionRepository?: { findByCallId: jest.Mock };
   stateRepository?: {
@@ -459,7 +806,13 @@ function createGateway(overrides?: {
     {} as never,
     (overrides?.leaveCallUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.rejectCallUseCase ?? { execute: jest.fn() }) as never,
-    (overrides?.answerCallUseCase ?? { execute: jest.fn() }) as never,
+    (overrides?.acceptIncomingCallUseCase ?? { execute: jest.fn() }) as never,
+    (overrides?.expireDueCallsUseCase ?? {
+      execute: jest.fn().mockResolvedValue([]),
+    }) as never,
+    (overrides?.recoverActiveCallsAfterMediaRestartUseCase ?? {
+      execute: jest.fn().mockResolvedValue([]),
+    }) as never,
     {} as never,
     {} as never,
     {} as never,
@@ -476,6 +829,10 @@ function createGateway(overrides?: {
     }) as never,
     { send: jest.fn() } as never,
     { issue: jest.fn().mockReturnValue('telemetry-token') } as never,
+    (overrides?.runtimeLease ?? {
+      acquire: jest.fn().mockResolvedValue(undefined),
+      assertHeld: jest.fn(),
+    }) as never,
   );
 }
 
@@ -486,6 +843,7 @@ function createSocket(input: {
   emit?: jest.Mock;
   join?: jest.Mock;
   to?: jest.Mock;
+  disconnected?: boolean;
 }) {
   return {
     id: input.id,
@@ -496,5 +854,6 @@ function createSocket(input: {
     emit: input.emit ?? jest.fn(),
     join: input.join ?? jest.fn().mockResolvedValue(undefined),
     to: input.to ?? jest.fn().mockReturnValue({ emit: jest.fn() }),
+    disconnected: input.disconnected ?? false,
   } as unknown as Socket;
 }

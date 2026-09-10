@@ -5,6 +5,8 @@ import { INestApplication } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import { CallGateway } from '../../src/infrastructure/gateways/call.gateway';
 import { CallServiceModule } from '../../src/call-service.module';
+import { PublishCallAnswerOutboxUseCase } from '../../src/application/use-cases/publish-call-answer-outbox.use-case';
+import { PublishCallTerminalOutboxUseCase } from '../../src/application/use-cases/publish-call-terminal-outbox.use-case';
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import type {
   ActiveProducerResult,
@@ -14,6 +16,11 @@ import type {
   ProducedMediaResult,
   RouterRtpCapabilitiesResult,
 } from '../../src/domain/interfaces/call-media.engine.interface';
+
+// This is only the in-process Socket.IO test harness. A short fixed timeout
+// flakes when Jest is concurrently tearing down another Nest application; it
+// is deliberately unrelated to the production call-answer watchdog.
+const SOCKET_EVENT_TIMEOUT_MS = 5_000;
 
 type RoomState = {
   transports: Map<
@@ -51,12 +58,16 @@ class FakeRedisClient {
   private readonly values = new Map<string, string>();
   private readonly hashes = new Map<string, Map<string, string>>();
   private readonly sets = new Map<string, Set<string>>();
+  private readonly sortedSets = new Map<string, Map<string, number>>();
 
   get(key: string): Promise<string | null> {
     return Promise.resolve(this.values.get(key) ?? null);
   }
 
-  set(key: string, value: string): Promise<'OK'> {
+  set(key: string, value: string, ...args: unknown[]): Promise<'OK' | null> {
+    if (args.includes('NX') && this.values.has(key)) {
+      return Promise.resolve(null);
+    }
     this.values.set(key, value);
     return Promise.resolve('OK');
   }
@@ -67,6 +78,7 @@ class FakeRedisClient {
       deleted += Number(this.values.delete(key));
       deleted += Number(this.hashes.delete(key));
       deleted += Number(this.sets.delete(key));
+      deleted += Number(this.sortedSets.delete(key));
     }
     return Promise.resolve(deleted);
   }
@@ -102,6 +114,124 @@ class FakeRedisClient {
     return Promise.resolve(1);
   }
 
+  ttl(): Promise<number> {
+    return Promise.resolve(60 * 60);
+  }
+
+  zadd(key: string, score: number | string, member: string): Promise<number> {
+    const values = this.sortedSets.get(key) ?? new Map<string, number>();
+    const existed = values.has(member);
+    values.set(member, Number(score));
+    this.sortedSets.set(key, values);
+    return Promise.resolve(existed ? 0 : 1);
+  }
+
+  zrem(key: string, ...members: string[]): Promise<number> {
+    const values = this.sortedSets.get(key);
+    if (!values) return Promise.resolve(0);
+
+    let deleted = 0;
+    for (const member of members) {
+      deleted += Number(values.delete(member));
+    }
+    if (values.size === 0) {
+      this.sortedSets.delete(key);
+    }
+    return Promise.resolve(deleted);
+  }
+
+  multi() {
+    const commands: Array<() => Promise<unknown>> = [];
+    const transaction = {
+      set: (...args: [string, string, ...unknown[]]) => {
+        commands.push(() => this.set(...args));
+        return transaction;
+      },
+      del: (...keys: string[]) => {
+        commands.push(() => this.del(...keys));
+        return transaction;
+      },
+      zadd: (key: string, score: number | string, member: string) => {
+        commands.push(() => this.zadd(key, score, member));
+        return transaction;
+      },
+      zrem: (key: string, ...members: string[]) => {
+        commands.push(() => this.zrem(key, ...members));
+        return transaction;
+      },
+      hset: (key: string, field: string, value: string) => {
+        commands.push(() => this.hset(key, field, value));
+        return transaction;
+      },
+      exec: async () =>
+        Promise.all(commands.map(async (command) => [null, await command()])),
+    };
+    return transaction;
+  }
+
+  eval(
+    script: string,
+    keyCount: number,
+    ...values: string[]
+  ): Promise<unknown> {
+    const keys = values.slice(0, keyCount);
+    const args = values.slice(keyCount);
+
+    if (script.includes("redis.call('PEXPIRE', KEYS[1], ARGV[2])")) {
+      return Promise.resolve(this.values.get(keys[0]) === args[0] ? 1 : 0);
+    }
+    if (script.includes("redis.call('DEL', KEYS[1])")) {
+      if (this.values.get(keys[0]) !== args[0]) return Promise.resolve(0);
+      this.values.delete(keys[0]);
+      return Promise.resolve(1);
+    }
+    if (script.includes('local joinedNow = true')) {
+      return Promise.resolve(this.evalJoin(keys, args));
+    }
+    if (script.includes('local acceptingLeaseUntil = ARGV[4]')) {
+      return Promise.resolve(this.evalClaimIncomingAnswer(keys, args));
+    }
+    if (script.includes("session.status = 'active'")) {
+      return Promise.resolve(this.evalActivateIncomingAnswer(keys, args));
+    }
+    if (script.includes('local requestedReason = ARGV[2]')) {
+      return Promise.resolve(this.evalTerminalTransition(keys, args));
+    }
+    if (script.includes("session.terminalReason = 'no_answer'")) {
+      return Promise.resolve(this.evalExpireDueCalls(keys, args));
+    }
+    if (script.includes("local callIds = redis.call('ZRANGE'")) {
+      return Promise.resolve(
+        this.evalTerminateActiveCallsForMediaRestart(keys, args),
+      );
+    }
+    if (script.includes('session.terminalEventPublishedAt = ARGV[2]')) {
+      return Promise.resolve(this.evalMarkTerminalPublished(keys, args));
+    }
+    if (script.includes('terminalEventPublishLeaseUntil')) {
+      return Promise.resolve(this.evalClaimPendingTerminalEvents(keys, args));
+    }
+    if (script.includes('local leaseUntilMs = ARGV[3]')) {
+      return Promise.resolve(this.evalClaimPendingAnswerEvents(keys, args));
+    }
+    if (script.includes('session.answerEventPublishedAt = ARGV[2]')) {
+      return Promise.resolve(this.evalMarkAnswerPublished(keys, args));
+    }
+    if (script.includes("local callIds = redis.call('ZRANGE'")) {
+      return Promise.resolve(
+        this.evalTerminateActiveCallsForMediaRestart(keys, args),
+      );
+    }
+    if (script.includes("local callIds = redis.call('ZRANGEBYSCORE'")) {
+      return Promise.resolve(this.evalExpireDueCalls(keys, args));
+    }
+    if (script.includes('local targetUserId = ARGV[3]')) {
+      return Promise.resolve(this.evalClearActiveCallForUsers(keys, args));
+    }
+
+    throw new Error('Unsupported Redis Lua script in call-flow test');
+  }
+
   sadd(key: string, ...members: string[]): Promise<number> {
     const set = this.sets.get(key) ?? new Set<string>();
     let added = 0;
@@ -123,24 +253,652 @@ class FakeRedisClient {
     return Promise.resolve('PONG');
   }
 
+  disconnect(): void {}
+
   reset(): void {
     this.values.clear();
     this.hashes.clear();
     this.sets.clear();
+    this.sortedSets.clear();
+  }
+
+  private evalJoin(keys: string[], args: string[]): string[] {
+    const [key] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return ['not_found'];
+
+    const session = this.readSession(raw);
+    const [now, userId, nowMs] = args;
+    if (this.isRingingExpired(session, now)) {
+      return [
+        'expired',
+        this.terminalizeExpiredSession(keys, session, now, nowMs),
+        '0',
+      ];
+    }
+    if (userId !== session.initiatorId && userId !== session.targetUserId) {
+      return ['forbidden', raw, '0'];
+    }
+    if (this.isTerminal(session)) {
+      return ['terminal', raw, '0'];
+    }
+
+    const participantIds = this.participantIds(session);
+    const joinedNow = !participantIds.includes(userId);
+    if (joinedNow) {
+      participantIds.push(userId);
+    }
+    session.participantIds = participantIds;
+    if (userId === session.targetUserId && session.status === 'initiated') {
+      session.status = 'ringing';
+    }
+    session.updatedAt = now;
+    session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+    return ['joined', this.writeSession(key, session), joinedNow ? '1' : '0'];
+  }
+
+  private evalClaimIncomingAnswer(keys: string[], args: string[]): string[] {
+    const [key, expiryKey, , , activeUsersKey] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return ['not_found'];
+
+    const session = this.readSession(raw);
+    const [
+      now,
+      userId,
+      actionId,
+      acceptingLeaseUntil,
+      acceptingLeaseUntilMs,
+      nowMs,
+    ] = args;
+    if (userId !== session.targetUserId) {
+      return ['forbidden', raw, '0'];
+    }
+    if (this.isRingingExpired(session, now)) {
+      return [
+        'expired',
+        this.terminalizeExpiredSession(keys, session, now, nowMs),
+        '0',
+      ];
+    }
+    if (session.status === 'accepting' || session.status === 'active') {
+      if (session.answerActionId === actionId) {
+        return ['already_accepted', raw, '0'];
+      }
+      return ['answered_elsewhere', raw, '0'];
+    }
+    if (this.isTerminal(session)) {
+      return ['terminal', raw, '0'];
+    }
+    if (this.hasOtherActiveCall(activeUsersKey, session)) {
+      return ['busy', raw, '0'];
+    }
+
+    const participantIds = this.participantIds(session);
+    if (!participantIds.includes(userId)) {
+      participantIds.push(userId);
+    }
+    session.participantIds = participantIds;
+    session.status = 'accepting';
+    session.answerActionId = actionId;
+    session.answerLeaseExpiresAt = acceptingLeaseUntil;
+    session.answeredAt = now;
+    session.updatedAt = now;
+    session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+    void this.zadd(expiryKey, acceptingLeaseUntilMs, String(session.callId));
+    return ['accepted', this.writeSession(key, session), '0'];
+  }
+
+  private terminalizeExpiredSession(
+    keys: string[],
+    session: Record<string, unknown>,
+    now: string,
+    nowMs: string | undefined,
+  ): string {
+    const [
+      key,
+      expiryKey,
+      answerOutboxKey,
+      activeKey,
+      activeUsersKey,
+      terminalOutboxKey,
+    ] = keys;
+    session.status = 'ended';
+    session.terminalReason = 'no_answer';
+    session.terminalActorId = session.initiatorId;
+    session.terminalEventPublishedAt = null;
+    session.terminalEventPublishLeaseUntil = null;
+    session.endedAt = now;
+    session.updatedAt = now;
+    session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+    void this.zrem(expiryKey, String(session.callId));
+    void this.zrem(answerOutboxKey, String(session.callId));
+    void this.zrem(activeKey, String(session.callId));
+    void this.zadd(
+      terminalOutboxKey,
+      Number(nowMs ?? Date.parse(now)),
+      String(session.callId),
+    );
+    this.clearActiveCallForSession(activeUsersKey, session);
+    return this.writeSession(key, session);
+  }
+
+  private evalActivateIncomingAnswer(keys: string[], args: string[]): string[] {
+    const [
+      key,
+      expiryKey,
+      outboxKey,
+      activeKey,
+      activeUsersKey,
+      terminalOutboxKey,
+    ] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return ['not_found'];
+
+    const session = this.readSession(raw);
+    const [now, nowMs, userId, actionId] = args;
+    if (userId !== session.targetUserId) {
+      return ['forbidden', raw];
+    }
+    if (session.status === 'active') {
+      return session.answerActionId === actionId
+        ? ['already_accepted', raw]
+        : ['answered_elsewhere', raw];
+    }
+    if (this.isTerminal(session)) {
+      return ['terminal', raw];
+    }
+    if (session.status !== 'accepting' || session.answerActionId !== actionId) {
+      return ['answered_elsewhere', raw];
+    }
+    if (this.hasOtherActiveCall(activeUsersKey, session)) {
+      return ['busy', raw];
+    }
+    if (
+      typeof session.answerLeaseExpiresAt === 'string' &&
+      Date.parse(session.answerLeaseExpiresAt) <= Date.parse(now)
+    ) {
+      session.status = 'ended';
+      session.terminalReason = 'media_unavailable';
+      session.terminalActorId = userId;
+      session.terminalEventPublishedAt = null;
+      session.terminalEventPublishLeaseUntil = null;
+      session.endedAt = now;
+      session.updatedAt = now;
+      session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+      void this.zrem(expiryKey, String(session.callId));
+      void this.zrem(outboxKey, String(session.callId));
+      void this.zrem(activeKey, String(session.callId));
+      void this.zadd(terminalOutboxKey, nowMs, String(session.callId));
+      this.clearActiveCallForSession(activeUsersKey, session);
+      return ['terminal', this.writeSession(key, session)];
+    }
+
+    session.status = 'active';
+    session.answerLeaseExpiresAt = null;
+    session.answerEventPublishedAt = null;
+    session.answerEventPublishLeaseUntil = null;
+    session.updatedAt = now;
+    session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+    const encoded = this.writeSession(key, session);
+    void this.zrem(expiryKey, String(session.callId));
+    void this.zadd(outboxKey, nowMs, String(session.callId));
+    void this.zadd(activeKey, nowMs, String(session.callId));
+    this.setActiveCallForSession(activeUsersKey, session);
+    return ['accepted', encoded];
+  }
+
+  private evalClaimPendingAnswerEvents(
+    keys: string[],
+    args: string[],
+  ): string[] {
+    const [outboxKey] = keys;
+    const [
+      nowMsRaw,
+      now,
+      leaseUntilMs,
+      leaseUntil,
+      rawLimit,
+      keyPrefix,
+      keySuffix,
+    ] = args;
+    const callIds = this.sortedMembersAtOrBefore(
+      outboxKey,
+      Number(nowMsRaw),
+      Number(rawLimit),
+    );
+    const results: string[] = [];
+
+    for (const callId of callIds) {
+      const key = `${keyPrefix}${callId}${keySuffix}`;
+      const raw = this.values.get(key);
+      if (!raw) {
+        void this.zrem(outboxKey, callId);
+        continue;
+      }
+      const session = this.readSession(raw);
+      const eventPending = !session.answerEventPublishedAt;
+      const leaseExpired =
+        !session.answerEventPublishLeaseUntil ||
+        (typeof session.answerEventPublishLeaseUntil === 'string' &&
+          session.answerEventPublishLeaseUntil <= now);
+      if (
+        session.status === 'active' &&
+        session.answerActionId &&
+        eventPending &&
+        leaseExpired
+      ) {
+        session.answerEventPublishLeaseUntil = leaseUntil;
+        session.updatedAt = now;
+        results.push(this.writeSession(key, session));
+        void this.zadd(outboxKey, leaseUntilMs, callId);
+      } else if (session.status !== 'active' || !eventPending) {
+        void this.zrem(outboxKey, callId);
+      }
+    }
+
+    return results;
+  }
+
+  private evalMarkAnswerPublished(keys: string[], args: string[]): number {
+    const [key, outboxKey] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return 0;
+
+    const session = this.readSession(raw);
+    const [actionId, now] = args;
+    if (session.answerActionId !== actionId || session.answerEventPublishedAt) {
+      return 0;
+    }
+    session.answerEventPublishedAt = now;
+    session.answerEventPublishLeaseUntil = null;
+    session.updatedAt = now;
+    this.writeSession(key, session);
+    void this.zrem(outboxKey, String(session.callId));
+    return 1;
+  }
+
+  private evalClaimPendingTerminalEvents(
+    keys: string[],
+    args: string[],
+  ): string[] {
+    const [outboxKey] = keys;
+    const [
+      nowMsRaw,
+      now,
+      leaseUntilMs,
+      leaseUntil,
+      rawLimit,
+      keyPrefix,
+      keySuffix,
+    ] = args;
+    const callIds = this.sortedMembersAtOrBefore(
+      outboxKey,
+      Number(nowMsRaw),
+      Number(rawLimit),
+    );
+    const results: string[] = [];
+
+    for (const callId of callIds) {
+      const key = `${keyPrefix}${callId}${keySuffix}`;
+      const raw = this.values.get(key);
+      if (!raw) {
+        void this.zrem(outboxKey, callId);
+        continue;
+      }
+
+      const session = this.readSession(raw);
+      const eventPending = !session.terminalEventPublishedAt;
+      const leaseExpired =
+        !session.terminalEventPublishLeaseUntil ||
+        (typeof session.terminalEventPublishLeaseUntil === 'string' &&
+          session.terminalEventPublishLeaseUntil <= now);
+      if (this.isTerminal(session) && eventPending && leaseExpired) {
+        session.terminalEventPublishLeaseUntil = leaseUntil;
+        session.updatedAt = now;
+        results.push(this.writeSession(key, session));
+        void this.zadd(outboxKey, leaseUntilMs, callId);
+      } else if (!this.isTerminal(session) || !eventPending) {
+        void this.zrem(outboxKey, callId);
+      }
+    }
+
+    return results;
+  }
+
+  private evalMarkTerminalPublished(keys: string[], args: string[]): number {
+    const [key, outboxKey] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return 0;
+
+    const session = this.readSession(raw);
+    const [lifecycleRevision, now] = args;
+    if (
+      !this.isTerminal(session) ||
+      this.scalarString(session.lifecycleRevision, '0') !== lifecycleRevision ||
+      session.terminalEventPublishedAt
+    ) {
+      return 0;
+    }
+    session.terminalEventPublishedAt = now;
+    session.terminalEventPublishLeaseUntil = null;
+    session.updatedAt = now;
+    this.writeSession(key, session);
+    void this.zrem(outboxKey, String(session.callId));
+    return 1;
+  }
+
+  private evalTerminalTransition(keys: string[], args: string[]): string[] {
+    const [
+      key,
+      expiryKey,
+      outboxKey,
+      activeKey,
+      activeUsersKey,
+      terminalOutboxKey,
+    ] = keys;
+    const raw = this.values.get(key);
+    if (!raw) return ['not_found'];
+
+    const session = this.readSession(raw);
+    const [userId, requestedReason, now, mode, nowMs] = args;
+    const wasActive = session.status === 'active';
+    if (mode === 'reject') {
+      if (userId !== session.targetUserId) {
+        return ['forbidden', raw, '', '0'];
+      }
+      if (wasActive) {
+        return ['active', raw, '', '1'];
+      }
+      if (this.isTerminal(session)) {
+        return [
+          'already_terminal',
+          raw,
+          this.scalarString(session.terminalReason),
+          '0',
+        ];
+      }
+      session.status = 'rejected';
+      session.terminalReason = requestedReason || 'rejected';
+    } else {
+      if (!this.participantIds(session).includes(userId)) {
+        return ['forbidden', raw, '', '0'];
+      }
+      if (this.isTerminal(session)) {
+        return [
+          'already_terminal',
+          raw,
+          this.scalarString(session.terminalReason),
+          '0',
+        ];
+      }
+      const reason =
+        requestedReason ||
+        (wasActive || userId !== session.initiatorId ? 'ended' : 'cancelled');
+      session.status = reason === 'cancelled' ? 'cancelled' : 'ended';
+      session.terminalReason = reason;
+    }
+
+    session.endedAt = now;
+    session.updatedAt = now;
+    session.terminalActorId = userId;
+    session.terminalEventPublishedAt = null;
+    session.terminalEventPublishLeaseUntil = null;
+    session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+    void this.zrem(expiryKey, session.callId as string);
+    void this.zrem(outboxKey, String(session.callId));
+    void this.zrem(activeKey, String(session.callId));
+    void this.zadd(terminalOutboxKey, nowMs, String(session.callId));
+    this.clearActiveCallForSession(activeUsersKey, session);
+    return [
+      'transitioned',
+      this.writeSession(key, session),
+      this.scalarString(session.terminalReason),
+      wasActive ? '1' : '0',
+    ];
+  }
+
+  private evalExpireDueCalls(keys: string[], args: string[]): string[] {
+    const [expiryKey, outboxKey, activeKey, activeUsersKey, terminalOutboxKey] =
+      keys;
+    const [nowMsRaw, now, rawLimit, keyPrefix, keySuffix] = args;
+    const nowMs = Number(nowMsRaw);
+    const limit = Number(rawLimit);
+    const callIds = this.sortedMembersAtOrBefore(expiryKey, nowMs, limit);
+    const results: string[] = [];
+
+    for (const callId of callIds) {
+      const key = `${keyPrefix}${callId}${keySuffix}`;
+      const raw = this.values.get(key);
+      if (!raw) {
+        void this.zrem(expiryKey, callId);
+        continue;
+      }
+
+      const session = this.readSession(raw);
+      if (this.isRingingExpired(session, now)) {
+        session.status = 'ended';
+        session.terminalReason = 'no_answer';
+        session.terminalActorId = session.initiatorId;
+        session.terminalEventPublishedAt = null;
+        session.terminalEventPublishLeaseUntil = null;
+        session.endedAt = now;
+        session.updatedAt = now;
+        session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+        void this.zadd(terminalOutboxKey, nowMs, callId);
+        results.push(this.writeSession(key, session));
+      } else if (
+        session.status === 'accepting' &&
+        typeof session.answerLeaseExpiresAt === 'string' &&
+        Date.parse(session.answerLeaseExpiresAt) <= nowMs
+      ) {
+        session.status = 'ended';
+        session.terminalReason = 'media_unavailable';
+        session.terminalActorId = session.targetUserId;
+        session.terminalEventPublishedAt = null;
+        session.terminalEventPublishLeaseUntil = null;
+        session.endedAt = now;
+        session.updatedAt = now;
+        session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+        void this.zadd(terminalOutboxKey, nowMs, callId);
+        results.push(this.writeSession(key, session));
+      }
+      void this.zrem(expiryKey, callId);
+      void this.zrem(outboxKey, callId);
+      void this.zrem(activeKey, callId);
+      this.clearActiveCallForSession(activeUsersKey, session);
+    }
+
+    return results;
+  }
+
+  private evalTerminateActiveCallsForMediaRestart(
+    keys: string[],
+    args: string[],
+  ): string[] {
+    const [activeKey, outboxKey, activeUsersKey, terminalOutboxKey] = keys;
+    const [now, nowMs, rawLimit, keyPrefix, keySuffix] = args;
+    const callIds = [
+      ...(
+        this.sortedSets.get(activeKey) ?? new Map<string, number>()
+      ).entries(),
+    ]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .slice(0, Number(rawLimit))
+      .map(([callId]) => callId);
+    const results: string[] = [];
+
+    for (const callId of callIds) {
+      const key = `${keyPrefix}${callId}${keySuffix}`;
+      const raw = this.values.get(key);
+      if (!raw) {
+        void this.zrem(activeKey, callId);
+        continue;
+      }
+      const session = this.readSession(raw);
+      if (session.status === 'active') {
+        session.status = 'ended';
+        session.terminalReason = 'media_unavailable';
+        session.terminalActorId = session.initiatorId;
+        session.terminalEventPublishedAt = null;
+        session.terminalEventPublishLeaseUntil = null;
+        session.endedAt = now;
+        session.updatedAt = now;
+        session.lifecycleRevision = Number(session.lifecycleRevision ?? 0) + 1;
+        void this.zadd(terminalOutboxKey, nowMs, callId);
+        results.push(this.writeSession(key, session));
+      }
+      void this.zrem(activeKey, callId);
+      void this.zrem(outboxKey, callId);
+      this.clearActiveCallForSession(activeUsersKey, session);
+    }
+
+    return results;
+  }
+
+  private sortedMembersAtOrBefore(
+    key: string,
+    maxScore: number,
+    limit: number,
+  ): string[] {
+    return [
+      ...(this.sortedSets.get(key) ?? new Map<string, number>()).entries(),
+    ]
+      .filter(([, score]) => score <= maxScore)
+      .sort(([leftMember, leftScore], [rightMember, rightScore]) =>
+        leftScore === rightScore
+          ? leftMember.localeCompare(rightMember)
+          : leftScore - rightScore,
+      )
+      .slice(0, limit)
+      .map(([member]) => member);
+  }
+
+  private hasOtherActiveCall(
+    activeUsersKey: string | undefined,
+    session: Record<string, unknown>,
+  ): boolean {
+    if (!activeUsersKey) return false;
+    const activeUsers = this.hashes.get(activeUsersKey);
+    const callId = String(session.callId);
+    return [String(session.initiatorId), String(session.targetUserId)].some(
+      (userId) => {
+        const activeCallId = activeUsers?.get(userId);
+        return Boolean(activeCallId && activeCallId !== callId);
+      },
+    );
+  }
+
+  private setActiveCallForSession(
+    activeUsersKey: string | undefined,
+    session: Record<string, unknown>,
+  ): void {
+    if (!activeUsersKey) return;
+    const activeUsers =
+      this.hashes.get(activeUsersKey) ?? new Map<string, string>();
+    const callId = String(session.callId);
+    activeUsers.set(String(session.initiatorId), callId);
+    activeUsers.set(String(session.targetUserId), callId);
+    this.hashes.set(activeUsersKey, activeUsers);
+  }
+
+  private clearActiveCallForSession(
+    activeUsersKey: string | undefined,
+    session: Record<string, unknown>,
+  ): void {
+    if (!activeUsersKey) return;
+    const activeUsers = this.hashes.get(activeUsersKey);
+    if (!activeUsers) return;
+    const callId = String(session.callId);
+    for (const userId of [
+      String(session.initiatorId),
+      String(session.targetUserId),
+    ]) {
+      if (activeUsers.get(userId) === callId) {
+        activeUsers.delete(userId);
+      }
+    }
+    if (activeUsers.size === 0) {
+      this.hashes.delete(activeUsersKey);
+    }
+  }
+
+  private evalClearActiveCallForUsers(keys: string[], args: string[]): number {
+    const [activeUsersKey] = keys;
+    const [callId, initiatorId, targetUserId] = args;
+    const activeUsers = this.hashes.get(activeUsersKey);
+    if (!activeUsers) return 1;
+    for (const userId of [initiatorId, targetUserId]) {
+      if (activeUsers.get(userId) === callId) {
+        activeUsers.delete(userId);
+      }
+    }
+    if (activeUsers.size === 0) {
+      this.hashes.delete(activeUsersKey);
+    }
+    return 1;
+  }
+
+  private readSession(raw: string): Record<string, unknown> {
+    return JSON.parse(raw) as Record<string, unknown>;
+  }
+
+  private scalarString(value: unknown, fallback = ''): string {
+    return typeof value === 'string' || typeof value === 'number'
+      ? String(value)
+      : fallback;
+  }
+
+  private writeSession(key: string, session: Record<string, unknown>): string {
+    const raw = JSON.stringify(session);
+    this.values.set(key, raw);
+    return raw;
+  }
+
+  private participantIds(session: Record<string, unknown>): string[] {
+    return Array.isArray(session.participantIds)
+      ? (session.participantIds as string[])
+      : [];
+  }
+
+  private isTerminal(session: Record<string, unknown>): boolean {
+    return ['ended', 'cancelled', 'rejected'].includes(String(session.status));
+  }
+
+  private isRingingExpired(
+    session: Record<string, unknown>,
+    now: string,
+  ): boolean {
+    return (
+      (session.status === 'initiated' || session.status === 'ringing') &&
+      typeof session.expiresAt === 'string' &&
+      Date.parse(session.expiresAt) <= Date.parse(now)
+    );
   }
 }
 
 class FakeCallEventPublisher {
   readonly events: Array<{ event: string; payload: Record<string, unknown> }> =
     [];
+  private nextError?: Error;
 
   publish(event: string, payload: Record<string, unknown>): Promise<void> {
+    if (this.nextError) {
+      const error = this.nextError;
+      this.nextError = undefined;
+      return Promise.reject(error);
+    }
     this.events.push({ event, payload });
     return Promise.resolve();
   }
 
+  failNextPublish(error = new Error('RabbitMQ unavailable')): void {
+    this.nextError = error;
+  }
+
   reset(): void {
     this.events.length = 0;
+    this.nextError = undefined;
   }
 }
 
@@ -503,6 +1261,8 @@ describe('Call Service P0 flow (e2e)', () => {
   let app: INestApplication;
   let moduleRef: TestingModule;
   let gateway: CallGateway;
+  let publishCallAnswerOutbox: PublishCallAnswerOutboxUseCase;
+  let publishCallTerminalOutbox: PublishCallTerminalOutboxUseCase;
   let redis: FakeRedisClient;
   let eventPublisher: FakeCallEventPublisher;
   let mediaEngine: FakeCallMediaEngine;
@@ -569,6 +1329,8 @@ describe('Call Service P0 flow (e2e)', () => {
     }
     baseUrl = `http://127.0.0.1:${address.port}`;
     gateway = app.get(CallGateway);
+    publishCallAnswerOutbox = app.get(PublishCallAnswerOutboxUseCase);
+    publishCallTerminalOutbox = app.get(PublishCallTerminalOutboxUseCase);
   });
 
   afterEach(async () => {
@@ -677,16 +1439,20 @@ describe('Call Service P0 flow (e2e)', () => {
       }),
     );
 
-    const answered = onceEvent<{ callId: string; userId: string }>(
-      caller,
-      'call_answered',
-    );
+    const answered = onceEvent<{
+      callId: string;
+      userId: string;
+      answerActionId?: string;
+    }>(caller, 'call_answered');
     callee.emit('answer_call', { callId });
 
-    await expect(answered).resolves.toEqual({
-      callId,
-      userId: calleeUser.id,
-    });
+    await expect(answered).resolves.toEqual(
+      expect.objectContaining({
+        callId,
+        userId: calleeUser.id,
+        answerActionId: expect.stringMatching(/^legacy:/),
+      }),
+    );
 
     const activeSession = await redis.get(`call:${callId}:session`);
     expect(JSON.parse(activeSession as string)).toEqual(
@@ -694,6 +1460,7 @@ describe('Call Service P0 flow (e2e)', () => {
         status: 'active',
       }),
     );
+    await publishCallAnswerOutbox.execute();
     expect(eventPublisher.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -703,6 +1470,224 @@ describe('Call Service P0 flow (e2e)', () => {
           event: 'call.answered',
         }),
       ]),
+    );
+  });
+
+  it('atomically tombstones an expired call when an accept reaches the deadline', async () => {
+    const caller = await connectClient('caller-token');
+    const callee = await connectClient('callee-token');
+    const callerJoined = onceEvent<{ callId: string }>(caller, 'call_joined');
+    const incomingCall = onceEvent<{ callId: string }>(callee, 'incoming_call');
+
+    caller.emit('initiate_call', {
+      conversationId: 'conv-happy-path',
+      targetUserId: calleeUser.id,
+      callType: 'VOICE',
+    });
+    const [{ callId }] = await Promise.all([callerJoined, incomingCall]);
+
+    // Isolate the exact deadline race from the gateway's in-memory fast-path.
+    // The durable Redis transition, not a local timer, must decide the result.
+    (
+      gateway as unknown as {
+        clearPendingUnansweredCall: (id: string) => void;
+      }
+    ).clearPendingUnansweredCall(callId);
+    const rawSession = await redis.get(`call:${callId}:session`);
+    expect(rawSession).not.toBeNull();
+    const expiredSession = JSON.parse(rawSession!);
+    expiredSession.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    await redis.set(`call:${callId}:session`, JSON.stringify(expiredSession));
+
+    const acceptance = onceEvent<{ callId: string; outcome: string }>(
+      callee,
+      'incoming_call_acceptance',
+    );
+    const callerEnded = onceEvent<{ callId: string; reason: string }>(
+      caller,
+      'call_ended',
+    );
+    const calleeEnded = onceEvent<{ callId: string; reason: string }>(
+      callee,
+      'call_ended',
+    );
+    callee.emit('accept_incoming_call', {
+      callId,
+      actionId: 'native-expired-at-deadline',
+    });
+
+    await expect(acceptance).resolves.toEqual(
+      expect.objectContaining({ callId, outcome: 'expired' }),
+    );
+    await expect(callerEnded).resolves.toEqual({ callId, reason: 'no_answer' });
+    await expect(calleeEnded).resolves.toEqual({ callId, reason: 'no_answer' });
+    await expectTerminalCallResourcesCleared(callId);
+    expect(JSON.parse((await redis.get(`call:${callId}:session`))!)).toEqual(
+      expect.objectContaining({
+        status: 'ended',
+        terminalReason: 'no_answer',
+        terminalEventPublishedAt: null,
+      }),
+    );
+  });
+
+  it('keeps the legacy join path on the same immediate expiry lifecycle', async () => {
+    const caller = await connectClient('caller-token');
+    const callee = await connectClient('callee-token');
+    const callerJoined = onceEvent<{ callId: string }>(caller, 'call_joined');
+    const incomingCall = onceEvent<{ callId: string }>(callee, 'incoming_call');
+
+    caller.emit('initiate_call', {
+      conversationId: 'conv-happy-path',
+      targetUserId: calleeUser.id,
+      callType: 'VOICE',
+    });
+    const [{ callId }] = await Promise.all([callerJoined, incomingCall]);
+
+    (
+      gateway as unknown as {
+        clearPendingUnansweredCall: (id: string) => void;
+      }
+    ).clearPendingUnansweredCall(callId);
+    const rawSession = await redis.get(`call:${callId}:session`);
+    expect(rawSession).not.toBeNull();
+    const expiredSession = JSON.parse(rawSession!);
+    expiredSession.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    await redis.set(`call:${callId}:session`, JSON.stringify(expiredSession));
+
+    const expiredException = onceEvent<{ message: string }>(
+      callee,
+      'exception',
+    );
+    const callerEnded = onceEvent<{ callId: string; reason: string }>(
+      caller,
+      'call_ended',
+    );
+    const calleeEnded = onceEvent<{ callId: string; reason: string }>(
+      callee,
+      'call_ended',
+    );
+    callee.emit('join_call', { callId });
+
+    await expect(expiredException).resolves.toEqual(
+      expect.objectContaining({ message: 'Call has expired' }),
+    );
+    await expect(callerEnded).resolves.toEqual({ callId, reason: 'no_answer' });
+    await expect(calleeEnded).resolves.toEqual({ callId, reason: 'no_answer' });
+    await expectTerminalCallResourcesCleared(callId);
+  });
+
+  it('rejects a second call acceptance as busy without ending the existing call', async () => {
+    const {
+      caller,
+      callee,
+      callId: activeCallId,
+    } = await establishActiveCall('VOICE');
+
+    const callerJoined = onceEvent<{ callId: string }>(caller, 'call_joined');
+    const incomingCall = onceEvent<{ callId: string }>(callee, 'incoming_call');
+    caller.emit('initiate_call', {
+      conversationId: 'conv-active',
+      targetUserId: calleeUser.id,
+      callType: 'VIDEO',
+    });
+    const [{ callId: busyCallId }] = await Promise.all([
+      callerJoined,
+      incomingCall,
+    ]);
+
+    const joined = onceEvent(callee, 'call_joined');
+    callee.emit('join_call', { callId: busyCallId });
+    await joined;
+
+    const acceptance = onceEvent<{
+      callId: string;
+      outcome: string;
+      session?: { status: string; terminalReason?: string };
+    }>(callee, 'incoming_call_acceptance');
+    const ended = onceEvent<{ callId: string; reason: string }>(
+      caller,
+      'call_ended',
+    );
+    callee.emit('accept_incoming_call', {
+      callId: busyCallId,
+      actionId: 'busy-action-1',
+    });
+
+    await expect(acceptance).resolves.toEqual(
+      expect.objectContaining({
+        callId: busyCallId,
+        outcome: 'busy',
+        session: expect.objectContaining({
+          status: 'ended',
+          terminalReason: 'busy',
+        }),
+      }),
+    );
+    await expect(ended).resolves.toEqual({
+      callId: busyCallId,
+      reason: 'busy',
+    });
+
+    const [busySession, activeSession] = await Promise.all([
+      redis.get(`call:${busyCallId}:session`),
+      redis.get(`call:${activeCallId}:session`),
+    ]);
+    expect(JSON.parse(busySession!)).toEqual(
+      expect.objectContaining({
+        status: 'ended',
+        terminalReason: 'busy',
+      }),
+    );
+    expect(JSON.parse(activeSession!)).toEqual(
+      expect.objectContaining({ status: 'active' }),
+    );
+  });
+
+  it('releases the active-user claim when a call ends so a later call can be accepted', async () => {
+    const {
+      caller,
+      callee,
+      callId: firstCallId,
+    } = await establishActiveCall('VOICE');
+    const firstCallEnded = onceEvent<{ callId: string; reason: string }>(
+      callee,
+      'call_ended',
+    );
+    caller.emit('leave_call', { callId: firstCallId, reason: 'ended' });
+    await expect(firstCallEnded).resolves.toEqual({
+      callId: firstCallId,
+      reason: 'ended',
+    });
+
+    const callerJoined = onceEvent<{ callId: string }>(caller, 'call_joined');
+    const incomingCall = onceEvent<{ callId: string }>(callee, 'incoming_call');
+    caller.emit('initiate_call', {
+      conversationId: 'conv-active',
+      targetUserId: calleeUser.id,
+      callType: 'VIDEO',
+    });
+    const [{ callId: nextCallId }] = await Promise.all([
+      callerJoined,
+      incomingCall,
+    ]);
+    const calleeJoined = onceEvent(callee, 'call_joined');
+    callee.emit('join_call', { callId: nextCallId });
+    await calleeJoined;
+
+    const acceptance = onceEvent<{ callId: string; outcome: string }>(
+      callee,
+      'incoming_call_acceptance',
+    );
+    callee.emit('accept_incoming_call', {
+      callId: nextCallId,
+      actionId: 'next-call-action',
+    });
+    await expect(acceptance).resolves.toEqual(
+      expect.objectContaining({
+        callId: nextCallId,
+        outcome: 'accepted',
+      }),
     );
   });
 
@@ -797,7 +1782,7 @@ describe('Call Service P0 flow (e2e)', () => {
     ).toBe(false);
   });
 
-  it('cancels a call when the caller leaves before answer and clears redis/media state', async () => {
+  it('cancels a call when the caller leaves before answer and clears live media state', async () => {
     const caller = await connectClient('caller-token');
     const callee = await connectClient('callee-token');
 
@@ -831,7 +1816,7 @@ describe('Call Service P0 flow (e2e)', () => {
       reason: 'cancelled',
     });
 
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
     expect(
       eventPublisher.events.find(
         (entry) =>
@@ -840,6 +1825,42 @@ describe('Call Service P0 flow (e2e)', () => {
           entry.payload.reason === 'cancelled',
       ),
     ).toBeDefined();
+  });
+
+  it('retries a cancelled call notification from the durable terminal outbox', async () => {
+    const caller = await connectClient('caller-token');
+    const callee = await connectClient('callee-token');
+    const callerJoined = onceEvent<{ callId: string }>(caller, 'call_joined');
+    const incomingCall = onceEvent<{ callId: string }>(callee, 'incoming_call');
+
+    caller.emit('initiate_call', {
+      conversationId: 'conv-cancel',
+      targetUserId: calleeUser.id,
+      callType: 'VOICE',
+    });
+    const [{ callId }] = await Promise.all([callerJoined, incomingCall]);
+
+    eventPublisher.reset();
+    eventPublisher.failNextPublish();
+    const callEnded = onceEvent<{ callId: string; reason: string }>(
+      callee,
+      'call_ended',
+    );
+    caller.emit('leave_call', { callId });
+    await expect(callEnded).resolves.toEqual({ callId, reason: 'cancelled' });
+
+    await expect(publishCallTerminalOutbox.execute()).resolves.toBe(1);
+    expect(eventPublisher.events).toEqual([
+      expect.objectContaining({
+        event: 'call.ended',
+        payload: expect.objectContaining({
+          callId,
+          reason: 'cancelled',
+          userId: callerUser.id,
+        }),
+      }),
+    ]);
+    await expect(publishCallTerminalOutbox.execute()).resolves.toBe(0);
   });
 
   // VIDEO_CALL_1TO1_E2E
@@ -877,7 +1898,7 @@ describe('Call Service P0 flow (e2e)', () => {
 
     await expect(callerEnded).resolves.toEqual({ callId, reason: 'no_answer' });
     await expect(calleeEnded).resolves.toEqual({ callId, reason: 'no_answer' });
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
   });
 
   it('switches VOICE to VIDEO and back on the same active call while enforcing media kind', async () => {
@@ -1204,7 +2225,7 @@ describe('Call Service P0 flow (e2e)', () => {
       reason: 'no_answer',
     });
 
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
     expect(
       eventPublisher.events.find(
         (entry) =>
@@ -1264,7 +2285,7 @@ describe('Call Service P0 flow (e2e)', () => {
       reason: 'no_answer',
     });
 
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
   });
 
   it('fails fast when a ringing call disconnects before answer', async () => {
@@ -1283,7 +2304,7 @@ describe('Call Service P0 flow (e2e)', () => {
       callId,
       reason: 'disconnected',
     });
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
   });
 
   it('rejects rejoin attempts for calls that are not active', async () => {
@@ -1330,7 +2351,7 @@ describe('Call Service P0 flow (e2e)', () => {
       reason: 'disconnected',
     });
 
-    await expectCallStateCleared(callId);
+    await expectTerminalCallResourcesCleared(callId);
     expect(
       eventPublisher.events.find(
         (entry) =>
@@ -1602,8 +2623,17 @@ describe('Call Service P0 flow (e2e)', () => {
     return transport;
   }
 
-  async function expectCallStateCleared(callId: string) {
-    expect(await redis.get(`call:${callId}:session`)).toBeNull();
+  async function expectTerminalCallResourcesCleared(callId: string) {
+    const rawSession = await redis.get(`call:${callId}:session`);
+    expect(rawSession).not.toBeNull();
+    expect(JSON.parse(rawSession!)).toEqual(
+      expect.objectContaining({
+        callId,
+        status: expect.stringMatching(/^(cancelled|ended|rejected)$/),
+        terminalReason: expect.any(String),
+        endedAt: expect.any(String),
+      }),
+    );
     expect(await redis.hgetall(`call:${callId}:participants`)).toEqual({});
     expect(await redis.smembers(`call:${callId}:transport-index`)).toEqual([]);
     expect(await redis.smembers(`call:${callId}:producer-index`)).toEqual([]);
@@ -1670,7 +2700,7 @@ describe('Call Service P0 flow (e2e)', () => {
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error('Timed out waiting for socket connect'));
-      }, 3000);
+      }, SOCKET_EVENT_TIMEOUT_MS);
 
       const cleanup = () => {
         clearTimeout(timer);
@@ -1698,7 +2728,7 @@ describe('Call Service P0 flow (e2e)', () => {
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error('Timed out waiting for socket disconnect'));
-      }, 3000);
+      }, SOCKET_EVENT_TIMEOUT_MS);
 
       const cleanup = () => {
         clearTimeout(timer);
@@ -1726,7 +2756,7 @@ describe('Call Service P0 flow (e2e)', () => {
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error(`Timed out waiting for ${event}`));
-      }, 3000);
+      }, SOCKET_EVENT_TIMEOUT_MS);
 
       const cleanup = () => {
         clearTimeout(timer);

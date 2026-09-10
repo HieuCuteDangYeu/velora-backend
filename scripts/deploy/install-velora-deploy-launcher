@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly LAUNCHER_SOURCE="$SCRIPT_DIR/velora-deploy-launcher"
+readonly INSTALL_PATH="${VELORA_DEPLOY_INSTALL_PATH:-/usr/local/bin/velora-deploy}"
+readonly SERVICE_USER="${VELORA_DEPLOY_USER:-quan}"
+readonly SERVICE_GROUP="${VELORA_DEPLOY_GROUP:-$SERVICE_USER}"
+readonly STATE_DIR="${VELORA_STATE_DIR:-/home/$SERVICE_USER/.local/state/velora}"
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+[[ "$EUID" -eq 0 ]] || fail "run this installer with sudo/root privileges"
+[[ -f "$LAUNCHER_SOURCE" ]] || fail "launcher source missing: $LAUNCHER_SOURCE"
+getent passwd "$SERVICE_USER" >/dev/null || fail "deployment user does not exist: $SERVICE_USER"
+getent group "$SERVICE_GROUP" >/dev/null || fail "deployment group does not exist: $SERVICE_GROUP"
+
+bash -n "$LAUNCHER_SOURCE"
+
+install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$STATE_DIR"
+chown -R "$SERVICE_USER:$SERVICE_GROUP" "$STATE_DIR"
+chmod -R u+rwX,go-rwx "$STATE_DIR"
+
+install -o root -g root -m 0755 "$LAUNCHER_SOURCE" "$INSTALL_PATH"
+
+if command -v systemctl >/dev/null 2>&1 && systemctl cat velora-deploy.service >/dev/null 2>&1; then
+  if ! systemctl cat velora-deploy.service | grep -Fq "ExecStart=$INSTALL_PATH"; then
+    fail "velora-deploy.service does not execute $INSTALL_PATH; refusing a partial launcher install"
+  fi
+fi
+
+printf 'Installed stable Velora deployment launcher at %s\n' "$INSTALL_PATH"
+printf 'Deployment state ownership normalized to %s:%s at %s\n' "$SERVICE_USER" "$SERVICE_GROUP" "$STATE_DIR"
+printf 'Future controller changes will be loaded from the CI-approved homelab-deploy SHA automatically.\n'

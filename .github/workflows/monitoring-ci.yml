@@ -86,7 +86,13 @@ jobs:
           set -euo pipefail
           bash -n scripts/deploy/velora-deploy
           bash -n scripts/deploy/velora-deploy-core
+          bash -n scripts/deploy/velora-deploy-launcher
+          bash -n scripts/deploy/install-velora-deploy-launcher
           bash -n scripts/ops/check-monitoring-stack.sh
+
+          grep -Fq 'homelab-deploy' scripts/deploy/velora-deploy-launcher
+          grep -Fq 'git show "$approved_sha:$CONTROLLER_PATH"' scripts/deploy/velora-deploy-launcher
+          grep -Fq 'git show "$approved_sha:$CORE_PATH"' scripts/deploy/velora-deploy-launcher
 
       - name: Validate Prometheus configuration and rules
         shell: bash

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Stable production launcher. This file is intentionally small and should be
+# installed at /usr/local/bin/velora-deploy. The mutable deployment controller
+# is always loaded from the CI-approved homelab-deploy commit instead of being
+# copied permanently into /usr/local/bin.
+readonly APP_DIR="${VELORA_APP_DIR:-/home/quan/apps/microservices-boilerplate}"
+readonly REMOTE="${VELORA_DEPLOY_REMOTE:-origin}"
+readonly CONTROLLER_PATH="scripts/deploy/velora-deploy"
+readonly CORE_PATH="scripts/deploy/velora-deploy-core"
+
+umask 077
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v git >/dev/null 2>&1 || fail "git is required"
+[[ -d "$APP_DIR/.git" ]] || fail "Velora repository not found at $APP_DIR"
+
+cd "$APP_DIR"
+
+printf '==> Launcher fetching CI-approved Velora deployment controller...\n'
+git fetch --no-tags "$REMOTE" \
+  '+refs/heads/master:refs/remotes/'"$REMOTE"'/master' \
+  '+refs/heads/homelab-deploy:refs/remotes/'"$REMOTE"'/homelab-deploy'
+
+readonly APPROVED_REF="refs/remotes/$REMOTE/homelab-deploy"
+readonly MASTER_REF="refs/remotes/$REMOTE/master"
+approved_sha="$(git rev-parse --verify "${APPROVED_REF}^{commit}")"
+master_sha="$(git rev-parse --verify "${MASTER_REF}^{commit}")"
+
+[[ "$approved_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid approved SHA: $approved_sha"
+[[ "$master_sha" =~ ^[0-9a-f]{40}$ ]] || fail "invalid master SHA: $master_sha"
+
+if ! git merge-base --is-ancestor "$approved_sha" "$master_sha"; then
+  fail "approved homelab-deploy SHA $approved_sha is not an ancestor of master $master_sha"
+fi
+
+runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/velora-deploy-controller.XXXXXXXX")"
+cleanup() {
+  rm -rf -- "$runtime_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+controller="$runtime_dir/velora-deploy"
+core="$runtime_dir/velora-deploy-core"
+
+git show "$approved_sha:$CONTROLLER_PATH" >"$controller" \
+  || fail "approved release does not contain $CONTROLLER_PATH"
+git show "$approved_sha:$CORE_PATH" >"$core" \
+  || fail "approved release does not contain $CORE_PATH"
+chmod 0700 "$controller" "$core"
+
+bash -n "$controller" || fail "approved deployment controller failed syntax validation"
+bash -n "$core" || fail "approved deployment core failed syntax validation"
+
+printf '==> Launcher executing controller from approved SHA %s...\n' "$approved_sha"
+"$controller" "$@"

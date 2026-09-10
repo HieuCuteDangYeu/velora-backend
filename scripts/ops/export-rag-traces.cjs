@@ -15,6 +15,8 @@ const PRIVATE_KEY =
   /(?:answer|authorization|cookie|content|draft|instruction|message|password|prompt|question|quote|reasoning|response|secret|text|title|token|transcript)/i;
 const SAFE_STRING_KEYS = new Set([
   'actualJsonType',
+  'availableEvidence',
+  'decisionSource',
   'endpointContract',
   'errorCode',
   'evidenceType',
@@ -25,6 +27,7 @@ const SAFE_STRING_KEYS = new Set([
   'intent',
   'model',
   'modelRole',
+  'missingEvidence',
   'networkErrorCode',
   'networkErrorName',
   'networkErrorSyscall',
@@ -32,6 +35,7 @@ const SAFE_STRING_KEYS = new Set([
   'providerCategory',
   'providerCode',
   'providerStatus',
+  'recommendedAction',
   'referenceTarget',
   'requiredEvidence',
   'reelQuestionType',
@@ -56,8 +60,12 @@ const SAFE_STRING_KEYS = new Set([
 const SAFE_DIAGNOSTIC_KEYS = new Set([
   'answerCalls',
   'answerRevisionExecuted',
+  'availableEvidence',
   'contextSufficiency',
+  'decisionSource',
   'draftAnswerExecuted',
+  'missingEvidence',
+  'recommendedAction',
 ]);
 
 function isSafeStringKey(key) {

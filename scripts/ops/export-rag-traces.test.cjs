@@ -92,7 +92,11 @@ test('retains context sufficiency diagnostics without private text', () => {
     sanitize({
       contextSufficiency: {
         providerStatus: 'SUCCESS',
+        decisionSource: 'LLM',
         sufficient: false,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: ['TRANSCRIPT'],
+        recommendedAction: 'REFUSE_NO_CONTEXT',
         supportedEvidenceIds: ['e0'],
         reason: 'private evidence reasoning',
         semanticCalls: [
@@ -109,5 +113,8 @@ test('retains context sufficiency diagnostics without private text', () => {
   assert.match(output, /contextSufficiency/);
   assert.match(output, /CONTEXT_SUFFICIENCY/);
   assert.match(output, /supportedEvidenceIds/);
+  assert.match(output, /availableEvidence/);
+  assert.match(output, /missingEvidence/);
+  assert.match(output, /REFUSE_NO_CONTEXT/);
   assert.doesNotMatch(output, /private evidence reasoning/);
 });

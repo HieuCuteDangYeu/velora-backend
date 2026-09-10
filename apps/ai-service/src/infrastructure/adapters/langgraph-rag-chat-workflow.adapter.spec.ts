@@ -22,6 +22,7 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
   );
   const routeAfterVerifier = workflow as unknown as {
     routeAfterVerifier: (state: RagChatWorkflowState) => string;
+    routeAfterContextSufficiency: (state: RagChatWorkflowState) => string;
     routeAfterCitationCoverage: (state: RagChatWorkflowState) => string;
     createPrepareAnswerRevisionNode: () => (
       state: RagChatWorkflowState,
@@ -73,6 +74,55 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
         }),
       ),
     ).toBe('citationNode');
+  });
+
+  it('routes successful semantic context negatives through answer verification', () => {
+    expect(
+      routeAfterVerifier.routeAfterContextSufficiency(
+        state({
+          route: { requiredEvidence: ['TRANSCRIPT'] },
+          rerankedChunks: [
+            {
+              evidenceType: 'TRANSCRIPT',
+              evidenceText: 'Typed transcript evidence.',
+              chunkText: 'Typed transcript evidence.',
+              tags: [],
+            },
+          ],
+          contextSufficiency: {
+            sufficient: false,
+            confidence: 0.2,
+            availableEvidence: ['TRANSCRIPT'],
+            missingEvidence: ['TRANSCRIPT'],
+            reason: 'Semantic negative.',
+            recommendedAction: 'REFUSE_NO_CONTEXT',
+            diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+          },
+        }),
+      ),
+    ).toBe('markRetrievalReadyNode');
+  });
+
+  it('keeps provider-error context failures on the refusal path', () => {
+    expect(
+      routeAfterVerifier.routeAfterContextSufficiency(
+        state({
+          route: { requiredEvidence: ['TRANSCRIPT'] },
+          contextSufficiency: {
+            sufficient: false,
+            confidence: 0,
+            availableEvidence: ['TRANSCRIPT'],
+            missingEvidence: ['TRANSCRIPT'],
+            reason: 'Provider unavailable.',
+            recommendedAction: 'REFUSE_NO_CONTEXT',
+            diagnostics: {
+              providerStatus: 'ERROR',
+              decisionSource: 'FAIL_CLOSED',
+            },
+          },
+        }),
+      ),
+    ).toBe('noContextAnswerNode');
   });
 
   it('derives a bounded recent-share signal from structural memory metadata', () => {

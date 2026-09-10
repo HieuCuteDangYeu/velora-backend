@@ -361,4 +361,42 @@ describe('BuildRagCitationsUseCase', () => {
     });
     expect(attributionService.attribute).not.toHaveBeenCalled();
   });
+
+  it('keeps citations enabled for a successful semantic negative with typed evidence', async () => {
+    const attributionService: ICitationAttributionService = {
+      attribute: jest.fn().mockResolvedValue({
+        selections: [{ evidenceId: 'e0', confidence: 0.98 }],
+        claims: [
+          {
+            claim: 'The visible error says Cannot find module @nestjs/config.',
+            supported: true,
+            evidenceIds: ['e0'],
+            confidence: 0.98,
+          },
+        ],
+        factualClaimCount: 1,
+        supportedClaimCount: 1,
+        coverage: 1,
+      }),
+    };
+    const useCase = new BuildRagCitationsUseCase(attributionService);
+    const state = {
+      ...buildState(),
+      contextSufficiency: {
+        sufficient: false,
+        confidence: 0.2,
+        availableEvidence: ['VISUAL'],
+        missingEvidence: ['VISUAL'],
+        reason: 'Semantic negative.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+      },
+    } as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      citations: [expect.objectContaining({ reelId: 'r1' })],
+      coverage: { mode: 'LLM', coverage: 1 },
+    });
+    expect(attributionService.attribute).toHaveBeenCalledTimes(1);
+  });
 });

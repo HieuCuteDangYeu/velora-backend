@@ -1213,18 +1213,36 @@ rabbitmq_queue_consumers() {
 }
 
 check_rabbitmq_consumers() {
-  local queues service queue consumers
-  queues="$(rabbitmq_queue_consumers)" || return 1
+  local queues service queue consumers attempt
+  local -a not_ready=()
 
-  for service in "${!RMQ_QUEUE_BY_SERVICE[@]}"; do
-    queue="${RMQ_QUEUE_BY_SERVICE[$service]}"
-    consumers="$(awk -v q="$queue" '$1 == q { print $2; found=1 } END { if (!found) print 0 }' <<<"$queues" | tail -n 1)"
-    if ! [[ "$consumers" =~ ^[0-9]+$ ]] || (( consumers < 1 )); then
-      warn "$service is not ready: RabbitMQ queue $queue has ${consumers:-0} consumers"
-      return 1
+  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
+    not_ready=()
+    queues="$(rabbitmq_queue_consumers)" || return 1
+
+    for service in "${!RMQ_QUEUE_BY_SERVICE[@]}"; do
+      queue="${RMQ_QUEUE_BY_SERVICE[$service]}"
+      consumers="$(awk -v q="$queue" '$1 == q { print $2; found=1 } END { if (!found) print 0 }' <<<"$queues" | tail -n 1)"
+      if ! [[ "$consumers" =~ ^[0-9]+$ ]] || (( consumers < 1 )); then
+        not_ready+=("$service($queue=${consumers:-0})")
+      fi
+    done
+
+    if (( ${#not_ready[@]} == 0 )); then
+      for service in "${!RMQ_QUEUE_BY_SERVICE[@]}"; do
+        queue="${RMQ_QUEUE_BY_SERVICE[$service]}"
+        consumers="$(awk -v q="$queue" '$1 == q { print $2; found=1 } END { if (!found) print 0 }' <<<"$queues" | tail -n 1)"
+        log "$service RabbitMQ readiness OK ($queue consumers=$consumers)"
+      done
+      return 0
     fi
-    log "$service RabbitMQ readiness OK ($queue consumers=$consumers)"
+
+    log "Waiting for RabbitMQ consumers: ${not_ready[*]} ($attempt/$HTTP_ATTEMPTS)..."
+    sleep "$HTTP_RETRY_SECONDS"
   done
+
+  warn "RabbitMQ consumers did not become ready: ${not_ready[*]}"
+  return 1
 }
 
 verify_monitoring_stack() {

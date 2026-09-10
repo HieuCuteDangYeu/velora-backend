@@ -10,6 +10,7 @@ import {
   boundPromptText,
   boundTextItems,
   readRagPromptBounds,
+  selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawGroundedAnswerRevision {
@@ -59,9 +60,16 @@ export class BuildGroundedAnswerRevisionUseCase {
       bounds.maxClaimChars,
       bounds.maxClaimsTotalChars,
     );
-    const evidence = boundEvidence(state.rerankedChunks, bounds, {
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
-    }).flatMap((chunk, index) => {
+    });
+    const answerEvidenceIds = selectRagAnswerEvidenceIds(
+      boundedChunks,
+      state.contextSufficiency,
+      state.route,
+    );
+    const evidence = boundedChunks.flatMap((chunk, index) => {
+      if (!answerEvidenceIds.has(`e${index}`)) return [];
       const evidenceText =
         chunk.evidenceText?.trim() ||
         (chunk.evidenceType === 'METADATA'

@@ -14,6 +14,7 @@ import {
   boundEvidence,
   boundPromptText,
   readRagPromptBounds,
+  selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawDraftAnswer {
@@ -52,15 +53,13 @@ export class GenerateDraftAnswerUseCase {
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
     });
-    const supportedEvidenceIds = new Set(
-      state.contextSufficiency?.sufficient
-        ? (state.contextSufficiency.supportedEvidenceIds ?? []).filter(
-            (value): value is string => typeof value === 'string',
-          )
-        : [],
+    const answerEvidenceIds = selectRagAnswerEvidenceIds(
+      boundedChunks,
+      state.contextSufficiency,
+      state.route,
     );
     const answerEvidence = boundedChunks.flatMap((chunk, index) =>
-      supportedEvidenceIds.size === 0 || supportedEvidenceIds.has(`e${index}`)
+      answerEvidenceIds.has(`e${index}`)
         ? [{ chunk, evidenceId: `e${index}` }]
         : [],
     );

@@ -1,4 +1,8 @@
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
+import type {
+  RagChatRouteDecision,
+  RagContextSufficiencyResult,
+} from '@ai/domain/interfaces/rag-chat-workflow.interface';
 
 export interface RagPromptConfig {
   get<T = string>(key: string): T | undefined;
@@ -332,4 +336,51 @@ export function boundEvidence(
       .slice(0, bounds.maxEvidenceTags)
       .map((tag) => truncatePromptText(tag, bounds.maxEvidenceTagChars)),
   }));
+}
+
+/**
+ * Keep answer/revision prompts focused on the highest-ranked required-evidence
+ * reel when semantic sufficiency is advisory but did not select evidence IDs.
+ * The original prompt-local IDs remain stable for verifier and citation use.
+ */
+export function selectRagAnswerEvidenceIds(
+  candidates: ReelContextSearchResult[],
+  context: RagContextSufficiencyResult | undefined,
+  route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
+): Set<string> {
+  const supported = new Set(
+    (context?.supportedEvidenceIds ?? []).filter(
+      (value): value is string => typeof value === 'string',
+    ),
+  );
+  if (supported.size > 0) return supported;
+
+  const required = new Set(
+    (route?.requiredEvidence ?? []).filter((value) => value !== 'NONE'),
+  );
+  const providerStatus = context?.diagnostics?.providerStatus;
+  const all = new Set(candidates.map((_candidate, index) => `e${index}`));
+  if (
+    !context ||
+    context.sufficient ||
+    (providerStatus !== 'SUCCESS' && providerStatus !== 'ERROR') ||
+    required.size === 0
+  ) {
+    return all;
+  }
+
+  const topRequired = candidates.find((candidate) =>
+    required.has(candidate.evidenceType ?? 'TRANSCRIPT'),
+  );
+  if (!topRequired) return all;
+
+  const focused = new Set(
+    candidates.flatMap((candidate, index) =>
+      candidate.reelId === topRequired.reelId &&
+      required.has(candidate.evidenceType ?? 'TRANSCRIPT')
+        ? [`e${index}`]
+        : [],
+    ),
+  );
+  return focused.size > 0 ? focused : all;
 }

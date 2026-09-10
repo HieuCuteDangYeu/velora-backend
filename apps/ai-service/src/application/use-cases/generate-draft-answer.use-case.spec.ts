@@ -212,6 +212,77 @@ describe('GenerateDraftAnswerUseCase', () => {
     ]);
   });
 
+  it('focuses an advisory negative on the top required-evidence reel', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The zorb is coupled to the quasar.',
+        claims: [
+          {
+            claim: 'The zorb is coupled to the quasar.',
+            evidenceIds: ['e0'],
+          },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await useCase.execute({
+      ...state,
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      contextSufficiency: {
+        sufficient: false,
+        confidence: 0.2,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: ['TRANSCRIPT'],
+        supportedEvidenceIds: [],
+        reason: 'Advisory negative.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+      },
+      rerankedChunks: [
+        {
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Target evidence.',
+          chunkText: 'Target evidence.',
+          reelId: 'reel-target',
+          tags: [],
+        },
+        {
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Distractor evidence.',
+          chunkText: 'Distractor evidence.',
+          reelId: 'reel-distractor',
+          tags: [],
+        },
+        {
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Target companion evidence.',
+          chunkText: 'Target companion evidence.',
+          reelId: 'reel-target',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+
+    const request = service.generateObject.mock.calls[0]?.[0] as {
+      userPrompt: string;
+    };
+    const payload = JSON.parse(request.userPrompt) as {
+      authorizedEvidence: Array<{ evidenceId: string }>;
+    };
+    expect(payload.authorizedEvidence.map((item) => item.evidenceId)).toEqual([
+      'e0',
+      'e2',
+    ]);
+  });
+
   it('retries once when a successful answer violates the local claim contract', async () => {
     const service = {
       generateObject: jest

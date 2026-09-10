@@ -8,6 +8,7 @@ import type {
   RagCitationEvidenceMapping,
   RagCitation,
   RagCitationCoverageResult,
+  RagCitationDiagnostics,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
@@ -59,6 +60,14 @@ export class BuildRagCitationsUseCase {
         candidates: candidates.map((candidate) => candidate.attribution),
         maxCitations: this.maxCitations,
       });
+
+      if (attribution.selections.length === 0) {
+        const fallback = this.buildVerifierMappingFallback(state, candidates, {
+          providerStatus: 'SUCCESS',
+          semanticCalls: attribution.diagnostics?.semanticCalls,
+        });
+        if (fallback) return fallback;
+      }
 
       const byEvidenceId = new Map(
         candidates.map((candidate) => [
@@ -122,6 +131,13 @@ export class BuildRagCitationsUseCase {
         error instanceof CitationAttributionProviderError ? error : undefined;
       const semanticCalls = providerFailure?.semanticCalls ?? [];
       const latestCall = semanticCalls.at(-1);
+      const fallback = this.buildVerifierMappingFallback(state, candidates, {
+        providerStatus: 'ERROR',
+        semanticCalls,
+        errorCode: latestCall?.errorCode,
+        providerCategory: latestCall?.providerCategory,
+      });
+      if (fallback) return fallback;
       this.logger.warn(
         `[CitationAttribution] provider failed; citation coverage is incomplete: ${message}`,
       );
@@ -168,6 +184,83 @@ export class BuildRagCitationsUseCase {
           deterministicSupportingEvidenceIds: [],
           modelRole: 'CITATION_ATTRIBUTION',
           providerStatus: 'NOT_CALLED',
+        },
+      },
+    };
+  }
+
+  private buildVerifierMappingFallback(
+    state: RagChatWorkflowState,
+    candidates: GroundedCitationCandidate[],
+    input: {
+      providerStatus: 'SUCCESS' | 'ERROR';
+      semanticCalls?: RagCitationDiagnostics['semanticCalls'];
+      errorCode?: string;
+      providerCategory?: RagCitationDiagnostics['providerCategory'];
+    },
+  ): RagCitationAssessment | undefined {
+    if (!state.verification?.passed) return undefined;
+
+    const byEvidenceId = new Map(
+      candidates.map((candidate) => [
+        candidate.attribution.evidenceId,
+        candidate,
+      ]),
+    );
+    const selectedEvidenceIds = [
+      ...new Set(
+        (state.verification.supportedClaimMappings ?? []).flatMap(
+          (mapping) => mapping.evidenceIds,
+        ),
+      ),
+    ].filter((evidenceId) => byEvidenceId.has(evidenceId));
+    if (selectedEvidenceIds.length === 0) return undefined;
+
+    const selectedCandidates = selectedEvidenceIds
+      .slice(0, this.maxCitations)
+      .map((evidenceId) => byEvidenceId.get(evidenceId))
+      .filter(
+        (candidate): candidate is GroundedCitationCandidate =>
+          candidate !== undefined,
+      );
+    const citations = selectedCandidates.map((candidate) => candidate.citation);
+    const selectedIds = selectedCandidates.map(
+      (candidate) => candidate.attribution.evidenceId,
+    );
+    const selectedEvidenceMappings = selectedCandidates.map(
+      (candidate, citationIndex) => ({
+        citationIndex,
+        selectedEvidenceId: candidate.attribution.evidenceId,
+        evidenceId: candidate.sourceEvidenceId,
+      }),
+    );
+    const factualClaimCount = Math.max(
+      1,
+      state.verification.supportedClaimMappings?.length ?? 0,
+    );
+
+    return {
+      citations,
+      coverage: {
+        mode: 'FALLBACK',
+        coverage: 1,
+        factualClaimCount,
+        supportedClaimCount: factualClaimCount,
+        unsupportedClaims: [],
+        diagnostics: {
+          decisionSource: 'FALLBACK',
+          selectedEvidenceIds: selectedIds,
+          deterministicSupportingEvidenceIds: [],
+          selectedEvidenceMappings,
+          modelRole: 'CITATION_ATTRIBUTION',
+          providerStatus: input.providerStatus,
+          ...(input.semanticCalls
+            ? { semanticCalls: input.semanticCalls }
+            : {}),
+          ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+          ...(input.providerCategory
+            ? { providerCategory: input.providerCategory }
+            : {}),
         },
       },
     };

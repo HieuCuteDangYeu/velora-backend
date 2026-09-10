@@ -331,6 +331,220 @@ describe('ChatMapper reply previews', () => {
   });
 });
 
+describe('recalled message privacy', () => {
+  it('never serializes legacy content or media from a recalled message', () => {
+    const dto = ChatMapper.toDto(
+      new Message({
+        id: 'message-1',
+        conversationId: 'conversation-1',
+        senderId: 'sender-1',
+        content: 'sensitive legacy content',
+        media: {
+          fileKey: 'chat-images/sender-1/private.jpg',
+          fileUrl: 'https://cdn.velora.test/private.jpg',
+        },
+        metadata: {
+          kind: 'velora_ai_reel_recommendations',
+        },
+        type: 'image',
+        signalType: 0,
+        createdAt: new Date('2026-06-02T00:00:00.000Z'),
+        isRecalled: true,
+        replyPreview: {
+          senderName: 'Sender Name',
+          content: 'sensitive reply preview',
+          type: 'text',
+        },
+        reactions: {
+          'user-2': {
+            emoji: '👍',
+            createdAt: '2026-06-02T00:00:00.000Z',
+          },
+        },
+      }),
+    );
+
+    expect(dto).toMatchObject({
+      content: 'Tin nhắn đã thu hồi',
+      isRecalled: true,
+    });
+    expect(dto.media).toBeUndefined();
+    expect(dto.metadata).toBeUndefined();
+    expect(dto.replyPreview).toBeUndefined();
+    expect(dto.reactions).toBeUndefined();
+  });
+
+  it('reads recalled history from the database and redacts a legacy record', async () => {
+    const redis = {
+      del: jest.fn(),
+      expire: jest.fn(),
+      get: jest.fn(),
+      hset: jest.fn(),
+      hdel: jest.fn(),
+      lrange: jest.fn(),
+      pipeline: jest.fn(),
+    };
+    const prisma = {
+      message: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'legacy-recalled-message',
+            conversationId: 'conversation-1',
+            senderId: 'sender-1',
+            clientMessageId: null,
+            content: 'encrypted-legacy-secret',
+            type: 'text',
+            signalType: 0,
+            media: {
+              fileKey: 'chat-images/sender-1/private.jpg',
+              fileUrl: 'https://cdn.velora.test/private.jpg',
+            },
+            metadata: null,
+            registrationId: null,
+            createdAt: new Date('2026-06-02T00:00:00.000Z'),
+            isRecalled: true,
+            recalledAt: new Date('2026-06-02T00:01:00.000Z'),
+            replyToId: null,
+            replyPreview: null,
+            reactions: null,
+            readBy: [],
+          },
+        ]),
+      },
+    };
+    const encryptionRepository = {
+      decrypt: jest.fn(() => 'decrypted legacy secret'),
+      encrypt: jest.fn((value: string) => value),
+    };
+    const repository = new PrismaChatRepository(
+      prisma as never,
+      redis as never,
+      encryptionRepository,
+      { findUsersByIds: jest.fn() } as never,
+      { deleteRecalledChatMedia: jest.fn() },
+    );
+
+    await expect(
+      repository.findMessagesByConversationId('conversation-1', 20),
+    ).resolves.toMatchObject([
+      {
+        content: 'Tin nhắn đã thu hồi',
+        isRecalled: true,
+      },
+    ]);
+    expect(encryptionRepository.decrypt).not.toHaveBeenCalled();
+    expect(redis.lrange).not.toHaveBeenCalled();
+  });
+
+  it('replaces persisted data and deletes owned chat objects when recalling', async () => {
+    const messageId = '507f1f77bcf86cd799439011';
+    const senderId = '507f191e810c19729de860ea';
+    const originalMessage = {
+      id: messageId,
+      conversationId: '507f1f77bcf86cd799439012',
+      senderId,
+      clientMessageId: null,
+      content: 'encrypted-original-content',
+      type: 'image',
+      signalType: 0,
+      media: {
+        fileKey: `chat-images/${senderId}/private.jpg`,
+        fileUrl: 'https://cdn.velora.test/private.jpg',
+        thumbnailKey: `chat-thumbnails/${senderId}/private.jpg`,
+        thumbnailUrl: 'https://cdn.velora.test/private-thumb.jpg',
+      },
+      metadata: { kind: 'velora_ai_reel_recommendations' },
+      registrationId: 1,
+      createdAt: new Date(),
+      isRecalled: false,
+      recalledAt: null,
+      replyToId: null,
+      replyPreview: null,
+      reactions: {
+        'user-2': { emoji: '👍', createdAt: new Date().toISOString() },
+      },
+      readBy: [],
+    };
+    let updateInput: unknown;
+    const update = jest.fn((input: unknown) => {
+      updateInput = input;
+      return Promise.resolve({
+        ...originalMessage,
+        content: 'encrypted-recalled-content',
+        media: null,
+        metadata: null,
+        registrationId: null,
+        isRecalled: true,
+        recalledAt: new Date(),
+        replyPreview: null,
+        reactions: null,
+      });
+    });
+    const tx = {
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue({ id: 'another-message' }),
+        update,
+      },
+      conversation: { update: jest.fn() },
+    };
+    const runTransaction = (callback: (transaction: typeof tx) => unknown) =>
+      callback(tx);
+    const prisma = {
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({ participantIds: [senderId] }),
+      },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(originalMessage),
+      },
+      $transaction: jest.fn(runTransaction),
+    };
+    const redis = {
+      del: jest.fn(),
+      hdel: jest.fn(),
+    };
+    const encryptionRepository = {
+      decrypt: jest.fn((value: string) => value),
+      encrypt: jest.fn((value: string) => `encrypted:${value}`),
+    };
+    const chatMediaService = { deleteRecalledChatMedia: jest.fn() };
+    const repository = new PrismaChatRepository(
+      prisma as never,
+      redis as never,
+      encryptionRepository,
+      { findUsersByIds: jest.fn() } as never,
+      chatMediaService,
+    );
+
+    const result = await repository.recallMessage(messageId, senderId);
+
+    expect(chatMediaService.deleteRecalledChatMedia).toHaveBeenCalledWith({
+      userId: senderId,
+      fileKeys: [
+        `chat-images/${senderId}/private.jpg`,
+        `chat-thumbnails/${senderId}/private.jpg`,
+      ],
+    });
+    const updateCall = updateInput as
+      | { data: Record<string, unknown> }
+      | undefined;
+    expect(updateCall?.data).toMatchObject({
+      content: 'encrypted:Tin nhắn đã thu hồi',
+      media: null,
+      metadata: null,
+      registrationId: null,
+      replyPreview: null,
+      reactions: null,
+      isRecalled: true,
+    });
+    expect(result.message).toMatchObject({
+      content: 'Tin nhắn đã thu hồi',
+      isRecalled: true,
+    });
+    expect(result.message.media).toBeUndefined();
+  });
+});
+
 describe('MessageDto reply previews', () => {
   it('accepts reply preview media metadata in outgoing message payloads', () => {
     expect(

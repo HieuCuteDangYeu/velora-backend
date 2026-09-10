@@ -103,11 +103,19 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).toBe('markRetrievalReadyNode');
   });
 
-  it('keeps provider-error context failures on the refusal path', () => {
+  it('routes provider-error context results with typed evidence through grounding gates', () => {
     expect(
       routeAfterVerifier.routeAfterContextSufficiency(
         state({
           route: { requiredEvidence: ['TRANSCRIPT'] },
+          rerankedChunks: [
+            {
+              evidenceType: 'TRANSCRIPT',
+              evidenceText: 'Typed transcript evidence.',
+              chunkText: 'Typed transcript evidence.',
+              tags: [],
+            },
+          ],
           contextSufficiency: {
             sufficient: false,
             confidence: 0,
@@ -118,6 +126,28 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
             diagnostics: {
               providerStatus: 'ERROR',
               decisionSource: 'FAIL_CLOSED',
+            },
+          },
+        }),
+      ),
+    ).toBe('markRetrievalReadyNode');
+  });
+
+  it('keeps missing-modality context failures on the refusal path', () => {
+    expect(
+      routeAfterVerifier.routeAfterContextSufficiency(
+        state({
+          route: { requiredEvidence: ['TRANSCRIPT'] },
+          contextSufficiency: {
+            sufficient: false,
+            confidence: 1,
+            availableEvidence: [],
+            missingEvidence: ['TRANSCRIPT'],
+            reason: 'Missing transcript.',
+            recommendedAction: 'REFUSE_NO_CONTEXT',
+            diagnostics: {
+              providerStatus: 'NOT_CALLED',
+              decisionSource: 'DETERMINISTIC_REQUIRED_MODALITY',
             },
           },
         }),

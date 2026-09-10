@@ -21,6 +21,13 @@ interface RawDraftAnswer {
   claims?: unknown;
 }
 
+class DraftAnswerContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DraftAnswerContractError';
+  }
+}
+
 export interface RagDraftAnswer {
   answer: string;
   claims: RagAnswerClaim[];
@@ -64,42 +71,52 @@ export class GenerateDraftAnswerUseCase {
         chunk.evidenceText?.trim() ||
         (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : ''),
     }));
-    const raw = await this.structuredLlmService.generateObject<RawDraftAnswer>({
-      systemPrompt: [
-        this.chatPromptBuilder.build(state, {
-          includeRetrievedEvidence: false,
-        }),
-        'Return only JSON matching the supplied schema.',
-        'Treat claims as an exhaustive grounding audit of every independently checkable factual reel assertion actually stated in answer; do not omit any such assertion.',
-        'Split compound answer sentences into atomic claims when they contain multiple independently checkable facts. Each factual claim must be stated in answer exactly once; do not add factual claims that answer does not state.',
-        'For every claim, declare only the authorized evidence IDs that directly support that exact assertion and requested relation or modality. Multiple claims may cite the same evidence ID, and one claim may cite multiple evidence IDs when combined support is genuinely required.',
-        'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
-        'Normal conversational statements that do not depend on reel evidence may have no claims.',
-      ].join('\n\n'),
-      userPrompt: JSON.stringify({
-        currentQuestion: boundPromptText(
-          state.userMessage,
-          bounds.maxUserMessageChars,
-        ),
-        authorizedEvidence,
+    const allowedEvidenceIds = new Set(
+      answerEvidence.map(({ evidenceId }) => evidenceId),
+    );
+    const systemPrompt = [
+      this.chatPromptBuilder.build(state, {
+        includeRetrievedEvidence: false,
       }),
-      jsonSchema: this.schema(),
-      model: this.config.model('ANSWER'),
-      timeoutMs: this.config.timeoutMs('ANSWER'),
-      temperature: 0,
-      maxTokens: this.config.maxCompletionTokens('ANSWER'),
-      modelRole: 'ANSWER',
-      onDiagnostics: (call) => diagnostics.push(call),
-    });
-
-    return {
-      ...this.normalize(
-        raw,
-        state,
-        new Set(answerEvidence.map(({ evidenceId }) => evidenceId)),
+      'Return only JSON matching the supplied schema.',
+      'Treat claims as an exhaustive grounding audit of every independently checkable factual reel assertion actually stated in answer; do not omit any such assertion.',
+      'Split compound answer sentences into atomic claims when they contain multiple independently checkable facts. Each factual claim must be stated in answer exactly once; do not add factual claims that answer does not state.',
+      'For every claim, declare only the authorized evidence IDs that directly support that exact assertion and requested relation or modality. Multiple claims may cite the same evidence ID, and one claim may cite multiple evidence IDs when combined support is genuinely required.',
+      'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
+      'Normal conversational statements that do not depend on reel evidence may have no claims.',
+    ].join('\n\n');
+    const userPrompt = JSON.stringify({
+      currentQuestion: boundPromptText(
+        state.userMessage,
+        bounds.maxUserMessageChars,
       ),
-      diagnostics,
-    };
+      authorizedEvidence,
+    });
+    const request = (prompt: string) =>
+      this.structuredLlmService.generateObject<RawDraftAnswer>({
+        systemPrompt: prompt,
+        userPrompt,
+        jsonSchema: this.schema(),
+        model: this.config.model('ANSWER'),
+        timeoutMs: this.config.timeoutMs('ANSWER'),
+        temperature: 0,
+        maxTokens: this.config.maxCompletionTokens('ANSWER'),
+        modelRole: 'ANSWER',
+        onDiagnostics: (call) => diagnostics.push(call),
+      });
+
+    let raw: RawDraftAnswer;
+    try {
+      raw = await request(systemPrompt);
+      return { ...this.normalize(raw, state, allowedEvidenceIds), diagnostics };
+    } catch (error: unknown) {
+      if (!(error instanceof DraftAnswerContractError)) throw error;
+      raw = await request(
+        `${systemPrompt}\n\nThe previous response violated the local grounding contract. Return a concise answer with a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
+      );
+    }
+
+    return { ...this.normalize(raw, state, allowedEvidenceIds), diagnostics };
   }
 
   private schema(): StructuredLlmJsonSchema {
@@ -145,7 +162,10 @@ export class GenerateDraftAnswerUseCase {
     allowedEvidenceIds: Set<string>,
   ): RagDraftAnswer {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
-    if (!answer) throw new Error('Answer model returned an empty answer');
+    if (!answer)
+      throw new DraftAnswerContractError(
+        'Answer model returned an empty answer',
+      );
 
     const claims = Array.isArray(raw.claims)
       ? raw.claims.map((value) =>
@@ -153,7 +173,9 @@ export class GenerateDraftAnswerUseCase {
         )
       : [];
     if (state.route?.intent === 'REEL_VIDEO_QUESTION' && claims.length === 0) {
-      throw new Error('Reel answer model returned no grounded claim mappings');
+      throw new DraftAnswerContractError(
+        'Reel answer model returned no grounded claim mappings',
+      );
     }
 
     return { answer, claims, modelRole: 'ANSWER', diagnostics: [] };
@@ -164,7 +186,9 @@ export class GenerateDraftAnswerUseCase {
     allowedIds: Set<string>,
   ): RagAnswerClaim {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Answer model returned a malformed claim mapping');
+      throw new DraftAnswerContractError(
+        'Answer model returned a malformed claim mapping',
+      );
     }
     const record = value as Record<string, unknown>;
     const claim =
@@ -179,10 +203,14 @@ export class GenerateDraftAnswerUseCase {
         ]
       : [];
     if (!claim || evidenceIds.length === 0) {
-      throw new Error('Reel factual claims require evidence IDs');
+      throw new DraftAnswerContractError(
+        'Reel factual claims require evidence IDs',
+      );
     }
     if (evidenceIds.some((id) => !allowedIds.has(id))) {
-      throw new Error('Answer model returned an unknown evidence ID');
+      throw new DraftAnswerContractError(
+        'Answer model returned an unknown evidence ID',
+      );
     }
     return { claim, evidenceIds };
   }

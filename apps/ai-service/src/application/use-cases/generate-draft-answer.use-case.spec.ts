@@ -190,4 +190,38 @@ describe('GenerateDraftAnswerUseCase', () => {
       expect.objectContaining({ evidenceId: 'e1' }),
     ]);
   });
+
+  it('retries once when a successful answer violates the local claim contract', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValueOnce({
+          answer: 'A response without a grounded claim mapping.',
+          claims: [],
+        })
+        .mockResolvedValueOnce({
+          answer: 'The zorb is coupled to the quasar.',
+          claims: [
+            {
+              claim: 'The zorb is coupled to the quasar.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      answer: 'The zorb is coupled to the quasar.',
+      claims: [{ evidenceIds: ['e0'] }],
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject.mock.calls[1][0].systemPrompt).toContain(
+      'previous response violated the local grounding contract',
+    );
+  });
 });

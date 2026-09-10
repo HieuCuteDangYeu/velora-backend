@@ -190,6 +190,33 @@ test('failed executor remains in-flight and is never marked completed', () => {
   assert.notEqual(state.cases['case-1'].status, 'COMPLETED');
 });
 
+test('reconciled failure becomes a report row without an assistant identifier', () => {
+  assert.deepEqual(
+    runner.reconciledResult(
+      { caseId: 'case-1', reelId: syntheticReelIds[0] },
+      {
+        status: 'FAILED_RECONCILED',
+        conversationId: 'conversation-1',
+        userMessageId: 'request-1',
+        reconciledAt: '2026-08-25T00:05:00.000Z',
+        reconciliationReason: 'WORKFLOW_ENDED_WITHOUT_BOT_RESPONSE',
+      },
+    ),
+    {
+      caseId: 'case-1',
+      reelId: syntheticReelIds[0],
+      status: 'FAILED_RECONCILED',
+      conversationId: 'conversation-1',
+      userMessageId: 'request-1',
+      reconciledAt: '2026-08-25T00:05:00.000Z',
+      latencyMs: null,
+      finalAnswer: '',
+      citations: [],
+      reconciliationReason: 'WORKFLOW_ENDED_WITHOUT_BOT_RESPONSE',
+    },
+  );
+});
+
 test('reconciliation records objective no-resend evidence after the quiet period', () => {
   const evidence = runner.buildReconciliationEvidence({
     runLockAcquired: true,

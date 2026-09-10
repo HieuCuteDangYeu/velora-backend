@@ -29,7 +29,7 @@ describe('allowsGroundedGeneration', () => {
     expect(allowsGroundedGeneration(context(), route)).toBe(true);
   });
 
-  it('does not bypass a provider failure or missing required modality', () => {
+  it('keeps provider failures in the verifier-backed path when typed evidence exists', () => {
     expect(
       allowsGroundedGeneration(
         context({
@@ -40,9 +40,18 @@ describe('allowsGroundedGeneration', () => {
         }),
         route,
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
-      allowsGroundedGeneration(context({ availableEvidence: [] }), route),
+      allowsGroundedGeneration(
+        context({
+          availableEvidence: [],
+          diagnostics: {
+            providerStatus: 'NOT_CALLED',
+            decisionSource: 'DETERMINISTIC_REQUIRED_MODALITY',
+          },
+        }),
+        route,
+      ),
     ).toBe(false);
   });
 

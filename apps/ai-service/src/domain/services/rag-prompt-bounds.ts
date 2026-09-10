@@ -206,15 +206,70 @@ export function truncateEvidenceText(value: string, maxChars: number): string {
   if (normalized.length <= maxChars) return normalized;
 
   const marker = '...';
-  const contentBudget = Math.max(2, maxChars - marker.length);
-  const headBudget = Math.ceil(contentBudget * 0.6);
-  const tailBudget = contentBudget - headBudget;
-  const headCandidate = normalized.slice(0, headBudget);
+  const contentBudget = Math.max(2, maxChars - marker.length * 2);
+  const headBudget = Math.floor(contentBudget * 0.3);
+  const tailBudget = Math.floor(contentBudget * 0.3);
+  const middleBudget = contentBudget - headBudget - tailBudget;
+  const quantityPattern =
+    /\b(?:\d+(?:[.,]\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b/gi;
+  const quantityMatches = [...normalized.matchAll(quantityPattern)];
+  const omittedQuantities = quantityMatches.filter((match) => {
+    const index = match.index ?? 0;
+    return index >= headBudget && index < normalized.length - tailBudget;
+  });
+
+  if (omittedQuantities.length > 0) {
+    const first = omittedQuantities[0];
+    const last = omittedQuantities.at(-1) ?? first;
+    const middleStart = Math.max(headBudget, (first.index ?? headBudget) - 24);
+    const middleEnd = Math.min(
+      normalized.length - tailBudget,
+      (last.index ?? middleStart) + last[0].length + 24,
+    );
+    let middle = normalized.slice(middleStart, middleEnd).trim();
+
+    if (middle.length > middleBudget) {
+      middle = omittedQuantities
+        .map((match) => {
+          const index = match.index ?? headBudget;
+          return normalized
+            .slice(
+              Math.max(headBudget, index - 12),
+              Math.min(
+                normalized.length - tailBudget,
+                index + match[0].length + 12,
+              ),
+            )
+            .trim();
+        })
+        .join(marker);
+    }
+
+    if (middle.length > middleBudget) {
+      middle = omittedQuantities.map((match) => match[0]).join(' ');
+    }
+
+    const head = normalized
+      .slice(0, headBudget)
+      .replace(/\s+\S*$/, '')
+      .trim();
+    const tail = normalized
+      .slice(-tailBudget)
+      .replace(/^\S*\s+/, '')
+      .trim();
+    const preserved = [head, middle, tail].filter(Boolean).join(marker);
+    if (preserved.length <= maxChars) return preserved;
+  }
+
+  const contentBudgetWithOneMarker = Math.max(2, maxChars - marker.length);
+  const fallbackHeadBudget = Math.ceil(contentBudgetWithOneMarker * 0.6);
+  const fallbackTailBudget = contentBudgetWithOneMarker - fallbackHeadBudget;
+  const headCandidate = normalized.slice(0, fallbackHeadBudget);
   const headBoundary = headCandidate.lastIndexOf(' ');
   const head = (
     headBoundary > 0 ? headCandidate.slice(0, headBoundary) : headCandidate
   ).trimEnd();
-  const tailCandidate = normalized.slice(-tailBudget);
+  const tailCandidate = normalized.slice(-fallbackTailBudget);
   const tailBoundary = tailCandidate.indexOf(' ');
   const tail = (
     tailBoundary >= 0 ? tailCandidate.slice(tailBoundary + 1) : tailCandidate

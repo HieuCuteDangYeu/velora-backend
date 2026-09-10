@@ -1,692 +1,16 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Velora production deployment controller for a single Docker Compose homelab.
-#
-# Source of truth:
-#   - master          : latest source
-#   - homelab-deploy  : CI-approved commit pointer
-#
-# Production application images are expected to exist as:
-#   <DOCKERHUB_USERNAME>/<service>:<40-char commit SHA>
-#
-# The script is intentionally conservative around cloud DB changes, RabbitMQ,
-# RAG workloads, profile-gated services, and worker configuration.
-
-readonly APP_DIR="${VELORA_APP_DIR:-/home/quan/apps/microservices-boilerplate}"
-readonly STATE_DIR="${VELORA_STATE_DIR:-/home/quan/.local/state/velora}"
-readonly STATE_FILE="$STATE_DIR/deployed-sha"
-readonly PREVIOUS_SHA_FILE="$STATE_DIR/previous-sha"
-readonly ENV_HASH_FILE="$STATE_DIR/env.sha256"
-readonly LOCK_FILE="$STATE_DIR/deploy.lock"
-readonly BLOCKED_DIR="$STATE_DIR/blocked"
-readonly DB_APPROVAL_DIR="$STATE_DIR/db-approvals"
-readonly DEPLOYMENT_LOG_DIR="$STATE_DIR/deployments"
-readonly STAGING_ROOT="$STATE_DIR/staging"
-readonly PREVIOUS_RELEASE_FILE="$STATE_DIR/previous-release.json"
-readonly RECEIPT_SCRIPT="${VELORA_RECEIPT_SCRIPT:-/usr/local/bin/velora-report-deployed}"
-readonly COMPOSE_PROJECT_NAME="${VELORA_COMPOSE_PROJECT_NAME:-microservices-boilerplate}"
-
-readonly MIN_FREE_GB="${VELORA_MIN_FREE_GB:-20}"
-readonly MIN_AVAILABLE_RAM_MB="${VELORA_MIN_AVAILABLE_RAM_MB:-1024}"
-readonly WARN_AVAILABLE_RAM_MB="${VELORA_WARN_AVAILABLE_RAM_MB:-1536}"
-readonly HTTP_ATTEMPTS="${VELORA_HTTP_ATTEMPTS:-12}"
-readonly HTTP_RETRY_SECONDS="${VELORA_HTTP_RETRY_SECONDS:-5}"
-readonly PULL_ATTEMPTS="${VELORA_PULL_ATTEMPTS:-3}"
-
-readonly -a APP_SERVICES=(
-  api-gateway
-  user-service
-  friend-service
-  auth-service
-  media-service
-  media-processing-service
-  reel-indexing-service
-  content-service
-  payment-service
-  mail-service
-  conversation-service
-  call-service
-  monitoring-service
-  notification-service
-  ai-service
-)
-
-# Compose services backed by Velora application images. The two long worker
-# lanes share the image of their primary service and are included here so a
-# one-time migration from :latest to ${VELORA_IMAGE_TAG} is not mistaken for a
-# protected worker-configuration change.
-readonly -a APP_IMAGE_SERVICES=(
-  "${APP_SERVICES[@]}"
-  media-processing-long-service
-  reel-indexing-long-service
-)
-
-# Services whose application image has a companion worker lane using the same image.
-# Normal --force does not restart worker lanes merely because .env drifted.
-readonly -a FORCE_SAFE_APP_SERVICES=(
-  api-gateway
-  user-service
-  friend-service
-  auth-service
-  media-service
-  content-service
-  payment-service
-  mail-service
-  conversation-service
-  call-service
-  monitoring-service
-  notification-service
-  ai-service
-)
-
-# Heavy/profile workloads must never be pulled/recreated by normal CD planning.
-readonly -a PROTECTED_SERVICES=(
-  rag-embedding
-  rag-reranker
-  rag-vision
-  rag-eval
-)
-
-# Infrastructure allowed to have explicit, bounded handlers.
-readonly -a MANAGED_INFRA_SERVICES=(
-  nginx
-  prometheus
-  node-exporter
-  grafana
-)
-
-# Compose changes to these services require deliberate operator handling.
-readonly -a BLOCKED_COMPOSE_SERVICES=(
-  rabbitmq
-  rag-embedding
-  rag-reranker
-  rag-vision
-  rag-eval
-  media-processing-service
-  media-processing-long-service
-  reel-indexing-service
-  reel-indexing-long-service
-)
-
-# PostgreSQL services that have migrations in Git but do not currently run
-# prisma migrate deploy in their production container startup.
-readonly -a MANUAL_DB_SERVICES=(
-  user-service
-  auth-service
-  friend-service
-  content-service
-  payment-service
-  notification-service
-)
-
-# Services that already execute prisma migrate deploy before starting Node.
-readonly -a SELF_MIGRATING_DB_SERVICES=(
-  ai-service
-  monitoring-service
-  reel-indexing-service
-)
-
-# RabbitMQ RPC server queues. Worker lane queues are intentionally not encoded
-# here because their semantics are owned by worker configuration.
-readonly -A RMQ_QUEUE_BY_SERVICE=(
-  [auth-service]="auth_queue"
-  [user-service]="user_queue"
-  [friend-service]="friend_queue"
-  [media-service]="media_queue"
-  [content-service]="content_queue"
-  [payment-service]="payment_queue"
-  [mail-service]="mail_queue"
-  [conversation-service]="conversation_queue"
-  [call-service]="call_queue"
-  [monitoring-service]="monitoring_queue"
-  [ai-service]="ai_queue"
-)
-
-MODE="deploy"
-DRY_RUN=false
-FORCE=false
-RETRY_FAILED=false
-APPROVE_DB_SHA=""
-DEPLOY_ID=""
-START_EPOCH=""
-STAGING_DIR=""
-BASELINE_DIR=""
-TEMP_SNAPSHOT=""
-TARGET_COMPOSE_JSON=""
-BASE_COMPOSE_JSON=""
-TARGET_SHA=""
-LAST_DEPLOYED_SHA=""
-CURRENT_ENV_HASH=""
-STORED_ENV_HASH=""
-DB_RISK=false
-MANUAL_DB_CHANGE=false
-ROLLBACK_RESULT="not-needed"
-
-CHANGED_FILES=""
-PULL_SERVICES=()
-RECONCILE_SERVICES=()
-INFRA_RECONCILE_SERVICES=()
-DB_IMPACT_SERVICES=()
-
-usage() {
-  cat <<'USAGE'
-Usage:
-  velora-deploy
-  velora-deploy --dry-run
-  velora-deploy --force
-  velora-deploy --retry-failed
-  velora-deploy --rollback
-  velora-deploy --approve-db-change <40-char-sha>
-
-Options:
-  --dry-run                 Print/validate the deployment plan without changing running production containers.
-  --force                   Reconcile normal application services for the approved release.
-                            Does not blindly restart RAG or worker lanes.
-  --retry-failed            Retry the currently promoted SHA even if it was blocked after a
-                            previous release-specific failure.
-  --rollback                Manually restore the previous healthy release snapshot.
-  --approve-db-change SHA   Record operator confirmation that cloud DB work for SHA was handled.
-                            This command never runs SQL or Prisma against the cloud database.
-USAGE
-}
-
-log() {
-  printf '%s\n' "$*"
-}
-
-warn() {
-  printf 'WARNING: %s\n' "$*" >&2
-}
-
-fail() {
-  printf 'ERROR: %s\n' "$*" >&2
+# Load the previously battle-tested deployment controller, but suppress its
+# terminal main "$@" invocation so this file can override the small set of
+# functions needed for the first-class Loki/Alloy migration.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CORE_SCRIPT="$SCRIPT_DIR/velora-deploy-core"
+[[ -f "$CORE_SCRIPT" ]] || {
+  printf 'ERROR: deployment core is missing: %s\n' "$CORE_SCRIPT" >&2
   exit 1
 }
-
-contains() {
-  local needle="$1"
-  shift
-  local item
-  for item in "$@"; do
-    [[ "$item" == "$needle" ]] && return 0
-  done
-  return 1
-}
-
-add_unique() {
-  local value="$1"
-  local array_name="$2"
-  local -n array_ref="$array_name"
-  local existing
-  for existing in "${array_ref[@]:-}"; do
-    [[ "$existing" == "$value" ]] && return 0
-  done
-  array_ref+=("$value")
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "required command is missing: $1"
-}
-
-is_sha() {
-  [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]]
-}
-
-safe_sha_prefix() {
-  printf '%s' "${1:0:12}"
-}
-
-free_root_gb() {
-  df -Pk / | awk 'NR == 2 { printf "%d\n", $4 / 1024 / 1024 }'
-}
-
-available_ram_mb() {
-  awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024 }' /proc/meminfo
-}
-
-env_hash() {
-  sha256sum "$APP_DIR/.env" | awk '{print $1}'
-}
-
-read_env_value() {
-  local key="$1"
-  python3 - "$APP_DIR/.env" "$key" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-key = sys.argv[2]
-value = ""
-for raw in path.read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line.startswith("export "):
-        line = line[7:].lstrip()
-    if not line.startswith(key + "="):
-        continue
-    value = line.split("=", 1)[1].strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        value = value[1:-1]
-    break
-print(value)
-PY
-}
-
-cleanup_worktrees() {
-  local dir
-  for dir in "$STAGING_DIR" "$BASELINE_DIR"; do
-    [[ -n "$dir" ]] || continue
-    if [[ -d "$dir" ]]; then
-      git -C "$APP_DIR" worktree remove --force "$dir" >/dev/null 2>&1 || rm -rf -- "$dir" || true
-    fi
-  done
-}
-
-cleanup() {
-  cleanup_worktrees || true
-}
-
-on_err() {
-  local status=$?
-  local line_no="$1"
-  warn "deployment command failed at line $line_no (exit $status)."
-  return "$status"
-}
-
-trap 'on_err "$LINENO"' ERR
-trap cleanup EXIT
-
-parse_args() {
-  while (( $# > 0 )); do
-    case "$1" in
-      --dry-run)
-        [[ "$MODE" == "deploy" ]] || fail "--dry-run cannot be combined with $MODE"
-        DRY_RUN=true
-        shift
-        ;;
-      --force)
-        [[ "$MODE" == "deploy" ]] || fail "--force cannot be combined with $MODE"
-        FORCE=true
-        shift
-        ;;
-      --retry-failed)
-        [[ "$MODE" == "deploy" ]] || fail "--retry-failed cannot be combined with $MODE"
-        RETRY_FAILED=true
-        shift
-        ;;
-      --rollback)
-        [[ "$MODE" == "deploy" ]] || fail "--rollback cannot be combined with another command"
-        MODE="rollback"
-        shift
-        ;;
-      --approve-db-change)
-        [[ "$MODE" == "deploy" ]] || fail "--approve-db-change cannot be combined with another command"
-        MODE="approve-db-change"
-        APPROVE_DB_SHA="${2:-}"
-        [[ -n "$APPROVE_DB_SHA" ]] || fail "--approve-db-change requires a SHA"
-        shift 2
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        usage >&2
-        fail "unknown argument: $1"
-        ;;
-    esac
-  done
-
-  if [[ "$MODE" != "deploy" && ( "$DRY_RUN" == true || "$FORCE" == true || "$RETRY_FAILED" == true ) ]]; then
-    fail "deployment flags cannot be combined with $MODE"
-  fi
-}
-
-init() {
-  require_command bash
-  require_command git
-  require_command jq
-  require_command flock
-
-  [[ -d "$APP_DIR/.git" ]] || fail "repository not found at $APP_DIR"
-
-  mkdir -p "$STATE_DIR" "$BLOCKED_DIR" "$DB_APPROVAL_DIR" "$DEPLOYMENT_LOG_DIR" "$STAGING_ROOT"
-  chmod 700 "$STATE_DIR" "$BLOCKED_DIR" "$DB_APPROVAL_DIR" "$DEPLOYMENT_LOG_DIR" "$STAGING_ROOT" || true
-
-  exec 9>"$LOCK_FILE"
-  if ! flock -n 9; then
-    log "Another Velora deployment is already running; exiting."
-    exit 0
-  fi
-
-  export COMPOSE_PROJECT_NAME
-  cd "$APP_DIR"
-
-  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-    git status --short --untracked-files=no >&2
-    fail "tracked local modifications detected; refusing deployment."
-  fi
-
-  if [[ "$MODE" == "approve-db-change" ]]; then
-    return 0
-  fi
-
-  require_command docker
-  require_command curl
-  require_command python3
-  require_command sha256sum
-  require_command find
-  [[ -f "$APP_DIR/.env" ]] || fail "$APP_DIR/.env is missing"
-  docker info >/dev/null 2>&1 || fail "Docker daemon is unavailable"
-}
-
-fetch_release_refs() {
-  log "==> Fetching master and homelab-deploy..."
-  git fetch --prune origin master homelab-deploy
-}
-
-validate_promoted_sha() {
-  TARGET_SHA="$(git rev-parse origin/homelab-deploy)"
-  is_sha "$TARGET_SHA" || fail "origin/homelab-deploy did not resolve to a full SHA"
-
-  if ! git merge-base --is-ancestor "$TARGET_SHA" origin/master; then
-    fail "CI-approved SHA $TARGET_SHA is not an ancestor of origin/master"
-  fi
-}
-
-load_state() {
-  LAST_DEPLOYED_SHA="$(cat "$STATE_FILE" 2>/dev/null || true)"
-  STORED_ENV_HASH="$(cat "$ENV_HASH_FILE" 2>/dev/null || true)"
-  CURRENT_ENV_HASH="$(env_hash)"
-
-  if [[ -n "$LAST_DEPLOYED_SHA" ]]; then
-    is_sha "$LAST_DEPLOYED_SHA" || fail "state file contains an invalid deployed SHA"
-    if ! git cat-file -e "${LAST_DEPLOYED_SHA}^{commit}" 2>/dev/null; then
-      git fetch --no-tags origin "$LAST_DEPLOYED_SHA" || fail "last deployed SHA is not available locally"
-    fi
-  fi
-}
-
-preflight_resources() {
-  local free_gb ram_mb preserve_target=true
-
-  # Reclaim stale immutable application images before checking disk headroom.
-  # Keep a non-blocked target SHA so partially/pre-pulled images are reusable;
-  # a blocked target is intentionally reclaimable unless the operator explicitly
-  # requested --retry-failed. Running/stopped container images and the exact
-  # previous-release rollback snapshot are always protected by the cleanup.
-  if [[ "$DRY_RUN" != true ]]; then
-    if [[ -f "$(blocked_marker "$TARGET_SHA")" && "$RETRY_FAILED" != true ]]; then
-      preserve_target=false
-    fi
-    reclaim_unused_docker_images "$preserve_target"
-  fi
-
-  free_gb="$(free_root_gb)"
-  log "Root disk free : ${free_gb} GB"
-  if (( free_gb < MIN_FREE_GB )); then
-    if [[ "$DRY_RUN" == true ]]; then
-      fail "only ${free_gb} GB root disk free; dry-run will not mutate Docker"
-    fi
-    log "Free disk is below ${MIN_FREE_GB} GB; pruning Docker build cache..."
-    docker builder prune -af >/dev/null || warn "pre-deploy build-cache prune failed"
-    free_gb="$(free_root_gb)"
-    log "Root disk after cleanup: ${free_gb} GB"
-    if (( free_gb < MIN_FREE_GB )); then
-      fail "only ${free_gb} GB root disk free; minimum is ${MIN_FREE_GB} GB"
-    fi
-  fi
-
-  ram_mb="$(available_ram_mb)"
-  log "MemAvailable   : ${ram_mb} MB"
-  if (( ram_mb < MIN_AVAILABLE_RAM_MB )); then
-    fail "only ${ram_mb} MB MemAvailable; refusing deployment below ${MIN_AVAILABLE_RAM_MB} MB"
-  elif (( ram_mb < WARN_AVAILABLE_RAM_MB )); then
-    warn "MemAvailable is below ${WARN_AVAILABLE_RAM_MB} MB; proceeding cautiously"
-  fi
-}
-
-validate_rabbitmq_static_config() {
-  log "==> Validating RabbitMQ configuration consistency..."
-  python3 - "$APP_DIR/.env" <<'PY'
-import sys
-from pathlib import Path
-from urllib.parse import unquote, urlparse
-
-required = [
-    "RABBITMQ_URL",
-    "RABBITMQ_DEFAULT_USER",
-    "RABBITMQ_DEFAULT_PASS",
-    "RABBITMQ_DEFAULT_VHOST",
-]
-dead = ["RABBITMQ_USER", "RABBITMQ_PASSWORD"]
-values = {}
-for raw in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#"):
-        continue
-    if line.startswith("export "):
-        line = line[7:].lstrip()
-    if "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-        value = value[1:-1]
-    values[key.strip()] = value
-
-for key in required:
-    if not values.get(key):
-        raise SystemExit(f"missing required RabbitMQ key: {key}")
-for key in dead:
-    if key in values:
-        raise SystemExit(f"dead RabbitMQ key must be removed: {key}")
-
-url = urlparse(values["RABBITMQ_URL"])
-if url.scheme not in {"amqp", "amqps"}:
-    raise SystemExit("RABBITMQ_URL must use amqp or amqps")
-if not all([url.username, url.password, url.hostname, url.port]):
-    raise SystemExit("RABBITMQ_URL must include username, password, host, and port")
-if unquote(url.username) != values["RABBITMQ_DEFAULT_USER"]:
-    raise SystemExit("RABBITMQ_URL username differs from RABBITMQ_DEFAULT_USER")
-if unquote(url.password) != values["RABBITMQ_DEFAULT_PASS"]:
-    raise SystemExit("RABBITMQ_URL password differs from RABBITMQ_DEFAULT_PASS")
-
-def normalize_vhost(value: str) -> str:
-    value = unquote(value or "/")
-    if value in {"", "/"}:
-        return "/"
-    return value if value.startswith("/") else "/" + value
-
-if normalize_vhost(url.path) != normalize_vhost(values["RABBITMQ_DEFAULT_VHOST"]):
-    raise SystemExit("RABBITMQ_URL vhost differs from RABBITMQ_DEFAULT_VHOST")
-PY
-  log "RabbitMQ .env configuration is consistent."
-}
-
-validate_rabbitmq_live() {
-  log "==> Validating live RabbitMQ application credentials and vhost permissions..."
-
-  local rabbit_id
-  rabbit_id="$(docker compose ps -q rabbitmq | head -n 1)"
-  [[ -n "$rabbit_id" ]] || fail "RabbitMQ container is not present"
-
-  if ! docker compose exec -T rabbitmq sh -ec '
-    rabbitmq-diagnostics -q check_running >/dev/null
-    rabbitmqctl authenticate_user "$RABBITMQ_DEFAULT_USER" "$RABBITMQ_DEFAULT_PASS" >/dev/null
-    rabbitmqctl -q list_vhosts name | grep -Fx -- "$RABBITMQ_DEFAULT_VHOST" >/dev/null
-    rabbitmqctl -q list_user_permissions "$RABBITMQ_DEFAULT_USER" \
-      | awk -v v="$RABBITMQ_DEFAULT_VHOST" '\''$1 == v { found=1 } END { exit(found ? 0 : 1) }'\''
-  '; then
-    fail "RabbitMQ is running but Velora application credentials/vhost permissions are invalid"
-  fi
-
-  log "RabbitMQ live authentication and vhost permissions are valid."
-}
-
-make_worktree() {
-  local sha="$1"
-  local label="$2"
-  local dir="$STAGING_ROOT/${label}-${sha:0:12}-$$"
-
-  rm -rf -- "$dir"
-  git worktree add --detach "$dir" "$sha" >/dev/null
-  ln -s "$APP_DIR/.env" "$dir/.env"
-  printf '%s' "$dir"
-}
-
-render_compose_json() {
-  local dir="$1"
-  local tag="$2"
-  (
-    cd "$dir"
-    VELORA_IMAGE_TAG="$tag" docker compose config --no-path-resolution --format json
-  )
-}
-
-normalize_compose_json() {
-  local input_json="$1"
-  local output_json="$2"
-  local services_json
-  services_json="$(printf '%s\n' "${APP_IMAGE_SERVICES[@]}" | jq -R . | jq -cs .)"
-
-  jq --argjson apps "$services_json" '
-    .services |= with_entries(
-      .value |= del(.build)
-      | if (.key as $k | $apps | index($k)) then
-          .value.image = "__VELORA_APP_IMAGE__"
-        else . end
-    )
-  ' "$input_json" >"$output_json"
-}
-
-validate_target_files() {
-  local nginx_image prometheus_image
-
-  log "==> Creating staging worktree for target $(safe_sha_prefix "$TARGET_SHA")..."
-  STAGING_DIR="$(make_worktree "$TARGET_SHA" target)"
-
-  log "==> Validating target Docker Compose..."
-  (
-    cd "$STAGING_DIR"
-    VELORA_IMAGE_TAG="$TARGET_SHA" docker compose config --quiet
-  )
-
-  TARGET_COMPOSE_JSON="$STAGING_DIR/.velora-compose-target.json"
-  render_compose_json "$STAGING_DIR" "__COMPARE__" >"$TARGET_COMPOSE_JSON"
-
-  nginx_image="$(jq -r '.services.nginx.image // empty' "$TARGET_COMPOSE_JSON")"
-  prometheus_image="$(jq -r '.services.prometheus.image // empty' "$TARGET_COMPOSE_JSON")"
-
-  if [[ -f "$STAGING_DIR/infra/nginx/nginx.conf" && -n "$nginx_image" ]]; then
-    log "==> Validating target Nginx configuration with $nginx_image..."
-    docker run --rm \
-      -v "$STAGING_DIR/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
-      "$nginx_image" nginx -t >/dev/null
-  fi
-
-  if [[ -f "$STAGING_DIR/infra/monitoring/prometheus/prometheus.yml" && -n "$prometheus_image" ]]; then
-    log "==> Validating target Prometheus configuration with $prometheus_image..."
-    docker run --rm \
-      --user 0:0 \
-      --entrypoint /bin/promtool \
-      -v "$STAGING_DIR/infra/monitoring/prometheus:/etc/prometheus:ro" \
-      "$prometheus_image" \
-      check config /etc/prometheus/prometheus.yml >/dev/null
-  fi
-
-  if [[ -d "$STAGING_DIR/infra/monitoring/grafana" ]]; then
-    log "==> Validating target Grafana JSON files..."
-    while IFS= read -r -d '' json_file; do
-      jq -e . "$json_file" >/dev/null
-    done < <(find "$STAGING_DIR/infra/monitoring/grafana" -type f -name '*.json' -print0)
-  fi
-}
-
-prepare_baseline_compose() {
-  [[ -n "$LAST_DEPLOYED_SHA" ]] || return 0
-  BASELINE_DIR="$(make_worktree "$LAST_DEPLOYED_SHA" baseline)"
-  BASE_COMPOSE_JSON="$BASELINE_DIR/.velora-compose-base.json"
-  render_compose_json "$BASELINE_DIR" "__COMPARE__" >"$BASE_COMPOSE_JSON"
-}
-
-compute_changed_files() {
-  if [[ -z "$LAST_DEPLOYED_SHA" ]]; then
-    CHANGED_FILES="__INITIAL_RELEASE__"
-    return
-  fi
-
-  if ! git merge-base --is-ancestor "$LAST_DEPLOYED_SHA" "$TARGET_SHA"; then
-    fail "CI-approved SHA is not a fast-forward from the last healthy release"
-  fi
-
-  CHANGED_FILES="$(git diff --name-only "$LAST_DEPLOYED_SHA" "$TARGET_SHA")"
-}
-
-add_app_and_worker_companions() {
-  local service="$1"
-  add_unique "$service" PULL_SERVICES
-  add_unique "$service" RECONCILE_SERVICES
-
-  case "$service" in
-    media-processing-service)
-      add_unique "media-processing-long-service" RECONCILE_SERVICES
-      ;;
-    reel-indexing-service)
-      add_unique "reel-indexing-long-service" RECONCILE_SERVICES
-      ;;
-  esac
-}
-
-add_all_application_services() {
-  local service
-  for service in "${APP_SERVICES[@]}"; do
-    add_app_and_worker_companions "$service"
-  done
-}
-
-classify_db_impact() {
-  local file service
-  DB_RISK=false
-  MANUAL_DB_CHANGE=false
-  DB_IMPACT_SERVICES=()
-
-  [[ "$CHANGED_FILES" != "__INITIAL_RELEASE__" ]] || return 0
-
-  while IFS= read -r file; do
-    [[ -n "$file" ]] || continue
-
-    for service in "${MANUAL_DB_SERVICES[@]}"; do
-      case "$file" in
-        apps/"$service"/prisma/schema.prisma|apps/"$service"/prisma/migrations/*)
-          DB_RISK=true
-          MANUAL_DB_CHANGE=true
-          add_unique "$service" DB_IMPACT_SERVICES
-          ;;
-      esac
-    done
-
-    # MongoDB conversation schema changes are manual-impact changes too.
-    case "$file" in
-      apps/conversation-service/prisma/*)
-        DB_RISK=true
-        MANUAL_DB_CHANGE=true
-        add_unique "conversation-service" DB_IMPACT_SERVICES
-        ;;
-    esac
-
-    for service in "${SELF_MIGRATING_DB_SERVICES[@]}"; do
-      case "$file" in
-        apps/"$service"/prisma/schema.prisma|apps/"$service"/prisma/migrations/*)
-          DB_RISK=true
-          add_unique "$service" DB_IMPACT_SERVICES
-          ;;
-      esac
-    done
-  done <<<"$CHANGED_FILES"
-}
+source <(sed '$d' "$CORE_SCRIPT")
 
 compare_compose_models() {
   [[ -n "$LAST_DEPLOYED_SHA" ]] || return 0
@@ -695,11 +19,6 @@ compare_compose_models() {
   local base_normal target_normal service base_image target_image
   local app_image_model_changed=false
 
-  # One-time cutover support: when Compose changes from hard-coded :latest to
-  # ${VELORA_IMAGE_TAG:-latest}, the rendered image reference changes even when
-  # application source did not. Reconcile all application services once so the
-  # runtime is actually moved onto immutable <commit-SHA> images. Subsequent
-  # releases render both sides with __COMPARE__ and do not trigger this path.
   for service in "${APP_SERVICES[@]}"; do
     base_image="$(jq -r --arg service "$service" '.services[$service].image // empty' "$BASE_COMPOSE_JSON")"
     target_image="$(jq -r --arg service "$service" '.services[$service].image // empty' "$TARGET_COMPOSE_JSON")"
@@ -719,8 +38,27 @@ compare_compose_models() {
   normalize_compose_json "$BASE_COMPOSE_JSON" "$base_normal"
   normalize_compose_json "$TARGET_COMPOSE_JSON" "$target_normal"
 
-  if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '($a[0].networks == $b[0].networks) and ($a[0].volumes == $b[0].volumes)' >/dev/null; then
-    fail "top-level Compose networks/volumes changed; automatic deployment is intentionally blocked"
+  if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" \
+    '($a[0].networks == $b[0].networks)' >/dev/null; then
+    fail "top-level Compose networks changed; automatic deployment is intentionally blocked"
+  fi
+
+  # Keep the existing safety invariant for volumes, with one deliberate
+  # migration exception: this release may add the persistent Loki/Alloy data
+  # volumes. Existing volume definitions may not be removed or changed.
+  if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
+    (($a[0].volumes // {}) | to_entries) as $base
+    | (($b[0].volumes // {}) | to_entries) as $target
+    | all($base[]; . as $entry | (($b[0].volumes // {})[$entry.key] == $entry.value))
+      and
+      all($target[];
+        . as $entry
+        | (($a[0].volumes // {}) | has($entry.key))
+          or ($entry.key == "loki_data")
+          or ($entry.key == "alloy_data")
+      )
+  ' >/dev/null; then
+    fail "top-level Compose volumes changed outside the approved Loki/Alloy additive migration"
   fi
 
   while IFS= read -r service; do
@@ -740,7 +78,7 @@ compare_compose_models() {
       continue
     fi
 
-    if contains "$service" "${MANAGED_INFRA_SERVICES[@]}"; then
+    if contains "$service" "${MANAGED_INFRA_SERVICES[@]}" || [[ "$service" == "loki" || "$service" == "alloy" ]]; then
       add_unique "$service" INFRA_RECONCILE_SERVICES
       continue
     fi
@@ -761,10 +99,11 @@ plan_from_changed_files() {
 
   if [[ "$CHANGED_FILES" == "__INITIAL_RELEASE__" ]]; then
     add_all_application_services
-    # Initial CD bootstrap deliberately does not auto-start protected workloads or RabbitMQ.
     add_unique nginx INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
+    add_unique loki INFRA_RECONCILE_SERVICES
+    add_unique alloy INFRA_RECONCILE_SERVICES
     add_unique grafana INFRA_RECONCILE_SERVICES
     return
   fi
@@ -783,40 +122,34 @@ plan_from_changed_files() {
           add_all_application_services
         fi
         ;;
-
       infra/nginx/*)
         add_unique nginx INFRA_RECONCILE_SERVICES
         ;;
-
       infra/monitoring/prometheus/*)
         add_unique prometheus INFRA_RECONCILE_SERVICES
         ;;
-
       infra/monitoring/grafana/*)
         add_unique grafana INFRA_RECONCILE_SERVICES
         ;;
-
-      infra/monitoring/alloy/*|infra/monitoring/loki/*|infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)
-        # Loki/Alloy are deployed through the optional monitoring overlay, and
-        # the smoke-check script changes verification only. Neither changes a
-        # Velora application image or requires application reconciliation.
+      infra/monitoring/loki/*)
+        add_unique loki INFRA_RECONCILE_SERVICES
         ;;
-
+      infra/monitoring/alloy/*)
+        add_unique alloy INFRA_RECONCILE_SERVICES
+        ;;
+      infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)
+        # The former overlay is removed by this migration. Root Compose model
+        # differences and explicit monitoring config handlers cover runtime work.
+        ;;
       docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml)
-        # Service-level Compose differences are handled by compare_compose_models.
         ;;
-
       scripts/deploy/*)
-        # Deployment-controller changes are CI/CD-only and do not alter app images.
         ;;
-
       package.json|pnpm-lock.yaml|pnpm-workspace.yaml|tsconfig.json|tsconfig.build.json|nest-cli.json|.npmrc|.dockerignore|Dockerfile|Dockerfile.*|libs/*|scripts/*|docker/*|infra/docker/*)
         add_all_application_services
         ;;
-
       .env.example|.github/*|docs/*|eval/rag/*|README|README.*|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*|.codex/*|AGENTS.md)
         ;;
-
       *)
         warn "unknown tracked change '$file'; conservatively reconciling all application services"
         add_all_application_services
@@ -830,116 +163,6 @@ plan_from_changed_files() {
       add_unique "$service" RECONCILE_SERVICES
     done
   fi
-}
-
-ensure_manual_db_approval() {
-  [[ "$MANUAL_DB_CHANGE" == true ]] || return 0
-
-  local marker="$DB_APPROVAL_DIR/$TARGET_SHA"
-  if [[ -f "$marker" ]]; then
-    log "Cloud DB-impact changes were explicitly approved for $TARGET_SHA."
-    return 0
-  fi
-
-  printf '\nDATABASE CHANGE DETECTED\n' >&2
-  printf 'Target SHA: %s\n' "$TARGET_SHA" >&2
-  printf 'Services  : %s\n' "${DB_IMPACT_SERVICES[*]}" >&2
-  printf 'Automatic deployment is paused. This CD will not run SQL or prisma db push against cloud databases.\n' >&2
-  printf 'After the responsible operator has applied/confirmed the cloud DB change, run:\n' >&2
-  printf '  velora-deploy --approve-db-change %s\n\n' "$TARGET_SHA" >&2
-  exit 20
-}
-
-blocked_marker() {
-  printf '%s/%s.json' "$BLOCKED_DIR" "$1"
-}
-
-check_blocked_release() {
-  local marker
-  marker="$(blocked_marker "$TARGET_SHA")"
-  [[ -f "$marker" ]] || return 0
-
-  if [[ "$RETRY_FAILED" == true ]]; then
-    warn "retrying previously blocked release $TARGET_SHA by explicit operator request"
-    return 0
-  fi
-
-  log "Release $TARGET_SHA is blocked after a previous release-specific failure."
-  log "Use --retry-failed to deliberately retry it, or wait for CI to promote a newer SHA."
-  exit 21
-}
-
-block_release() {
-  local reason="$1"
-  local marker
-  marker="$(blocked_marker "$TARGET_SHA")"
-
-  jq -n \
-    --arg sha "$TARGET_SHA" \
-    --arg time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg reason "$reason" \
-    '{sha:$sha, blocked_at:$time, reason:$reason}' >"$marker"
-  chmod 600 "$marker"
-}
-
-print_plan() {
-  printf '\n======================================\n'
-  printf 'Velora deployment plan\n'
-  printf 'From SHA : %s\n' "${LAST_DEPLOYED_SHA:-none}"
-  printf 'To SHA   : %s\n' "$TARGET_SHA"
-  printf 'DB risk  : %s\n' "$DB_RISK"
-  printf 'Env drift: %s\n' "$([[ -n "$STORED_ENV_HASH" && "$STORED_ENV_HASH" != "$CURRENT_ENV_HASH" ]] && echo yes || echo no)"
-
-  printf '\nApplication image pulls:\n'
-  if (( ${#PULL_SERVICES[@]} == 0 )); then
-    printf '  (none)\n'
-  else
-    printf '  %s\n' "${PULL_SERVICES[@]}"
-  fi
-
-  printf '\nCompose services to reconcile:\n'
-  if (( ${#RECONCILE_SERVICES[@]} == 0 )); then
-    printf '  (none)\n'
-  else
-    printf '  %s\n' "${RECONCILE_SERVICES[@]}"
-  fi
-
-  printf '\nManaged infrastructure:\n'
-  if (( ${#INFRA_RECONCILE_SERVICES[@]} == 0 )); then
-    printf '  (none)\n'
-  else
-    printf '  %s\n' "${INFRA_RECONCILE_SERVICES[@]}"
-  fi
-
-  printf '\nProtected workloads preserved:\n'
-  printf '  %s\n' "${PROTECTED_SERVICES[@]}"
-  printf '======================================\n\n'
-}
-
-prepull_target_images() {
-  local service image attempt
-  (( ${#PULL_SERVICES[@]} > 0 )) || return 0
-
-  log "==> Pre-pulling immutable application images before production mutation..."
-  for service in "${PULL_SERVICES[@]}"; do
-    image="$(
-      (cd "$STAGING_DIR" && VELORA_IMAGE_TAG="$TARGET_SHA" docker compose config --format json) \
-        | jq -r --arg service "$service" '.services[$service].image // empty'
-    )"
-    [[ -n "$image" ]] || fail "target Compose has no image for $service"
-    [[ "$image" == *":$TARGET_SHA" ]] || fail "target image for $service is not immutable SHA-tagged: $image"
-
-    for ((attempt=1; attempt<=PULL_ATTEMPTS; attempt++)); do
-      log "Pulling $image (attempt $attempt/$PULL_ATTEMPTS)..."
-      if docker pull "$image"; then
-        break
-      fi
-      if (( attempt == PULL_ATTEMPTS )); then
-        fail "failed to pull $image after $PULL_ATTEMPTS attempts"
-      fi
-      sleep $((attempt * 5))
-    done
-  done
 }
 
 prepull_managed_infra() {
@@ -956,16 +179,18 @@ prepull_managed_infra() {
       base_image="$(jq -r --arg service "$service" '.services[$service].image // empty' "$BASE_COMPOSE_JSON")"
     fi
 
-    # A config-only change must not refresh a mutable :latest/alpine tag from a
-    # registry. Reuse the already-present image when the Compose image reference
-    # itself did not change.
     if [[ -n "$base_image" && "$image" == "$base_image" ]]; then
       log "$service image reference unchanged ($image); skipping registry pull."
       continue
     fi
 
     if [[ -z "$base_image" ]]; then
-      existing_container="$(docker compose ps -aq "$service" | head -n 1)"
+      existing_container="$(
+        docker ps -aq \
+          --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+          --filter "label=com.docker.compose.service=${service}" \
+          | head -n 1
+      )"
       if [[ -n "$existing_container" ]]; then
         log "$service has an existing container and no baseline release state; skipping automatic infra image refresh."
         continue
@@ -991,16 +216,24 @@ snapshot_services_json() {
   local output="$3"
   shift 3
   local -a services=("$@")
-  local temp_entries service container_id image_id tag
+  local temp_entries temp_absent service container_id image_id tag
   temp_entries="$(mktemp)"
+  temp_absent="$(mktemp)"
   : >"$temp_entries"
+  : >"$temp_absent"
 
   for service in "${services[@]}"; do
-    container_id="$(docker compose ps -aq "$service" | head -n 1)"
-    [[ -n "$container_id" ]] || {
-      warn "no existing container found for $service; exact automatic rollback will be incomplete for this service"
+    container_id="$(
+      docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=${service}" \
+        | head -n 1
+    )"
+    if [[ -z "$container_id" ]]; then
+      log "$service is new in the target release; rollback will remove it if deployment fails."
+      jq -n --arg service "$service" '$service' >>"$temp_absent"
       continue
-    }
+    fi
 
     image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
     [[ -n "$image_id" ]] || continue
@@ -1014,68 +247,11 @@ snapshot_services_json() {
     --arg from_sha "$from_sha" \
     --arg to_sha "$to_sha" \
     --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{from_sha:$from_sha,to_sha:$to_sha,created_at:$created_at,services:(map({key:.service,value:.image})|from_entries)}' \
+    --slurpfile absent "$temp_absent" \
+    '{from_sha:$from_sha,to_sha:$to_sha,created_at:$created_at,services:(map({key:.service,value:.image})|from_entries),absent_services:$absent}' \
     "$temp_entries" >"$output"
-  rm -f -- "$temp_entries"
+  rm -f -- "$temp_entries" "$temp_absent"
   chmod 600 "$output"
-}
-
-all_mutated_services() {
-  local service
-  for service in "${RECONCILE_SERVICES[@]}" "${INFRA_RECONCILE_SERVICES[@]}"; do
-    [[ -n "$service" ]] && printf '%s\n' "$service"
-  done | awk '!seen[$0]++'
-}
-
-snapshot_current_release() {
-  local -a services=()
-  mapfile -t services < <(all_mutated_services)
-  (( ${#services[@]} > 0 )) || return 0
-
-  TEMP_SNAPSHOT="$STATE_DIR/.rollback-${DEPLOY_ID}.json"
-  snapshot_services_json "${LAST_DEPLOYED_SHA:-unknown}" "$TARGET_SHA" "$TEMP_SNAPSHOT" "${services[@]}"
-}
-
-write_rollback_override() {
-  local snapshot="$1"
-  local output="$2"
-  {
-    printf 'services:\n'
-    jq -r '.services | to_entries[] | "  \(.key):\n    image: \(.value)"' "$snapshot"
-  } >"$output"
-}
-
-snapshot_service_names() {
-  jq -r '.services | keys[]' "$1"
-}
-
-remove_snapshot_tags() {
-  local snapshot="$1"
-  [[ -f "$snapshot" ]] || return 0
-  while IFS= read -r tag; do
-    [[ -n "$tag" ]] || continue
-    docker image rm "$tag" >/dev/null 2>&1 || true
-  done < <(jq -r '.services[]' "$snapshot")
-}
-
-checkout_release() {
-  local sha="$1"
-  log "==> Switching production checkout to $sha..."
-  git checkout --detach "$sha" >/dev/null
-  git reset --hard "$sha" >/dev/null
-  [[ "$(git rev-parse HEAD)" == "$sha" ]] || fail "production checkout mismatch"
-  [[ -f .env ]] || fail ".env disappeared after checkout"
-}
-
-reconcile_application_services() {
-  (( ${#RECONCILE_SERVICES[@]} > 0 )) || return 0
-  log "==> Reconciling application services with immutable tag $(safe_sha_prefix "$TARGET_SHA")..."
-
-  if contains "api-gateway" "${RECONCILE_SERVICES[@]}"; then
-    VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --no-deps --scale api-gateway=2 "${RECONCILE_SERVICES[@]}"
-  else
-    VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --no-deps "${RECONCILE_SERVICES[@]}"
-  fi
 }
 
 reconcile_infrastructure() {
@@ -1098,6 +274,14 @@ reconcile_infrastructure() {
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
         ;;
+      loki)
+        log "==> Force-recreating Loki to refresh logging configuration..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps loki
+        ;;
+      alloy)
+        log "==> Force-recreating Alloy to refresh log collection configuration..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps alloy
+        ;;
       *)
         fail "no infrastructure reconcile handler for $service"
         ;;
@@ -1105,182 +289,12 @@ reconcile_infrastructure() {
   done
 }
 
-wait_for_running_services() {
-  local attempt service expected running
-  local -a bad=()
-
-  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
-    bad=()
-    while IFS= read -r service; do
-      [[ -n "$service" ]] || continue
-      expected=1
-      [[ "$service" == "api-gateway" ]] && expected=2
-      running="$(docker compose ps --status running -q "$service" | wc -l | tr -d ' ')"
-      if (( running < expected )); then
-        bad+=("${service}(${running}/${expected})")
-      fi
-    done < <(docker compose config --services)
-
-    if (( ${#bad[@]} == 0 )); then
-      log "All enabled Docker Compose services are running."
-      return 0
-    fi
-
-    log "Waiting for running services: ${bad[*]} ($attempt/$HTTP_ATTEMPTS)..."
-    sleep "$HTTP_RETRY_SECONDS"
-  done
-
-  docker compose ps >&2 || true
-  return 1
-}
-
-wait_for_docker_health() {
-  local service container_id health attempt
-
-  for service in rabbitmq rag-embedding rag-reranker monitoring-service; do
-    container_id="$(docker compose ps -q "$service" | head -n 1)"
-    [[ -n "$container_id" ]] || continue
-
-    health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
-    [[ "$health" != "none" ]] || continue
-
-    for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
-      health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
-      if [[ "$health" == "healthy" ]]; then
-        log "$service Docker health is healthy."
-        break
-      fi
-      if [[ "$health" == "unhealthy" && $attempt -eq $HTTP_ATTEMPTS ]]; then
-        return 1
-      fi
-      sleep "$HTTP_RETRY_SECONDS"
-    done
-  done
-}
-
-check_http() {
-  local name="$1"
-  local url="$2"
-  local allowed_codes="$3"
-  local code attempt
-
-  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
-    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)"
-    if [[ " $allowed_codes " == *" $code "* ]]; then
-      log "$name OK (HTTP $code)"
-      return 0
-    fi
-    log "$name not ready (HTTP ${code:-none}), attempt $attempt/$HTTP_ATTEMPTS..."
-    sleep "$HTTP_RETRY_SECONDS"
-  done
-  return 1
-}
-
-check_internal_http_from_service() {
-  local service="$1"
-  local port="$2"
-  local allowed_codes="$3"
-  local attempt code
-
-  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
-    code="$(
-      docker compose exec -T "$service" node - "$port" 2>/dev/null <<'NODE' || true
-const http = require('http');
-const port = Number(process.argv[2]);
-const req = http.get({host:'127.0.0.1', port, path:'/', timeout:3000}, (res) => {
-  process.stdout.write(String(res.statusCode || 0));
-  res.resume();
-});
-req.on('timeout', () => { req.destroy(); process.stdout.write('000'); });
-req.on('error', () => process.stdout.write('000'));
-NODE
-    )"
-    if [[ " $allowed_codes " == *" $code "* ]]; then
-      log "$service internal HTTP OK (HTTP $code)"
-      return 0
-    fi
-    sleep "$HTTP_RETRY_SECONDS"
-  done
-  return 1
-}
-
-rabbitmq_queue_consumers() {
-  docker compose exec -T rabbitmq sh -ec '
-    rabbitmqctl -q list_queues -p "$RABBITMQ_DEFAULT_VHOST" name consumers
-  '
-}
-
-check_rabbitmq_consumers() {
-  local queues service queue consumers
-  queues="$(rabbitmq_queue_consumers)" || return 1
-
-  for service in "${!RMQ_QUEUE_BY_SERVICE[@]}"; do
-    queue="${RMQ_QUEUE_BY_SERVICE[$service]}"
-    consumers="$(awk -v q="$queue" '$1 == q { print $2; found=1 } END { if (!found) print 0 }' <<<"$queues" | tail -n 1)"
-    if ! [[ "$consumers" =~ ^[0-9]+$ ]] || (( consumers < 1 )); then
-      warn "$service is not ready: RabbitMQ queue $queue has ${consumers:-0} consumers"
-      return 1
-    fi
-    log "$service RabbitMQ readiness OK ($queue consumers=$consumers)"
-  done
-}
-
-verify_monitoring_stack() {
-  if [[ -f scripts/ops/check-monitoring-stack.sh ]]; then
-    log "==> Running monitoring stack smoke check..."
-    bash scripts/ops/check-monitoring-stack.sh
-  else
-    warn "monitoring smoke script is not executable; skipping"
-  fi
-}
-
-verify_gateway_replicas() {
-  local count
-  count="$(docker compose ps --status running -q api-gateway | wc -l | tr -d ' ')"
-  [[ "$count" == "2" ]] || {
-    warn "expected 2 running API Gateway replicas, found $count"
-    return 1
-  }
-}
-
-verify_deployment_health() {
-  log "==> Verifying deployment health..."
-
-  wait_for_running_services || return 1
-  wait_for_docker_health || return 1
-  validate_rabbitmq_live || return 1
-  check_rabbitmq_consumers || return 1
-
-  check_http "API Gateway via Nginx" "http://127.0.0.1/" "200 404" || return 1
-  check_http "Conversation Socket.IO" "http://127.0.0.1/socket.io/?EIO=4&transport=polling" "200" || return 1
-  check_http "Call Socket.IO" "http://127.0.0.1/call/socket.io/?EIO=4&transport=polling" "200" || return 1
-  check_internal_http_from_service payment-service 3006 "200 201 202 204 400 401 403 404 405" || return 1
-  check_internal_http_from_service notification-service 3015 "200 201 202 204 400 401 403 404 405" || return 1
-  verify_gateway_replicas || return 1
-  verify_monitoring_stack || return 1
-
-  return 0
-}
-
-public_smoke_warning_only() {
-  local backend_url code
-  backend_url="$(read_env_value BACKEND_URL)"
-  [[ -n "$backend_url" ]] || return 0
-  [[ "$backend_url" =~ ^https?:// ]] || return 0
-
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 "$backend_url" 2>/dev/null || true)"
-  if [[ "$code" == "200" || "$code" == "301" || "$code" == "302" || "$code" == "404" ]]; then
-    log "Public endpoint reachable (HTTP $code)."
-  else
-    warn "public/Cloudflare endpoint check failed (HTTP ${code:-none}); internal deployment remains healthy, so no rollback will occur"
-  fi
-}
-
 rollback_from_snapshot() {
   local snapshot="$1"
   local restore_sha="$2"
   local override="$STATE_DIR/.rollback-override-${DEPLOY_ID}.yml"
   local -a services=()
+  local -a absent_services=()
 
   [[ -f "$snapshot" ]] || {
     warn "rollback snapshot is missing: $snapshot"
@@ -1292,456 +306,38 @@ rollback_from_snapshot() {
   }
 
   mapfile -t services < <(snapshot_service_names "$snapshot")
-  (( ${#services[@]} > 0 )) || {
-    warn "rollback snapshot contains no restorable services"
+  mapfile -t absent_services < <(jq -r '.absent_services[]?' "$snapshot")
+  if (( ${#services[@]} == 0 && ${#absent_services[@]} == 0 )); then
+    warn "rollback snapshot contains no restorable or removable services"
     return 1
-  }
+  fi
 
-  write_rollback_override "$snapshot" "$override"
+  # Remove services that did not exist in the healthy release while the target
+  # Compose model still knows their definitions. This prevents orphan Loki/Alloy
+  # containers from surviving a failed first deployment.
+  if (( ${#absent_services[@]} > 0 )); then
+    log "==> Removing target-only services before rollback: ${absent_services[*]}"
+    VELORA_IMAGE_TAG="$TARGET_SHA" docker compose rm -sf "${absent_services[@]}" || return 1
+  fi
+
+  if (( ${#services[@]} > 0 )); then
+    write_rollback_override "$snapshot" "$override"
+  fi
   checkout_release "$restore_sha"
 
-  log "==> Restoring exact pre-deploy images..."
-  if contains "api-gateway" "${services[@]}"; then
-    VELORA_IMAGE_TAG="$restore_sha" docker compose -f docker-compose.yml -f "$override" \
-      up -d --force-recreate --no-deps --scale api-gateway=2 "${services[@]}"
-  else
-    VELORA_IMAGE_TAG="$restore_sha" docker compose -f docker-compose.yml -f "$override" \
-      up -d --force-recreate --no-deps "${services[@]}"
+  if (( ${#services[@]} > 0 )); then
+    log "==> Restoring exact pre-deploy images..."
+    if contains "api-gateway" "${services[@]}"; then
+      VELORA_IMAGE_TAG="$restore_sha" docker compose -f docker-compose.yml -f "$override" \
+        up -d --force-recreate --no-deps --scale api-gateway=2 "${services[@]}"
+    else
+      VELORA_IMAGE_TAG="$restore_sha" docker compose -f docker-compose.yml -f "$override" \
+        up -d --force-recreate --no-deps "${services[@]}"
+    fi
+    rm -f -- "$override"
   fi
 
-  rm -f -- "$override"
   verify_deployment_health
-}
-
-save_local_deployment_receipt() {
-  local status="$1"
-  local end_epoch duration file
-  end_epoch="$(date +%s)"
-  duration=$((end_epoch - START_EPOCH))
-  file="$DEPLOYMENT_LOG_DIR/${DEPLOY_ID}-${status}.json"
-
-  jq -n \
-    --arg id "$DEPLOY_ID" \
-    --arg started_at "$(date -u -d "@$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg from_sha "${LAST_DEPLOYED_SHA:-}" \
-    --arg to_sha "${TARGET_SHA:-}" \
-    --arg status "$status" \
-    --arg rollback "$ROLLBACK_RESULT" \
-    --argjson duration "$duration" \
-    --argjson ram_mb "$(available_ram_mb)" \
-    --argjson disk_gb "$(free_root_gb)" \
-    --arg db_risk "$DB_RISK" \
-    --arg changed_files "$CHANGED_FILES" \
-    --arg pull_services "${PULL_SERVICES[*]:-}" \
-    --arg reconcile_services "${RECONCILE_SERVICES[*]:-}" \
-    --arg infra_services "${INFRA_RECONCILE_SERVICES[*]:-}" \
-    '{
-      id:$id,
-      started_at:$started_at,
-      from_sha:$from_sha,
-      to_sha:$to_sha,
-      status:$status,
-      rollback:$rollback,
-      duration_seconds:$duration,
-      mem_available_mb_after:$ram_mb,
-      root_disk_free_gb_after:$disk_gb,
-      db_risk:($db_risk == "true"),
-      changed_files:($changed_files|split("\n")|map(select(length>0))),
-      pull_services:($pull_services|split(" ")|map(select(length>0))),
-      reconcile_services:($reconcile_services|split(" ")|map(select(length>0))),
-      infrastructure:($infra_services|split(" ")|map(select(length>0)))
-    }' >"$file"
-  chmod 600 "$file"
-}
-
-preserve_failed_snapshot() {
-  [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" ]] || return 0
-  local destination="$BLOCKED_DIR/${TARGET_SHA}.rollback.json"
-  mv -f "$TEMP_SNAPSHOT" "$destination"
-  TEMP_SNAPSHOT=""
-  chmod 600 "$destination"
-  log "Preserved exact pre-deploy image snapshot for manual recovery: $destination"
-}
-
-promote_snapshot_to_previous_release() {
-  [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" ]] || return 0
-
-  if [[ -f "$PREVIOUS_RELEASE_FILE" ]]; then
-    remove_snapshot_tags "$PREVIOUS_RELEASE_FILE"
-  fi
-
-  mv -f "$TEMP_SNAPSHOT" "$PREVIOUS_RELEASE_FILE"
-  TEMP_SNAPSHOT=""
-}
-
-persist_success_state() {
-  if [[ -n "$LAST_DEPLOYED_SHA" ]]; then
-    printf '%s\n' "$LAST_DEPLOYED_SHA" >"$PREVIOUS_SHA_FILE"
-  fi
-  printf '%s\n' "$TARGET_SHA" >"$STATE_FILE"
-  printf '%s\n' "$CURRENT_ENV_HASH" >"$ENV_HASH_FILE"
-  chmod 600 "$STATE_FILE" "$ENV_HASH_FILE" 2>/dev/null || true
-  [[ -f "$PREVIOUS_SHA_FILE" ]] && chmod 600 "$PREVIOUS_SHA_FILE" || true
-
-  promote_snapshot_to_previous_release
-  rm -f -- "$(blocked_marker "$TARGET_SHA")"
-}
-
-send_deployment_receipt() {
-  if [[ -x "$RECEIPT_SCRIPT" ]]; then
-    if ! "$RECEIPT_SCRIPT" "$TARGET_SHA"; then
-      warn "deployment is healthy but the GitHub deployment receipt failed; the next timer run will retry it"
-    fi
-  else
-    warn "deployment receipt script is not installed: $RECEIPT_SCRIPT"
-  fi
-}
-
-cleanup_stale_failed_snapshots() {
-  local snapshot sha
-  shopt -s nullglob
-  for snapshot in "$BLOCKED_DIR"/*.rollback.json; do
-    sha="$(basename "$snapshot" .rollback.json)"
-    [[ "$sha" == "$TARGET_SHA" ]] && continue
-    remove_snapshot_tags "$snapshot"
-    rm -f -- "$snapshot"
-  done
-  shopt -u nullglob
-}
-
-cleanup_unused_velora_application_sha_tags() {
-  local preserve_target="${1:-false}"
-  local dockerhub_username service repo ref image_id
-  local keep_ids_file
-
-  dockerhub_username="$(read_env_value DOCKERHUB_USERNAME)"
-  keep_ids_file="$(mktemp)"
-  : >"$keep_ids_file"
-
-  # Preserve every image referenced by any running/stopped container.
-  while IFS= read -r image_id; do
-    [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-  done < <(
-    docker ps -aq \
-      | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null \
-      | sort -u
-  )
-
-  # Preserve the exact previous-release images kept for one-step rollback.
-  if [[ -f "$PREVIOUS_RELEASE_FILE" ]]; then
-    while IFS= read -r ref; do
-      [[ -n "$ref" ]] || continue
-      image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
-      [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-    done < <(jq -r '.services[]' "$PREVIOUS_RELEASE_FILE")
-  fi
-
-  # Preserve a non-blocked/retry target so already pulled immutable images can
-  # be reused. A failed target that was automatically rolled back is not kept.
-  if [[ "$preserve_target" == true && -n "$dockerhub_username" && -n "$TARGET_SHA" ]]; then
-    for service in "${APP_SERVICES[@]}"; do
-      ref="${dockerhub_username}/${service}:${TARGET_SHA}"
-      image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
-      [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-    done
-  fi
-
-  sort -u -o "$keep_ids_file" "$keep_ids_file"
-
-  # Remove stale immutable application SHA tags only when their image is neither
-  # in use, retained by rollback, nor deliberately retained as the current target.
-  if [[ -n "$dockerhub_username" ]]; then
-    log "==> Removing stale unused Velora application SHA tags..."
-    for service in "${APP_SERVICES[@]}"; do
-      repo="${dockerhub_username}/${service}"
-      while IFS= read -r ref; do
-        [[ "$ref" =~ :[0-9a-f]{40}$ ]] || continue
-        image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
-        [[ -n "$image_id" ]] || continue
-        if grep -Fxq -- "$image_id" "$keep_ids_file"; then
-          continue
-        fi
-        docker image rm "$ref" >/dev/null 2>&1 || true
-      done < <(docker image ls "$repo" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
-    done
-  fi
-
-  rm -f -- "$keep_ids_file"
-}
-
-reclaim_unused_docker_images() {
-  local preserve_target="${1:-false}"
-
-  cleanup_unused_velora_application_sha_tags "$preserve_target"
-
-  log "==> Pruning dangling Docker images..."
-  docker image prune -f >/dev/null || warn "failed to prune dangling Docker images"
-}
-
-post_success_cleanup() {
-  cleanup_stale_failed_snapshots
-  reclaim_unused_docker_images false
-}
-
-already_deployed_path() {
-  local env_drift=false
-  [[ -n "$STORED_ENV_HASH" && "$CURRENT_ENV_HASH" != "$STORED_ENV_HASH" ]] && env_drift=true
-
-  if [[ "$FORCE" == true ]]; then
-    return 1
-  fi
-
-  if [[ "$env_drift" == true ]]; then
-    warn "CONFIG DRIFT DETECTED: .env changed since the healthy release; timer will not restart services automatically"
-    warn "Use 'velora-deploy --force' after reviewing the configuration change"
-  fi
-
-  log "Already successfully deployed: $TARGET_SHA"
-  verify_deployment_health || fail "current deployed release is not healthy"
-  if [[ -z "$STORED_ENV_HASH" ]]; then
-    printf '%s\n' "$CURRENT_ENV_HASH" >"$ENV_HASH_FILE"
-    chmod 600 "$ENV_HASH_FILE" 2>/dev/null || true
-    log "Initialized .env hash baseline for the healthy release."
-  fi
-  public_smoke_warning_only
-  send_deployment_receipt
-  exit 0
-}
-
-approve_db_change() {
-  fetch_release_refs
-  is_sha "$APPROVE_DB_SHA" || fail "--approve-db-change expects a full 40-character lowercase SHA"
-
-  if ! git cat-file -e "${APPROVE_DB_SHA}^{commit}" 2>/dev/null; then
-    git fetch --no-tags origin "$APPROVE_DB_SHA" || fail "cannot fetch approval SHA"
-  fi
-
-  if ! git merge-base --is-ancestor "$APPROVE_DB_SHA" origin/master; then
-    fail "approval SHA is not an ancestor of origin/master"
-  fi
-
-  mkdir -p "$DB_APPROVAL_DIR"
-  jq -n \
-    --arg sha "$APPROVE_DB_SHA" \
-    --arg approved_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg approved_by "$(id -un)" \
-    '{sha:$sha,approved_at:$approved_at,approved_by:$approved_by,note:"Cloud DB change handled externally; no SQL was executed by velora-deploy."}' \
-    >"$DB_APPROVAL_DIR/$APPROVE_DB_SHA"
-  chmod 600 "$DB_APPROVAL_DIR/$APPROVE_DB_SHA"
-
-  log "Recorded cloud DB approval for $APPROVE_DB_SHA."
-  log "No database command was executed."
-}
-
-manual_rollback() {
-  [[ -f "$STATE_FILE" ]] || fail "no current deployed SHA state exists"
-
-  local current_sha restore_sha old_snapshot current_snapshot runtime_sha emergency_snapshot
-  local -a services=()
-  current_sha="$(cat "$STATE_FILE")"
-  is_sha "$current_sha" || fail "current deployed SHA state is invalid"
-
-  runtime_sha="$(git rev-parse HEAD)"
-  DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)-manual-rollback"
-  START_EPOCH="$(date +%s)"
-  LAST_DEPLOYED_SHA="$current_sha"
-
-  # If a failed deployment mutated the checkout but intentionally did not update
-  # deployed-sha (for example a DB-risk failure), restore its preserved exact
-  # pre-deploy image snapshot back to the last known healthy SHA.
-  if [[ "$runtime_sha" != "$current_sha" ]]; then
-    emergency_snapshot="$BLOCKED_DIR/${runtime_sha}.rollback.json"
-    [[ -f "$emergency_snapshot" ]] || fail "runtime checkout $runtime_sha differs from healthy state $current_sha and no failed-release recovery snapshot exists"
-
-    TARGET_SHA="$runtime_sha"
-    log "Manual recovery of failed runtime: $runtime_sha -> $current_sha"
-    if rollback_from_snapshot "$emergency_snapshot" "$current_sha"; then
-      remove_snapshot_tags "$emergency_snapshot"
-      rm -f -- "$emergency_snapshot"
-      printf '%s\n' "$(env_hash)" >"$ENV_HASH_FILE"
-      ROLLBACK_RESULT="manual-failed-release-recovery-success"
-      TARGET_SHA="$current_sha"
-      reclaim_unused_docker_images false
-      save_local_deployment_receipt "manual-failed-release-recovery-success"
-      log "Failed runtime was restored to healthy SHA $current_sha."
-      return 0
-    fi
-
-    ROLLBACK_RESULT="manual-failed-release-recovery-failed"
-    TARGET_SHA="$runtime_sha"
-    save_local_deployment_receipt "manual-failed-release-recovery-failed"
-    fail "manual recovery of failed runtime did not restore health"
-  fi
-
-  [[ -f "$PREVIOUS_RELEASE_FILE" ]] || fail "no previous release snapshot exists"
-  restore_sha="$(jq -r '.from_sha // empty' "$PREVIOUS_RELEASE_FILE")"
-  is_sha "$restore_sha" || fail "previous release snapshot does not contain a valid SHA"
-
-  TARGET_SHA="$current_sha"
-  mapfile -t services < <(snapshot_service_names "$PREVIOUS_RELEASE_FILE")
-  (( ${#services[@]} > 0 )) || fail "previous release snapshot has no services"
-
-  # Snapshot the current release first so a second explicit --rollback can roll forward.
-  current_snapshot="$STATE_DIR/.rollback-current-${DEPLOY_ID}.json"
-  snapshot_services_json "$restore_sha" "$current_sha" "$current_snapshot" "${services[@]}"
-
-  old_snapshot="$STATE_DIR/.previous-release-consumed-${DEPLOY_ID}.json"
-  cp "$PREVIOUS_RELEASE_FILE" "$old_snapshot"
-
-  log "Manual rollback: $current_sha -> $restore_sha"
-  if rollback_from_snapshot "$old_snapshot" "$restore_sha"; then
-    TARGET_SHA="$current_sha"
-    block_release "operator manually rolled this release back to $restore_sha"
-    printf '%s\n' "$restore_sha" >"$STATE_FILE"
-    printf '%s\n' "$current_sha" >"$PREVIOUS_SHA_FILE"
-    printf '%s\n' "$(env_hash)" >"$ENV_HASH_FILE"
-
-    remove_snapshot_tags "$PREVIOUS_RELEASE_FILE"
-    mv -f "$current_snapshot" "$PREVIOUS_RELEASE_FILE"
-    rm -f -- "$old_snapshot"
-
-    ROLLBACK_RESULT="manual-success"
-    TARGET_SHA="$restore_sha"
-    reclaim_unused_docker_images false
-    save_local_deployment_receipt "manual-rollback-success"
-    log "Manual rollback succeeded. Current healthy SHA: $restore_sha"
-    return 0
-  fi
-
-  ROLLBACK_RESULT="manual-failed"
-  rm -f -- "$current_snapshot" "$old_snapshot"
-  save_local_deployment_receipt "manual-rollback-failed"
-  fail "manual rollback failed; operator intervention is required"
-}
-
-perform_deployment() {
-  START_EPOCH="$(date +%s)"
-  DEPLOY_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(safe_sha_prefix "$TARGET_SHA")"
-
-  # The common 5-minute timer path should not fail merely because RAM/disk is
-  # temporarily tight when no deployment is needed. Verify the current release
-  # and retry any pending GitHub receipt without mutating production.
-  if [[ "$TARGET_SHA" == "$LAST_DEPLOYED_SHA" && "$FORCE" != true ]]; then
-    validate_rabbitmq_static_config
-    validate_rabbitmq_live
-    already_deployed_path
-  fi
-
-  preflight_resources
-  validate_rabbitmq_static_config
-  validate_rabbitmq_live
-  validate_target_files
-  prepare_baseline_compose
-  compute_changed_files
-  classify_db_impact
-  compare_compose_models
-  plan_from_changed_files
-  ensure_manual_db_approval
-  check_blocked_release
-
-  if [[ -n "$STORED_ENV_HASH" && "$CURRENT_ENV_HASH" != "$STORED_ENV_HASH" && "$FORCE" != true ]]; then
-    warn "CONFIG DRIFT DETECTED: .env changed since the last healthy release"
-    warn "Automatic deployment is paused to avoid partially applying new environment values"
-    warn "Review the .env change, then run: velora-deploy --force"
-    exit 22
-  fi
-
-  if [[ "$TARGET_SHA" == "$LAST_DEPLOYED_SHA" && "$FORCE" == true ]]; then
-    CHANGED_FILES=""
-  fi
-
-  print_plan
-
-  if [[ "$DRY_RUN" == true ]]; then
-    log "Dry run complete. Production was not mutated."
-    exit 0
-  fi
-
-  prepull_target_images
-  prepull_managed_infra
-  snapshot_current_release
-
-  checkout_release "$TARGET_SHA"
-
-  # Re-validate Compose using the real production checkout and immutable tag.
-  VELORA_IMAGE_TAG="$TARGET_SHA" docker compose config --quiet
-
-  reconcile_application_services
-  reconcile_infrastructure
-
-  if verify_deployment_health; then
-    persist_success_state
-    public_smoke_warning_only
-    save_local_deployment_receipt "success"
-    send_deployment_receipt
-    post_success_cleanup
-
-    log
-    log "======================================"
-    log "Deployment successful"
-    log "SHA              : $TARGET_SHA"
-    log "MemAvailable     : $(available_ram_mb) MB"
-    log "Root disk free   : $(free_root_gb) GB"
-    log "API Gateway      : 2 replicas"
-    log "======================================"
-    return 0
-  fi
-
-  warn "target release failed post-deployment health verification"
-
-  # A release with DB-impact may have changed cloud schema already (either via
-  # self-migration or external operator action). Blind application rollback can
-  # therefore be unsafe. Block and stop for manual intervention.
-  if [[ "$DB_RISK" == true ]]; then
-    ROLLBACK_RESULT="skipped-db-risk"
-    block_release "post-deploy health failure after DB-impact change; blind rollback intentionally skipped"
-    preserve_failed_snapshot
-    save_local_deployment_receipt "failed-db-risk"
-    fail "release failed after DB-impact change; SHA blocked and automatic rollback intentionally skipped"
-  fi
-
-  if [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" && -n "$LAST_DEPLOYED_SHA" ]]; then
-    warn "attempting automatic rollback to $LAST_DEPLOYED_SHA"
-    if rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
-      ROLLBACK_RESULT="success"
-      block_release "post-deploy health failure; automatic rollback to previous healthy release succeeded"
-      remove_snapshot_tags "$TEMP_SNAPSHOT"
-      rm -f -- "$TEMP_SNAPSHOT"
-      TEMP_SNAPSHOT=""
-      reclaim_unused_docker_images false
-      save_local_deployment_receipt "failed-rolled-back"
-      fail "target release failed health verification and was rolled back; SHA is now blocked"
-    fi
-  fi
-
-  ROLLBACK_RESULT="failed"
-  block_release "post-deploy health failure; automatic rollback was unavailable or failed"
-  preserve_failed_snapshot
-  save_local_deployment_receipt "failed-rollback-failed"
-  fail "target release failed and automatic rollback did not restore health; operator intervention is required"
-}
-
-main() {
-  parse_args "$@"
-  init
-
-  case "$MODE" in
-    approve-db-change)
-      approve_db_change
-      ;;
-    rollback)
-      manual_rollback
-      ;;
-    deploy)
-      fetch_release_refs
-      validate_promoted_sha
-      load_state
-      perform_deployment
-      ;;
-    *)
-      fail "unsupported mode: $MODE"
-      ;;
-  esac
 }
 
 main "$@"

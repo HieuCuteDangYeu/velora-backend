@@ -11,6 +11,21 @@ on:
       - 'apps/api-gateway/src/monitoring/**'
       - 'apps/api-gateway/src/api-gateway.module.ts'
       - 'infra/monitoring/**'
+      - 'scripts/deploy/**'
+      - 'scripts/ops/check-monitoring-stack.sh'
+      - '.github/workflows/monitoring-ci.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - '.env.example'
+      - 'docker-compose.yml'
+      - 'apps/monitoring-service/**'
+      - 'apps/api-gateway/src/monitoring/**'
+      - 'apps/api-gateway/src/api-gateway.module.ts'
+      - 'infra/monitoring/**'
+      - 'scripts/deploy/**'
+      - 'scripts/ops/check-monitoring-stack.sh'
       - '.github/workflows/monitoring-ci.yml'
   workflow_dispatch:
 
@@ -38,7 +53,7 @@ jobs:
           RABBITMQ_DEFAULT_VHOST=/
           RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/
           EOF
-          trap 'rm -f -- .env' EXIT
+          trap 'rm -f -- .env /tmp/velora-compose.json' EXIT
 
           node scripts/ops/validate-rabbitmq-config.cjs --env-file .env
 
@@ -49,7 +64,29 @@ jobs:
             RABBITMQ_DEFAULT_VHOST=/ \
             RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
             GRAFANA_ADMIN_PASSWORD=ci-placeholder \
-            docker compose config --no-env-resolution --quiet
+            docker compose config --no-env-resolution --format json > /tmp/velora-compose.json
+
+          jq -e '
+            (.services | has("loki")) and
+            (.services | has("alloy")) and
+            (.services["monitoring-service"].environment.LOKI_URL == "http://loki:3100") and
+            (.services["monitoring-service"].environment.PROMETHEUS_URL == "http://prometheus:9090") and
+            (.services["monitoring-service"].depends_on.loki.condition == "service_started") and
+            (.services.grafana.depends_on.loki.condition == "service_started") and
+            (.services.alloy.depends_on.loki.condition == "service_started") and
+            (.volumes | has("loki_data")) and
+            (.volumes | has("alloy_data"))
+          ' /tmp/velora-compose.json >/dev/null
+
+          test ! -e infra/monitoring/docker-compose.monitoring.yml
+
+      - name: Validate deployment scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy/velora-deploy
+          bash -n scripts/deploy/velora-deploy-core
+          bash -n scripts/ops/check-monitoring-stack.sh
 
       - name: Validate Prometheus configuration and rules
         shell: bash

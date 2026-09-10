@@ -131,7 +131,6 @@ services:
     env_file:
       - .env
     environment:
-      # The same image serves both lanes; only the lane differs from .env.
       INDEX_WORKER_LANE: SHORT
     depends_on:
       rabbitmq:
@@ -145,7 +144,6 @@ services:
     env_file:
       - .env
     environment:
-      # The same image serves both lanes; only the lane differs from .env.
       INDEX_WORKER_LANE: LONG
     depends_on:
       rabbitmq:
@@ -247,12 +245,17 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
     expose:
       - '3016'
     depends_on:
       rabbitmq:
         condition: service_healthy
       prometheus:
+        condition: service_started
+      loki:
         condition: service_started
     networks:
       - microservices-net
@@ -295,15 +298,46 @@ services:
     networks:
       - microservices-net
 
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    mem_limit: ${LOKI_MEMORY_LIMIT:-384m}
+    command:
+      - -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./infra/monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - '127.0.0.1:3100:3100'
+    networks:
+      - microservices-net
+
+  alloy:
+    image: grafana/alloy:latest
+    restart: unless-stopped
+    mem_limit: ${ALLOY_MEMORY_LIMIT:-192m}
+    command:
+      - run
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+    depends_on:
+      loki:
+        condition: service_started
+    networks:
+      - microservices-net
+
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
-    # Velora uses Grafana only as a lightweight Prometheus dashboard. Keep a
-    # little memory headroom while avoiding backend plugins and background
-    # services that are not part of the homelab observability path.
     mem_limit: ${GRAFANA_MEMORY_LIMIT:-384m}
     env_file:
       - .env
+    environment:
+      GF_PLUGINS_DISABLE_PLUGINS: elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-metricsdrilldown-app,grafana-advisor-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-lokiexplore-app
     volumes:
       - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -312,6 +346,7 @@ services:
       - '127.0.0.1:3001:3000'
     depends_on:
       - prometheus
+      - loki
     networks:
       - microservices-net
 
@@ -465,6 +500,8 @@ volumes:
   rabbitmq_data:
   prometheus_data:
   grafana_data:
+  loki_data:
+  alloy_data:
   rag_embedding_cache:
   rag_reranker_cache:
   rag_vision_cache:

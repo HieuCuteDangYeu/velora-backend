@@ -203,6 +203,101 @@ function reconciledResult(definition, progress) {
   };
 }
 
+function buildResponseReconciliationEvidence(input) {
+  if (input.runLockAcquired !== true)
+    fail('exclusive benchmark run lock was not acquired');
+  if (input.progress?.status !== 'IN_FLIGHT')
+    fail(`case is ${input.progress?.status || 'UNKNOWN'}, not IN_FLIGHT`);
+  if (input.primaryMessages.length !== 1)
+    fail(
+      `expected exactly one primary request, found ${input.primaryMessages.length}`,
+    );
+  if (input.botMessages.length !== 1)
+    fail(
+      `expected exactly one bot response for response-present reconciliation, found ${input.botMessages.length}`,
+    );
+
+  const botMessage = input.botMessages[0];
+  if (
+    !botMessage?.id ||
+    typeof botMessage.content !== 'string' ||
+    !botMessage.content.trim()
+  )
+    fail('bot response is missing a non-empty message');
+  if (input.traces.length === 0)
+    fail('no persisted trace proves that the workflow ended');
+  if (!input.traces.some((trace) => trace.hasAnswer))
+    fail('no persisted trace contains the bot response answer');
+
+  const latestTraceAt = Math.max(
+    ...input.traces.map((trace) => new Date(trace.createdAt).getTime()),
+  );
+  const botResponseAt = new Date(botMessage.createdAt).getTime();
+  if (!Number.isFinite(latestTraceAt) || !Number.isFinite(botResponseAt))
+    fail('response or trace timestamp is invalid');
+  const latestEventAt = Math.max(latestTraceAt, botResponseAt);
+  if (input.nowMs - latestEventAt < input.minimumQuietMs)
+    fail('response is still inside the configured quiet period');
+
+  return {
+    primaryRequestCount: 1,
+    botResponseCount: 1,
+    traceEvidenceCount: input.traces.length,
+    latestTraceAt: new Date(latestTraceAt).toISOString(),
+    latestBotResponseAt: new Date(botResponseAt).toISOString(),
+    activeRunLockBeforeReconciliation: false,
+    workflowTerminalEvidence: 'BOT_RESPONSE_AND_RAG_TRACE_PERSISTED',
+    assistantMessageId: botMessage.id,
+  };
+}
+
+function responseReconciledResult(
+  definition,
+  progress,
+  assistantMessage,
+  accessibleReelIds,
+  runId,
+) {
+  if (
+    progress?.status !== 'IN_FLIGHT' ||
+    !progress.conversationId ||
+    !progress.userMessageId
+  ) {
+    fail(`response-present case ${definition.caseId} is missing request identifiers`);
+  }
+  if (
+    !assistantMessage?.id ||
+    typeof assistantMessage.content !== 'string' ||
+    !assistantMessage.content.trim()
+  )
+    fail(`response-present case ${definition.caseId} is missing a non-empty bot response`);
+
+  const requestStartedAt = new Date(progress.requestStartedAt).getTime();
+  const responseCompletedAt = new Date(assistantMessage.createdAt);
+  const responseAt = responseCompletedAt.getTime();
+  const latencyMs =
+    Number.isFinite(requestStartedAt) && Number.isFinite(responseAt)
+      ? Math.max(0, responseAt - requestStartedAt)
+      : null;
+  const result = {
+    ...definition,
+    status: 'EVALUATED',
+    conversationId: progress.conversationId,
+    accessibleReelIds,
+    userMessageId: progress.userMessageId,
+    assistantMessageId: assistantMessage.id,
+    requestStartedAt: progress.requestStartedAt,
+    responseCompletedAt: responseCompletedAt.toISOString(),
+    latencyMs,
+    finalAnswer: assistantMessage.content,
+    citations: Array.isArray(assistantMessage.metadata?.citations)
+      ? assistantMessage.metadata.citations
+      : [],
+  };
+  result.normalized = normalizeCase(definition, result, null, runId);
+  return result;
+}
+
 async function reconcileInFlight(runId) {
   const caseId = arg('--case-id');
   const conversationId = arg('--conversation-id');
@@ -241,7 +336,7 @@ async function reconcileInFlight(runId) {
             senderId: BOT_USER_ID,
             createdAt: { gte: new Date(progress?.requestStartedAt || 0) },
           },
-          select: { id: true },
+          select: { id: true, createdAt: true, content: true, metadata: true },
         }),
         ai.ragTrace.findMany({
           where: { conversationId },
@@ -252,15 +347,63 @@ async function reconcileInFlight(runId) {
         message && message.clientMessageId.startsWith(`ami-rag-${caseId}-`)
           ? [message]
           : [];
+      const traceEvidence = traces.map((trace) => ({
+        createdAt: trace.createdAt,
+        hasAnswer: Boolean(trace.answer),
+      }));
+      if (botMessages.length > 0) {
+        const definitions = JSON.parse(
+          fs.readFileSync(state.definitionsReport, 'utf8'),
+        );
+        const definition = definitions?.ragBenchmark?.cases?.find(
+          (item) => item.caseId === caseId,
+        );
+        if (!definition) fail(`definition not found for ${caseId}`);
+        const evidence = buildResponseReconciliationEvidence({
+          runLockAcquired: true,
+          progress,
+          primaryMessages,
+          botMessages,
+          traces: traceEvidence,
+          nowMs: Date.now(),
+          minimumQuietMs,
+        });
+        const result = responseReconciledResult(
+          definition,
+          progress,
+          botMessages[0],
+          extractDistinctReelIds(definitions),
+          runId,
+        );
+        state.cases[caseId] = {
+          ...progress,
+          status: 'COMPLETED',
+          completedAt: new Date().toISOString(),
+          assistantMessageId: botMessages[0].id,
+          ...evidence,
+          result,
+        };
+        writeJsonAtomically(statePath(runId), state);
+        console.log(
+          JSON.stringify(
+            {
+              benchmarkRunId: runId,
+              caseId,
+              status: state.cases[caseId].status,
+              ...evidence,
+            },
+            null,
+            2,
+          ),
+        );
+        return;
+      }
       const evidence = buildReconciliationEvidence({
         runLockAcquired: true,
         progress,
         primaryMessages,
         botMessages,
-        traces: traces.map((trace) => ({
-          createdAt: trace.createdAt,
-          hasAnswer: Boolean(trace.answer),
-        })),
+        traces: traceEvidence,
         nowMs: Date.now(),
         minimumQuietMs,
       });
@@ -608,6 +751,8 @@ module.exports = {
   markCaseInFlight,
   pendingCases,
   reconciledResult,
+  buildResponseReconciliationEvidence,
+  responseReconciledResult,
   extractDistinctReelIds,
   readState,
   statePath,

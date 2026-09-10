@@ -217,6 +217,54 @@ test('reconciled failure becomes a report row without an assistant identifier', 
   );
 });
 
+test('response-present reconciliation records the bot result without resending', () => {
+  const definition = {
+    caseId: 'case-1',
+    reelId: syntheticReelIds[0],
+    question: 'What happened?',
+    referenceAnswerText: 'A response.',
+  };
+  const result = runner.responseReconciledResult(
+    definition,
+    {
+      status: 'IN_FLIGHT',
+      conversationId: 'conversation-1',
+      userMessageId: 'request-1',
+      requestStartedAt: '2026-08-25T00:00:00.000Z',
+    },
+    {
+      id: 'assistant-1',
+      createdAt: '2026-08-25T00:01:00.000Z',
+      content: 'A response.',
+      metadata: { citations: [{ reelId: syntheticReelIds[0] }] },
+    },
+    syntheticReelIds,
+    'run-1',
+  );
+  assert.deepEqual(
+    {
+      status: result.status,
+      conversationId: result.conversationId,
+      accessibleReelIds: result.accessibleReelIds,
+      userMessageId: result.userMessageId,
+      assistantMessageId: result.assistantMessageId,
+      latencyMs: result.latencyMs,
+      finalAnswer: result.finalAnswer,
+      citations: result.citations,
+    },
+    {
+      status: 'EVALUATED',
+      conversationId: 'conversation-1',
+      accessibleReelIds: syntheticReelIds,
+      userMessageId: 'request-1',
+      assistantMessageId: 'assistant-1',
+      latencyMs: 60_000,
+      finalAnswer: 'A response.',
+      citations: [{ reelId: syntheticReelIds[0] }],
+    },
+  );
+});
+
 test('reconciliation records objective no-resend evidence after the quiet period', () => {
   const evidence = runner.buildReconciliationEvidence({
     runLockAcquired: true,
@@ -234,6 +282,34 @@ test('reconciliation records objective no-resend evidence after the quiet period
     latestTraceAt: '2026-08-25T00:00:00.000Z',
     activeRunLockBeforeReconciliation: false,
     workflowTerminalEvidence: 'RAG_TRACE_PERSISTED_AFTER_GRAPH_EXIT',
+  });
+});
+
+test('response-present reconciliation accepts one quiet bot response with trace evidence', () => {
+  const evidence = runner.buildResponseReconciliationEvidence({
+    runLockAcquired: true,
+    progress: { status: 'IN_FLIGHT' },
+    primaryMessages: [{ id: 'request-1' }],
+    botMessages: [
+      {
+        id: 'assistant-1',
+        createdAt: '2026-08-25T00:02:00.000Z',
+        content: 'answer',
+      },
+    ],
+    traces: [{ createdAt: '2026-08-25T00:01:00.000Z', hasAnswer: true }],
+    nowMs: Date.parse('2026-08-25T00:05:00.000Z'),
+    minimumQuietMs: 120_000,
+  });
+  assert.deepEqual(evidence, {
+    primaryRequestCount: 1,
+    botResponseCount: 1,
+    traceEvidenceCount: 1,
+    latestTraceAt: '2026-08-25T00:01:00.000Z',
+    latestBotResponseAt: '2026-08-25T00:02:00.000Z',
+    activeRunLockBeforeReconciliation: false,
+    workflowTerminalEvidence: 'BOT_RESPONSE_AND_RAG_TRACE_PERSISTED',
+    assistantMessageId: 'assistant-1',
   });
 });
 

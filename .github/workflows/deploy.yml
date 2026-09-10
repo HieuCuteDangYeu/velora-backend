@@ -665,4 +665,32 @@ jobs:
           set -euo pipefail
           # The deployment branch can advance only after both application-image
           # publication and the matching evaluator image + offline gate succeed.
-          git push origin "${APPROVED_SHA}:refs/heads/homelab-deploy"
+          # A concurrent approved release may update the branch between checkout
+          # and this push. Treat an already-promoted ancestor as success, reject
+          # divergence, and retry only the bounded non-fast-forward race.
+          for attempt in 1 2 3; do
+            git fetch --no-tags origin \
+              '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
+            remote_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
+
+            if git merge-base --is-ancestor "${APPROVED_SHA}" "${remote_sha}"; then
+              echo "homelab-deploy already contains ${APPROVED_SHA} (${remote_sha})."
+              exit 0
+            fi
+
+            if ! git merge-base --is-ancestor "${remote_sha}" "${APPROVED_SHA}"; then
+              echo "homelab-deploy ${remote_sha} diverged from ${APPROVED_SHA}." >&2
+              exit 1
+            fi
+
+            if git push origin "${APPROVED_SHA}:refs/heads/homelab-deploy"; then
+              exit 0
+            fi
+
+            if (( attempt < 3 )); then
+              sleep 2
+            fi
+          done
+
+          echo "homelab-deploy promotion failed after bounded retries." >&2
+          exit 1

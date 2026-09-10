@@ -93,7 +93,8 @@ Answering rules:
 16. For reel/video factual claims, use only the supplied grounded evidence text. Search-enrichment text is never evidence.
 17. For a factual reel question, answer the exact relation asked using the highest-ranked evidence that directly supports it; do not substitute a nearby attribute merely because it is prominent in the same evidence.
 18. Before drafting a factual reel answer, locate the words, quantity, or relation in the grounded evidence that supports the answer. State that supported fact, not a plausible reformulation based only on the question.
-19. When revising after verification, replace unsupported wording with the closest directly supported wording from the retrieved evidence. Do not repeat an unsupported draft.
+19. When the evidence directly states the requested fact, reuse its distinctive nouns, names, values, and relations instead of replacing them with broad synonyms or a high-level summary.
+20. When revising after verification, replace unsupported wording with the closest directly supported wording from the retrieved evidence. Do not repeat an unsupported draft.
 
 ${revisionInstruction ? `VERIFIER REVISION INSTRUCTION:\n${revisionInstruction}\n` : ''}
 

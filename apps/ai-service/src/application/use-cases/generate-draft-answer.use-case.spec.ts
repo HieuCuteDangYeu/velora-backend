@@ -85,6 +85,9 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(request.systemPrompt).toContain(
       'one claim may cite multiple evidence IDs',
     );
+    expect(request.systemPrompt).toContain(
+      'reuse its distinctive nouns, names, values, and relations',
+    );
     expect(request.jsonSchema.properties.claims.description).toContain(
       'Exhaustive atomic grounding mappings',
     );

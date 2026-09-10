@@ -86,3 +86,28 @@ test('retains safe answer and finalization diagnostics without private text', ()
   assert.match(output, /finalSource/);
   assert.doesNotMatch(output, /private answer|private prompt/);
 });
+
+test('retains context sufficiency diagnostics without private text', () => {
+  const output = JSON.stringify(
+    sanitize({
+      contextSufficiency: {
+        providerStatus: 'SUCCESS',
+        sufficient: false,
+        supportedEvidenceIds: ['e0'],
+        reason: 'private evidence reasoning',
+        semanticCalls: [
+          {
+            modelRole: 'CONTEXT_SUFFICIENCY',
+            providerStatus: 200,
+            attempt: 1,
+          },
+        ],
+      },
+    }),
+  );
+
+  assert.match(output, /contextSufficiency/);
+  assert.match(output, /CONTEXT_SUFFICIENCY/);
+  assert.match(output, /supportedEvidenceIds/);
+  assert.doesNotMatch(output, /private evidence reasoning/);
+});

@@ -184,7 +184,9 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
       return 'No relevant shared reel evidence found in this conversation.';
     }
 
-    return this.selectPromptEvidence(boundEvidence(chunks, bounds))
+    return this.selectPromptEvidence(
+      boundEvidence(chunks, bounds, { preserveTail: true }),
+    )
       .map((match, index) => {
         const evidenceType = match.evidenceType ?? 'TRANSCRIPT';
         const evidenceLabel =

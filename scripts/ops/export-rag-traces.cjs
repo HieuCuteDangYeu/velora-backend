@@ -56,6 +56,7 @@ const SAFE_STRING_KEYS = new Set([
 const SAFE_DIAGNOSTIC_KEYS = new Set([
   'answerCalls',
   'answerRevisionExecuted',
+  'contextSufficiency',
   'draftAnswerExecuted',
 ]);
 

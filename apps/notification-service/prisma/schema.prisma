@@ -43,6 +43,7 @@ model NotificationJob {
   dataJson        Json?     @map("data_json")
   expiresAt       DateTime? @map("expires_at")
   status          String    @default("pending")
+  idempotencyKey  String?   @unique @map("idempotency_key")
   attemptCount    Int       @default(0) @map("attempt_count")
   nextAttemptAt   DateTime? @map("next_attempt_at")
   lastError       String?   @map("last_error")

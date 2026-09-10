@@ -1,4 +1,7 @@
-export type NotificationJobType = 'NEW_MESSAGE' | 'INCOMING_CALL';
+export type NotificationJobType =
+  | 'NEW_MESSAGE'
+  | 'INCOMING_CALL'
+  | 'CALL_STATE_UPDATE';
 export type NotificationJobStatus =
   | 'pending'
   | 'processing'
@@ -17,6 +20,11 @@ export type CreateNotificationJobInput = {
   body: string;
   dataJson?: Record<string, unknown>;
   expiresAt?: Date;
+  /**
+   * Stable key for an externally delivered event. Replays must reuse the
+   * original durable job instead of sending a second notification.
+   */
+  idempotencyKey?: string;
 };
 
 export type NotificationJobProps = {

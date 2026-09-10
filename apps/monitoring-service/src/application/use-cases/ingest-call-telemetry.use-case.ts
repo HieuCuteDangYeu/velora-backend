@@ -1,6 +1,5 @@
 import type { CallTelemetryEventPayload } from '@common/calls/dtos/call-telemetry.dto';
 import { Inject, Injectable } from '@nestjs/common';
-import { InvalidTelemetryTokenError } from '../../domain/errors/invalid-telemetry-token.error';
 import type { ICallTelemetryRepository } from '../../domain/interfaces/call-telemetry.repository.interface';
 import type { ICallTelemetryTokenVerifier } from '../../domain/interfaces/call-telemetry-token-verifier.interface';
 import type {
@@ -18,22 +17,33 @@ export class IngestCallTelemetryUseCase {
   ) {}
 
   async execute(events: CallTelemetryEventPayload[]) {
-    const accepted = await this.repository.create(
-      events.map((event) => this.toStoredEvent(event)),
-    );
+    const storedEvents: StoredCallTelemetryEvent[] = [];
+    let rejected = 0;
 
-    return { accepted };
+    for (const event of events) {
+      const storedEvent = this.toStoredEvent(event);
+      if (storedEvent) {
+        storedEvents.push(storedEvent);
+      } else {
+        rejected += 1;
+      }
+    }
+
+    const accepted =
+      storedEvents.length > 0 ? await this.repository.create(storedEvents) : 0;
+
+    return { accepted, rejected };
   }
 
   private toStoredEvent(
     event: CallTelemetryEventPayload,
-  ): StoredCallTelemetryEvent {
+  ): StoredCallTelemetryEvent | null {
     const token = event.telemetryToken
       ? this.tokenVerifier.verify(event.telemetryToken)
       : null;
 
     if (event.telemetryToken && !token) {
-      throw new InvalidTelemetryTokenError();
+      return null;
     }
 
     const metricsJson: TelemetryJsonObject | null =

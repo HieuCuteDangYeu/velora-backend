@@ -38,6 +38,7 @@ export class SendIncomingCallNotificationUseCase {
           ? 'Incoming video call'
           : 'Incoming voice call',
       expiresAt,
+      idempotencyKey: `incoming-call:${input.callId}:${input.recipientUserId}`,
       dataJson: {
         type: 'INCOMING_CALL',
         callId: input.callId,

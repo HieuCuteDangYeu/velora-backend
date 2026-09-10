@@ -21,6 +21,7 @@ import { PrismaNotificationJobRepository } from './infrastructure/repositories/p
 import { PrismaPushTokenRepository } from './infrastructure/repositories/prisma-push-token.repository';
 import { RedisPushTokenLifecycleRepository } from './infrastructure/repositories/redis-push-token-lifecycle.repository';
 import { NotificationRetryScheduler } from './infrastructure/schedulers/notification-retry.scheduler';
+import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.subscriber';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { NotificationRetryScheduler } from './infrastructure/schedulers/notifica
     PushTokensController,
     InternalNotificationsController,
     DevPushController,
+    CallEventsSubscriber,
   ],
   providers: [
     PrismaService,

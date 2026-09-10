@@ -60,11 +60,16 @@ export class CallTelemetryController {
   @MessagePattern('call.telemetry.recent')
   async recent(@Payload() payload: unknown) {
     return this.measure('call.telemetry.recent', () =>
-      this.listRecentLegs.execute(this.parse(CallTelemetryQuerySchema, payload)),
+      this.listRecentLegs.execute(
+        this.parse(CallTelemetryQuerySchema, payload),
+      ),
     );
   }
 
-  private async measure<T>(pattern: string, operation: () => Promise<T>): Promise<T> {
+  private async measure<T>(
+    pattern: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const startedAt = process.hrtime.bigint();
     let status: 'success' | 'error' = 'success';
 

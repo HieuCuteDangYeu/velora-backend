@@ -41,13 +41,9 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         'apns-push-type': 'voip',
         'apns-priority': '10',
         'apns-topic': `${input.bundleId}.voip`,
-        ...(input.expiresAt
-          ? {
-              'apns-expiration': String(
-                Math.floor(input.expiresAt.getTime() / 1000),
-              ),
-            }
-          : {}),
+        // A VoIP push is a wake-up signal for a live call, never a message to
+        // deliver later. The recipient validates the call expiry independently.
+        'apns-expiration': '0',
       });
 
       let statusCode = 0;

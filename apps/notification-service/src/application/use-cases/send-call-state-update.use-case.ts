@@ -1,8 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { PushToken } from '../../domain/entities/push-token.entity';
-import { IFcmPushGateway } from '../../domain/interfaces/fcm-push.gateway.interface';
-import { IPushTokenRepository } from '../../domain/interfaces/push-token.repository.interface';
+import { INotificationJobRepository } from '../../domain/interfaces/notification-job.repository.interface';
+import { ProcessNotificationJobUseCase } from './process-notification-job.use-case';
 
 export type SendCallStateUpdateInput = {
   recipientUserIds: string[];
@@ -11,148 +10,138 @@ export type SendCallStateUpdateInput = {
   callId: string;
   status: 'active' | 'rejected' | 'ended' | 'cancelled';
   reason?: string;
+  answerActionId?: string;
+  lifecycleRevision?: number;
   at: string;
 };
 
-type PushTokenSendResult = {
-  tokenId: string;
-  provider: string;
-  platform: string;
-  ok: boolean;
-  messageId?: string;
-  errorCode?: string;
-  errorMessage?: string;
-};
+type CallStateTargetPlatform = 'android' | 'ios';
 
 @Injectable()
 export class SendCallStateUpdateUseCase {
   constructor(
-    @Inject('IPushTokenRepository')
-    private readonly pushTokenRepository: IPushTokenRepository,
-    @Inject('IFcmPushGateway')
-    private readonly fcmPushGateway: IFcmPushGateway,
+    @Inject('INotificationJobRepository')
+    private readonly notificationJobRepository: INotificationJobRepository,
+    private readonly processNotificationJob: ProcessNotificationJobUseCase,
   ) {}
 
+  /**
+   * State updates must survive a temporary FCM/APNs outage. Persist one
+   * independently retryable job per recipient before attempting delivery so a
+   * slow or offline device cannot make another recipient's update disappear.
+   */
   async execute(input: SendCallStateUpdateInput) {
-    const uniqueRecipientIds = [...new Set(input.recipientUserIds)];
-    const androidTokenGroups = await Promise.all(
-      uniqueRecipientIds.map((userId) =>
-        this.pushTokenRepository.findActiveByUserId(userId, {
-          provider: 'fcm',
-          platform: 'android',
-        }),
-      ),
-    );
-    const iosRecipientUserIds = [
-      ...new Set(
-        input.iosRecipientUserIds ??
-          (input.status === 'active' ? [] : uniqueRecipientIds),
-      ),
-    ];
-    const iosTokenGroups = await Promise.all(
-      iosRecipientUserIds.map((userId) =>
-        this.pushTokenRepository.findActiveByUserId(userId, {
-          provider: 'fcm',
-          platform: 'ios',
-        }),
-      ),
-    );
-    const tokens = [...androidTokenGroups.flat(), ...iosTokenGroups.flat()];
+    const recipients = this.collectRecipients(input);
 
-    if (tokens.length === 0) {
+    if (recipients.size === 0) {
       return {
-        status: 'skipped',
-        sendResult: {
-          totalTokens: 0,
-          sentCount: 0,
-          failedCount: 0,
-          results: [],
-        },
+        status: 'skipped' as const,
+        sendResult: this.emptySendResult(),
       };
     }
 
-    const results = await Promise.all(
-      tokens.map((token) => this.sendToToken(token, input)),
+    const deliveries = await Promise.all(
+      [...recipients.entries()].map(async ([recipientUserId, platforms]) => {
+        const job = await this.notificationJobRepository.create({
+          type: 'CALL_STATE_UPDATE',
+          recipientUserId,
+          conversationId: input.conversationId,
+          callId: input.callId,
+          title: 'Call update',
+          body: '',
+          idempotencyKey: this.getIdempotencyKey(input, recipientUserId),
+          dataJson: {
+            type: 'CALL_STATE_UPDATE',
+            platforms: [...platforms].sort(),
+            status: input.status,
+            ...(input.reason ? { reason: input.reason } : {}),
+            ...(input.answerActionId
+              ? { answerActionId: input.answerActionId }
+              : {}),
+            ...(input.lifecycleRevision !== undefined
+              ? { lifecycleRevision: input.lifecycleRevision }
+              : {}),
+            at: input.at,
+          },
+        });
+
+        return this.processNotificationJob.execute(job);
+      }),
+    );
+    const results = deliveries.flatMap(
+      (delivery) => delivery.sendResult.results,
     );
     const sentCount = results.filter((result) => result.ok).length;
+    const failedCount = results.length - sentCount;
 
     return {
-      status: sentCount > 0 ? 'sent' : 'failed',
+      status:
+        failedCount > 0
+          ? ('failed' as const)
+          : sentCount > 0
+            ? ('sent' as const)
+            : ('skipped' as const),
       sendResult: {
         totalTokens: results.length,
         sentCount,
-        failedCount: results.length - sentCount,
+        failedCount,
         results,
       },
     };
   }
 
-  private async sendToToken(
-    token: PushToken,
+  private collectRecipients(input: SendCallStateUpdateInput) {
+    const recipients = new Map<string, Set<CallStateTargetPlatform>>();
+    const addRecipient = (
+      rawRecipientUserId: string,
+      platform: CallStateTargetPlatform,
+    ) => {
+      const recipientUserId = rawRecipientUserId.trim();
+
+      if (!recipientUserId) {
+        return;
+      }
+
+      const platforms = recipients.get(recipientUserId) ?? new Set();
+      platforms.add(platform);
+      recipients.set(recipientUserId, platforms);
+    };
+
+    for (const recipientUserId of input.recipientUserIds) {
+      addRecipient(recipientUserId, 'android');
+    }
+
+    const iosRecipientUserIds =
+      input.iosRecipientUserIds ??
+      (input.status === 'active' ? [] : input.recipientUserIds);
+
+    for (const recipientUserId of iosRecipientUserIds) {
+      addRecipient(recipientUserId, 'ios');
+    }
+
+    return recipients;
+  }
+
+  private emptySendResult() {
+    return {
+      totalTokens: 0,
+      sentCount: 0,
+      failedCount: 0,
+      results: [],
+    };
+  }
+
+  private getIdempotencyKey(
     input: SendCallStateUpdateInput,
-  ): Promise<PushTokenSendResult> {
-    try {
-      const messageId = await this.fcmPushGateway.send({
-        token: token.token,
-        includeNotification: false,
-        data: {
-          type: 'CALL_STATE_UPDATE',
-          callId: input.callId,
-          recipientUserId: token.userId,
-          conversationId: input.conversationId,
-          status: input.status,
-          reason: input.reason,
-          at: input.at,
-        },
-        ...(token.platform === 'ios'
-          ? {
-              apnsContentAvailable: true,
-              apnsBackground: true,
-            }
-          : {}),
-      });
+    recipientUserId: string,
+  ): string {
+    // Lifecycle revision is the authoritative dedupe key. Keep a deterministic
+    // fallback for legacy publishers during the compatibility window.
+    const eventKey =
+      input.lifecycleRevision !== undefined
+        ? `revision:${input.lifecycleRevision}`
+        : `legacy:${input.status}:${input.reason ?? ''}:${input.answerActionId ?? ''}:${input.at}`;
 
-      return {
-        tokenId: token.id,
-        provider: token.provider,
-        platform: token.platform,
-        ok: true,
-        messageId,
-      };
-    } catch (error) {
-      const errorCode = this.readErrorCode(error);
-
-      if (this.shouldDeactivateToken(errorCode)) {
-        await this.pushTokenRepository.deactivateById(token.id);
-      }
-
-      return {
-        tokenId: token.id,
-        provider: token.provider,
-        platform: token.platform,
-        ok: false,
-        errorCode,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  private shouldDeactivateToken(errorCode?: string) {
-    return (
-      errorCode === 'messaging/registration-token-not-registered' ||
-      errorCode === 'messaging/invalid-registration-token'
-    );
-  }
-
-  private readErrorCode(error: unknown) {
-    if (error && typeof error === 'object' && 'code' in error) {
-      const code = error.code;
-
-      if (typeof code === 'string') {
-        return code;
-      }
-    }
-
-    return undefined;
+    return `call-state:${input.callId}:${recipientUserId}:${eventKey}`;
   }
 }

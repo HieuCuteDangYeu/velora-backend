@@ -71,7 +71,10 @@ export class CallController {
     const payload = TrackCallTelemetrySchema.parse(body);
     return lastValueFrom(
       this.monitoringClient
-        .send<{ accepted: number }>('call.telemetry.ingest', payload)
+        .send<{
+          accepted: number;
+          rejected: number;
+        }>('call.telemetry.ingest', payload)
         .pipe(timeout(5000)),
     );
   }

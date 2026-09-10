@@ -113,6 +113,7 @@ export class GenerateDraftAnswerUseCase {
     const bounds = readRagPromptBounds(this.config);
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
+      focusText: state.userMessage,
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,

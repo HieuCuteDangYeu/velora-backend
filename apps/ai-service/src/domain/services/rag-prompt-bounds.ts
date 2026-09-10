@@ -201,7 +201,11 @@ export function truncatePromptText(value: string, maxChars: number): string {
  * Keep both ends of long evidence windows because a transcript fact may be
  * introduced near the beginning and qualified near the end of a chunk.
  */
-export function truncateEvidenceText(value: string, maxChars: number): string {
+export function truncateEvidenceText(
+  value: string,
+  maxChars: number,
+  focusText?: string,
+): string {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (normalized.length <= maxChars) return normalized;
 
@@ -213,14 +217,66 @@ export function truncateEvidenceText(value: string, maxChars: number): string {
   const quantityPattern =
     /\b(?:\d+(?:[.,]\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b/gi;
   const quantityMatches = [...normalized.matchAll(quantityPattern)];
-  const omittedQuantities = quantityMatches.filter((match) => {
+  const focusStopwords = new Set([
+    'a',
+    'an',
+    'and',
+    'are',
+    'at',
+    'about',
+    'can',
+    'did',
+    'do',
+    'does',
+    'during',
+    'for',
+    'from',
+    'go',
+    'how',
+    'in',
+    'into',
+    'is',
+    'of',
+    'on',
+    'said',
+    'say',
+    'says',
+    'still',
+    'the',
+    'they',
+    'to',
+    'under',
+    'was',
+    'were',
+    'what',
+    'where',
+    'while',
+    'who',
+    'why',
+    'with',
+  ]);
+  const focusTokens = new Set(
+    (focusText?.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
+      (token) => token.length >= 3 && !focusStopwords.has(token),
+    ),
+  );
+  const focusMatches = [...normalized.matchAll(/[a-z0-9]+/gi)].filter((match) =>
+    focusTokens.has(match[0].toLowerCase()),
+  );
+  const importantMatches = [...quantityMatches, ...focusMatches]
+    .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+    .filter(
+      (match, index, matches) =>
+        index === 0 || match.index !== matches[index - 1].index,
+    );
+  const omittedImportantMatches = importantMatches.filter((match) => {
     const index = match.index ?? 0;
     return index >= headBudget && index < normalized.length - tailBudget;
   });
 
-  if (omittedQuantities.length > 0) {
-    const first = omittedQuantities[0];
-    const last = omittedQuantities.at(-1) ?? first;
+  if (omittedImportantMatches.length > 0) {
+    const first = omittedImportantMatches[0];
+    const last = omittedImportantMatches.at(-1) ?? first;
     const middleStart = Math.max(headBudget, (first.index ?? headBudget) - 24);
     const middleEnd = Math.min(
       normalized.length - tailBudget,
@@ -229,7 +285,7 @@ export function truncateEvidenceText(value: string, maxChars: number): string {
     let middle = normalized.slice(middleStart, middleEnd).trim();
 
     if (middle.length > middleBudget) {
-      middle = omittedQuantities
+      middle = omittedImportantMatches
         .map((match) => {
           const index = match.index ?? headBudget;
           return normalized
@@ -246,7 +302,7 @@ export function truncateEvidenceText(value: string, maxChars: number): string {
     }
 
     if (middle.length > middleBudget) {
-      middle = omittedQuantities.map((match) => match[0]).join(' ');
+      middle = omittedImportantMatches.map((match) => match[0]).join(' ');
     }
 
     const head = normalized
@@ -356,8 +412,14 @@ export function boundTextItems<T>(
 export function boundEvidence(
   candidates: ReelContextSearchResult[],
   bounds: RagPromptBounds,
-  options: { preserveTail?: boolean } = {},
+  options: { preserveTail?: boolean; focusText?: string } = {},
 ): ReelContextSearchResult[] {
+  const truncate = options.focusText?.trim()
+    ? (value: string, maxChars: number) =>
+        truncateEvidenceText(value, maxChars, options.focusText)
+    : options.preserveTail
+      ? truncateEvidenceText
+      : truncatePromptText;
   const bounded = boundTextItems(
     candidates,
     (candidate) =>
@@ -374,7 +436,7 @@ export function boundEvidence(
     bounds.maxEvidenceItems,
     bounds.maxEvidenceTextChars,
     bounds.maxEvidenceTotalChars,
-    options.preserveTail ? truncateEvidenceText : truncatePromptText,
+    truncate,
   );
   return bounded.map((candidate) => ({
     ...candidate,

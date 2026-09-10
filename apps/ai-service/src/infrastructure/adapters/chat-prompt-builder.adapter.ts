@@ -36,7 +36,11 @@ export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
       options?.includeRetrievedEvidence === false
         ? 'Authorized reel evidence is supplied separately with stable evidence IDs.'
         : state.memorySelection?.includeRetrievedChunks
-          ? this.formatRetrievedReelEvidence(state.rerankedChunks, bounds)
+          ? this.formatRetrievedReelEvidence(
+              state.rerankedChunks,
+              bounds,
+              state.userMessage,
+            )
           : 'Retrieved reel evidence was not selected for this request.';
     const routeContext = this.formatRouteContext(state, bounds);
     const revisionInstruction = state.verification?.revisedInstruction
@@ -179,13 +183,17 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
   private formatRetrievedReelEvidence(
     chunks: ReelContextSearchResult[],
     bounds: RagPromptBounds,
+    focusText: string,
   ): string {
     if (chunks.length === 0) {
       return 'No relevant shared reel evidence found in this conversation.';
     }
 
     return this.selectPromptEvidence(
-      boundEvidence(chunks, bounds, { preserveTail: true }),
+      boundEvidence(chunks, bounds, {
+        preserveTail: true,
+        focusText,
+      }),
     )
       .map((match, index) => {
         const evidenceType = match.evidenceType ?? 'TRANSCRIPT';

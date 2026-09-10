@@ -80,6 +80,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 !/docs/reel-pipeline-phase-5-hierarchical-indexing.md
 !/docs/reel-pipeline-phase-6-semantic-database.md
 !/docs/reel-pipeline-phase-8-validation.md
+!/docs/call-runtime-rollout.md
 
 # Local notification service secrets
 apps/notification-service/secrets/

@@ -13,6 +13,11 @@ import { ConsumeUseCase } from './application/use-cases/consume.use-case';
 import { LeaveCallUseCase } from './application/use-cases/leave-call.use-case';
 import { RejectCallUseCase } from './application/use-cases/reject-call.use-case';
 import { AnswerCallUseCase } from './application/use-cases/answer-call.use-case';
+import { AcceptIncomingCallUseCase } from './application/use-cases/accept-incoming-call.use-case';
+import { ExpireDueCallsUseCase } from './application/use-cases/expire-due-calls.use-case';
+import { PublishCallAnswerOutboxUseCase } from './application/use-cases/publish-call-answer-outbox.use-case';
+import { PublishCallTerminalOutboxUseCase } from './application/use-cases/publish-call-terminal-outbox.use-case';
+import { RecoverActiveCallsAfterMediaRestartUseCase } from './application/use-cases/recover-active-calls-after-media-restart.use-case';
 import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
 import { RestartIceUseCase } from './application/use-cases/restart-ice.use-case';
 import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
@@ -23,9 +28,10 @@ import { RedisCallStateRepository } from './infrastructure/repositories/redis-ca
 import { RedisCallSessionRepository } from './infrastructure/repositories/redis-call-session.repository';
 import { RabbitCallEventPublisher } from './infrastructure/publishers/rabbit-call-event.publisher';
 import { MediasoupCallMediaEngine } from './infrastructure/engines/mediasoup-call.engine';
-import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.subscriber';
-import { NotificationServiceAdapter } from './infrastructure/adapters/notification-service.adapter';
 import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prometheus-metrics.service';
+import { CallServiceRuntimeLease } from './infrastructure/runtime/call-service-runtime-lease.service';
+import { CallAnswerOutboxWorker } from './infrastructure/workers/call-answer-outbox.worker';
+import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal-outbox.worker';
 
 @Module({
   imports: [
@@ -35,12 +41,12 @@ import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prom
     }),
     ClientsModule.registerAsync([
       {
-        name: 'CALL_SERVICE_RMQ',
+        name: 'NOTIFICATION_SERVICE_RMQ',
         useFactory: (config: ConfigService) => ({
           transport: Transport.RMQ,
           options: {
             urls: [config.getOrThrow<string>('RABBITMQ_URL')],
-            queue: 'call_queue',
+            queue: 'notification_queue',
             queueOptions: { durable: true },
           },
         }),
@@ -78,7 +84,7 @@ import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prom
       },
     ]),
   ],
-  controllers: [CallEventsSubscriber, CallStateController, CallMetricsController],
+  controllers: [CallStateController, CallMetricsController],
   providers: [
     CallGateway,
     CallPrometheusMetricsService,
@@ -91,6 +97,11 @@ import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prom
     LeaveCallUseCase,
     RejectCallUseCase,
     AnswerCallUseCase,
+    AcceptIncomingCallUseCase,
+    ExpireDueCallsUseCase,
+    PublishCallAnswerOutboxUseCase,
+    PublishCallTerminalOutboxUseCase,
+    RecoverActiveCallsAfterMediaRestartUseCase,
     ResumeConsumerUseCase,
     RestartIceUseCase,
     ChangeCallTypeUseCase,
@@ -98,7 +109,9 @@ import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prom
     RedisCallStateRepository,
     RabbitCallEventPublisher,
     MediasoupCallMediaEngine,
-    NotificationServiceAdapter,
+    CallServiceRuntimeLease,
+    CallAnswerOutboxWorker,
+    CallTerminalOutboxWorker,
     CallTelemetryTokenService,
     {
       provide: 'ICallSessionRepository',

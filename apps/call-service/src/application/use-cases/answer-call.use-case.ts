@@ -4,50 +4,62 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
-import { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
+import type { CallSession } from '../../domain/entities/call-session.entity';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
+
+export interface AnswerCallResult {
+  session: CallSession;
+  outcome:
+    | 'accepted'
+    | 'already_accepted'
+    | 'answered_elsewhere'
+    | 'terminal'
+    | 'expired'
+    | 'busy';
+}
 
 @Injectable()
 export class AnswerCallUseCase {
   constructor(
     @Inject('ICallSessionRepository')
     private readonly sessionRepository: ICallSessionRepository,
-    @Inject('ICallEventPublisher')
-    private readonly eventPublisher: ICallEventPublisher,
   ) {}
 
-  async execute(callId: string, userId: string): Promise<void> {
-    const session = await this.sessionRepository.findByCallId(callId);
-    if (!session) {
+  async execute(
+    callId: string,
+    userId: string,
+    actionId: string,
+  ): Promise<AnswerCallResult> {
+    const now = new Date();
+    const transition = await this.sessionRepository.claimIncomingAnswer(
+      callId,
+      userId,
+      actionId,
+      now,
+    );
+    const session = transition.session;
+
+    if (transition.outcome === 'not_found' || !session) {
       throw new NotFoundException('Call not found');
     }
-
-    if (userId !== session.targetUserId) {
+    if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('Only the callee can answer this call');
     }
-
-    if (session.status !== 'ringing') {
-      throw new ForbiddenException(
-        'Call cannot be answered in its current state',
-      );
+    if (
+      transition.outcome === 'expired' ||
+      transition.outcome === 'terminal' ||
+      transition.outcome === 'answered_elsewhere' ||
+      transition.outcome === 'busy'
+    ) {
+      return { session, outcome: transition.outcome };
     }
 
-    const now = new Date();
-    session.status = 'active';
-    session.answeredAt = now;
-    session.updatedAt = now;
-    await this.sessionRepository.save(session);
-
-    await this.eventPublisher.publish('call.answered', {
-      callId,
-      conversationId: session.conversationId,
-      initiatorId: session.initiatorId,
-      targetUserId: session.targetUserId,
-      userId,
-      callType: session.callType,
-      ...buildCallLifecycleMetadata(session, now),
-      at: now.toISOString(),
-    });
+    return {
+      session,
+      outcome:
+        transition.outcome === 'already_accepted'
+          ? 'already_accepted'
+          : 'accepted',
+    };
   }
 }

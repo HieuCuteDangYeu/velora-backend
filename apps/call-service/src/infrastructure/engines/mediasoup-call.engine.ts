@@ -55,6 +55,10 @@ export class MediasoupCallMediaEngine
 {
   private readonly logger = new Logger(MediasoupCallMediaEngine.name);
   private readonly rooms = new Map<string, RoomRuntimeState>();
+  // A lost accept acknowledgement can retry while the first request is still
+  // creating the router. Keep room creation single-flight per call so the
+  // same durable answer action cannot leak a second router.
+  private readonly roomCreationPromises = new Map<string, Promise<void>>();
   private readonly workers: mediasoup.types.Worker[] = [];
   private workerCursor = 0;
   private readonly workerCount = Math.max(
@@ -85,6 +89,28 @@ export class MediasoupCallMediaEngine
   }
 
   async createRoom(callId: string): Promise<void> {
+    if (this.rooms.has(callId)) return;
+
+    const existingCreation = this.roomCreationPromises.get(callId);
+    if (existingCreation) {
+      return existingCreation;
+    }
+
+    const creation = this.createRoomInternal(callId);
+    this.roomCreationPromises.set(callId, creation);
+
+    try {
+      await creation;
+    } finally {
+      if (this.roomCreationPromises.get(callId) === creation) {
+        this.roomCreationPromises.delete(callId);
+      }
+    }
+  }
+
+  private async createRoomInternal(callId: string): Promise<void> {
+    // A call can have been created by the request that won the single-flight
+    // check while this request was scheduled.
     if (this.rooms.has(callId)) return;
 
     const worker = await this.getNextWorker();
@@ -487,15 +513,30 @@ export class MediasoupCallMediaEngine
   }
 
   closeRoom(callId: string): Promise<void> {
+    return this.closeRoomAfterPendingCreation(callId);
+  }
+
+  private async closeRoomAfterPendingCreation(callId: string): Promise<void> {
+    // A terminal transition may win while a router is still being allocated.
+    // Waiting for the in-flight creation keeps that router from materializing
+    // after terminal cleanup has already returned.
+    const creation = this.roomCreationPromises.get(callId);
+    if (creation) {
+      try {
+        await creation;
+      } catch {
+        // Failed room creation leaves nothing to close.
+      }
+    }
+
     const room = this.rooms.get(callId);
-    if (!room) return Promise.resolve();
+    if (!room) return;
 
     room.consumers.forEach((consumer) => consumer.close());
     room.producers.forEach((producer) => producer.close());
     room.transports.forEach((transport) => transport.close());
     room.router.close();
     this.rooms.delete(callId);
-    return Promise.resolve();
   }
 
   private async bootstrapWorkers(count: number): Promise<void> {

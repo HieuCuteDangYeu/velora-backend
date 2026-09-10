@@ -227,6 +227,9 @@ services:
       - '3007'
     ports:
       - '40000-40100:40000-40100/udp'
+    environment:
+      NODE_ENV: production
+      CALL_SINGLE_INSTANCE_GUARD: 'true'
     env_file:
       - .env
     depends_on:
@@ -234,6 +237,8 @@ services:
         condition: service_healthy
     networks:
       - microservices-net
+    deploy:
+      replicas: 1
 
   monitoring-service:
     image: ${DOCKERHUB_USERNAME}/monitoring-service:${VELORA_IMAGE_TAG:-latest}

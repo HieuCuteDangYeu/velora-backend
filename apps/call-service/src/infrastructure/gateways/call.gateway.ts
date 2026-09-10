@@ -6,6 +6,9 @@ import {
   Inject,
   Logger,
   NotFoundException,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+  OnModuleInit,
   UseFilters,
 } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
@@ -20,13 +23,18 @@ import {
 } from '@nestjs/websockets';
 import { catchError, lastValueFrom, of, timeout } from 'rxjs';
 import { Server, Socket } from 'socket.io';
-import { AnswerCallUseCase } from '../../application/use-cases/answer-call.use-case';
+import { AcceptIncomingCallUseCase } from '../../application/use-cases/accept-incoming-call.use-case';
 import { ChangeCallTypeUseCase } from '../../application/use-cases/change-call-type.use-case';
 import { ConnectTransportUseCase } from '../../application/use-cases/connect-transport.use-case';
 import { ConsumeUseCase } from '../../application/use-cases/consume.use-case';
 import { CreateTransportUseCase } from '../../application/use-cases/create-transport.use-case';
+import { ExpireDueCallsUseCase } from '../../application/use-cases/expire-due-calls.use-case';
+import { RecoverActiveCallsAfterMediaRestartUseCase } from '../../application/use-cases/recover-active-calls-after-media-restart.use-case';
 import { InitiateCallUseCase } from '../../application/use-cases/initiate-call.use-case';
-import { JoinCallUseCase } from '../../application/use-cases/join-call.use-case';
+import {
+  CallExpiredError,
+  JoinCallUseCase,
+} from '../../application/use-cases/join-call.use-case';
 import { LeaveCallUseCase } from '../../application/use-cases/leave-call.use-case';
 import { ProduceUseCase } from '../../application/use-cases/produce.use-case';
 import { RejectCallUseCase } from '../../application/use-cases/reject-call.use-case';
@@ -41,7 +49,13 @@ import type {
 } from '../../domain/interfaces/call-media.engine.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
 import { CallWsExceptionFilter } from './call-ws-exception.filter';
+import {
+  getCallNoAnswerTimeoutMs,
+  getSessionExpiryDate,
+  getSessionRingTimeoutMs,
+} from '../../domain/call-lifecycle-config';
 
 type InitiateCallPayload = {
   conversationId: string;
@@ -51,6 +65,19 @@ type InitiateCallPayload = {
 
 type JoinCallPayload = {
   callId: string;
+};
+
+type LegacyAnswerCallPayload = JoinCallPayload & {
+  /**
+   * Optional so existing clients keep their original answer_call contract.
+   * A rollback-capable new client sends its native action id, which lets the
+   * active state update distinguish its own winner from another device.
+   */
+  actionId?: string;
+};
+
+type AcceptIncomingCallPayload = JoinCallPayload & {
+  actionId: string;
 };
 
 type RejoinCallPayload = {
@@ -131,6 +158,25 @@ type CallJoinedSocketPayload = {
   telemetryToken: string;
 };
 
+type IncomingCallAcceptanceSocketPayload = {
+  callId: string;
+  outcome:
+    | 'accepted'
+    | 'already_accepted_same_attempt'
+    | 'answered_elsewhere'
+    | 'terminal'
+    | 'expired'
+    | 'unauthorized'
+    | 'busy'
+    | 'media_unavailable';
+  role?: 'guest';
+  session?: CallSession;
+  rtpCapabilities?: RouterRtpCapabilitiesResult;
+  activeProducers?: ActiveProducerResult[];
+  telemetryToken?: string;
+  noAnswerTimeoutMs?: number;
+};
+
 type RecentTerminalCall = {
   callId: string;
   reason: string;
@@ -147,15 +193,24 @@ type StoredRecentTerminalCall = RecentTerminalCall & {
   pingTimeout: 5000,
 })
 @UseFilters(new CallWsExceptionFilter())
-export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class CallGateway
+  implements
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleInit,
+    OnApplicationBootstrap,
+    OnModuleDestroy
+{
   @WebSocketServer() server!: Server;
 
   private readonly logger = new Logger(CallGateway.name);
   private readonly reconnectGraceMs = Number(
     process.env.CALL_RECONNECT_GRACE_MS || 15000,
   );
-  private readonly noAnswerTimeoutMs = Number(
-    process.env.CALL_NO_ANSWER_TIMEOUT_MS || 30000,
+  private readonly noAnswerTimeoutMs = getCallNoAnswerTimeoutMs();
+  private readonly expirySweepIntervalMs = Math.max(
+    1000,
+    Number(process.env.CALL_EXPIRY_SWEEP_INTERVAL_MS || 5000) || 5000,
   );
   private readonly terminalReplayTtlMs = Number(
     process.env.CALL_TERMINAL_REPLAY_TTL_MS || 60000,
@@ -172,6 +227,8 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     string,
     ReturnType<typeof setTimeout>
   >();
+  private expirySweepTimer?: ReturnType<typeof setInterval>;
+  private expirySweepInFlight = false;
 
   constructor(
     private readonly initiateCallUseCase: InitiateCallUseCase,
@@ -182,7 +239,9 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly consumeUseCase: ConsumeUseCase,
     private readonly leaveCallUseCase: LeaveCallUseCase,
     private readonly rejectCallUseCase: RejectCallUseCase,
-    private readonly answerCallUseCase: AnswerCallUseCase,
+    private readonly acceptIncomingCallUseCase: AcceptIncomingCallUseCase,
+    private readonly expireDueCallsUseCase: ExpireDueCallsUseCase,
+    private readonly recoverActiveCallsAfterMediaRestartUseCase: RecoverActiveCallsAfterMediaRestartUseCase,
     private readonly resumeConsumerUseCase: ResumeConsumerUseCase,
     private readonly restartIceUseCase: RestartIceUseCase,
     private readonly changeCallTypeUseCase: ChangeCallTypeUseCase,
@@ -194,7 +253,57 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly stateRepository: ICallStateRepository,
     @Inject('AUTH_SERVICE_RMQ') private readonly authClient: ClientProxy,
     private readonly telemetryTokenService: CallTelemetryTokenService,
+    private readonly runtimeLease: CallServiceRuntimeLease,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.runtimeLease.acquire();
+    this.runtimeLease.assertHeld();
+    // A process-local timeout gives prompt feedback, while the Redis-backed
+    // sweep makes expiration survive deploys and gateway restarts.
+    this.expirySweepTimer = setInterval(() => {
+      void this.sweepExpiredCalls();
+    }, this.expirySweepIntervalMs);
+    this.expirySweepTimer.unref?.();
+    void this.sweepExpiredCalls();
+  }
+
+  onModuleDestroy(): void {
+    if (this.expirySweepTimer) {
+      clearInterval(this.expirySweepTimer);
+      this.expirySweepTimer = undefined;
+    }
+
+    for (const timeoutId of this.pendingDisconnects.values()) {
+      clearTimeout(timeoutId);
+    }
+    this.pendingDisconnects.clear();
+
+    for (const timeoutId of this.pendingUnansweredCalls.values()) {
+      clearTimeout(timeoutId);
+    }
+    this.pendingUnansweredCalls.clear();
+  }
+
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      this.runtimeLease.assertHeld();
+      const lostActiveCalls =
+        await this.recoverActiveCallsAfterMediaRestartUseCase.execute();
+      for (const session of lostActiveCalls) {
+        this.emitCallEnded(session, 'media_unavailable');
+      }
+    } catch (error) {
+      // Startup must fail closed at the call level, not by leaving existing
+      // active sessions pretending that their in-memory media still exists.
+      this.logger.error(
+        `Failed to reconcile active calls after media startup: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      throw error;
+    }
+  }
 
   async handleConnection(client: Socket) {
     const userId = await this.resolveUserId(client);
@@ -219,83 +328,7 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const callIds = this.getTrackedCallIds(client);
     for (const callId of callIds) {
       try {
-        const session = await this.sessionRepository.findByCallId(callId);
-        if (!session) {
-          continue;
-        }
-
-        const participant = await this.stateRepository.getParticipant(
-          callId,
-          userId,
-        );
-
-        if (!participant) {
-          continue;
-        }
-
-        const remainingSocketIds = participant.socketIds.filter(
-          (socketId) => socketId !== client.id,
-        );
-
-        if (remainingSocketIds.length > 0) {
-          await this.stateRepository.upsertParticipant(
-            new CallParticipant({
-              ...participant,
-              socketId: remainingSocketIds[0],
-              socketIds: remainingSocketIds,
-              isConnected: true,
-              reconnectDeadlineAt: undefined,
-            }),
-          );
-          continue;
-        }
-
-        if (session.status === 'active') {
-          const reconnectDeadlineAt = new Date(
-            Date.now() + this.reconnectGraceMs,
-          );
-          await this.stateRepository.upsertParticipant(
-            new CallParticipant({
-              ...participant,
-              socketIds: [],
-              socketId: undefined,
-              isConnected: false,
-              reconnectDeadlineAt,
-            }),
-          );
-          this.server.to(callId).emit('peer_reconnecting', {
-            callId,
-            userId,
-            reconnectDeadlineAt: reconnectDeadlineAt.toISOString(),
-          });
-          this.scheduleDisconnectFinalization(callId, userId);
-          continue;
-        }
-
-        if (session.status === 'initiated' || session.status === 'ringing') {
-          await this.stateRepository.removeParticipant(callId, userId);
-          const result = await this.leaveCallUseCase.execute(
-            callId,
-            userId,
-            'disconnected',
-          );
-          if (result.shouldEmitPeerLeft) {
-            this.emitPeerLeft(callId, userId, 'disconnected');
-          }
-          this.emitCallEnded(result.session, result.endedReason);
-          continue;
-        }
-
-        await this.stateRepository.removeParticipant(callId, userId);
-        const result = await this.leaveCallUseCase.execute(
-          callId,
-          userId,
-          'disconnected',
-        );
-        if (result.shouldEmitPeerLeft) {
-          this.emitPeerLeft(callId, userId, 'disconnected');
-        }
-        this.emitCallEnded(result.session, result.endedReason);
+        await this.reconcileDisconnectedCall(callId, userId, client.id);
       } catch (error) {
         this.logger.warn(
           `Disconnect cleanup failed for call ${callId}: ${
@@ -322,8 +355,15 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.id,
     );
 
-    await client.join(result.session.callId);
-    this.trackCallId(client, result.session.callId);
+    if (
+      !(await this.attachLiveSocketToCall(
+        client,
+        result.session.callId,
+        userId,
+      ))
+    ) {
+      return;
+    }
 
     client.emit('call_joined', {
       callId: result.session.callId,
@@ -338,6 +378,11 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
       noAnswerTimeoutMs: this.noAnswerTimeoutMs,
     } satisfies CallJoinedSocketPayload);
 
+    const ringTimeoutMs = getSessionRingTimeoutMs(result.session.ringTimeoutMs);
+    const expiresAt = getSessionExpiryDate(
+      result.session.expiresAt,
+      ringTimeoutMs,
+    );
     this.server.to(result.session.targetUserId).emit('incoming_call', {
       callId: result.session.callId,
       conversationId: result.session.conversationId,
@@ -347,14 +392,12 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
       initiatorDisplayName:
         result.session.initiatorDisplayName ?? 'Incoming call',
       initiatorAvatarUrl: result.session.initiatorAvatarUrl,
-      ringTimeoutMs: result.session.ringTimeoutMs ?? this.noAnswerTimeoutMs,
-      expiresAt:
-        result.session.expiresAt?.toISOString() ??
-        new Date(Date.now() + this.noAnswerTimeoutMs).toISOString(),
+      ringTimeoutMs,
+      expiresAt: expiresAt.toISOString(),
       callType: result.session.callType,
     });
 
-    this.scheduleUnansweredCallTimeout(result.session.callId);
+    this.scheduleUnansweredCallTimeout(result.session);
   }
 
   @SubscribeMessage('join_call')
@@ -365,14 +408,27 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
-    const result = await this.joinCallUseCase.execute(
-      payload.callId,
-      userId,
-      client.id,
-    );
+    let result: Awaited<ReturnType<JoinCallUseCase['execute']>>;
+    try {
+      result = await this.joinCallUseCase.execute(
+        payload.callId,
+        userId,
+        client.id,
+      );
+    } catch (error) {
+      if (error instanceof CallExpiredError) {
+        this.clearPendingUnansweredCall(payload.callId);
+        this.emitCallEnded(
+          error.session,
+          error.session.terminalReason ?? 'no_answer',
+        );
+      }
+      throw error;
+    }
 
-    await client.join(payload.callId);
-    this.trackCallId(client, payload.callId);
+    if (!(await this.attachLiveSocketToCall(client, payload.callId, userId))) {
+      return;
+    }
     this.clearPendingDisconnect(payload.callId, userId);
 
     const activeProducers = await this.mediaEngine.listActiveProducers(
@@ -440,8 +496,9 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
       client.id,
     );
 
-    await client.join(payload.callId);
-    this.trackCallId(client, payload.callId);
+    if (!(await this.attachLiveSocketToCall(client, payload.callId, userId))) {
+      return;
+    }
     this.clearPendingDisconnect(payload.callId, userId);
 
     const activePeerProducers = await this.mediaEngine.listActiveProducers(
@@ -751,21 +808,161 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('answer_call')
   async handleAnswerCall(
-    @MessageBody() payload: JoinCallPayload,
+    @MessageBody() payload: LegacyAnswerCallPayload,
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
-    await this.answerCallUseCase.execute(payload.callId, userId);
-    await client.join(payload.callId);
-    this.trackCallId(client, payload.callId);
-    this.clearPendingDisconnect(payload.callId, userId);
+    const suppliedActionId = payload.actionId?.trim();
+    if (suppliedActionId && suppliedActionId.length > 128) {
+      throw new BadRequestException('A call action id is too long');
+    }
+    const actionId = suppliedActionId || `legacy:${client.id}`;
+
+    // Existing clients must still join a ringing room before `answer_call`.
+    // A retry of a modern rollback action is the one exception: it must reach
+    // the same CAS lifecycle while `accepting`/`active`, otherwise a lost ACK
+    // turns a successful answer into a false client-side failure.
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    const isJoinedRingingParticipant =
+      session?.status === 'ringing' && session.participantIds.includes(userId);
+    const isRetryOfWinningAction =
+      Boolean(suppliedActionId) &&
+      (session?.status === 'accepting' || session?.status === 'active') &&
+      session.answerActionId === actionId;
+    if (!session || (!isJoinedRingingParticipant && !isRetryOfWinningAction)) {
+      throw new ForbiddenException(
+        'Call cannot be answered in its current state',
+      );
+    }
+
+    const result = await this.acceptIncomingCallUseCase.execute(
+      payload.callId,
+      userId,
+      client.id,
+      actionId,
+    );
+    if (result.outcome === 'answered_elsewhere') {
+      throw new ForbiddenException('Call was answered elsewhere');
+    }
+    if (result.outcome === 'expired') {
+      const terminalSession = result.session;
+      if (terminalSession?.status === 'ended') {
+        this.clearPendingUnansweredCall(payload.callId);
+        this.emitCallEnded(
+          terminalSession,
+          terminalSession.terminalReason ?? 'no_answer',
+        );
+      }
+      throw new ForbiddenException('Call has expired');
+    }
+    if (result.outcome === 'terminal') {
+      throw new ForbiddenException('Call is no longer active');
+    }
+    if (result.outcome === 'unauthorized') {
+      throw new ForbiddenException('Call cannot be answered by this user');
+    }
+    if (result.outcome === 'media_unavailable' || result.outcome === 'busy') {
+      if (result.shouldEmitTerminal && result.session) {
+        this.emitCallEnded(result.session, result.outcome);
+      }
+      throw new ForbiddenException(
+        result.outcome === 'busy'
+          ? 'A participant is already in another call'
+          : 'Call media is unavailable',
+      );
+    }
     this.clearPendingUnansweredCall(payload.callId);
-    this.server.to(payload.callId).emit('call_answered', {
+    if (!(await this.attachLiveSocketToCall(client, payload.callId, userId))) {
+      return;
+    }
+    this.clearPendingDisconnect(payload.callId, userId);
+    const answeredPayload = {
       callId: payload.callId,
       userId,
-    });
+      answerActionId: actionId,
+    };
+    this.server.to(payload.callId).emit('call_answered', answeredPayload);
+    // A second device for the callee is authenticated into its user room but
+    // has not joined the call room yet. Notify it immediately so its pending
+    // CallKit/Connecting surface can resolve without waiting for APNs.
+    this.server.to(session.targetUserId).emit('call_answered', answeredPayload);
+  }
+
+  @SubscribeMessage('accept_incoming_call')
+  async handleAcceptIncomingCall(
+    @MessageBody() payload: AcceptIncomingCallPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    const actionId = payload.actionId?.trim();
+    if (!actionId || actionId.length > 128) {
+      throw new BadRequestException('A call action id is required');
+    }
+
+    const result = await this.acceptIncomingCallUseCase.execute(
+      payload.callId,
+      userId,
+      client.id,
+      actionId,
+    );
+
+    if (
+      result.outcome === 'answered_elsewhere' ||
+      result.outcome === 'terminal' ||
+      result.outcome === 'expired' ||
+      result.outcome === 'unauthorized' ||
+      result.outcome === 'busy' ||
+      result.outcome === 'media_unavailable'
+    ) {
+      client.emit('incoming_call_acceptance', {
+        callId: payload.callId,
+        outcome: result.outcome,
+        ...(result.session ? { session: result.session } : {}),
+      } satisfies IncomingCallAcceptanceSocketPayload);
+      if (result.shouldEmitTerminal && result.session) {
+        this.clearPendingUnansweredCall(payload.callId);
+        this.emitCallEnded(
+          result.session,
+          result.session.terminalReason ?? result.outcome,
+        );
+      }
+      return;
+    }
+
+    if (!result.session || !result.role || !result.rtpCapabilities) {
+      throw new BadRequestException('Incoming call acceptance was incomplete');
+    }
+
+    this.clearPendingUnansweredCall(payload.callId);
+    if (!(await this.attachLiveSocketToCall(client, payload.callId, userId))) {
+      return;
+    }
+    this.clearPendingDisconnect(payload.callId, userId);
+
+    client.emit('incoming_call_acceptance', {
+      callId: payload.callId,
+      outcome: result.outcome,
+      role: result.role,
+      session: result.session,
+      rtpCapabilities: result.rtpCapabilities,
+      activeProducers: result.activeProducers,
+      telemetryToken: this.telemetryTokenService.issue(payload.callId, 'guest'),
+      noAnswerTimeoutMs: this.noAnswerTimeoutMs,
+    } satisfies IncomingCallAcceptanceSocketPayload);
+    const answeredPayload = {
+      callId: payload.callId,
+      userId,
+      answerActionId: actionId,
+    };
+    this.server.to(payload.callId).emit('call_answered', answeredPayload);
+    // See the legacy path above: the user room reaches the other signed-in
+    // device before it has joined the winning call room.
+    this.server
+      .to(result.session.targetUserId)
+      .emit('call_answered', answeredPayload);
   }
 
   @SubscribeMessage('leave_call')
@@ -788,7 +985,9 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (result.shouldEmitPeerLeft) {
       this.emitPeerLeft(payload.callId, userId, result.endedReason);
     }
-    this.emitCallEnded(result.session, result.endedReason);
+    if (result.didTransition !== false) {
+      this.emitCallEnded(result.session, result.endedReason);
+    }
   }
 
   @SubscribeMessage('reject_call')
@@ -808,17 +1007,19 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.clearPendingDisconnect(payload.callId, userId);
     this.untrackCallId(client, payload.callId);
 
-    this.server
-      .to([
-        result.session.callId,
-        result.session.initiatorId,
-        result.session.targetUserId,
-      ])
-      .emit('call_rejected', {
-        callId: result.session.callId,
-        userId,
-        reason: result.reason,
-      });
+    if (result.didTransition !== false) {
+      this.server
+        .to([
+          result.session.callId,
+          result.session.initiatorId,
+          result.session.targetUserId,
+        ])
+        .emit('call_rejected', {
+          callId: result.session.callId,
+          userId,
+          reason: result.reason,
+        });
+    }
   }
 
   private emitCallEnded(session: CallSession, reason: string): void {
@@ -898,6 +1099,103 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
   }
 
+  /**
+   * A call use case can persist a participant before the Socket.IO room join
+   * completes. Track synchronously before the first await so a disconnect in
+   * that window is visible to `handleDisconnect`; when the socket was already
+   * gone, reconcile the persisted participant directly instead of leaving a
+   * ghost connection behind.
+   */
+  private async attachLiveSocketToCall(
+    client: Socket,
+    callId: string,
+    userId: string,
+  ): Promise<boolean> {
+    if (client.disconnected) {
+      if (!this.getTrackedCallIds(client).includes(callId)) {
+        await this.reconcileDisconnectedCall(callId, userId, client.id);
+      }
+      return false;
+    }
+
+    this.trackCallId(client, callId);
+    await client.join(callId);
+
+    // Once the id is tracked, Socket.IO's disconnect hook owns cleanup. Do
+    // not emit a success acknowledgement from a socket that is already gone.
+    return !client.disconnected;
+  }
+
+  private async reconcileDisconnectedCall(
+    callId: string,
+    userId: string,
+    socketId: string,
+  ): Promise<void> {
+    this.runtimeLease.assertHeld();
+    const session = await this.sessionRepository.findByCallId(callId);
+    if (!session) {
+      return;
+    }
+
+    const participant = await this.stateRepository.getParticipant(
+      callId,
+      userId,
+    );
+    if (!participant) {
+      return;
+    }
+
+    const remainingSocketIds = participant.socketIds.filter(
+      (participantSocketId) => participantSocketId !== socketId,
+    );
+
+    if (remainingSocketIds.length > 0) {
+      await this.stateRepository.upsertParticipant(
+        new CallParticipant({
+          ...participant,
+          socketId: remainingSocketIds[0],
+          socketIds: remainingSocketIds,
+          isConnected: true,
+          reconnectDeadlineAt: undefined,
+        }),
+      );
+      return;
+    }
+
+    if (session.status === 'active') {
+      const reconnectDeadlineAt = new Date(Date.now() + this.reconnectGraceMs);
+      await this.stateRepository.upsertParticipant(
+        new CallParticipant({
+          ...participant,
+          socketIds: [],
+          socketId: undefined,
+          isConnected: false,
+          reconnectDeadlineAt,
+        }),
+      );
+      this.server.to(callId).emit('peer_reconnecting', {
+        callId,
+        userId,
+        reconnectDeadlineAt: reconnectDeadlineAt.toISOString(),
+      });
+      this.scheduleDisconnectFinalization(callId, userId);
+      return;
+    }
+
+    await this.stateRepository.removeParticipant(callId, userId);
+    const result = await this.leaveCallUseCase.execute(
+      callId,
+      userId,
+      'disconnected',
+    );
+    if (result.shouldEmitPeerLeft) {
+      this.emitPeerLeft(callId, userId, 'disconnected');
+    }
+    if (result.didTransition !== false) {
+      this.emitCallEnded(result.session, result.endedReason);
+    }
+  }
+
   private scheduleDisconnectFinalization(
     callId: string,
     userId: string,
@@ -940,7 +1238,9 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
             if (result.shouldEmitPeerLeft) {
               this.emitPeerLeft(callId, userId, 'disconnected');
             }
-            this.emitCallEnded(result.session, result.endedReason);
+            if (result.didTransition !== false) {
+              this.emitCallEnded(result.session, result.endedReason);
+            }
           } catch (error) {
             this.logger.warn(
               `Deferred disconnect cleanup failed for call ${callId}: ${
@@ -960,39 +1260,49 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.pendingDisconnects.set(this.disconnectKey(callId, userId), timeoutId);
   }
 
-  private scheduleUnansweredCallTimeout(callId: string): void {
+  private scheduleUnansweredCallTimeout(session: CallSession): void {
+    const { callId } = session;
     this.clearPendingUnansweredCall(callId);
 
-    const timeoutId = setTimeout(() => {
-      void (async () => {
-        try {
-          const session = await this.sessionRepository.findByCallId(callId);
-          if (
-            !session ||
-            (session.status !== 'initiated' && session.status !== 'ringing')
-          ) {
-            return;
-          }
-
-          const result = await this.leaveCallUseCase.execute(
-            callId,
-            session.initiatorId,
-            'no_answer',
-          );
-          this.emitCallEnded(result.session, result.endedReason);
-        } catch (error) {
-          this.logger.warn(
-            `Unanswered call timeout cleanup failed for call ${callId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        } finally {
-          this.clearPendingUnansweredCall(callId);
-        }
-      })();
-    }, this.noAnswerTimeoutMs);
+    const expiresAtMs = getSessionExpiryDate(
+      session.expiresAt,
+      session.ringTimeoutMs ?? this.noAnswerTimeoutMs,
+    ).getTime();
+    const timeoutId = setTimeout(
+      () => {
+        this.clearPendingUnansweredCall(callId);
+        void this.sweepExpiredCalls();
+      },
+      Math.max(1, expiresAtMs - Date.now()),
+    );
 
     this.pendingUnansweredCalls.set(callId, timeoutId);
+  }
+
+  private async sweepExpiredCalls(): Promise<void> {
+    if (this.expirySweepInFlight) {
+      return;
+    }
+
+    this.expirySweepInFlight = true;
+    try {
+      this.runtimeLease.assertHeld();
+      const expiredCalls = await this.expireDueCallsUseCase.execute(new Date());
+      for (const { session, reason } of expiredCalls) {
+        this.clearPendingUnansweredCall(session.callId);
+        if (this.server) {
+          this.emitCallEnded(session, reason);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Durable unanswered-call sweep failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    } finally {
+      this.expirySweepInFlight = false;
+    }
   }
 
   private clearPendingDisconnect(callId: string, userId: string): void {
@@ -1087,6 +1397,10 @@ export class CallGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private async resolveUserId(client: Socket): Promise<string | null> {
+    // The lease-loss handler closes the application, but an established
+    // Socket.IO connection can deliver one more packet before that shutdown
+    // completes. Refuse every control-plane request once ownership is lost.
+    this.runtimeLease.assertHeld();
     const cachedUserId = this.getResolvedUserId(client);
     if (cachedUserId) {
       return cachedUserId;

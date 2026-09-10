@@ -21,6 +21,17 @@ export interface JoinCallResult {
   shouldEmitNewPeer: boolean;
 }
 
+/**
+ * Lets the Socket.IO boundary resolve an expired legacy join immediately
+ * without treating it like an authorization failure. The session is already
+ * terminalized atomically by Redis before this error is raised.
+ */
+export class CallExpiredError extends ForbiddenException {
+  constructor(readonly session: CallSession) {
+    super('Call has expired');
+  }
+}
+
 @Injectable()
 export class JoinCallUseCase {
   constructor(
@@ -37,34 +48,34 @@ export class JoinCallUseCase {
     socketId: string,
   ): Promise<JoinCallResult> {
     const now = new Date();
-    const session = await this.sessionRepository.findByCallId(callId);
+    const transition = await this.sessionRepository.joinParticipant(
+      callId,
+      userId,
+      now,
+    );
+    const session = transition.session;
 
-    if (!session) {
+    if (transition.outcome === 'not_found' || !session) {
       throw new NotFoundException('Call not found');
     }
-
-    if (session.status === 'ended' || session.status === 'cancelled') {
+    if (transition.outcome === 'expired') {
+      // The durable join transition commits the terminal tombstone at the
+      // deadline. Do not leave the caller's pre-created room alive until the
+      // periodic sweep catches up.
+      await Promise.allSettled([
+        this.mediaEngine.closeRoom(callId),
+        this.stateRepository.clearCallState(callId),
+      ]);
+      throw new CallExpiredError(session);
+    }
+    if (transition.outcome === 'terminal') {
       throw new ForbiddenException('Call is no longer active');
     }
-
-    if (userId !== session.initiatorId && userId !== session.targetUserId) {
+    if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('You are not part of this call');
     }
 
     const role = session.initiatorId === userId ? 'host' : 'guest';
-    const existingParticipants = new Set(session.participantIds);
-    const isNewParticipant = !existingParticipants.has(userId);
-
-    if (isNewParticipant) {
-      session.participantIds = [...session.participantIds, userId];
-    }
-
-    if (role === 'guest' && session.status === 'initiated') {
-      session.status = 'ringing';
-    }
-
-    session.updatedAt = now;
-    await this.sessionRepository.save(session);
 
     const existingParticipant = await this.stateRepository.getParticipant(
       callId,
@@ -95,7 +106,7 @@ export class JoinCallUseCase {
       session,
       rtpCapabilities: await this.mediaEngine.getRouterRtpCapabilities(callId),
       peerUserId,
-      shouldEmitNewPeer: isNewParticipant && role === 'guest',
+      shouldEmitNewPeer: transition.joinedNow && role === 'guest',
     };
   }
 }

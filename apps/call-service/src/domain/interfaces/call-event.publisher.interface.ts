@@ -19,6 +19,14 @@ export interface CallLifecyclePayload {
   ringTimeoutMs: number;
   expiresAt: string;
   reason?: string;
+  /** Identifies the device action that atomically accepted this call. */
+  answerActionId?: string;
+  /**
+   * Monotonic Redis lifecycle revision. Consumers use this as the primary
+   * ordering signal when an active and terminal notification arrive out of
+   * order; `at` remains a compatibility fallback for older publishers.
+   */
+  lifecycleRevision?: number;
   at: string;
 }
 

@@ -10,7 +10,7 @@ import {
 @Injectable()
 export class RabbitCallEventPublisher implements ICallEventPublisher {
   constructor(
-    @Inject('CALL_SERVICE_RMQ') private readonly client: ClientProxy,
+    @Inject('NOTIFICATION_SERVICE_RMQ') private readonly client: ClientProxy,
   ) {}
 
   async publish(

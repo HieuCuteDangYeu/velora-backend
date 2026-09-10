@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
@@ -20,6 +21,8 @@ import {
 } from '../../domain/interfaces/call-media.engine.interface';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
+import { getCallNoAnswerTimeoutMs } from '../../domain/call-lifecycle-config';
 
 interface ConversationDetailResponse {
   id?: string;
@@ -42,9 +45,8 @@ export interface InitiateCallResult {
 
 @Injectable()
 export class InitiateCallUseCase {
-  private readonly ringTimeoutMs = Number(
-    process.env.CALL_NO_ANSWER_TIMEOUT_MS || 30000,
-  );
+  private readonly logger = new Logger(InitiateCallUseCase.name);
+  private readonly ringTimeoutMs = getCallNoAnswerTimeoutMs();
 
   constructor(
     @Inject('ICallSessionRepository')
@@ -101,8 +103,6 @@ export class InitiateCallUseCase {
       );
     }
 
-    await this.mediaEngine.createRoom(callId);
-
     const initiatorDisplay = conversation.participants?.find(
       (participant) =>
         participant.id === initiatorId || participant.userId === initiatorId,
@@ -112,56 +112,158 @@ export class InitiateCallUseCase {
       initiatorDisplay?.fullName?.trim() ||
       'Incoming call';
     const expiresAt = new Date(now.getTime() + this.ringTimeoutMs);
+    let session: CallSession | undefined;
+    // Set before publishing: a transport error can still mean RabbitMQ
+    // accepted the message, so the rollback must make any late ringing push
+    // terminal rather than leaving a ghost incoming call.
+    let initiationPublishAttempted = false;
+    try {
+      await this.mediaEngine.createRoom(callId);
 
-    const session = new CallSession({
-      callId,
-      conversationId,
-      initiatorId,
-      targetUserId: resolvedTargetUserId,
-      initiatorDisplayName,
-      initiatorAvatarUrl: initiatorDisplay?.avatar?.trim() || undefined,
-      ringTimeoutMs: this.ringTimeoutMs,
-      expiresAt,
-      callType,
-      status: 'initiated',
-      participantIds: [initiatorId],
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    await this.sessionRepository.save(session);
-    await this.stateRepository.upsertParticipant(
-      new CallParticipant({
-        userId: initiatorId,
+      session = new CallSession({
         callId,
+        conversationId,
+        initiatorId,
+        targetUserId: resolvedTargetUserId,
+        initiatorDisplayName,
+        initiatorAvatarUrl: initiatorDisplay?.avatar?.trim() || undefined,
+        ringTimeoutMs: this.ringTimeoutMs,
+        expiresAt,
+        callType,
+        status: 'initiated',
+        participantIds: [initiatorId],
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      await this.sessionRepository.save(session);
+      await this.stateRepository.upsertParticipant(
+        new CallParticipant({
+          userId: initiatorId,
+          callId,
+          role: 'host',
+          socketId,
+          isConnected: true,
+          reconnectDeadlineAt: undefined,
+          joinedAt: now,
+        }),
+      );
+
+      initiationPublishAttempted = true;
+      await this.eventPublisher.publish('call.initiated', {
+        callId,
+        conversationId,
+        initiatorId,
+        targetUserId: resolvedTargetUserId,
+        recipientUserId: resolvedTargetUserId,
+        userId: initiatorId,
+        callType,
+        initiatorDisplayName,
+        initiatorAvatarUrl: session.initiatorAvatarUrl,
+        ringTimeoutMs: this.ringTimeoutMs,
+        expiresAt: expiresAt.toISOString(),
+        at: now.toISOString(),
+      });
+
+      return {
         role: 'host',
-        socketId,
-        isConnected: true,
-        reconnectDeadlineAt: undefined,
-        joinedAt: now,
-      }),
-    );
+        session,
+        rtpCapabilities:
+          await this.mediaEngine.getRouterRtpCapabilities(callId),
+      };
+    } catch (error) {
+      await this.rollbackFailedInitiation({
+        callId,
+        initiatorId,
+        session,
+        initiationPublishAttempted,
+      });
+      throw error;
+    }
+  }
 
-    await this.eventPublisher.publish('call.initiated', {
-      callId,
-      conversationId,
-      initiatorId,
-      targetUserId: resolvedTargetUserId,
-      recipientUserId: resolvedTargetUserId,
-      userId: initiatorId,
-      callType,
-      initiatorDisplayName,
-      initiatorAvatarUrl: session.initiatorAvatarUrl,
-      ringTimeoutMs: this.ringTimeoutMs,
-      expiresAt: expiresAt.toISOString(),
-      at: now.toISOString(),
-    });
+  private async rollbackFailedInitiation({
+    callId,
+    initiatorId,
+    session,
+    initiationPublishAttempted,
+  }: {
+    callId: string;
+    initiatorId: string;
+    session: CallSession | undefined;
+    initiationPublishAttempted: boolean;
+  }): Promise<void> {
+    let terminalSession: CallSession | undefined;
+    let didTransition = false;
 
-    return {
-      role: 'host',
-      session,
-      rtpCapabilities: await this.mediaEngine.getRouterRtpCapabilities(callId),
-    };
+    if (session) {
+      try {
+        const transition = await this.sessionRepository.transitionToTerminal(
+          callId,
+          initiatorId,
+          'failed',
+          new Date(),
+          'leave',
+        );
+        terminalSession = transition.session ?? undefined;
+        didTransition = transition.outcome === 'transitioned';
+      } catch (rollbackError) {
+        this.logger.warn(
+          `Failed to terminalize failed initiation call=${callId}: ${
+            rollbackError instanceof Error
+              ? rollbackError.message
+              : String(rollbackError)
+          }`,
+        );
+      }
+    }
+
+    // If the initial publish may have reached consumers, publish the winning
+    // terminal revision too. Consumers dedupe by lifecycle revision, so this
+    // is safe both for an acknowledged publish and an ambiguous timeout.
+    if (initiationPublishAttempted && didTransition && terminalSession) {
+      const endedAt = terminalSession.endedAt ?? new Date();
+      try {
+        await this.eventPublisher.publish('call.ended', {
+          callId,
+          conversationId: terminalSession.conversationId,
+          initiatorId: terminalSession.initiatorId,
+          targetUserId: terminalSession.targetUserId,
+          userId: initiatorId,
+          callType: terminalSession.callType,
+          ...buildCallLifecycleMetadata(terminalSession, endedAt),
+          reason: 'failed',
+          at: endedAt.toISOString(),
+        });
+      } catch (publishError) {
+        this.logger.warn(
+          `Failed to publish failed-initiation terminal state call=${callId}: ${
+            publishError instanceof Error
+              ? publishError.message
+              : String(publishError)
+          }`,
+        );
+      }
+    }
+
+    // A createRoom failure can still have allocated process-local resources.
+    // Cleanup is therefore unconditional and intentionally cannot mask the
+    // original initiation error.
+    const cleanupResults = await Promise.allSettled([
+      this.mediaEngine.closeRoom(callId),
+      this.stateRepository.clearCallState(callId),
+    ]);
+    for (const result of cleanupResults) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Failed to clean up failed initiation call=${callId}: ${
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason)
+          }`,
+        );
+      }
+    }
   }
 
   private async getConversationOrThrow(

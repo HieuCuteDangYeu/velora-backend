@@ -1,5 +1,9 @@
 import { Controller, Inject } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
+import {
+  getSessionExpiryDate,
+  getSessionRingTimeoutMs,
+} from '../../domain/call-lifecycle-config';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 
 type GetCallStatePayload = {
@@ -57,14 +61,11 @@ export class CallStateController {
         status: session.status,
         initiatorDisplayName: session.initiatorDisplayName ?? 'Incoming call',
         initiatorAvatarUrl: session.initiatorAvatarUrl,
-        ringTimeoutMs:
-          session.ringTimeoutMs ??
-          Number(process.env.CALL_NO_ANSWER_TIMEOUT_MS || 30000),
-        expiresAt:
-          session.expiresAt?.toISOString() ??
-          new Date(
-            Date.now() + Number(process.env.CALL_NO_ANSWER_TIMEOUT_MS || 30000),
-          ).toISOString(),
+        ringTimeoutMs: getSessionRingTimeoutMs(session.ringTimeoutMs),
+        expiresAt: getSessionExpiryDate(
+          session.expiresAt,
+          session.ringTimeoutMs,
+        ).toISOString(),
       },
     };
   }

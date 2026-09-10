@@ -2,6 +2,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
@@ -15,10 +16,13 @@ export interface LeaveCallResult {
   session: CallSession;
   endedReason: string;
   shouldEmitPeerLeft: boolean;
+  didTransition: boolean;
 }
 
 @Injectable()
 export class LeaveCallUseCase {
+  private readonly logger = new Logger(LeaveCallUseCase.name);
+
   constructor(
     @Inject('ICallSessionRepository')
     private readonly sessionRepository: ICallSessionRepository,
@@ -34,47 +38,74 @@ export class LeaveCallUseCase {
     userId: string,
     requestedReason?: string,
   ): Promise<LeaveCallResult> {
-    const session = await this.sessionRepository.findByCallId(callId);
-    if (!session) {
+    const transition = await this.sessionRepository.transitionToTerminal(
+      callId,
+      userId,
+      requestedReason,
+      new Date(),
+      'leave',
+    );
+    const session = transition.session;
+
+    if (transition.outcome === 'not_found' || !session) {
       throw new NotFoundException('Call not found');
     }
-
-    if (!session.participantIds.includes(userId)) {
+    if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('You are not part of this call');
     }
+    if (transition.outcome === 'already_terminal') {
+      return {
+        session,
+        endedReason: transition.reason ?? 'ended',
+        shouldEmitPeerLeft: false,
+        didTransition: false,
+      };
+    }
 
-    const now = new Date();
-    const wasActive = session.status === 'active';
-    const endedReason = wasActive
-      ? (requestedReason ?? 'ended')
-      : userId === session.initiatorId
-        ? (requestedReason ?? 'cancelled')
-        : (requestedReason ?? 'ended');
+    const now = session.endedAt ?? new Date();
+    const endedReason = transition.reason ?? 'ended';
 
-    session.status = endedReason === 'cancelled' ? 'cancelled' : 'ended';
-    session.endedAt = now;
-    session.updatedAt = now;
+    try {
+      await this.eventPublisher.publish('call.ended', {
+        callId,
+        conversationId: session.conversationId,
+        initiatorId: session.initiatorId,
+        targetUserId: session.targetUserId,
+        userId,
+        callType: session.callType,
+        ...buildCallLifecycleMetadata(session, now),
+        reason: endedReason,
+        at: now.toISOString(),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to publish terminal state for ${callId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
-    await this.eventPublisher.publish('call.ended', {
-      callId,
-      conversationId: session.conversationId,
-      initiatorId: session.initiatorId,
-      targetUserId: session.targetUserId,
-      userId,
-      callType: session.callType,
-      ...buildCallLifecycleMetadata(session, now),
-      reason: endedReason,
-      at: now.toISOString(),
-    });
-
-    await this.mediaEngine.closeRoom(callId);
-    await this.stateRepository.clearCallState(callId);
-    await this.sessionRepository.delete(callId);
+    const cleanupResults = await Promise.allSettled([
+      this.mediaEngine.closeRoom(callId),
+      this.stateRepository.clearCallState(callId),
+    ]);
+    for (const result of cleanupResults) {
+      if (result.status === 'rejected') {
+        this.logger.warn(
+          `Call cleanup failed for ${callId}: ${
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason)
+          }`,
+        );
+      }
+    }
 
     return {
       session,
       endedReason,
-      shouldEmitPeerLeft: wasActive,
+      shouldEmitPeerLeft: transition.wasActive,
+      didTransition: true,
     };
   }
 }

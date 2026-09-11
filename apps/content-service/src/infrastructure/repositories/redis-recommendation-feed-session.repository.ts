@@ -6,9 +6,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import type Redis from 'ioredis';
 
 @Injectable()
-export class RedisRecommendationFeedSessionRepository
-  implements IRecommendationFeedSessionRepository
-{
+export class RedisRecommendationFeedSessionRepository implements IRecommendationFeedSessionRepository {
   private readonly logger = new Logger(
     RedisRecommendationFeedSessionRepository.name,
   );

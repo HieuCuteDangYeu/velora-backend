@@ -27,17 +27,12 @@ function reel(id: string, createdAt: string) {
   } as any;
 }
 
-function createHarness(options?: {
-  cachedSession?: any;
-  reels?: any[];
-}) {
-  const reels =
-    options?.reels ??
-    [
-      reel('reel-1', '2026-09-11T10:00:00.000Z'),
-      reel('reel-2', '2026-09-10T10:00:00.000Z'),
-      reel('reel-3', '2026-09-09T10:00:00.000Z'),
-    ];
+function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
+  const reels = options?.reels ?? [
+    reel('reel-1', '2026-09-11T10:00:00.000Z'),
+    reel('reel-2', '2026-09-10T10:00:00.000Z'),
+    reel('reel-3', '2026-09-09T10:00:00.000Z'),
+  ];
   const evidence = reels.map((item, index) => ({
     reelId: item.id,
     source: 'RECENT_QUALITY' as const,
@@ -54,9 +49,11 @@ function createHarness(options?: {
     findSocialCandidates: jest.fn().mockResolvedValue([]),
     findExplorationCandidates: jest.fn().mockResolvedValue([]),
     findRecentlySeenReelIds: jest.fn().mockResolvedValue(new Set()),
-    findEligibleReelsByIds: jest.fn().mockImplementation(async (ids: string[]) =>
-      reels.filter((item) => ids.includes(item.id)),
-    ),
+    findEligibleReelsByIds: jest
+      .fn()
+      .mockImplementation(async (ids: string[]) =>
+        reels.filter((item) => ids.includes(item.id)),
+      ),
     loadRankingSnapshot: jest.fn().mockResolvedValue(emptySnapshot),
   };
   const feedSessionRepository = {
@@ -151,7 +148,9 @@ describe('GetRecommendedReelsUseCase feed sessions', () => {
     });
 
     expect(result.items.map((item) => item.id)).toEqual(['reel-1', 'reel-2']);
-    expect(result.items.map((item) => item.recommendation?.rank)).toEqual([1, 2]);
+    expect(result.items.map((item) => item.recommendation?.rank)).toEqual([
+      1, 2,
+    ]);
     expect(result.nextCursor?.id).toBe('reel-2');
     expect(harness.feedSessionRepository.save).toHaveBeenCalledTimes(1);
 
@@ -202,8 +201,12 @@ describe('GetRecommendedReelsUseCase feed sessions', () => {
     expect(result.items.map((item) => item.id)).toEqual(['reel-2']);
     expect(result.items[0].recommendation?.rank).toBe(2);
     expect(result.nextCursor?.id).toBe('reel-2');
-    expect(harness.recommendationRepository.findRecentQualityCandidates).not.toHaveBeenCalled();
-    expect(harness.recommendationRepository.loadRankingSnapshot).not.toHaveBeenCalled();
+    expect(
+      harness.recommendationRepository.findRecentQualityCandidates,
+    ).not.toHaveBeenCalled();
+    expect(
+      harness.recommendationRepository.loadRankingSnapshot,
+    ).not.toHaveBeenCalled();
     expect(harness.feedSessionRepository.save).not.toHaveBeenCalled();
   });
 
@@ -223,7 +226,8 @@ describe('GetRecommendedReelsUseCase feed sessions', () => {
 
     expect(result.items.map((item) => item.id)).toEqual(['reel-2']);
     const query =
-      harness.recommendationRepository.findRecentQualityCandidates.mock.calls[0][0];
+      harness.recommendationRepository.findRecentQualityCandidates.mock
+        .calls[0][0];
     expect(query.cursor).toBeUndefined();
   });
 });

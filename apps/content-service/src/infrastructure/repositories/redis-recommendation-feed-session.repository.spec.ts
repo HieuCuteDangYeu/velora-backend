@@ -37,7 +37,9 @@ describe('RedisRecommendationFeedSessionRepository', () => {
       get: jest.fn().mockResolvedValue(JSON.stringify(session)),
     } as any);
 
-    await expect(repository.get(session.feedSessionId)).resolves.toEqual(session);
+    await expect(repository.get(session.feedSessionId)).resolves.toEqual(
+      session,
+    );
   });
 
   it('refuses to overwrite a feed session owned by another viewer', async () => {

@@ -148,12 +148,7 @@ export class GetRecommendedReelsUseCase {
         const reelById = new Map(
           pipeline.items.map((item) => [item.reel.id, item.reel]),
         );
-        page = this.buildPage(
-          session.items,
-          reelById,
-          input.cursor,
-          limit,
-        );
+        page = this.buildPage(session.items, reelById, input.cursor, limit);
       }
 
       const generatedAt = session.generatedAt;
@@ -995,7 +990,10 @@ export class GetRecommendedReelsUseCase {
     );
   }
 
-  private jaccardSimilarity(leftValues: string[], rightValues: string[]): number {
+  private jaccardSimilarity(
+    leftValues: string[],
+    rightValues: string[],
+  ): number {
     if (leftValues.length === 0 || rightValues.length === 0) {
       return 0;
     }

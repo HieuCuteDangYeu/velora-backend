@@ -36,12 +36,7 @@ export class RecommendationConfigService implements IRecommendationConfig {
       60,
       60 * 60,
     );
-    this.feedSlateSize = this.readInteger(
-      'REEL_FEED_SLATE_SIZE',
-      100,
-      20,
-      200,
-    );
+    this.feedSlateSize = this.readInteger('REEL_FEED_SLATE_SIZE', 100, 20, 200);
   }
 
   getAlgorithmVersion(): string {
@@ -123,10 +118,13 @@ export class RecommendationConfigService implements IRecommendationConfig {
     maximum: number,
   ): number {
     const raw = this.configService.get<string | number>(key);
-    const value = raw === undefined || raw === null || raw === '' ? fallback : Number(raw);
+    const value =
+      raw === undefined || raw === null || raw === '' ? fallback : Number(raw);
 
     if (!Number.isInteger(value) || value < minimum || value > maximum) {
-      throw new Error(`${key} must be an integer between ${minimum} and ${maximum}`);
+      throw new Error(
+        `${key} must be an integer between ${minimum} and ${maximum}`,
+      );
     }
 
     return value;

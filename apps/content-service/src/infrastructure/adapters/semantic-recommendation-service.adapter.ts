@@ -64,10 +64,9 @@ export class SemanticRecommendationServiceAdapter implements ISemanticRecommenda
 
       const results = await firstValueFrom(
         this.indexClient
-          .send<SemanticIndexSearchResult[]>(
-            SEMANTIC_INDEX_PATTERNS.SEARCH_REELS,
-            request,
-          )
+          .send<
+            SemanticIndexSearchResult[]
+          >(SEMANTIC_INDEX_PATTERNS.SEARCH_REELS, request)
           .pipe(timeout(4_000)),
       );
 

@@ -1,0 +1,72 @@
+name: Reel Recommendation Format Once
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts'
+      - 'apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts'
+      - 'apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts'
+      - 'apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts'
+      - 'apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts'
+      - 'apps/content-service/src/infrastructure/services/recommendation-config.service.ts'
+      - '.github/workflows/reel-recommendation-format-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pull request branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Format recommendation files
+        run: >-
+          pnpm exec prettier --write
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts
+          apps/content-service/src/infrastructure/services/recommendation-config.service.ts
+
+      - name: Commit formatting only if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Recommendation files already formatted.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts \
+            apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts \
+            apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts \
+            apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts \
+            apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts \
+            apps/content-service/src/infrastructure/services/recommendation-config.service.ts
+          git commit -m 'style(recommendation): format v2 recommendation changes'
+          git push origin HEAD:${{ github.head_ref }}

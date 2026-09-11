@@ -1,0 +1,104 @@
+name: Reel Recommendation CI
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts'
+      - 'apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts'
+      - 'apps/content-service/src/domain/interfaces/recommendation*.ts'
+      - 'apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts'
+      - 'apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.spec.ts'
+      - 'apps/content-service/src/infrastructure/repositories/recommendation.repository.ts'
+      - 'apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.ts'
+      - 'apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.spec.ts'
+      - 'apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts'
+      - 'apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts'
+      - 'apps/content-service/src/infrastructure/services/recommendation-config.service.ts'
+      - 'apps/content-service/src/content-service.module.ts'
+      - 'libs/common/src/processing/interfaces/semantic-index.interface.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'jest.config.cjs'
+      - 'eslint.config.mjs'
+      - '.prettierrc'
+      - '.github/workflows/reel-recommendation-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reel-recommendation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  recommendation-regression:
+    runs-on: ubuntu-24.04
+    env:
+      CONTENT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/content?schema=public
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Generate content Prisma client
+        run: pnpm run prisma:generate:content
+
+      - name: Check recommendation formatting
+        run: >-
+          pnpm exec prettier --check
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts
+          apps/content-service/src/domain/interfaces/recommendation-config.interface.ts
+          apps/content-service/src/domain/interfaces/recommendation-feed-session.repository.interface.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.spec.ts
+          apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.ts
+          apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.spec.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts
+          apps/content-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/content-service/src/content-service.module.ts
+
+      - name: Lint recommendation changes
+        run: >-
+          pnpm exec eslint
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts
+          apps/content-service/src/domain/interfaces/recommendation-config.interface.ts
+          apps/content-service/src/domain/interfaces/recommendation-feed-session.repository.interface.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.spec.ts
+          apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.ts
+          apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.spec.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts
+          apps/content-service/src/infrastructure/services/recommendation-config.service.ts
+          apps/content-service/src/content-service.module.ts
+
+      - name: Run reel recommendation regression tests
+        run: >-
+          pnpm exec jest --runInBand
+          apps/content-service/src/application/use-cases/get-recommended-reels.use-case.spec.ts
+          apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.spec.ts
+          apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-session.repository.spec.ts
+          apps/content-service/src/infrastructure/repositories/optimized-recommendation.repository.spec.ts
+
+      - name: Build content service
+        run: pnpm run build:content

@@ -1,3 +1,14 @@
+import type { Reel } from '@content/domain/entities/reel.entity';
+import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
+import type { IRecommendationConfig } from '@content/domain/interfaces/recommendation-config.interface';
+import type {
+  IRecommendationFeedSessionRepository,
+  RecommendationFeedSession,
+} from '@content/domain/interfaces/recommendation-feed-session.repository.interface';
+import type { IRecommendationRankingConfig } from '@content/domain/interfaces/recommendation-ranking-config.interface';
+import type { IRecommendationTelemetryService } from '@content/domain/interfaces/recommendation-telemetry-service.interface';
+import type { IRecommendationRepository } from '@content/domain/interfaces/recommendation.repository.interface';
+import type { ISemanticRecommendationService } from '@content/domain/interfaces/semantic-recommendation.service.interface';
 import { GetRecommendedReelsUseCase } from './get-recommended-reels.use-case';
 
 const emptySnapshot = {
@@ -11,7 +22,7 @@ const emptySnapshot = {
   engagementByReelId: {},
 };
 
-function reel(id: string, createdAt: string) {
+function reel(id: string, createdAt: string): Reel {
   return {
     id,
     userId: `creator-${id}`,
@@ -24,10 +35,13 @@ function reel(id: string, createdAt: string) {
     viewCount: 1n,
     createdAt: new Date(createdAt),
     updatedAt: new Date(createdAt),
-  } as any;
+  };
 }
 
-function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
+function createHarness(options?: {
+  cachedSession?: RecommendationFeedSession;
+  reels?: Reel[];
+}) {
   const reels = options?.reels ?? [
     reel('reel-1', '2026-09-11T10:00:00.000Z'),
     reel('reel-2', '2026-09-10T10:00:00.000Z'),
@@ -39,7 +53,7 @@ function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
     sourceScore: 0.9 - index * 0.1,
     reasons: ['test evidence'],
   }));
-  const recommendationRepository = {
+  const recommendationRepository: jest.Mocked<IRecommendationRepository> = {
     findRecentQualityCandidates: jest.fn().mockResolvedValue(evidence),
     findTrendingCandidates: jest.fn().mockResolvedValue([]),
     findTagAffinityCandidates: jest.fn().mockResolvedValue([]),
@@ -48,19 +62,20 @@ function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
     findViewerInterestTags: jest.fn().mockResolvedValue([]),
     findSocialCandidates: jest.fn().mockResolvedValue([]),
     findExplorationCandidates: jest.fn().mockResolvedValue([]),
-    findRecentlySeenReelIds: jest.fn().mockResolvedValue(new Set()),
+    findRecentlySeenReelIds: jest.fn().mockResolvedValue(new Set<string>()),
     findEligibleReelsByIds: jest
       .fn()
-      .mockImplementation(async (ids: string[]) =>
-        reels.filter((item) => ids.includes(item.id)),
+      .mockImplementation((ids: string[]) =>
+        Promise.resolve(reels.filter((item) => ids.includes(item.id))),
       ),
     loadRankingSnapshot: jest.fn().mockResolvedValue(emptySnapshot),
   };
-  const feedSessionRepository = {
-    get: jest.fn().mockResolvedValue(options?.cachedSession ?? null),
-    save: jest.fn().mockResolvedValue(undefined),
-  };
-  const rankingConfig = {
+  const feedSessionRepository: jest.Mocked<IRecommendationFeedSessionRepository> =
+    {
+      get: jest.fn().mockResolvedValue(options?.cachedSession ?? null),
+      save: jest.fn().mockResolvedValue(undefined),
+    };
+  const rankingConfig: IRecommendationRankingConfig = {
     getWeights: () => ({
       candidateScore: 1,
       tagAffinity: 0,
@@ -94,7 +109,7 @@ function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
       explorationRatio: 0,
     }),
   };
-  const recommendationConfig = {
+  const recommendationConfig: IRecommendationConfig = {
     getAlgorithmVersion: () => 'personalized-ranker-v2',
     getCandidateSource: () => 'PERSONALIZED_MULTI_SOURCE_PHASE8',
     getFeatureFlags: () => ({
@@ -111,22 +126,27 @@ function createHarness(options?: { cachedSession?: any; reels?: any[] }) {
     getFeedSlateSize: () => 3,
     isTelemetryEnabled: () => true,
   };
-  const telemetry = { publish: jest.fn() };
-  const friends = {
+  const telemetry: jest.Mocked<IRecommendationTelemetryService> = {
+    publish: jest.fn(),
+  };
+  const friends: jest.Mocked<IFriendContentAccessService> = {
     getFeedAudience: jest.fn().mockResolvedValue({
       friendUserIds: [],
       excludedUserIds: [],
     }),
+    canView: jest.fn().mockResolvedValue(true),
   };
-  const semantic = { findCandidates: jest.fn().mockResolvedValue([]) };
+  const semantic: jest.Mocked<ISemanticRecommendationService> = {
+    findCandidates: jest.fn().mockResolvedValue([]),
+  };
   const useCase = new GetRecommendedReelsUseCase(
-    recommendationRepository as any,
-    feedSessionRepository as any,
-    rankingConfig as any,
-    recommendationConfig as any,
-    telemetry as any,
-    friends as any,
-    semantic as any,
+    recommendationRepository,
+    feedSessionRepository,
+    rankingConfig,
+    recommendationConfig,
+    telemetry,
+    friends,
+    semantic,
   );
 
   return {
@@ -155,7 +175,7 @@ describe('GetRecommendedReelsUseCase feed sessions', () => {
     expect(harness.feedSessionRepository.save).toHaveBeenCalledTimes(1);
 
     const savedSession = harness.feedSessionRepository.save.mock.calls[0][0];
-    expect(savedSession.items.map((item: any) => item.reelId)).toEqual([
+    expect(savedSession.items.map((item) => item.reelId)).toEqual([
       'reel-1',
       'reel-2',
       'reel-3',
@@ -163,7 +183,7 @@ describe('GetRecommendedReelsUseCase feed sessions', () => {
   });
 
   it('serves the next page from the cached ranked slate without rerunning candidate generation', async () => {
-    const cachedSession = {
+    const cachedSession: RecommendationFeedSession = {
       feedSessionId: '2f628c36-e32d-4b0c-8df5-c1f91087a001',
       viewerId: 'viewer-1',
       algorithmVersion: 'personalized-ranker-v2',

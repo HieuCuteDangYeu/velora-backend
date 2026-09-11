@@ -1,15 +1,20 @@
+import type { IAiEmbeddingService } from '@content/application/use-cases/ai-embedding.service.interface';
+import type { ClientProxy } from '@nestjs/microservices';
 import { of } from 'rxjs';
 import { SemanticRecommendationServiceAdapter } from './semantic-recommendation-service.adapter';
 
 describe('SemanticRecommendationServiceAdapter', () => {
   it('forwards embedding identity and caps the semantic result limit at 100', async () => {
-    const generateEmbedding = jest.fn().mockResolvedValue({
+    const generateEmbedding: jest.MockedFunction<
+      IAiEmbeddingService['generateEmbedding']
+    > = jest.fn().mockResolvedValue({
       values: [0.1, 0.2],
       model: 'BAAI/bge-m3',
       dimensions: 2,
       provider: 'test',
       version: 'bge-m3-tei-v1',
     });
+    const embeddingService: IAiEmbeddingService = { generateEmbedding };
     const send = jest.fn().mockReturnValue(
       of([
         {
@@ -29,9 +34,10 @@ describe('SemanticRecommendationServiceAdapter', () => {
         },
       ]),
     );
+    const indexClient = { send } as unknown as ClientProxy;
     const adapter = new SemanticRecommendationServiceAdapter(
-      { generateEmbedding } as any,
-      { send } as any,
+      embeddingService,
+      indexClient,
     );
 
     const result = await adapter.findCandidates({
@@ -60,16 +66,19 @@ describe('SemanticRecommendationServiceAdapter', () => {
   });
 
   it('falls back to keyword/tag hybrid retrieval if embedding identity is incomplete', async () => {
+    const generateEmbedding: jest.MockedFunction<
+      IAiEmbeddingService['generateEmbedding']
+    > = jest.fn().mockResolvedValue({
+      values: [0.1, 0.2],
+      model: 'BAAI/bge-m3',
+      dimensions: 2,
+    });
+    const embeddingService: IAiEmbeddingService = { generateEmbedding };
     const send = jest.fn().mockReturnValue(of([]));
+    const indexClient = { send } as unknown as ClientProxy;
     const adapter = new SemanticRecommendationServiceAdapter(
-      {
-        generateEmbedding: jest.fn().mockResolvedValue({
-          values: [0.1, 0.2],
-          model: 'BAAI/bge-m3',
-          dimensions: 2,
-        }),
-      } as any,
-      { send } as any,
+      embeddingService,
+      indexClient,
     );
 
     await adapter.findCandidates({

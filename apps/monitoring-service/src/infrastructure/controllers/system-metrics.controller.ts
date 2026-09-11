@@ -3,6 +3,12 @@ import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
 import { PrometheusQueryService } from '../services/prometheus-query.service';
 
+const HOST_FILESYSTEM_SELECTOR =
+  'job="node-exporter",mountpoint=~"^/$|^/opt/orbstack-guest/data$",fstype!~"tmpfs|overlay|squashfs"';
+
+const hostFilesystemQuery = (metric: string) =>
+  `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
+
 const RANGE_QUERIES = {
   memory: 'max(velora_process_resident_memory_bytes{service="monitoring-service"})',
   heap: 'max(velora_process_heap_used_bytes{service="monitoring-service"})',
@@ -20,8 +26,7 @@ const RANGE_QUERIES = {
     '1 - (max(node_memory_MemAvailable_bytes{job="node-exporter"}) / clamp_min(max(node_memory_MemTotal_bytes{job="node-exporter"}), 1))',
   host_swap:
     '(max(node_memory_SwapTotal_bytes{job="node-exporter"}) - max(node_memory_SwapFree_bytes{job="node-exporter"})) / clamp_min(max(node_memory_SwapTotal_bytes{job="node-exporter"}), 1)',
-  host_disk:
-    '1 - (max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}) / clamp_min(max(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"}), 1))',
+  host_disk: `1 - (${hostFilesystemQuery('node_filesystem_avail_bytes')} / clamp_min(${hostFilesystemQuery('node_filesystem_size_bytes')}, 1))`,
   host_load1: 'max(node_load1{job="node-exporter"})',
   conversation_cpu:
     'sum(rate(velora_process_cpu_user_seconds_total{service="conversation-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="conversation-service"}[5m]))',
@@ -146,8 +151,8 @@ export class SystemMetricsController {
           this.prometheus.scalar('max(node_memory_MemAvailable_bytes{job="node-exporter"})'),
           this.prometheus.scalar('max(node_memory_SwapTotal_bytes{job="node-exporter"})'),
           this.prometheus.scalar('max(node_memory_SwapFree_bytes{job="node-exporter"})'),
-          this.prometheus.scalar('max(node_filesystem_size_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})'),
-          this.prometheus.scalar('max(node_filesystem_avail_bytes{job="node-exporter",mountpoint="/",fstype!~"tmpfs|overlay|squashfs"})'),
+          this.prometheus.scalar(hostFilesystemQuery('node_filesystem_size_bytes')),
+          this.prometheus.scalar(hostFilesystemQuery('node_filesystem_avail_bytes')),
           this.prometheus.scalar(RANGE_QUERIES.host_load1),
           this.prometheus.scalar('max(time() - node_boot_time_seconds{job="node-exporter"})'),
           this.prometheus.scalar('max(up{job="conversation-service"})'),

@@ -18,6 +18,7 @@ describe('RedisRecommendationFeedSessionRepository', () => {
   it('stores a session with an expiry', async () => {
     const set = jest.fn().mockResolvedValue('OK');
     const repository = new RedisRecommendationFeedSessionRepository({
+      get: jest.fn().mockResolvedValue(null),
       set,
     } as any);
 
@@ -37,6 +38,23 @@ describe('RedisRecommendationFeedSessionRepository', () => {
     } as any);
 
     await expect(repository.get(session.feedSessionId)).resolves.toEqual(session);
+  });
+
+  it('refuses to overwrite a feed session owned by another viewer', async () => {
+    const set = jest.fn();
+    const repository = new RedisRecommendationFeedSessionRepository({
+      get: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          ...session,
+          viewerId: 'viewer-2',
+        }),
+      ),
+      set,
+    } as any);
+
+    await repository.save(session, 900);
+
+    expect(set).not.toHaveBeenCalled();
   });
 
   it('fails open on malformed or unavailable cache data', async () => {

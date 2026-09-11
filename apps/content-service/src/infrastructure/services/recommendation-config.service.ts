@@ -11,11 +11,13 @@ export class RecommendationConfigService implements IRecommendationConfig {
   private readonly telemetryEnabled: boolean;
   private readonly socialPoolEnabled: boolean;
   private readonly semanticPoolEnabled: boolean;
+  private readonly feedSessionTtlSeconds: number;
+  private readonly feedSlateSize: number;
 
   constructor(private readonly configService: ConfigService) {
     this.algorithmVersion = this.readVersion(
       'REEL_RECOMMENDATION_VERSION',
-      'personalized-ranker-v1',
+      'personalized-ranker-v2',
     );
 
     this.telemetryEnabled = this.readBoolean(
@@ -24,13 +26,17 @@ export class RecommendationConfigService implements IRecommendationConfig {
     );
 
     this.socialPoolEnabled = this.readBoolean('REEL_SOCIAL_POOL_ENABLED', true);
-    this.semanticPoolEnabled = this.readBoolean(
-      'REEL_SEMANTIC_POOL_ENABLED',
-      true,
-    );
     this.semanticPoolEnabled =
-      this.semanticPoolEnabled &&
+      this.readBoolean('REEL_SEMANTIC_POOL_ENABLED', true) &&
       this.readBoolean('RECOMMENDATION_SEMANTIC_INDEX_ENABLED', false);
+
+    this.feedSessionTtlSeconds = this.readInteger(
+      'REEL_FEED_SESSION_TTL_SECONDS',
+      15 * 60,
+      60,
+      60 * 60,
+    );
+    this.feedSlateSize = this.readInteger('REEL_FEED_SLATE_SIZE', 100, 20, 200);
   }
 
   getAlgorithmVersion(): string {
@@ -38,7 +44,7 @@ export class RecommendationConfigService implements IRecommendationConfig {
   }
 
   getCandidateSource(): string {
-    return 'PERSONALIZED_MULTI_SOURCE_PHASE7';
+    return 'PERSONALIZED_MULTI_SOURCE_PHASE8';
   }
 
   getFeatureFlags(): RecommendationFeatureFlags {
@@ -55,7 +61,16 @@ export class RecommendationConfigService implements IRecommendationConfig {
       sessionIntent: true,
       fatigueControl: true,
       diversityReranking: true,
+      stableFeedSessionSlate: true,
     };
+  }
+
+  getFeedSessionTtlSeconds(): number {
+    return this.feedSessionTtlSeconds;
+  }
+
+  getFeedSlateSize(): number {
+    return this.feedSlateSize;
   }
 
   isTelemetryEnabled(): boolean {
@@ -94,5 +109,24 @@ export class RecommendationConfigService implements IRecommendationConfig {
     }
 
     throw new Error(`${key} has an invalid boolean value`);
+  }
+
+  private readInteger(
+    key: string,
+    fallback: number,
+    minimum: number,
+    maximum: number,
+  ): number {
+    const raw = this.configService.get<string | number>(key);
+    const value =
+      raw === undefined || raw === null || raw === '' ? fallback : Number(raw);
+
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw new Error(
+        `${key} must be an integer between ${minimum} and ${maximum}`,
+      );
+    }
+
+    return value;
   }
 }

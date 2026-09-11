@@ -27,22 +27,7 @@ export class RedisRecommendationFeedSessionRepository
         return null;
       }
 
-      const parsed = JSON.parse(raw) as Partial<RecommendationFeedSession>;
-
-      if (
-        parsed.feedSessionId !== feedSessionId ||
-        typeof parsed.viewerId !== 'string' ||
-        typeof parsed.algorithmVersion !== 'string' ||
-        typeof parsed.generatedAt !== 'string' ||
-        !Array.isArray(parsed.items)
-      ) {
-        this.logger.warn(
-          `Ignoring malformed recommendation feed session ${feedSessionId}`,
-        );
-        return null;
-      }
-
-      return parsed as RecommendationFeedSession;
+      return this.parseSession(raw, feedSessionId);
     } catch (error: unknown) {
       this.logger.warn(
         `Recommendation feed session cache unavailable for ${feedSessionId}: ${this.describeError(error)}`,
@@ -57,8 +42,22 @@ export class RedisRecommendationFeedSessionRepository
   ): Promise<void> {
     try {
       await this.ensureConnected();
+      const key = this.key(session.feedSessionId);
+      const existingRaw = await this.redis.get(key);
+
+      if (existingRaw) {
+        const existing = this.parseSession(existingRaw, session.feedSessionId);
+
+        if (existing && existing.viewerId !== session.viewerId) {
+          this.logger.warn(
+            `Refusing to overwrite recommendation feed session ${session.feedSessionId} owned by another viewer`,
+          );
+          return;
+        }
+      }
+
       await this.redis.set(
-        this.key(session.feedSessionId),
+        key,
         JSON.stringify(session),
         'EX',
         Math.max(1, Math.floor(ttlSeconds)),
@@ -68,6 +67,28 @@ export class RedisRecommendationFeedSessionRepository
         `Unable to cache recommendation feed session ${session.feedSessionId}: ${this.describeError(error)}`,
       );
     }
+  }
+
+  private parseSession(
+    raw: string,
+    expectedFeedSessionId: string,
+  ): RecommendationFeedSession | null {
+    const parsed = JSON.parse(raw) as Partial<RecommendationFeedSession>;
+
+    if (
+      parsed.feedSessionId !== expectedFeedSessionId ||
+      typeof parsed.viewerId !== 'string' ||
+      typeof parsed.algorithmVersion !== 'string' ||
+      typeof parsed.generatedAt !== 'string' ||
+      !Array.isArray(parsed.items)
+    ) {
+      this.logger.warn(
+        `Ignoring malformed recommendation feed session ${expectedFeedSessionId}`,
+      );
+      return null;
+    }
+
+    return parsed as RecommendationFeedSession;
   }
 
   private async ensureConnected(): Promise<void> {

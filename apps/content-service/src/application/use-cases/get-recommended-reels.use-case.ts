@@ -2,6 +2,11 @@ import type { Reel } from '@content/domain/entities/reel.entity';
 import type { ReelCursor } from '@content/domain/interfaces/content.repository.interface';
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
 import type { IRecommendationConfig } from '@content/domain/interfaces/recommendation-config.interface';
+import type {
+  IRecommendationFeedSessionRepository,
+  RecommendationFeedSession,
+  RecommendationFeedSessionItem,
+} from '@content/domain/interfaces/recommendation-feed-session.repository.interface';
 import type { IRecommendationRankingConfig } from '@content/domain/interfaces/recommendation-ranking-config.interface';
 import type { IRecommendationTelemetryService } from '@content/domain/interfaces/recommendation-telemetry-service.interface';
 import type {
@@ -23,6 +28,17 @@ import type {
 } from '@content/domain/interfaces/recommended-reels.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
+interface RecommendationSessionPageItem {
+  reel: Reel;
+  sessionItem: RecommendationFeedSessionItem;
+  rank: number;
+}
+
+interface RecommendationSessionPage {
+  items: RecommendationSessionPageItem[];
+  nextCursor: ReelCursor | null;
+}
+
 @Injectable()
 export class GetRecommendedReelsUseCase {
   private readonly logger = new Logger(GetRecommendedReelsUseCase.name);
@@ -30,6 +46,9 @@ export class GetRecommendedReelsUseCase {
   constructor(
     @Inject('IRecommendationRepository')
     private readonly recommendationRepository: IRecommendationRepository,
+
+    @Inject('IRecommendationFeedSessionRepository')
+    private readonly feedSessionRepository: IRecommendationFeedSessionRepository,
 
     @Inject('IRecommendationRankingConfig')
     private readonly rankingConfig: IRecommendationRankingConfig,
@@ -53,7 +72,7 @@ export class GetRecommendedReelsUseCase {
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 50);
     const feedSessionId = input.feedSessionId ?? globalThis.crypto.randomUUID();
     const algorithmVersion = this.recommendationConfig.getAlgorithmVersion();
-    const featureFlags = this.recommendationConfig.getFeatureFlags();
+    const baseFeatureFlags = this.recommendationConfig.getFeatureFlags();
     const pipelineCandidateSource =
       this.recommendationConfig.getCandidateSource();
     const startedAt = Date.now();
@@ -62,38 +81,99 @@ export class GetRecommendedReelsUseCase {
       const audience = await this.friendContentAccessService.getFeedAudience(
         input.viewerId,
       );
-
       const excludedUserIds = this.uniqueStrings([
         ...audience.excludedUserIds,
         ...(input.excludedUserIds ?? []),
       ]);
 
-      const pipeline = await this.buildPipeline({
-        viewerId: input.viewerId,
-        limit,
-        cursor: input.cursor,
-        excludedUserIds,
-        friendUserIds: audience.friendUserIds,
-        excludeRecentlySeen: input.excludeRecentlySeen,
-        feedSessionId,
-      });
+      let session = input.feedSessionId
+        ? await this.feedSessionRepository.get(feedSessionId)
+        : null;
+      let cacheHit = false;
+      let sourceCounts: Partial<Record<RecommendationCandidateSource, number>> =
+        {};
+      let page: RecommendationSessionPage;
 
-      const generatedAt = new Date().toISOString();
+      if (
+        session &&
+        session.viewerId === input.viewerId &&
+        session.algorithmVersion === algorithmVersion
+      ) {
+        cacheHit = true;
+        page = await this.pageFromSession(
+          session,
+          input.cursor,
+          limit,
+          excludedUserIds,
+        );
+      } else {
+        if (session) {
+          this.logger.warn(
+            `Ignoring recommendation feed session ${feedSessionId} because viewer or algorithm version does not match`,
+          );
+        }
 
-      const items = pipeline.items.map((rankedItem, index) => ({
-        ...rankedItem.reel,
+        const slateLimit = Math.max(
+          limit,
+          this.recommendationConfig.getFeedSlateSize(),
+        );
+        const pipeline = await this.buildPipeline({
+          viewerId: input.viewerId,
+          limit: slateLimit,
+          excludedUserIds,
+          friendUserIds: audience.friendUserIds,
+          excludeRecentlySeen: input.excludeRecentlySeen,
+          feedSessionId,
+        });
+        const generatedAt = new Date().toISOString();
+
+        session = {
+          feedSessionId,
+          viewerId: input.viewerId,
+          algorithmVersion,
+          generatedAt,
+          items: pipeline.items.map((item) => ({
+            reelId: item.reel.id,
+            primarySource: item.candidate.primarySource,
+            sources: item.candidate.sources,
+          })),
+        };
+        sourceCounts = pipeline.sourceCounts;
+
+        await this.feedSessionRepository.save(
+          session,
+          this.recommendationConfig.getFeedSessionTtlSeconds(),
+        );
+
+        const reelById = new Map(
+          pipeline.items.map((item) => [item.reel.id, item.reel]),
+        );
+        page = this.buildPage(
+          session.items,
+          reelById,
+          input.cursor,
+          limit,
+        );
+      }
+
+      const generatedAt = session.generatedAt;
+      const items = page.items.map(({ reel, sessionItem, rank }) => ({
+        ...reel,
         recommendation: {
           recommendationId: globalThis.crypto.randomUUID(),
           feedSessionId,
           algorithmVersion,
-          candidateSource: rankedItem.candidate.primarySource,
-          candidateSources: rankedItem.candidate.sources,
-          rank: index + 1,
+          candidateSource: sessionItem.primarySource,
+          candidateSources: sessionItem.sources,
+          rank,
           generatedAt,
         },
       }));
-
       const latencyMs = Math.max(0, Date.now() - startedAt);
+      const featureFlags = {
+        ...baseFeatureFlags,
+        feedSessionCacheHit: cacheHit,
+      };
 
       this.publishTelemetry({
         eventId: globalThis.crypto.randomUUID(),
@@ -107,22 +187,24 @@ export class GetRecommendedReelsUseCase {
         latencyMs,
         outcome: 'SUCCEEDED',
         featureFlags,
-        occurredAt: generatedAt,
+        occurredAt: new Date().toISOString(),
       });
 
-      this.publishSourceTelemetry({
-        sourceCounts: pipeline.sourceCounts,
-        algorithmVersion,
-        feedSessionId,
-        requestedLimit: limit,
-        latencyMs,
-        featureFlags,
-        occurredAt: generatedAt,
-      });
+      if (!cacheHit) {
+        this.publishSourceTelemetry({
+          sourceCounts,
+          algorithmVersion,
+          feedSessionId,
+          requestedLimit: limit,
+          latencyMs,
+          featureFlags,
+          occurredAt: new Date().toISOString(),
+        });
+      }
 
       return {
         items,
-        nextCursor: pipeline.nextCursor,
+        nextCursor: page.nextCursor,
         feedSessionId,
         algorithmVersion,
         generatedAt,
@@ -142,7 +224,7 @@ export class GetRecommendedReelsUseCase {
         latencyMs: Math.max(0, Date.now() - startedAt),
         outcome: 'FAILED',
         errorCode: this.errorCode(error),
-        featureFlags,
+        featureFlags: baseFeatureFlags,
         occurredAt,
       });
 
@@ -150,27 +232,114 @@ export class GetRecommendedReelsUseCase {
     }
   }
 
+  private async pageFromSession(
+    session: RecommendationFeedSession,
+    cursor: ReelCursor | undefined,
+    limit: number,
+    excludedUserIds: string[],
+  ): Promise<RecommendationSessionPage> {
+    const startIndex = this.resolveStartIndex(session.items, cursor);
+    const remaining = session.items.slice(startIndex);
+    const reels = await this.recommendationRepository.findEligibleReelsByIds(
+      remaining.map((item) => item.reelId),
+      excludedUserIds,
+    );
+    const reelById = new Map(reels.map((reel) => [reel.id, reel]));
+
+    return this.buildPage(session.items, reelById, cursor, limit);
+  }
+
+  private buildPage(
+    sessionItems: RecommendationFeedSessionItem[],
+    reelById: Map<string, Reel>,
+    cursor: ReelCursor | undefined,
+    limit: number,
+  ): RecommendationSessionPage {
+    const startIndex = this.resolveStartIndex(sessionItems, cursor);
+    const items: RecommendationSessionPageItem[] = [];
+    let lastSelectedIndex = -1;
+
+    for (let index = startIndex; index < sessionItems.length; index += 1) {
+      const sessionItem = sessionItems[index];
+      const reel = reelById.get(sessionItem.reelId);
+
+      if (!reel) {
+        continue;
+      }
+
+      items.push({
+        reel,
+        sessionItem,
+        rank: index + 1,
+      });
+      lastSelectedIndex = index;
+
+      if (items.length >= limit) {
+        break;
+      }
+    }
+
+    if (items.length === 0 || lastSelectedIndex < 0) {
+      return {
+        items: [],
+        nextCursor: null,
+      };
+    }
+
+    const hasMore = sessionItems
+      .slice(lastSelectedIndex + 1)
+      .some((item) => reelById.has(item.reelId));
+    const lastReel = items[items.length - 1].reel;
+
+    return {
+      items,
+      nextCursor: hasMore
+        ? {
+            createdAt: lastReel.createdAt,
+            id: lastReel.id,
+          }
+        : null,
+    };
+  }
+
+  private resolveStartIndex(
+    sessionItems: RecommendationFeedSessionItem[],
+    cursor?: ReelCursor,
+  ): number {
+    if (!cursor) {
+      return 0;
+    }
+
+    const cursorIndex = sessionItems.findIndex(
+      (item) => item.reelId === cursor.id,
+    );
+
+    if (cursorIndex < 0) {
+      this.logger.warn(
+        `Recommendation cursor reel ${cursor.id} is not present in the current feed session; restarting from the beginning of the rebuilt slate`,
+      );
+      return 0;
+    }
+
+    return cursorIndex + 1;
+  }
+
   private async buildPipeline(input: {
     viewerId: string;
     limit: number;
-    cursor?: ReelCursor;
     excludedUserIds: string[];
     friendUserIds: string[];
     excludeRecentlySeen?: boolean;
     feedSessionId: string;
   }): Promise<RecommendationPipelineResult> {
     const candidateLimit = Math.min(Math.max(input.limit * 6, 60), 300);
-
     const candidateQuery: RecommendationCandidateQuery = {
       viewerId: input.viewerId,
       limit: candidateLimit,
-      cursor: input.cursor,
       excludedUserIds: input.excludedUserIds,
       friendUserIds: input.friendUserIds,
     };
-
     const featureFlags = this.recommendationConfig.getFeatureFlags();
-
     const sourceOperations: Array<{
       source: RecommendationCandidateSource;
       execute: () => Promise<RecommendationCandidateEvidence[]>;
@@ -226,7 +395,7 @@ export class GetRecommendedReelsUseCase {
           return await this.semanticRecommendationService.findCandidates({
             viewerId: candidateQuery.viewerId,
             interestTags,
-            limit: candidateQuery.limit,
+            limit: Math.min(candidateQuery.limit, 100),
           });
         },
         enabled: featureFlags['semanticPool'] !== false,
@@ -246,18 +415,15 @@ export class GetRecommendedReelsUseCase {
         enabled: featureFlags['explorationPool'] !== false,
       },
     ];
-
     const enabledOperations = sourceOperations.filter(
       (operation) => operation.enabled,
     );
-
     const settled = await Promise.allSettled(
       enabledOperations.map(async (operation) => ({
         source: operation.source,
         candidates: await operation.execute(),
       })),
     );
-
     const allCandidates: RecommendationCandidateEvidence[] = [];
     const sourceCounts: Partial<Record<RecommendationCandidateSource, number>> =
       {};
@@ -281,7 +447,6 @@ export class GetRecommendedReelsUseCase {
     }
 
     const mergedCandidates = this.mergeCandidates(allCandidates);
-
     const recentlySeenReelIds =
       input.excludeRecentlySeen === false
         ? new Set<string>()
@@ -289,42 +454,27 @@ export class GetRecommendedReelsUseCase {
             input.viewerId,
             new Date(Date.now() - 24 * 60 * 60 * 1000),
           );
-
     const unseenCandidates = mergedCandidates.filter(
       (candidate) => !recentlySeenReelIds.has(candidate.reelId),
     );
-
     const seenFallbackCandidates = mergedCandidates.filter((candidate) =>
       recentlySeenReelIds.has(candidate.reelId),
     );
-
-    // Prefer unseen candidates, but never return an empty feed merely because
-    // an active viewer has exhausted the 24-hour unseen window. Seen reels are
-    // still ranked with the existing recently-seen penalty and are used only
-    // after unseen candidates.
     const eligibleCandidates =
       input.excludeRecentlySeen === false
         ? mergedCandidates
         : [...unseenCandidates, ...seenFallbackCandidates];
-
     const eligibleReels =
       await this.recommendationRepository.findEligibleReelsByIds(
         eligibleCandidates.map((candidate) => candidate.reelId),
         input.excludedUserIds,
       );
-
     const reelById = new Map(eligibleReels.map((reel) => [reel.id, reel]));
-
     const candidatesWithReels = eligibleCandidates
       .map((candidate) => {
         const reel = reelById.get(candidate.reelId);
 
-        return reel
-          ? {
-              candidate,
-              reel,
-            }
-          : null;
+        return reel ? { candidate, reel } : null;
       })
       .filter(
         (
@@ -334,13 +484,11 @@ export class GetRecommendedReelsUseCase {
           reel: Reel;
         } => item !== null,
       );
-
     const snapshot = await this.recommendationRepository.loadRankingSnapshot({
       viewerId: input.viewerId,
       reelIds: candidatesWithReels.map((item) => item.reel.id),
       feedSessionId: input.feedSessionId,
     });
-
     const rankedItems = candidatesWithReels
       .map(({ candidate, reel }) =>
         this.rankCandidate(reel, candidate, snapshot),
@@ -359,27 +507,21 @@ export class GetRecommendedReelsUseCase {
 
         return left.reel.id.localeCompare(right.reel.id);
       });
-
     const rankedUnseenItems = rankedItems.filter(
       (item) => !recentlySeenReelIds.has(item.reel.id),
     );
-
     const rankedSeenFallbackItems = rankedItems.filter((item) =>
       recentlySeenReelIds.has(item.reel.id),
     );
-
     const diversifiedUnseenItems = this.diversify(
       rankedUnseenItems,
       input.limit,
     );
-
     const remainingCapacity = input.limit - diversifiedUnseenItems.length;
-
     const diversifiedSeenFallbackItems =
       remainingCapacity > 0
         ? this.diversify(rankedSeenFallbackItems, remainingCapacity)
         : [];
-
     const diversifiedItems = [
       ...diversifiedUnseenItems,
       ...diversifiedSeenFallbackItems,
@@ -387,7 +529,7 @@ export class GetRecommendedReelsUseCase {
 
     return {
       items: diversifiedItems,
-      nextCursor: this.buildNextCursor(diversifiedItems),
+      nextCursor: null,
       rawCandidateCount: allCandidates.length,
       deduplicatedCandidateCount: mergedCandidates.length,
       sourceCounts,
@@ -410,9 +552,7 @@ export class GetRecommendedReelsUseCase {
         sourceScores: {},
         reasons: new Set<string>(),
       };
-
       const sourceScore = this.clamp(candidate.sourceScore);
-
       existing.sourceScores[candidate.source] = Math.max(
         existing.sourceScores[candidate.source] ?? 0,
         sourceScore,
@@ -434,21 +574,14 @@ export class GetRecommendedReelsUseCase {
         const sourceEntries = Object.entries(value.sourceScores) as Array<
           [RecommendationCandidateSource, number]
         >;
-
         sourceEntries.sort((left, right) => right[1] - left[1]);
-
         const sources = sourceEntries.map(([source]) => source);
         const primarySource = sources[0] ?? 'EXPLORATION';
-
-        const unionScore = sourceEntries.reduce(
-          (combined, [, score]) => 1 - (1 - combined) * (1 - this.clamp(score)),
-          0,
-        );
-
-        const multiSourceBoost = Math.min(
-          0.15,
-          Math.max(0, sources.length - 1) * 0.04,
-        );
+        const strongestEvidence = sourceEntries[0]?.[1] ?? 0;
+        const supportingEvidence = sourceEntries
+          .slice(1)
+          .reduce((sum, [, score]) => sum + this.clamp(score), 0);
+        const multiSourceBoost = Math.min(0.12, supportingEvidence * 0.04);
 
         return {
           reelId,
@@ -456,7 +589,7 @@ export class GetRecommendedReelsUseCase {
           sources,
           sourceScores: value.sourceScores,
           reasons: [...value.reasons].slice(0, 12),
-          candidateScore: this.clamp(unionScore + multiSourceBoost),
+          candidateScore: this.clamp(strongestEvidence + multiSourceBoost),
         };
       })
       .sort((left, right) => {
@@ -475,30 +608,23 @@ export class GetRecommendedReelsUseCase {
   ): RankedRecommendationItem {
     const weights = this.rankingConfig.getWeights();
     const fatigue = this.rankingConfig.getFatigueConfig();
-
     const normalizedTags = this.normalizeTags(reel.tags);
     const dominantTopic = this.selectDominantTopic(normalizedTags, snapshot);
-
     const tagAffinityScore = this.averageScore(
       normalizedTags.map((tag) => snapshot.tagAffinityByTag[tag] ?? 0),
     );
-
     const creatorAffinityScore = this.clamp(
       snapshot.creatorAffinityByCreatorId[reel.userId] ?? 0,
     );
-
     const sessionTagScore = this.averageSignedScore(
       normalizedTags.map((tag) => snapshot.sessionTagIntentByTag[tag] ?? 0),
     );
-
     const sessionCreatorScore = this.clampSigned(
       snapshot.sessionCreatorIntentByCreatorId[reel.userId] ?? 0,
     );
-
     const sessionIntentScore = this.clampSigned(
       sessionTagScore * 0.7 + sessionCreatorScore * 0.3,
     );
-
     const engagement = snapshot.engagementByReelId[reel.id] ?? {
       impressionCount: 0,
       completionCount: 0,
@@ -510,16 +636,12 @@ export class GetRecommendedReelsUseCase {
       skipRate: 0,
       trendingScore: 0,
     };
-
     const recentlySeen = snapshot.recentlySeenReelIds.includes(reel.id);
-
     const creatorImpressions =
       snapshot.recentCreatorImpressionsByCreatorId[reel.userId] ?? 0;
-
     const topicImpressions = dominantTopic
       ? (snapshot.recentTagImpressionsByTag[dominantTopic] ?? 0)
       : 0;
-
     const scoreComponents: RecommendationScoreComponents = {
       candidateScore: candidate.candidateScore,
       tagAffinityScore,
@@ -558,7 +680,6 @@ export class GetRecommendedReelsUseCase {
             )
           : 0,
     };
-
     const positiveScore =
       scoreComponents.candidateScore * weights.candidateScore +
       scoreComponents.tagAffinityScore * weights.tagAffinity +
@@ -570,13 +691,11 @@ export class GetRecommendedReelsUseCase {
       scoreComponents.completionRate * weights.completionRate +
       scoreComponents.replayRate * weights.replayRate +
       scoreComponents.sessionIntentScore * weights.sessionIntent;
-
     const negativeScore =
       scoreComponents.skipRate * weights.skipRate +
       scoreComponents.recentlySeenPenalty +
       scoreComponents.creatorFatiguePenalty +
       scoreComponents.topicFatiguePenalty;
-
     const rawScore = positiveScore - negativeScore;
     const explanation = this.buildExplanation(scoreComponents, rawScore);
 
@@ -598,7 +717,6 @@ export class GetRecommendedReelsUseCase {
     const selected: RankedRecommendationItem[] = [];
     const deferred: RankedRecommendationItem[] = [];
     const remaining = [...rankedItems];
-
     const explorationTarget = Math.min(
       limit,
       Math.max(0, Math.round(limit * config.explorationRatio)),
@@ -609,7 +727,6 @@ export class GetRecommendedReelsUseCase {
         selected.filter((item) =>
           item.candidate.sources.includes('EXPLORATION'),
         ).length < explorationTarget;
-
       let selectedIndex = -1;
 
       for (let index = 0; index < remaining.length; index += 1) {
@@ -705,9 +822,9 @@ export class GetRecommendedReelsUseCase {
     const nearDuplicateWindow = selected.slice(-config.nearDuplicateLookback);
 
     for (const selectedItem of nearDuplicateWindow) {
-      const similarity = this.jaccardSimilarity(
-        this.normalizeTags(selectedItem.reel.tags),
-        this.normalizeTags(item.reel.tags),
+      const similarity = this.nearDuplicateSimilarity(
+        selectedItem.reel,
+        item.reel,
       );
 
       if (similarity >= config.nearDuplicateJaccardThreshold) {
@@ -716,6 +833,51 @@ export class GetRecommendedReelsUseCase {
     }
 
     return true;
+  }
+
+  private nearDuplicateSimilarity(left: Reel, right: Reel): number {
+    const leftTitle = this.normalizeText(left.title ?? '');
+    const rightTitle = this.normalizeText(right.title ?? '');
+
+    if (
+      leftTitle.length >= 8 &&
+      rightTitle.length >= 8 &&
+      leftTitle === rightTitle
+    ) {
+      return 1;
+    }
+
+    const tagSimilarity = this.jaccardSimilarity(
+      this.normalizeTags(left.tags),
+      this.normalizeTags(right.tags),
+    );
+    const metadataSimilarity = this.jaccardSimilarity(
+      this.metadataTokens(left),
+      this.metadataTokens(right),
+    );
+
+    return Math.max(tagSimilarity, metadataSimilarity);
+  }
+
+  private metadataTokens(reel: Reel): string[] {
+    const text = [reel.title ?? '', reel.description ?? '', ...reel.tags].join(
+      ' ',
+    );
+
+    return this.uniqueStrings(
+      this.normalizeText(text)
+        .split(/\s+/u)
+        .filter((token) => token.length >= 3)
+        .slice(0, 80),
+    );
+  }
+
+  private normalizeText(value: string): string {
+    return value
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
   }
 
   private buildExplanation(
@@ -734,7 +896,6 @@ export class GetRecommendedReelsUseCase {
       ['replay rate', components.replayRate],
       ['current-session intent', components.sessionIntentScore],
     ];
-
     const penalties: Array<[string, number]> = [
       ['skip-rate penalty', components.skipRate],
       ['recently-seen penalty', components.recentlySeenPenalty],
@@ -770,7 +931,6 @@ export class GetRecommendedReelsUseCase {
       const leftScore =
         (snapshot.tagAffinityByTag[left] ?? 0) +
         (snapshot.sessionTagIntentByTag[left] ?? 0);
-
       const rightScore =
         (snapshot.tagAffinityByTag[right] ?? 0) +
         (snapshot.sessionTagIntentByTag[right] ?? 0);
@@ -835,45 +995,17 @@ export class GetRecommendedReelsUseCase {
     );
   }
 
-  private jaccardSimilarity(leftTags: string[], rightTags: string[]): number {
-    if (leftTags.length === 0 || rightTags.length === 0) {
+  private jaccardSimilarity(leftValues: string[], rightValues: string[]): number {
+    if (leftValues.length === 0 || rightValues.length === 0) {
       return 0;
     }
 
-    const left = new Set(leftTags);
-    const right = new Set(rightTags);
-    const intersection = [...left].filter((tag) => right.has(tag)).length;
+    const left = new Set(leftValues);
+    const right = new Set(rightValues);
+    const intersection = [...left].filter((value) => right.has(value)).length;
     const union = new Set([...left, ...right]).size;
 
     return union > 0 ? intersection / union : 0;
-  }
-
-  private buildNextCursor(
-    items: RankedRecommendationItem[],
-  ): ReelCursor | null {
-    if (items.length === 0) {
-      return null;
-    }
-
-    const chronological = items
-      .map((item) => item.reel)
-      .sort((left, right) => {
-        const dateDifference =
-          right.createdAt.getTime() - left.createdAt.getTime();
-
-        if (dateDifference !== 0) {
-          return dateDifference;
-        }
-
-        return left.id.localeCompare(right.id);
-      });
-
-    const last = chronological[chronological.length - 1];
-
-    return {
-      createdAt: last.createdAt,
-      id: last.id,
-    };
   }
 
   private publishSourceTelemetry(input: {

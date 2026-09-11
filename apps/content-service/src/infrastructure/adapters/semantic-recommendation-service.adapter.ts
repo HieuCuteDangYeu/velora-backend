@@ -5,6 +5,7 @@ import type {
 } from '@content/domain/interfaces/semantic-recommendation.service.interface';
 import {
   SEMANTIC_INDEX_PATTERNS,
+  type SemanticIndexSearchRequest,
   type SemanticIndexSearchResult,
 } from '@common/processing/interfaces/semantic-index.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -37,17 +38,35 @@ export class SemanticRecommendationServiceAdapter implements ISemanticRecommenda
         text: interestText,
         taskType: 'RETRIEVAL_QUERY',
       });
+      const searchLimit = Math.min(Math.max(Math.floor(input.limit), 1), 100);
+      const hasEmbeddingIdentity = Boolean(
+        embedding.model?.trim() && embedding.version?.trim(),
+      );
+      const request: SemanticIndexSearchRequest = {
+        queryText: interestText,
+        queryTags: interestTags,
+        limit: searchLimit,
+        candidateLimit: Math.min(Math.max(searchLimit * 4, 100), 1_000),
+        ...(hasEmbeddingIdentity
+          ? {
+              queryEmbedding: embedding.values,
+              queryEmbeddingModel: embedding.model,
+              queryEmbeddingVersion: embedding.version,
+            }
+          : {}),
+      };
+
+      if (!hasEmbeddingIdentity) {
+        this.logger.warn(
+          'AI embedding response did not include model/version identity; semantic recommendation is falling back to keyword/tag hybrid retrieval.',
+        );
+      }
+
       const results = await firstValueFrom(
         this.indexClient
           .send<SemanticIndexSearchResult[]>(
             SEMANTIC_INDEX_PATTERNS.SEARCH_REELS,
-            {
-              queryText: interestText,
-              queryEmbedding: embedding.values,
-              queryTags: interestTags,
-              limit: input.limit,
-              candidateLimit: Math.min(Math.max(input.limit * 4, 100), 1_000),
-            },
+            request,
           )
           .pipe(timeout(4_000)),
       );
@@ -58,12 +77,20 @@ export class SemanticRecommendationServiceAdapter implements ISemanticRecommenda
             ? 0
             : this.clamp(1 - result.vectorDistance);
         const rankScore = 1 / (index + 1);
+        const hybridScore =
+          result.vectorDistance === undefined
+            ? rankScore
+            : vectorScore * 0.8 + rankScore * 0.2;
 
         return {
           reelId: result.reelId,
           source: 'SEMANTIC' as const,
-          sourceScore: this.clamp(vectorScore * 0.8 + rankScore * 0.2),
-          reasons: ['semantic match to viewer interest vector'],
+          sourceScore: this.clamp(hybridScore),
+          reasons: [
+            result.vectorDistance === undefined
+              ? 'hybrid keyword and interest-tag match'
+              : 'semantic match to viewer interest vector',
+          ],
         };
       });
     } catch (error: unknown) {

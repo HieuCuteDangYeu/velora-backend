@@ -267,6 +267,15 @@ env_hash() {
   sha256sum "$APP_DIR/.env" | awk '{print $1}'
 }
 
+format_epoch_utc() {
+  local epoch="$1"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ
+  else
+    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
+  fi
+}
+
 read_env_value() {
   local key="$1"
   python3 - "$APP_DIR/.env" "$key" <<'PY'
@@ -1361,7 +1370,7 @@ save_local_deployment_receipt() {
 
   jq -n \
     --arg id "$DEPLOY_ID" \
-    --arg started_at "$(date -u -r "$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg started_at "$(format_epoch_utc "$START_EPOCH" 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg from_sha "${LAST_DEPLOYED_SHA:-}" \
     --arg to_sha "${TARGET_SHA:-}" \
     --arg status "$status" \

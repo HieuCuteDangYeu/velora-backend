@@ -48,6 +48,7 @@ import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
 import { PrismaIndexAttemptReadRepository } from '@content/infrastructure/repositories/prisma-index-attempt-read.repository';
 import { RecommendationRepository } from '@content/infrastructure/repositories/recommendation.repository';
+import { RedisRecommendationFeedSessionRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-session.repository';
 import { R2StorageService } from '@content/infrastructure/services/r2-storage.service';
 import { RecommendationConfigService } from '@content/infrastructure/services/recommendation-config.service';
 import { RecommendationRankingConfigService } from '@content/infrastructure/services/recommendation-ranking-config.service';
@@ -55,6 +56,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ScheduleModule } from '@nestjs/schedule';
+import Redis from 'ioredis';
 
 function createRmqClientRegistration(name: string, queue: string) {
   return {
@@ -147,6 +149,26 @@ function createRmqClientRegistration(name: string, queue: string) {
     GetSearchSuggestionsUseCase,
     GetFriendsReelsUseCase,
 
+    {
+      provide: 'REDIS_CLIENT',
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new Redis({
+          host: config.get<string>('REDIS_HOST') ?? 'localhost',
+          port: config.get<number>('REDIS_PORT') ?? 6379,
+          password: config.get<string>('REDIS_PASSWORD') || undefined,
+          tls: (config.get<string>('REDIS_HOST') ?? '').includes('upstash')
+            ? { servername: config.get<string>('REDIS_HOST') }
+            : undefined,
+          lazyConnect: true,
+          enableOfflineQueue: false,
+          maxRetriesPerRequest: 1,
+        }),
+    },
+    {
+      provide: 'IRecommendationFeedSessionRepository',
+      useClass: RedisRecommendationFeedSessionRepository,
+    },
     {
       provide: 'IRecommendationRepository',
       useClass: RecommendationRepository,

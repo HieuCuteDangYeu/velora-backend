@@ -238,11 +238,29 @@ safe_sha_prefix() {
 }
 
 free_root_gb() {
-  df -Pk / | awk 'NR == 2 { printf "%d\n", $4 / 1024 / 1024 }'
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    /bin/df -g / | awk 'NR == 2 { print $4 }'
+  else
+    df -Pk / | awk 'NR == 2 { printf "%d\n", $4 / 1024 / 1024 }'
+  fi
 }
 
 available_ram_mb() {
-  awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024 }' /proc/meminfo
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    awk '/^MemAvailable:/ { printf "%d\n", $2 / 1024 }' /proc/meminfo
+    return
+  fi
+
+  vm_stat | awk '
+    /page size of/ { page_size = $(NF - 1) }
+    /^Pages free:/ { gsub(/\./, "", $3); free_pages = $3 }
+    /^Pages inactive:/ { gsub(/\./, "", $3); inactive_pages = $3 }
+    /^Pages speculative:/ { gsub(/\./, "", $3); speculative_pages = $3 }
+    END {
+      if (!page_size) exit 1
+      printf "%d\n", (free_pages + inactive_pages + speculative_pages) * page_size / 1024 / 1024
+    }
+  '
 }
 
 env_hash() {
@@ -346,6 +364,7 @@ parse_args() {
 
 init() {
   require_command bash
+  (( BASH_VERSINFO[0] >= 4 )) || fail "Bash 4+ is required (install Homebrew bash and ensure it is first in PATH)"
   require_command git
   require_command jq
   require_command flock
@@ -1342,7 +1361,7 @@ save_local_deployment_receipt() {
 
   jq -n \
     --arg id "$DEPLOY_ID" \
-    --arg started_at "$(date -u -d "@$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg started_at "$(date -u -r "$START_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg from_sha "${LAST_DEPLOYED_SHA:-}" \
     --arg to_sha "${TARGET_SHA:-}" \
     --arg status "$status" \

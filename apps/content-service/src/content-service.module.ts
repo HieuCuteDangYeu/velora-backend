@@ -46,6 +46,7 @@ import { IndexingAttemptGuardController } from '@content/infrastructure/controll
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
+import { OptimizedRecommendationRepository } from '@content/infrastructure/repositories/optimized-recommendation.repository';
 import { PrismaIndexAttemptReadRepository } from '@content/infrastructure/repositories/prisma-index-attempt-read.repository';
 import { RecommendationRepository } from '@content/infrastructure/repositories/recommendation.repository';
 import { RedisRecommendationFeedSessionRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-session.repository';
@@ -112,6 +113,8 @@ function createRmqClientRegistration(name: string, queue: string) {
     PrismaService,
     ContentRepository,
     PrismaIndexAttemptReadRepository,
+    RecommendationRepository,
+    OptimizedRecommendationRepository,
     ReelMediaJobPublisherAdapter,
     ReelIndexJobPublisherAdapter,
     OutboxDispatcherService,
@@ -171,7 +174,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     },
     {
       provide: 'IRecommendationRepository',
-      useClass: RecommendationRepository,
+      useExisting: OptimizedRecommendationRepository,
     },
     {
       provide: 'IRecommendationRankingConfig',

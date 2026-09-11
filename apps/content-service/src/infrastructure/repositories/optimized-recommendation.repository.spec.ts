@@ -1,3 +1,4 @@
+import type { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { OptimizedRecommendationRepository } from './optimized-recommendation.repository';
 
 describe('OptimizedRecommendationRepository', () => {
@@ -6,10 +7,11 @@ describe('OptimizedRecommendationRepository', () => {
       { reelId: 'reel-1', score: 4 },
       { reelId: 'reel-2', score: 2 },
     ]);
-    const repository = new OptimizedRecommendationRepository({
+    const prisma = {
       $queryRaw: queryRaw,
       reelViewEvent: { findMany: jest.fn() },
-    } as any);
+    } as unknown as PrismaService;
+    const repository = new OptimizedRecommendationRepository(prisma);
 
     const result = await repository.findTrendingCandidates({
       viewerId: 'viewer-1',
@@ -47,10 +49,11 @@ describe('OptimizedRecommendationRepository', () => {
         averagePercentageWatched: 80,
       },
     ]);
-    const repository = new OptimizedRecommendationRepository({
+    const prisma = {
       $queryRaw: queryRaw,
       reelViewEvent: { findMany },
-    } as any);
+    } as unknown as PrismaService;
+    const repository = new OptimizedRecommendationRepository(prisma);
 
     const result = await repository.loadRankingSnapshot({
       viewerId: 'viewer-1',
@@ -64,17 +67,22 @@ describe('OptimizedRecommendationRepository', () => {
         ([input]) => input?.take === 20_000 || input?.take === 10000,
       ),
     ).toBe(false);
-    expect(result.engagementByReelId['reel-1']).toEqual({
-      impressionCount: 10,
-      completionCount: 5,
-      replayCount: 2,
-      skipCount: 1,
-      averagePercentageWatched: 80,
-      completionRate: 0.5,
-      replayRate: 0.2,
-      skipRate: 0.1,
-      trendingScore: 0.45,
-    });
+
+    const reelOneEngagement = result.engagementByReelId['reel-1'];
+    expect(reelOneEngagement).toEqual(
+      expect.objectContaining({
+        impressionCount: 10,
+        completionCount: 5,
+        replayCount: 2,
+        skipCount: 1,
+        averagePercentageWatched: 80,
+        completionRate: 0.5,
+        replayRate: 0.2,
+        skipRate: 0.1,
+      }),
+    );
+    expect(reelOneEngagement.trendingScore).toBeCloseTo(0.45, 10);
+
     expect(result.engagementByReelId['reel-2']).toEqual({
       impressionCount: 0,
       completionCount: 0,

@@ -20,6 +20,7 @@ export class RedisRecommendationFeedSessionRepository
 
   async get(feedSessionId: string): Promise<RecommendationFeedSession | null> {
     try {
+      await this.ensureConnected();
       const raw = await this.redis.get(this.key(feedSessionId));
 
       if (!raw) {
@@ -55,6 +56,7 @@ export class RedisRecommendationFeedSessionRepository
     ttlSeconds: number,
   ): Promise<void> {
     try {
+      await this.ensureConnected();
       await this.redis.set(
         this.key(session.feedSessionId),
         JSON.stringify(session),
@@ -65,6 +67,12 @@ export class RedisRecommendationFeedSessionRepository
       this.logger.warn(
         `Unable to cache recommendation feed session ${session.feedSessionId}: ${this.describeError(error)}`,
       );
+    }
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (this.redis.status === 'wait') {
+      await this.redis.connect();
     }
   }
 

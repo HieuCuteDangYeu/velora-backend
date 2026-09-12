@@ -139,7 +139,7 @@ function splitEvidenceIntoSegments(value: string): string[] {
   if (!normalized) return [];
 
   const sentences = normalized
-    .split(/(?<=[.!?])\s+/)
+    .split(/(?<=[!?])\s+|(?<=[A-Za-z]\.)\s+(?=[A-Z])/)
     .map((item) => item.trim())
     .filter(Boolean);
   if (sentences.length > 1 || normalized.length <= 600) return sentences;

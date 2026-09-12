@@ -153,6 +153,51 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('keeps decimal timestamp text intact while selecting a transcript segment', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The answer is not available.',
+        claims: [],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'Where was the project carried out?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
+            chunkText:
+              'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer:
+        'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
+      claims: [
+        {
+          claim:
+            'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
+          evidenceIds: ['e0'],
+        },
+      ],
+    });
+  });
+
   it.each([
     [
       'unknown evidence ID',

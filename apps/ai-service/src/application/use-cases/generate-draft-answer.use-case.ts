@@ -134,28 +134,6 @@ function extractiveTokens(value: string): string[] {
   );
 }
 
-function splitEvidenceIntoSegments(value: string): string[] {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (!normalized) return [];
-
-  const sentences = normalized
-    .split(/(?<=[.!?])\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (sentences.length > 1 || normalized.length <= 600) return sentences;
-
-  const clauses = normalized
-    .split(/(?<=[,;:])\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return clauses.length > 1 ? clauses : [normalized];
-}
-
-function overlapCount(left: string[], right: string[]): number {
-  const rightSet = new Set(right);
-  return new Set(left.filter((token) => rightSet.has(token))).size;
-}
-
 function hasSupportedQuantity(
   question: string,
   evidence: string[],
@@ -267,7 +245,7 @@ export class GenerateDraftAnswerUseCase {
       return this.extractiveTranscriptFallback(
         state,
         normalized,
-        authorizedEvidence,
+        boundedChunks,
       );
     };
 
@@ -288,84 +266,71 @@ export class GenerateDraftAnswerUseCase {
   private extractiveTranscriptFallback(
     state: RagChatWorkflowState,
     draft: RagDraftAnswer,
-    authorizedEvidence: Array<{
-      evidenceId: string;
-      evidenceType: string;
-      evidenceText: string;
+    boundedChunks: Array<{
+      evidenceType?: string;
+      evidenceText?: string;
+      reelId?: string;
     }>,
   ): RagDraftAnswer {
     if (
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
       !(state.route.requiredEvidence ?? []).includes('TRANSCRIPT') ||
-      authorizedEvidence.length === 0
+      boundedChunks.length === 0
     ) {
       return draft;
     }
 
+    const transcriptCandidates = boundedChunks
+      .map((chunk, index) => ({
+        evidenceId: `e${index}`,
+        evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+        evidenceText: chunk.evidenceText?.trim() ?? '',
+        reelId: chunk.reelId,
+      }))
+      .filter(
+        (candidate) =>
+          candidate.evidenceType === 'TRANSCRIPT' &&
+          candidate.evidenceText.length > 0,
+      );
+    if (transcriptCandidates.length === 0) return draft;
+
     const exactProvenance = assessExactEvidenceProvenance({
       answer: draft.answer,
-      candidates: authorizedEvidence
-        .filter((item) => item.evidenceType === 'TRANSCRIPT')
-        .map((item) => ({
-          evidenceType: 'TRANSCRIPT' as const,
-          evidenceText: item.evidenceText,
-        })),
+      candidates: transcriptCandidates.map((item) => ({
+        evidenceType: 'TRANSCRIPT' as const,
+        evidenceText: item.evidenceText,
+      })),
     });
     if (
       exactProvenance.supported &&
+      extractiveTokens(draft.answer).length > 2 &&
       !REFUSAL_ANSWER_PATTERN.test(draft.answer)
     ) {
       return draft;
     }
 
-    const questionTokens = extractiveTokens(state.userMessage);
-    const answerTokens = extractiveTokens(draft.answer);
-    let best:
-      | {
-          answer: string;
-          evidenceId: string;
-          questionOverlap: number;
-          answerOverlap: number;
-          length: number;
-        }
-      | undefined;
+    const first = transcriptCandidates[0];
+    const selected = first.reelId
+      ? transcriptCandidates
+          .filter((candidate) => candidate.reelId === first.reelId)
+          .slice(0, 2)
+      : [first];
+    const answer = selected
+      .map((candidate) => candidate.evidenceText)
+      .join('\n')
+      .slice(0, 2_500)
+      .trim();
+    if (!answer) return draft;
 
-    for (const item of authorizedEvidence) {
-      if (item.evidenceType !== 'TRANSCRIPT' || !item.evidenceText.trim()) {
-        continue;
-      }
-      for (const segment of splitEvidenceIntoSegments(item.evidenceText)) {
-        const segmentTokens = extractiveTokens(segment);
-        const questionOverlap = overlapCount(questionTokens, segmentTokens);
-        const answerOverlap = overlapCount(answerTokens, segmentTokens);
-        if (questionOverlap === 0) continue;
-
-        const candidate = {
-          answer: segment,
-          evidenceId: item.evidenceId,
-          questionOverlap,
-          answerOverlap,
-          length: segmentTokens.length,
-        };
-        if (
-          !best ||
-          candidate.questionOverlap > best.questionOverlap ||
-          (candidate.questionOverlap === best.questionOverlap &&
-            candidate.answerOverlap > best.answerOverlap) ||
-          (candidate.questionOverlap === best.questionOverlap &&
-            candidate.answerOverlap === best.answerOverlap &&
-            candidate.length < best.length)
-        ) {
-          best = candidate;
-        }
-      }
-    }
-
-    if (!best) return draft;
     return {
       ...draft,
-      answer: best.answer,
-      claims: [{ claim: best.answer, evidenceIds: [best.evidenceId] }],
+      answer,
+      claims: [
+        {
+          claim: answer,
+          evidenceIds: selected.map((candidate) => candidate.evidenceId),
+        },
+      ],
     };
   }
 

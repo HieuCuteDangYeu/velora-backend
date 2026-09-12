@@ -197,6 +197,50 @@ describe('BuildRagCitationsUseCase', () => {
     );
   });
 
+  it('uses an exact verifier mapping when attribution provider fails', async () => {
+    const failure = new CitationAttributionProviderError([
+      {
+        modelRole: 'CITATION_ATTRIBUTION',
+        model: 'test/test/citation',
+        providerStatus: 'TIMEOUT',
+        latencyMs: 4_000,
+        configuredTimeoutMs: 4_000,
+        configuredMaxCompletionTokens: 768,
+        attempt: 1,
+        errorCode: 'STRUCTURED_COMPLETION_TIMEOUT',
+        providerCategory: 'TRANSIENT_PROVIDER_FAILURE',
+      },
+    ]);
+    const attributionService: ICitationAttributionService = {
+      attribute: jest.fn().mockRejectedValue(failure),
+    };
+    const state = buildState();
+    state.verification = {
+      passed: true,
+      confidence: 1,
+      issues: [],
+      requiresRevision: false,
+      supportedClaimMappings: [{ claim: state.answer, evidenceIds: ['e0'] }],
+      contradictions: [],
+    };
+    const useCase = new BuildRagCitationsUseCase(attributionService);
+
+    const assessment = await useCase.execute(state);
+
+    expect(assessment.citations).toHaveLength(1);
+    expect(assessment.coverage).toMatchObject({
+      mode: 'FALLBACK',
+      coverage: 1,
+      factualClaimCount: 1,
+      supportedClaimCount: 1,
+      diagnostics: {
+        decisionSource: 'FALLBACK',
+        selectedEvidenceIds: ['e0'],
+        providerStatus: 'ERROR',
+      },
+    });
+  });
+
   it.each([
     [
       'Who is the shot detector being presented to?',

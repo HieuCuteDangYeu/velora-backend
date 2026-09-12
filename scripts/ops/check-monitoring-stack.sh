@@ -79,23 +79,23 @@ wait_for_container_metrics() {
   for ((attempt = 1; attempt <= TARGET_RETRY_ATTEMPTS; attempt += 1)); do
     response="$(
       curl --fail --silent --show-error --get \
-        --data-urlencode 'query=count(container_memory_working_set_bytes{job="cadvisor",service!="",container!=""})' \
+        --data-urlencode 'query=count(container_memory_working_set_bytes{job="cadvisor",name!=""})' \
         "${PROMETHEUS_URL}/api/v1/query"
     )"
 
     value="$(jq -r '.data.result[0].value[1] // "0"' <<<"$response")"
     if [ "$value" != "0" ] && [ "$value" != "null" ]; then
-      echo "      cAdvisor is reporting ${value} labeled container(s)"
+      echo "      cAdvisor is reporting ${value} container(s)"
       return 0
     fi
 
     if (( attempt < TARGET_RETRY_ATTEMPTS )); then
-      echo "      cAdvisor has not exposed labeled container metrics yet; retrying in ${TARGET_RETRY_DELAY_SECONDS}s (${attempt}/${TARGET_RETRY_ATTEMPTS})..."
+      echo "      cAdvisor has not exposed container metrics yet; retrying in ${TARGET_RETRY_DELAY_SECONDS}s (${attempt}/${TARGET_RETRY_ATTEMPTS})..."
       sleep "$TARGET_RETRY_DELAY_SECONDS"
     fi
   done
 
-  echo "      cAdvisor did not expose labeled container metrics after ${TARGET_RETRY_ATTEMPTS} attempts" >&2
+  echo "      cAdvisor did not expose container metrics after ${TARGET_RETRY_ATTEMPTS} attempts" >&2
   jq '.data.result' <<<"$response" >&2
   return 1
 }

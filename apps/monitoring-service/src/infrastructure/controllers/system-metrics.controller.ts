@@ -9,13 +9,13 @@ const HOST_FILESYSTEM_SELECTOR =
 const hostFilesystemQuery = (metric: string) =>
   `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
 
-const CADVISOR_LABEL_SELECTOR = 'job="cadvisor",service!="",container!=""';
+const CADVISOR_LABEL_SELECTOR = 'job="cadvisor",name!=""';
 
 const CADVISOR_QUERIES = {
-  cpuCores: `sum by (service, container) (rate(container_cpu_usage_seconds_total{${CADVISOR_LABEL_SELECTOR}}[5m]))`,
-  memoryWorkingSetBytes: `sum by (service, container) (container_memory_working_set_bytes{${CADVISOR_LABEL_SELECTOR}})`,
-  memoryLimitBytes: `max by (service, container) (container_spec_memory_limit_bytes{${CADVISOR_LABEL_SELECTOR}})`,
-  filesystemUsageBytes: `max by (service, container) (container_fs_usage_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+  cpuCores: `sum by (service, container, name) (rate(container_cpu_usage_seconds_total{${CADVISOR_LABEL_SELECTOR}}[5m]))`,
+  memoryWorkingSetBytes: `sum by (service, container, name) (container_memory_working_set_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+  memoryLimitBytes: `max by (service, container, name) (container_spec_memory_limit_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+  filesystemUsageBytes: `max by (service, container, name) (container_fs_usage_bytes{${CADVISOR_LABEL_SELECTOR}})`,
 } as const;
 
 const RANGE_QUERIES = {
@@ -140,19 +140,25 @@ export class SystemMetricsController {
   async containers() {
     return this.measure('system.metrics.containers', async () => {
       try {
-        const [cpu, memoryWorkingSet, memoryLimit, filesystemUsage] =
-          await Promise.all([
-            this.prometheus.vector(CADVISOR_QUERIES.cpuCores),
-            this.prometheus.vector(CADVISOR_QUERIES.memoryWorkingSetBytes),
-            this.prometheus.vector(CADVISOR_QUERIES.memoryLimitBytes),
-            this.prometheus.vector(CADVISOR_QUERIES.filesystemUsageBytes),
-          ]);
+        const [
+          cadvisorUp,
+          cpu,
+          memoryWorkingSet,
+          memoryLimit,
+          filesystemUsage,
+        ] = await Promise.all([
+          this.prometheus.scalar('max(up{job="cadvisor"})'),
+          this.prometheus.vector(CADVISOR_QUERIES.cpuCores),
+          this.prometheus.vector(CADVISOR_QUERIES.memoryWorkingSetBytes),
+          this.prometheus.vector(CADVISOR_QUERIES.memoryLimitBytes),
+          this.prometheus.vector(CADVISOR_QUERIES.filesystemUsageBytes),
+        ]);
 
         const resources = new Map<string, ContainerResource>();
         const ensureResource = (metric: Record<string, string>) => {
-          const service = metric.service?.trim();
-          const container = metric.container?.trim();
-          if (!service || !container) return null;
+          const container = metric.container?.trim() || metric.name?.trim();
+          const service = metric.service?.trim() || container;
+          if (!container || container === '/') return null;
 
           const key = `${service}\u0000${container}`;
           const existing = resources.get(key);
@@ -198,6 +204,7 @@ export class SystemMetricsController {
         return {
           generatedAt: new Date().toISOString(),
           source: 'cadvisor' as const,
+          cadvisorUp: targetStatus(cadvisorUp),
           containers: Array.from(resources.values()).sort(
             (left, right) =>
               (right.memoryWorkingSetBytes ?? -1) -

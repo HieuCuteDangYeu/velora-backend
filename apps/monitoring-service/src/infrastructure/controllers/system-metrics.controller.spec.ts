@@ -16,6 +16,7 @@ describe('SystemMetricsController container resources', () => {
   });
 
   it('joins cAdvisor vectors by service and container and sorts by memory', async () => {
+    prometheus.scalar.mockResolvedValue(1);
     prometheus.vector.mockImplementation((query: string) => {
       if (query.includes('container_cpu_usage_seconds_total')) {
         return [
@@ -80,6 +81,7 @@ describe('SystemMetricsController container resources', () => {
     await expect(controller.containers()).resolves.toEqual({
       generatedAt: expect.any(String),
       source: 'cadvisor',
+      cadvisorUp: true,
       containers: [
         {
           service: 'monitoring-service',
@@ -100,12 +102,46 @@ describe('SystemMetricsController container resources', () => {
       ],
     });
 
+    expect(prometheus.scalar).toHaveBeenCalledWith('max(up{job="cadvisor"})');
     expect(prometheus.vector).toHaveBeenCalledTimes(4);
     expect(metrics.recordRpc).toHaveBeenCalledWith(
       'system.metrics.containers',
       'success',
       expect.any(Number),
     );
+  });
+
+  it('keeps containers visible when only cAdvisor names are available', async () => {
+    prometheus.scalar.mockResolvedValue(1);
+    prometheus.vector.mockImplementation((query: string) => {
+      if (query.includes('container_memory_working_set_bytes')) {
+        return [
+          {
+            metric: { name: '/' },
+            timestamp: 1720000000,
+            value: 2048,
+          },
+          {
+            metric: { name: 'microservices-api-gateway-1' },
+            timestamp: 1720000000,
+            value: 512,
+          },
+        ];
+      }
+
+      return [];
+    });
+
+    await expect(controller.containers()).resolves.toMatchObject({
+      cadvisorUp: true,
+      containers: [
+        expect.objectContaining({
+          service: 'microservices-api-gateway-1',
+          container: 'microservices-api-gateway-1',
+          memoryWorkingSetBytes: 512,
+        }),
+      ],
+    });
   });
 
   it('returns lightweight target status for the global live indicator', async () => {

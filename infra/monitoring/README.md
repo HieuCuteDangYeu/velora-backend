@@ -86,8 +86,8 @@ up{job="monitoring-service"}
 velora_process_resident_memory_bytes{service="monitoring-service"}
 sum(rate(velora_monitoring_rpc_requests_total[5m]))
 histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[5m])))
-sum by (service, container) (rate(container_cpu_usage_seconds_total{job="cadvisor",service!="",container!=""}[5m]))
-sum by (service, container) (container_memory_working_set_bytes{job="cadvisor",service!="",container!=""})
+sum by (service, container) (rate(container_cpu_usage_seconds_total{job="cadvisor",name!=""}[5m]))
+sum by (service, container) (container_memory_working_set_bytes{job="cadvisor",name!=""})
 ```
 
 Grafana is bound to localhost only:

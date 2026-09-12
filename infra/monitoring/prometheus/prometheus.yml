@@ -46,3 +46,7 @@ scrape_configs:
       - source_labels: [name]
         regex: '.+'
         target_label: container
+      - source_labels: [service, name]
+        regex: '^;(.+)$'
+        replacement: '$1'
+        target_label: service

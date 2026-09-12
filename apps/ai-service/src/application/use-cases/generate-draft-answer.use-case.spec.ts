@@ -187,12 +187,67 @@ describe('GenerateDraftAnswerUseCase', () => {
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({
       answer:
-        'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
+        'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
       claims: [
         {
           claim:
-            'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
+            'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
           evidenceIds: ['e0'],
+        },
+      ],
+    });
+  });
+
+  it('keeps the top two authorized windows from the same reel', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The answer is not available.',
+        claims: [],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'What relation is asserted?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Target evidence window one.',
+            chunkText: 'Target evidence window one.',
+            reelId: 'target-reel',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Target evidence window two.',
+            chunkText: 'Target evidence window two.',
+            reelId: 'target-reel',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Distractor evidence window.',
+            chunkText: 'Distractor evidence window.',
+            reelId: 'other-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'Target evidence window one.\nTarget evidence window two.',
+      claims: [
+        {
+          evidenceIds: ['e0', 'e1'],
         },
       ],
     });

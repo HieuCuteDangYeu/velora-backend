@@ -42,4 +42,22 @@ describe('assessExactEvidenceProvenance', () => {
       }).supported,
     ).toBe(false);
   });
+
+  it('accepts an extractive answer assembled from ordered evidence windows', () => {
+    expect(
+      assessExactEvidenceProvenance({
+        answer: 'The first source window. The second source window.',
+        candidates: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The first source window.',
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The second source window.',
+          },
+        ],
+      }),
+    ).toEqual({ supported: true, supportingEvidenceIndexes: [0, 1] });
+  });
 });

@@ -168,6 +168,10 @@ export class VerifierAgentUseCase {
 
     const exactProvenance = this.exactProvenance(state);
     if (exactProvenance.supported) {
+      const supportedClaimMappings = this.exactSupportedClaimMappings(
+        state,
+        exactProvenance,
+      );
       return {
         passed: true,
         confidence: 1,
@@ -175,7 +179,7 @@ export class VerifierAgentUseCase {
           'Semantic verifier unavailable; answer accepted only as an exact source span.',
         ],
         requiresRevision: false,
-        supportedClaimMappings: [],
+        supportedClaimMappings,
         contradictions: [],
         diagnostics: {
           providerStatus: 'ERROR',
@@ -214,6 +218,24 @@ export class VerifierAgentUseCase {
         exactProvenance,
       },
     };
+  }
+
+  private exactSupportedClaimMappings(
+    state: RagChatWorkflowState,
+    provenance: { supportingEvidenceIndexes: number[] },
+  ): RagSupportedClaimMapping[] {
+    const exactEvidenceIds = new Set(
+      provenance.supportingEvidenceIndexes.map((index) => `e${index}`),
+    );
+    const claim = state.answer?.trim();
+    return claim && exactEvidenceIds.size > 0
+      ? [
+          {
+            claim,
+            evidenceIds: [...exactEvidenceIds].slice(0, 3),
+          },
+        ]
+      : [];
   }
 
   private async verifyWithRole(

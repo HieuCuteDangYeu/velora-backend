@@ -528,6 +528,39 @@ describe('VerifierAgentUseCase', () => {
     });
   });
 
+  it('preserves exact ordered-source claims when the semantic provider fails', async () => {
+    const service = {
+      generateObject: jest.fn().mockRejectedValue(new Error('provider down')),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const answer = 'The first source window. The second source window.';
+
+    await expect(
+      useCase.execute({
+        ...state({ answer, evidenceText: 'The first source window.' }),
+        answerClaims: [{ claim: answer, evidenceIds: ['e0', 'e1'] }],
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The first source window.',
+            chunkText: 'The first source window.',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The second source window.',
+            chunkText: 'The second source window.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      passed: true,
+      diagnostics: { decisionSource: 'EXACT_PROVENANCE' },
+      supportedClaimMappings: [{ claim: answer, evidenceIds: ['e0', 'e1'] }],
+    });
+  });
+
   it('fails closed on provider error without exact provenance', async () => {
     const service = {
       generateObject: jest.fn().mockRejectedValue(new Error('provider down')),

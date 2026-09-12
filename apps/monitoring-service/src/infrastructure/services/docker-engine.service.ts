@@ -302,7 +302,7 @@ export class DockerEngineService {
 
     const [statsResult, inspectResult] = await Promise.allSettled([
       this.requestJson<DockerStats>(
-        `/containers/${encodedId}/stats?stream=false&one-shot=true`,
+        `/containers/${encodedId}/stats?stream=false`,
       ),
       this.requestJson<DockerContainerInspect>(
         `/containers/${encodedId}/json?size=true`,

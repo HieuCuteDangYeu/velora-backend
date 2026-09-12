@@ -104,9 +104,7 @@ describe('DockerEngineService', () => {
             SizeRw: 256,
           },
         ];
-      } else if (
-        path === '/containers/engine-container/stats?stream=false&one-shot=true'
-      ) {
+      } else if (path === '/containers/engine-container/stats?stream=false') {
         payload = {
           cpu_stats: {
             cpu_usage: { total_usage: 2_000_000 },

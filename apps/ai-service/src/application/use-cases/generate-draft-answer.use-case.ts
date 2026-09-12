@@ -245,7 +245,7 @@ export class GenerateDraftAnswerUseCase {
       return this.extractiveTranscriptFallback(
         state,
         normalized,
-        boundedChunks,
+        state.rerankedChunks,
       );
     };
 
@@ -269,6 +269,8 @@ export class GenerateDraftAnswerUseCase {
     boundedChunks: Array<{
       evidenceType?: string;
       evidenceText?: string;
+      retrievalText?: string;
+      chunkText?: string;
       reelId?: string;
     }>,
   ): RagDraftAnswer {
@@ -284,7 +286,11 @@ export class GenerateDraftAnswerUseCase {
       .map((chunk, index) => ({
         evidenceId: `e${index}`,
         evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
-        evidenceText: chunk.evidenceText?.trim() ?? '',
+        evidenceText:
+          chunk.evidenceText?.trim() ||
+          chunk.retrievalText?.trim() ||
+          chunk.chunkText?.trim() ||
+          '',
         reelId: chunk.reelId,
       }))
       .filter(

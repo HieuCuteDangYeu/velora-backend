@@ -93,8 +93,14 @@ readonly -a MANAGED_INFRA_SERVICES=(
   nginx
   prometheus
   node-exporter
-  cadvisor
   grafana
+)
+
+# Services intentionally removed from the Compose topology. They are cleaned
+# up before switching the production checkout to avoid leaving orphaned
+# containers behind while preserving the general removal guardrail.
+readonly -a REMOVED_COMPOSE_SERVICES=(
+  cadvisor
 )
 
 # Compose changes to these services require deliberate operator handling.
@@ -300,10 +306,6 @@ for raw in path.read_text(encoding="utf-8").splitlines():
     break
 print(value)
 PY
-}
-
-cadvisor_enabled() {
-  [[ "$(read_env_value CADVISOR_ENABLED | tr '[:upper:]' '[:lower:]')" != "false" ]]
 }
 
 cleanup_worktrees() {
@@ -761,13 +763,12 @@ compare_compose_models() {
   while IFS= read -r service; do
     [[ -n "$service" ]] || continue
 
-    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
-      log "Skipping cAdvisor Compose diff because CADVISOR_ENABLED=false."
-      continue
-    fi
-
     if jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
       && ! jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
+      if contains "$service" "${REMOVED_COMPOSE_SERVICES[@]}"; then
+        log "Compose service '$service' removal is an approved migration."
+        continue
+      fi
       fail "Compose service '$service' was removed; automatic service removal is intentionally blocked"
     fi
 
@@ -803,11 +804,6 @@ plan_from_changed_files() {
     add_all_application_services
     # Initial CD bootstrap deliberately does not auto-start protected workloads or RabbitMQ.
     add_unique nginx INFRA_RECONCILE_SERVICES
-    if cadvisor_enabled; then
-      add_unique cadvisor INFRA_RECONCILE_SERVICES
-    else
-      log "Skipping cAdvisor initial reconciliation because CADVISOR_ENABLED=false."
-    fi
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
     add_unique grafana INFRA_RECONCILE_SERVICES
@@ -1081,6 +1077,23 @@ snapshot_current_release() {
   snapshot_services_json "${LAST_DEPLOYED_SHA:-unknown}" "$TARGET_SHA" "$TEMP_SNAPSHOT" "${services[@]}"
 }
 
+remove_removed_compose_services() {
+  local service container_ids
+
+  for service in "${REMOVED_COMPOSE_SERVICES[@]}"; do
+    container_ids="$(
+      docker ps -aq \
+        --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME}" \
+        --filter "label=com.docker.compose.service=${service}" \
+        | tr '\n' ' '
+    )"
+    [[ -n "${container_ids// /}" ]] || continue
+
+    log "==> Removing deprecated Compose service containers: $service"
+    docker rm -f $container_ids >/dev/null
+  done
+}
+
 write_rollback_override() {
   local snapshot="$1"
   local output="$2"
@@ -1126,11 +1139,6 @@ reconcile_application_services() {
 reconcile_infrastructure() {
   local service
   for service in "${INFRA_RECONCILE_SERVICES[@]}"; do
-    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
-      log "Skipping cAdvisor reconciliation because CADVISOR_ENABLED=false."
-      continue
-    fi
-
     case "$service" in
       nginx)
         log "==> Force-recreating Nginx to refresh config bind mount..."
@@ -1148,10 +1156,6 @@ reconcile_infrastructure() {
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
         ;;
-      cadvisor)
-        log "==> Recreating cAdvisor..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps cadvisor
-        ;;
       *)
         fail "no infrastructure reconcile handler for $service"
         ;;
@@ -1167,9 +1171,6 @@ wait_for_running_services() {
     bad=()
     while IFS= read -r service; do
       [[ -n "$service" ]] || continue
-      if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
-        continue
-      fi
       expected=1
       [[ "$service" == "api-gateway" ]] && expected=2
       running="$(docker compose ps --status running -q "$service" | wc -l | tr -d ' ')"
@@ -1303,9 +1304,7 @@ check_rabbitmq_consumers() {
 verify_monitoring_stack() {
   if [[ -f scripts/ops/check-monitoring-stack.sh ]]; then
     log "==> Running monitoring stack smoke check..."
-    local cadvisor_setting
-    cadvisor_setting="$(read_env_value CADVISOR_ENABLED)"
-    CADVISOR_ENABLED="${cadvisor_setting:-true}" bash scripts/ops/check-monitoring-stack.sh
+    bash scripts/ops/check-monitoring-stack.sh
   else
     warn "monitoring smoke script is not executable; skipping"
   fi
@@ -1747,6 +1746,9 @@ perform_deployment() {
   reconcile_infrastructure
 
   if verify_deployment_health; then
+    # Keep removed services alive until the target release passes health checks
+    # so an automatic rollback can still restore the previous Compose model.
+    remove_removed_compose_services || warn "deprecated Compose service cleanup failed"
     persist_success_state
     public_smoke_warning_only
     save_local_deployment_receipt "success"

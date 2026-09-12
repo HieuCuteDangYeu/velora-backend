@@ -6,82 +6,41 @@ describe('SystemMetricsController container resources', () => {
     vector: jest.fn(),
   };
   const metrics = { recordRpc: jest.fn() };
+  const docker = { snapshot: jest.fn() };
   const controller = new SystemMetricsController(
     prometheus as never,
     metrics as never,
+    docker as never,
   );
 
   beforeEach(() => {
     jest.resetAllMocks();
   });
 
-  it('joins cAdvisor vectors by service and container and sorts by memory', async () => {
-    prometheus.scalar.mockResolvedValue(1);
-    prometheus.vector.mockImplementation((query: string) => {
-      if (query.includes('container_cpu_usage_seconds_total')) {
-        return [
-          {
-            metric: { service: 'api-gateway', container: 'gateway-1' },
-            timestamp: 1720000000,
-            value: 0.25,
-          },
-          {
-            metric: {
-              service: 'monitoring-service',
-              container: 'monitoring-1',
-            },
-            timestamp: 1720000000,
-            value: 0.05,
-          },
-        ];
-      }
-      if (query.includes('container_memory_working_set_bytes')) {
-        return [
-          {
-            metric: {
-              service: 'monitoring-service',
-              container: 'monitoring-1',
-            },
-            timestamp: 1720000000,
-            value: 400,
-          },
-          {
-            metric: { service: 'api-gateway', container: 'gateway-1' },
-            timestamp: 1720000000,
-            value: 200,
-          },
-        ];
-      }
-      if (query.includes('container_spec_memory_limit_bytes')) {
-        return [
-          {
-            metric: {
-              service: 'monitoring-service',
-              container: 'monitoring-1',
-            },
-            timestamp: 1720000000,
-            value: Number.MAX_SAFE_INTEGER + 1,
-          },
-          {
-            metric: { service: 'api-gateway', container: 'gateway-1' },
-            timestamp: 1720000000,
-            value: 1000,
-          },
-        ];
-      }
-      return [
-        {
-          metric: { service: 'api-gateway', container: 'gateway-1' },
-          timestamp: 1720000000,
-          value: 80,
-        },
-      ];
-    });
+  it('returns the current Docker Engine snapshot', async () => {
+    docker.snapshot.mockResolvedValue([
+      {
+        service: 'monitoring-service',
+        container: 'monitoring-1',
+        cpuCores: 0.05,
+        memoryWorkingSetBytes: 400,
+        memoryLimitBytes: null,
+        filesystemUsageBytes: 120,
+      },
+      {
+        service: 'api-gateway',
+        container: 'gateway-1',
+        cpuCores: 0.25,
+        memoryWorkingSetBytes: 200,
+        memoryLimitBytes: 1000,
+        filesystemUsageBytes: 80,
+      },
+    ]);
 
     await expect(controller.containers()).resolves.toEqual({
       generatedAt: expect.any(String),
-      source: 'cadvisor',
-      cadvisorUp: true,
+      source: 'docker',
+      dockerEngineUp: true,
       containers: [
         {
           service: 'monitoring-service',
@@ -89,7 +48,7 @@ describe('SystemMetricsController container resources', () => {
           cpuCores: 0.05,
           memoryWorkingSetBytes: 400,
           memoryLimitBytes: null,
-          filesystemUsageBytes: null,
+          filesystemUsageBytes: 120,
         },
         {
           service: 'api-gateway',
@@ -102,8 +61,9 @@ describe('SystemMetricsController container resources', () => {
       ],
     });
 
-    expect(prometheus.scalar).toHaveBeenCalledWith('max(up{job="cadvisor"})');
-    expect(prometheus.vector).toHaveBeenCalledTimes(4);
+    expect(docker.snapshot).toHaveBeenCalledTimes(1);
+    expect(prometheus.scalar).not.toHaveBeenCalled();
+    expect(prometheus.vector).not.toHaveBeenCalled();
     expect(metrics.recordRpc).toHaveBeenCalledWith(
       'system.metrics.containers',
       'success',
@@ -111,36 +71,14 @@ describe('SystemMetricsController container resources', () => {
     );
   });
 
-  it('keeps containers visible when only cAdvisor names are available', async () => {
-    prometheus.scalar.mockResolvedValue(1);
-    prometheus.vector.mockImplementation((query: string) => {
-      if (query.includes('container_memory_working_set_bytes')) {
-        return [
-          {
-            metric: { name: '/' },
-            timestamp: 1720000000,
-            value: 2048,
-          },
-          {
-            metric: { name: 'microservices-api-gateway-1' },
-            timestamp: 1720000000,
-            value: 512,
-          },
-        ];
-      }
+  it('reports Docker Engine availability without failing the RPC', async () => {
+    docker.snapshot.mockRejectedValue(new Error('Docker socket unavailable'));
 
-      return [];
-    });
-
-    await expect(controller.containers()).resolves.toMatchObject({
-      cadvisorUp: true,
-      containers: [
-        expect.objectContaining({
-          service: 'microservices-api-gateway-1',
-          container: 'microservices-api-gateway-1',
-          memoryWorkingSetBytes: 512,
-        }),
-      ],
+    await expect(controller.containers()).resolves.toEqual({
+      generatedAt: expect.any(String),
+      source: 'docker',
+      dockerEngineUp: false,
+      containers: [],
     });
   });
 

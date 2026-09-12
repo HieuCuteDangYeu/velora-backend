@@ -253,8 +253,13 @@ services:
     environment:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
+      DOCKER_ENGINE_SOCKET: ${DOCKER_ENGINE_SOCKET:-/var/run/docker.sock}
     expose:
       - '3016'
+    group_add:
+      - '${DOCKER_ENGINE_GID:-0}'
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -281,7 +286,6 @@ services:
       - '127.0.0.1:9090:9090'
     depends_on:
       - node-exporter
-      - cadvisor
     networks:
       - microservices-net
 
@@ -301,26 +305,6 @@ services:
       - /:/rootfs:ro,rslave
     expose:
       - '9100'
-    networks:
-      - microservices-net
-
-  cadvisor:
-    image: ghcr.io/google/cadvisor:v0.53.0
-    restart: unless-stopped
-    mem_limit: ${CADVISOR_MEMORY_LIMIT:-256m}
-    command:
-      - --docker_only=true
-      - --store_container_labels=false
-      - --whitelisted_container_labels=com.docker.compose.project,com.docker.compose.service
-    volumes:
-      - /:/rootfs:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
-    privileged: true
-    expose:
-      - '8080'
     networks:
       - microservices-net
 

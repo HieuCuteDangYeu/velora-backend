@@ -1,6 +1,10 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
+import {
+  DockerEngineService,
+  type DockerContainerResource,
+} from '../services/docker-engine.service';
 import { PrometheusQueryService } from '../services/prometheus-query.service';
 
 const HOST_FILESYSTEM_SELECTOR =
@@ -8,15 +12,6 @@ const HOST_FILESYSTEM_SELECTOR =
 
 const hostFilesystemQuery = (metric: string) =>
   `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
-
-const CADVISOR_LABEL_SELECTOR = 'job="cadvisor",name!=""';
-
-const CADVISOR_QUERIES = {
-  cpuCores: `sum by (service, container, name) (rate(container_cpu_usage_seconds_total{${CADVISOR_LABEL_SELECTOR}}[5m]))`,
-  memoryWorkingSetBytes: `sum by (service, container, name) (container_memory_working_set_bytes{${CADVISOR_LABEL_SELECTOR}})`,
-  memoryLimitBytes: `max by (service, container, name) (container_spec_memory_limit_bytes{${CADVISOR_LABEL_SELECTOR}})`,
-  filesystemUsageBytes: `max by (service, container, name) (container_fs_usage_bytes{${CADVISOR_LABEL_SELECTOR}})`,
-} as const;
 
 const RANGE_QUERIES = {
   memory:
@@ -70,15 +65,6 @@ const RANGE_QUERIES = {
 type RangeMetric = keyof typeof RANGE_QUERIES;
 type ScalarMetric = number | null;
 
-type ContainerResource = {
-  service: string;
-  container: string;
-  cpuCores: number | null;
-  memoryWorkingSetBytes: number | null;
-  memoryLimitBytes: number | null;
-  filesystemUsageBytes: number | null;
-};
-
 type TimeseriesPayload = {
   metric?: unknown;
   from?: unknown;
@@ -113,6 +99,7 @@ export class SystemMetricsController {
   constructor(
     private readonly prometheus: PrometheusQueryService,
     private readonly metrics: PrometheusMetricsService,
+    private readonly docker: DockerEngineService,
   ) {}
 
   @MessagePattern('system.metrics.status')
@@ -140,79 +127,22 @@ export class SystemMetricsController {
   async containers() {
     return this.measure('system.metrics.containers', async () => {
       try {
-        const [
-          cadvisorUp,
-          cpu,
-          memoryWorkingSet,
-          memoryLimit,
-          filesystemUsage,
-        ] = await Promise.all([
-          this.prometheus.scalar('max(up{job="cadvisor"})'),
-          this.prometheus.vector(CADVISOR_QUERIES.cpuCores),
-          this.prometheus.vector(CADVISOR_QUERIES.memoryWorkingSetBytes),
-          this.prometheus.vector(CADVISOR_QUERIES.memoryLimitBytes),
-          this.prometheus.vector(CADVISOR_QUERIES.filesystemUsageBytes),
-        ]);
-
-        const resources = new Map<string, ContainerResource>();
-        const ensureResource = (metric: Record<string, string>) => {
-          const container = metric.container?.trim() || metric.name?.trim();
-          const service = metric.service?.trim() || container;
-          if (!container || container === '/') return null;
-
-          const key = `${service}\u0000${container}`;
-          const existing = resources.get(key);
-          if (existing) return existing;
-
-          const created: ContainerResource = {
-            service,
-            container,
-            cpuCores: null,
-            memoryWorkingSetBytes: null,
-            memoryLimitBytes: null,
-            filesystemUsageBytes: null,
-          };
-          resources.set(key, created);
-          return created;
-        };
-
-        cpu.forEach((sample) => {
-          const resource = ensureResource(sample.metric);
-          if (resource) resource.cpuCores = Math.max(0, sample.value);
-        });
-        memoryWorkingSet.forEach((sample) => {
-          const resource = ensureResource(sample.metric);
-          if (resource) {
-            resource.memoryWorkingSetBytes = Math.max(0, sample.value);
-          }
-        });
-        memoryLimit.forEach((sample) => {
-          const resource = ensureResource(sample.metric);
-          if (resource) {
-            resource.memoryLimitBytes =
-              sample.value <= 0 || sample.value >= Number.MAX_SAFE_INTEGER
-                ? null
-                : sample.value;
-          }
-        });
-        filesystemUsage.forEach((sample) => {
-          const resource = ensureResource(sample.metric);
-          if (resource)
-            resource.filesystemUsageBytes = Math.max(0, sample.value);
-        });
+        const containers: DockerContainerResource[] =
+          await this.docker.snapshot();
 
         return {
           generatedAt: new Date().toISOString(),
-          source: 'cadvisor' as const,
-          cadvisorUp: targetStatus(cadvisorUp),
-          containers: Array.from(resources.values()).sort(
-            (left, right) =>
-              (right.memoryWorkingSetBytes ?? -1) -
-              (left.memoryWorkingSetBytes ?? -1),
-          ),
+          source: 'docker' as const,
+          dockerEngineUp: true,
+          containers,
         };
-      } catch (error) {
-        throw this.prometheusError(error);
+      } catch {
+        return {
+          generatedAt: new Date().toISOString(),
+          source: 'docker' as const,
+          dockerEngineUp: false,
+          containers: [],
+        };
       }
     });
   }

@@ -64,13 +64,12 @@ compare_compose_models() {
   while IFS= read -r service; do
     [[ -n "$service" ]] || continue
 
-    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
-      log "Skipping cAdvisor Compose diff because CADVISOR_ENABLED=false."
-      continue
-    fi
-
     if jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
       && ! jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
+      if contains "$service" "${REMOVED_COMPOSE_SERVICES[@]}"; then
+        log "Compose service '$service' removal is an approved migration."
+        continue
+      fi
       fail "Compose service '$service' was removed; automatic service removal is intentionally blocked"
     fi
 
@@ -105,11 +104,6 @@ plan_from_changed_files() {
   if [[ "$CHANGED_FILES" == "__INITIAL_RELEASE__" ]]; then
     add_all_application_services
     add_unique nginx INFRA_RECONCILE_SERVICES
-    if cadvisor_enabled; then
-      add_unique cadvisor INFRA_RECONCILE_SERVICES
-    else
-      log "Skipping cAdvisor initial reconciliation because CADVISOR_ENABLED=false."
-    fi
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
     add_unique loki INFRA_RECONCILE_SERVICES
@@ -267,11 +261,6 @@ snapshot_services_json() {
 reconcile_infrastructure() {
   local service
   for service in "${INFRA_RECONCILE_SERVICES[@]}"; do
-    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
-      log "Skipping cAdvisor reconciliation because CADVISOR_ENABLED=false."
-      continue
-    fi
-
     case "$service" in
       nginx)
         log "==> Force-recreating Nginx to refresh config bind mount..."
@@ -288,10 +277,6 @@ reconcile_infrastructure() {
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
-        ;;
-      cadvisor)
-        log "==> Recreating cAdvisor..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps cadvisor
         ;;
       loki)
         log "==> Force-recreating Loki to refresh logging configuration..."

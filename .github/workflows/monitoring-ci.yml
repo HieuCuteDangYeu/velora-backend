@@ -69,8 +69,8 @@ jobs:
           jq -e '
             (.services | has("loki")) and
             (.services | has("alloy")) and
-            (.services | has("cadvisor")) and
-            (.services.prometheus.depends_on.cadvisor.condition == "service_started") and
+            ((.services | has("cadvisor")) | not) and
+            ((.services["monitoring-service"].volumes // []) | any(.source == "/var/run/docker.sock" and .target == "/var/run/docker.sock" and .read_only == true)) and
             (.services["monitoring-service"].environment.LOKI_URL == "http://loki:3100") and
             (.services["monitoring-service"].environment.PROMETHEUS_URL == "http://prometheus:9090") and
             (.services["monitoring-service"].depends_on.loki.condition == "service_started") and

@@ -32,7 +32,6 @@ const ALLOWED_LOG_SERVICES = new Set([
   'rabbitmq',
   'prometheus',
   'node-exporter',
-  'cadvisor',
   'grafana',
   'loki',
   'alloy',

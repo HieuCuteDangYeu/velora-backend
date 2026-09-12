@@ -22,6 +22,7 @@ import { MonitoringPrismaService } from '@monitoring/infrastructure/prisma/monit
 import { PrismaService } from '@monitoring/infrastructure/prisma/prisma.service';
 import { PrismaCallTelemetryRepository } from '@monitoring/infrastructure/repositories/prisma-call-telemetry.repository';
 import { RecommendationTelemetryRepository } from '@monitoring/infrastructure/repositories/recommendation-telemetry.repository';
+import { DockerEngineService } from '@monitoring/infrastructure/services/docker-engine.service';
 import { LokiQueryService } from '@monitoring/infrastructure/services/loki-query.service';
 import { PrometheusQueryService } from '@monitoring/infrastructure/services/prometheus-query.service';
 import { Module } from '@nestjs/common';
@@ -47,6 +48,7 @@ import { ScheduleModule } from '@nestjs/schedule';
   ],
   providers: [
     PrometheusMetricsService,
+    DockerEngineService,
     PrometheusQueryService,
     LokiQueryService,
     CallTelemetryTokenService,

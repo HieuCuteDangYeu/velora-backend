@@ -305,7 +305,7 @@ services:
       - microservices-net
 
   cadvisor:
-    image: ghcr.io/google/cadvisor:0.56.1
+    image: ghcr.io/google/cadvisor:v0.53.0
     restart: unless-stopped
     mem_limit: ${CADVISOR_MEMORY_LIMIT:-256m}
     command:

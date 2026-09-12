@@ -103,6 +103,56 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('uses a question-matched transcript segment when the generated answer is unanchored', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The material describes the relationship in general terms.',
+        claims: [
+          {
+            claim: 'The material describes the relationship in general terms.',
+            evidenceIds: ['e0'],
+          },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'Where was the project carried out?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'The project was carried out during an internship at IDIAP under Jean-Marc.',
+            chunkText:
+              'The project was carried out during an internship at IDIAP under Jean-Marc.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer:
+        'The project was carried out during an internship at IDIAP under Jean-Marc.',
+      claims: [
+        {
+          claim:
+            'The project was carried out during an internship at IDIAP under Jean-Marc.',
+          evidenceIds: ['e0'],
+        },
+      ],
+    });
+  });
+
   it.each([
     [
       'unknown evidence ID',

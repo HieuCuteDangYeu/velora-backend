@@ -16,6 +16,7 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 
 interface RawDraftAnswer {
   answer?: unknown;
@@ -58,6 +59,58 @@ const NUMBER_WORD_VALUES = new Map<string, string>([
   ['thousand', '1000'],
 ]);
 
+const EXTRACTIVE_STOPWORDS = new Set([
+  'a',
+  'about',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'being',
+  'by',
+  'can',
+  'do',
+  'does',
+  'for',
+  'from',
+  'has',
+  'have',
+  'how',
+  'in',
+  'into',
+  'is',
+  'it',
+  'of',
+  'on',
+  'or',
+  'say',
+  'said',
+  'should',
+  'someone',
+  'that',
+  'the',
+  'they',
+  'this',
+  'to',
+  'under',
+  'use',
+  'used',
+  'using',
+  'was',
+  'were',
+  'what',
+  'where',
+  'which',
+  'who',
+  'why',
+  'with',
+]);
+
+const REFUSAL_ANSWER_PATTERN =
+  /\b(?:no relevant|not enough|cannot|can't|unable|do not have|don't have|not available|could not)\b/i;
+
 function quantityTokens(value: string): Set<string> {
   const tokens: string[] =
     value.toLowerCase().match(/[a-z]+|\d+(?:[.,]\d+)?/g) ?? [];
@@ -69,6 +122,38 @@ function quantityTokens(value: string): Set<string> {
       return [];
     }),
   );
+}
+
+function extractiveTokens(value: string): string[] {
+  return (
+    value
+      .toLowerCase()
+      .match(/[a-z]+|\d+(?:[.,]\d+)?/g)
+      ?.map((token) => NUMBER_WORD_VALUES.get(token) ?? token)
+      .filter((token) => !EXTRACTIVE_STOPWORDS.has(token)) ?? []
+  );
+}
+
+function splitEvidenceIntoSegments(value: string): string[] {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (sentences.length > 1 || normalized.length <= 600) return sentences;
+
+  const clauses = normalized
+    .split(/(?<=[,;:])\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return clauses.length > 1 ? clauses : [normalized];
+}
+
+function overlapCount(left: string[], right: string[]): number {
+  const rightSet = new Set(right);
+  return new Set(left.filter((token) => rightSet.has(token))).size;
 }
 
 function hasSupportedQuantity(
@@ -172,18 +257,24 @@ export class GenerateDraftAnswerUseCase {
         onDiagnostics: (call) => diagnostics.push(call),
       });
 
+    const finalize = (candidate: RawDraftAnswer): RagDraftAnswer => {
+      const normalized = this.normalize(
+        candidate,
+        state,
+        allowedEvidenceIds,
+        authorizedEvidenceText,
+      );
+      return this.extractiveTranscriptFallback(
+        state,
+        normalized,
+        authorizedEvidence,
+      );
+    };
+
     let raw: RawDraftAnswer;
     try {
       raw = await request(systemPrompt);
-      return {
-        ...this.normalize(
-          raw,
-          state,
-          allowedEvidenceIds,
-          authorizedEvidenceText,
-        ),
-        diagnostics,
-      };
+      return { ...finalize(raw), diagnostics };
     } catch (error: unknown) {
       if (!(error instanceof DraftAnswerContractError)) throw error;
       raw = await request(
@@ -191,9 +282,90 @@ export class GenerateDraftAnswerUseCase {
       );
     }
 
+    return { ...finalize(raw), diagnostics };
+  }
+
+  private extractiveTranscriptFallback(
+    state: RagChatWorkflowState,
+    draft: RagDraftAnswer,
+    authorizedEvidence: Array<{
+      evidenceId: string;
+      evidenceType: string;
+      evidenceText: string;
+    }>,
+  ): RagDraftAnswer {
+    if (
+      state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
+      !(state.route.requiredEvidence ?? []).includes('TRANSCRIPT') ||
+      authorizedEvidence.length === 0
+    ) {
+      return draft;
+    }
+
+    const exactProvenance = assessExactEvidenceProvenance({
+      answer: draft.answer,
+      candidates: authorizedEvidence
+        .filter((item) => item.evidenceType === 'TRANSCRIPT')
+        .map((item) => ({
+          evidenceType: 'TRANSCRIPT' as const,
+          evidenceText: item.evidenceText,
+        })),
+    });
+    if (
+      exactProvenance.supported &&
+      !REFUSAL_ANSWER_PATTERN.test(draft.answer)
+    ) {
+      return draft;
+    }
+
+    const questionTokens = extractiveTokens(state.userMessage);
+    const answerTokens = extractiveTokens(draft.answer);
+    let best:
+      | {
+          answer: string;
+          evidenceId: string;
+          questionOverlap: number;
+          answerOverlap: number;
+          length: number;
+        }
+      | undefined;
+
+    for (const item of authorizedEvidence) {
+      if (item.evidenceType !== 'TRANSCRIPT' || !item.evidenceText.trim()) {
+        continue;
+      }
+      for (const segment of splitEvidenceIntoSegments(item.evidenceText)) {
+        const segmentTokens = extractiveTokens(segment);
+        const questionOverlap = overlapCount(questionTokens, segmentTokens);
+        const answerOverlap = overlapCount(answerTokens, segmentTokens);
+        if (questionOverlap === 0) continue;
+
+        const candidate = {
+          answer: segment,
+          evidenceId: item.evidenceId,
+          questionOverlap,
+          answerOverlap,
+          length: segmentTokens.length,
+        };
+        if (
+          !best ||
+          candidate.questionOverlap > best.questionOverlap ||
+          (candidate.questionOverlap === best.questionOverlap &&
+            candidate.answerOverlap > best.answerOverlap) ||
+          (candidate.questionOverlap === best.questionOverlap &&
+            candidate.answerOverlap === best.answerOverlap &&
+            candidate.length < best.length)
+        ) {
+          best = candidate;
+        }
+      }
+    }
+
+    if (!best) return draft;
     return {
-      ...this.normalize(raw, state, allowedEvidenceIds, authorizedEvidenceText),
-      diagnostics,
+      ...draft,
+      answer: best.answer,
+      claims: [{ claim: best.answer, evidenceIds: [best.evidenceId] }],
     };
   }
 

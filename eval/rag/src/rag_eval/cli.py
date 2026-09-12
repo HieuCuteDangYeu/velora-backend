@@ -13,10 +13,10 @@ from typing import Any
 
 from rag_eval.adapters.cloudflare_judge import (
     build_capacity_client,
-    build_live_judge,
     capacity_message_class,
     classify_capacity_error,
 )
+from rag_eval.adapters.evaluation_judge import build_live_judge
 from rag_eval.adapters.runner_output import (
     fixture_execution,
     invoke_typescript_runner,
@@ -71,6 +71,9 @@ def _variant(args: argparse.Namespace) -> dict[str, Any]:
         "retrievalK": args.retrieval_k,
         "rerankK": args.rerank_k,
         "promptVersion": args.prompt_version,
+        "judgeProvider": os.getenv("RAG_EVAL_JUDGE_PROVIDER"),
+        "judgeModel": os.getenv("RAG_EVAL_JUDGE_MODEL"),
+        "embeddingProvider": os.getenv("RAG_EVAL_EMBEDDING_PROVIDER"),
     }
 
 

@@ -109,6 +109,21 @@ RAG_EVAL_CLOUDFLARE_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/
 
 The adapter uses Ragas' current factory with an OpenAI-compatible Cloudflare client. It never silently falls back to `AI_ANSWER_MODEL` or `AI_VERIFIER_MODEL`. Judge token usage and cost use `EVALUATION_JUDGE` scope and remain separate from `QUERY` and `INDEXING` costs.
 
+For an evaluation-only non-Cloudflare judge, the existing provider selector also
+supports Groq with the local TEI embedding service:
+
+```sh
+RAG_EVAL_JUDGE_PROVIDER=groq
+RAG_EVAL_JUDGE_MODEL=openai/gpt-oss-120b
+RAG_EVAL_EMBEDDING_PROVIDER=tei
+RAG_EVAL_EMBEDDING_MODEL=BAAI/bge-m3
+RAG_EVAL_TEI_EMBEDDING_BASE_URL=http://127.0.0.1:<forwarded-port>/v1
+```
+
+This path uses `GROQ_API_KEY`/`GROQ_BASE_URL` for the judge and an
+OpenAI-compatible `/v1/embeddings` endpoint backed by the self-hosted TEI
+service. It does not fall back to Cloudflare or production RAG models.
+
 ## Pricing, reports, and comparisons
 
 `config/cloudflare-pricing-v1.json` is a versioned snapshot of official Workers AI pricing. Update it only after checking the linked Cloudflare source, change the version and verification date, and add pricing tests. Unknown models or missing usage produce `costUsd=null` plus a warning, never a fabricated zero. Provider token counts remain labeled `PROVIDER`; explicit estimates are labeled `ESTIMATED`; absent usage is `UNAVAILABLE`.

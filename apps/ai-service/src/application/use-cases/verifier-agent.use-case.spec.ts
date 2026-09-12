@@ -23,11 +23,17 @@ describe('VerifierAgentUseCase', () => {
     evidenceText?: string;
     needsVerification?: boolean;
     retryCount?: number;
+    intent?: string;
+    requiredEvidence?: string[];
   }): RagChatWorkflowState =>
     ({
       userMessage: 'Which novel relation is explicitly asserted?',
       answer: input.answer ?? 'The zorb is linked to the quasar.',
-      route: { needsVerification: input.needsVerification ?? true },
+      route: {
+        needsVerification: input.needsVerification ?? true,
+        intent: input.intent,
+        requiredEvidence: input.requiredEvidence ?? [],
+      },
       rerankedChunks: input.evidenceText
         ? [
             {
@@ -102,6 +108,48 @@ describe('VerifierAgentUseCase', () => {
         temperature: 0,
       }),
     );
+  });
+
+  it('requests a source-wording revision for an unanchored transcript answer', async () => {
+    const service = { generateObject: jest.fn().mockResolvedValue(result()) };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+
+    await expect(
+      useCase.execute(
+        state({
+          answer: 'The zorb has a relationship with the quasar.',
+          evidenceText: 'The zorb is linked to the quasar.',
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        }),
+      ),
+    ).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      issues: [
+        'Transcript answer is not anchored to a contiguous authorized evidence span.',
+      ],
+      diagnostics: {
+        decisionSource: 'LLM_PRIMARY',
+        escalated: false,
+      },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply transcript source anchoring to visual-only answers', async () => {
+    const service = { generateObject: jest.fn().mockResolvedValue(result()) };
+
+    await expect(
+      new VerifierAgentUseCase(service as never, config).execute(
+        state({
+          answer: 'The object is visible near the center.',
+          evidenceText: 'A sampled frame shows the object near the center.',
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['VISUAL'],
+        }),
+      ),
+    ).resolves.toMatchObject({ passed: true });
   });
 
   it('persists safe primary verifier call diagnostics', async () => {

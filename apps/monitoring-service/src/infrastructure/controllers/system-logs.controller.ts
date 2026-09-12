@@ -32,6 +32,7 @@ const ALLOWED_LOG_SERVICES = new Set([
   'rabbitmq',
   'prometheus',
   'node-exporter',
+  'cadvisor',
   'grafana',
   'loki',
   'alloy',
@@ -187,7 +188,8 @@ export class SystemLogsController {
   }
 
   private lokiError(error: unknown) {
-    const message = error instanceof Error ? error.message : 'Loki query failed';
+    const message =
+      error instanceof Error ? error.message : 'Loki query failed';
     return new RpcException({
       statusCode: 503,
       message,

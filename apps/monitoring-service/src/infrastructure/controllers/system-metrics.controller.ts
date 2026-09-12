@@ -9,8 +9,18 @@ const HOST_FILESYSTEM_SELECTOR =
 const hostFilesystemQuery = (metric: string) =>
   `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
 
+const CADVISOR_LABEL_SELECTOR = 'job="cadvisor",service!="",container!=""';
+
+const CADVISOR_QUERIES = {
+  cpuCores: `sum by (service, container) (rate(container_cpu_usage_seconds_total{${CADVISOR_LABEL_SELECTOR}}[5m]))`,
+  memoryWorkingSetBytes: `sum by (service, container) (container_memory_working_set_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+  memoryLimitBytes: `max by (service, container) (container_spec_memory_limit_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+  filesystemUsageBytes: `max by (service, container) (container_fs_usage_bytes{${CADVISOR_LABEL_SELECTOR}})`,
+} as const;
+
 const RANGE_QUERIES = {
-  memory: 'max(velora_process_resident_memory_bytes{service="monitoring-service"})',
+  memory:
+    'max(velora_process_resident_memory_bytes{service="monitoring-service"})',
   heap: 'max(velora_process_heap_used_bytes{service="monitoring-service"})',
   cpu: 'sum(rate(velora_process_cpu_user_seconds_total{service="monitoring-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="monitoring-service"}[5m]))',
   rpc_rate: 'sum(rate(velora_monitoring_rpc_requests_total[5m]))',
@@ -54,12 +64,20 @@ const RANGE_QUERIES = {
     'sum(velora_process_resident_memory_bytes{service="call-service"})',
   call_event_loop_p99:
     'max(velora_nodejs_event_loop_lag_p99_seconds{service="call-service"})',
-  call_sockets:
-    'sum(velora_call_socket_connections{service="call-service"})',
+  call_sockets: 'sum(velora_call_socket_connections{service="call-service"})',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
 type ScalarMetric = number | null;
+
+type ContainerResource = {
+  service: string;
+  container: string;
+  cpuCores: number | null;
+  memoryWorkingSetBytes: number | null;
+  memoryLimitBytes: number | null;
+  filesystemUsageBytes: number | null;
+};
 
 type TimeseriesPayload = {
   metric?: unknown;
@@ -96,6 +114,101 @@ export class SystemMetricsController {
     private readonly prometheus: PrometheusQueryService,
     private readonly metrics: PrometheusMetricsService,
   ) {}
+
+  @MessagePattern('system.metrics.status')
+  async status() {
+    return this.measure('system.metrics.status', async () => {
+      try {
+        const [monitoringUp, hostUp] = await Promise.all([
+          this.prometheus.scalar('max(up{job="monitoring-service"})'),
+          this.prometheus.scalar('max(up{job="node-exporter"})'),
+        ]);
+
+        return {
+          generatedAt: new Date().toISOString(),
+          source: 'prometheus' as const,
+          monitoringUp: targetStatus(monitoringUp),
+          hostUp: targetStatus(hostUp),
+        };
+      } catch (error) {
+        throw this.prometheusError(error);
+      }
+    });
+  }
+
+  @MessagePattern('system.metrics.containers')
+  async containers() {
+    return this.measure('system.metrics.containers', async () => {
+      try {
+        const [cpu, memoryWorkingSet, memoryLimit, filesystemUsage] =
+          await Promise.all([
+            this.prometheus.vector(CADVISOR_QUERIES.cpuCores),
+            this.prometheus.vector(CADVISOR_QUERIES.memoryWorkingSetBytes),
+            this.prometheus.vector(CADVISOR_QUERIES.memoryLimitBytes),
+            this.prometheus.vector(CADVISOR_QUERIES.filesystemUsageBytes),
+          ]);
+
+        const resources = new Map<string, ContainerResource>();
+        const ensureResource = (metric: Record<string, string>) => {
+          const service = metric.service?.trim();
+          const container = metric.container?.trim();
+          if (!service || !container) return null;
+
+          const key = `${service}\u0000${container}`;
+          const existing = resources.get(key);
+          if (existing) return existing;
+
+          const created: ContainerResource = {
+            service,
+            container,
+            cpuCores: null,
+            memoryWorkingSetBytes: null,
+            memoryLimitBytes: null,
+            filesystemUsageBytes: null,
+          };
+          resources.set(key, created);
+          return created;
+        };
+
+        cpu.forEach((sample) => {
+          const resource = ensureResource(sample.metric);
+          if (resource) resource.cpuCores = Math.max(0, sample.value);
+        });
+        memoryWorkingSet.forEach((sample) => {
+          const resource = ensureResource(sample.metric);
+          if (resource) {
+            resource.memoryWorkingSetBytes = Math.max(0, sample.value);
+          }
+        });
+        memoryLimit.forEach((sample) => {
+          const resource = ensureResource(sample.metric);
+          if (resource) {
+            resource.memoryLimitBytes =
+              sample.value <= 0 || sample.value >= Number.MAX_SAFE_INTEGER
+                ? null
+                : sample.value;
+          }
+        });
+        filesystemUsage.forEach((sample) => {
+          const resource = ensureResource(sample.metric);
+          if (resource)
+            resource.filesystemUsageBytes = Math.max(0, sample.value);
+        });
+
+        return {
+          generatedAt: new Date().toISOString(),
+          source: 'cadvisor' as const,
+          containers: Array.from(resources.values()).sort(
+            (left, right) =>
+              (right.memoryWorkingSetBytes ?? -1) -
+              (left.memoryWorkingSetBytes ?? -1),
+          ),
+        };
+      } catch (error) {
+        throw this.prometheusError(error);
+      }
+    });
+  }
 
   @MessagePattern('system.metrics.overview')
   async overview() {
@@ -147,14 +260,28 @@ export class SystemMetricsController {
           this.prometheus.scalar(RANGE_QUERIES.p95_rpc_latency),
           this.prometheus.scalar('max(up{job="node-exporter"})'),
           this.prometheus.scalar(RANGE_QUERIES.host_cpu),
-          this.prometheus.scalar('max(node_memory_MemTotal_bytes{job="node-exporter"})'),
-          this.prometheus.scalar('max(node_memory_MemAvailable_bytes{job="node-exporter"})'),
-          this.prometheus.scalar('max(node_memory_SwapTotal_bytes{job="node-exporter"})'),
-          this.prometheus.scalar('max(node_memory_SwapFree_bytes{job="node-exporter"})'),
-          this.prometheus.scalar(hostFilesystemQuery('node_filesystem_size_bytes')),
-          this.prometheus.scalar(hostFilesystemQuery('node_filesystem_avail_bytes')),
+          this.prometheus.scalar(
+            'max(node_memory_MemTotal_bytes{job="node-exporter"})',
+          ),
+          this.prometheus.scalar(
+            'max(node_memory_MemAvailable_bytes{job="node-exporter"})',
+          ),
+          this.prometheus.scalar(
+            'max(node_memory_SwapTotal_bytes{job="node-exporter"})',
+          ),
+          this.prometheus.scalar(
+            'max(node_memory_SwapFree_bytes{job="node-exporter"})',
+          ),
+          this.prometheus.scalar(
+            hostFilesystemQuery('node_filesystem_size_bytes'),
+          ),
+          this.prometheus.scalar(
+            hostFilesystemQuery('node_filesystem_avail_bytes'),
+          ),
           this.prometheus.scalar(RANGE_QUERIES.host_load1),
-          this.prometheus.scalar('max(time() - node_boot_time_seconds{job="node-exporter"})'),
+          this.prometheus.scalar(
+            'max(time() - node_boot_time_seconds{job="node-exporter"})',
+          ),
           this.prometheus.scalar('max(up{job="conversation-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.conversation_cpu),
           this.prometheus.scalar(RANGE_QUERIES.conversation_memory),

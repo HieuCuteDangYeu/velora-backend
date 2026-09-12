@@ -69,6 +69,33 @@ wait_for_prometheus_target() {
   return 1
 }
 
+wait_for_container_metrics() {
+  local attempt response value
+
+  for ((attempt = 1; attempt <= TARGET_RETRY_ATTEMPTS; attempt += 1)); do
+    response="$(
+      curl --fail --silent --show-error --get \
+        --data-urlencode 'query=count(container_memory_working_set_bytes{job="cadvisor",service!="",container!=""})' \
+        "${PROMETHEUS_URL}/api/v1/query"
+    )"
+
+    value="$(jq -r '.data.result[0].value[1] // "0"' <<<"$response")"
+    if [ "$value" != "0" ] && [ "$value" != "null" ]; then
+      echo "      cAdvisor is reporting ${value} labeled container(s)"
+      return 0
+    fi
+
+    if (( attempt < TARGET_RETRY_ATTEMPTS )); then
+      echo "      cAdvisor has not exposed labeled container metrics yet; retrying in ${TARGET_RETRY_DELAY_SECONDS}s (${attempt}/${TARGET_RETRY_ATTEMPTS})..."
+      sleep "$TARGET_RETRY_DELAY_SECONDS"
+    fi
+  done
+
+  echo "      cAdvisor did not expose labeled container metrics after ${TARGET_RETRY_ATTEMPTS} attempts" >&2
+  jq '.data.result' <<<"$response" >&2
+  return 1
+}
+
 wait_for_grafana_health() {
   local attempt response database_status
 
@@ -167,34 +194,40 @@ require_command curl
 require_command jq
 require_command docker
 
-echo "[1/9] Checking Prometheus readiness..."
+echo "[1/11] Checking Prometheus readiness..."
 curl --fail --silent --show-error "${PROMETHEUS_URL}/-/ready" >/dev/null
 echo "      Prometheus is ready"
 
-echo "[2/9] Checking monitoring-service scrape target..."
+echo "[2/11] Checking monitoring-service scrape target..."
 wait_for_prometheus_target "monitoring-service" "monitoring-service"
 
-echo "[3/9] Checking conversation-service scrape target..."
+echo "[3/11] Checking conversation-service scrape target..."
 wait_for_prometheus_target "conversation-service" "conversation-service"
 
-echo "[4/9] Checking call-service scrape target..."
+echo "[4/11] Checking call-service scrape target..."
 wait_for_prometheus_target "call-service" "call-service"
 
-echo "[5/9] Checking host node-exporter scrape target..."
+echo "[5/11] Checking host node-exporter scrape target..."
 wait_for_prometheus_target "node-exporter" "node-exporter"
 
-echo "[6/9] Checking Loki readiness..."
+echo "[6/11] Checking cAdvisor scrape target..."
+wait_for_prometheus_target "cadvisor" "cAdvisor"
+
+echo "[7/11] Checking cAdvisor container metrics..."
+wait_for_container_metrics
+
+echo "[8/11] Checking Loki readiness..."
 wait_for_loki_ready
 
-echo "[7/9] Checking monitoring-service to Loki Docker DNS/network..."
+echo "[9/11] Checking monitoring-service to Loki Docker DNS/network..."
 check_loki_from_monitoring_service
 
-echo "[8/9] Checking Alloy log collector..."
+echo "[10/11] Checking Alloy log collector..."
 check_alloy_running
 
-echo "[9/9] Checking Grafana health..."
+echo "[11/11] Checking Grafana health..."
 wait_for_grafana_health
 
 echo
-printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
+printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\ncAdvisor:             UP\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
   "$PROMETHEUS_URL" "$LOKI_URL" "$GRAFANA_URL"

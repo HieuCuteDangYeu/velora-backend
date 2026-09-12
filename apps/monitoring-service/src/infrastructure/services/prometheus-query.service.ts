@@ -40,6 +40,12 @@ export type PrometheusActiveAlert = {
   value: number | null;
 };
 
+export type PrometheusInstantSample = {
+  metric: Record<string, string>;
+  timestamp: number;
+  value: number;
+};
+
 @Injectable()
 export class PrometheusQueryService {
   private readonly baseUrl: string;
@@ -73,6 +79,23 @@ export class PrometheusQueryService {
     return Number.isFinite(value) ? value : null;
   }
 
+  async vector(query: string): Promise<PrometheusInstantSample[]> {
+    const payload = await this.request<PrometheusInstantResult>(
+      '/api/v1/query',
+      new URLSearchParams({ query }),
+    );
+
+    return payload.result.flatMap((sample) => {
+      const [rawTimestamp, rawValue] = sample.value ?? [];
+      const timestamp = Number(rawTimestamp);
+      const value = Number(rawValue);
+
+      return Number.isFinite(timestamp) && Number.isFinite(value)
+        ? [{ metric: sample.metric, timestamp, value }]
+        : [];
+    });
+  }
+
   async range(
     query: string,
     from: string,
@@ -89,10 +112,12 @@ export class PrometheusQueryService {
       }),
     );
 
-    return (payload.result[0]?.values ?? []).flatMap(([timestamp, rawValue]) => {
-      const value = Number(rawValue);
-      return Number.isFinite(value) ? [{ timestamp, value }] : [];
-    });
+    return (payload.result[0]?.values ?? []).flatMap(
+      ([timestamp, rawValue]) => {
+        const value = Number(rawValue);
+        return Number.isFinite(value) ? [{ timestamp, value }] : [];
+      },
+    );
   }
 
   async activeAlerts(): Promise<PrometheusActiveAlert[]> {
@@ -117,7 +142,10 @@ export class PrometheusQueryService {
     });
   }
 
-  private async request<T>(path: string, searchParams: URLSearchParams): Promise<T> {
+  private async request<T>(
+    path: string,
+    searchParams: URLSearchParams,
+  ): Promise<T> {
     const query = searchParams.toString();
     const url = `${this.baseUrl}${path}${query ? `?${query}` : ''}`;
     let response: Response;

@@ -66,6 +66,26 @@ export class MonitoringController {
     );
   }
 
+  @Get('status')
+  @ApiOperation({ summary: 'Get lightweight monitoring pipeline status' })
+  status() {
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.metrics.status', {})
+        .pipe(timeout(5000)),
+    );
+  }
+
+  @Get('containers')
+  @ApiOperation({ summary: 'Get current resource usage for Docker containers' })
+  containers() {
+    return lastValueFrom(
+      this.monitoringClient
+        .send('system.metrics.containers', {})
+        .pipe(timeout(7000)),
+    );
+  }
+
   @Get('timeseries')
   @ApiOperation({ summary: 'Get a bounded monitoring timeseries' })
   timeseries(@Req() request: AuthenticatedRequest) {
@@ -102,9 +122,7 @@ export class MonitoringController {
   @ApiOperation({ summary: 'List active Prometheus alerts' })
   alerts() {
     return lastValueFrom(
-      this.monitoringClient
-        .send('system.alerts.list', {})
-        .pipe(timeout(5000)),
+      this.monitoringClient.send('system.alerts.list', {}).pipe(timeout(5000)),
     );
   }
 
@@ -144,7 +162,9 @@ export class MonitoringController {
     }
 
     if (!Number.isInteger(limit) || limit < 20 || limit > 500) {
-      throw new BadRequestException('limit must be an integer between 20 and 500');
+      throw new BadRequestException(
+        'limit must be an integer between 20 and 500',
+      );
     }
 
     return lastValueFrom(

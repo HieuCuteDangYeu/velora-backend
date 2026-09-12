@@ -100,6 +100,7 @@ plan_from_changed_files() {
   if [[ "$CHANGED_FILES" == "__INITIAL_RELEASE__" ]]; then
     add_all_application_services
     add_unique nginx INFRA_RECONCILE_SERVICES
+    add_unique cadvisor INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
     add_unique loki INFRA_RECONCILE_SERVICES
@@ -273,6 +274,10 @@ reconcile_infrastructure() {
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
+        ;;
+      cadvisor)
+        log "==> Recreating cAdvisor..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps cadvisor
         ;;
       loki)
         log "==> Force-recreating Loki to refresh logging configuration..."

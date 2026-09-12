@@ -93,6 +93,7 @@ readonly -a MANAGED_INFRA_SERVICES=(
   nginx
   prometheus
   node-exporter
+  cadvisor
   grafana
 )
 
@@ -793,6 +794,7 @@ plan_from_changed_files() {
     add_all_application_services
     # Initial CD bootstrap deliberately does not auto-start protected workloads or RabbitMQ.
     add_unique nginx INFRA_RECONCILE_SERVICES
+    add_unique cadvisor INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
     add_unique grafana INFRA_RECONCILE_SERVICES
@@ -1127,6 +1129,10 @@ reconcile_infrastructure() {
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
+        ;;
+      cadvisor)
+        log "==> Recreating cAdvisor..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps cadvisor
         ;;
       *)
         fail "no infrastructure reconcile handler for $service"

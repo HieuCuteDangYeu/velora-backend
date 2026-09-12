@@ -9,12 +9,10 @@ export interface ExactEvidenceProvenance {
 }
 
 /**
- * Structural source-fidelity check: the complete answer must be an exact
- * contiguous source-token span after Unicode-aware whitespace/punctuation
- * normalization. It is used for provider-failure fallback and as a
- * transcript-answer revision trigger. It deliberately does not interpret the
- * question, relations, synonyms, numbers, units, or language-specific
- * vocabulary.
+ * Structural fallback only: the complete answer must be an exact contiguous
+ * source-token span after Unicode-aware whitespace/punctuation normalization.
+ * It deliberately does not interpret the question, relations, synonyms,
+ * numbers, units, or language-specific vocabulary.
  */
 export function assessExactEvidenceProvenance(input: {
   answer: string;

@@ -29,9 +29,6 @@ interface RawVerificationResult {
   supportedClaimMappings?: unknown;
 }
 
-const SOURCE_FIDELITY_REVISION_ISSUE =
-  'Transcript answer is not anchored to a contiguous authorized evidence span.';
-
 @Injectable()
 export class VerifierAgentUseCase {
   private readonly logger = new Logger(VerifierAgentUseCase.name);
@@ -115,15 +112,6 @@ export class VerifierAgentUseCase {
     }
 
     try {
-      if (this.isSourceFidelityRevision(primary)) {
-        return this.withDiagnostics(primary, {
-          role: 'VERIFIER',
-          source: 'LLM_PRIMARY',
-          escalated: false,
-          state,
-        });
-      }
-
       const escalationReason = this.escalationReason(primary, state);
 
       if (escalationReason && escalationEnabled) {
@@ -493,32 +481,19 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
         ? Math.min(Math.max(raw.confidence, 0), 1)
         : 0;
-    const exactProvenance = this.exactProvenance(state);
-    const sourceFidelityRevisionRequired =
-      raw.passed === true &&
-      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
-      state.route.requiredEvidence.includes('TRANSCRIPT') &&
-      Boolean(state.answer?.trim()) &&
-      state.rerankedChunks.length > 0 &&
-      !exactProvenance.supported;
-    if (sourceFidelityRevisionRequired) {
-      issues.push(SOURCE_FIDELITY_REVISION_ISSUE);
-    }
     const passed =
       raw.passed === true &&
       !hasUnknownEvidenceId &&
-      contradictions.length === 0 &&
-      !sourceFidelityRevisionRequired;
+      contradictions.length === 0;
 
     return {
       passed,
       confidence,
       issues,
       requiresRevision:
-        sourceFidelityRevisionRequired ||
-        (typeof raw.requiresRevision === 'boolean'
+        typeof raw.requiresRevision === 'boolean'
           ? raw.requiresRevision
-          : !passed),
+          : !passed,
       revisedInstruction:
         typeof raw.revisedInstruction === 'string' &&
         raw.revisedInstruction.trim()
@@ -537,12 +512,5 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         evidenceText: chunk.evidenceText?.trim() || '',
       })),
     });
-  }
-
-  private isSourceFidelityRevision(result: RagVerificationResult): boolean {
-    return (
-      result.requiresRevision &&
-      result.issues.includes(SOURCE_FIDELITY_REVISION_ISSUE)
-    );
   }
 }

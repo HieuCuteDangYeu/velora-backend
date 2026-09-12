@@ -4,6 +4,8 @@ import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service'
 import {
   DockerEngineService,
   type DockerContainerResource,
+  type DockerSnapshot,
+  type DockerSnapshotMetadata,
 } from '../services/docker-engine.service';
 import { PrometheusQueryService } from '../services/prometheus-query.service';
 
@@ -127,14 +129,32 @@ export class SystemMetricsController {
   async containers() {
     return this.measure('system.metrics.containers', async () => {
       try {
-        const containers: DockerContainerResource[] =
-          await this.docker.snapshot();
+        const [snapshot, metadata] = await Promise.all([
+          this.readDockerSnapshot(),
+          this.readDockerSnapshotMetadata(),
+        ]);
+
+        const metadataFields = metadata
+          ? {
+              hostCpuCount: metadata.hostCpuCount,
+              storage: metadata.storage,
+            }
+          : {};
+        const coverageFields =
+          snapshot.runningContainers === undefined
+            ? {}
+            : {
+                runningContainers: snapshot.runningContainers,
+                sampledContainers: snapshot.sampledContainers,
+              };
 
         return {
           generatedAt: new Date().toISOString(),
           source: 'docker' as const,
           dockerEngineUp: true,
-          containers,
+          containers: snapshot.containers,
+          ...metadataFields,
+          ...coverageFields,
         };
       } catch {
         return {
@@ -145,6 +165,42 @@ export class SystemMetricsController {
         };
       }
     });
+  }
+
+  private readDockerSnapshot(): Promise<{
+    containers: DockerContainerResource[];
+    runningContainers?: number;
+    sampledContainers?: number;
+  }> {
+    const snapshotWithCoverage = (
+      this.docker as DockerEngineService & {
+        snapshotWithCoverage?: () => Promise<DockerSnapshot>;
+      }
+    ).snapshotWithCoverage;
+
+    if (typeof snapshotWithCoverage === 'function') {
+      return Promise.resolve(snapshotWithCoverage.call(this.docker));
+    }
+
+    return Promise.resolve(this.docker.snapshot()).then((containers) => ({
+      containers,
+    }));
+  }
+
+  private readDockerSnapshotMetadata(): Promise<DockerSnapshotMetadata | null> {
+    const snapshotMetadata = (
+      this.docker as DockerEngineService & {
+        snapshotMetadata?: () => Promise<DockerSnapshotMetadata>;
+      }
+    ).snapshotMetadata;
+
+    if (typeof snapshotMetadata !== 'function') {
+      return Promise.resolve(null);
+    }
+
+    return Promise.resolve(snapshotMetadata.call(this.docker)).catch(
+      () => null,
+    );
   }
 
   @MessagePattern('system.metrics.overview')

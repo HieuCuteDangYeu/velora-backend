@@ -33,6 +33,16 @@ type DockerStats = {
   memory_stats?: DockerMemoryStats;
 };
 
+type DockerSystemDf = {
+  LayersSize?: unknown;
+  Volumes?: unknown;
+  BuildCache?: unknown;
+};
+
+type DockerInfo = {
+  NCPU?: unknown;
+};
+
 export type DockerContainerResource = {
   service: string;
   container: string;
@@ -40,6 +50,23 @@ export type DockerContainerResource = {
   memoryWorkingSetBytes: number | null;
   memoryLimitBytes: number | null;
   filesystemUsageBytes: number | null;
+};
+
+export type DockerStorageSummary = {
+  imagesBytes: number | null;
+  volumesBytes: number | null;
+  buildCacheBytes: number | null;
+};
+
+export type DockerSnapshotMetadata = {
+  hostCpuCount: number | null;
+  storage: DockerStorageSummary;
+};
+
+export type DockerSnapshot = {
+  containers: DockerContainerResource[];
+  runningContainers: number;
+  sampledContainers: number;
 };
 
 const DEFAULT_SOCKET_PATH = '/var/run/docker.sock';
@@ -137,6 +164,53 @@ const filesystemUsageFrom = (
   return value !== null && value >= 0 ? value : null;
 };
 
+const nonNegativeNumber = (value: unknown): number | null => {
+  const number = finiteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+};
+
+const sumUsageDataSizes = (value: unknown): number | null => {
+  if (!Array.isArray(value)) return null;
+  if (value.length === 0) return 0;
+
+  const sizes = value.flatMap((item) => {
+    const record = recordValue(item);
+    const usageData = recordValue(record?.UsageData);
+    const size = nonNegativeNumber(usageData?.Size);
+    return size === null ? [] : [size];
+  });
+
+  return sizes.length > 0
+    ? sizes.reduce((total, size) => total + size, 0)
+    : null;
+};
+
+const sumBuildCacheSizes = (value: unknown): number | null => {
+  if (!Array.isArray(value)) return null;
+  if (value.length === 0) return 0;
+
+  const sizes = value.flatMap((item) => {
+    const record = recordValue(item);
+    const size = nonNegativeNumber(record?.Size);
+    return size === null ? [] : [size];
+  });
+
+  return sizes.length > 0
+    ? sizes.reduce((total, size) => total + size, 0)
+    : null;
+};
+
+const storageFrom = (value: DockerSystemDf | null): DockerStorageSummary => ({
+  imagesBytes: nonNegativeNumber(value?.LayersSize),
+  volumesBytes: sumUsageDataSizes(value?.Volumes),
+  buildCacheBytes: sumBuildCacheSizes(value?.BuildCache),
+});
+
+const hostCpuCountFrom = (value: DockerInfo | null): number | null => {
+  const count = nonNegativeNumber(value?.NCPU);
+  return count !== null && count > 0 ? Math.round(count) : null;
+};
+
 @Injectable()
 export class DockerEngineService {
   private readonly socketPath: string;
@@ -158,6 +232,11 @@ export class DockerEngineService {
   }
 
   async snapshot(): Promise<DockerContainerResource[]> {
+    const snapshot = await this.snapshotWithCoverage();
+    return snapshot.containers;
+  }
+
+  async snapshotWithCoverage(): Promise<DockerSnapshot> {
     const summaries = await this.requestJson<DockerContainerSummary[]>(
       '/containers/json?all=false&size=true',
     );
@@ -179,11 +258,35 @@ export class DockerEngineService {
       throw new Error('Docker Engine returned no container stats');
     }
 
-    return resources.sort(
+    const containers = resources.sort(
       (left, right) =>
         (right.memoryWorkingSetBytes ?? -1) -
         (left.memoryWorkingSetBytes ?? -1),
     );
+
+    return {
+      containers,
+      runningContainers: summaries.length,
+      sampledContainers: containers.length,
+    };
+  }
+
+  async snapshotMetadata(): Promise<DockerSnapshotMetadata> {
+    const [infoResult, storageResult] = await Promise.allSettled([
+      this.requestJson<DockerInfo>('/info'),
+      this.requestJson<DockerSystemDf>('/system/df'),
+    ]);
+
+    return {
+      hostCpuCount:
+        infoResult.status === 'fulfilled'
+          ? hostCpuCountFrom(infoResult.value)
+          : null,
+      storage:
+        storageResult.status === 'fulfilled'
+          ? storageFrom(storageResult.value)
+          : storageFrom(null),
+    };
   }
 
   private async collectContainer(
@@ -199,7 +302,7 @@ export class DockerEngineService {
 
     const [statsResult, inspectResult] = await Promise.allSettled([
       this.requestJson<DockerStats>(
-        `/containers/${encodedId}/stats?stream=false`,
+        `/containers/${encodedId}/stats?stream=false&one-shot=true`,
       ),
       this.requestJson<DockerContainerInspect>(
         `/containers/${encodedId}/json?size=true`,

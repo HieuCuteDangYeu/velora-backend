@@ -63,6 +63,31 @@ describe('DockerEngineService', () => {
     ]);
   });
 
+  it('reads host CPU capacity and shared Docker storage for breakdowns', async () => {
+    const service = new DockerEngineService(config);
+    const requestJson = jest.spyOn(service as any, 'requestJson');
+    requestJson.mockImplementation((path: string) => {
+      if (path === '/info') return Promise.resolve({ NCPU: 8 });
+      if (path === '/system/df') {
+        return Promise.resolve({
+          LayersSize: 1024,
+          Volumes: [{ UsageData: { Size: 200 } }, { UsageData: { Size: 300 } }],
+          BuildCache: [{ Size: 50 }, { Size: 25 }],
+        });
+      }
+      return Promise.reject(new Error(`Unexpected Docker API path: ${path}`));
+    });
+
+    await expect(service.snapshotMetadata()).resolves.toEqual({
+      hostCpuCount: 8,
+      storage: {
+        imagesBytes: 1024,
+        volumesBytes: 500,
+        buildCacheBytes: 75,
+      },
+    });
+  });
+
   it('reads a live snapshot over the Docker Engine Unix socket', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'velora-docker-engine-'));
     const socketPath = join(directory, 'docker.sock');
@@ -79,7 +104,9 @@ describe('DockerEngineService', () => {
             SizeRw: 256,
           },
         ];
-      } else if (path === '/containers/engine-container/stats?stream=false') {
+      } else if (
+        path === '/containers/engine-container/stats?stream=false&one-shot=true'
+      ) {
         payload = {
           cpu_stats: {
             cpu_usage: { total_usage: 2_000_000 },

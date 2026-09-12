@@ -6,7 +6,10 @@ describe('SystemMetricsController container resources', () => {
     vector: jest.fn(),
   };
   const metrics = { recordRpc: jest.fn() };
-  const docker = { snapshot: jest.fn() };
+  const docker = {
+    snapshot: jest.fn(),
+    snapshotMetadata: jest.fn().mockResolvedValue(null),
+  };
   const controller = new SystemMetricsController(
     prometheus as never,
     metrics as never,
@@ -78,6 +81,30 @@ describe('SystemMetricsController container resources', () => {
       generatedAt: expect.any(String),
       source: 'docker',
       dockerEngineUp: false,
+      containers: [],
+    });
+  });
+
+  it('includes Docker metadata when the engine exposes it', async () => {
+    docker.snapshot.mockResolvedValue([]);
+    docker.snapshotMetadata = jest.fn().mockResolvedValue({
+      hostCpuCount: 8,
+      storage: {
+        imagesBytes: 1024,
+        volumesBytes: 2048,
+        buildCacheBytes: 0,
+      },
+    });
+
+    await expect(controller.containers()).resolves.toMatchObject({
+      source: 'docker',
+      dockerEngineUp: true,
+      hostCpuCount: 8,
+      storage: {
+        imagesBytes: 1024,
+        volumesBytes: 2048,
+        buildCacheBytes: 0,
+      },
       containers: [],
     });
   });

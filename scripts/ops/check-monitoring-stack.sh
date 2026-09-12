@@ -6,6 +6,10 @@ LOKI_URL="${LOKI_URL:-http://127.0.0.1:3100}"
 GRAFANA_URL="${GRAFANA_URL:-http://127.0.0.1:3001}"
 TARGET_RETRY_ATTEMPTS="${TARGET_RETRY_ATTEMPTS:-9}"
 TARGET_RETRY_DELAY_SECONDS="${TARGET_RETRY_DELAY_SECONDS:-5}"
+CADVISOR_ENABLED="${CADVISOR_ENABLED:-true}"
+CADVISOR_ENABLED="$(printf '%s' "$CADVISOR_ENABLED" | tr '[:upper:]' '[:lower:]')"
+cadvisor_status="UP"
+[ "$CADVISOR_ENABLED" = "false" ] && cadvisor_status="DISABLED"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -210,11 +214,16 @@ wait_for_prometheus_target "call-service" "call-service"
 echo "[5/11] Checking host node-exporter scrape target..."
 wait_for_prometheus_target "node-exporter" "node-exporter"
 
-echo "[6/11] Checking cAdvisor scrape target..."
-wait_for_prometheus_target "cadvisor" "cAdvisor"
+if [ "$cadvisor_status" = "UP" ]; then
+  echo "[6/11] Checking cAdvisor scrape target..."
+  wait_for_prometheus_target "cadvisor" "cAdvisor"
 
-echo "[7/11] Checking cAdvisor container metrics..."
-wait_for_container_metrics
+  echo "[7/11] Checking cAdvisor container metrics..."
+  wait_for_container_metrics
+else
+  echo "[6/11] Skipping cAdvisor scrape target (CADVISOR_ENABLED=false)"
+  echo "[7/11] Skipping cAdvisor container metrics (CADVISOR_ENABLED=false)"
+fi
 
 echo "[8/11] Checking Loki readiness..."
 wait_for_loki_ready
@@ -229,5 +238,5 @@ echo "[11/11] Checking Grafana health..."
 wait_for_grafana_health
 
 echo
-printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\ncAdvisor:             UP\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
-  "$PROMETHEUS_URL" "$LOKI_URL" "$GRAFANA_URL"
+printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\ncAdvisor:             %s\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
+  "$PROMETHEUS_URL" "$cadvisor_status" "$LOKI_URL" "$GRAFANA_URL"

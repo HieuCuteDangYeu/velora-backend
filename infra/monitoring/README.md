@@ -30,6 +30,13 @@ export GRAFANA_MEMORY_LIMIT=384m
 export CADVISOR_MEMORY_LIMIT=256m
 ```
 
+Some Docker runtimes, including OrbStack, do not expose the container storage
+metadata required for cAdvisor's per-container metrics. On those runtimes set
+`CADVISOR_ENABLED=false` in the host `.env`. Normal deployment then skips
+cAdvisor reconciliation and cAdvisor-specific smoke assertions while keeping
+Prometheus, node-exporter, Loki, Alloy, and Grafana checks required. Linux
+hosts default to `CADVISOR_ENABLED=true`.
+
 Prometheus and Grafana are now defined directly in the root Compose file, so a
 normal deployment starts them automatically. To start only the monitoring
 components manually:
@@ -50,7 +57,8 @@ It verifies:
 
 1. Prometheus readiness.
 2. `up{job="monitoring-service"} == 1`.
-3. `up{job="cadvisor"} == 1` and labeled container samples.
+3. `up{job="cadvisor"} == 1` and labeled container samples when
+   `CADVISOR_ENABLED` is not `false`.
 4. Grafana database health.
 
 For exporter-level inspection, the application endpoint remains internal to the
@@ -67,9 +75,10 @@ Prometheus is bound to localhost only:
 http://127.0.0.1:9090
 ```
 
-Open **Status -> Targets** and confirm `monitoring-service` and `cadvisor` are
-`UP`. cAdvisor is available only inside the Docker network at
-`http://cadvisor:8080/metrics`.
+Open **Status -> Targets** and confirm `monitoring-service` is `UP`. Confirm
+`cadvisor` is also `UP` when cAdvisor is enabled; when
+`CADVISOR_ENABLED=false`, its absence is expected. cAdvisor is available only
+inside the Docker network at `http://cadvisor:8080/metrics`.
 Useful first queries:
 
 ```promql

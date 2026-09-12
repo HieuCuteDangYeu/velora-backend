@@ -302,6 +302,10 @@ print(value)
 PY
 }
 
+cadvisor_enabled() {
+  [[ "$(read_env_value CADVISOR_ENABLED | tr '[:upper:]' '[:lower:]')" != "false" ]]
+}
+
 cleanup_worktrees() {
   local dir
   for dir in "$STAGING_DIR" "$BASELINE_DIR"; do
@@ -757,6 +761,11 @@ compare_compose_models() {
   while IFS= read -r service; do
     [[ -n "$service" ]] || continue
 
+    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
+      log "Skipping cAdvisor Compose diff because CADVISOR_ENABLED=false."
+      continue
+    fi
+
     if jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
       && ! jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
       fail "Compose service '$service' was removed; automatic service removal is intentionally blocked"
@@ -794,7 +803,11 @@ plan_from_changed_files() {
     add_all_application_services
     # Initial CD bootstrap deliberately does not auto-start protected workloads or RabbitMQ.
     add_unique nginx INFRA_RECONCILE_SERVICES
-    add_unique cadvisor INFRA_RECONCILE_SERVICES
+    if cadvisor_enabled; then
+      add_unique cadvisor INFRA_RECONCILE_SERVICES
+    else
+      log "Skipping cAdvisor initial reconciliation because CADVISOR_ENABLED=false."
+    fi
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
     add_unique grafana INFRA_RECONCILE_SERVICES
@@ -1113,6 +1126,11 @@ reconcile_application_services() {
 reconcile_infrastructure() {
   local service
   for service in "${INFRA_RECONCILE_SERVICES[@]}"; do
+    if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
+      log "Skipping cAdvisor reconciliation because CADVISOR_ENABLED=false."
+      continue
+    fi
+
     case "$service" in
       nginx)
         log "==> Force-recreating Nginx to refresh config bind mount..."
@@ -1149,6 +1167,9 @@ wait_for_running_services() {
     bad=()
     while IFS= read -r service; do
       [[ -n "$service" ]] || continue
+      if [[ "$service" == "cadvisor" ]] && ! cadvisor_enabled; then
+        continue
+      fi
       expected=1
       [[ "$service" == "api-gateway" ]] && expected=2
       running="$(docker compose ps --status running -q "$service" | wc -l | tr -d ' ')"
@@ -1282,7 +1303,9 @@ check_rabbitmq_consumers() {
 verify_monitoring_stack() {
   if [[ -f scripts/ops/check-monitoring-stack.sh ]]; then
     log "==> Running monitoring stack smoke check..."
-    bash scripts/ops/check-monitoring-stack.sh
+    local cadvisor_setting
+    cadvisor_setting="$(read_env_value CADVISOR_ENABLED)"
+    CADVISOR_ENABLED="${cadvisor_setting:-true}" bash scripts/ops/check-monitoring-stack.sh
   else
     warn "monitoring smoke script is not executable; skipping"
   fi

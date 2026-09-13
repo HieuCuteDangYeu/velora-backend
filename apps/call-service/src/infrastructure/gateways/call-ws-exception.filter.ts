@@ -6,24 +6,69 @@ import type { Socket } from 'socket.io';
 export class CallWsExceptionFilter extends BaseWsExceptionFilter {
   override catch(exception: unknown, host: ArgumentsHost) {
     const client = host.switchToWs().getClient<Socket>();
+    const request = this.getRequestContext(host);
 
     if (exception instanceof HttpException) {
-      client.emit('exception', {
-        status: 'error',
-        message: this.getHttpExceptionMessage(exception),
-      });
+      this.emitException(
+        client,
+        host,
+        this.getHttpExceptionMessage(exception),
+        request,
+        `http_${exception.getStatus()}`,
+      );
       return;
     }
 
     if (exception instanceof WsException) {
-      client.emit('exception', {
-        status: 'error',
-        message: this.getWsExceptionMessage(exception),
-      });
+      this.emitException(
+        client,
+        host,
+        this.getWsExceptionMessage(exception),
+        request,
+        'ws_error',
+      );
       return;
     }
 
-    super.catch(exception, host);
+    this.emitException(
+      client,
+      host,
+      exception instanceof Error ? exception.message : 'Internal server error',
+      request,
+      'internal_error',
+    );
+  }
+
+  private emitException(
+    client: Socket,
+    host: ArgumentsHost,
+    message: string,
+    request: { callId?: string; requestId?: string },
+    code: string,
+  ): void {
+    client.emit('exception', {
+      status: 'error',
+      message,
+      code,
+      event: host.switchToWs().getPattern(),
+      ...(request.callId ? { callId: request.callId } : {}),
+      ...(request.requestId ? { requestId: request.requestId } : {}),
+    });
+  }
+
+  private getRequestContext(host: ArgumentsHost): {
+    callId?: string;
+    requestId?: string;
+  } {
+    const data = host.switchToWs().getData();
+    if (!data || typeof data !== 'object') return {};
+    const record = data as Record<string, unknown>;
+    return {
+      ...(typeof record.callId === 'string' ? { callId: record.callId } : {}),
+      ...(typeof record.requestId === 'string'
+        ? { requestId: record.requestId }
+        : {}),
+    };
   }
 
   private getHttpExceptionMessage(exception: HttpException): string {

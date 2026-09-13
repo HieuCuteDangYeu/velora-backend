@@ -106,6 +106,7 @@ type ProducePayload = {
   transportId: string;
   kind: 'audio' | 'video';
   rtpParameters: Record<string, unknown>;
+  requestId?: string;
 };
 
 type ConsumePayload = {
@@ -603,13 +604,16 @@ export class CallGateway
       payload.transportId,
       payload.kind,
       payload.rtpParameters,
+      payload.requestId,
     );
 
-    client.emit('new_producer', {
+    client.emit('producer_created', {
       callId: payload.callId,
       userId,
+      transportId: payload.transportId,
       ...result,
       kind: payload.kind,
+      ...(payload.requestId ? { requestId: payload.requestId } : {}),
     });
 
     client.to(payload.callId).emit('new_producer', {

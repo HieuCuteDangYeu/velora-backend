@@ -77,6 +77,7 @@ export abstract class ICallMediaEngine {
     transportId: string,
     kind: 'audio' | 'video',
     rtpParameters: Record<string, unknown>,
+    requestId?: string,
   ): Promise<ProducedMediaResult>;
   abstract consume(
     callId: string,

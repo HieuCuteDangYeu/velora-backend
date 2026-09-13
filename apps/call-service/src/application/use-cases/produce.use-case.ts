@@ -21,6 +21,7 @@ export class ProduceUseCase {
     transportId: string,
     kind: 'audio' | 'video',
     rtpParameters: Record<string, unknown>,
+    requestId?: string,
   ) {
     const session = await this.sessionRepository.findByCallId(callId);
     if (!session) {
@@ -43,6 +44,7 @@ export class ProduceUseCase {
       transportId,
       kind,
       rtpParameters,
+      requestId,
     );
   }
 }

@@ -35,6 +35,7 @@ jobs:
       build_services_list: ${{ steps.detect.outputs.build_services_list }}
       call_regression_required: ${{ steps.detect.outputs.call_regression_required }}
       friend_recommendation_required: ${{ steps.detect.outputs.friend_recommendation_required }}
+      rag_evaluator_required: ${{ steps.detect.outputs.rag_evaluator_required }}
       comparison_base: ${{ steps.detect.outputs.comparison_base }}
       checkout_sha: ${{ steps.detect.outputs.checkout_sha }}
       is_production: ${{ steps.detect.outputs.is_production }}
@@ -164,18 +165,21 @@ jobs:
             while IFS= read -r changed_file; do
               [ -z "$changed_file" ] && continue
 
-              # Runtime configuration and documentation still go through the
-              # validation/promotion gate, but do not change an app image.
+              # Runtime configuration, documentation and shared TypeScript libs
+              # still go through the validation/promotion gate. Shared libs are
+              # compiled by build:all below; production still publishes every
+              # immutable app image, so PRs do not need one Docker job per app.
               case "$changed_file" in
-                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|eval/rag/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
+                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
                   continue
                   ;;
               esac
 
-              # All application Dockerfiles copy the monorepo root. These inputs
-              # can alter dependency installation or compilation for every app.
+              # Root dependency/build inputs and runtime scripts can alter the
+              # Docker build itself for every app, so PRs still validate all
+              # images when one of these changes.
               case "$changed_file" in
-                package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|libs/*|scripts/*|Dockerfile|Dockerfile.*|docker/*|infra/docker/*)
+                package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|scripts/*|Dockerfile|Dockerfile.*|docker/*|infra/docker/*)
                   build_all=true
                   break
                   ;;
@@ -291,14 +295,21 @@ jobs:
             friend_recommendation_required=true
           fi
 
+          rag_evaluator_required=false
+          if [ "$is_production" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.github/workflows/deploy\.yml$)'; then
+            rag_evaluator_required=true
+          fi
+
           echo "Build services: ${build_services_list:-none}"
           echo "Call regression required: $call_regression_required"
           echo "Friend recommendation regression required: $friend_recommendation_required"
+          echo "RAG evaluator required: $rag_evaluator_required"
           {
             printf 'build_matrix_json=%s\n' "$build_matrix_json"
             printf 'build_services_list=%s\n' "$build_services_list"
             printf 'call_regression_required=%s\n' "$call_regression_required"
             printf 'friend_recommendation_required=%s\n' "$friend_recommendation_required"
+            printf 'rag_evaluator_required=%s\n' "$rag_evaluator_required"
             printf 'comparison_base=%s\n' "$comparison_base"
             printf 'checkout_sha=%s\n' "$head_sha"
             printf 'is_production=%s\n' "$is_production"
@@ -491,6 +502,7 @@ jobs:
 
   rag-evaluator-ci:
     needs: [detect-changes, validate]
+    if: needs.detect-changes.outputs.rag_evaluator_required == 'true'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
@@ -531,12 +543,18 @@ jobs:
   build-images:
     needs: [detect-changes, validate, rag-evaluator-ci]
     if: >-
+      always() &&
+      needs.detect-changes.result == 'success' &&
+      needs.validate.result == 'success' &&
+      (needs.rag-evaluator-ci.result == 'success' || needs.rag-evaluator-ci.result == 'skipped') &&
       needs.detect-changes.outputs.build_matrix_json != '[]' &&
       needs.detect-changes.outputs.is_production != 'true'
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # One ARM runner per PR keeps different PRs moving concurrently instead of
+      # letting one broad PR consume two scarce ARM slots at once.
+      max-parallel: 1
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.build_matrix_json) }}
     steps:

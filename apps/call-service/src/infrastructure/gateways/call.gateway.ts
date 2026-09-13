@@ -51,6 +51,7 @@ import type { ICallSessionRepository } from '../../domain/interfaces/call-sessio
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
 import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
 import { CallWsExceptionFilter } from './call-ws-exception.filter';
+import { getCallSocketHeartbeatConfig } from './call-socket-config';
 import {
   getCallNoAnswerTimeoutMs,
   getSessionExpiryDate,
@@ -189,8 +190,7 @@ type StoredRecentTerminalCall = RecentTerminalCall & {
 @WebSocketGateway({
   namespace: '/call',
   cors: { origin: '*' },
-  pingInterval: 5000,
-  pingTimeout: 5000,
+  ...getCallSocketHeartbeatConfig(),
 })
 @UseFilters(new CallWsExceptionFilter())
 export class CallGateway

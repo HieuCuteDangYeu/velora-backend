@@ -32,6 +32,8 @@ describe('CallGateway reconnect recovery', () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     process.env.CALL_RECONNECT_GRACE_MS = '15000';
+    delete process.env.CALL_SOCKET_PING_INTERVAL_MS;
+    delete process.env.CALL_SOCKET_PING_TIMEOUT_MS;
     process.env.CALL_NO_ANSWER_TIMEOUT_MS = '30000';
   });
 
@@ -39,13 +41,15 @@ describe('CallGateway reconnect recovery', () => {
     jest.useRealTimers();
     delete process.env.CALL_RECONNECT_GRACE_MS;
     delete process.env.CALL_NO_ANSWER_TIMEOUT_MS;
+    delete process.env.CALL_SOCKET_PING_INTERVAL_MS;
+    delete process.env.CALL_SOCKET_PING_TIMEOUT_MS;
   });
 
-  it('uses strict heartbeat settings for the call namespace', () => {
+  it('uses mobile-safe heartbeat settings for the call namespace', () => {
     expect(Reflect.getMetadata(GATEWAY_OPTIONS, CallGateway)).toMatchObject({
       namespace: '/call',
-      pingInterval: 5000,
-      pingTimeout: 5000,
+      pingInterval: 25000,
+      pingTimeout: 20000,
     });
   });
 

@@ -21,7 +21,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       userId: 'user-1',
       conversationId: 'conversation-1',
       userMessage: input.question,
-      route: { intent: 'REEL_VIDEO_QUESTION' },
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
       verification: {
         passed: false,
         confidence: 0.9,
@@ -106,6 +109,43 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
         state({ question: 'Where is it?', evidence: ['Inside the atrium.'] }),
       ),
     ).rejects.toThrow('unknown evidence IDs');
+  });
+
+  it('does not accept a revision with an unsupported distinctive entity', async () => {
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer:
+        'The video shot detector project was carried out at EDIAP under Jean-Marc.',
+      evidenceIds: ['e0'],
+    });
+
+    await expect(
+      useCase.executeWithProvenance(
+        state({
+          question:
+            'Where was the video shot detector project carried out, and under whose supervision?',
+          evidence: [
+            'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+          ],
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('does not accept an evidence-dependent refusal as a revision', async () => {
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer:
+        'The transcript is too garbled to determine the requested label reliably.',
+      evidenceIds: ['e0'],
+    });
+
+    await expect(
+      useCase.executeWithProvenance(
+        state({
+          question: 'What example label is used for the marble?',
+          evidence: ['The example label used for the marble is blue.'],
+        }),
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it('bounds revision context to the shared evidence budget', async () => {

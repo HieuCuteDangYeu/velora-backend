@@ -319,7 +319,15 @@ export class MediasoupCallMediaEngine
     const creationKey = `${callId}:${producerKey}`;
     const pendingCreation = this.producerCreationPromises.get(creationKey);
     if (pendingCreation) {
-      await pendingCreation;
+      const pendingResult = await pendingCreation;
+      if (normalizedRequestId) {
+        const pendingOperation = room.producerOperations.get(
+          this.producerOperationKey(userId, kind, normalizedRequestId),
+        );
+        if (pendingOperation?.producerId === pendingResult.producerId) {
+          return pendingResult;
+        }
+      }
       throw new Error('Media producer already exists');
     }
 
@@ -362,6 +370,14 @@ export class MediasoupCallMediaEngine
         userId,
       },
     });
+
+    // A terminal transition may have removed the room while mediasoup was
+    // still allocating the producer. Do not publish or persist media that no
+    // longer belongs to a live call.
+    if (this.rooms.get(callId) !== room) {
+      producer.close();
+      throw new Error('Call room not found');
+    }
 
     room.producers.set(producer.id, producer);
     room.producerMeta.set(producer.id, {

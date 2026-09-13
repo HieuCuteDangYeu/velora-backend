@@ -123,6 +123,7 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
       id: 'transport-1',
       produce: jest.fn().mockResolvedValue(producer),
       connect: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn(),
       on: jest.fn(),
       observer: { on: jest.fn() },
     };
@@ -210,5 +211,65 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     resolveProduce(producer);
     await expect(first).resolves.toEqual({ producerId: 'producer-1' });
     await expect(second).rejects.toThrow('Media producer already exists');
+  });
+
+  it('returns the pending producer to a retry with the same request id', async () => {
+    const { engine, transport, producer } = await createConnectedEngine();
+    let resolveProduce: (value: typeof producer) => void = () => undefined;
+    transport.produce.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveProduce = resolve)),
+    );
+
+    const first = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+      'request-retry',
+    );
+    const retry = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+      'request-retry',
+    );
+    await Promise.resolve();
+    expect(transport.produce).toHaveBeenCalledTimes(1);
+
+    resolveProduce(producer);
+    await expect(Promise.all([first, retry])).resolves.toEqual([
+      { producerId: 'producer-1' },
+      { producerId: 'producer-1' },
+    ]);
+  });
+
+  it('does not resurrect a producer that finishes after terminal room cleanup', async () => {
+    const { engine, transport, producer } = await createConnectedEngine();
+    let resolveProduce: (value: typeof producer) => void = () => undefined;
+    transport.produce.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveProduce = resolve)),
+    );
+
+    const creation = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+      'request-terminal-race',
+    );
+    const cleanup = engine.closeRoom('call-producer');
+    await Promise.resolve();
+    await expect(cleanup).resolves.toBeUndefined();
+    expect(() => engine.listActiveProducers('call-producer')).toThrow(
+      'Call room not found',
+    );
+
+    resolveProduce(producer);
+    await expect(creation).rejects.toThrow('Call room not found');
+    expect(producer.close).toHaveBeenCalledTimes(1);
   });
 });

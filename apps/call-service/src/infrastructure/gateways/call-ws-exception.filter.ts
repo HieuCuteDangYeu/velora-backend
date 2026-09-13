@@ -60,7 +60,7 @@ export class CallWsExceptionFilter extends BaseWsExceptionFilter {
     callId?: string;
     requestId?: string;
   } {
-    const data = host.switchToWs().getData();
+    const data = host.switchToWs().getData<unknown>();
     if (!data || typeof data !== 'object') return {};
     const record = data as Record<string, unknown>;
     return {

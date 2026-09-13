@@ -846,7 +846,14 @@ export class CallGateway
     const operation = previous
       .catch(() => undefined)
       .then(() => this.applyVideoStateUpdate(payload, userId));
-    const queued = operation.then(() => undefined);
+    // Keep the queue tail settled even when the caller receives a structured
+    // websocket exception. A rejected tail would otherwise become an
+    // unhandled promise and could terminate the Node process during a
+    // terminal/media race.
+    const queued = operation.then(
+      () => undefined,
+      () => undefined,
+    );
     this.videoStateQueues.set(key, queued);
 
     try {
@@ -956,6 +963,34 @@ export class CallGateway
         payload.producerId,
       );
     }
+
+    // Terminal lifecycle transitions can race the asynchronous mediasoup
+    // pause/resume call. Re-read the authoritative session and producer
+    // before publishing state so a late media completion can never resurrect
+    // a terminal call or emit a camera update after teardown.
+    const latestSession = await this.sessionRepository.findByCallId(
+      payload.callId,
+    );
+    if (
+      !latestSession ||
+      latestSession.status !== 'active' ||
+      latestSession.callType !== 'VIDEO' ||
+      (latestSession.initiatorId !== userId &&
+        latestSession.targetUserId !== userId)
+    ) {
+      throw new ForbiddenException('Video state cannot be changed');
+    }
+
+    const latestProducer = (
+      await this.mediaEngine.listActiveProducers(payload.callId)
+    ).find(
+      (entry) =>
+        entry.producerId === payload.producerId &&
+        entry.userId === userId &&
+        entry.kind === 'video',
+    );
+    if (!latestProducer)
+      throw new NotFoundException('Video producer not found');
 
     const next: VideoStateRecord = {
       enabled: payload.enabled,

@@ -654,6 +654,77 @@ describe('CallGateway reconnect recovery', () => {
     );
   });
 
+  it('does not publish a camera update when the call terminates during media mutation', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const terminalSession = new CallSession({
+      ...videoSession,
+      status: 'ended',
+      terminalReason: 'hangup',
+    });
+    let releasePause!: () => void;
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'producer-video', userId: 'user-a', kind: 'video' },
+        ]),
+      pauseProducer: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            releasePause = resolve;
+          }),
+      ),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest
+        .fn()
+        .mockResolvedValueOnce(videoSession)
+        .mockResolvedValueOnce(terminalSession),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video-terminal-race',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ mediaEngine, sessionRepository });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+
+    const operation = gateway.handleSetVideoEnabled(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+        revision: 1,
+        actionId: 'camera-terminal-race',
+        requestId: 'camera-terminal-race',
+      },
+      client,
+    );
+    for (let attempt = 0; attempt < 10 && !releasePause; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(releasePause).toEqual(expect.any(Function));
+    releasePause();
+
+    await expect(operation).rejects.toThrow('Video state cannot be changed');
+    expect(roomEmitter.emit).not.toHaveBeenCalledWith(
+      'video_state_changed',
+      expect.anything(),
+    );
+    expect(client.emit).not.toHaveBeenCalledWith(
+      'video_state_updated',
+      expect.anything(),
+    );
+  });
+
   it('rejects rejoin when the reconnect deadline has already expired', async () => {
     const joinCallUseCase = {
       execute: jest.fn(),
@@ -885,11 +956,11 @@ describe('CallGateway reconnect recovery', () => {
 
     const incomingPayload = recipientEmitter.emit.mock.calls.find(
       ([event]) => event === 'incoming_call',
-    )?.[1];
+    )?.[1] as { expiresAt?: string } | undefined;
     expect(incomingPayload).toEqual(
       expect.objectContaining({ ringTimeoutMs: 1250 }),
     );
-    expect(Date.parse(incomingPayload.expiresAt)).not.toBeNaN();
+    expect(Date.parse(incomingPayload?.expiresAt ?? '')).not.toBeNaN();
     gateway.onModuleDestroy();
   });
 });

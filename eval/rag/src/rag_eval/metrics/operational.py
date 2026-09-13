@@ -102,6 +102,9 @@ def judge_metrics(results: list[dict[str, Any]]) -> dict[str, Any]:
         "failureCount": len(failures),
         "retryCount": len(retries),
         "rateLimitErrorCount": sum(call.get("providerStatus") == 429 for call in failures),
+        "accountLimitedCount": sum(
+            call.get("providerCategory") == "ACCOUNT_LIMITED" for call in failures
+        ),
         "timeoutCount": sum(call.get("providerStatus") == "TIMEOUT" for call in failures),
         "networkErrorCount": sum(
             call.get("providerStatus") == "NETWORK_ERROR" for call in failures

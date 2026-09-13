@@ -142,12 +142,40 @@ def _provider_error(error: BaseException) -> dict[str, Any]:
     return {}
 
 
+def _is_account_quota_error(
+    status: int | None, message: str, provider: dict[str, Any]
+) -> bool:
+    if status != 429:
+        return False
+    try:
+        details = json.dumps(provider, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        details = ""
+    normalized = f"{message} {details}".lower()
+    if any(
+        marker in normalized
+        for marker in (
+            "tokens per day",
+            "daily quota",
+            "daily token limit",
+            "quota exhausted",
+            "quota exceeded",
+        )
+    ):
+        return True
+    return "quota" in normalized and any(
+        marker in normalized for marker in ("exhausted", "exceeded", "reached")
+    )
+
+
 def classify_judge_error(
     status: int | None, error: BaseException | None = None
 ) -> tuple[str, bool, str | None]:
     message = str(error or "")
     provider = _provider_error(error) if error else {}
     code = provider.get("code")
+    if _is_account_quota_error(status, message, provider):
+        return "ACCOUNT_LIMITED", False, str(code) if code is not None else None
     if status == 429 or "rate_limit" in message.lower() or "rate limit" in message.lower():
         return "RATE_LIMITED", True, str(code) if code is not None else None
     if status in {408, 500, 502, 503, 504}:
@@ -318,6 +346,7 @@ class JudgeRateLimiter:
         actual_tokens: int | None,
         reservation: _Reservation | None = None,
         error_text: str = "",
+        account_limited: bool = False,
     ) -> None:
         if os.getenv("RAGAS_RATE_LIMIT_HEADERS_ENABLED", "true").lower() != "false":
             self._last_headers = dict(headers)
@@ -328,17 +357,28 @@ class JudgeRateLimiter:
                     self._provider_limit_tokens = int(
                         float(headers["x-ratelimit-limit-tokens"])
                     )
-                if headers.get("x-ratelimit-remaining-tokens") is not None:
+                if account_limited:
+                    self._provider_remaining_tokens = None
+                    self._provider_reset_at = 0.0
+                elif headers.get("x-ratelimit-remaining-tokens") is not None:
                     self._provider_remaining_tokens = int(
                         float(headers["x-ratelimit-remaining-tokens"])
                     )
+                if not account_limited:
+                    reset = _duration(headers.get("x-ratelimit-reset-tokens"))
+                    if reset is not None:
+                        self._provider_reset_at = max(
+                            self._provider_reset_at, self._clock() + reset
+                        )
             except (TypeError, ValueError):
                 pass
-            reset = _duration(headers.get("x-ratelimit-reset-tokens"))
-            if reset is not None:
-                self._provider_reset_at = max(self._provider_reset_at, self._clock() + reset)
         retry_after = retry_after_seconds(headers, error_text)
-        if status == 429 and retry_after is not None:
+        if (
+            status == 429
+            and retry_after is not None
+            and not account_limited
+            and not _is_account_quota_error(status, error_text, {})
+        ):
             self._provider_blocked_until = max(
                 self._provider_blocked_until,
                 self._clock() + retry_after,
@@ -504,6 +544,7 @@ class JudgeUsageTracker:
                             actual_tokens=None,
                             reservation=reservation,
                             error_text=error_text,
+                            account_limited=category == "ACCOUNT_LIMITED",
                         )
                         provider_status: Any = status
                         if status is None:

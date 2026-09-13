@@ -6,6 +6,7 @@ import pytest
 from rag_eval.judge_runtime import (
     JudgeRateLimiter,
     JudgeUsageTracker,
+    classify_judge_error,
     estimate_input_tokens,
     retry_after_seconds,
 )
@@ -120,6 +121,24 @@ class FakeRateLimitError(Exception):
     )
 
 
+class FakeDailyQuotaError(Exception):
+    status_code = 429
+    body = {
+        "error": {
+            "code": "rate_limit_exceeded",
+            "message": "tokens per day limit reached",
+        }
+    }
+    response = SimpleNamespace(
+        headers={
+            "retry-after": "574",
+            "x-ratelimit-limit-tokens": "8000",
+            "x-ratelimit-remaining-tokens": "0",
+            "x-ratelimit-reset-tokens": "17s",
+        }
+    )
+
+
 class FakeCompletions:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -193,6 +212,35 @@ async def test_maximum_retries_stops_without_unbounded_calls(monkeypatch):
     calls = tracker.take("run:case")
     assert client.chat.completions.calls == 2
     assert all(call["providerStatus"] == 429 for call in calls)
+
+
+def test_daily_quota_429_is_permanent_and_not_transient():
+    category, transient, code = classify_judge_error(429, FakeDailyQuotaError())
+    assert category == "ACCOUNT_LIMITED"
+    assert transient is False
+    assert code == "rate_limit_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_429_is_not_retried(monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    client = FakeClient([FakeDailyQuotaError()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.begin("run:case")
+    tracker.set_metric("faithfulness")
+
+    with pytest.raises(FakeDailyQuotaError):
+        await client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "judge"}],
+            max_tokens=32,
+        )
+
+    calls = tracker.take("run:case")
+    assert client.chat.completions.calls == 1
+    assert calls[0]["providerCategory"] == "ACCOUNT_LIMITED"
+    assert tracker.limiter_stats()["providerRemainingTokens"] is None
 
 
 class SlowCompletions:

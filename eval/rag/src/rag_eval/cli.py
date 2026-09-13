@@ -30,6 +30,7 @@ from rag_eval.config_snapshot import load_runtime_snapshot
 from rag_eval.dataset import ROOT, is_supported_live_dataset, load_dataset
 from rag_eval.experiment import rag_experiment
 from rag_eval.pricing import load_pricing
+from rag_eval.preflight import run_preflight
 from rag_eval.reports import build_summary, load_cases, write_report
 from rag_eval.schemas import EvaluationRow
 
@@ -467,6 +468,12 @@ def parser() -> argparse.ArgumentParser:
     compare.add_argument("--candidate", required=True)
     capacity = commands.add_parser("capacity-check")
     capacity.add_argument("--confirm-one-call", action="store_true")
+    preflight = commands.add_parser("preflight")
+    preflight.add_argument("--models")
+    preflight.add_argument("--first-model")
+    preflight.add_argument("--first-operation-tokens", type=int)
+    preflight.add_argument("--tpd-attestation")
+    preflight.add_argument("--timeout", type=float, default=10.0)
     return root
 
 
@@ -482,5 +489,7 @@ def main() -> None:
         run_compare(args)
     elif args.command == "capacity-check":
         asyncio.run(run_capacity_check(args))
+    elif args.command == "preflight":
+        raise SystemExit(asyncio.run(run_preflight(args)))
     else:
         raise ValueError(f"Unsupported rag-eval command: {args.command}")

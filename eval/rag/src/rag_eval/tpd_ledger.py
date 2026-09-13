@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -19,6 +20,7 @@ except ImportError:  # pragma: no cover - the evaluator runs on Unix hosts
 
 DEFAULT_LEDGER_PATH = Path(__file__).resolve().parents[2] / "results" / "groq-tpd-ledger.jsonl"
 LEDGER_FIELDS = (
+    "recordType",
     "schemaVersion",
     "requestId",
     "timestamp",
@@ -38,6 +40,13 @@ LEDGER_FIELDS = (
     "providerStatus",
     "providerCategory",
     "attempt",
+    "baselineId",
+    "ledgerEpoch",
+    "baselineUsedTokens",
+    "dailyLimitTokens",
+    "organizationScope",
+    "baselineFingerprint",
+    "pricingVersion",
 )
 
 
@@ -112,11 +121,28 @@ class GroqDailyTokenLedger:
                 or not isinstance(record.get("countedTokens"), int)
                 or isinstance(record.get("countedTokens"), bool)
                 or record.get("countedTokens") < 0
+                or record.get("recordType", "REQUEST") not in {"REQUEST", "BASELINE"}
             ):
                 raise LedgerPersistenceError(
                     f"invalid Groq TPD ledger record at line {line_number}"
                 )
             records.append(record)
+            if record.get("recordType", "REQUEST") == "BASELINE" and (
+                not isinstance(record.get("baselineId"), str)
+                or not record.get("baselineId")
+                or record.get("ledgerEpoch") != record.get("baselineId")
+                or not isinstance(record.get("baselineUsedTokens"), int)
+                or isinstance(record.get("baselineUsedTokens"), bool)
+                or record.get("baselineUsedTokens") < 0
+                or not isinstance(record.get("dailyLimitTokens"), int)
+                or isinstance(record.get("dailyLimitTokens"), bool)
+                or record.get("dailyLimitTokens") <= 0
+                or not isinstance(record.get("organizationScope"), str)
+                or not record.get("organizationScope")
+            ):
+                raise LedgerPersistenceError(
+                    f"invalid Groq TPD baseline record at line {line_number}"
+                )
         return records
 
     def record(self, record: dict[str, Any]) -> str:
@@ -146,6 +172,7 @@ class GroqDailyTokenLedger:
             if key in record and isinstance(record[key], (str, int, float, type(None)))
         }
         safe_record.setdefault("schemaVersion", "groq-tpd-ledger-record-v1")
+        safe_record["recordType"] = "REQUEST"
         safe_record["provider"] = "groq"
         safe_record["requestId"] = request_id
         safe_record["countedTokens"] = counted_tokens
@@ -166,6 +193,108 @@ class GroqDailyTokenLedger:
         except OSError as error:
             raise LedgerPersistenceError(f"unable to write Groq TPD ledger: {error}") from error
         return request_id
+
+    def initialize_baseline(
+        self,
+        *,
+        provider: str,
+        model: str,
+        observed_at: str,
+        daily_limit_tokens: int,
+        baseline_used_tokens: int,
+        organization_scope: str,
+        baseline_fingerprint: str,
+        pricing_version: str,
+    ) -> str:
+        """Persist one immutable quota baseline without counting it as a request."""
+
+        if provider != "groq" or not model or not organization_scope:
+            raise LedgerPersistenceError("Groq TPD baseline identity is invalid")
+        if parse_timestamp(observed_at) is None:
+            raise LedgerPersistenceError("Groq TPD baseline timestamp is invalid")
+        if (
+            not isinstance(daily_limit_tokens, int)
+            or isinstance(daily_limit_tokens, bool)
+            or daily_limit_tokens <= 0
+            or not isinstance(baseline_used_tokens, int)
+            or isinstance(baseline_used_tokens, bool)
+            or baseline_used_tokens < 0
+        ):
+            raise LedgerPersistenceError("Groq TPD baseline token values are invalid")
+        if not isinstance(baseline_fingerprint, str) or not baseline_fingerprint:
+            raise LedgerPersistenceError("Groq TPD baseline fingerprint is missing")
+        if not isinstance(pricing_version, str) or not pricing_version:
+            raise LedgerPersistenceError("Groq TPD baseline pricing version is missing")
+        identity = "\x1f".join(
+            (
+                provider,
+                model,
+                observed_at,
+                organization_scope,
+                str(daily_limit_tokens),
+                str(baseline_used_tokens),
+                baseline_fingerprint,
+                pricing_version,
+            )
+        )
+        baseline_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        baseline = {
+            "recordType": "BASELINE",
+            "schemaVersion": "groq-tpd-ledger-baseline-v1",
+            "requestId": baseline_id,
+            "baselineId": baseline_id,
+            "ledgerEpoch": baseline_id,
+            "timestamp": observed_at,
+            "provider": provider,
+            "model": model,
+            "countedTokens": 0,
+            "baselineUsedTokens": baseline_used_tokens,
+            "dailyLimitTokens": daily_limit_tokens,
+            "organizationScope": organization_scope,
+            "baselineFingerprint": baseline_fingerprint,
+            "pricingVersion": pricing_version,
+        }
+        try:
+            with self._locked("a+") as handle:
+                records = self._read_records(handle)
+                matching = [
+                    item
+                    for item in records
+                    if item.get("recordType", "REQUEST") == "BASELINE"
+                    and item.get("provider") == provider
+                    and item.get("model") == model
+                    and item.get("organizationScope") == organization_scope
+                ]
+                if matching:
+                    same_baseline = next(
+                        (item for item in matching if item.get("baselineId") == baseline_id),
+                        None,
+                    )
+                    if same_baseline is not None and all(
+                        same_baseline.get(key) == baseline[key]
+                        for key in (
+                            "timestamp",
+                            "model",
+                            "baselineUsedTokens",
+                            "dailyLimitTokens",
+                            "organizationScope",
+                            "baselineFingerprint",
+                            "pricingVersion",
+                        )
+                    ):
+                        return baseline_id
+                    raise LedgerPersistenceError(
+                        "conflicting Groq TPD baseline already exists for model/window"
+                    )
+                handle.seek(0, 2)
+                handle.write(json.dumps(baseline, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except LedgerPersistenceError:
+            raise
+        except OSError as error:
+            raise LedgerPersistenceError(f"unable to write Groq TPD baseline: {error}") from error
+        return baseline_id
 
     def usage_since(
         self,
@@ -194,6 +323,8 @@ class GroqDailyTokenLedger:
             if request_id in seen:
                 continue
             seen.add(request_id)
+            if record.get("recordType", "REQUEST") != "REQUEST":
+                continue
             if record.get("provider") != "groq" or record.get("model") != model:
                 continue
             timestamp = parse_timestamp(record.get("timestamp"))

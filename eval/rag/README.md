@@ -35,6 +35,8 @@ pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
 pnpm eval:rag:preflight --tpd-limit-attestation <limit-json> \
   --tpd-window-attestation <window-json> --ledger-path <ledger-jsonl>
+pnpm eval:rag:preflight --tpd-cost-attestation <cost-json> \
+  --pricing-path eval/rag/config/groq-pricing-v1.json --ledger-path <ledger-jsonl>
 ```
 
 ## Containerized evaluator
@@ -97,8 +99,8 @@ headroom, while `x-ratelimit-*-requests` is RPD rather than TPD. The existing
 reset waits, Retry-After, and bounded transient retries throughout a semantic
 run. TPD is not inferred from provider headers.
 
-The preflight requires two fresh, operator-supplied artifacts for every model
-being probed:
+Token-window preflight requires two fresh, operator-supplied artifacts for
+every model being probed:
 
 1. An independently observed organization TPD limit (`TPD_LIMIT`).
 2. A current-window usage baseline (`TPD`) plus the persistent evaluator ledger.
@@ -138,6 +140,48 @@ The current-window artifact may use an explicitly observed fresh window:
   }
 }
 ```
+
+When the usage console exposes only precise organization-wide model cost, a
+cost-derived upper-bound artifact can be used instead of a token-count window
+baseline. It must carry the underlying decimal precision and an operator
+confirmation that the reporting-delay quiet period was observed:
+
+```json
+{
+  "schemaVersion": "groq-tpd-cost-upper-bound-attestation-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "groq-console-organization-usage",
+  "observedAt": "2026-09-13T00:15:00Z",
+  "organizationScope": "all-projects",
+  "model": "openai/gpt-oss-120b",
+  "dailyLimitTokens": 200000,
+  "observedOrganizationModelCostUsd": "0.0200000",
+  "costValueSource": "groq-console-usage-raw",
+  "costDecimalPlaces": 7,
+  "rateLimitedTokenPriceFloorUsdPerMillion": "0.15",
+  "consoleMaxReportingDelaySeconds": 900,
+  "verifiedQuietPeriodSeconds": 900,
+  "quietPeriodStatus": "operator-confirmed-no-known-groq-traffic",
+  "plannedFullRunTokens": 54048
+}
+```
+
+The tracked `config/groq-pricing-v1.json` snapshot is validated for official
+source, freshness, uncached input price ($0.15/M), cached input price
+($0.075/M), output price ($0.60/M), and cached-token rate-limit semantics.
+The default pricing snapshot freshness window is 30 days and is configurable
+with `RAGAS_GROQ_PRICING_MAX_AGE_SECONDS`.
+The evaluator uses decimal arithmetic only:
+`ceil(cost / 0.15 * 1,000,000)` is the maximum possible rate-limited token
+usage compatible with the observed cost. A visible rounded value such as
+`"0.02"` is rejected because it cannot prove the required $0.0218928 boundary.
+With the 200,000-token limit and 54,048-token planned run, the exact boundary
+is `0.0218928`; the boundary itself passes and any greater precise value fails.
+The optional `TPD_LIMIT` artifact is cross-checked when supplied, while the
+cost artifact still must state the current 200,000-token limit.
+The cost baseline is persisted in the TPD ledger as a non-counting epoch;
+subsequent evaluator requests are counted after the observation timestamp.
 
 For a non-fresh window, include an operator-proven `windowStartedAt` and the
 known usage since that boundary. The evaluator then calculates

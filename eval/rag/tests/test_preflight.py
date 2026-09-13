@@ -116,6 +116,30 @@ def ledger_record(*, request_id="request-1", model=MODEL, counted_tokens=1_000):
     }
 
 
+def cost_attestation(tmp_path, *, observed_at):
+    return write_json(
+        tmp_path / "cost.json",
+        {
+            "schemaVersion": "groq-tpd-cost-upper-bound-attestation-v1",
+            "provider": "groq",
+            "scope": "TPD",
+            "source": "groq-console-organization-usage",
+            "observedAt": observed_at.isoformat(),
+            "organizationScope": "all-projects",
+            "model": MODEL,
+            "dailyLimitTokens": 200_000,
+            "observedOrganizationModelCostUsd": "0.0218928",
+            "costValueSource": "groq-console-usage-raw",
+            "costDecimalPlaces": 7,
+            "rateLimitedTokenPriceFloorUsdPerMillion": "0.15",
+            "consoleMaxReportingDelaySeconds": 900,
+            "verifiedQuietPeriodSeconds": 900,
+            "quietPeriodStatus": "operator-confirmed-no-known-groq-traffic",
+            "plannedFullRunTokens": 54_048,
+        },
+    )
+
+
 def test_tpm_preflight_checks_only_the_next_operation():
     ok, remaining = first_request_tpm_headroom(probe(), 6_000)
 
@@ -323,3 +347,38 @@ async def test_run_preflight_passes_with_limit_and_window_attestations(
     assert "TPD_CALCULATED_REMAINING_TOKENS=200000" in output
     assert "PREFLIGHT_PASS=YES" in output
     assert "FROZEN_V3_RUN_STARTED" not in output
+
+
+@pytest.mark.asyncio
+async def test_run_preflight_accepts_cost_upper_bound_attestation(monkeypatch, capsys, tmp_path):
+    async def fake_probe(models, _base_url, _api_key, _timeout):
+        return [probe() | {"model": model} for model in models]
+
+    monkeypatch.setenv("GROQ_API_KEY", "present-but-not-read")
+    monkeypatch.setenv("RAGAS_GROQ_TPM_LIMIT", "8000")
+    monkeypatch.setenv("RAGAS_GROQ_TPM_TARGET", "6000")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_HEADROOM_RATIO", "0.25")
+    monkeypatch.setattr("rag_eval.preflight.probe_groq", fake_probe)
+    observed_at = datetime.now(UTC)
+    args = SimpleNamespace(
+        models=MODEL,
+        first_model=MODEL,
+        first_operation_tokens=6_000,
+        tpd_attestation=None,
+        tpd_limit_attestation=None,
+        tpd_window_attestation=None,
+        tpd_cost_attestation=str(cost_attestation(tmp_path, observed_at=observed_at)),
+        pricing_path=None,
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+        timeout=1.0,
+    )
+
+    result = await run_preflight(args)
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "TPD_BASELINE_METHOD=COST_DERIVED_CONSERVATIVE_UPPER_BOUND" in output
+    assert "TPD_OBSERVED_EXACT_COST_USD=0.0218928" in output
+    assert "MAX_RATE_LIMITED_TOKENS_FROM_COST=145952" in output
+    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=54048" in output
+    assert "PREFLIGHT_PASS=YES" in output

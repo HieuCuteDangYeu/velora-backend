@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "groq-pricing-v1",
+  "provider": "groq",
+  "model": "openai/gpt-oss-120b",
+  "currency": "USD",
+  "unit": "per 1M tokens",
+  "uncachedInputUsdPerMillion": "0.15",
+  "cachedInputUsdPerMillion": "0.075",
+  "outputUsdPerMillion": "0.60",
+  "rateLimitCountedTokenPriceFloorUsdPerMillion": "0.15",
+  "cachedTokensCountTowardRateLimits": false,
+  "verifiedAt": "2026-09-13",
+  "officialSource": "https://console.groq.com/docs/model/openai/gpt-oss-120b"
+}

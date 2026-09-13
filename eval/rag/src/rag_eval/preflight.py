@@ -12,6 +12,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter
 from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
 
@@ -231,6 +232,8 @@ def tpd_headroom(
     ledger_path: str | None = None,
     limit_attestation_path: str | None = None,
     window_attestation_path: str | None = None,
+    cost_attestation_path: str | None = None,
+    pricing_path: str | None = None,
     now: datetime | None = None,
     max_age_seconds: int | None = None,
 ) -> dict[str, Any]:
@@ -243,6 +246,34 @@ def tpd_headroom(
     legacy = _read_json(attestation_path)
     limit_payload = _read_json(limit_attestation_path)
     window_payload = _read_json(window_attestation_path)
+    cost_payload = _read_json(cost_attestation_path)
+    if (
+        cost_payload is None
+        and legacy is not None
+        and legacy.get("schemaVersion") == COST_ATTESTATION_SCHEMA
+    ):
+        cost_payload = legacy
+    if cost_attestation_path and cost_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_COST_ATTESTATION_UNREADABLE"}
+    if cost_payload is not None:
+        if cost_payload.get("schemaVersion") != COST_ATTESTATION_SCHEMA:
+            return {"status": "UNKNOWN", "reason": "TPD_COST_ATTESTATION_INVALID"}
+        if limit_attestation_path and limit_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_UNREADABLE"}
+        if limit_payload is None and legacy is not None and legacy.get("scope") == "TPD_LIMIT":
+            limit_payload = legacy
+        ledger = (
+            GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+        )
+        return cost_tpd_headroom(
+            cost_payload,
+            models,
+            ledger,
+            limit_payload=limit_payload,
+            pricing_path=pricing_path,
+            now=current,
+            max_age_seconds=age_limit,
+        )
     if legacy is not None and (limit_payload is None or window_payload is None):
         scope = legacy.get("scope")
         if scope == "TPD_LIMIT" and limit_payload is None:
@@ -399,6 +430,9 @@ async def run_preflight(args: argparse.Namespace) -> int:
         or os.getenv("RAGAS_GROQ_TPD_LIMIT_ATTESTATION_PATH"),
         window_attestation_path=getattr(args, "tpd_window_attestation", None)
         or os.getenv("RAGAS_GROQ_TPD_WINDOW_ATTESTATION_PATH"),
+        cost_attestation_path=getattr(args, "tpd_cost_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_COST_ATTESTATION_PATH"),
+        pricing_path=getattr(args, "pricing_path", None) or os.getenv("RAGAS_GROQ_PRICING_PATH"),
     )
     provider_reachable = all(probe["networkReachable"] for probe in probes)
     daily_quota_error = any(probe["dailyQuotaError"] for probe in probes)
@@ -420,23 +454,60 @@ async def run_preflight(args: argparse.Namespace) -> int:
     print(f"TPD_HEADROOM_REASON={tpd['reason']}")
     details = tpd.get("models", [{}])
     first_tpd = details[0] if details and isinstance(details[0], dict) else {}
-    print(f"TPD_ATTESTATION_SOURCE={first_tpd.get('limitSource', 'UNKNOWN')}")
-    print(f"TPD_ATTESTATION_OBSERVED_AT={first_tpd.get('limitObservedAt', 'UNKNOWN')}")
+    attestation_source = first_tpd.get("source", first_tpd.get("limitSource", "UNKNOWN"))
+    attestation_observed_at = first_tpd.get(
+        "observedAt", first_tpd.get("limitObservedAt", "UNKNOWN")
+    )
+    proven_remaining = first_tpd.get(
+        "minimumProvenRemainingTokens",
+        first_tpd.get("calculatedRemainingTokens", "UNKNOWN"),
+    )
+    calculated_remaining = first_tpd.get(
+        "calculatedRemainingTokens", first_tpd.get("minimumProvenRemainingTokens", "UNKNOWN")
+    )
+    print(f"TPD_ATTESTATION_SOURCE={attestation_source}")
+    print(f"TPD_ATTESTATION_OBSERVED_AT={attestation_observed_at}")
     print(f"TPD_WINDOW_ATTESTATION_SOURCE={first_tpd.get('windowSource', 'UNKNOWN')}")
     print(f"TPD_WINDOW_ATTESTATION_OBSERVED_AT={first_tpd.get('windowObservedAt', 'UNKNOWN')}")
+    print(f"TPD_BASELINE_METHOD={first_tpd.get('method', 'WINDOW_BASELINE_PLUS_LEDGER')}")
+    print(
+        "TPD_OBSERVED_EXACT_COST_USD="
+        f"{first_tpd.get('observedOrganizationModelCostUsd', 'UNKNOWN')}"
+    )
+    print(
+        "TPD_RATE_LIMITED_PRICE_FLOOR_USD_PER_MILLION="
+        f"{first_tpd.get('rateLimitedTokenPriceFloorUsdPerMillion', 'UNKNOWN')}"
+    )
+    print(
+        "MAX_RATE_LIMITED_TOKENS_FROM_COST="
+        f"{first_tpd.get('maxRateLimitedTokensFromCost', 'UNKNOWN')}"
+    )
+    print(
+        "CALCULATED_MINIMUM_REMAINING_TOKENS="
+        f"{first_tpd.get('calculatedMinimumRemainingTokens', 'UNKNOWN')}"
+    )
     print(
         "TPD_WINDOW_BASELINE_STATUS="
-        + ("ATTESTED_AND_LEDGER_ACCOUNTED" if first_tpd else "UNKNOWN")
+        + (
+            "COST_BOUND_INITIALIZED_AND_LEDGER_ACCOUNTED"
+            if first_tpd.get("method") == "COST_DERIVED_CONSERVATIVE_UPPER_BOUND"
+            else "ATTESTED_AND_LEDGER_ACCOUNTED"
+            if first_tpd
+            else "UNKNOWN"
+        )
     )
     print(f"TPD_DAILY_LIMIT_TOKENS={first_tpd.get('dailyLimitTokens', 'UNKNOWN')}")
     print(f"TPD_LEDGER_USED_TOKENS={first_tpd.get('ledgerUsedTokens', 'UNKNOWN')}")
-    print(
-        f"TPD_CALCULATED_REMAINING_TOKENS={first_tpd.get('calculatedRemainingTokens', 'UNKNOWN')}"
-    )
+    print(f"TPD_CALCULATED_REMAINING_TOKENS={calculated_remaining}")
     print(
         "TPD_PLANNED_FULL_RUN_TOKENS="
         f"{first_tpd.get('plannedFullRunTokens', DEFAULT_TPD_PLANNED_TOKENS)}"
     )
+    print(
+        "TPD_CONSERVATIVE_USED_TOKEN_UPPER_BOUND="
+        f"{first_tpd.get('conservativeUsedTokensUpperBound', 'UNKNOWN')}"
+    )
+    print(f"TPD_MINIMUM_PROVEN_REMAINING_TOKENS={proven_remaining}")
     print(f"PREFLIGHT_PASS={'YES' if all_gates_pass else 'NO'}")
     if not all_gates_pass:
         print("FROZEN_V3_RUN_STARTED=NO")

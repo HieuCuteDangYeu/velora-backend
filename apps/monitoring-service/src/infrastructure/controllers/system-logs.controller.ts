@@ -3,6 +3,7 @@ import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
 import {
   LokiQueryService,
+  type LokiLogEntry,
   type LokiLogLevel,
 } from '../services/loki-query.service';
 
@@ -39,6 +40,9 @@ const ALLOWED_LOG_SERVICES = new Set([
 
 const ALLOWED_LOG_LEVELS = new Set(['all', 'error', 'warn', 'info', 'debug']);
 const MAX_LOG_RANGE_MS = 24 * 60 * 60 * 1000;
+const ERROR_LOG_PATTERN = String.raw`(?i)\b(FATAL|ERROR|EXCEPTION)\b`;
+const WARN_LOG_PATTERN = String.raw`(?i)\bWARN(?:ING)?\b`;
+const DEBUG_LOG_PATTERN = String.raw`(?i)\b(DEBUG|VERBOSE)\b`;
 
 type LogsPayload = {
   service?: unknown;
@@ -69,31 +73,28 @@ export class SystemLogsController {
   async query(@Payload() payload: LogsPayload) {
     return this.measure('system.logs.query', async () => {
       const parsed = this.parsePayload(payload);
-      const logQl = this.buildLogQl(parsed);
-      const sourceLimit =
-        parsed.level === 'all'
-          ? parsed.limit
-          : Math.min(Math.max(parsed.limit * 4, parsed.limit), 1000);
+      const logQlQueries = this.buildLogQl(parsed);
+      // The LogQL level filter is applied before Loki's limit. Ask for one
+      // extra matching entry so mayHaveMore reflects matching logs, not noise.
+      const sourceLimit = parsed.limit + 1;
 
       try {
-        const entries = await this.loki.range(
-          logQl,
-          parsed.from,
-          parsed.to,
-          sourceLimit,
+        const sourceEntries = await Promise.all(
+          logQlQueries.map((logQl) =>
+            this.loki.range(logQl, parsed.from, parsed.to, sourceLimit),
+          ),
         );
-        const filtered =
-          parsed.level === 'all'
-            ? entries
-            : entries.filter((entry) => entry.level === parsed.level);
+        const entries = this.mergeEntries(sourceEntries.flat());
+        const filtered = entries.filter(
+          (entry) => parsed.level === 'all' || entry.level === parsed.level,
+        );
 
         return {
           generatedAt: new Date().toISOString(),
           source: 'loki' as const,
           query: parsed,
           entries: filtered.slice(0, parsed.limit),
-          mayHaveMore:
-            filtered.length > parsed.limit || entries.length >= sourceLimit,
+          mayHaveMore: filtered.length > parsed.limit,
         };
       } catch (error) {
         throw this.lokiError(error);
@@ -173,7 +174,7 @@ export class SystemLogsController {
     };
   }
 
-  private buildLogQl(query: ParsedLogsQuery): string {
+  private buildLogQl(query: ParsedLogsQuery): string[] {
     const selector =
       query.service === 'all'
         ? `{service=~"${Array.from(ALLOWED_LOG_SERVICES)
@@ -181,9 +182,92 @@ export class SystemLogsController {
             .join('|')}"}`
         : `{service=${JSON.stringify(query.service)}}`;
 
-    return query.search
-      ? `${selector} |= ${JSON.stringify(query.search)}`
-      : selector;
+    const levelQueries = this.buildLevelLogQl(selector, query.level);
+    const queries = levelQueries.map((levelQuery) => {
+      const withSearch = query.search
+        ? this.appendSearch(levelQuery, query.search)
+        : levelQuery;
+      return withSearch;
+    });
+
+    return queries;
+  }
+
+  private buildLevelLogQl(
+    selector: string,
+    level: ParsedLogsQuery['level'],
+  ): string[] {
+    if (level === 'all') return [selector];
+
+    const nonStderrSelector = this.withStreamMatcher(selector, '!=', 'stderr');
+
+    if (level === 'error') {
+      const messageErrors = this.lineFilter(
+        nonStderrSelector,
+        '|~',
+        ERROR_LOG_PATTERN,
+      );
+      const stderr = this.withStreamMatcher(selector, '=', 'stderr');
+      return [messageErrors, stderr];
+    }
+
+    const withoutErrors = this.lineFilter(
+      nonStderrSelector,
+      '!~',
+      ERROR_LOG_PATTERN,
+    );
+    if (level === 'warn') {
+      return [this.lineFilter(withoutErrors, '|~', WARN_LOG_PATTERN)];
+    }
+
+    const withoutWarnings = this.lineFilter(
+      withoutErrors,
+      '!~',
+      WARN_LOG_PATTERN,
+    );
+    if (level === 'debug') {
+      return [this.lineFilter(withoutWarnings, '|~', DEBUG_LOG_PATTERN)];
+    }
+
+    return [this.lineFilter(withoutWarnings, '!~', DEBUG_LOG_PATTERN)];
+  }
+
+  private lineFilter(selector: string, operator: '|~' | '!~', pattern: string) {
+    return `${selector} ${operator} ${JSON.stringify(pattern)}`;
+  }
+
+  private withStreamMatcher(
+    selector: string,
+    operator: '=' | '!=',
+    stream: string,
+  ) {
+    return `${selector.slice(0, -1)},stream${operator}${JSON.stringify(stream)}}`;
+  }
+
+  private appendSearch(query: string, search: string) {
+    return `${query} |= ${JSON.stringify(search)}`;
+  }
+
+  private mergeEntries(entries: LokiLogEntry[]) {
+    const unique = new Map<string, LokiLogEntry>();
+    for (const entry of entries) {
+      const key = JSON.stringify([
+        entry.timestampNs,
+        entry.service,
+        entry.container,
+        entry.stream,
+        entry.message,
+      ]);
+      unique.set(key, entry);
+    }
+
+    return Array.from(unique.values()).sort((left, right) =>
+      left.timestampNs === right.timestampNs
+        ? 0
+        : BigInt(left.timestampNs) > BigInt(right.timestampNs)
+          ? -1
+          : 1,
+    );
   }
 
   private lokiError(error: unknown) {

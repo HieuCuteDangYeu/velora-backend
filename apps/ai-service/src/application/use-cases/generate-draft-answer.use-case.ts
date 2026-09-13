@@ -18,7 +18,10 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
-import { validateRagAnswerContract } from '@ai/domain/services/rag-answer-contract';
+import {
+  answerContentTokens,
+  validateRagAnswerContract,
+} from '@ai/domain/services/rag-answer-contract';
 
 interface RawDraftAnswer {
   answer?: unknown;
@@ -221,13 +224,17 @@ export class GenerateDraftAnswerUseCase {
     if (transcriptCandidates.length === 0) return undefined;
 
     const first = transcriptCandidates[0];
-    const selected = first.reelId
-      ? transcriptCandidates
-          .filter((candidate) => candidate.reelId === first.reelId)
-          .slice(0, 2)
+    const scopedCandidates = first.reelId
+      ? transcriptCandidates.filter(
+          (candidate) => candidate.reelId === first.reelId,
+        )
       : [first];
+    const selected = this.selectFallbackSpans(
+      state.userMessage,
+      scopedCandidates,
+    );
     const answer = selected
-      .map((candidate) => candidate.evidenceText)
+      .map((candidate) => candidate.text)
       .join('\n')
       .slice(0, 2_500)
       .trim();
@@ -237,6 +244,62 @@ export class GenerateDraftAnswerUseCase {
       answer,
       evidenceIds: selected.map((candidate) => candidate.evidenceId),
     };
+  }
+
+  private selectFallbackSpans(
+    question: string,
+    candidates: Array<{
+      evidenceId: string;
+      evidenceText: string;
+    }>,
+  ): Array<{ evidenceId: string; text: string }> {
+    const questionTokens = new Set(answerContentTokens(question));
+    const spans = candidates.flatMap((candidate, candidateIndex) =>
+      this.transcriptSpans(candidate.evidenceText).map((text, spanIndex) => ({
+        evidenceId: candidate.evidenceId,
+        text,
+        candidateIndex,
+        spanIndex,
+        score: this.fallbackSpanScore(text, questionTokens),
+      })),
+    );
+    const scored = spans
+      .filter((span) => span.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.candidateIndex - right.candidateIndex ||
+          left.spanIndex - right.spanIndex,
+      )
+      .slice(0, 2)
+      .sort(
+        (left, right) =>
+          left.candidateIndex - right.candidateIndex ||
+          left.spanIndex - right.spanIndex,
+      );
+
+    if (scored.length > 0) {
+      return scored.map(({ evidenceId, text }) => ({ evidenceId, text }));
+    }
+
+    return candidates.slice(0, 2).map(({ evidenceId, evidenceText }) => ({
+      evidenceId,
+      text: evidenceText,
+    }));
+  }
+
+  private transcriptSpans(text: string): string[] {
+    return text
+      .split(/(?<=[.!?])\s+|\n+/)
+      .map((span) => span.trim())
+      .filter(Boolean);
+  }
+
+  private fallbackSpanScore(span: string, questionTokens: Set<string>): number {
+    return [...new Set(answerContentTokens(span))].reduce(
+      (score, token) => score + (questionTokens.has(token) ? 1 : 0),
+      0,
+    );
   }
 
   private schema(): StructuredLlmJsonSchema {

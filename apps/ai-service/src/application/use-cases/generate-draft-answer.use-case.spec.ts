@@ -329,11 +329,11 @@ describe('GenerateDraftAnswerUseCase', () => {
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({
       answer:
-        'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
+        'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
       claims: [
         {
           claim:
-            'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc. A separate sentence follows.',
+            'At 42.5 seconds, the project was carried out during an internship at IDIAP under Jean-Marc.',
           evidenceIds: ['e0'],
         },
       ],
@@ -426,6 +426,46 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledTimes(2);
   });
 
+  it('selects relevant source spans from a noisy transcript fallback', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: '',
+        claims: [],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'Why do they say CDs are not enough for backing up data?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'They discussed unrelated storage. Because one CD is not even one GB. Another unrelated sentence.',
+            chunkText:
+              'They discussed unrelated storage. Because one CD is not even one GB. Another unrelated sentence.',
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'Because one CD is not even one GB.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+    });
+  });
+
   it('uses extractive fallback for an evidence-dependent refusal', async () => {
     const refusal =
       'The transcript is too garbled to determine the requested label reliably.';
@@ -445,6 +485,56 @@ describe('GenerateDraftAnswerUseCase', () => {
       useCase.execute({
         ...state,
         userMessage: 'What example label is used for the marble?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The example label used for the marble is blue.',
+            chunkText: 'The example label used for the marble is blue.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The example label used for the marble is blue.',
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not preserve an answer that only echoes the question vocabulary', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer:
+          'The example label used for a marble that is put into a bag is bag.',
+        claims: [
+          {
+            claim:
+              'The example label used for a marble that is put into a bag is bag.',
+            evidenceIds: ['e0'],
+          },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage:
+          'What example label is used for a marble that is put into a bag?',
         route: {
           intent: 'REEL_VIDEO_QUESTION',
           requiredEvidence: ['TRANSCRIPT'],

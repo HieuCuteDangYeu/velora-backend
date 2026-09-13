@@ -1,4 +1,84 @@
 groups:
+  - name: velora-host
+    rules:
+      - alert: VeloraHostDown
+        expr: up{job="node-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: node-exporter
+        annotations:
+          summary: monitored host exporter is unavailable
+          description: Prometheus has not been able to scrape node-exporter for at least one minute.
+
+      - alert: VeloraHostHighCpu
+        expr: |
+          1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[5m]))
+          > 0.7
+        for: 5m
+        labels:
+          severity: warning
+          service: node-exporter
+        annotations:
+          summary: host CPU usage is above 70 percent
+          description: CPU usage across the monitored host has remained above 70 percent for five minutes.
+
+      - alert: VeloraHostHighMemory
+        expr: |
+          1 - (
+            max(node_memory_MemAvailable_bytes{job="node-exporter"})
+            / clamp_min(max(node_memory_MemTotal_bytes{job="node-exporter"}), 1)
+          ) > 0.75
+        for: 5m
+        labels:
+          severity: warning
+          service: node-exporter
+        annotations:
+          summary: host memory usage is above 75 percent
+          description: Host memory usage based on MemAvailable has remained above 75 percent for five minutes.
+
+      - alert: VeloraHostDiskAlmostFull
+        expr: |
+          1 - (
+            max(node_filesystem_avail_bytes{
+              job="node-exporter",
+              mountpoint=~"^/$|^/opt/orbstack-guest/data$",
+              fstype!~"tmpfs|overlay|squashfs"
+            })
+            / clamp_min(max(node_filesystem_size_bytes{
+              job="node-exporter",
+              mountpoint=~"^/$|^/opt/orbstack-guest/data$",
+              fstype!~"tmpfs|overlay|squashfs"
+            }), 1)
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: node-exporter
+        annotations:
+          summary: monitored filesystem is above 80 percent full
+          description: Usage of the monitored Docker host filesystem has remained above 80 percent for five minutes.
+
+      - alert: VeloraConversationServiceDown
+        expr: up{job="conversation-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: conversation-service
+        annotations:
+          summary: conversation-service is unavailable
+          description: Prometheus has not been able to scrape conversation-service for at least one minute.
+
+      - alert: VeloraCallServiceDown
+        expr: up{job="call-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: call-service
+        annotations:
+          summary: call-service is unavailable
+          description: Prometheus has not been able to scrape call-service for at least one minute.
+
   - name: velora-monitoring-service
     rules:
       - alert: VeloraMonitoringServiceDown
@@ -6,6 +86,7 @@ groups:
         for: 1m
         labels:
           severity: critical
+          service: monitoring-service
         annotations:
           summary: monitoring-service is unavailable
           description: Prometheus has not been able to scrape monitoring-service for at least one minute.
@@ -19,6 +100,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service RPC error rate is above 5 percent
           description: More than 5 percent of monitoring-service RPC/event operations have failed during the last five minutes.
@@ -34,6 +116,7 @@ groups:
         for: 5m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service p95 RPC latency is above one second
           description: p95 monitoring-service RPC/event latency has remained above one second for five minutes.
@@ -43,6 +126,7 @@ groups:
         for: 10m
         labels:
           severity: warning
+          service: monitoring-service
         annotations:
           summary: monitoring-service resident memory is above 512 MiB
           description: monitoring-service has used more than 512 MiB of resident memory for ten minutes.

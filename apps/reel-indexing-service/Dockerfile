@@ -8,9 +8,11 @@ WORKDIR /usr/src/app
 RUN corepack enable
 RUN corepack prepare pnpm@9.15.0 --activate
 
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
 COPY . .
 
-RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm exec prisma generate --schema=./apps/reel-indexing-service/prisma/schema.prisma
 RUN pnpm run build:reel-indexing
 

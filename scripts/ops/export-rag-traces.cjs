@@ -109,7 +109,115 @@ function sanitizeCitations(value) {
   }));
 }
 
-function buildTraceRows(cases, traces) {
+function semanticContextIds(traces) {
+  return [
+    ...new Set(
+      traces.flatMap((trace) => [
+        ...(Array.isArray(trace.retrievedChunkIds)
+          ? trace.retrievedChunkIds
+          : []),
+        ...(Array.isArray(trace.rerankedChunkIds)
+          ? trace.rerankedChunkIds
+          : []),
+      ]).filter((id) => typeof id === 'string' && id.length > 0),
+    ),
+  ];
+}
+
+function semanticContextTable(id) {
+  if (/^reel:[^:]+:chunk:\d+$/.test(id)) {
+    return { clientKey: 'reelChunk', evidenceType: 'TRANSCRIPT' };
+  }
+  if (/^reel:[^:]+:section:\d+$/.test(id)) {
+    return { clientKey: 'reelSection', evidenceType: 'TRANSCRIPT' };
+  }
+  if (/^reel:[^:]+:visual:\d+$/.test(id)) {
+    return { clientKey: 'reelVisualScene', evidenceType: 'VISUAL' };
+  }
+  if (/^reel:[^:]+$/.test(id)) {
+    return { clientKey: 'reelDocument', evidenceType: 'METADATA' };
+  }
+  throw new Error(`SEMANTIC_CONTEXT_PROVENANCE=UNSUPPORTED_ID id=${id}`);
+}
+
+async function loadSemanticContexts(indexing, ids) {
+  const groups = new Map();
+  for (const id of ids) {
+    const table = semanticContextTable(id);
+    const group = groups.get(table.clientKey) || {
+      ...table,
+      ids: [],
+    };
+    group.ids.push(id);
+    groups.set(table.clientKey, group);
+  }
+
+  const rows = (
+    await Promise.all(
+      [...groups.values()].map(async (group) => {
+        const found = await indexing[group.clientKey].findMany({
+          where: { id: { in: group.ids }, isActive: true },
+          select: {
+            id: true,
+            reelId: true,
+            evidenceText: true,
+            retrievalText: true,
+            indexAttemptId: true,
+          },
+        });
+        return found.map((row) => ({
+          evidenceId: row.id,
+          reelId: row.reelId,
+          evidenceType: group.evidenceType,
+          text: row.retrievalText || row.evidenceText || '',
+          indexAttemptId: row.indexAttemptId,
+        }));
+      }),
+    )
+  ).flat();
+
+  const byId = new Map();
+  for (const row of rows) {
+    if (byId.has(row.evidenceId)) {
+      throw new Error(
+        `SEMANTIC_CONTEXT_PROVENANCE=AMBIGUOUS id=${row.evidenceId}`,
+      );
+    }
+    if (!row.text.trim()) {
+      throw new Error(
+        `SEMANTIC_CONTEXT_PROVENANCE=EMPTY_TEXT id=${row.evidenceId}`,
+      );
+    }
+    byId.set(row.evidenceId, row);
+  }
+
+  const missing = ids.filter((id) => !byId.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `SEMANTIC_CONTEXT_PROVENANCE=MISSING ids=${missing.join(',')}`,
+    );
+  }
+  return byId;
+}
+
+function contextsForIds(ids, semanticContexts) {
+  if (!Array.isArray(ids)) return [];
+  return ids.map((id, index) => {
+    const context = semanticContexts.get(id);
+    if (!context) {
+      throw new Error(`SEMANTIC_CONTEXT_PROVENANCE=MISSING id=${id}`);
+    }
+    return {
+      evidenceId: context.evidenceId,
+      reelId: context.reelId,
+      evidenceType: context.evidenceType,
+      text: context.text,
+      rank: index + 1,
+    };
+  });
+}
+
+function buildTraceRows(cases, traces, semanticContexts = null) {
   const expected = new Map(cases.map((item) => [item.caseId, item]));
   if (expected.size !== cases.length)
     throw new Error('runner report contains duplicate case IDs');
@@ -137,7 +245,7 @@ function buildTraceRows(cases, traces) {
         `TRACE_PROVENANCE=AMBIGUOUS case=${caseId} count=${matches.length}`,
       );
     const trace = matches[0];
-    return {
+    const row = {
       caseId,
       traceId: trace.id,
       intent: trace.intent,
@@ -151,6 +259,17 @@ function buildTraceRows(cases, traces) {
       nodeTimings: sanitize(trace.nodeTimings, 'nodeTimings'),
       workflowMetrics: sanitize(trace.workflowMetrics, 'workflowMetrics'),
     };
+    if (semanticContexts) {
+      row.retrievedContexts = contextsForIds(
+        trace.retrievedChunkIds,
+        semanticContexts,
+      );
+      row.rerankedContexts = contextsForIds(
+        trace.rerankedChunkIds,
+        semanticContexts,
+      );
+    }
+    return row;
   });
 }
 
@@ -163,6 +282,13 @@ async function main() {
   dotenv.config({ path: envFile });
   if (!process.env.AI_DATABASE_URL)
     throw new Error('AI_DATABASE_URL is required for read-only trace export');
+  const includeSemanticContext = process.argv.includes(
+    '--include-semantic-context',
+  );
+  if (includeSemanticContext && !process.env.REEL_INDEXING_DATABASE_URL)
+    throw new Error(
+      'REEL_INDEXING_DATABASE_URL is required with --include-semantic-context',
+    );
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
   if (!Array.isArray(report.cases))
     throw new Error('runner report must contain cases');
@@ -171,6 +297,7 @@ async function main() {
     throw new Error('runner report contains duplicate conversation IDs');
   const { PrismaClient } = require('@prisma/ai-client');
   const prisma = new PrismaClient();
+  let indexing;
   try {
     const traces = await prisma.ragTrace.findMany({
       where: { conversationId: { in: conversationIds } },
@@ -189,7 +316,18 @@ async function main() {
         workflowMetrics: true,
       },
     });
-    const rows = buildTraceRows(report.cases, traces);
+    let semanticContexts = null;
+    if (includeSemanticContext) {
+      const { PrismaClient: IndexingClient } = require(
+        '@prisma/reel-indexing-client',
+      );
+      indexing = new IndexingClient();
+      semanticContexts = await loadSemanticContexts(
+        indexing,
+        semanticContextIds(traces),
+      );
+    }
+    const rows = buildTraceRows(report.cases, traces, semanticContexts);
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     const temporary = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(
@@ -201,11 +339,13 @@ async function main() {
       JSON.stringify({
         TRACE_PROVENANCE: 'COMPLETE',
         TRACE_ROWS_EXPORTED: rows.length,
-        PRIVATE_EVIDENCE_TEXT_EXPORTED: 'NO',
+        PRIVATE_EVIDENCE_TEXT_EXPORTED: includeSemanticContext ? 'YES' : 'NO',
+        SEMANTIC_CONTEXT_ROWS_EXPORTED: semanticContexts?.size || 0,
       }),
     );
   } finally {
     await prisma.$disconnect();
+    if (indexing) await indexing.$disconnect();
   }
 }
 
@@ -215,4 +355,10 @@ if (require.main === module)
     process.exitCode = 1;
   });
 
-module.exports = { buildTraceRows, sanitize };
+module.exports = {
+  buildTraceRows,
+  loadSemanticContexts,
+  sanitize,
+  semanticContextIds,
+  semanticContextTable,
+};

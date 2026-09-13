@@ -36,6 +36,61 @@ test('requires exactly one matching trace', () => {
   assert.equal(rows[0].traceId, 'trace-1');
 });
 
+test('includes semantic contexts only when explicitly supplied', () => {
+  const trace = {
+    id: 'trace-1',
+    conversationId: 'conversation-1',
+    retrievedChunkIds: ['reel:r1:chunk:0'],
+    rerankedChunkIds: ['reel:r1:chunk:0'],
+  };
+  const withoutContext = buildTraceRows(cases, [trace]);
+  assert.equal(withoutContext[0].retrievedContexts, undefined);
+
+  const withContext = buildTraceRows(
+    cases,
+    [trace],
+    new Map([
+      [
+        'reel:r1:chunk:0',
+        {
+          evidenceId: 'reel:r1:chunk:0',
+          reelId: 'r1',
+          evidenceType: 'TRANSCRIPT',
+          text: 'Saved retrieval context.',
+        },
+      ],
+    ]),
+  );
+  assert.deepEqual(withContext[0].retrievedContexts, [
+    {
+      evidenceId: 'reel:r1:chunk:0',
+      reelId: 'r1',
+      evidenceType: 'TRANSCRIPT',
+      text: 'Saved retrieval context.',
+      rank: 1,
+    },
+  ]);
+  assert.equal(withContext[0].rerankedContexts[0].rank, 1);
+});
+
+test('fails closed when a requested semantic context is missing', () => {
+  assert.throws(
+    () =>
+      buildTraceRows(
+        cases,
+        [
+          {
+            id: 'trace-1',
+            conversationId: 'conversation-1',
+            retrievedChunkIds: ['reel:r1:chunk:0'],
+          },
+        ],
+        new Map(),
+      ),
+    /SEMANTIC_CONTEXT_PROVENANCE=MISSING/,
+  );
+});
+
 test('accepts one trace for a reconciled failure without an assistant identifier', () => {
   const rows = buildTraceRows(
     [

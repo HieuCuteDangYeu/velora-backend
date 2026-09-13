@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import os
 from typing import Any, Protocol
 
 from ragas.metrics.collections import (
@@ -16,6 +18,8 @@ from ragas.metrics.collections import (
     ToolCallAccuracy,
     ToolCallF1,
 )
+
+from rag_eval.checkpoint import JudgeCheckpointStore
 
 
 class Scorer(Protocol):
@@ -54,6 +58,14 @@ class SemanticMetricSuite:
     ):
         self.scorers = scorers or {}
         self.usage_tracker = usage_tracker
+        self.checkpoint: JudgeCheckpointStore | None = None
+        self.checkpoint_identity: dict[str, Any] = {}
+
+    def configure_checkpoint(
+        self, checkpoint: JudgeCheckpointStore, identity: dict[str, Any]
+    ) -> None:
+        self.checkpoint = checkpoint
+        self.checkpoint_identity = dict(identity)
 
     def score(self, payloads: dict[str, dict[str, Any]]) -> dict[str, float | None]:
         output: dict[str, float | None] = {}
@@ -85,15 +97,83 @@ class SemanticMetricSuite:
         return output
 
     async def ascore_with_usage(
-        self, payloads: dict[str, dict[str, Any]], usage_key: str
+        self,
+        payloads: dict[str, dict[str, Any]],
+        usage_key: str,
+        checkpoint_context: dict[str, Any] | None = None,
     ) -> tuple[dict[str, float | None], list[dict[str, Any]]]:
+        if self.checkpoint and (
+            not checkpoint_context
+            or not checkpoint_context.get("sourceExecutionId")
+            or not checkpoint_context.get("ragTraceId")
+        ):
+            raise ValueError("judge checkpoint source execution identity is incomplete")
         if self.usage_tracker:
             self.usage_tracker.begin(usage_key)
+        case_id = usage_key.rsplit(":", 1)[-1]
+        cached_calls: list[dict[str, Any]] = []
+        context = checkpoint_context or {}
         try:
-            metrics = await self.ascore(payloads)
+            metrics: dict[str, float | None] = {}
+            for name in SEMANTIC_NAMES:
+                scorer = self.scorers.get(name)
+                if scorer is None or name not in payloads:
+                    metrics[name] = None
+                    continue
+
+                cached = (
+                    self.checkpoint.get(case_id, name)
+                    if self.checkpoint
+                    and os.getenv("RAGAS_RESUME_COMPLETED_JUDGE_RESULTS", "true").lower()
+                    != "false"
+                    else None
+                )
+                if cached and cached.get("status") == "COMPLETE":
+                    metrics[name] = float(cached["value"])
+                    cached_calls.extend(cached.get("calls") or [])
+                    continue
+
+                if self.usage_tracker:
+                    self.usage_tracker.set_metric(name)
+                try:
+                    if hasattr(scorer, "ascore"):
+                        result = await scorer.ascore(**payloads[name])
+                    else:
+                        result = scorer.score(**payloads[name])
+                    value = float(result.value)
+                    if not math.isfinite(value):
+                        raise ValueError("metric returned a non-finite value")
+                    metrics[name] = value
+                    status = "COMPLETE"
+                    error_type = None
+                except Exception as error:
+                    metrics[name] = None
+                    value = None
+                    status = "UNAVAILABLE"
+                    error_type = type(error).__name__
+
+                calls = (
+                    self.usage_tracker.calls_for(usage_key, name)
+                    if self.usage_tracker
+                    else []
+                )
+                if self.checkpoint:
+                    self.checkpoint.record(
+                        {
+                            **self.checkpoint_identity,
+                            "sourceExecutionId": context.get("sourceExecutionId"),
+                            "ragTraceId": context.get("ragTraceId"),
+                            "caseId": case_id,
+                            "metricName": name,
+                            "status": status,
+                            "value": value,
+                            "errorType": error_type,
+                            "calls": calls,
+                        }
+                    )
         finally:
             calls = self.usage_tracker.take(usage_key) if self.usage_tracker else []
-        return metrics, calls
+        return metrics, cached_calls + calls
 
 
 def build_live_semantic_suite(

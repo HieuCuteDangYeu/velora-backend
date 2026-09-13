@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -13,16 +14,17 @@ from typing import Any
 
 from rag_eval.adapters.cloudflare_judge import (
     build_capacity_client,
-    build_live_judge,
     capacity_message_class,
     classify_capacity_error,
 )
+from rag_eval.adapters.evaluation_judge import build_live_judge
 from rag_eval.adapters.runner_output import (
     fixture_execution,
     invoke_typescript_runner,
     load_runner_report,
     validate_trace_provenance,
 )
+from rag_eval.checkpoint import JudgeCheckpointStore
 from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
 from rag_eval.dataset import ROOT, is_supported_live_dataset, load_dataset
@@ -71,12 +73,41 @@ def _variant(args: argparse.Namespace) -> dict[str, Any]:
         "retrievalK": args.retrieval_k,
         "rerankK": args.rerank_k,
         "promptVersion": args.prompt_version,
+        "judgeProvider": os.getenv("RAG_EVAL_JUDGE_PROVIDER"),
+        "judgeModel": os.getenv("RAG_EVAL_JUDGE_MODEL"),
+        "embeddingProvider": os.getenv("RAG_EVAL_EMBEDDING_PROVIDER"),
     }
 
 
 def _repo_path(value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else ROOT.parents[1] / path
+
+
+def _saved_runner_report(run_id: str) -> Path:
+    return ROOT.parents[1] / "test-data/reel-integration/ami/reports" / f"{run_id}.json"
+
+
+def _validate_source_summary(
+    path: Path,
+    args: argparse.Namespace,
+    expected_case_ids: set[str],
+) -> dict[str, Any]:
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        summary.get("dataset") != args.dataset
+        or summary.get("caseCount") != len(expected_case_ids)
+        or summary.get("correctAndGrounded") != len(expected_case_ids)
+        or summary.get("hardGatePassed") is not True
+        or summary.get("variant", {}).get("productionSha") != args.production_sha
+    ):
+        raise ValueError("saved deterministic summary does not match the requested source run")
+    if summary.get("runId") != args.resume:
+        raise ValueError("saved deterministic summary run ID does not match the source run")
+    return {
+        "runId": summary.get("runId"),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
 
 
 def _export_trace_artifact(
@@ -206,7 +237,37 @@ async def run_live(args: argparse.Namespace) -> Path:
     )
     snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, args.dataset)
     run_id, runner_args = _build_live_runner_args(args, definitions_path)
-    report_path = invoke_typescript_runner(runner_args)
+    source_attestation = None
+    if args.resume and args.trace_file:
+        source_summary_value = args.source_summary or os.getenv("RAGAS_SOURCE_SUMMARY_PATH")
+        if not source_summary_value:
+            raise ValueError(
+                "saved live evaluation requires --source-summary or RAGAS_SOURCE_SUMMARY_PATH"
+            )
+        source_summary_path = _repo_path(source_summary_value)
+        source_attestation = _validate_source_summary(
+            source_summary_path, args, set(rows)
+        )
+        report_path = _saved_runner_report(run_id)
+        if not report_path.exists():
+            raise ValueError("saved runner report is missing for the requested source run")
+        saved_report = json.loads(report_path.read_text(encoding="utf-8"))
+        saved_cases = saved_report.get("cases")
+        saved_ids = [case.get("caseId") for case in saved_cases or []]
+        if (
+            saved_report.get("runId") != run_id
+            or len(saved_ids) != len(set(saved_ids))
+            or set(saved_ids) != set(rows)
+            or any(
+                case.get("status") != "EVALUATED"
+                or not case.get("userMessageId")
+                or not case.get("assistantMessageId")
+                for case in saved_cases or []
+            )
+        ):
+            raise ValueError("saved runner report is incomplete or mixed across source runs")
+    else:
+        report_path = invoke_typescript_runner(runner_args)
     trace_path = (
         _repo_path(args.trace_file)
         if args.trace_file
@@ -221,10 +282,24 @@ async def run_live(args: argparse.Namespace) -> Path:
     missing = set(rows) - set(executions)
     if missing:
         raise RuntimeError(f"runner report omitted cases: {sorted(missing)}")
+    if source_attestation and (
+        len(executions) != len(rows)
+        or any(
+            execution.runId != run_id
+            or execution.executionStatus != "COMPLETED"
+            or not execution.trace.get("productionExecutionId")
+            or not execution.trace.get("ragTraceId")
+            for execution in executions.values()
+        )
+    ):
+        raise ValueError("saved execution set is incomplete or lacks immutable provenance")
     variant = _variant(args)
     variant["configSnapshot"] = snapshot
     variant["variantName"] = snapshot["variantName"]
     variant["traceProvenance"] = "COMPLETE"
+    if source_attestation:
+        variant["savedSourceMode"] = "SAVED_RUN_ONLY"
+        variant["sourceSummarySha256"] = source_attestation["sha256"]
     result = await rag_experiment.arun(
         dataset,
         name=run_id,
@@ -239,6 +314,24 @@ async def run_live(args: argparse.Namespace) -> Path:
         if not summary["hardGatePassed"]:
             raise RuntimeError("deterministic hard gate failed; saved results, no judge calls made")
         semantic_suite, _client, _model = build_live_judge()
+        checkpoint_value = os.getenv("RAGAS_JUDGE_CHECKPOINT_PATH")
+        checkpoint_path = (
+            _repo_path(checkpoint_value)
+            if checkpoint_value
+            else RESULTS / f"{run_id}-judge-checkpoint.json"
+        )
+        checkpoint = JudgeCheckpointStore(
+            checkpoint_path,
+            {
+                "sourceRunId": run_id,
+                "productionSha": args.production_sha,
+                "datasetVersion": args.dataset,
+                "judgeProvider": os.getenv("RAG_EVAL_JUDGE_PROVIDER", "cloudflare"),
+                "judgeModel": os.getenv("RAG_EVAL_JUDGE_MODEL"),
+                "evaluatorSha": variant.get("evaluatorSha"),
+            },
+        )
+        semantic_suite.configure_checkpoint(checkpoint, checkpoint.identity)
         judged = await rag_experiment.arun(
             dataset,
             name=f"{run_id}-semantic",
@@ -366,6 +459,7 @@ def parser() -> argparse.ArgumentParser:
     live.add_argument("--trace-file")
     live.add_argument("--live-judge", action="store_true")
     live.add_argument("--runtime-config-snapshot")
+    live.add_argument("--source-summary")
     report = commands.add_parser("report")
     report.add_argument("--run", required=True)
     compare = commands.add_parser("compare")

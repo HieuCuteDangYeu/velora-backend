@@ -7,7 +7,8 @@ from statistics import fmean
 from typing import Any
 
 from rag_eval.metrics.cost import aggregate_costs, safe_cost_per
-from rag_eval.metrics.operational import latency_summary, reliability_metrics
+from rag_eval.metrics.operational import judge_metrics, latency_summary, reliability_metrics
+from rag_eval.metrics.semantic import SEMANTIC_NAMES
 from rag_eval.pricing import load_pricing
 
 
@@ -26,6 +27,14 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     semantic = {
         key: _mean([item["semantic"].get(key) for item in cases])
         for key in (cases[0]["semantic"] if cases else {})
+    }
+    semantic_coverage = {
+        name: {
+            "available": sum(item["semantic"].get(name) is not None for item in cases),
+            "total": len(cases),
+            "complete": all(item["semantic"].get(name) is not None for item in cases),
+        }
+        for name in SEMANTIC_NAMES
     }
     calls = [call for execution in executions for call in execution.get("modelCalls", [])]
     costs = aggregate_costs(calls, load_pricing())
@@ -55,8 +64,12 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         ),
         "metrics": metrics,
         "semanticMetrics": semantic,
+        "semanticMetricCoverage": semantic_coverage,
+        "semanticEvaluationComplete": bool(cases)
+        and all(item["complete"] for item in semantic_coverage.values()),
         "latencyMs": latency_summary(executions),
         "reliability": reliability_metrics(executions),
+        "judge": judge_metrics(executions),
         "cost": {
             **costs,
             "averageProductionCostPerQuery": safe_cost_per(costs["totalQueryCostUsd"], len(cases)),
@@ -114,6 +127,7 @@ def write_report(cases: list[dict[str, Any]], run_id: str, output_root: Path) ->
         f"- MRR: {metric.get('mrr')}",
         f"- Production query cost: {cost.get('totalQueryCostUsd')}",
         f"- Evaluation judge cost: {cost.get('evaluationJudgeCostUsd')}",
+        f"- Semantic evaluation complete: {summary['semanticEvaluationComplete']}",
         f"- Hard gate: {'PASS' if summary['hardGatePassed'] else 'FAIL'}",
         "",
     ]

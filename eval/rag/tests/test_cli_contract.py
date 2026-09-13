@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from rag_eval import cli
-from rag_eval.cli import _build_live_runner_args, validate_definitions_report
+from rag_eval.cli import (
+    _build_live_runner_args,
+    _validate_source_summary,
+    validate_definitions_report,
+)
 from rag_eval.dataset import is_supported_live_dataset, load_dataset
 
 
@@ -101,6 +105,36 @@ def test_live_rejects_ambiguous_run_id_and_resume():
     with pytest.raises(SystemExit, match="either --run-id or --resume"):
         _build_live_runner_args(
             _runner_args(run_id="run-a", resume="run-b"), Path("/tmp/definitions.json")
+        )
+
+
+def test_saved_source_summary_requires_exact_production_identity(tmp_path):
+    path = tmp_path / "summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "runId": "source-run",
+                "dataset": "rag-frozen-ami-v3",
+                "caseCount": 8,
+                "correctAndGrounded": 8,
+                "hardGatePassed": True,
+                "variant": {"productionSha": "a" * 40},
+            }
+        )
+    )
+    args = Namespace(
+        dataset="rag-frozen-ami-v3",
+        production_sha="a" * 40,
+        resume="source-run",
+    )
+    case_ids = {f"C-{index}" for index in range(8)}
+    attestation = _validate_source_summary(path, args, case_ids)
+    assert attestation["runId"] == "source-run"
+    with pytest.raises(ValueError, match="source run"):
+        _validate_source_summary(
+            path,
+            Namespace(**{**vars(args), "resume": "other-run"}),
+            case_ids,
         )
 
 

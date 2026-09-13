@@ -1,0 +1,299 @@
+name: Homelab CD
+
+on:
+  workflow_run:
+    workflows:
+      - Homelab CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+# This is the only production serialization point. CI runs are intentionally
+# free to overlap; complete releases are built/published/promoted one at a time.
+concurrency:
+  group: homelab-production
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'master' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    outputs:
+      target_sha: ${{ steps.prepare.outputs.target_sha }}
+      should_release: ${{ steps.prepare.outputs.should_release }}
+      build_matrix_json: ${{ steps.prepare.outputs.build_matrix_json }}
+    steps:
+      - name: Checkout CI-approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Prepare immutable release
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_sha="$(git rev-parse HEAD)"
+          expected_sha='${{ github.event.workflow_run.head_sha }}'
+          if [ "$target_sha" != "$expected_sha" ]; then
+            echo "Checked out $target_sha but workflow_run approved $expected_sha." >&2
+            exit 1
+          fi
+
+          git fetch --no-tags origin '+refs/heads/master:refs/remotes/origin/master'
+          if ! git merge-base --is-ancestor "$target_sha" refs/remotes/origin/master; then
+            echo "Approved commit $target_sha is no longer on master; refusing release." >&2
+            exit 1
+          fi
+
+          # The CD workflow itself is serialized, so this check observes the
+          # latest completed promotion. Older CI runs that finish out of order
+          # are treated as superseded instead of rolling production backwards.
+          if git ls-remote --exit-code --heads origin refs/heads/homelab-deploy >/dev/null 2>&1; then
+            git fetch --no-tags origin \
+              '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
+            deployed_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
+
+            if git merge-base --is-ancestor "$target_sha" "$deployed_sha"; then
+              echo "Release $target_sha is already deployed or superseded by $deployed_sha."
+              {
+                printf 'target_sha=%s\n' "$target_sha"
+                printf 'should_release=false\n'
+                printf 'build_matrix_json=[]\n'
+              } >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if ! git merge-base --is-ancestor "$deployed_sha" "$target_sha"; then
+              echo "homelab-deploy $deployed_sha diverged from candidate $target_sha." >&2
+              exit 1
+            fi
+          else
+            remote_status=$?
+            if [ "$remote_status" -ne 2 ]; then
+              echo 'Unable to query origin/homelab-deploy.' >&2
+              exit "$remote_status"
+            fi
+            echo 'homelab-deploy does not exist; preparing the initial release.'
+          fi
+
+          all_services=(
+            api-gateway
+            user-service
+            friend-service
+            auth-service
+            media-service
+            media-processing-service
+            reel-indexing-service
+            content-service
+            payment-service
+            mail-service
+            conversation-service
+            call-service
+            monitoring-service
+            notification-service
+            ai-service
+          )
+
+          temporary_env_file='.env'
+          if [ -e "$temporary_env_file" ]; then
+            echo "Refusing to overwrite existing $temporary_env_file in CD workspace." >&2
+            exit 1
+          fi
+          install -m 600 /dev/null "$temporary_env_file"
+          trap 'rm -f -- "$temporary_env_file"' EXIT
+
+          dockerhub_placeholder='ci-placeholder'
+          build_matrix_json="$(
+            COMPOSE_DISABLE_ENV_FILE=1 \
+              DOCKERHUB_USERNAME="$dockerhub_placeholder" \
+              RABBITMQ_DEFAULT_USER=ci \
+              RABBITMQ_DEFAULT_PASS=ci \
+              RABBITMQ_DEFAULT_VHOST=/ \
+              RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
+              docker compose config --no-env-resolution --no-path-resolution --format json \
+                | jq -ce --arg prefix "${dockerhub_placeholder}/" '
+                    [
+                      .services
+                      | to_entries[]
+                      | select(.value.build != null and .key != "rag-eval")
+                      | {
+                          service: .key,
+                          context: .value.build.context,
+                          dockerfile: .value.build.dockerfile,
+                          image: (
+                            .value.image
+                            | if startswith($prefix) and endswith(":latest") then
+                                ltrimstr($prefix) | rtrimstr(":latest")
+                              else
+                                error("compose build image must use the CI Docker Hub namespace and :latest")
+                              end
+                          )
+                        }
+                    ]
+                    | sort_by(.service)
+                  '
+          )"
+
+          expected_services_json="$(printf '%s\n' "${all_services[@]}" | jq -R . | jq -cs 'sort')"
+          actual_services_json="$(jq -c '[.[].service] | sort' <<< "$build_matrix_json")"
+          if [ "$expected_services_json" != "$actual_services_json" ]; then
+            echo 'The explicit application service list does not match Compose build services.' >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r service context dockerfile image; do
+            if [ "$context" != '.' ]; then
+              echo "${service} uses unsupported build context ${context}." >&2
+              exit 1
+            fi
+            if [ ! -f "$dockerfile" ]; then
+              echo "${service} Dockerfile does not exist: ${dockerfile}" >&2
+              exit 1
+            fi
+            if [ -z "$image" ]; then
+              echo "${service} has no Docker Hub repository name." >&2
+              exit 1
+            fi
+          done < <(jq -r '.[] | [.service, .context, .dockerfile, .image] | @tsv' <<< "$build_matrix_json")
+
+          {
+            printf 'target_sha=%s\n' "$target_sha"
+            printf 'should_release=true\n'
+            printf 'build_matrix_json=%s\n' "$build_matrix_json"
+          } >> "$GITHUB_OUTPUT"
+
+  build-and-push-images:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJson(needs.prepare-release.outputs.build_matrix_json) }}
+    steps:
+      - name: Checkout approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ARM64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.prepare-release.outputs.target_sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
+
+  build-and-push-rag-eval:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push versioned ARM64 RAG evaluator image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: eval/rag/Dockerfile
+          platforms: linux/arm64
+          push: true
+          build-args: |
+            EVALUATOR_SHA=${{ needs.prepare-release.outputs.target_sha }}
+            PRODUCTION_SHA=${{ needs.prepare-release.outputs.target_sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:${{ needs.prepare-release.outputs.target_sha }}
+          cache-from: type=gha,scope=rag-eval-arm64
+          cache-to: type=gha,mode=max,scope=rag-eval-arm64
+
+  promote-homelab:
+    needs:
+      - prepare-release
+      - build-and-push-images
+      - build-and-push-rag-eval
+    if: >-
+      always() &&
+      needs.prepare-release.result == 'success' &&
+      needs.prepare-release.outputs.should_release == 'true' &&
+      needs.build-and-push-images.result == 'success' &&
+      needs.build-and-push-rag-eval.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Promote approved commit to homelab-deploy
+        env:
+          APPROVED_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if git ls-remote --exit-code --heads origin refs/heads/homelab-deploy >/dev/null 2>&1; then
+              git fetch --no-tags origin \
+                '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
+              remote_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
+
+              if git merge-base --is-ancestor "${APPROVED_SHA}" "${remote_sha}"; then
+                echo "homelab-deploy already contains ${APPROVED_SHA} (${remote_sha})."
+                exit 0
+              fi
+
+              if ! git merge-base --is-ancestor "${remote_sha}" "${APPROVED_SHA}"; then
+                echo "homelab-deploy ${remote_sha} diverged from ${APPROVED_SHA}." >&2
+                exit 1
+              fi
+            fi
+
+            if git push origin "${APPROVED_SHA}:refs/heads/homelab-deploy"; then
+              exit 0
+            fi
+
+            if (( attempt < 3 )); then
+              sleep 2
+            fi
+          done
+
+          echo 'homelab-deploy promotion failed after bounded retries.' >&2
+          exit 1

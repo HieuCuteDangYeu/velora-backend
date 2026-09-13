@@ -12,6 +12,9 @@ WORKDIR /usr/src/app
 RUN corepack enable
 RUN corepack prepare pnpm@9.15.0 --activate
 
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+RUN pnpm fetch
+
 COPY . .
 
 ENV MEDIASOUP_MAX_CORES=2

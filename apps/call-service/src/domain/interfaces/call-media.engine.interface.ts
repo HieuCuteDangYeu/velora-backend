@@ -23,6 +23,7 @@ export interface ActiveProducerResult {
   userId: string;
   kind: 'audio' | 'video';
   paused?: boolean;
+  revision?: number;
 }
 
 export interface ConsumedMediaResult {

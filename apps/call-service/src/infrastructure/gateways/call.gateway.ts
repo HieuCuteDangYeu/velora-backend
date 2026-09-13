@@ -135,6 +135,28 @@ type SetVideoEnabledPayload = {
   callId: string;
   producerId: string;
   enabled: boolean;
+  revision?: number;
+  actionId?: string;
+  requestId?: string;
+};
+
+type VideoStateRecord = {
+  enabled: boolean;
+  revision: number;
+  actionId?: string;
+};
+
+type VideoStateUpdateStatus = 'applied' | 'stale' | 'already_applied';
+
+type VideoStateUpdatedPayload = {
+  callId: string;
+  producerId: string;
+  userId: string;
+  enabled: boolean;
+  revision: number;
+  status: VideoStateUpdateStatus;
+  actionId?: string;
+  requestId?: string;
 };
 
 type AudioBitrateProfile = 'normal' | 'constrained';
@@ -228,6 +250,8 @@ export class CallGateway
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly videoStatesByProducer = new Map<string, VideoStateRecord>();
+  private readonly videoStateQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
   private expirySweepInFlight = false;
 
@@ -284,6 +308,8 @@ export class CallGateway
       clearTimeout(timeoutId);
     }
     this.pendingUnansweredCalls.clear();
+    this.videoStatesByProducer.clear();
+    this.videoStateQueues.clear();
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -303,6 +329,74 @@ export class CallGateway
         }`,
       );
       throw error;
+    }
+  }
+
+  private videoStateKey(callId: string, producerId: string): string {
+    return `${callId}:${producerId}`;
+  }
+
+  private getVideoState(callId: string, producerId: string): VideoStateRecord {
+    return (
+      this.videoStatesByProducer.get(
+        this.videoStateKey(callId, producerId),
+      ) ?? {
+        enabled: true,
+        revision: 0,
+      }
+    );
+  }
+
+  private getVideoStateForProducer(
+    callId: string,
+    producer: ActiveProducerResult,
+  ): VideoStateRecord {
+    const stored = this.videoStatesByProducer.get(
+      this.videoStateKey(callId, producer.producerId),
+    );
+    if (stored) return stored;
+
+    // mediasoup owns the producer's pause bit. Use it as the bootstrap value
+    // after a gateway restart, then start the durable client-visible revision
+    // at zero until the first explicit camera action is applied.
+    return {
+      enabled: producer.paused !== true,
+      revision: producer.revision ?? 0,
+    };
+  }
+
+  private decorateActiveProducers(
+    callId: string,
+    producers: ActiveProducerResult[],
+  ): ActiveProducerResult[] {
+    return producers.map((producer) => {
+      if (producer.kind !== 'video') return producer;
+      const state = this.getVideoStateForProducer(callId, producer);
+      return {
+        ...producer,
+        paused: !state.enabled,
+        revision: state.revision,
+      };
+    });
+  }
+
+  private clearVideoState(callId: string, producerId?: string): void {
+    const prefix = `${callId}:`;
+    for (const key of this.videoStatesByProducer.keys()) {
+      if (
+        key === `${prefix}${producerId}` ||
+        (!producerId && key.startsWith(prefix))
+      ) {
+        this.videoStatesByProducer.delete(key);
+      }
+    }
+
+    if (producerId) {
+      this.videoStateQueues.delete(`${prefix}${producerId}`);
+      return;
+    }
+    for (const key of this.videoStateQueues.keys()) {
+      if (key.startsWith(prefix)) this.videoStateQueues.delete(key);
     }
   }
 
@@ -432,9 +526,9 @@ export class CallGateway
     }
     this.clearPendingDisconnect(payload.callId, userId);
 
-    const activeProducers = await this.mediaEngine.listActiveProducers(
+    const activeProducers = this.decorateActiveProducers(
       payload.callId,
-      userId,
+      await this.mediaEngine.listActiveProducers(payload.callId, userId),
     );
 
     client.emit('call_joined', {
@@ -502,9 +596,9 @@ export class CallGateway
     }
     this.clearPendingDisconnect(payload.callId, userId);
 
-    const activePeerProducers = await this.mediaEngine.listActiveProducers(
+    const activePeerProducers = this.decorateActiveProducers(
       payload.callId,
-      userId,
+      await this.mediaEngine.listActiveProducers(payload.callId, userId),
     );
 
     client.emit('call_rejoined', {
@@ -531,12 +625,18 @@ export class CallGateway
         producerId: producer.producerId,
         kind: producer.kind,
         paused: producer.paused ?? false,
+        ...(producer.revision !== undefined
+          ? { revision: producer.revision }
+          : {}),
       });
     });
 
-    const rejoinedUserProducers = (
-      await this.mediaEngine.listActiveProducers(payload.callId)
-    ).filter((producer) => producer.userId === userId);
+    const rejoinedUserProducers = this.decorateActiveProducers(
+      payload.callId,
+      (await this.mediaEngine.listActiveProducers(payload.callId)).filter(
+        (producer) => producer.userId === userId,
+      ),
+    );
 
     rejoinedUserProducers.forEach((producer) => {
       client.to(payload.callId).emit('new_producer', {
@@ -545,6 +645,9 @@ export class CallGateway
         producerId: producer.producerId,
         kind: producer.kind,
         paused: producer.paused ?? false,
+        ...(producer.revision !== undefined
+          ? { revision: producer.revision }
+          : {}),
       });
     });
   }
@@ -616,11 +719,19 @@ export class CallGateway
       ...(payload.requestId ? { requestId: payload.requestId } : {}),
     });
 
+    if (payload.kind === 'video') {
+      const key = this.videoStateKey(payload.callId, result.producerId);
+      if (!this.videoStatesByProducer.has(key)) {
+        this.videoStatesByProducer.set(key, { enabled: true, revision: 0 });
+      }
+    }
+
     client.to(payload.callId).emit('new_producer', {
       callId: payload.callId,
       userId,
       producerId: result.producerId,
       kind: payload.kind,
+      ...(payload.kind === 'video' ? { paused: false, revision: 0 } : {}),
     });
   }
 
@@ -730,10 +841,30 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
-    const session = await this.sessionRepository.findByCallId(payload.callId);
-    if (!session) {
-      throw new NotFoundException('Call not found');
+    const key = this.videoStateKey(payload.callId, payload.producerId);
+    const previous = this.videoStateQueues.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(() => this.applyVideoStateUpdate(payload, userId));
+    const queued = operation.then(() => undefined);
+    this.videoStateQueues.set(key, queued);
+
+    try {
+      const result = await operation;
+      client.emit('video_state_updated', result);
+    } finally {
+      if (this.videoStateQueues.get(key) === queued) {
+        this.videoStateQueues.delete(key);
+      }
     }
+  }
+
+  private async applyVideoStateUpdate(
+    payload: SetVideoEnabledPayload,
+    userId: string,
+  ): Promise<VideoStateUpdatedPayload> {
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    if (!session) throw new NotFoundException('Call not found');
 
     if (session.status !== 'active' || session.callType !== 'VIDEO') {
       throw new ForbiddenException('Video state cannot be changed');
@@ -751,8 +882,65 @@ export class CallGateway
         entry.userId === userId &&
         entry.kind === 'video',
     );
-    if (!producer) {
-      throw new NotFoundException('Video producer not found');
+    if (!producer) throw new NotFoundException('Video producer not found');
+
+    const current = this.getVideoStateForProducer(payload.callId, producer);
+    const actionId = payload.actionId?.trim() || payload.requestId?.trim();
+    const requestedRevision =
+      Number.isInteger(payload.revision) && (payload.revision as number) >= 0
+        ? (payload.revision as number)
+        : current.revision + 1;
+
+    if (requestedRevision < current.revision) {
+      return {
+        callId: payload.callId,
+        producerId: payload.producerId,
+        userId,
+        enabled: current.enabled,
+        revision: current.revision,
+        status: 'stale',
+        ...(current.actionId ? { actionId: current.actionId } : {}),
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+      };
+    }
+
+    if (requestedRevision === current.revision) {
+      if (actionId && current.actionId === actionId) {
+        return {
+          callId: payload.callId,
+          producerId: payload.producerId,
+          userId,
+          enabled: current.enabled,
+          revision: current.revision,
+          status: 'already_applied',
+          ...(current.actionId ? { actionId: current.actionId } : {}),
+          ...(payload.requestId ? { requestId: payload.requestId } : {}),
+        };
+      }
+
+      if (current.enabled === payload.enabled) {
+        return {
+          callId: payload.callId,
+          producerId: payload.producerId,
+          userId,
+          enabled: current.enabled,
+          revision: current.revision,
+          status: 'already_applied',
+          ...(current.actionId ? { actionId: current.actionId } : {}),
+          ...(payload.requestId ? { requestId: payload.requestId } : {}),
+        };
+      }
+
+      return {
+        callId: payload.callId,
+        producerId: payload.producerId,
+        userId,
+        enabled: current.enabled,
+        revision: current.revision,
+        status: 'stale',
+        ...(current.actionId ? { actionId: current.actionId } : {}),
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+      };
     }
 
     if (payload.enabled) {
@@ -769,12 +957,34 @@ export class CallGateway
       );
     }
 
+    const next: VideoStateRecord = {
+      enabled: payload.enabled,
+      revision: requestedRevision,
+      ...(actionId ? { actionId } : {}),
+    };
+    this.videoStatesByProducer.set(
+      this.videoStateKey(payload.callId, payload.producerId),
+      next,
+    );
     this.server.to(payload.callId).emit('video_state_changed', {
       callId: payload.callId,
       userId,
       producerId: payload.producerId,
-      enabled: payload.enabled,
+      enabled: next.enabled,
+      revision: next.revision,
+      ...(actionId ? { actionId } : {}),
     });
+
+    return {
+      callId: payload.callId,
+      producerId: payload.producerId,
+      userId,
+      enabled: next.enabled,
+      revision: next.revision,
+      status: 'applied',
+      ...(actionId ? { actionId } : {}),
+      ...(payload.requestId ? { requestId: payload.requestId } : {}),
+    };
   }
 
   @SubscribeMessage('set_call_type')
@@ -796,6 +1006,7 @@ export class CallGateway
     );
 
     for (const producerId of result.closedVideoProducerIds) {
+      this.clearVideoState(payload.callId, producerId);
       this.server.to(payload.callId).emit('producer_closed', {
         callId: payload.callId,
         producerId,
@@ -946,13 +1157,17 @@ export class CallGateway
     }
     this.clearPendingDisconnect(payload.callId, userId);
 
+    const activeProducers = result.activeProducers
+      ? this.decorateActiveProducers(payload.callId, result.activeProducers)
+      : result.activeProducers;
+
     client.emit('incoming_call_acceptance', {
       callId: payload.callId,
       outcome: result.outcome,
       role: result.role,
       session: result.session,
       rtpCapabilities: result.rtpCapabilities,
-      activeProducers: result.activeProducers,
+      activeProducers,
       telemetryToken: this.telemetryTokenService.issue(payload.callId, 'guest'),
       noAnswerTimeoutMs: this.noAnswerTimeoutMs,
     } satisfies IncomingCallAcceptanceSocketPayload);
@@ -985,6 +1200,7 @@ export class CallGateway
 
     this.clearPendingUnansweredCall(payload.callId);
     this.clearPendingDisconnect(payload.callId, userId);
+    this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
     if (result.shouldEmitPeerLeft) {
       this.emitPeerLeft(payload.callId, userId, result.endedReason);
@@ -1009,6 +1225,7 @@ export class CallGateway
     );
     this.clearPendingUnansweredCall(payload.callId);
     this.clearPendingDisconnect(payload.callId, userId);
+    this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
 
     if (result.didTransition !== false) {
@@ -1027,6 +1244,7 @@ export class CallGateway
   }
 
   private emitCallEnded(session: CallSession, reason: string): void {
+    this.clearVideoState(session.callId);
     this.clearPendingUnansweredCall(session.callId);
     this.clearPendingDisconnect(session.callId, session.initiatorId);
     this.clearPendingDisconnect(session.callId, session.targetUserId);

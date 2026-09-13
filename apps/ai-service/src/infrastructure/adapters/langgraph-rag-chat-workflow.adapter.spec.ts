@@ -541,6 +541,7 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
           answer,
           claims: [],
           modelRole: 'ANSWER',
+          finalizationMode: 'SYNTHESIZED',
         }),
       } as never,
       undefined as never,
@@ -574,6 +575,7 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
     expect(result.draftHistory).toEqual([
       { revision: 0, source: 'INITIAL', answer: 'x'.repeat(1_500) },
     ]);
+    expect(result.answerGenerationMode).toBe('SYNTHESIZED');
   });
 
   it('uses a bounded grounded verifier revision before calling the draft LLM', async () => {

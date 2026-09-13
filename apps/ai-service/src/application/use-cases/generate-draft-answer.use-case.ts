@@ -1,6 +1,8 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { IChatPromptBuilder } from '@ai/domain/interfaces/chat-prompt-builder.interface';
 import type {
+  RagAnswerFallbackReason,
+  RagAnswerGenerationMode,
   RagAnswerClaim,
   RagChatWorkflowState,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
@@ -16,7 +18,6 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
-import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 
 interface RawDraftAnswer {
   answer?: unknown;
@@ -59,58 +60,6 @@ const NUMBER_WORD_VALUES = new Map<string, string>([
   ['thousand', '1000'],
 ]);
 
-const EXTRACTIVE_STOPWORDS = new Set([
-  'a',
-  'about',
-  'an',
-  'and',
-  'are',
-  'as',
-  'at',
-  'be',
-  'being',
-  'by',
-  'can',
-  'do',
-  'does',
-  'for',
-  'from',
-  'has',
-  'have',
-  'how',
-  'in',
-  'into',
-  'is',
-  'it',
-  'of',
-  'on',
-  'or',
-  'say',
-  'said',
-  'should',
-  'someone',
-  'that',
-  'the',
-  'they',
-  'this',
-  'to',
-  'under',
-  'use',
-  'used',
-  'using',
-  'was',
-  'were',
-  'what',
-  'where',
-  'which',
-  'who',
-  'why',
-  'with',
-]);
-
-const REFUSAL_ANSWER_PATTERN =
-  /\b(?:no relevant|not enough|cannot|can't|unable|do not have|don't have|not available|could not)\b/i;
-
 function quantityTokens(value: string): Set<string> {
   const tokens: string[] =
     value.toLowerCase().match(/[a-z]+|\d+(?:[.,]\d+)?/g) ?? [];
@@ -121,16 +70,6 @@ function quantityTokens(value: string): Set<string> {
       if (/^\d/.test(token)) return [token.replace(/,/g, '')];
       return [];
     }),
-  );
-}
-
-function extractiveTokens(value: string): string[] {
-  return (
-    value
-      .toLowerCase()
-      .match(/[a-z]+|\d+(?:[.,]\d+)?/g)
-      ?.map((token) => NUMBER_WORD_VALUES.get(token) ?? token)
-      .filter((token) => !EXTRACTIVE_STOPWORDS.has(token)) ?? []
   );
 }
 
@@ -158,6 +97,8 @@ export interface RagDraftAnswer {
   claims: RagAnswerClaim[];
   modelRole: 'ANSWER';
   diagnostics: StructuredLlmCallDiagnostics[];
+  finalizationMode: RagAnswerGenerationMode;
+  fallbackReason?: RagAnswerFallbackReason;
 }
 
 @Injectable()
@@ -235,56 +176,95 @@ export class GenerateDraftAnswerUseCase {
         onDiagnostics: (call) => diagnostics.push(call),
       });
 
-    const finalize = (candidate: RawDraftAnswer): RagDraftAnswer => {
-      const normalized = this.normalize(
+    const fallbackCandidates =
+      answerEvidence.length > 0
+        ? answerEvidence
+        : answerEvidenceIds.size > 0
+          ? []
+          : boundedChunks.map((chunk, index) => ({
+              chunk,
+              evidenceId: `e${index}`,
+            }));
+    const synthesized = (candidate: RawDraftAnswer): RagDraftAnswer => ({
+      ...this.normalize(
         candidate,
         state,
         allowedEvidenceIds,
         authorizedEvidenceText,
-      );
-      return this.extractiveTranscriptFallback(
+      ),
+      diagnostics,
+      finalizationMode: 'SYNTHESIZED',
+    });
+    const fallback = (
+      reason: RagAnswerFallbackReason,
+    ): RagDraftAnswer | undefined => {
+      const result = this.extractiveTranscriptFallback(
         state,
-        normalized,
-        state.rerankedChunks,
+        fallbackCandidates,
       );
+      if (!result) return undefined;
+      return {
+        answer: result.answer,
+        claims: [
+          {
+            claim: result.answer,
+            evidenceIds: result.evidenceIds,
+          },
+        ],
+        modelRole: 'ANSWER',
+        diagnostics,
+        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+        fallbackReason: reason,
+      };
     };
 
     let raw: RawDraftAnswer;
     try {
       raw = await request(systemPrompt);
-      return { ...finalize(raw), diagnostics };
+      return synthesized(raw);
     } catch (error: unknown) {
-      if (!(error instanceof DraftAnswerContractError)) throw error;
-      raw = await request(
-        `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation with the supported value stated explicitly, then return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
-      );
+      if (!(error instanceof DraftAnswerContractError)) {
+        const fallbackAnswer = fallback('ANSWER_GENERATION_FAILURE');
+        if (fallbackAnswer) return fallbackAnswer;
+        throw error;
+      }
+      try {
+        raw = await request(
+          `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation with the supported value stated explicitly, then return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
+        );
+        return synthesized(raw);
+      } catch (retryError: unknown) {
+        const fallbackAnswer = fallback('UNUSABLE_SYNTHESIS');
+        if (fallbackAnswer) return fallbackAnswer;
+        throw retryError;
+      }
     }
-
-    return { ...finalize(raw), diagnostics };
   }
 
   private extractiveTranscriptFallback(
     state: RagChatWorkflowState,
-    draft: RagDraftAnswer,
-    boundedChunks: Array<{
-      evidenceType?: string;
-      evidenceText?: string;
-      retrievalText?: string;
-      chunkText?: string;
-      reelId?: string;
+    candidates: Array<{
+      evidenceId: string;
+      chunk: {
+        evidenceType?: string;
+        evidenceText?: string;
+        retrievalText?: string;
+        chunkText?: string;
+        reelId?: string;
+      };
     }>,
-  ): RagDraftAnswer {
+  ): { answer: string; evidenceIds: string[] } | undefined {
     if (
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
       !(state.route.requiredEvidence ?? []).includes('TRANSCRIPT') ||
-      boundedChunks.length === 0
+      candidates.length === 0
     ) {
-      return draft;
+      return undefined;
     }
 
-    const transcriptCandidates = boundedChunks
-      .map((chunk, index) => ({
-        evidenceId: `e${index}`,
+    const transcriptCandidates = candidates
+      .map(({ chunk, evidenceId }) => ({
+        evidenceId,
         evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
         evidenceText:
           chunk.evidenceText?.trim() ||
@@ -298,22 +278,7 @@ export class GenerateDraftAnswerUseCase {
           candidate.evidenceType === 'TRANSCRIPT' &&
           candidate.evidenceText.length > 0,
       );
-    if (transcriptCandidates.length === 0) return draft;
-
-    const exactProvenance = assessExactEvidenceProvenance({
-      answer: draft.answer,
-      candidates: transcriptCandidates.map((item) => ({
-        evidenceType: 'TRANSCRIPT' as const,
-        evidenceText: item.evidenceText,
-      })),
-    });
-    if (
-      exactProvenance.supported &&
-      extractiveTokens(draft.answer).length > 2 &&
-      !REFUSAL_ANSWER_PATTERN.test(draft.answer)
-    ) {
-      return draft;
-    }
+    if (transcriptCandidates.length === 0) return undefined;
 
     const first = transcriptCandidates[0];
     const selected = first.reelId
@@ -326,17 +291,11 @@ export class GenerateDraftAnswerUseCase {
       .join('\n')
       .slice(0, 2_500)
       .trim();
-    if (!answer) return draft;
+    if (!answer) return undefined;
 
     return {
-      ...draft,
       answer,
-      claims: [
-        {
-          claim: answer,
-          evidenceIds: selected.map((candidate) => candidate.evidenceId),
-        },
-      ],
+      evidenceIds: selected.map((candidate) => candidate.evidenceId),
     };
   }
 
@@ -383,7 +342,7 @@ export class GenerateDraftAnswerUseCase {
     state: RagChatWorkflowState,
     allowedEvidenceIds: Set<string>,
     authorizedEvidenceText: string[],
-  ): RagDraftAnswer {
+  ): Omit<RagDraftAnswer, 'finalizationMode' | 'fallbackReason'> {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
     if (!answer)
       throw new DraftAnswerContractError(

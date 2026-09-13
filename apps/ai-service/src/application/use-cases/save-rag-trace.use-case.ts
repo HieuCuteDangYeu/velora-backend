@@ -1,5 +1,6 @@
 import type {
   RagChatWorkflowState,
+  RagFinalizationMode,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { IRagTraceRepository } from '@ai/domain/interfaces/rag-trace.repository.interface';
@@ -169,8 +170,43 @@ export class SaveRagTraceUseCase {
       : state.verification?.passed
         ? 'PASS'
         : 'FAIL';
+    const finalizationMode: RagFinalizationMode =
+      state.finalFailureSource !== 'NONE'
+        ? 'FAILURE_FALLBACK'
+        : state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+          ? 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+          : verifierDecision === 'PASS'
+            ? 'SYNTHESIZED_GROUNDED'
+            : 'SYNTHESIZED';
+    const answerGenerationStatus:
+      | 'ANSWER_GENERATION_SUCCESS'
+      | 'EXTRACTIVE_FALLBACK_USED'
+      | 'NOT_EXECUTED' =
+      state.answerGenerationMode === 'SYNTHESIZED'
+        ? 'ANSWER_GENERATION_SUCCESS'
+        : state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+          ? 'EXTRACTIVE_FALLBACK_USED'
+          : 'NOT_EXECUTED';
+    const groundingVerification:
+      | 'GROUNDING_VERIFIED'
+      | 'FAILED'
+      | 'NOT_EXECUTED' =
+      verifierDecision === 'PASS'
+        ? 'GROUNDING_VERIFIED'
+        : verifierDecision === 'FAIL'
+          ? 'FAILED'
+          : 'NOT_EXECUTED';
 
     return {
+      answerGenerationStatus,
+      groundingVerification,
+      synthesizedAnswerPreserved: finalizationMode === 'SYNTHESIZED_GROUNDED',
+      extractiveFallbackUsed:
+        finalizationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      finalizationMode,
+      ...(state.answerFallbackReason
+        ? { fallbackReason: state.answerFallbackReason }
+        : {}),
       draftAnswerExecuted: state.draftHistory.length > 0,
       draftAnswerProviderStatus: this.lastProviderStatus(answerCalls),
       verifierExecuted,

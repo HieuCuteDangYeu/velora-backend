@@ -362,6 +362,46 @@ describe('VerifierAgentUseCase', () => {
     });
   });
 
+  it('rejects an unsupported hallucinated claim even when it points at authorized evidence', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          passed: false,
+          confidence: 0.91,
+          requiresRevision: true,
+          issues: ['The color claim is not supported by the transcript.'],
+          supportedClaimMappings: [
+            {
+              claim: 'The zorb is linked to the quasar.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+      ),
+    };
+    const noEscalationConfig = {
+      ...config,
+      boolean: jest.fn(() => false),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      noEscalationConfig,
+    );
+
+    await expect(
+      useCase.execute(
+        state({
+          answer: 'The zorb is linked to the quasar and glows green.',
+          evidenceText: 'The zorb is linked to the quasar.',
+        }),
+      ),
+    ).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      issues: ['The color claim is not supported by the transcript.'],
+    });
+  });
+
   it('preserves a wrong-modality rejection', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue(

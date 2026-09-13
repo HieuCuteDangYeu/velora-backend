@@ -337,4 +337,75 @@ describe('SaveRagTraceUseCase', () => {
     ]);
     expect(actual.reason).toHaveLength(240);
   });
+
+  it.each([
+    [
+      'SYNTHESIZED',
+      undefined,
+      {
+        answerGenerationStatus: 'ANSWER_GENERATION_SUCCESS',
+        finalizationMode: 'SYNTHESIZED_GROUNDED',
+        synthesizedAnswerPreserved: true,
+        extractiveFallbackUsed: false,
+      },
+    ],
+    [
+      'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      'UNUSABLE_SYNTHESIS',
+      {
+        answerGenerationStatus: 'EXTRACTIVE_FALLBACK_USED',
+        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+        synthesizedAnswerPreserved: false,
+        extractiveFallbackUsed: true,
+      },
+    ],
+  ] as const)(
+    'records %s finalization provenance',
+    async (mode, reason, expected) => {
+      const create = jest.fn().mockResolvedValue(undefined);
+      const useCase = new SaveRagTraceUseCase({ create });
+
+      await useCase.execute({
+        state: {
+          userId: 'u',
+          conversationId: 'c',
+          userMessage: 'question',
+          answer: 'A finalized answer.',
+          answerGenerationMode: mode,
+          ...(reason ? { answerFallbackReason: reason } : {}),
+          retrievedChunks: [],
+          rerankedChunks: [],
+          retryCount: 0,
+          retrievalRetryCount: 0,
+          citationRetryCount: 0,
+          draftHistory: [{ revision: 0, source: 'INITIAL', answer: 'answer' }],
+          draftRevision: 1,
+          citationAttempts: [],
+          nextDraftSource: 'INITIAL',
+          finalFailureSource: 'NONE',
+          verification: {
+            passed: true,
+            confidence: 0.95,
+            issues: [],
+            requiresRevision: false,
+          },
+        },
+        latencyMs: 1,
+        nodeTimings: {},
+      });
+
+      expect(
+        create.mock.calls[0][0].workflowMetrics.diagnostics.finalization,
+      ).toMatchObject({
+        ...expected,
+        groundingVerification: 'GROUNDING_VERIFIED',
+        verifierDecision: 'PASS',
+      });
+      if (reason) {
+        expect(
+          create.mock.calls[0][0].workflowMetrics.diagnostics.finalization,
+        ).toMatchObject({ fallbackReason: reason });
+      }
+    },
+  );
 });

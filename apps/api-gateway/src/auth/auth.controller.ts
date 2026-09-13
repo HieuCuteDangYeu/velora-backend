@@ -2,6 +2,8 @@ import { ConfirmAccountDto } from '@common/auth/dtos/confirm-account.dto';
 import { ForgotPasswordDto } from '@common/auth/dtos/forgot-password.dto';
 import { LoginDto } from '@common/auth/dtos/login.dto';
 import { LogoutDto } from '@common/auth/dtos/logout.dto';
+import { MobileLogoutDto } from '@common/auth/dtos/mobile-logout.dto';
+import { MobileRefreshDto } from '@common/auth/dtos/mobile-refresh.dto';
 import { RegisterDto } from '@common/auth/dtos/register.dto';
 import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto';
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
@@ -91,6 +93,65 @@ export class AuthController {
     this.setCookies(response, tokens.accessToken, tokens.refreshToken);
 
     return { message: 'Login successful' };
+  }
+
+  @Post('mobile/login')
+  @ApiOperation({ summary: 'Login for mobile clients' })
+  async mobileLogin(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) response: ExpressResponse,
+  ): Promise<TokenResponse> {
+    this.setNoStore(response);
+
+    return lastValueFrom(
+      this.authClient
+        .send<TokenResponse>('auth.login', dto)
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
+  @Post('mobile/google/verify')
+  @ApiOperation({ summary: 'Verify a Google ID token for mobile clients' })
+  async mobileVerifyGoogleToken(
+    @Body() dto: VerifyGoogleTokenDto,
+    @Res({ passthrough: true }) response: ExpressResponse,
+  ): Promise<TokenResponse> {
+    this.setNoStore(response);
+
+    return lastValueFrom(
+      this.authClient
+        .send<TokenResponse>('auth.verify_google_token', dto)
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
+  @Post('mobile/refresh')
+  @ApiOperation({ summary: 'Refresh a mobile access token' })
+  async mobileRefresh(
+    @Body() dto: MobileRefreshDto,
+    @Res({ passthrough: true }) response: ExpressResponse,
+  ): Promise<TokenResponse> {
+    this.setNoStore(response);
+
+    return lastValueFrom(
+      this.authClient
+        .send<TokenResponse>('auth.refresh', dto)
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
+  @Post('mobile/logout')
+  @ApiOperation({ summary: 'Logout a mobile client' })
+  async mobileLogout(
+    @Body() dto: MobileLogoutDto,
+  ): Promise<{ message: string }> {
+    const logoutResult = await lastValueFrom(
+      this.authClient
+        .send<LogoutResponse>('auth.logout', dto)
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return { message: logoutResult.message };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -338,6 +399,10 @@ export class AuthController {
       ...this.getCookieOptions(),
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
+  }
+
+  private setNoStore(response: ExpressResponse): void {
+    response.setHeader('Cache-Control', 'no-store');
   }
 
   private getCookieOptions() {

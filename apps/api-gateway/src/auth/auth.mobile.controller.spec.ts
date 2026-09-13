@@ -1,0 +1,239 @@
+import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { of, throwError } from 'rxjs';
+
+import { AuthController } from './auth.controller';
+
+const tokens = {
+  accessToken: 'access-token',
+  refreshToken: 'refresh-token',
+};
+
+const createResponse = () => ({
+  clearCookie: jest.fn(),
+  cookie: jest.fn(),
+  setHeader: jest.fn(),
+});
+
+const createController = () => {
+  const authClient = {
+    send: jest.fn(),
+  };
+  const configService = {
+    get: jest.fn(),
+  };
+
+  return {
+    authClient,
+    controller: new AuthController(authClient as never, configService as never),
+  };
+};
+
+describe('AuthController mobile authentication', () => {
+  it('returns tokens for mobile password login without setting cookies', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    const dto = { email: 'user@example.com', password: 'password123' };
+    authClient.send.mockReturnValueOnce(of(tokens));
+
+    await expect(
+      controller.mobileLogin(dto as never, response as never),
+    ).resolves.toEqual(tokens);
+
+    expect(authClient.send).toHaveBeenCalledWith('auth.login', dto);
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Cache-Control',
+      'no-store',
+    );
+    expect(response.cookie).not.toHaveBeenCalled();
+  });
+
+  it('returns tokens for mobile Google verification without setting cookies', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    const dto = { idToken: 'google-id-token' };
+    authClient.send.mockReturnValueOnce(of(tokens));
+
+    await expect(
+      controller.mobileVerifyGoogleToken(dto as never, response as never),
+    ).resolves.toEqual(tokens);
+
+    expect(authClient.send).toHaveBeenCalledWith(
+      'auth.verify_google_token',
+      dto,
+    );
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Cache-Control',
+      'no-store',
+    );
+    expect(response.cookie).not.toHaveBeenCalled();
+  });
+
+  it('forwards the mobile refresh token and returns the rotated tokens', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    const dto = { refreshToken: 'mobile-refresh-token' };
+    authClient.send.mockReturnValueOnce(of(tokens));
+
+    await expect(
+      controller.mobileRefresh(dto as never, response as never),
+    ).resolves.toEqual(tokens);
+
+    expect(authClient.send).toHaveBeenCalledWith('auth.refresh', dto);
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Cache-Control',
+      'no-store',
+    );
+    expect(response.cookie).not.toHaveBeenCalled();
+  });
+
+  it('translates invalid mobile refresh RPC errors without exposing the token', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    const dto = { refreshToken: 'mobile-refresh-token' };
+    authClient.send.mockReturnValueOnce(
+      throwError(() => ({
+        statusCode: 401,
+        message: 'Invalid or expired refresh token',
+      })),
+    );
+
+    await expect(
+      controller.mobileRefresh(dto as never, response as never),
+    ).rejects.toMatchObject({
+      message: 'Invalid or expired refresh token',
+      status: 401,
+    });
+    expect(response.cookie).not.toHaveBeenCalled();
+  });
+
+  it('forwards mobile logout and omits the auth service userId', async () => {
+    const { authClient, controller } = createController();
+    const dto = { refreshToken: 'mobile-refresh-token' };
+    authClient.send.mockReturnValueOnce(
+      of({ message: 'Logged out successfully', userId: 'user-1' }),
+    );
+
+    await expect(controller.mobileLogout(dto as never)).resolves.toEqual({
+      message: 'Logged out successfully',
+    });
+
+    expect(authClient.send).toHaveBeenCalledWith('auth.logout', dto);
+  });
+
+  it('does not apply JwtAuthGuard to mobile authentication routes', () => {
+    for (const method of [
+      'mobileLogin',
+      'mobileVerifyGoogleToken',
+      'mobileRefresh',
+      'mobileLogout',
+    ] as const) {
+      expect(
+        Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]),
+      ).toBeUndefined();
+    }
+  });
+});
+
+describe('AuthController browser authentication regression coverage', () => {
+  const expectedCookieOptions = (maxAge?: number) => ({
+    ...(maxAge === undefined ? {} : { maxAge }),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+  });
+
+  it('keeps browser login cookie behavior unchanged', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    const dto = { email: 'user@example.com', password: 'password123' };
+    authClient.send.mockReturnValueOnce(of(tokens));
+
+    await expect(
+      controller.login(dto as never, response as never),
+    ).resolves.toEqual({
+      message: 'Login successful',
+    });
+
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      1,
+      'access_token',
+      tokens.accessToken,
+      expectedCookieOptions(15 * 60 * 1000),
+    );
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      2,
+      'refresh_token',
+      tokens.refreshToken,
+      expectedCookieOptions(7 * 24 * 60 * 60 * 1000),
+    );
+  });
+
+  it('keeps browser refresh cookie rotation behavior unchanged', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    authClient.send.mockReturnValueOnce(of(tokens));
+
+    await expect(
+      controller.refresh(
+        { cookies: { refresh_token: 'browser-refresh-token' } } as never,
+        response as never,
+      ),
+    ).resolves.toEqual({ message: 'Token refreshed successfully' });
+
+    expect(authClient.send).toHaveBeenCalledWith('auth.refresh', {
+      refreshToken: 'browser-refresh-token',
+    });
+    expect(response.cookie).toHaveBeenCalledTimes(2);
+    expect(response.clearCookie).not.toHaveBeenCalled();
+  });
+
+  it('keeps browser invalid-refresh cookie clearing behavior unchanged', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    authClient.send.mockReturnValueOnce(
+      throwError(() => new Error('invalid refresh token')),
+    );
+
+    await expect(
+      controller.refresh(
+        { cookies: { refresh_token: 'browser-refresh-token' } } as never,
+        response as never,
+      ),
+    ).rejects.toMatchObject({ message: 'Invalid refresh token', status: 401 });
+
+    expect(response.clearCookie).toHaveBeenNthCalledWith(1, 'access_token');
+    expect(response.clearCookie).toHaveBeenNthCalledWith(2, 'refresh_token');
+  });
+
+  it('keeps browser logout cookie clearing behavior unchanged', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    authClient.send.mockReturnValueOnce(
+      of({ message: 'Logged out successfully', userId: 'user-1' }),
+    );
+
+    await expect(
+      controller.logout(
+        undefined,
+        { cookies: { refresh_token: 'browser-refresh-token' } } as never,
+        response as never,
+      ),
+    ).resolves.toEqual({ message: 'Logged out successfully' });
+
+    expect(authClient.send).toHaveBeenCalledWith('auth.logout', {
+      refreshToken: 'browser-refresh-token',
+    });
+    expect(response.clearCookie).toHaveBeenNthCalledWith(
+      1,
+      'access_token',
+      expectedCookieOptions(),
+    );
+    expect(response.clearCookie).toHaveBeenNthCalledWith(
+      2,
+      'refresh_token',
+      expectedCookieOptions(),
+    );
+    expect(response.cookie).not.toHaveBeenCalled();
+  });
+});

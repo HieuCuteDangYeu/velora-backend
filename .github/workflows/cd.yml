@@ -12,10 +12,10 @@ on:
 permissions:
   contents: read
 
-# This is the only production serialization point. CI runs are intentionally
-# free to overlap; complete releases are built/published/promoted one at a time.
+# Only successful release-candidate runs share the production lock. Failed CI
+# completions use a unique no-op group so they cannot displace a pending release.
 concurrency:
-  group: homelab-production
+  group: ${{ github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch') && 'homelab-production' || format('homelab-cd-noop-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:

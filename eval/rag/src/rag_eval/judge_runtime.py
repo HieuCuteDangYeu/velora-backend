@@ -410,6 +410,12 @@ class JudgeUsageTracker:
             )
         except ValueError:
             self._max_retries = 2
+        try:
+            self._timeout_seconds = max(
+                1.0, float(os.getenv("RAGAS_JUDGE_TIMEOUT_SECONDS", "120"))
+            )
+        except ValueError:
+            self._timeout_seconds = 120.0
         original = client.chat.completions.create
         _install_response_header_capture(client)
 
@@ -433,7 +439,9 @@ class JudgeUsageTracker:
                 for attempt in range(1, self._max_retries + 2):
                     started = time.monotonic()
                     try:
-                        response = await original(*args, **kwargs)
+                        response = await asyncio.wait_for(
+                            original(*args, **kwargs), timeout=self._timeout_seconds
+                        )
                         headers = _header_map(response) or _response_headers.get({}) or {}
                         _response_headers.set({})
                         usage = getattr(response, "usage", None)
@@ -459,7 +467,7 @@ class JudgeUsageTracker:
                                 "provider": self._limiter.provider,
                                 "model": kwargs.get("model", "UNKNOWN"),
                                 "attempt": attempt,
-                                "configuredTimeoutMs": None,
+                                "configuredTimeoutMs": self._timeout_seconds * 1000,
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,
@@ -509,6 +517,7 @@ class JudgeUsageTracker:
                                 "provider": self._limiter.provider,
                                 "model": kwargs.get("model", "UNKNOWN"),
                                 "attempt": attempt,
+                                "configuredTimeoutMs": self._timeout_seconds * 1000,
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,

@@ -137,7 +137,9 @@ Live semantic runs persist metric-level judge checkpoints at
 checkpoint is bound to the source run, production SHA, provider, model, and
 evaluator revision; only unavailable metrics are eligible for resume.
 Each external judge request has a bounded timeout; timeout failures are recorded
-and use the same bounded transient retry policy as network failures.
+and use the same bounded transient retry policy as network failures. Account-level
+daily quota failures are recorded as permanent `ACCOUNT_LIMITED` errors and are
+not retried.
 
 When evaluating an already accepted production run, pass `--resume`,
 `--source-summary`, and `--trace-file`. The evaluator loads the saved runner

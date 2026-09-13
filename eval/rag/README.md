@@ -118,11 +118,24 @@ RAG_EVAL_JUDGE_MODEL=openai/gpt-oss-120b
 RAG_EVAL_EMBEDDING_PROVIDER=tei
 RAG_EVAL_EMBEDDING_MODEL=BAAI/bge-m3
 RAG_EVAL_TEI_EMBEDDING_BASE_URL=http://127.0.0.1:<forwarded-port>/v1
+RAGAS_JUDGE_CONCURRENCY=1
+RAGAS_GROQ_TPM_LIMIT=8000
+RAGAS_GROQ_TPM_TARGET=6000
+RAGAS_MAX_COMPLETION_TOKENS=256
 ```
 
 This path uses `GROQ_API_KEY`/`GROQ_BASE_URL` for the judge and an
 OpenAI-compatible `/v1/embeddings` endpoint backed by the self-hosted TEI
 service. It does not fall back to Cloudflare or production RAG models.
+
+Live semantic runs persist metric-level judge checkpoints at
+`RAGAS_JUDGE_CHECKPOINT_PATH`, or beside the result root by default. A
+checkpoint is bound to the source run, production SHA, provider, model, and
+evaluator revision; only unavailable metrics are eligible for resume.
+
+When evaluating an already accepted production run, pass `--resume`,
+`--source-summary`, and `--trace-file`. The evaluator loads the saved runner
+report directly and does not contact the production RAG API.
 
 ## Pricing, reports, and comparisons
 

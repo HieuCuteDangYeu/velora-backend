@@ -192,7 +192,12 @@ async def evaluate_case_async(
     result = evaluate_case(row, execution, None, catalog)
     if semantic_suite:
         metrics, judge_calls = await semantic_suite.ascore_with_usage(
-            semantic_payloads(row, execution), f"{execution.runId}:{row.id}"
+            semantic_payloads(row, execution),
+            f"{execution.runId}:{row.id}",
+            {
+                "sourceExecutionId": execution.trace.get("productionExecutionId"),
+                "ragTraceId": execution.trace.get("ragTraceId"),
+            },
         )
         result["semantic"] = metrics
         result["execution"]["modelCalls"].extend(judge_calls)

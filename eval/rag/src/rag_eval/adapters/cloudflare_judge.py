@@ -1,88 +1,14 @@
 """Evaluation-only OpenAI-compatible Cloudflare adapter."""
 
 import os
-import threading
-import time
-from contextvars import ContextVar
 from typing import Any
 
 from openai import AsyncOpenAI
 from ragas.embeddings import embedding_factory
 from ragas.llms import llm_factory
 
+from rag_eval.judge_runtime import JudgeUsageTracker
 from rag_eval.metrics.semantic import build_live_semantic_suite
-
-_usage_key: ContextVar[str | None] = ContextVar("rag_eval_judge_usage_key", default=None)
-
-
-class JudgeUsageTracker:
-    def __init__(self, client: AsyncOpenAI):
-        self._calls: dict[str, list[dict[str, Any]]] = {}
-        self._lock = threading.Lock()
-        original = client.chat.completions.create
-
-        async def tracked_create(*args: Any, **kwargs: Any) -> Any:
-            started = time.monotonic()
-            try:
-                response = await original(*args, **kwargs)
-            except Exception as error:
-                key = _usage_key.get()
-                if key:
-                    status = getattr(error, "status_code", None)
-                    body = getattr(error, "body", {}) or {}
-                    provider = body.get("error", body) if isinstance(body, dict) else {}
-                    call = {
-                        "modelRole": "EVALUATION_JUDGE",
-                        "model": kwargs.get("model", "UNKNOWN"),
-                        "inputTokens": None,
-                        "outputTokens": None,
-                        "totalTokens": None,
-                        "usageSource": "UNAVAILABLE",
-                        "latencyMs": (time.monotonic() - started) * 1000,
-                        "finishReason": None,
-                        "attempt": 1,
-                        "providerStatus": status,
-                        "providerCategory": classify_capacity_error(
-                            status,
-                            provider.get("code") if isinstance(provider, dict) else None,
-                            str(error),
-                        ),
-                        "scope": "EVALUATION_JUDGE",
-                    }
-                    with self._lock:
-                        self._calls.setdefault(key, []).append(call)
-                raise
-            usage = getattr(response, "usage", None)
-            key = _usage_key.get()
-            if key:
-                call = {
-                    "modelRole": "EVALUATION_JUDGE",
-                    "model": kwargs.get("model", "UNKNOWN"),
-                    "inputTokens": getattr(usage, "prompt_tokens", None),
-                    "outputTokens": getattr(usage, "completion_tokens", None),
-                    "totalTokens": getattr(usage, "total_tokens", None),
-                    "usageSource": "PROVIDER" if usage else "UNAVAILABLE",
-                    "latencyMs": (time.monotonic() - started) * 1000,
-                    "finishReason": None,
-                    "attempt": 1,
-                    "providerStatus": 200,
-                    "scope": "EVALUATION_JUDGE",
-                }
-                with self._lock:
-                    self._calls.setdefault(key, []).append(call)
-            return response
-
-        client.chat.completions.create = tracked_create
-
-    def begin(self, key: str) -> None:
-        _usage_key.set(key)
-        with self._lock:
-            self._calls[key] = []
-
-    def take(self, key: str) -> list[dict[str, Any]]:
-        _usage_key.set(None)
-        with self._lock:
-            return self._calls.pop(key, [])
 
 
 def cloudflare_base_url() -> str:
@@ -102,7 +28,7 @@ def build_live_judge() -> tuple[Any, Any, Any]:
         base_url=cloudflare_base_url(),
         max_retries=0,
     )
-    usage_tracker = JudgeUsageTracker(client)
+    usage_tracker = JudgeUsageTracker(client, provider="cloudflare")
     llm = llm_factory(model=judge_model, provider="openai", client=client)
     embeddings = embedding_factory(provider="openai", model=embedding_model, client=client)
     return (

@@ -359,6 +359,8 @@ def normalize_runner_case(
         trace={
             **(_object(trace.get("workflowMetrics")) or trace),
             **({"ragTraceId": trace["traceId"]} if trace.get("traceId") else {}),
+            "productionExecutionId": case.get("assistantMessageId")
+            or case.get("userMessageId"),
         },
         modelCalls=trace.get("modelCalls") or _collect_model_calls(trace),
         latencyMs=case.get("latencyMs", trace.get("latencyMs")),

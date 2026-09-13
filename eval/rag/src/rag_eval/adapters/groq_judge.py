@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 from ragas.embeddings import embedding_factory
 from ragas.llms import llm_factory
 
-from rag_eval.adapters.cloudflare_judge import JudgeUsageTracker
+from rag_eval.judge_runtime import JudgeUsageTracker
 from rag_eval.metrics.semantic import build_live_semantic_suite
 
 
@@ -19,6 +19,13 @@ def build_live_judge() -> tuple[Any, Any, str]:
     )
     embedding_model = os.getenv("RAG_EVAL_EMBEDDING_MODEL", "BAAI/bge-m3")
     embedding_base_url = os.environ["RAG_EVAL_TEI_EMBEDDING_BASE_URL"].rstrip("/")
+    try:
+        max_completion_tokens = int(
+            os.getenv("RAGAS_MAX_COMPLETION_TOKENS", "256")
+        )
+    except ValueError:
+        max_completion_tokens = 256
+    max_completion_tokens = min(4096, max(64, max_completion_tokens))
 
     judge_client = AsyncOpenAI(
         api_key=token,
@@ -30,13 +37,13 @@ def build_live_judge() -> tuple[Any, Any, str]:
         base_url=embedding_base_url,
         max_retries=0,
     )
-    usage_tracker = JudgeUsageTracker(judge_client)
+    usage_tracker = JudgeUsageTracker(judge_client, provider="groq")
     llm = llm_factory(
         model=judge_model,
         provider="openai",
         client=judge_client,
         temperature=0.0,
-        max_tokens=2048,
+        max_tokens=max_completion_tokens,
     )
     embeddings = embedding_factory(
         provider="openai",

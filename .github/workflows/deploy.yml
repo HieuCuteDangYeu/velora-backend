@@ -1,4 +1,4 @@
-name: Homelab CI/CD
+name: Homelab CI
 
 on:
   pull_request:
@@ -10,21 +10,19 @@ on:
   workflow_dispatch:
     inputs:
       build_all:
-        description: Build every application Docker image instead of only affected images
+        description: Validate every application Docker image instead of only affected images
         required: false
         default: false
         type: boolean
 
-# Jobs inherit read-only repository access. Only the promotion job needs write
-# access to move the machine-managed homelab-deploy branch.
 permissions:
   contents: read
 
-# Production publishes both immutable commit-SHA tags and convenience :latest
-# tags, then moves the deployment branch. Production runs must stay serialized;
-# PRs keep independent, cancelable validation queues.
+# Only stale runs for the same PR are cancelled. Pushes to master deliberately
+# get a unique group so independent CI runs can execute concurrently. Production
+# serialization lives in the separate Homelab CD workflow.
 concurrency:
-  group: homelab-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production' }}
+  group: homelab-ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -38,7 +36,7 @@ jobs:
       rag_evaluator_required: ${{ steps.detect.outputs.rag_evaluator_required }}
       comparison_base: ${{ steps.detect.outputs.comparison_base }}
       checkout_sha: ${{ steps.detect.outputs.checkout_sha }}
-      is_production: ${{ steps.detect.outputs.is_production }}
+      is_release_candidate: ${{ steps.detect.outputs.is_release_candidate }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,11 +50,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # These are application services that own a normal production Docker
-          # build. The profile-gated rag-eval image is built and validated by a
-          # dedicated job below, so it is deliberately excluded from this matrix.
-          # The two *-long worker services intentionally do not appear here: they
-          # share the media-processing-service or reel-indexing-service image.
           all_services=(
             api-gateway
             user-service
@@ -79,40 +72,10 @@ jobs:
           head_sha="$(git rev-parse HEAD)"
           comparison_base=''
           build_all=false
-          is_production=false
-
-          resolve_deployment_base() {
-            # Check the remote explicitly so a missing deployment branch is
-            # distinguishable from a transient remote/authentication failure.
-            if git ls-remote --exit-code --heads origin refs/heads/homelab-deploy >/dev/null; then
-              git fetch --no-tags origin \
-                '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
-              comparison_base="$(git rev-parse refs/remotes/origin/homelab-deploy)"
-
-              if git merge-base --is-ancestor "$comparison_base" "$head_sha"; then
-                :
-              elif git merge-base --is-ancestor "$head_sha" "$comparison_base"; then
-                echo "Candidate $head_sha is older than already promoted homelab-deploy $comparison_base; refusing stale production run." >&2
-                exit 1
-              else
-                echo "Candidate $head_sha and already promoted homelab-deploy $comparison_base have diverged; refusing production run until deliberate recovery." >&2
-                exit 1
-              fi
-            else
-              remote_status=$?
-              if [ "$remote_status" -eq 2 ]; then
-                echo 'origin/homelab-deploy does not exist; treating this as the initial production build.'
-                comparison_base=''
-                build_all=true
-              else
-                echo 'Unable to query origin/homelab-deploy; refusing to choose an incremental production build base.' >&2
-                exit "$remote_status"
-              fi
-            fi
-          }
+          is_release_candidate=false
 
           if [ "$event_name" = 'workflow_dispatch' ] && [ "$GITHUB_REF" != 'refs/heads/master' ]; then
-            echo 'workflow_dispatch is a production path and must be started from master.' >&2
+            echo 'workflow_dispatch must be started from master.' >&2
             exit 1
           fi
 
@@ -121,15 +84,21 @@ jobs:
               comparison_base='${{ github.event.pull_request.base.sha }}'
               ;;
             push)
-              is_production=true
-              resolve_deployment_base
-              ;;
-            workflow_dispatch)
-              is_production=true
-              if [ '${{ inputs.build_all }}' = 'true' ]; then
+              is_release_candidate=true
+              comparison_base='${{ github.event.before }}'
+              if [ -z "$comparison_base" ] || [[ "$comparison_base" =~ ^0+$ ]]; then
+                comparison_base=''
                 build_all=true
               fi
-              resolve_deployment_base
+              ;;
+            workflow_dispatch)
+              is_release_candidate=true
+              if [ '${{ inputs.build_all }}' = 'true' ]; then
+                build_all=true
+              else
+                comparison_base="$(git rev-parse HEAD^ 2>/dev/null || true)"
+                [ -n "$comparison_base" ] || build_all=true
+              fi
               ;;
             *)
               echo "Unsupported event: $event_name" >&2
@@ -165,19 +134,12 @@ jobs:
             while IFS= read -r changed_file; do
               [ -z "$changed_file" ] && continue
 
-              # Runtime configuration, documentation and shared TypeScript libs
-              # still go through the validation/promotion gate. Shared libs are
-              # compiled by build:all below; production still publishes every
-              # immutable app image, so PRs do not need one Docker job per app.
               case "$changed_file" in
                 docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
                   continue
                   ;;
               esac
 
-              # Root dependency/build inputs and runtime scripts can alter the
-              # Docker build itself for every app, so PRs still validate all
-              # images when one of these changes.
               case "$changed_file" in
                 package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|scripts/*|Dockerfile|Dockerfile.*|docker/*|infra/docker/*)
                   build_all=true
@@ -194,8 +156,6 @@ jobs:
                 fi
               done
 
-              # Unknown tracked files are conservative: build every application
-              # image rather than risk missing a shared build dependency.
               if [ "$matched_service" = false ]; then
                 build_all=true
                 break
@@ -203,17 +163,11 @@ jobs:
             done <<< "$changed_files"
           fi
 
-          # PRs keep affected-image builds. Every production commit publishes a
-          # complete immutable image set so homelab deploy/rollback never depends
-          # on mutable :latest tags.
-          if [ "$build_all" = true ] || [ "$is_production" = true ]; then
+          if [ "$build_all" = true ]; then
             build_services=("${all_services[@]}")
             build_service_count="${#all_services[@]}"
           fi
 
-          # Resolve Dockerfile, build context, and image repository from the
-          # actual Compose model. rag-eval is a separate profile-gated artifact
-          # with its own CI/CD job and therefore must not enter this app matrix.
           temporary_env_file='.env'
           if [ -e "$temporary_env_file" ]; then
             echo "Refusing to overwrite existing $temporary_env_file in CI workspace." >&2
@@ -296,7 +250,7 @@ jobs:
           fi
 
           rag_evaluator_required=false
-          if [ "$is_production" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.dockerignore$|\.github/workflows/deploy\.yml$)'; then
+          if [ "$is_release_candidate" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.dockerignore$|\.github/workflows/(deploy|cd)\.yml$)'; then
             rag_evaluator_required=true
           fi
 
@@ -312,15 +266,13 @@ jobs:
             printf 'rag_evaluator_required=%s\n' "$rag_evaluator_required"
             printf 'comparison_base=%s\n' "$comparison_base"
             printf 'checkout_sha=%s\n' "$head_sha"
-            printf 'is_production=%s\n' "$is_production"
+            printf 'is_release_candidate=%s\n' "$is_release_candidate"
           } >> "$GITHUB_OUTPUT"
 
   validate:
     needs: detect-changes
     runs-on: ubuntu-24.04
     env:
-      # CI-only syntactically valid values for Prisma generation. They do not
-      # point at a real database and are never written to a repository file.
       AI_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ai?schema=public
       AUTH_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/auth?schema=public
       CONTENT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/content?schema=public
@@ -547,13 +499,12 @@ jobs:
       needs.detect-changes.result == 'success' &&
       needs.validate.result == 'success' &&
       (needs.rag-evaluator-ci.result == 'success' || needs.rag-evaluator-ci.result == 'skipped') &&
-      needs.detect-changes.outputs.build_matrix_json != '[]' &&
-      needs.detect-changes.outputs.is_production != 'true'
+      needs.detect-changes.outputs.build_matrix_json != '[]'
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
-      # One ARM runner per PR keeps different PRs moving concurrently instead of
-      # letting one broad PR consume two scarce ARM slots at once.
+      # Keep each CI run to one ARM slot so multiple PR/master validations can
+      # make progress instead of one broad change monopolizing the ARM pool.
       max-parallel: 1
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.build_matrix_json) }}
@@ -575,140 +526,3 @@ jobs:
           push: false
           cache-from: type=gha,scope=${{ matrix.service }}-arm64
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
-
-  build-and-push-images:
-    needs: [detect-changes, validate, rag-evaluator-ci]
-    if: >-
-      needs.detect-changes.outputs.build_matrix_json != '[]' &&
-      needs.detect-changes.outputs.is_production == 'true'
-    runs-on: ubuntu-24.04-arm
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.build_matrix_json) }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push ARM64 image
-        uses: docker/build-push-action@v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/arm64
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.detect-changes.outputs.checkout_sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}-arm64
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
-
-  build-and-push-rag-eval:
-    needs: [detect-changes, validate, rag-evaluator-ci]
-    if: needs.detect-changes.outputs.is_production == 'true'
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push versioned ARM64 RAG evaluator image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: eval/rag/Dockerfile
-          platforms: linux/arm64
-          push: true
-          build-args: |
-            EVALUATOR_SHA=${{ needs.detect-changes.outputs.checkout_sha }}
-            PRODUCTION_SHA=${{ needs.detect-changes.outputs.checkout_sha }}
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/rag-eval:${{ needs.detect-changes.outputs.checkout_sha }}
-          cache-from: type=gha,scope=rag-eval-arm64
-          cache-to: type=gha,mode=max,scope=rag-eval-arm64
-
-  promote-homelab:
-    needs:
-      - detect-changes
-      - validate
-      - rag-evaluator-ci
-      - build-and-push-images
-      - build-and-push-rag-eval
-    if: >-
-      always() &&
-      needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.is_production == 'true' &&
-      needs.validate.result == 'success' &&
-      needs.rag-evaluator-ci.result == 'success' &&
-      needs.build-and-push-rag-eval.result == 'success' &&
-      (needs.build-and-push-images.result == 'success' || needs.build-and-push-images.result == 'skipped')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout approved commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Promote approved commit to homelab-deploy
-        env:
-          APPROVED_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
-        run: |
-          set -euo pipefail
-          # The deployment branch can advance only after both application-image
-          # publication and the matching evaluator image + offline gate succeed.
-          # A concurrent approved release may update the branch between checkout
-          # and this push. Treat an already-promoted ancestor as success, reject
-          # divergence, and retry only the bounded non-fast-forward race.
-          for attempt in 1 2 3; do
-            git fetch --no-tags origin \
-              '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
-            remote_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
-
-            if git merge-base --is-ancestor "${APPROVED_SHA}" "${remote_sha}"; then
-              echo "homelab-deploy already contains ${APPROVED_SHA} (${remote_sha})."
-              exit 0
-            fi
-
-            if ! git merge-base --is-ancestor "${remote_sha}" "${APPROVED_SHA}"; then
-              echo "homelab-deploy ${remote_sha} diverged from ${APPROVED_SHA}." >&2
-              exit 1
-            fi
-
-            if git push origin "${APPROVED_SHA}:refs/heads/homelab-deploy"; then
-              exit 0
-            fi
-
-            if (( attempt < 3 )); then
-              sleep 2
-            fi
-          done
-
-          echo "homelab-deploy promotion failed after bounded retries." >&2
-          exit 1

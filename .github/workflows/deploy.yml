@@ -296,7 +296,7 @@ jobs:
           fi
 
           rag_evaluator_required=false
-          if [ "$is_production" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.github/workflows/deploy\.yml$)'; then
+          if [ "$is_production" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.dockerignore$|\.github/workflows/deploy\.yml$)'; then
             rag_evaluator_required=true
           fi
 

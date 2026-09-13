@@ -1,14 +1,14 @@
 name: Video Call CI
 
+# The main Homelab CI/CD workflow already runs the call-service unit/E2E
+# regression suite for call/notification changes. Keep this workflow only as a
+# manual diagnostic entry point so PRs do not spend a second hosted runner on
+# duplicate work.
 on:
-  pull_request:
-    branches:
-      - master
-    paths:
-      - 'apps/call-service/**'
-      - 'apps/notification-service/**'
-      - '.github/workflows/video-call-ci.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   call-video-regression:

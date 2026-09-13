@@ -33,6 +33,7 @@ pnpm eval:rag:persist --run <completed-run-id>
 pnpm eval:rag:reranker
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
+pnpm eval:rag:preflight --tpd-attestation <operator-supplied-json>
 ```
 
 ## Containerized evaluator
@@ -86,6 +87,44 @@ resource. Its two-case result is a small qualification gate, not a statistical
 reliability claim.
 
 Capacity check makes exactly one cheap production-model request and never launches a benchmark. It requires explicit confirmation and Cloudflare credentials. Do not repeat it while an account-limit response is already known.
+
+The Groq preflight is separate from the Cloudflare capacity check. It makes only
+small provider probes and never calls the production RAG endpoint. It treats
+`x-ratelimit-*-tokens` as rolling TPM and checks only the next operation's
+headroom, while `x-ratelimit-*-requests` is RPD rather than TPD. The existing
+`JudgeUsageTracker` remains responsible for concurrency,
+the 6,000 TPM target, reset waits, Retry-After, and bounded transient retries
+throughout a semantic run. TPD is not inferred from TPM headers. Supply a
+current independent attestation (for example, exported from the Groq Console)
+with this shape:
+
+```json
+{
+  "schemaVersion": "groq-tpd-attestation-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "groq-console-limits",
+  "observedAt": "2026-09-13T00:00:00Z",
+  "models": {
+    "openai/gpt-oss-120b": {
+      "dailyRemainingTokens": 150000,
+      "plannedFullRunTokens": 54048
+    },
+    "openai/gpt-oss-20b": {
+      "dailyRemainingTokens": 150000,
+      "plannedFullRunTokens": 38104
+    },
+    "qwen/qwen3.8-27b": {
+      "dailyRemainingTokens": 150000,
+      "plannedFullRunTokens": 32456
+    }
+  }
+}
+```
+
+The attestation is intentionally not committed with credentials or production
+data. Missing, stale, incomplete, or header-derived TPD evidence produces an
+unknown gate and prevents a frozen run from starting.
 
 The capacity check uses `RAG_EVAL_CAPACITY_MODEL` (default `@cf/openai/gpt-oss-20b`) through a separate no-retry client. It does not construct the Ragas judge, invoke the judge model, or call embeddings. Run production-model deterministic gates and persist normalized frozen execution results before invoking semantic judge metrics.
 

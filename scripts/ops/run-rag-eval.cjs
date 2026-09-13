@@ -12,7 +12,7 @@ const evaluationRoot = path.join(repositoryRoot, 'eval/rag');
 const mode = process.argv[2] ?? 'offline';
 const forwarded = process.argv.slice(3);
 
-if (mode === 'capacity-check') {
+if (mode === 'capacity-check' || mode === 'preflight') {
   dotenv.config({
     path:
       process.env.RAG_EVAL_ENV_FILE ||
@@ -37,6 +37,7 @@ const commands = {
   compare: ['run', 'rag-eval', 'compare'],
   test: ['run', 'pytest', '-q'],
   'capacity-check': ['run', 'rag-eval', 'capacity-check', '--confirm-one-call'],
+  preflight: ['run', 'rag-eval', 'preflight'],
 };
 const command = commands[mode];
 if (!command) {

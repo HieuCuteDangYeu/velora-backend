@@ -7,7 +7,12 @@ type RouterDouble = {
 };
 
 function createEngine(createRouter: jest.Mock) {
-  const stateRepository = { saveRoom: jest.fn().mockResolvedValue(undefined) };
+  const stateRepository = {
+    saveRoom: jest.fn().mockResolvedValue(undefined),
+    saveTransportState: jest.fn().mockResolvedValue(undefined),
+    saveProducerState: jest.fn().mockResolvedValue(undefined),
+    removeProducerState: jest.fn().mockResolvedValue(undefined),
+  };
   const engine = new MediasoupCallMediaEngine(stateRepository as never);
   const worker = { pid: 1, createRouter };
   (engine as unknown as { workers: unknown[] }).workers.push(worker);
@@ -104,5 +109,106 @@ describe('MediasoupCallMediaEngine room creation', () => {
     expect(() => engine.getRouterRtpCapabilities('call-3')).toThrow(
       'Call room not found',
     );
+  });
+});
+
+describe('MediasoupCallMediaEngine producer lifecycle', () => {
+  const createConnectedEngine = async () => {
+    const producer = {
+      id: 'producer-1',
+      on: jest.fn(),
+      close: jest.fn(),
+    };
+    const transport = {
+      id: 'transport-1',
+      produce: jest.fn().mockResolvedValue(producer),
+      connect: jest.fn().mockResolvedValue(undefined),
+      on: jest.fn(),
+      observer: { on: jest.fn() },
+    };
+    const router = {
+      id: 'router-producer',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    };
+    const createRouter = jest.fn().mockResolvedValue(router);
+    const result = createEngine(createRouter);
+    await result.engine.createRoom('call-producer');
+    await result.engine.createSendTransport('call-producer', 'user-a');
+    await result.engine.connectTransport(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      {},
+    );
+    return { ...result, producer, transport };
+  };
+
+  it('returns the same producer for an idempotent request and rejects a second active kind', async () => {
+    const { engine, transport } = await createConnectedEngine();
+
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-1',
+      ),
+    ).resolves.toEqual({ producerId: 'producer-1' });
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-1',
+      ),
+    ).resolves.toEqual({ producerId: 'producer-1' });
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-2',
+      ),
+    ).rejects.toThrow('Media producer already exists');
+    expect(transport.produce).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent producer creation before enforcing uniqueness', async () => {
+    const { engine, transport, producer } = await createConnectedEngine();
+    let resolveProduce: (value: typeof producer) => void = () => undefined;
+    transport.produce.mockImplementationOnce(
+      () => new Promise((resolve) => (resolveProduce = resolve)),
+    );
+
+    const first = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+      'request-1',
+    );
+    const second = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+      'request-2',
+    );
+    await Promise.resolve();
+    expect(transport.produce).toHaveBeenCalledTimes(1);
+
+    resolveProduce(producer);
+    await expect(first).resolves.toEqual({ producerId: 'producer-1' });
+    await expect(second).rejects.toThrow('Media producer already exists');
   });
 });

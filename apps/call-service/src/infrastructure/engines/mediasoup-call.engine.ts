@@ -38,6 +38,11 @@ type RoomRuntimeState = {
     }
   >;
   producers: Map<string, mediasoup.types.Producer>;
+  producerByUserKind: Map<string, string>;
+  producerOperations: Map<
+    string,
+    { producerId: string; transportId: string; userId: string; kind: MediaType }
+  >;
   producerMeta: Map<
     string,
     { callId: string; userId: string; transportId: string; kind: MediaType }
@@ -59,6 +64,10 @@ export class MediasoupCallMediaEngine
   // creating the router. Keep room creation single-flight per call so the
   // same durable answer action cannot leak a second router.
   private readonly roomCreationPromises = new Map<string, Promise<void>>();
+  private readonly producerCreationPromises = new Map<
+    string,
+    Promise<ProducedMediaResult>
+  >();
   private readonly workers: mediasoup.types.Worker[] = [];
   private workerCursor = 0;
   private readonly workerCount = Math.max(
@@ -144,6 +153,8 @@ export class MediasoupCallMediaEngine
       transports: new Map(),
       transportMeta: new Map(),
       producers: new Map(),
+      producerByUserKind: new Map(),
+      producerOperations: new Map(),
       producerMeta: new Map(),
       consumers: new Map(),
       consumerMeta: new Map(),
@@ -272,6 +283,7 @@ export class MediasoupCallMediaEngine
     transportId: string,
     kind: MediaType,
     rtpParameters: Record<string, unknown>,
+    requestId?: string,
   ): Promise<ProducedMediaResult> {
     const room = this.getRoomOrThrow(callId);
     const transport = room.transports.get(transportId);
@@ -287,6 +299,60 @@ export class MediasoupCallMediaEngine
     ) {
       throw new Error('Send transport is not connected');
     }
+
+    const normalizedRequestId = requestId?.trim();
+    if (normalizedRequestId) {
+      const previousOperation = room.producerOperations.get(
+        this.producerOperationKey(userId, kind, normalizedRequestId),
+      );
+      if (previousOperation) {
+        return { producerId: previousOperation.producerId };
+      }
+    }
+
+    const producerKey = this.producerUserKindKey(userId, kind);
+    const existingProducerId = room.producerByUserKind.get(producerKey);
+    if (existingProducerId && room.producers.has(existingProducerId)) {
+      throw new Error('Media producer already exists');
+    }
+
+    const creationKey = `${callId}:${producerKey}`;
+    const pendingCreation = this.producerCreationPromises.get(creationKey);
+    if (pendingCreation) {
+      await pendingCreation;
+      throw new Error('Media producer already exists');
+    }
+
+    const creation = this.createProducer(
+      room,
+      callId,
+      userId,
+      transportId,
+      kind,
+      rtpParameters,
+      normalizedRequestId,
+    );
+    this.producerCreationPromises.set(creationKey, creation);
+    try {
+      return await creation;
+    } finally {
+      if (this.producerCreationPromises.get(creationKey) === creation) {
+        this.producerCreationPromises.delete(creationKey);
+      }
+    }
+  }
+
+  private async createProducer(
+    room: RoomRuntimeState,
+    callId: string,
+    userId: string,
+    transportId: string,
+    kind: MediaType,
+    rtpParameters: Record<string, unknown>,
+    requestId?: string,
+  ): Promise<ProducedMediaResult> {
+    const transport = room.transports.get(transportId);
+    if (!transport) throw new Error('Send transport is not connected');
 
     const producer = await transport.produce({
       kind,
@@ -304,10 +370,29 @@ export class MediasoupCallMediaEngine
       transportId,
       kind,
     });
+    room.producerByUserKind.set(
+      this.producerUserKindKey(userId, kind),
+      producer.id,
+    );
+    if (requestId) {
+      room.producerOperations.set(
+        this.producerOperationKey(userId, kind, requestId),
+        { producerId: producer.id, transportId, userId, kind },
+      );
+    }
 
     producer.on('transportclose', () => {
       room.producers.delete(producer.id);
       room.producerMeta.delete(producer.id);
+      const producerKey = this.producerUserKindKey(userId, kind);
+      if (room.producerByUserKind.get(producerKey) === producer.id) {
+        room.producerByUserKind.delete(producerKey);
+      }
+      for (const [operationKey, operation] of room.producerOperations) {
+        if (operation.producerId === producer.id) {
+          room.producerOperations.delete(operationKey);
+        }
+      }
       void this.stateRepository
         .removeProducerState(callId, userId, producer.id)
         .catch((error: unknown) => {
@@ -328,6 +413,18 @@ export class MediasoupCallMediaEngine
     });
 
     return { producerId: producer.id };
+  }
+
+  private producerUserKindKey(userId: string, kind: MediaType): string {
+    return `${userId}:${kind}`;
+  }
+
+  private producerOperationKey(
+    userId: string,
+    kind: MediaType,
+    requestId: string,
+  ): string {
+    return `${userId}:${kind}:${requestId}`;
   }
 
   async consume(
@@ -509,6 +606,15 @@ export class MediasoupCallMediaEngine
     producer.close();
     room.producers.delete(producerId);
     room.producerMeta.delete(producerId);
+    const producerKey = this.producerUserKindKey(userId, meta.kind);
+    if (room.producerByUserKind.get(producerKey) === producerId) {
+      room.producerByUserKind.delete(producerKey);
+    }
+    for (const [operationKey, operation] of room.producerOperations) {
+      if (operation.producerId === producerId) {
+        room.producerOperations.delete(operationKey);
+      }
+    }
     await this.stateRepository.removeProducerState(callId, userId, producerId);
   }
 

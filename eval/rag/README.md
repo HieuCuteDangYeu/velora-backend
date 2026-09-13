@@ -121,6 +121,7 @@ RAG_EVAL_TEI_EMBEDDING_BASE_URL=http://127.0.0.1:<forwarded-port>/v1
 RAGAS_JUDGE_CONCURRENCY=1
 RAGAS_GROQ_TPM_LIMIT=8000
 RAGAS_GROQ_TPM_TARGET=6000
+RAGAS_JUDGE_TIMEOUT_SECONDS=120
 RAGAS_MAX_COMPLETION_TOKENS=512
 ```
 
@@ -135,6 +136,8 @@ Live semantic runs persist metric-level judge checkpoints at
 `RAGAS_JUDGE_CHECKPOINT_PATH`, or beside the result root by default. A
 checkpoint is bound to the source run, production SHA, provider, model, and
 evaluator revision; only unavailable metrics are eligible for resume.
+Each external judge request has a bounded timeout; timeout failures are recorded
+and use the same bounded transient retry policy as network failures.
 
 When evaluating an already accepted production run, pass `--resume`,
 `--source-summary`, and `--trace-file`. The evaluator loads the saved runner

@@ -193,3 +193,33 @@ async def test_maximum_retries_stops_without_unbounded_calls(monkeypatch):
     calls = tracker.take("run:case")
     assert client.chat.completions.calls == 2
     assert all(call["providerStatus"] == 429 for call in calls)
+
+
+class SlowCompletions:
+    async def create(self, **_kwargs):
+        await asyncio.sleep(2)
+
+
+@pytest.mark.asyncio
+async def test_timeout_is_bounded_and_recorded(monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SlowCompletions())
+    )
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.begin("run:case")
+    tracker.set_metric("faithfulness")
+
+    with pytest.raises(asyncio.TimeoutError):
+        await client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "judge"}],
+            max_tokens=32,
+        )
+
+    calls = tracker.take("run:case")
+    assert len(calls) == 1
+    assert calls[0]["providerStatus"] == "TIMEOUT"
+    assert calls[0]["providerCategory"] == "TRANSIENT_NETWORK_ERROR"
+    assert calls[0]["configuredTimeoutMs"] == 1000.0

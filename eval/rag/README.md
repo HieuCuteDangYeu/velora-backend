@@ -121,12 +121,15 @@ RAG_EVAL_TEI_EMBEDDING_BASE_URL=http://127.0.0.1:<forwarded-port>/v1
 RAGAS_JUDGE_CONCURRENCY=1
 RAGAS_GROQ_TPM_LIMIT=8000
 RAGAS_GROQ_TPM_TARGET=6000
-RAGAS_MAX_COMPLETION_TOKENS=256
+RAGAS_MAX_COMPLETION_TOKENS=512
 ```
 
 This path uses `GROQ_API_KEY`/`GROQ_BASE_URL` for the judge and an
 OpenAI-compatible `/v1/embeddings` endpoint backed by the self-hosted TEI
-service. It does not fall back to Cloudflare or production RAG models.
+service. Groq returned structured-output truncation at 256 tokens in the
+accepted evaluation attempt, so this path defaults to 512 while preserving the
+explicit `RAGAS_MAX_COMPLETION_TOKENS` override. It does not fall back to
+Cloudflare or production RAG models.
 
 Live semantic runs persist metric-level judge checkpoints at
 `RAGAS_JUDGE_CHECKPOINT_PATH`, or beside the result root by default. A

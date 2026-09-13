@@ -11,6 +11,16 @@ from rag_eval.judge_runtime import JudgeUsageTracker
 from rag_eval.metrics.semantic import build_live_semantic_suite
 
 
+def configured_max_completion_tokens() -> int:
+    """Return the Groq structured-output budget, preserving an explicit override."""
+
+    try:
+        configured = int(os.getenv("RAGAS_MAX_COMPLETION_TOKENS", "512"))
+    except ValueError:
+        configured = 512
+    return min(4096, max(64, configured))
+
+
 def build_live_judge() -> tuple[Any, Any, str]:
     judge_model = os.environ["RAG_EVAL_JUDGE_MODEL"]
     token = os.environ["GROQ_API_KEY"]
@@ -19,13 +29,7 @@ def build_live_judge() -> tuple[Any, Any, str]:
     )
     embedding_model = os.getenv("RAG_EVAL_EMBEDDING_MODEL", "BAAI/bge-m3")
     embedding_base_url = os.environ["RAG_EVAL_TEI_EMBEDDING_BASE_URL"].rstrip("/")
-    try:
-        max_completion_tokens = int(
-            os.getenv("RAGAS_MAX_COMPLETION_TOKENS", "256")
-        )
-    except ValueError:
-        max_completion_tokens = 256
-    max_completion_tokens = min(4096, max(64, max_completion_tokens))
+    max_completion_tokens = configured_max_completion_tokens()
 
     judge_client = AsyncOpenAI(
         api_key=token,

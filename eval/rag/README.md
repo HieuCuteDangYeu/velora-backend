@@ -33,7 +33,8 @@ pnpm eval:rag:persist --run <completed-run-id>
 pnpm eval:rag:reranker
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
-pnpm eval:rag:preflight --tpd-attestation <operator-supplied-json>
+pnpm eval:rag:preflight --tpd-limit-attestation <limit-json> \
+  --tpd-window-attestation <window-json> --ledger-path <ledger-jsonl>
 ```
 
 ## Containerized evaluator
@@ -92,38 +93,67 @@ The Groq preflight is separate from the Cloudflare capacity check. It makes only
 small provider probes and never calls the production RAG endpoint. It treats
 `x-ratelimit-*-tokens` as rolling TPM and checks only the next operation's
 headroom, while `x-ratelimit-*-requests` is RPD rather than TPD. The existing
-`JudgeUsageTracker` remains responsible for concurrency,
-the 6,000 TPM target, reset waits, Retry-After, and bounded transient retries
-throughout a semantic run. TPD is not inferred from TPM headers. Supply a
-current independent attestation (for example, exported from the Groq Console)
-with this shape:
+`JudgeUsageTracker` remains responsible for concurrency, the 6,000 TPM target,
+reset waits, Retry-After, and bounded transient retries throughout a semantic
+run. TPD is not inferred from provider headers.
+
+The preflight requires two fresh, operator-supplied artifacts for every model
+being probed:
+
+1. An independently observed organization TPD limit (`TPD_LIMIT`).
+2. A current-window usage baseline (`TPD`) plus the persistent evaluator ledger.
+
+The limit artifact may have this shape:
 
 ```json
 {
-  "schemaVersion": "groq-tpd-attestation-v1",
+  "schemaVersion": "groq-tpd-limit-attestation-v1",
   "provider": "groq",
-  "scope": "TPD",
-  "source": "groq-console-limits",
+  "scope": "TPD_LIMIT",
+  "source": "groq-console-organization-limits",
   "observedAt": "2026-09-13T00:00:00Z",
   "models": {
     "openai/gpt-oss-120b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 54048
-    },
-    "openai/gpt-oss-20b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 38104
-    },
-    "qwen/qwen3.8-27b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 32456
+      "dailyLimitTokens": 200000
     }
   }
 }
 ```
 
-The attestation is intentionally not committed with credentials or production
-data. Missing, stale, incomplete, or header-derived TPD evidence produces an
+The current-window artifact may use an explicitly observed fresh window:
+
+```json
+{
+  "schemaVersion": "groq-tpd-window-attestation-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "operator-observed-fresh-window",
+  "observedAt": "2026-09-13T00:00:00Z",
+  "models": {
+    "openai/gpt-oss-120b": {
+      "dailyLimitTokens": 200000,
+      "usageSinceWindowStartTokens": 0,
+      "plannedFullRunTokens": 54048
+    }
+  }
+}
+```
+
+For a non-fresh window, include an operator-proven `windowStartedAt` and the
+known usage since that boundary. The evaluator then calculates
+`dailyLimitTokens - usageSinceWindowStartTokens - ledgerUsage` and requires at
+least `plannedFullRunTokens` (54,048 by default). It never automatically resets
+the ledger because the provider's exact TPD reset boundary is not assumed.
+
+The ledger records only safe request metadata and token counts, including
+failed/retried requests. Provider usage is used when available; otherwise the
+reserved input/output budget plus safety tokens is counted as a conservative
+upper bound. Request IDs make repeated writes idempotent, and file locking keeps
+concurrent evaluator processes from corrupting the ledger.
+
+The attestation and ledger are intentionally not committed with credentials or
+production data. A limit-only artifact, stale/incomplete evidence, a legacy
+`dailyRemainingTokens` artifact, or header-derived TPD evidence produces an
 unknown gate and prevents a frozen run from starting.
 
 The capacity check uses `RAG_EVAL_CAPACITY_MODEL` (default `@cf/openai/gpt-oss-20b`) through a separate no-retry client. It does not construct the Ragas judge, invoke the judge model, or call embeddings. Run production-model deterministic gates and persist normalized frozen execution results before invoking semantic judge metrics.

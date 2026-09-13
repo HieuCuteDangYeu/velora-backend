@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +12,11 @@ from rag_eval.judge_runtime import (
     estimate_input_tokens,
     retry_after_seconds,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_groq_ledger(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAGAS_GROQ_DAILY_LEDGER_PATH", str(tmp_path / "groq-ledger.jsonl"))
 
 
 class FakeClock:
@@ -108,6 +115,12 @@ async def test_tracker_reserves_input_output_and_records_rate_limit_state(monkey
     assert tracker.limiter_stats()["providerRemainingTokens"] == 7986
 
 
+def ledger_rows():
+    path = os.environ["RAGAS_GROQ_DAILY_LEDGER_PATH"]
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
 class FakeRateLimitError(Exception):
     status_code = 429
     body = {"error": {"code": "rate_limit_exceeded"}}
@@ -119,6 +132,10 @@ class FakeRateLimitError(Exception):
             "x-ratelimit-reset-tokens": "0s",
         }
     )
+
+
+class FakeConsumedRateLimitError(FakeRateLimitError):
+    usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2, total_tokens=12)
 
 
 class FakeDailyQuotaError(Exception):
@@ -159,6 +176,7 @@ class FakeClient:
 
 def response():
     return SimpleNamespace(
+        id="response-1",
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14),
         headers={
             "x-ratelimit-limit-tokens": "8000",
@@ -191,6 +209,56 @@ async def test_429_is_bounded_retried_and_headers_are_recorded(monkeypatch):
     assert calls[1]["providerStatus"] == 200
     assert calls[0]["rateLimitHeaders"]["retry-after"] == "0"
     assert calls[0]["waitDurationMs"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_request_with_known_usage_is_counted(monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    client = FakeClient([FakeConsumedRateLimitError()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.begin("run:case")
+    tracker.set_metric("faithfulness")
+
+    with pytest.raises(FakeConsumedRateLimitError):
+        await client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "judge"}],
+            max_tokens=32,
+        )
+
+    rows = ledger_rows()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "FAILURE"
+    assert rows[0]["inputTokens"] == 10
+    assert rows[0]["outputTokens"] == 2
+    assert rows[0]["totalTokens"] == 12
+    assert rows[0]["countedTokens"] == 12
+    assert rows[0]["countingMode"] == "PROVIDER"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_usage_receives_conservative_accounting(monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    monkeypatch.setenv("RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", "0")
+    messages = [{"role": "user", "content": "judge"}]
+    client = FakeClient([FakeRateLimitError()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.begin("run:case")
+    tracker.set_metric("faithfulness")
+
+    with pytest.raises(FakeRateLimitError):
+        await client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=messages,
+            max_tokens=32,
+        )
+
+    rows = ledger_rows()
+    assert len(rows) == 1
+    assert rows[0]["countingMode"] == "CONSERVATIVE_UPPER_BOUND"
+    assert rows[0]["countedTokens"] == estimate_input_tokens(messages) + 32
 
 
 @pytest.mark.asyncio
@@ -252,9 +320,7 @@ class SlowCompletions:
 async def test_timeout_is_bounded_and_recorded(monkeypatch):
     monkeypatch.setenv("RAGAS_JUDGE_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
-    client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SlowCompletions())
-    )
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SlowCompletions()))
     tracker = JudgeUsageTracker(client, provider="groq")
     tracker.begin("run:case")
     tracker.set_metric("faithfulness")

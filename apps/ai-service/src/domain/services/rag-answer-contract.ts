@@ -7,6 +7,56 @@ const QUANTITY_RATIONALE_PATTERN =
 const EVIDENCE_REFUSAL_PATTERN =
   /^(?:I\s+(?:do not|don't|cannot|can't|could not|couldn't|am unable to)\b|(?:the|this)\s+(?:transcript|audio|ASR|evidence)\s+(?:is|was)\s+(?:too\s+)?(?:garbled|unclear|unreadable|insufficient)\b)/i;
 
+const QUESTION_ECHO_QUESTION_PATTERN = /\b(?:what|where|which|why|how)\b/i;
+
+const QUESTION_ECHO_STOPWORDS = new Set([
+  'a',
+  'about',
+  'an',
+  'and',
+  'are',
+  'at',
+  'be',
+  'because',
+  'by',
+  'can',
+  'did',
+  'do',
+  'does',
+  'for',
+  'from',
+  'have',
+  'how',
+  'in',
+  'into',
+  'is',
+  'it',
+  'of',
+  'on',
+  'or',
+  'say',
+  'says',
+  'that',
+  'the',
+  'their',
+  'they',
+  'this',
+  'to',
+  'under',
+  'up',
+  'used',
+  'was',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'while',
+  'whose',
+  'why',
+  'with',
+]);
+
 const NUMBER_WORD_VALUES = new Map<string, string>([
   ['zero', '0'],
   ['one', '1'],
@@ -73,6 +123,13 @@ export function validateRagAnswerContract(
     return 'Answer model introduced an unsupported distinctive token';
   }
 
+  if (
+    input.evidenceRequired &&
+    isQuestionVocabularyEcho(input.question, input.evidence, answer)
+  ) {
+    return 'Answer model repeated the question without an evidence-bearing fact';
+  }
+
   return undefined;
 }
 
@@ -121,6 +178,28 @@ function unsupportedDistinctiveTokens(
   );
 }
 
+function isQuestionVocabularyEcho(
+  question: string,
+  evidence: readonly string[],
+  answer: string,
+): boolean {
+  if (answer.length < 20 || !QUESTION_ECHO_QUESTION_PATTERN.test(question)) {
+    return false;
+  }
+
+  const questionTokens = new Set(answerContentTokens(question));
+  const evidenceTokens = new Set(
+    evidence.flatMap((value) => answerContentTokens(value)),
+  );
+  const answerTokens = answerContentTokens(answer);
+  if (answerTokens.length === 0) return false;
+
+  const evidenceBearingAnswerTokens = answerTokens.filter(
+    (token) => !questionTokens.has(token) && evidenceTokens.has(token),
+  );
+  return evidenceBearingAnswerTokens.length === 0;
+}
+
 function distinctiveTokens(value: string): string[] {
   return (value.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? []).filter(
     (token) => {
@@ -132,6 +211,16 @@ function distinctiveTokens(value: string): string[] {
       return uppercaseLetters >= 2 || /\d/.test(token);
     },
   );
+}
+
+export function answerContentTokens(value: string): string[] {
+  const tokens: string[] =
+    value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  return tokens
+    .filter((token) => !QUESTION_ECHO_STOPWORDS.has(token))
+    .map((token: string) =>
+      token.endsWith('s') && token.length >= 3 ? token.slice(0, -1) : token,
+    );
 }
 
 function normalizeDistinctiveToken(value: string): string {

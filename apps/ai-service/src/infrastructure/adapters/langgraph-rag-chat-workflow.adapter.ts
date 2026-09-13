@@ -70,6 +70,12 @@ const RagChatStateSchema = new StateSchema({
   answer: z.string().optional(),
   answerClaims: z.array(z.any()).optional(),
   answerDiagnostics: z.array(z.any()).default([]),
+  answerGenerationMode: z
+    .enum(['SYNTHESIZED', 'EXTRACTIVE_TRANSCRIPT_FALLBACK'])
+    .optional(),
+  answerFallbackReason: z
+    .enum(['ANSWER_GENERATION_FAILURE', 'UNUSABLE_SYNTHESIS'])
+    .optional(),
   verification: z.any().optional(),
   citations: z.array(z.any()).default([]),
   citationCoverage: z.any().optional(),
@@ -539,6 +545,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             this.generateDraftAnswerUseCase.execute(state),
           );
       const answer = groundedAnswer ?? draft!.answer;
+      const answerGenerationMode = groundedRevision
+        ? 'SYNTHESIZED'
+        : (draft!.finalizationMode ?? 'SYNTHESIZED');
 
       return {
         answer,
@@ -551,6 +560,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             ]
           : draft!.claims,
         answerDiagnostics: draft?.diagnostics,
+        answerGenerationMode,
+        answerFallbackReason: groundedRevision
+          ? undefined
+          : draft!.fallbackReason,
         citations: [],
         citationCoverage: undefined,
         groundedRevision: groundedRevision

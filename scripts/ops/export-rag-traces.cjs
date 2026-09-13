@@ -54,6 +54,10 @@ const SAFE_STRING_KEYS = new Set([
   'embeddingVersion',
   'finalFailureSource',
   'finalSource',
+  'answerGenerationStatus',
+  'groundingVerification',
+  'finalizationMode',
+  'fallbackReason',
   'verifierDecision',
 ]);
 
@@ -64,8 +68,14 @@ const SAFE_DIAGNOSTIC_KEYS = new Set([
   'contextSufficiency',
   'decisionSource',
   'draftAnswerExecuted',
+  'answerGenerationStatus',
+  'synthesizedAnswerPreserved',
   'missingEvidence',
   'recommendedAction',
+  'extractiveFallbackUsed',
+  'groundingVerification',
+  'finalizationMode',
+  'fallbackReason',
 ]);
 
 function isSafeStringKey(key) {

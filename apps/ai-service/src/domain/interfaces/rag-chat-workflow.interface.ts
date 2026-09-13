@@ -325,6 +325,20 @@ export interface RagAnswerClaim {
   evidenceIds: string[];
 }
 
+export type RagAnswerGenerationMode =
+  | 'SYNTHESIZED'
+  | 'EXTRACTIVE_TRANSCRIPT_FALLBACK';
+
+export type RagAnswerFallbackReason =
+  | 'ANSWER_GENERATION_FAILURE'
+  | 'UNUSABLE_SYNTHESIS';
+
+export type RagFinalizationMode =
+  | 'SYNTHESIZED'
+  | 'SYNTHESIZED_GROUNDED'
+  | 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+  | 'FAILURE_FALLBACK';
+
 export type RagCitation = AiRagCitation;
 
 export interface RagChatWorkflowInput {
@@ -386,6 +400,8 @@ export interface RagChatWorkflowState {
   answer?: string;
   answerClaims?: RagAnswerClaim[];
   answerDiagnostics?: StructuredLlmCallDiagnostics[];
+  answerGenerationMode?: RagAnswerGenerationMode;
+  answerFallbackReason?: RagAnswerFallbackReason;
   verification?: RagVerificationResult;
   citations?: RagCitation[];
   citationCoverage?: RagCitationCoverageResult;

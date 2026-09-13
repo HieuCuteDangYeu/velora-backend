@@ -50,6 +50,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
       modelRole: 'ANSWER',
       diagnostics: [],
+      finalizationMode: 'SYNTHESIZED',
     });
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -103,13 +104,15 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
-  it('uses a question-matched transcript segment when the generated answer is unanchored', async () => {
+  it('preserves a grounded transcript paraphrase instead of replacing it', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({
-        answer: 'The material describes the relationship in general terms.',
+        answer:
+          'The speaker began learning TypeScript roughly three years ago when the team moved away from plain JavaScript.',
         claims: [
           {
-            claim: 'The material describes the relationship in general terms.',
+            claim:
+              'The speaker began learning TypeScript roughly three years ago when the team moved away from plain JavaScript.',
             evidenceIds: ['e0'],
           },
         ],
@@ -124,7 +127,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     await expect(
       useCase.execute({
         ...state,
-        userMessage: 'Where was the project carried out?',
+        userMessage: 'Why did the speaker start learning TypeScript?',
         route: {
           intent: 'REEL_VIDEO_QUESTION',
           requiredEvidence: ['TRANSCRIPT'],
@@ -133,30 +136,108 @@ describe('GenerateDraftAnswerUseCase', () => {
           {
             evidenceType: 'TRANSCRIPT',
             evidenceText:
-              'The project was carried out during an internship at IDIAP under Jean-Marc.',
+              'I started learning TypeScript about three years ago because our team moved away from plain JavaScript.',
             chunkText:
-              'The project was carried out during an internship at IDIAP under Jean-Marc.',
+              'I started learning TypeScript about three years ago because our team moved away from plain JavaScript.',
             tags: [],
           },
         ],
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({
       answer:
-        'The project was carried out during an internship at IDIAP under Jean-Marc.',
+        'The speaker began learning TypeScript roughly three years ago when the team moved away from plain JavaScript.',
       claims: [
         {
           claim:
-            'The project was carried out during an internship at IDIAP under Jean-Marc.',
+            'The speaker began learning TypeScript roughly three years ago when the team moved away from plain JavaScript.',
           evidenceIds: ['e0'],
         },
       ],
+      finalizationMode: 'SYNTHESIZED',
     });
   });
 
-  it('keeps decimal timestamp text intact while selecting a transcript segment', async () => {
+  it('preserves a grounded summary assembled from multiple transcript chunks', async () => {
+    const answer =
+      "The speaker learned TypeScript during the team's move away from plain JavaScript.";
     const service = {
       generateObject: jest.fn().mockResolvedValue({
-        answer: 'The answer is not available.',
+        answer,
+        claims: [
+          {
+            claim: 'The speaker learned TypeScript during the transition.',
+            evidenceIds: ['e0', 'e1'],
+          },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'What happened during the language transition?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The speaker started learning TypeScript.',
+            chunkText: 'The speaker started learning TypeScript.',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The team moved away from plain JavaScript.',
+            chunkText: 'The team moved away from plain JavaScript.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer,
+      finalizationMode: 'SYNTHESIZED',
+    });
+  });
+
+  it('leaves an unanchored candidate for semantic verification instead of copying transcript text', async () => {
+    const answer = 'The zorb is coupled to the quasar and glows green.';
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer,
+        claims: [{ claim: answer, evidenceIds: ['e0'] }],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer,
+      finalizationMode: 'SYNTHESIZED',
+    });
+  });
+
+  it('uses the ranked transcript window when synthesis remains unusable', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: '',
         claims: [],
       }),
     };
@@ -195,13 +276,15 @@ describe('GenerateDraftAnswerUseCase', () => {
           evidenceIds: ['e0'],
         },
       ],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
     });
   });
 
-  it('keeps the top two authorized windows from the same reel', async () => {
+  it('keeps the top two ranked windows from the same reel for fallback', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({
-        answer: 'The answer is not available.',
+        answer: '',
         claims: [],
       }),
     };
@@ -250,6 +333,103 @@ describe('GenerateDraftAnswerUseCase', () => {
           evidenceIds: ['e0', 'e1'],
         },
       ],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+  });
+
+  it('uses extractive fallback when an empty answer remains unusable after retry', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The zorb is coupled to the quasar.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses extractive fallback after provider failure without bypassing the evidence boundary', async () => {
+    const service = {
+      generateObject: jest.fn().mockRejectedValue(new Error('provider down')),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The zorb is coupled to the quasar.',
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'ANSWER_GENERATION_FAILURE',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses only sufficiency-authorized evidence for an extractive fallback', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e1'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Unauthorized distractor text.',
+            chunkText: 'Unauthorized distractor text.',
+            tags: [],
+          },
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'Authorized evidence text.',
+            chunkText: 'Authorized evidence text.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'Authorized evidence text.',
+      claims: [{ evidenceIds: ['e1'] }],
     });
   });
 

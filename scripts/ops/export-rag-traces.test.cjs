@@ -150,6 +150,12 @@ test('retains safe answer and finalization diagnostics without private text', ()
         draftAnswerExecuted: true,
         draftAnswerProviderStatus: 200,
         verifierDecision: 'PASS',
+        answerGenerationStatus: 'ANSWER_GENERATION_SUCCESS',
+        groundingVerification: 'GROUNDING_VERIFIED',
+        synthesizedAnswerPreserved: true,
+        extractiveFallbackUsed: false,
+        finalizationMode: 'SYNTHESIZED_GROUNDED',
+        fallbackReason: 'UNUSABLE_SYNTHESIS',
         answerRevisionExecuted: false,
         finalSource: 'ANSWER',
         finalFailureSource: 'NONE',
@@ -161,6 +167,12 @@ test('retains safe answer and finalization diagnostics without private text', ()
   assert.match(output, /draftAnswerExecuted/);
   assert.match(output, /answerRevisionExecuted/);
   assert.match(output, /verifierDecision/);
+  assert.match(output, /answerGenerationStatus/);
+  assert.match(output, /groundingVerification/);
+  assert.match(output, /synthesizedAnswerPreserved/);
+  assert.match(output, /extractiveFallbackUsed/);
+  assert.match(output, /finalizationMode/);
+  assert.match(output, /fallbackReason/);
   assert.match(output, /finalSource/);
   assert.doesNotMatch(output, /private answer|private prompt/);
 });

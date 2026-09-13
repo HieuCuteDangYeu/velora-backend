@@ -2,6 +2,8 @@ import type {
   RagCitation,
   RagCitationDiagnostics,
   RagCitationEvidenceMapping,
+  RagAnswerFallbackReason,
+  RagFinalizationMode,
   RagPersistedRouteDecision,
   RagRetrievalExecutionDiagnostics,
   RagRetrievalPlanActual,
@@ -38,6 +40,15 @@ export interface RagWorkflowTraceMetrics {
     citationDiagnostics?: RagCitationDiagnostics;
     citationAttempts?: unknown[];
     finalization?: {
+      answerGenerationStatus:
+        | 'ANSWER_GENERATION_SUCCESS'
+        | 'EXTRACTIVE_FALLBACK_USED'
+        | 'NOT_EXECUTED';
+      groundingVerification: 'GROUNDING_VERIFIED' | 'FAILED' | 'NOT_EXECUTED';
+      synthesizedAnswerPreserved: boolean;
+      extractiveFallbackUsed: boolean;
+      finalizationMode: RagFinalizationMode;
+      fallbackReason?: RagAnswerFallbackReason;
       draftAnswerExecuted: boolean;
       draftAnswerProviderStatus?: number | string;
       verifierExecuted: boolean;

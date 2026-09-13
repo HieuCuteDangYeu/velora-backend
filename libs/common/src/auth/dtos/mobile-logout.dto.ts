@@ -1,7 +1,9 @@
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
-export const MobileLogoutSchema = z.object({
+import { LogoutSchema } from './logout.dto';
+
+export const MobileLogoutSchema = LogoutSchema.extend({
   refreshToken: z.string().min(1),
 });
 

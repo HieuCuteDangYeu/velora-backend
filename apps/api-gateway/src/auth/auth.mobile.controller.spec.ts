@@ -14,12 +14,22 @@ const createResponse = () => ({
   setHeader: jest.fn(),
 });
 
-const createController = () => {
+const createController = (notificationGatewaySecret = 'gateway-secret') => {
   const authClient = {
     send: jest.fn(),
   };
   const configService = {
-    get: jest.fn(),
+    get: jest.fn((key: string) => {
+      if (key === 'NOTIFICATION_SERVICE_URL') {
+        return 'http://notification-service:3015';
+      }
+
+      if (key === 'NOTIFICATION_GATEWAY_SECRET') {
+        return notificationGatewaySecret;
+      }
+
+      return undefined;
+    }),
   };
 
   return {
@@ -120,6 +130,103 @@ describe('AuthController mobile authentication', () => {
     expect(authClient.send).toHaveBeenCalledWith('auth.logout', dto);
   });
 
+  it('deactivates mobile FCM and APNs tokens with the auth userId', async () => {
+    const { authClient, controller } = createController();
+    const dto = {
+      refreshToken: 'mobile-refresh-token',
+      pushTokens: [
+        { provider: 'fcm', token: 'fcm-token-that-is-long-enough' },
+        { provider: 'apns_voip', token: 'voip-token-that-is-long-enough' },
+      ],
+    };
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ count: 1 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    authClient.send.mockReturnValueOnce(
+      of({ message: 'Logged out successfully', userId: 'user-1' }),
+    );
+    global.fetch = fetchMock;
+
+    try {
+      await expect(controller.mobileLogout(dto as never)).resolves.toEqual({
+        message: 'Logged out successfully',
+      });
+
+      expect(authClient.send).toHaveBeenCalledWith('auth.logout', dto);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://notification-service:3015/notifications/push-tokens/deactivate',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-user-id': 'user-1',
+            'x-notification-gateway-secret': 'gateway-secret',
+          }),
+        }),
+      );
+      expect(authClient.send.mock.invocationCallOrder[0]).toBeLessThan(
+        fetchMock.mock.invocationCallOrder[0],
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('does not block mobile logout when push-token cleanup fails', async () => {
+    const { authClient, controller } = createController();
+    const dto = {
+      refreshToken: 'mobile-refresh-token',
+      pushTokens: [{ provider: 'fcm', token: 'fcm-token-that-is-long-enough' }],
+    };
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn(() =>
+      Promise.resolve(
+        new Response('notification service unavailable', { status: 503 }),
+      ),
+    );
+    authClient.send.mockReturnValueOnce(
+      of({ message: 'Logged out successfully', userId: 'user-1' }),
+    );
+    global.fetch = fetchMock;
+
+    try {
+      await expect(controller.mobileLogout(dto as never)).resolves.toEqual({
+        message: 'Logged out successfully',
+      });
+      expect(authClient.send).toHaveBeenCalledWith('auth.logout', dto);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it('skips mobile push-token cleanup when auth logout has no userId', async () => {
+    const { authClient, controller } = createController();
+    const dto = {
+      refreshToken: 'unknown-mobile-refresh-token',
+      pushTokens: [{ provider: 'fcm', token: 'fcm-token-that-is-long-enough' }],
+    };
+    const originalFetch = global.fetch;
+    const fetchMock = jest.fn();
+    authClient.send.mockReturnValueOnce(
+      of({ message: 'Logged out successfully' }),
+    );
+    global.fetch = fetchMock;
+
+    try {
+      await expect(controller.mobileLogout(dto as never)).resolves.toEqual({
+        message: 'Logged out successfully',
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it('does not apply JwtAuthGuard to mobile authentication routes', () => {
     for (const method of [
       'mobileLogin',
@@ -131,6 +238,38 @@ describe('AuthController mobile authentication', () => {
         Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype[method]),
       ).toBeUndefined();
     }
+  });
+});
+
+describe('AuthController socket token', () => {
+  it('returns the cookie token for browser-authenticated requests', () => {
+    const { controller } = createController();
+
+    expect(
+      controller.getSocketToken({
+        cookies: { access_token: 'cookie-access-token' },
+        headers: { authorization: 'Bearer bearer-access-token' },
+      } as never),
+    ).toEqual({ accessToken: 'cookie-access-token' });
+  });
+
+  it('returns the bearer token for mobile-authenticated requests', () => {
+    const { controller } = createController();
+
+    expect(
+      controller.getSocketToken({
+        cookies: {},
+        headers: { authorization: 'Bearer bearer-access-token' },
+      } as never),
+    ).toEqual({ accessToken: 'bearer-access-token' });
+  });
+
+  it('rejects a socket-token request without a cookie or bearer token', () => {
+    const { controller } = createController();
+
+    expect(() =>
+      controller.getSocketToken({ cookies: {}, headers: {} } as never),
+    ).toThrow('No access token found');
   });
 });
 

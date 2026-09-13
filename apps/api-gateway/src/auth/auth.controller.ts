@@ -151,6 +151,25 @@ export class AuthController {
         .pipe(catchError((error) => this.handleMicroserviceError(error))),
     );
 
+    const pushTokens = this.getLogoutPushTokens(dto);
+    const userId = logoutResult.userId;
+
+    if (userId && pushTokens.length > 0) {
+      try {
+        await Promise.all(
+          pushTokens.map((pushToken) =>
+            this.forwardToNotificationService({
+              path: '/notifications/push-tokens/deactivate',
+              userId,
+              body: pushToken,
+            }),
+          ),
+        );
+      } catch {
+        // Sign-out must not be blocked by notification token cleanup.
+      }
+    }
+
     return { message: logoutResult.message };
   }
 
@@ -170,13 +189,22 @@ export class AuthController {
   getSocketToken(@Req() request: AuthenticatedRequest): {
     accessToken: string;
   } {
-    const accessToken = request.cookies['access_token'];
+    const accessToken =
+      request.cookies?.['access_token'] || this.getBearerToken(request);
 
     if (!accessToken) {
       throw new HttpException('No access token found', HttpStatus.UNAUTHORIZED);
     }
 
     return { accessToken };
+  }
+
+  private getBearerToken(request: AuthenticatedRequest): string | undefined {
+    const authHeader = request.headers['authorization'];
+    if (!authHeader) return undefined;
+
+    const [type, token] = authHeader.split(' ');
+    return type === 'Bearer' ? token : undefined;
   }
 
   @Post('confirm')

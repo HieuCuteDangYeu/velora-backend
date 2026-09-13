@@ -20,5 +20,14 @@ describe('mobile auth DTO validation', () => {
     expect(
       MobileLogoutSchema.safeParse({ refreshToken: 'refresh-token' }).success,
     ).toBe(true);
+    expect(
+      MobileLogoutSchema.safeParse({
+        refreshToken: 'refresh-token',
+        pushTokens: [
+          { provider: 'fcm', token: 'fcm-token-that-is-long-enough' },
+          { provider: 'apns_voip', token: 'voip-token-that-is-long-enough' },
+        ],
+      }).success,
+    ).toBe(true);
   });
 });

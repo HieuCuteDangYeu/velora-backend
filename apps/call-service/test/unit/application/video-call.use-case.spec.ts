@@ -135,6 +135,7 @@ describe('1:1 video call use cases', () => {
       'transport',
       'video',
       { codecs: [] },
+      undefined,
     );
   });
 });

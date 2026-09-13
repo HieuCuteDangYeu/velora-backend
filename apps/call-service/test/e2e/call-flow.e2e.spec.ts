@@ -2116,6 +2116,7 @@ describe('Call Service P0 flow (e2e)', () => {
           producerId: videoNotice.producerId,
           kind: 'video',
           paused: false,
+          revision: 0,
         },
       ]),
     );
@@ -2148,17 +2149,20 @@ describe('Call Service P0 flow (e2e)', () => {
       userId: string;
       producerId: string;
       enabled: boolean;
+      revision: number;
     }>(callee, 'video_state_changed');
     caller.emit('set_video_enabled', {
       callId,
       producerId: videoNotice.producerId,
       enabled: false,
+      revision: 1,
     });
     await expect(cameraOff).resolves.toEqual({
       callId,
       userId: callerUser.id,
       producerId: videoNotice.producerId,
       enabled: false,
+      revision: 1,
     });
     expect(
       mediaEngine.getRoomState(callId)?.producers.get(videoNotice.producerId)
@@ -2170,17 +2174,20 @@ describe('Call Service P0 flow (e2e)', () => {
       userId: string;
       producerId: string;
       enabled: boolean;
+      revision: number;
     }>(callee, 'video_state_changed');
     caller.emit('set_video_enabled', {
       callId,
       producerId: videoNotice.producerId,
       enabled: true,
+      revision: 2,
     });
     await expect(cameraOn).resolves.toEqual({
       callId,
       userId: callerUser.id,
       producerId: videoNotice.producerId,
       enabled: true,
+      revision: 2,
     });
     expect(
       mediaEngine.getRoomState(callId)?.producers.get(videoNotice.producerId)

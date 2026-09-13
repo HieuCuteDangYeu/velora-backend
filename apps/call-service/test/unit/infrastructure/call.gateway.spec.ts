@@ -544,6 +544,116 @@ describe('CallGateway reconnect recovery', () => {
     expect(stateRepository.removeParticipant).not.toHaveBeenCalled();
   });
 
+  it('serializes camera revisions, rejects stale updates, and makes retries idempotent', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'producer-video', userId: 'user-a', kind: 'video' },
+        ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(videoSession),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ mediaEngine, sessionRepository });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+
+    await Promise.all([
+      gateway.handleSetVideoEnabled(
+        {
+          callId: 'call-1',
+          producerId: 'producer-video',
+          enabled: false,
+          revision: 2,
+          actionId: 'camera-action-2',
+          requestId: 'camera-action-2',
+        },
+        client,
+      ),
+      gateway.handleSetVideoEnabled(
+        {
+          callId: 'call-1',
+          producerId: 'producer-video',
+          enabled: true,
+          revision: 1,
+          actionId: 'camera-action-1',
+          requestId: 'camera-action-1',
+        },
+        client,
+      ),
+    ]);
+
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(mediaEngine.resumeProducer).not.toHaveBeenCalled();
+    expect(roomEmitter.emit).toHaveBeenCalledWith('video_state_changed', {
+      callId: 'call-1',
+      userId: 'user-a',
+      producerId: 'producer-video',
+      enabled: false,
+      revision: 2,
+      actionId: 'camera-action-2',
+    });
+    expect(client.emit).toHaveBeenCalledWith(
+      'video_state_updated',
+      expect.objectContaining({
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+        revision: 2,
+        status: 'applied',
+        requestId: 'camera-action-2',
+      }),
+    );
+    expect(client.emit).toHaveBeenCalledWith(
+      'video_state_updated',
+      expect.objectContaining({
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+        revision: 2,
+        status: 'stale',
+        requestId: 'camera-action-1',
+      }),
+    );
+
+    await gateway.handleSetVideoEnabled(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+        revision: 2,
+        actionId: 'camera-action-2',
+        requestId: 'camera-action-2',
+      },
+      client,
+    );
+
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(client.emit).toHaveBeenCalledWith(
+      'video_state_updated',
+      expect.objectContaining({
+        revision: 2,
+        status: 'already_applied',
+        requestId: 'camera-action-2',
+      }),
+    );
+  });
+
   it('rejects rejoin when the reconnect deadline has already expired', async () => {
     const joinCallUseCase = {
       execute: jest.fn(),
@@ -793,7 +903,11 @@ function createGateway(overrides?: {
   expireDueCallsUseCase?: { execute: jest.Mock };
   recoverActiveCallsAfterMediaRestartUseCase?: { execute: jest.Mock };
   runtimeLease?: { acquire: jest.Mock; assertHeld: jest.Mock };
-  mediaEngine?: { listActiveProducers: jest.Mock };
+  mediaEngine?: {
+    listActiveProducers: jest.Mock;
+    pauseProducer?: jest.Mock;
+    resumeProducer?: jest.Mock;
+  };
   sessionRepository?: { findByCallId: jest.Mock };
   stateRepository?: {
     getParticipant: jest.Mock;

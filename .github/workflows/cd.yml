@@ -6,6 +6,8 @@ on:
       - Homelab CI
     types:
       - completed
+    branches:
+      - master
 
 permissions:
   contents: read
@@ -283,6 +285,12 @@ jobs:
               if ! git merge-base --is-ancestor "${remote_sha}" "${APPROVED_SHA}"; then
                 echo "homelab-deploy ${remote_sha} diverged from ${APPROVED_SHA}." >&2
                 exit 1
+              fi
+            else
+              remote_status=$?
+              if [ "$remote_status" -ne 2 ]; then
+                echo 'Unable to query origin/homelab-deploy during promotion.' >&2
+                exit "$remote_status"
               fi
             fi
 

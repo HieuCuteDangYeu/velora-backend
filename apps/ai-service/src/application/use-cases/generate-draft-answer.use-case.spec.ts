@@ -157,6 +157,67 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('retries a revision that introduces an unsupported distinctive entity', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValueOnce({
+          answer:
+            'The video shot detector project was carried out at EDIAP under Jean-Marc.',
+          claims: [
+            {
+              claim:
+                'The video shot detector project was carried out at EDIAP under Jean-Marc.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          answer:
+            'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+          claims: [
+            {
+              claim:
+                'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage:
+          'Where was the video shot detector project carried out, and under whose supervision?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+            chunkText:
+              'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer:
+        'The video shot detector project was carried out at IDIAP under Jean-Marc.',
+      finalizationMode: 'SYNTHESIZED',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+  });
+
   it('preserves a grounded summary assembled from multiple transcript chunks', async () => {
     const answer =
       "The speaker learned TypeScript during the team's move away from plain JavaScript.";
@@ -359,6 +420,50 @@ describe('GenerateDraftAnswerUseCase', () => {
     ).resolves.toMatchObject({
       answer: 'The zorb is coupled to the quasar.',
       claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses extractive fallback for an evidence-dependent refusal', async () => {
+    const refusal =
+      'The transcript is too garbled to determine the requested label reliably.';
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: refusal,
+        claims: [],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'What example label is used for the marble?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The example label used for the marble is blue.',
+            chunkText: 'The example label used for the marble is blue.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The example label used for the marble is blue.',
       finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
       fallbackReason: 'UNUSABLE_SYNTHESIS',
     });
@@ -659,6 +764,54 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(service.generateObject.mock.calls[1][0].systemPrompt).toContain(
       'explicit-quantity requirement',
     );
+  });
+
+  it('requires a supported quantity in a capacity explanation', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValueOnce({
+          answer:
+            'CDs are not enough for backing up data because a single CD cannot hold all the data needed.',
+          claims: [
+            {
+              claim:
+                'CDs are not enough for backing up data because a single CD cannot hold all the data needed.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          answer: 'One CD is not even one gigabyte.',
+          claims: [
+            {
+              claim: 'One CD is not even one gigabyte.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'Why do they say CDs are not enough for backing up data?',
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'One CD is not even one GB.',
+            chunkText: 'One CD is not even one GB.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({ answer: 'One CD is not even one gigabyte.' });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
   });
 
   it('retries once when a successful answer violates the local claim contract', async () => {

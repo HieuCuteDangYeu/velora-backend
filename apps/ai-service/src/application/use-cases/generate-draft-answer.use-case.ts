@@ -18,71 +18,11 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { validateRagAnswerContract } from '@ai/domain/services/rag-answer-contract';
 
 interface RawDraftAnswer {
   answer?: unknown;
   claims?: unknown;
-}
-
-const QUANTITY_QUESTION_PATTERN =
-  /\b(?:how many|how much|how low|how high|how long|how old|number of|what (?:number|percentage|percent|year|date))\b/i;
-
-const NUMBER_WORD_VALUES = new Map<string, string>([
-  ['zero', '0'],
-  ['one', '1'],
-  ['two', '2'],
-  ['three', '3'],
-  ['four', '4'],
-  ['five', '5'],
-  ['six', '6'],
-  ['seven', '7'],
-  ['eight', '8'],
-  ['nine', '9'],
-  ['ten', '10'],
-  ['eleven', '11'],
-  ['twelve', '12'],
-  ['thirteen', '13'],
-  ['fourteen', '14'],
-  ['fifteen', '15'],
-  ['sixteen', '16'],
-  ['seventeen', '17'],
-  ['eighteen', '18'],
-  ['nineteen', '19'],
-  ['twenty', '20'],
-  ['thirty', '30'],
-  ['forty', '40'],
-  ['fifty', '50'],
-  ['sixty', '60'],
-  ['seventy', '70'],
-  ['eighty', '80'],
-  ['ninety', '90'],
-  ['hundred', '100'],
-  ['thousand', '1000'],
-]);
-
-function quantityTokens(value: string): Set<string> {
-  const tokens: string[] =
-    value.toLowerCase().match(/[a-z]+|\d+(?:[.,]\d+)?/g) ?? [];
-  return new Set<string>(
-    tokens.flatMap((token) => {
-      const wordValue = NUMBER_WORD_VALUES.get(token);
-      if (wordValue) return [wordValue];
-      if (/^\d/.test(token)) return [token.replace(/,/g, '')];
-      return [];
-    }),
-  );
-}
-
-function hasSupportedQuantity(
-  question: string,
-  evidence: string[],
-  answer: string,
-): boolean {
-  if (!QUANTITY_QUESTION_PATTERN.test(question)) return true;
-  const evidenceQuantities = quantityTokens(evidence.join(' '));
-  if (evidenceQuantities.size === 0) return true;
-  const answerQuantities = quantityTokens(answer);
-  return [...answerQuantities].some((value) => evidenceQuantities.has(value));
 }
 
 class DraftAnswerContractError extends Error {
@@ -344,17 +284,15 @@ export class GenerateDraftAnswerUseCase {
     authorizedEvidenceText: string[],
   ): Omit<RagDraftAnswer, 'finalizationMode' | 'fallbackReason'> {
     const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
-    if (!answer)
-      throw new DraftAnswerContractError(
-        'Answer model returned an empty answer',
-      );
-    if (
-      !hasSupportedQuantity(state.userMessage, authorizedEvidenceText, answer)
-    ) {
-      throw new DraftAnswerContractError(
-        'Answer model omitted a directly supported quantity',
-      );
-    }
+    const contractError = validateRagAnswerContract({
+      answer,
+      question: state.userMessage,
+      evidence: authorizedEvidenceText,
+      evidenceRequired:
+        state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+        (state.route.requiredEvidence?.length ?? 0) > 0,
+    });
+    if (contractError) throw new DraftAnswerContractError(contractError);
 
     const claims = Array.isArray(raw.claims)
       ? raw.claims.map((value) =>

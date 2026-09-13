@@ -12,6 +12,7 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { validateRagAnswerContract } from '@ai/domain/services/rag-answer-contract';
 
 interface RawGroundedAnswerRevision {
   answer?: unknown;
@@ -156,6 +157,19 @@ export class BuildGroundedAnswerRevisionUseCase {
       throw new Error(
         'Answer revision returned an empty answer or unknown evidence IDs',
       );
+    }
+
+    if (
+      validateRagAnswerContract({
+        answer,
+        question: state.userMessage,
+        evidence: evidence.map((item) => item.evidenceText),
+        evidenceRequired:
+          state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+          (state.route.requiredEvidence?.length ?? 0) > 0,
+      })
+    ) {
+      return undefined;
     }
 
     return {

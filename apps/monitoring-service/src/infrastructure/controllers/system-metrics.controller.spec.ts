@@ -119,4 +119,30 @@ describe('SystemMetricsController container resources', () => {
       generatedAt: expect.any(String),
     });
   });
+
+  it('normalizes every process CPU query to the whole host capacity', async () => {
+    prometheus.scalar.mockResolvedValue(0);
+
+    await expect(controller.overview()).resolves.toMatchObject({
+      process: { cpuUsageRatio: 0 },
+      conversation: { cpuUsageRatio: 0 },
+      call: { cpuUsageRatio: 0 },
+    });
+
+    const processCpuQueries = prometheus.scalar.mock.calls
+      .map(([query]) => query as string)
+      .filter((query) =>
+        query.includes('velora_process_cpu_user_seconds_total'),
+      );
+
+    expect(processCpuQueries).toHaveLength(3);
+    expect(
+      processCpuQueries.every(
+        (query) =>
+          query.includes(
+            'count(node_cpu_seconds_total{job="node-exporter",mode="idle"})',
+          ) && query.includes('/ clamp_min('),
+      ),
+    ).toBe(true);
+  });
 });

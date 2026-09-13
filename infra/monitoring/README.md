@@ -117,6 +117,12 @@ GET /api/monitoring/timeseries
 The timeseries endpoint accepts only the server-side metric whitelist and a bounded
 range; clients cannot submit arbitrary PromQL.
 
+CPU values returned by the overview and timeseries endpoints are ratios of the
+monitored host's total CPU capacity across all cores. This matches the CPU
+percentage used by the Server view and its Docker container breakdown. The
+underlying process counters remain available in Prometheus as cumulative
+CPU-seconds, but the dashboard API normalizes them before returning them.
+
 ## Retention and scrape interval
 
 The local profile uses a 15-second scrape interval and three-day Prometheus

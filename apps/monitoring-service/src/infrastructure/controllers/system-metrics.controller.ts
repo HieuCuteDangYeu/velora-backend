@@ -15,11 +15,20 @@ const HOST_FILESYSTEM_SELECTOR =
 const hostFilesystemQuery = (metric: string) =>
   `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
 
+const HOST_CPU_COUNT_QUERY =
+  'count(node_cpu_seconds_total{job="node-exporter",mode="idle"})';
+
+// Process counters report core-equivalents (CPU-seconds per wall-second).
+// Divide by the host core count so every dashboard CPU metric uses the same
+// whole-host ratio as host_cpu and the Docker container breakdown.
+const processCpuUsageQuery = (service: string) =>
+  `(sum(rate(velora_process_cpu_user_seconds_total{service="${service}"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="${service}"}[5m]))) / clamp_min(${HOST_CPU_COUNT_QUERY}, 1)`;
+
 const RANGE_QUERIES = {
   memory:
     'max(velora_process_resident_memory_bytes{service="monitoring-service"})',
   heap: 'max(velora_process_heap_used_bytes{service="monitoring-service"})',
-  cpu: 'sum(rate(velora_process_cpu_user_seconds_total{service="monitoring-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="monitoring-service"}[5m]))',
+  cpu: processCpuUsageQuery('monitoring-service'),
   rpc_rate: 'sum(rate(velora_monitoring_rpc_requests_total[5m]))',
   error_rate:
     'sum(rate(velora_monitoring_rpc_requests_total{status="error"}[5m])) / clamp_min(sum(rate(velora_monitoring_rpc_requests_total[5m])), 0.000001)',
@@ -35,8 +44,7 @@ const RANGE_QUERIES = {
     '(max(node_memory_SwapTotal_bytes{job="node-exporter"}) - max(node_memory_SwapFree_bytes{job="node-exporter"})) / clamp_min(max(node_memory_SwapTotal_bytes{job="node-exporter"}), 1)',
   host_disk: `1 - (${hostFilesystemQuery('node_filesystem_avail_bytes')} / clamp_min(${hostFilesystemQuery('node_filesystem_size_bytes')}, 1))`,
   host_load1: 'max(node_load1{job="node-exporter"})',
-  conversation_cpu:
-    'sum(rate(velora_process_cpu_user_seconds_total{service="conversation-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="conversation-service"}[5m]))',
+  conversation_cpu: processCpuUsageQuery('conversation-service'),
   conversation_memory:
     'sum(velora_process_resident_memory_bytes{service="conversation-service"})',
   conversation_event_loop_p99:
@@ -55,8 +63,7 @@ const RANGE_QUERIES = {
     '(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service",status="error"}[5m])) / clamp_min(sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])), 0.000001)) and on() (sum(rate(velora_conversation_send_message_requests_total{service="conversation-service"}[5m])) > 0)',
   conversation_p95_send_latency:
     'histogram_quantile(0.95, sum by (le) (rate(velora_conversation_send_message_duration_seconds_bucket{service="conversation-service",status="success"}[5m])))',
-  call_cpu:
-    'sum(rate(velora_process_cpu_user_seconds_total{service="call-service"}[5m])) + sum(rate(velora_process_cpu_system_seconds_total{service="call-service"}[5m]))',
+  call_cpu: processCpuUsageQuery('call-service'),
   call_memory:
     'sum(velora_process_resident_memory_bytes{service="call-service"})',
   call_event_loop_p99:
@@ -211,7 +218,7 @@ export class SystemMetricsController {
           serviceUp,
           residentMemoryBytes,
           heapUsedBytes,
-          cpuSecondsPerSecond,
+          cpuUsageRatio,
           eventLoopP99Seconds,
           requestsPerSecond,
           errorRate,
@@ -227,7 +234,7 @@ export class SystemMetricsController {
           hostLoad1,
           hostUptimeSeconds,
           conversationUp,
-          conversationCpuSecondsPerSecond,
+          conversationCpuUsageRatio,
           conversationResidentMemoryBytes,
           conversationEventLoopP99Seconds,
           conversationSocketConnections,
@@ -238,7 +245,7 @@ export class SystemMetricsController {
           conversationErrorRate,
           conversationP95SendLatencySeconds,
           callUp,
-          callCpuSecondsPerSecond,
+          callCpuUsageRatio,
           callResidentMemoryBytes,
           callEventLoopP99Seconds,
           callSocketConnections,
@@ -336,7 +343,7 @@ export class SystemMetricsController {
           process: {
             residentMemoryBytes,
             heapUsedBytes,
-            cpuSecondsPerSecond,
+            cpuUsageRatio,
             eventLoopP99Seconds,
           },
           rpc: {
@@ -347,7 +354,7 @@ export class SystemMetricsController {
           conversation: {
             up: targetStatus(conversationUp),
             residentMemoryBytes: conversationResidentMemoryBytes,
-            cpuSecondsPerSecond: conversationCpuSecondsPerSecond,
+            cpuUsageRatio: conversationCpuUsageRatio,
             eventLoopP99Seconds: conversationEventLoopP99Seconds,
             socketConnections: conversationSocketConnections,
             messagesPerSecond: conversationMessagesPerSecond,
@@ -360,7 +367,7 @@ export class SystemMetricsController {
           call: {
             up: targetStatus(callUp),
             residentMemoryBytes: callResidentMemoryBytes,
-            cpuSecondsPerSecond: callCpuSecondsPerSecond,
+            cpuUsageRatio: callCpuUsageRatio,
             eventLoopP99Seconds: callEventLoopP99Seconds,
             socketConnections: callSocketConnections,
           },

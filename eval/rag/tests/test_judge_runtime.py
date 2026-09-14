@@ -156,6 +156,16 @@ class FakeDailyQuotaError(Exception):
     )
 
 
+class FakeGroqSchemaError(Exception):
+    status_code = 400
+    body = {
+        "error": {
+            "code": "json_validate_failed",
+            "message": "Failed to validate JSON",
+        }
+    }
+
+
 class FakeCompletions:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -287,6 +297,14 @@ def test_daily_quota_429_is_permanent_and_not_transient():
     assert category == "ACCOUNT_LIMITED"
     assert transient is False
     assert code == "rate_limit_exceeded"
+
+
+def test_groq_json_schema_failure_is_permanent_and_not_retried():
+    category, transient, code = classify_judge_error(400, FakeGroqSchemaError())
+
+    assert category == "NON_RETRYABLE_PROVIDER_ERROR"
+    assert transient is False
+    assert code == "json_validate_failed"
 
 
 @pytest.mark.asyncio

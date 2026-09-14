@@ -1,6 +1,7 @@
 import type { ReelEncodingProfile } from '@processing/domain/interfaces/video-processing.service.interface';
 import {
   buildHlsTranscodeArguments,
+  buildTranscriptionAudioArguments,
   buildThumbnailArguments,
 } from './ffmpeg-arguments';
 
@@ -104,5 +105,23 @@ describe('FFmpeg reel arguments', () => {
     expect(thumbnailArgs.slice(0, thumbnailArgs.indexOf('-i'))).toContain(
       '3.500',
     );
+  });
+
+  it('resamples before speech-band filtering for low-rate audio sources', () => {
+    const args = buildTranscriptionAudioArguments({
+      inputPath: '/tmp/source.mp4',
+      segment: {
+        outputPath: '/tmp/audio_000000.wav',
+        startMs: 0,
+        endMs: 11_580,
+        overlapBeforeMs: 0,
+      },
+      format: 'wav',
+    });
+
+    expect(args[args.indexOf('-af') + 1]).toBe(
+      'aresample=16000,highpass=f=80,lowpass=f=7600,loudnorm',
+    );
+    expect(args[args.indexOf('-ar') + 1]).toBe('16000');
   });
 });

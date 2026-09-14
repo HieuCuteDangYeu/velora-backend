@@ -116,7 +116,8 @@ export class PrepareReelMediaUseCase {
   }> {
     let currentProgress = 10;
     let currentStage = 'DOWNLOADING';
-    let currentPublicMessage = 'Video processing failed';
+    let currentPublicMessage =
+      'The source video could not be downloaded. Please try again.';
     let currentErrorCode = 'PROCESSING_FAILED';
     let mediaMetadata: ReelProcessingMediaMetadata | undefined;
     let classification: ReelMediaClassification | undefined;
@@ -158,7 +159,7 @@ export class PrepareReelMediaUseCase {
       currentStage = 'PROBING_SOURCE';
       currentErrorCode = 'SOURCE_PROBE_FAILED';
       currentPublicMessage =
-        'This video could not be processed. Please try another video.';
+        'This video could not be inspected. Please try another video.';
       await this.emitProgress(data, currentStage, 'Checking source video', 20);
 
       const probeTimer = this.processingMetrics.startStage(
@@ -186,6 +187,8 @@ export class PrepareReelMediaUseCase {
 
       currentStage = 'VALIDATING_TRIM';
       currentErrorCode = 'VIDEO_TRIM_INVALID';
+      currentPublicMessage =
+        'This video edit is invalid. Please adjust it and try again.';
       processingTrim = this.validateReelSourceMediaUseCase.resolveTrim(
         data.edit,
         sourceMetadata.durationMs!,
@@ -249,6 +252,8 @@ export class PrepareReelMediaUseCase {
       currentProgress = 35;
       currentStage = 'TRANSCODING';
       currentErrorCode = 'TRANSCODING_FAILED';
+      currentPublicMessage =
+        'This video could not be transcoded. Please try another video.';
       await this.emitProgress(
         data,
         currentStage,
@@ -287,6 +292,8 @@ export class PrepareReelMediaUseCase {
       currentProgress = 60;
       currentStage = 'UPLOADING_STREAM';
       currentErrorCode = 'STREAM_UPLOAD_FAILED';
+      currentPublicMessage =
+        'Streaming files could not be uploaded. Please try again.';
       await this.mediaStorageService.deleteObjectsByPrefix(storagePrefix);
       await this.emitProgress(
         data,
@@ -310,6 +317,8 @@ export class PrepareReelMediaUseCase {
       currentProgress = 72;
       currentStage = 'GENERATING_THUMBNAIL';
       currentErrorCode = 'THUMBNAIL_FAILED';
+      currentPublicMessage =
+        'A thumbnail could not be generated. Please try again.';
       await this.emitProgress(
         data,
         currentStage,
@@ -350,6 +359,8 @@ export class PrepareReelMediaUseCase {
       currentProgress = 82;
       currentStage = 'BUILDING_AUDIO_MANIFEST';
       currentErrorCode = 'AUDIO_ARTIFACT_FAILED';
+      currentPublicMessage =
+        'Transcription audio could not be prepared. Please try again.';
       await this.emitProgress(
         data,
         currentStage,

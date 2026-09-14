@@ -211,7 +211,7 @@ export function buildTranscriptionAudioArguments(input: {
     '-ar',
     '16000',
     '-af',
-    'highpass=f=80,lowpass=f=8000,loudnorm',
+    'aresample=16000,highpass=f=80,lowpass=f=7600,loudnorm',
     '-c:a',
     input.format === 'flac' ? 'flac' : 'pcm_s16le',
     '-f',

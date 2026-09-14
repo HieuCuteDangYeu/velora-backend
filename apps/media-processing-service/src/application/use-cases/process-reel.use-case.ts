@@ -253,7 +253,10 @@ export class ProcessReelUseCase {
           stage: failedStage,
           message: failedMessage,
           progress: currentProgress,
-          errorCode: failedStage,
+          errorCode:
+            error instanceof PrepareReelMediaError
+              ? error.errorCode
+              : failedStage,
           errorDetail: failureDetail,
           mediaMetadata: failureMediaMetadata,
           metricsContext,

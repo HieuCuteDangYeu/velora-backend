@@ -654,6 +654,62 @@ describe('CallGateway reconnect recovery', () => {
     );
   });
 
+  it('keeps legacy camera payloads functional while assigning a revision', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'producer-video', userId: 'user-a', kind: 'video' },
+        ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(videoSession),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video-legacy',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ mediaEngine, sessionRepository });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+
+    await gateway.handleSetVideoEnabled(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+      },
+      client,
+    );
+
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(client.emit).toHaveBeenCalledWith(
+      'video_state_updated',
+      expect.objectContaining({
+        enabled: false,
+        revision: 1,
+        status: 'applied',
+      }),
+    );
+    expect(roomEmitter.emit).toHaveBeenCalledWith('video_state_changed', {
+      callId: 'call-1',
+      userId: 'user-a',
+      producerId: 'producer-video',
+      enabled: false,
+      revision: 1,
+    });
+  });
+
   it('replays the authoritative camera state when a produce retry reuses a producer', async () => {
     const videoSession = new CallSession({
       ...activeSession,

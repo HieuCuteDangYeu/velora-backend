@@ -37,6 +37,8 @@ pnpm eval:rag:preflight --tpd-limit-attestation <limit-json> \
   --tpd-window-attestation <window-json> --ledger-path <ledger-jsonl>
 pnpm eval:rag:preflight --tpd-cost-attestation <cost-json> \
   --pricing-path eval/rag/config/groq-pricing-v1.json --ledger-path <ledger-jsonl>
+pnpm eval:rag:preflight --tpd-usage-attestation <usage-baseline-json> \
+  --ledger-path <ledger-jsonl>
 ```
 
 ## Containerized evaluator
@@ -140,6 +142,38 @@ The current-window artifact may use an explicitly observed fresh window:
   }
 }
 ```
+
+When the Organization Usage API provides exact per-model token fields, prefer
+an exact-token baseline over cost conversion:
+
+```json
+{
+  "schemaVersion": "groq-tpd-usage-baseline-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "groq-console-organization-usage-api",
+  "observedAt": "2026-09-14T05:45:00Z",
+  "windowDateUtc": "2026-09-14",
+  "usageBucketTimestamp": 1789344000,
+  "organizationScope": "all-projects",
+  "model": "openai/gpt-oss-120b",
+  "dailyLimitTokens": 200000,
+  "contextTokens": 0,
+  "nonCachedInputTokens": 0,
+  "cachedInputTokens": 0,
+  "generatedTokens": 0,
+  "rateLimitCountedUsedTokens": 0,
+  "plannedFullRunTokens": 54048,
+  "verifiedQuietPeriodSeconds": 900
+}
+```
+
+The evaluator requires the current UTC bucket, exact context breakdown, and
+`nonCachedInputTokens + generatedTokens` as the rate-limit-counted total; cached
+input tokens are deliberately excluded. It persists that exact count as the
+ledger baseline and counts later evaluator requests after `observedAt`.
+Identifiers such as organization, project, or API-key IDs are rejected from
+the artifact and are never stored.
 
 When the usage console exposes only precise organization-wide model cost, a
 cost-derived upper-bound artifact can be used instead of a token-count window

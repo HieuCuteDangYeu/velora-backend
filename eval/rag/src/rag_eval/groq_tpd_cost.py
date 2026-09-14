@@ -210,6 +210,7 @@ def cost_tpd_headroom(
             daily_limit_tokens=daily_limit,
             baseline_used_tokens=baseline_used,
             organization_scope=payload["organizationScope"],
+            window_key=observed_at_text,
             baseline_fingerprint=fingerprint,
             pricing_version=pricing_version,
         )

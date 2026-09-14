@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
+from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter
 from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
 
@@ -233,6 +234,7 @@ def tpd_headroom(
     limit_attestation_path: str | None = None,
     window_attestation_path: str | None = None,
     cost_attestation_path: str | None = None,
+    usage_attestation_path: str | None = None,
     pricing_path: str | None = None,
     now: datetime | None = None,
     max_age_seconds: int | None = None,
@@ -247,6 +249,33 @@ def tpd_headroom(
     limit_payload = _read_json(limit_attestation_path)
     window_payload = _read_json(window_attestation_path)
     cost_payload = _read_json(cost_attestation_path)
+    usage_payload = _read_json(usage_attestation_path)
+    if (
+        usage_payload is None
+        and legacy is not None
+        and legacy.get("schemaVersion") == USAGE_BASELINE_SCHEMA
+    ):
+        usage_payload = legacy
+    if usage_attestation_path and usage_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_UNREADABLE"}
+    if usage_payload is not None:
+        if usage_payload.get("schemaVersion") != USAGE_BASELINE_SCHEMA:
+            return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_INVALID"}
+        if limit_attestation_path and limit_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_UNREADABLE"}
+        if limit_payload is None and legacy is not None and legacy.get("scope") == "TPD_LIMIT":
+            limit_payload = legacy
+        ledger = (
+            GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+        )
+        return exact_usage_tpd_headroom(
+            usage_payload,
+            models,
+            ledger,
+            limit_payload=limit_payload,
+            now=current,
+            max_age_seconds=age_limit,
+        )
     if (
         cost_payload is None
         and legacy is not None
@@ -432,6 +461,8 @@ async def run_preflight(args: argparse.Namespace) -> int:
         or os.getenv("RAGAS_GROQ_TPD_WINDOW_ATTESTATION_PATH"),
         cost_attestation_path=getattr(args, "tpd_cost_attestation", None)
         or os.getenv("RAGAS_GROQ_TPD_COST_ATTESTATION_PATH"),
+        usage_attestation_path=getattr(args, "tpd_usage_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"),
         pricing_path=getattr(args, "pricing_path", None) or os.getenv("RAGAS_GROQ_PRICING_PATH"),
     )
     provider_reachable = all(probe["networkReachable"] for probe in probes)
@@ -489,13 +520,23 @@ async def run_preflight(args: argparse.Namespace) -> int:
     print(
         "TPD_WINDOW_BASELINE_STATUS="
         + (
-            "COST_BOUND_INITIALIZED_AND_LEDGER_ACCOUNTED"
+            "EXACT_USAGE_BASELINE_INITIALIZED_AND_LEDGER_ACCOUNTED"
+            if first_tpd.get("method") == "EXACT_TOKEN_USAGE_BASELINE"
+            else "COST_BOUND_INITIALIZED_AND_LEDGER_ACCOUNTED"
             if first_tpd.get("method") == "COST_DERIVED_CONSERVATIVE_UPPER_BOUND"
             else "ATTESTED_AND_LEDGER_ACCOUNTED"
             if first_tpd
             else "UNKNOWN"
         )
     )
+    print(f"TPD_EXACT_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
+    print(f"TPD_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
+    print(f"TPD_NON_CACHED_INPUT_TOKENS={first_tpd.get('nonCachedInputTokens', 'UNKNOWN')}")
+    print(f"TPD_CONTEXT_TOKENS={first_tpd.get('contextTokens', 'UNKNOWN')}")
+    print(f"TPD_CACHED_INPUT_TOKENS={first_tpd.get('cachedInputTokens', 'UNKNOWN')}")
+    print(f"TPD_GENERATED_TOKENS={first_tpd.get('generatedTokens', 'UNKNOWN')}")
+    print(f"TPD_USAGE_BUCKET_TIMESTAMP={first_tpd.get('usageBucketTimestamp', 'UNKNOWN')}")
+    print(f"TPD_WINDOW_DATE_UTC={first_tpd.get('windowDateUtc', 'UNKNOWN')}")
     print(f"TPD_DAILY_LIMIT_TOKENS={first_tpd.get('dailyLimitTokens', 'UNKNOWN')}")
     print(f"TPD_LEDGER_USED_TOKENS={first_tpd.get('ledgerUsedTokens', 'UNKNOWN')}")
     print(f"TPD_CALCULATED_REMAINING_TOKENS={calculated_remaining}")

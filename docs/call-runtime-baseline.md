@@ -9,7 +9,7 @@ device evidence must not be replaced with invented numbers.
 | Item | Baseline before this fix | Candidate after this fix |
 | --- | --- | --- |
 | Backend | `87688b2942c3383cffcc5929907b1a2e90210c81` | `d2eab4282bae4d7ed881071b0b4e6ed91106e70e` |
-| Mobile | `0e7722076857e3e79625afc376dfd57b1a1b1207` | `f14f90fd60f6aad185367316dc148386e9f90573` |
+| Mobile | `0e7722076857e3e79625afc376dfd57b1a1b1207` | `2054abc9a55193646b484ad360d06016697c1c3a` |
 | Captured at | 2026-09-14, Asia/Ho_Chi_Minh | 2026-09-14, Asia/Ho_Chi_Minh |
 
 The baseline SHAs are immutable source references. The baseline runtime

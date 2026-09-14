@@ -730,8 +730,23 @@ export class CallGateway
 
     if (payload.kind === 'video') {
       const key = this.videoStateKey(payload.callId, producerId);
+      const replacementState = replacedProducerId
+        ? this.videoStatesByProducer.get(
+            this.videoStateKey(payload.callId, replacedProducerId),
+          )
+        : undefined;
+      if (replacedProducerId) {
+        this.videoStatesByProducer.delete(
+          this.videoStateKey(payload.callId, replacedProducerId),
+        );
+      }
       if (!this.videoStatesByProducer.has(key)) {
-        this.videoStatesByProducer.set(key, { enabled: true, revision: 0 });
+        this.videoStatesByProducer.set(
+          key,
+          replacementState
+            ? { ...replacementState }
+            : { enabled: true, revision: 0 },
+        );
       }
     }
 

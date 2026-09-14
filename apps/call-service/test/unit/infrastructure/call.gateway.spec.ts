@@ -724,6 +724,84 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('carries the authoritative camera state across a controlled producer replacement', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'producer-old', userId: 'user-a', kind: 'video' },
+        ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(videoSession),
+    };
+    const produceUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        producerId: 'producer-new',
+        replacedProducerId: 'producer-old',
+      }),
+    };
+    const peerEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video-rebuild',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+      to: jest.fn().mockReturnValue(peerEmitter),
+    });
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository,
+      produceUseCase,
+    });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(peerEmitter),
+    } as never;
+
+    await gateway.handleSetVideoEnabled(
+      {
+        callId: 'call-1',
+        producerId: 'producer-old',
+        enabled: false,
+        revision: 4,
+        actionId: 'camera-off',
+        requestId: 'camera-off',
+      },
+      client,
+    );
+
+    await gateway.handleProduce(
+      {
+        callId: 'call-1',
+        transportId: 'transport-new',
+        kind: 'video',
+        rtpParameters: {},
+        requestId: 'produce-rebuild',
+      },
+      client,
+    );
+
+    expect(peerEmitter.emit).toHaveBeenCalledWith('producer_closed', {
+      callId: 'call-1',
+      producerId: 'producer-old',
+      kind: 'video',
+    });
+    expect(peerEmitter.emit).toHaveBeenCalledWith('new_producer', {
+      callId: 'call-1',
+      userId: 'user-a',
+      producerId: 'producer-new',
+      kind: 'video',
+      paused: true,
+      revision: 4,
+    });
+  });
+
   it('does not publish a camera update when the call terminates during media mutation', async () => {
     const videoSession = new CallSession({
       ...activeSession,

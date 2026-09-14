@@ -480,13 +480,40 @@ export class MediasoupCallMediaEngine
         });
     });
 
-    await this.stateRepository.saveProducerState({
-      producerId: producer.id,
-      transportId,
-      callId,
-      userId,
-      kind,
-    });
+    try {
+      await this.stateRepository.saveProducerState({
+        producerId: producer.id,
+        transportId,
+        callId,
+        userId,
+        kind,
+      });
+    } catch (error) {
+      // Do not leave a live mediasoup producer behind when the durable
+      // producer index cannot be written. The caller will receive the
+      // persistence error and may retry with the same request id; the retry
+      // must start from a clean one-producer invariant.
+      room.producers.delete(producer.id);
+      room.producerMeta.delete(producer.id);
+      const producerKey = this.producerUserKindKey(userId, kind);
+      if (room.producerByUserKind.get(producerKey) === producer.id) {
+        room.producerByUserKind.delete(producerKey);
+      }
+      for (const [operationKey, operation] of room.producerOperations) {
+        if (operation.producerId === producer.id) {
+          room.producerOperations.delete(operationKey);
+        }
+      }
+      try {
+        producer.close();
+      } catch {
+        // Best-effort mediasoup cleanup; preserve the persistence error.
+      }
+      await this.stateRepository
+        .removeProducerState(callId, userId, producer.id)
+        .catch(() => undefined);
+      throw error;
+    }
 
     return { producerId: producer.id };
   }

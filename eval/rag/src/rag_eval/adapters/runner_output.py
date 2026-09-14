@@ -204,6 +204,9 @@ def validate_semantic_context_artifact(
             raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=ENVELOPE_{label}_MISMATCH")
 
     artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    source_report_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    source_trace_sha256 = hashlib.sha256(source_trace_path.read_bytes()).hexdigest()
+    source_summary_sha256 = hashlib.sha256(source_summary_path.read_bytes()).hexdigest()
     bound: dict[str, dict[str, Any]] = {}
     binding_cases: list[dict[str, Any]] = []
     explicit_metadata = True
@@ -287,6 +290,9 @@ def validate_semantic_context_artifact(
         "schemaVersion": SEMANTIC_CONTEXT_SCHEMA,
         **expected_envelope,
         "artifactSha256": artifact_sha256,
+        "sourceReportSha256": source_report_sha256,
+        "sourceTraceSha256": source_trace_sha256,
+        "sourceSummarySha256": source_summary_sha256,
         "cases": binding_cases,
     }
     binding_sha256 = hashlib.sha256(
@@ -295,6 +301,9 @@ def validate_semantic_context_artifact(
     return bound, {
         "schemaVersion": SEMANTIC_CONTEXT_SCHEMA,
         "artifactSha256": artifact_sha256,
+        "sourceReportSha256": source_report_sha256,
+        "sourceTraceSha256": source_trace_sha256,
+        "sourceSummarySha256": source_summary_sha256,
         "bindingSha256": binding_sha256,
         "sourceRunId": source_run_id,
         "productionSha": production_sha,

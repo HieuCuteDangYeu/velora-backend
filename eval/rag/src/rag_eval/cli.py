@@ -30,8 +30,27 @@ from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
 from rag_eval.dataset import ROOT, dataset_sha256, is_supported_live_dataset, load_dataset
 from rag_eval.experiment import rag_experiment
-from rag_eval.preflight import run_preflight
+from rag_eval.metrics.semantic import SEMANTIC_NAMES
+from rag_eval.preflight import (
+    first_request_tpm_headroom,
+    probe_groq,
+    run_preflight,
+    scheduler_ready,
+    scheduler_snapshot,
+    tpd_headroom,
+)
 from rag_eval.pricing import load_pricing
+from rag_eval.recovery import (
+    DEFAULT_TOTAL_RECOVERY_ESTIMATE_TOKENS,
+    INSUFFICIENT_TPD_FOR_NEXT_OPERATION,
+    DailyRecoveryDeferred,
+    MultiDayRecoveryStore,
+    RecoveryStateError,
+    mandatory_metrics_complete,
+    multiday_tpd_preflight,
+    recovery_operations,
+    source_provenance_fingerprint,
+)
 from rag_eval.reports import build_summary, load_cases, write_report
 from rag_eval.schemas import EvaluationRow
 
@@ -220,6 +239,86 @@ async def run_offline(args: argparse.Namespace) -> Path:
     return directory
 
 
+def _recovery_path(value: str | None, default: Path) -> Path:
+    return _repo_path(value) if value else default
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_float_from_env(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _print_multiday_recovery(
+    store: MultiDayRecoveryStore,
+    checkpoint: JudgeCheckpointStore,
+    *,
+    total_operations: int,
+    plan: dict[str, Any] | None = None,
+) -> None:
+    progress = store.progress(
+        checkpoint.entries(),
+        total_operations=total_operations,
+        scheduled_operations=len((plan or {}).get("scheduledOperationKeys", [])),
+        deferred_operations=(
+            len((plan or {}).get("deferredOperationKeys", [])) if plan is not None else None
+        ),
+    )
+    snapshot = store.snapshot()
+    epochs = snapshot.get("epochs") or []
+    latest = epochs[-1] if epochs else {}
+    print(f"MULTI_DAY_RECOVERY_STATUS={snapshot.get('status', 'UNKNOWN')}")
+    authorization = snapshot.get("authorization", {}).get("status", "UNKNOWN")
+    print(f"MULTI_DAY_RECOVERY_AUTHORIZATION={authorization}")
+    total_estimate = latest.get(
+        "totalRecoveryEstimateTokens", DEFAULT_TOTAL_RECOVERY_ESTIMATE_TOKENS
+    )
+    print(f"TOTAL_RECOVERY_ESTIMATE_TOKENS={total_estimate}")
+    safe_budget = (plan or {}).get("currentDaySafeBudgetTokens", "UNKNOWN")
+    print(f"CURRENT_DAY_SAFE_BUDGET_TOKENS={safe_budget}")
+    scheduled_reservation = (plan or {}).get(
+        "scheduledReservationTokens", latest.get("scheduledReservationTokens", 0)
+    )
+    print(f"SCHEDULED_RESERVATION_TOKENS={scheduled_reservation}")
+    remaining_after_reservation = (plan or {}).get(
+        "currentDayRemainingAfterReservationTokens",
+        latest.get("calculatedRemainingTokens", "UNKNOWN"),
+    )
+    print(
+        "CURRENT_DAY_REMAINING_AFTER_RESERVATION_TOKENS="
+        f"{remaining_after_reservation}"
+    )
+    remaining_estimate = (plan or {}).get("remainingRecoveryEstimateTokens", "UNKNOWN")
+    print(f"REMAINING_RECOVERY_ESTIMATE_TOKENS={remaining_estimate}")
+    baseline_used = latest.get("baselineCountedUsedTokens", "UNKNOWN")
+    print(f"DAILY_BASELINE_COUNTED_USED_TOKENS={baseline_used}")
+    print(f"DAILY_EVALUATOR_COUNTED_TOKENS={latest.get('evaluatorCountedTokens', 'UNKNOWN')}")
+    print(f"DAILY_CALCULATED_REMAINING_TOKENS={latest.get('calculatedRemainingTokens', 'UNKNOWN')}")
+    print(f"COMPLETED_CALLS={progress['callsCompletedToday']}")
+    print(f"FAILED_CALLS={progress['callsFailedToday']}")
+    print(f"PENDING_CALLS={progress['callsPendingToday']}")
+    print(f"COMPLETED_CHECKPOINTS={progress['completedCalls']}")
+    print(f"UNAVAILABLE_CHECKPOINTS={progress['failedCalls']}")
+    print(f"DEFERRED_CALLS={progress['deferredCalls']}")
+    print(f"WAITING_FOR_NEXT_TPD_WINDOW={'YES' if progress['waitingForNextTpdWindow'] else 'NO'}")
+    print(f"DAILY_RECOVERY_STOP_REASON={progress['dailyRecoveryStopReason'] or 'NONE'}")
+    if plan is not None:
+        print(
+            "CAN_RUN_SAFE_DAILY_SLICE="
+            f"{'YES' if plan.get('status') == 'YES' else 'NO'}"
+        )
+
+
 async def run_live(args: argparse.Namespace) -> Path:
     if not args.confirm_live:
         raise SystemExit("LIVE requires --confirm-live; exactly-once runner state is authoritative")
@@ -230,9 +329,14 @@ async def run_live(args: argparse.Namespace) -> Path:
     if args.resume and not args.trace_file:
         raise SystemExit("saved live evaluation requires --trace-file")
     semantic_context_value = getattr(args, "semantic_context_file", None)
+    multi_day_recovery = bool(getattr(args, "multi_day_recovery", False))
     if semantic_context_value and not (args.resume and args.trace_file):
         raise SystemExit(
             "--semantic-context-file is supported only for saved --resume evaluations"
+        )
+    if multi_day_recovery and not (args.resume and args.live_judge and semantic_context_value):
+        raise SystemExit(
+            "--multi-day-recovery requires saved --resume --live-judge with --semantic-context-file"
         )
     dataset = load_dataset(args.dataset)
     rows = _rows(dataset)
@@ -337,12 +441,24 @@ async def run_live(args: argparse.Namespace) -> Path:
         variant=variant,
         semantic_suite=None,
     )
-    directory = write_report(_dicts(result), run_id, RESULTS)
-    summary = json.loads((directory / "summary.json").read_text())
+    deterministic_cases = _dicts(result)
+    deterministic_directory = RESULTS / run_id
+    if multi_day_recovery and deterministic_directory.exists():
+        directory = deterministic_directory
+        summary = build_summary(deterministic_cases, run_id)
+    else:
+        directory = write_report(deterministic_cases, run_id, RESULTS)
+        summary = json.loads((directory / "summary.json").read_text())
     print_terminal_summary(summary)
     if args.live_judge:
         if not summary["hardGatePassed"]:
             raise RuntimeError("deterministic hard gate failed; saved results, no judge calls made")
+        if multi_day_recovery:
+            ledger_value = getattr(args, "ledger_path", None) or os.getenv(
+                "RAGAS_GROQ_DAILY_LEDGER_PATH"
+            )
+            if ledger_value:
+                os.environ["RAGAS_GROQ_DAILY_LEDGER_PATH"] = str(_repo_path(ledger_value))
         semantic_suite, _client, _model = build_live_judge()
         checkpoint_value = os.getenv("RAGAS_JUDGE_CHECKPOINT_PATH")
         checkpoint_path = (
@@ -362,13 +478,168 @@ async def run_live(args: argparse.Namespace) -> Path:
             },
         )
         semantic_suite.configure_checkpoint(checkpoint, checkpoint.identity)
-        judged = await rag_experiment.arun(
-            dataset,
-            name=f"{run_id}-semantic",
-            execution_results=executions,
-            variant=variant,
-            semantic_suite=semantic_suite,
-        )
+        recovery_store: MultiDayRecoveryStore | None = None
+        recovery_plan: dict[str, Any] | None = None
+        total_operations = len(rows) * len(SEMANTIC_NAMES)
+        if multi_day_recovery:
+            if source_attestation is None or semantic_context_binding is None:
+                raise RecoveryStateError(
+                    "multi-day recovery requires immutable saved source provenance"
+                )
+            judge_provider = os.getenv("RAG_EVAL_JUDGE_PROVIDER", "cloudflare")
+            judge_model = os.getenv("RAG_EVAL_JUDGE_MODEL")
+            recovery_identity = {
+                "sourceRunId": run_id,
+                "productionSha": args.production_sha,
+                "datasetVersion": args.dataset,
+                "datasetSha256": dataset_sha256(args.dataset),
+                "judgeProvider": judge_provider,
+                "judgeModel": judge_model,
+                "sourceProvenanceFingerprint": source_provenance_fingerprint(executions),
+                "semanticContextBindingSha256": semantic_context_binding["bindingSha256"],
+            }
+            recovery_state_value = getattr(args, "recovery_state", None) or os.getenv(
+                "RAGAS_MULTI_DAY_RECOVERY_STATE_PATH"
+            )
+            recovery_store = MultiDayRecoveryStore(
+                _recovery_path(
+                    recovery_state_value, RESULTS / f"{run_id}-multiday-recovery.json"
+                ),
+                recovery_identity,
+                checkpoint_id=checkpoint.checkpoint_id,
+            )
+            operations = recovery_operations(
+                rows.keys(), SEMANTIC_NAMES, checkpoint.entries()
+            )
+            usage_value = getattr(args, "tpd_usage_attestation", None) or os.getenv(
+                "RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"
+            )
+            empty_value = getattr(args, "tpd_empty_attestation", None) or os.getenv(
+                "RAGAS_GROQ_TPD_EMPTY_ATTESTATION_PATH"
+            )
+            limit_value = getattr(args, "tpd_limit_attestation", None) or os.getenv(
+                "RAGAS_GROQ_TPD_LIMIT_ATTESTATION_PATH"
+            )
+            ledger_path = os.getenv("RAGAS_GROQ_DAILY_LEDGER_PATH")
+            tpd = tpd_headroom(
+                None,
+                (str(judge_model),),
+                ledger_path=ledger_path,
+                limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
+                usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
+                empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+            )
+            recovery_plan = multiday_tpd_preflight(tpd, operations)
+            if recovery_plan["status"] == "UNKNOWN":
+                raise RecoveryStateError(
+                    f"multi-day recovery preflight failed: {recovery_plan['reason']}"
+                )
+            scheduler = scheduler_snapshot("groq")
+            first_tokens = _positive_int_from_env(
+                "RAGAS_PREFLIGHT_FIRST_OPERATION_TOKENS",
+                scheduler.get("tpmTarget") or 1,
+            )
+            probe_timeout = _positive_float_from_env(
+                "RAGAS_PREFLIGHT_TIMEOUT_SECONDS", 10.0
+            )
+            api_key = os.getenv("GROQ_API_KEY")
+            probes = (
+                await probe_groq(
+                    (str(judge_model),),
+                    os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+                    api_key,
+                    probe_timeout,
+                )
+                if api_key
+                else []
+            )
+            probe = probes[0] if probes else {"status": None, "headers": {}}
+            provider_reachable = bool(probes and probe.get("networkReachable"))
+            scheduler_pass = scheduler_ready(scheduler)
+            first_headroom, first_remaining = first_request_tpm_headroom(
+                probe, first_tokens
+            )
+            slice_pass = recovery_plan["status"] == "YES"
+            preflight_pass = (
+                provider_reachable and scheduler_pass and first_headroom and slice_pass
+            )
+            print(f"PROVIDER_REACHABLE={'YES' if provider_reachable else 'NO'}")
+            print(f"TPM_SCHEDULER_READY={'YES' if scheduler_pass else 'NO'}")
+            print(
+                "TPM_REMAINING_TOKENS="
+                f"{first_remaining if first_remaining is not None else 'UNKNOWN'}"
+            )
+            print(f"FIRST_REQUEST_TPM_HEADROOM={'YES' if first_headroom else 'NO'}")
+            print(f"CAN_RUN_SAFE_DAILY_SLICE={'YES' if slice_pass else 'NO'}")
+            print(f"PREFLIGHT_PASS={'YES' if preflight_pass else 'NO'}")
+            if not provider_reachable or not scheduler_pass or not first_headroom:
+                raise RecoveryStateError(
+                    "multi-day recovery provider/TPM preflight failed; no judge request sent"
+                )
+            try:
+                recovery_store.begin_epoch(recovery_plan["baseline"])
+            except DailyRecoveryDeferred:
+                _print_multiday_recovery(
+                    recovery_store,
+                    checkpoint,
+                    total_operations=total_operations,
+                    plan=recovery_plan,
+                )
+                return directory
+            recovery_store.set_daily_plan(
+                scheduled_operation_keys=recovery_plan["scheduledOperationKeys"],
+                deferred_operation_keys=recovery_plan["deferredOperationKeys"],
+                scheduled_reservation_tokens=recovery_plan["scheduledReservationTokens"],
+                total_recovery_estimate_tokens=recovery_plan["totalRecoveryEstimateTokens"],
+            )
+            if recovery_plan["status"] == "WAITING":
+                recovery_store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION)
+                _print_multiday_recovery(
+                    recovery_store,
+                    checkpoint,
+                    total_operations=total_operations,
+                    plan=recovery_plan,
+                )
+                return directory
+            semantic_suite.configure_multiday_recovery(recovery_store)
+        try:
+            judged = await rag_experiment.arun(
+                dataset,
+                name=f"{run_id}-semantic",
+                execution_results=executions,
+                variant=variant,
+                semantic_suite=semantic_suite,
+            )
+        except DailyRecoveryDeferred as error:
+            if recovery_store is None:
+                raise
+            recovery_store.close_current(str(error))
+            _print_multiday_recovery(
+                recovery_store,
+                checkpoint,
+                total_operations=total_operations,
+                plan=recovery_plan,
+            )
+            return directory
+        if recovery_store is not None:
+            if not mandatory_metrics_complete(checkpoint.entries(), total_operations):
+                _print_multiday_recovery(
+                    recovery_store,
+                    checkpoint,
+                    total_operations=total_operations,
+                    plan=recovery_plan,
+                )
+                raise RuntimeError(
+                    "semantic recovery remains incomplete after the scheduled slice; "
+                    "final aggregates withheld"
+                )
+            recovery_store.complete()
+            _print_multiday_recovery(
+                recovery_store,
+                checkpoint,
+                total_operations=total_operations,
+                plan=recovery_plan,
+            )
         directory = write_report(_dicts(judged), f"{run_id}-semantic", RESULTS)
     return directory
 
@@ -489,6 +760,12 @@ def parser() -> argparse.ArgumentParser:
     live.add_argument("--trace-file")
     live.add_argument("--semantic-context-file")
     live.add_argument("--live-judge", action="store_true")
+    live.add_argument("--multi-day-recovery", action="store_true")
+    live.add_argument("--recovery-state")
+    live.add_argument("--ledger-path")
+    live.add_argument("--tpd-limit-attestation")
+    live.add_argument("--tpd-usage-attestation")
+    live.add_argument("--tpd-empty-attestation")
     live.add_argument("--runtime-config-snapshot")
     live.add_argument("--source-summary")
     report = commands.add_parser("report")
@@ -510,6 +787,8 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--tpd-empty-attestation")
     preflight.add_argument("--pricing-path")
     preflight.add_argument("--ledger-path")
+    preflight.add_argument("--multi-day-recovery", action="store_true")
+    preflight.add_argument("--recovery-operations")
     preflight.add_argument("--timeout", type=float, default=10.0)
     return root
 

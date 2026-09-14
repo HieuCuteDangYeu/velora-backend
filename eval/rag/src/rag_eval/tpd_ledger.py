@@ -42,6 +42,7 @@ LEDGER_FIELDS = (
     "attempt",
     "baselineId",
     "ledgerEpoch",
+    "windowDateUtc",
     "baselineUsedTokens",
     "dailyLimitTokens",
     "organizationScope",
@@ -214,8 +215,10 @@ class GroqDailyTokenLedger:
 
         if provider != "groq" or not model or not organization_scope or not window_key:
             raise LedgerPersistenceError("Groq TPD baseline identity is invalid")
-        if parse_timestamp(observed_at) is None:
+        observed = parse_timestamp(observed_at)
+        if observed is None:
             raise LedgerPersistenceError("Groq TPD baseline timestamp is invalid")
+        window_date_utc = observed.astimezone(UTC).date().isoformat()
         if (
             not isinstance(daily_limit_tokens, int)
             or isinstance(daily_limit_tokens, bool)
@@ -253,6 +256,7 @@ class GroqDailyTokenLedger:
             "provider": provider,
             "model": model,
             "countedTokens": 0,
+            "windowDateUtc": window_date_utc,
             "baselineUsedTokens": baseline_used_tokens,
             "dailyLimitTokens": daily_limit_tokens,
             "organizationScope": organization_scope,
@@ -263,14 +267,20 @@ class GroqDailyTokenLedger:
         try:
             with self._locked("a+") as handle:
                 records = self._read_records(handle)
-                matching = [
-                    item
-                    for item in records
-                    if item.get("recordType", "REQUEST") == "BASELINE"
-                    and item.get("provider") == provider
-                    and item.get("model") == model
-                    and item.get("organizationScope") == organization_scope
-                ]
+                matching = []
+                for item in records:
+                    item_timestamp = parse_timestamp(item.get("timestamp"))
+                    item_window_date = item.get("windowDateUtc")
+                    if item_window_date is None and item_timestamp is not None:
+                        item_window_date = item_timestamp.astimezone(UTC).date().isoformat()
+                    if (
+                        item.get("recordType", "REQUEST") == "BASELINE"
+                        and item.get("provider") == provider
+                        and item.get("model") == model
+                        and item.get("organizationScope") == organization_scope
+                        and item_window_date == window_date_utc
+                    ):
+                        matching.append(item)
                 if matching:
                     same_baseline = next(
                         (item for item in matching if item.get("baselineId") == baseline_id),
@@ -342,6 +352,45 @@ class GroqDailyTokenLedger:
             if timestamp > current:
                 # Count future-dated records conservatively rather than resetting or ignoring them.
                 total += int(record.get("countedTokens", 0))
+                continue
+            total += int(record.get("countedTokens", 0))
+        return total
+
+
+    def request(self, request_id: str) -> dict[str, Any] | None:
+        """Return one persisted request record by ID without exposing content."""
+
+        if not self.path.exists():
+            return None
+        with self._locked("r") as handle:
+            for record in self._read_records(handle):
+                if (
+                    record.get("recordType", "REQUEST") == "REQUEST"
+                    and record.get("requestId") == request_id
+                ):
+                    return dict(record)
+        return None
+
+    def usage_for_epoch(self, model: str, ledger_epoch: str) -> int:
+        """Count only requests explicitly bound to one immutable quota epoch."""
+
+        if not self.path.exists():
+            return 0
+        with self._locked("r") as handle:
+            records = self._read_records(handle)
+        seen: set[str] = set()
+        total = 0
+        for record in records:
+            request_id = record.get("requestId")
+            if request_id in seen:
+                continue
+            seen.add(request_id)
+            if (
+                record.get("recordType", "REQUEST") != "REQUEST"
+                or record.get("provider") != "groq"
+                or record.get("model") != model
+                or record.get("ledgerEpoch") != ledger_epoch
+            ):
                 continue
             total += int(record.get("countedTokens", 0))
         return total

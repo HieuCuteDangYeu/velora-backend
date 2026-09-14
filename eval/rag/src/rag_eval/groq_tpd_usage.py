@@ -210,11 +210,17 @@ def exact_usage_tpd_headroom(
             pricing_version=USAGE_BASELINE_SCHEMA,
         )
         ledger_used = ledger.usage_since(model, observed_at, now=current)
+        # The baseline is allowed to resume an existing PR #107 ledger. Count
+        # every same-window request after the observation, including legacy rows
+        # that predate explicit recovery-epoch binding; ignoring those rows would
+        # overstate the safe daily budget on the first resumed invocation.
+        epoch_ledger_used = ledger_used
     except LedgerPersistenceError:
         return {"status": "UNKNOWN", "reason": "TPD_LEDGER_BASELINE_UNAVAILABLE"}
 
     cost_only_remaining = max(0, daily_limit - counted_tokens)
     proven_remaining = max(0, cost_only_remaining - ledger_used)
+    epoch_proven_remaining = max(0, cost_only_remaining - epoch_ledger_used)
     return {
         "status": "YES" if proven_remaining >= planned else "NO",
         "reason": "EXACT_TOKEN_TPD_BASELINE_EVALUATED",
@@ -232,12 +238,16 @@ def exact_usage_tpd_headroom(
                 "rateLimitCountedUsedTokens": counted_tokens,
                 "baselineUsedTokens": counted_tokens,
                 "ledgerUsedTokens": ledger_used,
+                "epochLedgerUsedTokens": epoch_ledger_used,
                 "knownUsedTokens": counted_tokens + ledger_used,
                 "calculatedMinimumRemainingTokens": cost_only_remaining,
                 "conservativeUsedTokensUpperBound": counted_tokens + ledger_used,
                 "minimumProvenRemainingTokens": proven_remaining,
+                "epochMinimumProvenRemainingTokens": epoch_proven_remaining,
                 "plannedFullRunTokens": planned,
                 "baselineId": baseline_id,
+                "baselineFingerprint": fingerprint,
+                "ledgerEpoch": baseline_id,
                 "observedAt": observed_at_text,
                 "organizationScope": payload["organizationScope"],
                 "source": payload["source"],

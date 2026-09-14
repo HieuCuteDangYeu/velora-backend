@@ -449,3 +449,71 @@ async def test_run_preflight_prefers_exact_usage_baseline(monkeypatch, capsys, t
     assert "TPD_EXACT_COUNTED_USED_TOKENS=110000" in output
     assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=90000" in output
     assert "PREFLIGHT_PASS=YES" in output
+
+
+@pytest.mark.asyncio
+async def test_multiday_preflight_accepts_safe_slice_when_full_run_does_not_fit(
+    monkeypatch, capsys, tmp_path
+):
+    async def fake_probe(models, _base_url, _api_key, _timeout):
+        return [probe() | {"model": model} for model in models]
+
+    monkeypatch.setenv("GROQ_API_KEY", "present-but-not-read")
+    monkeypatch.setenv("RAGAS_GROQ_TPM_LIMIT", "8000")
+    monkeypatch.setenv("RAGAS_GROQ_TPM_TARGET", "6000")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_HEADROOM_RATIO", "0.25")
+    monkeypatch.setenv("RAGAS_MULTI_DAY_DAILY_SAFETY_MARGIN_TOKENS", "10000")
+    monkeypatch.setattr("rag_eval.preflight.probe_groq", fake_probe)
+    operation_path = tmp_path / "operations.json"
+    operation_path.write_text(
+        json.dumps(
+            {
+                "operations": [
+                    {
+                        "caseId": "IN1001-1",
+                        "metricName": "faithfulness",
+                        "reservationTokens": 8_000,
+                        "status": "UNAVAILABLE",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed_at = datetime.now(UTC)
+    usage_path = usage_attestation(tmp_path, observed_at=observed_at)
+    usage = json.loads(usage_path.read_text(encoding="utf-8"))
+    usage.update(
+        {
+            "contextTokens": 152_000,
+            "nonCachedInputTokens": 150_000,
+            "cachedInputTokens": 2_000,
+            "generatedTokens": 0,
+            "rateLimitCountedUsedTokens": 150_000,
+        }
+    )
+    usage_path.write_text(json.dumps(usage), encoding="utf-8")
+    args = SimpleNamespace(
+        models=MODEL,
+        first_model=MODEL,
+        first_operation_tokens=6_000,
+        tpd_attestation=None,
+        tpd_limit_attestation=None,
+        tpd_window_attestation=None,
+        tpd_cost_attestation=None,
+        tpd_usage_attestation=str(usage_path),
+        tpd_empty_attestation=None,
+        pricing_path=None,
+        ledger_path=str(tmp_path / "ledger.jsonl"),
+        timeout=1.0,
+        multi_day_recovery=True,
+        recovery_operations=str(operation_path),
+    )
+
+    result = await run_preflight(args)
+
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "TPD_HEADROOM_FOR_FULL_RUN=NO" in output
+    assert "CAN_RUN_SAFE_DAILY_SLICE=YES" in output
+    assert "PREFLIGHT_PASS=YES" in output

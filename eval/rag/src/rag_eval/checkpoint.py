@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,17 @@ class JudgeCheckpointStore:
         }
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        needs_initial_write = not self.path.exists()
         self._state = self._load()
+        if needs_initial_write:
+            with self._lock:
+                self._write_locked()
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
             return {
                 "schemaVersion": CHECKPOINT_SCHEMA,
+                "checkpointId": str(uuid.uuid4()),
                 "identity": self.identity,
                 "entries": {},
             }
@@ -54,7 +60,30 @@ class JudgeCheckpointStore:
             raise ValueError("judge checkpoint source/provider identity mismatch")
         if not isinstance(state.get("entries"), dict):
             raise ValueError("judge checkpoint entries are invalid")
+        if not isinstance(state.get("checkpointId"), str) or not state.get("checkpointId"):
+            # Existing v1 checkpoints predate instance IDs. Preserve their entries and
+            # derive a stable ID from their immutable source identity plus path. The
+            # evaluator SHA is deliberately excluded so an evaluator-only revision
+            # can resume the same semantic lineage.
+            lineage_identity = {
+                key: value
+                for key, value in stored_identity.items()
+                if key not in {"evaluatorSha", "evaluatorCompatibility"}
+            }
+            state["checkpointId"] = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "velora-ragas-checkpoint:"
+                    + str(self.path.resolve())
+                    + ":"
+                    + json.dumps(lineage_identity, sort_keys=True, separators=(",", ":")),
+                )
+            )
         return state
+
+    @property
+    def checkpoint_id(self) -> str:
+        return str(self._state["checkpointId"])
 
     @staticmethod
     def key(case_id: str, metric_name: str) -> str:
@@ -81,14 +110,8 @@ class JudgeCheckpointStore:
         }
         if required - entry.keys():
             raise ValueError("judge checkpoint entry identity is incomplete")
-        identity_keys = required - {
-            "sourceExecutionId",
-            "ragTraceId",
-            "caseId",
-            "metricName",
-            "status",
-        }
-        if any(entry[key] != self.identity.get(key) for key in identity_keys):
+        identity_keys = set(self.identity) - {"evaluatorSha", "evaluatorCompatibility"}
+        if any(entry.get(key) != self.identity.get(key) for key in identity_keys):
             raise ValueError("judge checkpoint entry does not match source identity")
         key = self.key(entry["caseId"], entry["metricName"])
         with self._lock:

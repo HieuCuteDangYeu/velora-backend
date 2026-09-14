@@ -296,9 +296,13 @@ def empty_usage_tpd_headroom(
             pricing_version=EMPTY_BASELINE_SCHEMA,
         )
         ledger_used = ledger.usage_since(MODEL, observed_at, now=current)
+        # Include legacy same-window rows that were written before recovery
+        # epoch metadata existed; a resumed run must not ignore known usage.
+        epoch_ledger_used = ledger_used
     except LedgerPersistenceError:
         return _unknown("TPD_EMPTY_BASELINE_LEDGER_UNAVAILABLE")
     proven_remaining = max(0, daily_limit - ledger_used)
+    epoch_proven_remaining = max(0, daily_limit - epoch_ledger_used)
     return {
         "status": "YES" if proven_remaining >= planned else "NO",
         "reason": "EMPTY_CURRENT_WINDOW_TPD_BASELINE_EVALUATED",
@@ -312,12 +316,16 @@ def empty_usage_tpd_headroom(
                 "rateLimitCountedUsedTokens": 0,
                 "baselineUsedTokens": 0,
                 "ledgerUsedTokens": ledger_used,
+                "epochLedgerUsedTokens": epoch_ledger_used,
                 "knownUsedTokens": ledger_used,
                 "calculatedMinimumRemainingTokens": daily_limit,
                 "conservativeUsedTokensUpperBound": ledger_used,
                 "minimumProvenRemainingTokens": proven_remaining,
+                "epochMinimumProvenRemainingTokens": epoch_proven_remaining,
                 "plannedFullRunTokens": planned,
                 "baselineId": baseline_id,
+                "baselineFingerprint": fingerprint,
+                "ledgerEpoch": baseline_id,
                 "observedAt": observed_at_text,
                 "organizationScope": "all-projects",
                 "source": payload["source"],

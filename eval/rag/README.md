@@ -39,6 +39,10 @@ pnpm eval:rag:preflight --tpd-cost-attestation <cost-json> \
   --pricing-path eval/rag/config/groq-pricing-v1.json --ledger-path <ledger-jsonl>
 pnpm eval:rag:preflight --tpd-usage-attestation <usage-baseline-json> \
   --ledger-path <ledger-jsonl>
+pnpm eval:rag:preflight --multi-day-recovery \
+  --recovery-operations <pending-operations-json> \
+  --tpd-usage-attestation <usage-baseline-json> \
+  --ledger-path <ledger-jsonl>
 ```
 
 ## Containerized evaluator
@@ -244,6 +248,48 @@ failed/retried requests. Provider usage is used when available; otherwise the
 reserved input/output budget plus safety tokens is counted as a conservative
 upper bound. Request IDs make repeated writes idempotent, and file locking keeps
 concurrent evaluator processes from corrupting the ledger.
+
+## Multi-day semantic recovery
+
+When the unresolved semantic recovery budget exceeds one Groq daily TPD window,
+use `--multi-day-recovery` with the saved-output `live --resume` path. The
+semantic checkpoint remains bound to one immutable source lineage, while the
+recovery state stores a separate immutable epoch for each UTC day. A new day
+requires a fresh exact or verified-empty current-day TPD baseline; yesterday's
+ledger usage is never subtracted from today's daily ceiling.
+
+The multi-day preflight schedules only pending `UNAVAILABLE` or
+`NOT_EVALUATED` case/metric operations whose conservative reservation fits
+`current-day proven remaining - RAGAS_MULTI_DAY_DAILY_SAFETY_MARGIN_TOKENS`.
+The default safety margin is 10,000 tokens. It never resends a `COMPLETE`
+checkpoint. If the next operation cannot fit, the evaluator persists the
+checkpoint, closes the UTC epoch, reports `WAITING_FOR_NEXT_TPD_WINDOW`, and
+exits without treating quota deferral as a judge or semantic failure. It never
+sleeps until midnight. The one-day full-run preflight remains strict; the
+multi-day gate is `CAN_RUN_SAFE_DAILY_SLICE=YES`.
+
+For standalone preflight, provide a content-free JSON operation list (or an
+object with an `operations` list):
+
+```json
+{
+  "operations": [
+    {
+      "caseId": "IN1001-1",
+      "metricName": "faithfulness",
+      "reservationTokens": 8000,
+      "status": "UNAVAILABLE"
+    }
+  ]
+}
+```
+
+The first actual semantic judge dispatch changes the persisted recovery
+authorization from `UNCONSUMED` to `CONSUMED`. Rollover and resume of the same
+checkpoint lineage do not consume another authorization. Every attempt is
+accounted to the active UTC epoch before provider dispatch and reconciled with
+the append-only Groq ledger after a restart; an in-flight request crossing
+midnight is handled conservatively.
 
 The attestation and ledger are intentionally not committed with credentials or
 production data. A limit-only artifact, stale/incomplete evidence, a legacy

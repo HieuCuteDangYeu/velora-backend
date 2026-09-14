@@ -20,6 +20,7 @@ from ragas.metrics.collections import (
 )
 
 from rag_eval.checkpoint import JudgeCheckpointStore
+from rag_eval.recovery import DailyRecoveryDeferred, MultiDayRecoveryStore
 
 
 class Scorer(Protocol):
@@ -88,6 +89,11 @@ class SemanticMetricSuite:
     ) -> None:
         self.checkpoint = checkpoint
         self.checkpoint_identity = dict(identity)
+
+    def configure_multiday_recovery(self, store: MultiDayRecoveryStore) -> None:
+        if not self.usage_tracker or not hasattr(self.usage_tracker, "configure_multiday_recovery"):
+            raise ValueError("semantic suite has no recoverable judge usage tracker")
+        self.usage_tracker.configure_multiday_recovery(store)
 
     def diagnostics_for(self, usage_key: str) -> dict[str, dict[str, Any]]:
         return {
@@ -184,6 +190,8 @@ class SemanticMetricSuite:
                     metrics[name] = value
                     status = "COMPLETE"
                     error_type = None
+                except DailyRecoveryDeferred:
+                    raise
                 except Exception as error:
                     metrics[name] = None
                     value = None

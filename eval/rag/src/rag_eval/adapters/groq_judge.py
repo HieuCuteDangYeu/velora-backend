@@ -3,9 +3,10 @@
 import os
 from typing import Any
 
+import instructor
 from openai import AsyncOpenAI
 from ragas.embeddings import embedding_factory
-from ragas.llms import llm_factory
+from ragas.llms.base import InstructorLLM, InstructorModelArgs
 
 from rag_eval.judge_runtime import JudgeUsageTracker
 from rag_eval.metrics.semantic import build_live_semantic_suite
@@ -19,6 +20,28 @@ def configured_max_completion_tokens() -> int:
     except ValueError:
         configured = 512
     return min(4096, max(64, configured))
+
+
+def build_groq_structured_llm(
+    client: AsyncOpenAI, model: str, max_completion_tokens: int
+) -> InstructorLLM:
+    """Use JSON text mode so Groq validates the result locally via Pydantic.
+
+    Groq's native ``json_object`` path can reject otherwise valid Ragas
+    schemas with ``json_validate_failed``. Markdown-JSON mode does not send a
+    provider-side schema; Instructor still extracts and strictly validates the
+    requested Pydantic response model.
+    """
+
+    patched_client = instructor.from_openai(client, mode=instructor.Mode.MD_JSON)
+    return InstructorLLM(
+        client=patched_client,
+        model=model,
+        provider="openai",
+        model_args=InstructorModelArgs(),
+        temperature=0.0,
+        max_tokens=max_completion_tokens,
+    )
 
 
 def build_live_judge() -> tuple[Any, Any, str]:
@@ -42,13 +65,7 @@ def build_live_judge() -> tuple[Any, Any, str]:
         max_retries=0,
     )
     usage_tracker = JudgeUsageTracker(judge_client, provider="groq")
-    llm = llm_factory(
-        model=judge_model,
-        provider="openai",
-        client=judge_client,
-        temperature=0.0,
-        max_tokens=max_completion_tokens,
-    )
+    llm = build_groq_structured_llm(judge_client, judge_model, max_completion_tokens)
     embeddings = embedding_factory(
         provider="openai",
         model=embedding_model,

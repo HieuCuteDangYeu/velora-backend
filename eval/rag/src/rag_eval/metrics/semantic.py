@@ -35,6 +35,27 @@ SEMANTIC_NAMES = (
 )
 
 
+def classify_metric_error(error: BaseException | None, calls: list[dict[str, Any]]) -> str:
+    """Separate provider transport timeouts from metric/experiment failures."""
+
+    if any(
+        call.get("providerStatus") == "TIMEOUT"
+        or call.get("providerCategory") == "PROVIDER_TIMEOUT"
+        for call in calls
+    ):
+        return "PROVIDER_TIMEOUT"
+    error_name = type(error).__name__.lower()
+    if (
+        isinstance(error, TimeoutError)
+        or "timeout" in error_name
+        or "timeout" in str(error).lower()
+    ):
+        return "METRIC_TIMEOUT"
+    if "incompleteoutput" in error_name:
+        return "METRIC_OUTPUT_INCOMPLETE"
+    return "METRIC_ERROR"
+
+
 def current_ragas_metric_types() -> dict[str, type]:
     return {
         "faithfulness": Faithfulness,
@@ -60,12 +81,19 @@ class SemanticMetricSuite:
         self.usage_tracker = usage_tracker
         self.checkpoint: JudgeCheckpointStore | None = None
         self.checkpoint_identity: dict[str, Any] = {}
+        self._metric_diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
 
     def configure_checkpoint(
         self, checkpoint: JudgeCheckpointStore, identity: dict[str, Any]
     ) -> None:
         self.checkpoint = checkpoint
         self.checkpoint_identity = dict(identity)
+
+    def diagnostics_for(self, usage_key: str) -> dict[str, dict[str, Any]]:
+        return {
+            name: dict(value)
+            for name, value in self._metric_diagnostics.get(usage_key, {}).items()
+        }
 
     def score(self, payloads: dict[str, dict[str, Any]]) -> dict[str, float | None]:
         output: dict[str, float | None] = {}
@@ -112,6 +140,7 @@ class SemanticMetricSuite:
             self.usage_tracker.begin(usage_key)
         case_id = usage_key.rsplit(":", 1)[-1]
         cached_calls: list[dict[str, Any]] = []
+        metric_diagnostics: dict[str, dict[str, Any]] = {}
         context = checkpoint_context or {}
         try:
             metrics: dict[str, float | None] = {}
@@ -119,6 +148,10 @@ class SemanticMetricSuite:
                 scorer = self.scorers.get(name)
                 if scorer is None or name not in payloads:
                     metrics[name] = None
+                    metric_diagnostics[name] = {
+                        "status": "NOT_EVALUATED",
+                        "errorCategory": "NOT_ELIGIBLE",
+                    }
                     continue
 
                 cached = (
@@ -131,10 +164,15 @@ class SemanticMetricSuite:
                 if cached and cached.get("status") == "COMPLETE":
                     metrics[name] = float(cached["value"])
                     cached_calls.extend(cached.get("calls") or [])
+                    metric_diagnostics[name] = {
+                        "status": "COMPLETE",
+                        "source": "CHECKPOINT",
+                    }
                     continue
 
                 if self.usage_tracker:
                     self.usage_tracker.set_metric(name)
+                caught_error: BaseException | None = None
                 try:
                     if hasattr(scorer, "ascore"):
                         result = await scorer.ascore(**payloads[name])
@@ -151,12 +189,24 @@ class SemanticMetricSuite:
                     value = None
                     status = "UNAVAILABLE"
                     error_type = type(error).__name__
+                    caught_error = error
 
                 calls = (
                     self.usage_tracker.calls_for(usage_key, name)
                     if self.usage_tracker
                     else []
                 )
+                error_category = (
+                    None
+                    if status == "COMPLETE"
+                    else classify_metric_error(caught_error, calls)
+                )
+                metric_diagnostics[name] = {
+                    "status": status,
+                    "errorType": error_type,
+                    "errorCategory": error_category,
+                    "judgeCallCount": len(calls),
+                }
                 if self.checkpoint:
                     self.checkpoint.record(
                         {
@@ -168,10 +218,12 @@ class SemanticMetricSuite:
                             "status": status,
                             "value": value,
                             "errorType": error_type,
+                            "errorCategory": error_category,
                             "calls": calls,
                         }
                     )
         finally:
+            self._metric_diagnostics[usage_key] = metric_diagnostics
             calls = self.usage_tracker.take(usage_key) if self.usage_tracker else []
         return metrics, cached_calls + calls
 

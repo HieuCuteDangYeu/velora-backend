@@ -305,8 +305,13 @@ daily quota failures are recorded as permanent `ACCOUNT_LIMITED` errors and are
 not retried.
 
 When evaluating an already accepted production run, pass `--resume`,
-`--source-summary`, and `--trace-file`. The evaluator loads the saved runner
-report directly and does not contact the production RAG API.
+`--source-summary`, and `--trace-file`. For semantic judging, also pass
+`--semantic-context-file` pointing to an enriched, saved trace artifact. The
+evaluator binds every enriched row to the source execution, RagTrace, chunk
+lists, production SHA, and canonical dataset hash before loading its context
+text; an ID-only trace remains insufficient for context-bearing metrics. The
+evaluator loads the saved runner report directly and does not contact the
+production RAG API.
 
 ## Pricing, reports, and comparisons
 

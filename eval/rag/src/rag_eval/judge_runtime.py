@@ -213,13 +213,15 @@ def classify_judge_error(
     message = str(error or "")
     provider = _provider_error(error) if error else {}
     code = provider.get("code")
+    error_name = type(error).__name__.lower() if error else ""
     if _is_account_quota_error(status, message, provider):
         return "ACCOUNT_LIMITED", False, str(code) if code is not None else None
     if status == 429 or "rate_limit" in message.lower() or "rate limit" in message.lower():
         return "RATE_LIMITED", True, str(code) if code is not None else None
+    if "timeout" in error_name or "timeout" in message.lower():
+        return "PROVIDER_TIMEOUT", True, str(code) if code is not None else None
     if status in {408, 500, 502, 503, 504}:
         return "TRANSIENT_PROVIDER_ERROR", True, str(code) if code is not None else None
-    error_name = type(error).__name__.lower() if error else ""
     if any(
         term in error_name or term in message.lower() for term in ("timeout", "connect", "network")
     ):

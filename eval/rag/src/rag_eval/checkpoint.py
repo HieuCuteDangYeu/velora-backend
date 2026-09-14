@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 CHECKPOINT_SCHEMA = "ragas-judge-checkpoint-v1"
+CHECKPOINT_EVALUATOR_COMPATIBILITY = "ragas-semantic-output-v1"
 
 
 class JudgeCheckpointStore:
@@ -17,7 +18,12 @@ class JudgeCheckpointStore:
 
     def __init__(self, path: str | Path, identity: dict[str, Any]):
         self.path = Path(path)
-        self.identity = dict(identity)
+        self.identity = {
+            **identity,
+            "evaluatorCompatibility": identity.get(
+                "evaluatorCompatibility", CHECKPOINT_EVALUATOR_COMPATIBILITY
+            ),
+        }
         self._lock = threading.Lock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state = self._load()
@@ -32,7 +38,19 @@ class JudgeCheckpointStore:
         state = json.loads(self.path.read_text(encoding="utf-8"))
         if state.get("schemaVersion") != CHECKPOINT_SCHEMA:
             raise ValueError("judge checkpoint schema mismatch")
-        if state.get("identity") != self.identity:
+        stored_identity = state.get("identity")
+        if not isinstance(stored_identity, dict):
+            raise ValueError("judge checkpoint identity is invalid")
+        stored_compatibility = stored_identity.get(
+            "evaluatorCompatibility", CHECKPOINT_EVALUATOR_COMPATIBILITY
+        )
+        if stored_compatibility != self.identity["evaluatorCompatibility"]:
+            raise ValueError("judge checkpoint source/provider identity mismatch")
+        if any(
+            key != "evaluatorSha" and stored_identity.get(key) != value
+            for key, value in self.identity.items()
+            if key != "evaluatorCompatibility"
+        ):
             raise ValueError("judge checkpoint source/provider identity mismatch")
         if not isinstance(state.get("entries"), dict):
             raise ValueError("judge checkpoint entries are invalid")

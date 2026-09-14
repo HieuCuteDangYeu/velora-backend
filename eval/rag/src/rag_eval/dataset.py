@@ -1,5 +1,6 @@
 """Ragas-backed dataset loading and immutable contract checks."""
 
+import hashlib
 from pathlib import Path
 
 from ragas import Dataset
@@ -14,6 +15,18 @@ KNOWN_DATASETS = {
     "rag-generalization-v1": 104,
 }
 FROZEN_AMI_DATASET_PREFIX = "rag-frozen-ami-"
+
+
+def dataset_path(name: str) -> Path:
+    """Return the immutable JSONL source path for one versioned dataset."""
+
+    return ROOT / "datasets" / f"{name}.jsonl"
+
+
+def dataset_sha256(name: str) -> str:
+    """Fingerprint the exact dataset bytes used by an evaluation."""
+
+    return hashlib.sha256(dataset_path(name).read_bytes()).hexdigest()
 
 
 def is_supported_live_dataset(name: str) -> bool:

@@ -51,3 +51,24 @@ def test_unavailable_entry_can_be_replaced_but_complete_entry_cannot(tmp_path):
     assert store.get("IN1001-1", "faithfulness")["value"] == 0.9
     store.record(entry(status="COMPLETE", value=0.1))
     assert store.get("IN1001-1", "faithfulness")["value"] == 0.9
+
+
+def test_checkpoint_allows_revision_with_same_evaluator_compatibility(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    JudgeCheckpointStore(path, IDENTITY).record(entry())
+
+    restored = JudgeCheckpointStore(path, {**IDENTITY, "evaluatorSha": "c" * 40})
+
+    assert restored.get("IN1001-1", "faithfulness")["value"] == 0.8
+
+
+def test_checkpoint_rejects_different_evaluator_compatibility(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    identity = {**IDENTITY, "evaluatorCompatibility": "contract-a"}
+    JudgeCheckpointStore(path, identity).record({**entry(), **identity})
+
+    with pytest.raises(ValueError, match="identity mismatch"):
+        JudgeCheckpointStore(
+            path,
+            {**identity, "evaluatorCompatibility": "contract-b"},
+        )

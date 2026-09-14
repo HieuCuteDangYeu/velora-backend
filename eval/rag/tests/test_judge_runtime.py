@@ -156,6 +156,16 @@ class FakeDailyQuotaError(Exception):
     )
 
 
+class FakeGroqSchemaError(Exception):
+    status_code = 400
+    body = {
+        "error": {
+            "code": "json_validate_failed",
+            "message": "Failed to validate JSON",
+        }
+    }
+
+
 class FakeCompletions:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -289,6 +299,14 @@ def test_daily_quota_429_is_permanent_and_not_transient():
     assert code == "rate_limit_exceeded"
 
 
+def test_groq_json_schema_failure_is_permanent_and_not_retried():
+    category, transient, code = classify_judge_error(400, FakeGroqSchemaError())
+
+    assert category == "NON_RETRYABLE_PROVIDER_ERROR"
+    assert transient is False
+    assert code == "json_validate_failed"
+
+
 @pytest.mark.asyncio
 async def test_daily_quota_429_is_not_retried(monkeypatch):
     monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")
@@ -335,5 +353,5 @@ async def test_timeout_is_bounded_and_recorded(monkeypatch):
     calls = tracker.take("run:case")
     assert len(calls) == 1
     assert calls[0]["providerStatus"] == "TIMEOUT"
-    assert calls[0]["providerCategory"] == "TRANSIENT_NETWORK_ERROR"
+    assert calls[0]["providerCategory"] == "PROVIDER_TIMEOUT"
     assert calls[0]["configuredTimeoutMs"] == 1000.0

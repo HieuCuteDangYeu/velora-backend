@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
+import { safeCallErrorCode } from '../gateways/call-debug';
 
 const RENEW_LEASE_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -105,9 +106,7 @@ export class CallServiceRuntimeLease implements OnModuleDestroy {
         await this.redis.eval(RELEASE_LEASE_SCRIPT, 1, this.key, this.owner);
       } catch (error) {
         this.logger.warn(
-          `Failed to release call runtime lease: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Failed to release call runtime lease errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }
@@ -167,14 +166,12 @@ export class CallServiceRuntimeLease implements OnModuleDestroy {
 
     this.state = 'lost';
     this.clearRenewal();
-    this.logger.error(`Call runtime lease lost: ${error.message}`);
+    this.logger.error(
+      `Call runtime lease lost errorCode=${safeCallErrorCode(error)}`,
+    );
     void Promise.resolve(this.lossHandler?.(error)).catch((handlerError) => {
       this.logger.error(
-        `Call runtime lease loss handler failed: ${
-          handlerError instanceof Error
-            ? handlerError.message
-            : String(handlerError)
-        }`,
+        `Call runtime lease loss handler failed errorCode=${safeCallErrorCode(handlerError)}`,
       );
     });
   }

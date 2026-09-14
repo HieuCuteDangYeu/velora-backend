@@ -11,11 +11,17 @@ import random
 import re
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
+
+from rag_eval.tpd_ledger import (
+    GroqDailyTokenLedger,
+    LedgerPersistenceError,
+    utc_timestamp,
+)
 
 _usage_key: ContextVar[str | None] = ContextVar("rag_eval_usage_key", default=None)
 _metric_name: ContextVar[str | None] = ContextVar("rag_eval_metric_name", default=None)
@@ -46,6 +52,36 @@ def _nonnegative_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value >= 0 else default
+
+
+def _usage_value(value: Any) -> Any:
+    usage = getattr(value, "usage", None)
+    if usage is not None:
+        return usage
+    response = getattr(value, "response", None)
+    return getattr(response, "usage", value)
+
+
+def _usage_field(value: Any, field: str) -> Any:
+    usage = _usage_value(value)
+    if isinstance(usage, Mapping):
+        return usage.get(field)
+    return getattr(usage, field, None)
+
+
+def _usage_tokens(value: Any, field: str) -> int | None:
+    candidate = _usage_field(value, field)
+    return candidate if isinstance(candidate, int) and candidate >= 0 else None
+
+
+def _usage_total(value: Any) -> int | None:
+    total = _usage_field(value, "total_tokens")
+    if isinstance(total, int) and total > 0:
+        return total
+    input_tokens = _usage_tokens(value, "prompt_tokens")
+    output_tokens = _usage_tokens(value, "completion_tokens")
+    combined = (input_tokens or 0) + (output_tokens or 0)
+    return combined if combined > 0 else None
 
 
 def _ratio(name: str, default: float) -> float:
@@ -126,10 +162,15 @@ def retry_after_seconds(headers: dict[str, str], error_text: str = "") -> float 
     if not match:
         return None
     amount = float(match.group(1))
-    return amount / 1000 if (match.group(2) or "s").lower() == "ms" else amount * {
-        "s": 1.0,
-        "m": 60.0,
-    }.get((match.group(2) or "s").lower(), 1.0)
+    return (
+        amount / 1000
+        if (match.group(2) or "s").lower() == "ms"
+        else amount
+        * {
+            "s": 1.0,
+            "m": 60.0,
+        }.get((match.group(2) or "s").lower(), 1.0)
+    )
 
 
 def _provider_error(error: BaseException) -> dict[str, Any]:
@@ -142,9 +183,7 @@ def _provider_error(error: BaseException) -> dict[str, Any]:
     return {}
 
 
-def _is_account_quota_error(
-    status: int | None, message: str, provider: dict[str, Any]
-) -> bool:
+def _is_account_quota_error(status: int | None, message: str, provider: dict[str, Any]) -> bool:
     if status != 429:
         return False
     try:
@@ -182,8 +221,7 @@ def classify_judge_error(
         return "TRANSIENT_PROVIDER_ERROR", True, str(code) if code is not None else None
     error_name = type(error).__name__.lower() if error else ""
     if any(
-        term in error_name or term in message.lower()
-        for term in ("timeout", "connect", "network")
+        term in error_name or term in message.lower() for term in ("timeout", "connect", "network")
     ):
         return "TRANSIENT_NETWORK_ERROR", True, str(code) if code is not None else None
     return "NON_RETRYABLE_PROVIDER_ERROR", False, str(code) if code is not None else None
@@ -259,10 +297,7 @@ class JudgeRateLimiter:
                 configured_target,
                 max(
                     1,
-                    math.floor(
-                        limit
-                        * (1 - _ratio("RAGAS_RATE_LIMIT_HEADROOM_RATIO", 0.25))
-                    ),
+                    math.floor(limit * (1 - _ratio("RAGAS_RATE_LIMIT_HEADROOM_RATIO", 0.25))),
                 ),
             )
         try:
@@ -321,8 +356,7 @@ class JudgeRateLimiter:
                         if self._reservations:
                             wait_seconds = max(
                                 wait_seconds,
-                                self.window_seconds
-                                - (now - self._reservations[0].created_at),
+                                self.window_seconds - (now - self._reservations[0].created_at),
                             )
                 wait_seconds += (
                     self._random_uniform(0, self.jitter_max_seconds)
@@ -354,9 +388,7 @@ class JudgeRateLimiter:
                 self.header_observation_count += 1
             try:
                 if headers.get("x-ratelimit-limit-tokens") is not None:
-                    self._provider_limit_tokens = int(
-                        float(headers["x-ratelimit-limit-tokens"])
-                    )
+                    self._provider_limit_tokens = int(float(headers["x-ratelimit-limit-tokens"]))
                 if account_limited:
                     self._provider_remaining_tokens = None
                     self._provider_reset_at = 0.0
@@ -394,9 +426,7 @@ class JudgeRateLimiter:
             used * 60.0 / self.window_seconds,
         )
 
-    async def release(
-        self, reservation: _Reservation, actual_tokens: int | None = None
-    ) -> None:
+    async def release(self, reservation: _Reservation, actual_tokens: int | None = None) -> None:
         async with self._lock:
             if actual_tokens is not None:
                 reservation.tokens = max(1, actual_tokens)
@@ -412,9 +442,7 @@ class JudgeRateLimiter:
         if delay is None:
             delay = 1.0
         delay += (
-            self._random_uniform(0, self.jitter_max_seconds)
-            if self.jitter_max_seconds
-            else 0.0
+            self._random_uniform(0, self.jitter_max_seconds) if self.jitter_max_seconds else 0.0
         )
         await self._sleep(max(0.01, delay))
         return delay
@@ -444,16 +472,15 @@ class JudgeUsageTracker:
     def __init__(self, client: Any, *, provider: str = "cloudflare"):
         self._calls: dict[str, list[dict[str, Any]]] = {}
         self._limiter = JudgeRateLimiter.from_env(provider)
+        self._ledger = (
+            GroqDailyTokenLedger.from_env() if provider.strip().lower() == "groq" else None
+        )
         try:
-            self._max_retries = max(
-                0, int(os.getenv("RAGAS_JUDGE_429_MAX_RETRIES", "2"))
-            )
+            self._max_retries = max(0, int(os.getenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")))
         except ValueError:
             self._max_retries = 2
         try:
-            self._timeout_seconds = max(
-                1.0, float(os.getenv("RAGAS_JUDGE_TIMEOUT_SECONDS", "120"))
-            )
+            self._timeout_seconds = max(1.0, float(os.getenv("RAGAS_JUDGE_TIMEOUT_SECONDS", "120")))
         except ValueError:
             self._timeout_seconds = 120.0
         original = client.chat.completions.create
@@ -477,6 +504,9 @@ class JudgeUsageTracker:
             metric = _metric_name.get()
             try:
                 for attempt in range(1, self._max_retries + 2):
+                    fallback_request_id = (
+                        self._ledger.new_request_id() if self._ledger is not None else None
+                    )
                     started = time.monotonic()
                     try:
                         response = await asyncio.wait_for(
@@ -485,14 +515,9 @@ class JudgeUsageTracker:
                         headers = _header_map(response) or _response_headers.get({}) or {}
                         _response_headers.set({})
                         usage = getattr(response, "usage", None)
-                        actual_tokens = None
-                        if usage is not None:
-                            input_tokens = getattr(usage, "prompt_tokens", None)
-                            output_tokens = getattr(usage, "completion_tokens", None)
-                            actual_tokens = (
-                                getattr(usage, "total_tokens", None)
-                                or (input_tokens or 0) + (output_tokens or 0)
-                            )
+                        input_tokens = _usage_tokens(usage, "prompt_tokens")
+                        output_tokens = _usage_tokens(usage, "completion_tokens")
+                        actual_tokens = _usage_total(usage)
                         await self._limiter.observe(
                             headers,
                             status=200,
@@ -511,10 +536,10 @@ class JudgeUsageTracker:
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,
-                                "inputTokens": getattr(usage, "prompt_tokens", None),
-                                "outputTokens": getattr(usage, "completion_tokens", None),
-                                "totalTokens": getattr(usage, "total_tokens", None),
-                                "usageSource": "PROVIDER" if usage else "UNAVAILABLE",
+                                "inputTokens": input_tokens,
+                                "outputTokens": output_tokens,
+                                "totalTokens": actual_tokens,
+                                "usageSource": "PROVIDER" if actual_tokens else "UNAVAILABLE",
                                 "latencyMs": (time.monotonic() - started) * 1000,
                                 "providerStatus": 200,
                                 "providerCategory": "SUCCESS",
@@ -528,9 +553,31 @@ class JudgeUsageTracker:
                                 "configuredConcurrency": self._limiter.concurrency,
                             },
                         )
+                        try:
+                            self._record_ledger(
+                                key=key,
+                                metric=metric,
+                                model=kwargs.get("model", "UNKNOWN"),
+                                request_id=getattr(response, "id", None) or fallback_request_id,
+                                status="SUCCESS",
+                                provider_status=200,
+                                provider_category="SUCCESS",
+                                attempt=attempt,
+                                estimated_input_tokens=estimated_input,
+                                reserved_output_tokens=reserved_output,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                total_tokens=actual_tokens,
+                            )
+                        except LedgerPersistenceError:
+                            await self._limiter.release(reservation, actual_tokens)
+                            released = True
+                            raise
                         await self._limiter.release(reservation, actual_tokens)
                         released = True
                         return response
+                    except LedgerPersistenceError:
+                        raise
                     except Exception as error:
                         status = getattr(error, "status_code", None)
                         headers = _header_map(error) or _response_headers.get({}) or {}
@@ -538,6 +585,9 @@ class JudgeUsageTracker:
                         category, transient, provider_code = classify_judge_error(status, error)
                         error_text = str(error)
                         delay = retry_after_seconds(headers, error_text)
+                        input_tokens = _usage_tokens(error, "prompt_tokens")
+                        output_tokens = _usage_tokens(error, "completion_tokens")
+                        actual_tokens = _usage_total(error)
                         await self._limiter.observe(
                             headers,
                             status=status,
@@ -562,10 +612,10 @@ class JudgeUsageTracker:
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,
-                                "inputTokens": None,
-                                "outputTokens": None,
-                                "totalTokens": None,
-                                "usageSource": "UNAVAILABLE",
+                                "inputTokens": input_tokens,
+                                "outputTokens": output_tokens,
+                                "totalTokens": actual_tokens,
+                                "usageSource": "PROVIDER" if actual_tokens else "UNAVAILABLE",
                                 "latencyMs": (time.monotonic() - started) * 1000,
                                 "providerStatus": provider_status,
                                 "providerCategory": category,
@@ -582,6 +632,21 @@ class JudgeUsageTracker:
                                 "configuredTpmTarget": self._limiter.tpm_target,
                                 "configuredConcurrency": self._limiter.concurrency,
                             },
+                        )
+                        self._record_ledger(
+                            key=key,
+                            metric=metric,
+                            model=kwargs.get("model", "UNKNOWN"),
+                            request_id=getattr(error, "request_id", None) or fallback_request_id,
+                            status="FAILURE",
+                            provider_status=provider_status,
+                            provider_category=category,
+                            attempt=attempt,
+                            estimated_input_tokens=estimated_input,
+                            reserved_output_tokens=reserved_output,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            total_tokens=actual_tokens,
                         )
                         if not transient or attempt > self._max_retries:
                             await self._limiter.release(reservation)
@@ -604,6 +669,69 @@ class JudgeUsageTracker:
         if key:
             self._calls.setdefault(key, []).append(call)
 
+    def _record_ledger(
+        self,
+        *,
+        key: str | None,
+        metric: str | None,
+        model: Any,
+        request_id: Any,
+        status: str,
+        provider_status: Any,
+        provider_category: str,
+        attempt: int,
+        estimated_input_tokens: int,
+        reserved_output_tokens: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        total_tokens: int | None,
+    ) -> None:
+        if self._ledger is None:
+            return
+        run_id, separator, case_id = (key or "").rpartition(":")
+        if not separator:
+            run_id = key
+            case_id = None
+        provider_total = total_tokens if total_tokens and total_tokens > 0 else None
+        counted_tokens = provider_total or (
+            estimated_input_tokens + reserved_output_tokens + self._limiter.safety_tokens
+        )
+        model_name = str(model)
+        stable_request_id = (
+            request_id
+            if isinstance(request_id, str) and request_id
+            else self._ledger.deterministic_request_id(
+                run_id=run_id,
+                case_id=case_id,
+                metric=metric,
+                model=model_name,
+                attempt=attempt,
+            )
+        )
+        self._ledger.record(
+            {
+                "schemaVersion": "groq-tpd-ledger-record-v1",
+                "requestId": stable_request_id,
+                "timestamp": utc_timestamp(),
+                "provider": "groq",
+                "model": model_name,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+                "totalTokens": total_tokens,
+                "estimatedInputTokens": estimated_input_tokens,
+                "reservedOutputTokens": reserved_output_tokens,
+                "countedTokens": counted_tokens,
+                "countingMode": "PROVIDER" if provider_total else "CONSERVATIVE_UPPER_BOUND",
+                "runId": run_id,
+                "caseId": case_id,
+                "judgeOperation": metric or "UNKNOWN",
+                "status": status,
+                "providerStatus": provider_status,
+                "providerCategory": provider_category,
+                "attempt": attempt,
+            }
+        )
+
     def begin(self, key: str) -> None:
         _usage_key.set(key)
         self._calls[key] = []
@@ -617,11 +745,7 @@ class JudgeUsageTracker:
         return self._calls.pop(key, [])
 
     def calls_for(self, key: str, metric: str) -> list[dict[str, Any]]:
-        return [
-            dict(call)
-            for call in self._calls.get(key, [])
-            if call.get("metricName") == metric
-        ]
+        return [dict(call) for call in self._calls.get(key, []) if call.get("metricName") == metric]
 
     def limiter_stats(self) -> dict[str, Any]:
         return self._limiter.stats()

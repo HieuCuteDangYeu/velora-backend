@@ -29,8 +29,8 @@ from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
 from rag_eval.dataset import ROOT, is_supported_live_dataset, load_dataset
 from rag_eval.experiment import rag_experiment
-from rag_eval.pricing import load_pricing
 from rag_eval.preflight import run_preflight
+from rag_eval.pricing import load_pricing
 from rag_eval.reports import build_summary, load_cases, write_report
 from rag_eval.schemas import EvaluationRow
 
@@ -111,13 +111,9 @@ def _validate_source_summary(
     }
 
 
-def _export_trace_artifact(
-    report_path: Path, output_path: Path, env_file: str | None
-) -> None:
+def _export_trace_artifact(report_path: Path, output_path: Path, env_file: str | None) -> None:
     if not env_file:
-        raise SystemExit(
-            "LIVE frozen evaluation requires --env-file for automatic trace export"
-        )
+        raise SystemExit("LIVE frozen evaluation requires --env-file for automatic trace export")
     exporter = ROOT.parents[1] / "scripts/ops/export-rag-traces.cjs"
     completed = subprocess.run(
         [
@@ -246,9 +242,7 @@ async def run_live(args: argparse.Namespace) -> Path:
                 "saved live evaluation requires --source-summary or RAGAS_SOURCE_SUMMARY_PATH"
             )
         source_summary_path = _repo_path(source_summary_value)
-        source_attestation = _validate_source_summary(
-            source_summary_path, args, set(rows)
-        )
+        source_attestation = _validate_source_summary(source_summary_path, args, set(rows))
         report_path = _saved_runner_report(run_id)
         if not report_path.exists():
             raise ValueError("saved runner report is missing for the requested source run")
@@ -270,16 +264,12 @@ async def run_live(args: argparse.Namespace) -> Path:
     else:
         report_path = invoke_typescript_runner(runner_args)
     trace_path = (
-        _repo_path(args.trace_file)
-        if args.trace_file
-        else RESULTS / f"{run_id}-traces.jsonl"
+        _repo_path(args.trace_file) if args.trace_file else RESULTS / f"{run_id}-traces.jsonl"
     )
     if not args.trace_file:
         _export_trace_artifact(report_path, trace_path, args.env_file)
     validate_trace_provenance(trace_path, set(rows))
-    executions = load_runner_report(
-        report_path, rows, trace_path, require_trace=True
-    )
+    executions = load_runner_report(report_path, rows, trace_path, require_trace=True)
     missing = set(rows) - set(executions)
     if missing:
         raise RuntimeError(f"runner report omitted cases: {sorted(missing)}")
@@ -473,6 +463,12 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--first-model")
     preflight.add_argument("--first-operation-tokens", type=int)
     preflight.add_argument("--tpd-attestation")
+    preflight.add_argument("--tpd-limit-attestation")
+    preflight.add_argument("--tpd-window-attestation")
+    preflight.add_argument("--tpd-cost-attestation")
+    preflight.add_argument("--tpd-usage-attestation")
+    preflight.add_argument("--pricing-path")
+    preflight.add_argument("--ledger-path")
     preflight.add_argument("--timeout", type=float, default=10.0)
     return root
 

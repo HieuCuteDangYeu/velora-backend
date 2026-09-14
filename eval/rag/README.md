@@ -33,7 +33,12 @@ pnpm eval:rag:persist --run <completed-run-id>
 pnpm eval:rag:reranker
 pnpm eval:rag:test
 pnpm eval:rag:capacity-check --confirm-one-call
-pnpm eval:rag:preflight --tpd-attestation <operator-supplied-json>
+pnpm eval:rag:preflight --tpd-limit-attestation <limit-json> \
+  --tpd-window-attestation <window-json> --ledger-path <ledger-jsonl>
+pnpm eval:rag:preflight --tpd-cost-attestation <cost-json> \
+  --pricing-path eval/rag/config/groq-pricing-v1.json --ledger-path <ledger-jsonl>
+pnpm eval:rag:preflight --tpd-usage-attestation <usage-baseline-json> \
+  --ledger-path <ledger-jsonl>
 ```
 
 ## Containerized evaluator
@@ -92,38 +97,141 @@ The Groq preflight is separate from the Cloudflare capacity check. It makes only
 small provider probes and never calls the production RAG endpoint. It treats
 `x-ratelimit-*-tokens` as rolling TPM and checks only the next operation's
 headroom, while `x-ratelimit-*-requests` is RPD rather than TPD. The existing
-`JudgeUsageTracker` remains responsible for concurrency,
-the 6,000 TPM target, reset waits, Retry-After, and bounded transient retries
-throughout a semantic run. TPD is not inferred from TPM headers. Supply a
-current independent attestation (for example, exported from the Groq Console)
-with this shape:
+`JudgeUsageTracker` remains responsible for concurrency, the 6,000 TPM target,
+reset waits, Retry-After, and bounded transient retries throughout a semantic
+run. TPD is not inferred from provider headers.
+
+Token-window preflight requires two fresh, operator-supplied artifacts for
+every model being probed:
+
+1. An independently observed organization TPD limit (`TPD_LIMIT`).
+2. A current-window usage baseline (`TPD`) plus the persistent evaluator ledger.
+
+The limit artifact may have this shape:
 
 ```json
 {
-  "schemaVersion": "groq-tpd-attestation-v1",
+  "schemaVersion": "groq-tpd-limit-attestation-v1",
   "provider": "groq",
-  "scope": "TPD",
-  "source": "groq-console-limits",
+  "scope": "TPD_LIMIT",
+  "source": "groq-console-organization-limits",
   "observedAt": "2026-09-13T00:00:00Z",
   "models": {
     "openai/gpt-oss-120b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 54048
-    },
-    "openai/gpt-oss-20b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 38104
-    },
-    "qwen/qwen3.8-27b": {
-      "dailyRemainingTokens": 150000,
-      "plannedFullRunTokens": 32456
+      "dailyLimitTokens": 200000
     }
   }
 }
 ```
 
-The attestation is intentionally not committed with credentials or production
-data. Missing, stale, incomplete, or header-derived TPD evidence produces an
+The current-window artifact may use an explicitly observed fresh window:
+
+```json
+{
+  "schemaVersion": "groq-tpd-window-attestation-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "operator-observed-fresh-window",
+  "observedAt": "2026-09-13T00:00:00Z",
+  "models": {
+    "openai/gpt-oss-120b": {
+      "dailyLimitTokens": 200000,
+      "usageSinceWindowStartTokens": 0,
+      "plannedFullRunTokens": 54048
+    }
+  }
+}
+```
+
+When the Organization Usage API provides exact per-model token fields, prefer
+an exact-token baseline over cost conversion:
+
+```json
+{
+  "schemaVersion": "groq-tpd-usage-baseline-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "groq-console-organization-usage-api",
+  "observedAt": "2026-09-14T05:45:00Z",
+  "windowDateUtc": "2026-09-14",
+  "usageBucketTimestamp": 1789344000,
+  "organizationScope": "all-projects",
+  "model": "openai/gpt-oss-120b",
+  "dailyLimitTokens": 200000,
+  "contextTokens": 0,
+  "nonCachedInputTokens": 0,
+  "cachedInputTokens": 0,
+  "generatedTokens": 0,
+  "rateLimitCountedUsedTokens": 0,
+  "plannedFullRunTokens": 54048,
+  "verifiedQuietPeriodSeconds": 900
+}
+```
+
+The evaluator requires the current UTC bucket, exact context breakdown, and
+`nonCachedInputTokens + generatedTokens` as the rate-limit-counted total; cached
+input tokens are deliberately excluded. It persists that exact count as the
+ledger baseline and counts later evaluator requests after `observedAt`.
+Identifiers such as organization, project, or API-key IDs are rejected from
+the artifact and are never stored.
+
+When the usage console exposes only precise organization-wide model cost, a
+cost-derived upper-bound artifact can be used instead of a token-count window
+baseline. It must carry the underlying decimal precision and an operator
+confirmation that the reporting-delay quiet period was observed:
+
+```json
+{
+  "schemaVersion": "groq-tpd-cost-upper-bound-attestation-v1",
+  "provider": "groq",
+  "scope": "TPD",
+  "source": "groq-console-organization-usage",
+  "observedAt": "2026-09-13T00:15:00Z",
+  "organizationScope": "all-projects",
+  "model": "openai/gpt-oss-120b",
+  "dailyLimitTokens": 200000,
+  "observedOrganizationModelCostUsd": "0.0200000",
+  "costValueSource": "groq-console-usage-raw",
+  "costDecimalPlaces": 7,
+  "rateLimitedTokenPriceFloorUsdPerMillion": "0.15",
+  "consoleMaxReportingDelaySeconds": 900,
+  "verifiedQuietPeriodSeconds": 900,
+  "quietPeriodStatus": "operator-confirmed-no-known-groq-traffic",
+  "plannedFullRunTokens": 54048
+}
+```
+
+The tracked `config/groq-pricing-v1.json` snapshot is validated for official
+source, freshness, uncached input price ($0.15/M), cached input price
+($0.075/M), output price ($0.60/M), and cached-token rate-limit semantics.
+The default pricing snapshot freshness window is 30 days and is configurable
+with `RAGAS_GROQ_PRICING_MAX_AGE_SECONDS`.
+The evaluator uses decimal arithmetic only:
+`ceil(cost / 0.15 * 1,000,000)` is the maximum possible rate-limited token
+usage compatible with the observed cost. A visible rounded value such as
+`"0.02"` is rejected because it cannot prove the required $0.0218928 boundary.
+With the 200,000-token limit and 54,048-token planned run, the exact boundary
+is `0.0218928`; the boundary itself passes and any greater precise value fails.
+The optional `TPD_LIMIT` artifact is cross-checked when supplied, while the
+cost artifact still must state the current 200,000-token limit.
+The cost baseline is persisted in the TPD ledger as a non-counting epoch;
+subsequent evaluator requests are counted after the observation timestamp.
+
+For a non-fresh window, include an operator-proven `windowStartedAt` and the
+known usage since that boundary. The evaluator then calculates
+`dailyLimitTokens - usageSinceWindowStartTokens - ledgerUsage` and requires at
+least `plannedFullRunTokens` (54,048 by default). It never automatically resets
+the ledger because the provider's exact TPD reset boundary is not assumed.
+
+The ledger records only safe request metadata and token counts, including
+failed/retried requests. Provider usage is used when available; otherwise the
+reserved input/output budget plus safety tokens is counted as a conservative
+upper bound. Request IDs make repeated writes idempotent, and file locking keeps
+concurrent evaluator processes from corrupting the ledger.
+
+The attestation and ledger are intentionally not committed with credentials or
+production data. A limit-only artifact, stale/incomplete evidence, a legacy
+`dailyRemainingTokens` artifact, or header-derived TPD evidence produces an
 unknown gate and prevents a frozen run from starting.
 
 The capacity check uses `RAG_EVAL_CAPACITY_MODEL` (default `@cf/openai/gpt-oss-20b`) through a separate no-retry client. It does not construct the Ragas judge, invoke the judge model, or call embeddings. Run production-model deterministic gates and persist normalized frozen execution results before invoking semantic judge metrics.

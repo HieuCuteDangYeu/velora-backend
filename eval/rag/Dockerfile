@@ -14,11 +14,12 @@ RUN corepack enable \
   && corepack prepare pnpm@${PNPM_VERSION} --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml nest-cli.json tsconfig.json tsconfig.build.json .npmrc ./
+RUN pnpm install --frozen-lockfile --ignore-scripts
+
 COPY apps ./apps
 COPY libs ./libs
 COPY scripts ./scripts
 
-RUN pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm run prisma:generate:conversation \
   && pnpm run prisma:generate:ai \
   && pnpm run prisma:generate:reel-indexing

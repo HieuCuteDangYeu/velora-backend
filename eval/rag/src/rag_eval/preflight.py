@@ -12,13 +12,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
+from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter
+from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
 
-DEFAULT_PROBE_MODELS = (
-    "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
-    "qwen/qwen3.8-27b",
-)
+DEFAULT_PROBE_MODELS = ("openai/gpt-oss-120b",)
 RATE_LIMIT_HEADERS = (
     "retry-after",
     "x-ratelimit-limit-requests",
@@ -168,90 +167,253 @@ def first_request_tpm_headroom(
     )
 
 
-def _parse_timestamp(value: Any) -> datetime | None:
-    if not isinstance(value, str):
+DEFAULT_TPD_PLANNED_TOKENS = 54_048
+TPD_LIMIT_SCHEMA = "groq-tpd-limit-attestation-v1"
+TPD_WINDOW_SCHEMA = "groq-tpd-window-attestation-v1"
+TPD_WINDOW_SCOPES = {"TPD", "TPD_WINDOW"}
+
+
+def _read_json(path: str | None) -> dict[str, Any] | None:
+    if not path:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return payload if isinstance(payload, dict) else None
 
 
-def _remaining_tokens(value: dict[str, Any]) -> int | None:
-    direct = value.get("dailyRemainingTokens")
-    if isinstance(direct, (int, float)):
-        return int(direct)
-    limit = value.get("dailyLimitTokens")
-    used = value.get("dailyUsedTokens")
-    if isinstance(limit, (int, float)) and isinstance(used, (int, float)):
-        return int(limit - used)
+def _model_attestation(payload: dict[str, Any], model: str) -> dict[str, Any] | None:
+    models = payload.get("models")
+    if isinstance(models, dict):
+        value = models.get(model)
+        return value if isinstance(value, dict) else None
+    if payload.get("model") == model:
+        return payload
     return None
 
 
-def _required_tokens(value: dict[str, Any]) -> int | None:
-    for key in ("requiredTokens", "plannedFullRunTokens"):
-        candidate = value.get(key)
-        if isinstance(candidate, (int, float)) and candidate > 0:
-            return int(candidate)
-    return None
+def _attestation_is_fresh(
+    payload: dict[str, Any],
+    *,
+    expected_schema: str,
+    expected_scopes: set[str],
+    now: datetime,
+    max_age_seconds: int,
+) -> bool:
+    if str(payload.get("provider", "")).lower() != "groq":
+        return False
+    if payload.get("schemaVersion") != expected_schema:
+        return False
+    if payload.get("scope") not in expected_scopes:
+        return False
+    source = str(payload.get("source", "")).lower()
+    if not source or "header" in source or "ratelimit" in source:
+        return False
+    observed_at = parse_timestamp(payload.get("observedAt"))
+    if observed_at is None:
+        return False
+    age_seconds = (now - observed_at).total_seconds()
+    return 0 <= age_seconds <= max_age_seconds
+
+
+def _integer(value: Any, *, minimum: int = 0) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    converted = int(value)
+    return converted if converted >= minimum else None
 
 
 def tpd_headroom(
     attestation_path: str | None,
     models: tuple[str, ...],
     *,
+    ledger_path: str | None = None,
+    limit_attestation_path: str | None = None,
+    window_attestation_path: str | None = None,
+    cost_attestation_path: str | None = None,
+    usage_attestation_path: str | None = None,
+    pricing_path: str | None = None,
     now: datetime | None = None,
     max_age_seconds: int | None = None,
 ) -> dict[str, Any]:
-    if not attestation_path:
-        return {"status": "UNKNOWN", "reason": "INDEPENDENT_TPD_ATTESTATION_REQUIRED"}
-
-    try:
-        payload = json.loads(Path(attestation_path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_UNREADABLE"}
-    if not isinstance(payload, dict):
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_INVALID"}
-    if str(payload.get("provider", "")).lower() != "groq" or payload.get("scope") != "TPD":
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_SCOPE_INVALID"}
-    source = str(payload.get("source", "")).lower()
-    if not source or "header" in source or "ratelimit" in source:
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_NOT_INDEPENDENT"}
-    observed_at = _parse_timestamp(payload.get("observedAt"))
-    if observed_at is None:
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_TIMESTAMP_INVALID"}
     current = now or datetime.now(UTC)
-    age_limit = max_age_seconds or _positive_int(
-        "RAGAS_GROQ_TPD_ATTESTATION_MAX_AGE_SECONDS", 3_600
+    age_limit = (
+        max_age_seconds
+        if max_age_seconds is not None
+        else _positive_int("RAGAS_GROQ_TPD_ATTESTATION_MAX_AGE_SECONDS", 3_600)
     )
-    if (current - observed_at).total_seconds() > age_limit:
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_STALE"}
+    legacy = _read_json(attestation_path)
+    limit_payload = _read_json(limit_attestation_path)
+    window_payload = _read_json(window_attestation_path)
+    cost_payload = _read_json(cost_attestation_path)
+    usage_payload = _read_json(usage_attestation_path)
+    if (
+        usage_payload is None
+        and legacy is not None
+        and legacy.get("schemaVersion") == USAGE_BASELINE_SCHEMA
+    ):
+        usage_payload = legacy
+    if usage_attestation_path and usage_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_UNREADABLE"}
+    if usage_payload is not None:
+        if usage_payload.get("schemaVersion") != USAGE_BASELINE_SCHEMA:
+            return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_INVALID"}
+        if limit_attestation_path and limit_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_UNREADABLE"}
+        if limit_payload is None and legacy is not None and legacy.get("scope") == "TPD_LIMIT":
+            limit_payload = legacy
+        ledger = (
+            GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+        )
+        return exact_usage_tpd_headroom(
+            usage_payload,
+            models,
+            ledger,
+            limit_payload=limit_payload,
+            now=current,
+            max_age_seconds=age_limit,
+        )
+    if (
+        cost_payload is None
+        and legacy is not None
+        and legacy.get("schemaVersion") == COST_ATTESTATION_SCHEMA
+    ):
+        cost_payload = legacy
+    if cost_attestation_path and cost_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_COST_ATTESTATION_UNREADABLE"}
+    if cost_payload is not None:
+        if cost_payload.get("schemaVersion") != COST_ATTESTATION_SCHEMA:
+            return {"status": "UNKNOWN", "reason": "TPD_COST_ATTESTATION_INVALID"}
+        if limit_attestation_path and limit_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_UNREADABLE"}
+        if limit_payload is None and legacy is not None and legacy.get("scope") == "TPD_LIMIT":
+            limit_payload = legacy
+        ledger = (
+            GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+        )
+        return cost_tpd_headroom(
+            cost_payload,
+            models,
+            ledger,
+            limit_payload=limit_payload,
+            pricing_path=pricing_path,
+            now=current,
+            max_age_seconds=age_limit,
+        )
+    if legacy is not None and (limit_payload is None or window_payload is None):
+        scope = legacy.get("scope")
+        if scope == "TPD_LIMIT" and limit_payload is None:
+            limit_payload = legacy
+        elif scope in TPD_WINDOW_SCOPES and window_payload is None:
+            window_payload = legacy
+        elif scope not in {"TPD_LIMIT", "TPD", "TPD_WINDOW"}:
+            return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_SCOPE_INVALID"}
 
-    model_values = payload.get("models")
-    if isinstance(model_values, dict):
-        checks = []
-        for model in models:
-            value = model_values.get(model)
-            if not isinstance(value, dict):
-                return {"status": "UNKNOWN", "reason": f"TPD_MODEL_ATTESTATION_MISSING:{model}"}
-            remaining = _remaining_tokens(value)
-            required = _required_tokens(value)
-            if remaining is None or required is None:
-                return {"status": "UNKNOWN", "reason": f"TPD_MODEL_ATTESTATION_INCOMPLETE:{model}"}
-            checks.append(remaining >= required)
-        return {
-            "status": "YES" if all(checks) else "NO",
-            "reason": "MODEL_TPD_ATTESTATION_EVALUATED",
-        }
+    if limit_payload is None or window_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_WINDOW_BASELINE_REQUIRED"}
+    if not _attestation_is_fresh(
+        limit_payload,
+        expected_schema=TPD_LIMIT_SCHEMA,
+        expected_scopes={"TPD_LIMIT"},
+        now=current,
+        max_age_seconds=age_limit,
+    ):
+        return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_INVALID_OR_STALE"}
+    if not _attestation_is_fresh(
+        window_payload,
+        expected_schema=TPD_WINDOW_SCHEMA,
+        expected_scopes=TPD_WINDOW_SCOPES,
+        now=current,
+        max_age_seconds=age_limit,
+    ):
+        return {"status": "UNKNOWN", "reason": "TPD_WINDOW_ATTESTATION_INVALID_OR_STALE"}
 
-    remaining = _remaining_tokens(payload)
-    required = _required_tokens(payload)
-    if remaining is None or required is None:
-        return {"status": "UNKNOWN", "reason": "TPD_ATTESTATION_INCOMPLETE"}
+    ledger = GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+    results = []
+    if not models:
+        return {"status": "UNKNOWN", "reason": "TPD_MODELS_MISSING"}
+    for model in models:
+        limit_value = _model_attestation(limit_payload, model)
+        window_value = _model_attestation(window_payload, model)
+        if limit_value is None or window_value is None:
+            return {"status": "UNKNOWN", "reason": f"TPD_MODEL_ATTESTATION_MISSING:{model}"}
+        daily_limit = _integer(limit_value.get("dailyLimitTokens"), minimum=1)
+        window_limit = (
+            _integer(window_value.get("dailyLimitTokens"), minimum=1)
+            if "dailyLimitTokens" in window_value
+            else daily_limit
+        )
+        baseline_usage = _integer(window_value.get("usageSinceWindowStartTokens"))
+        observed_at = parse_timestamp(window_payload.get("observedAt"))
+        window_started_at = parse_timestamp(
+            window_payload.get("windowStartedAt") or window_value.get("windowStartedAt")
+        )
+        if (
+            daily_limit is None
+            or baseline_usage is None
+            or window_limit is None
+            or window_limit != daily_limit
+            or observed_at is None
+        ):
+            return {"status": "UNKNOWN", "reason": f"TPD_MODEL_ATTESTATION_INCOMPLETE:{model}"}
+        if window_started_at is None:
+            if window_payload.get("source") == "operator-observed-fresh-window":
+                window_started_at = observed_at
+            else:
+                return {"status": "UNKNOWN", "reason": "TPD_WINDOW_START_UNPROVEN"}
+        if window_started_at > current:
+            return {"status": "UNKNOWN", "reason": "TPD_WINDOW_START_IN_FUTURE"}
+        if window_started_at > observed_at:
+            return {"status": "UNKNOWN", "reason": "TPD_WINDOW_START_AFTER_OBSERVATION"}
+        configured_required = _positive_int(
+            "RAGAS_GROQ_TPD_PLANNED_FULL_RUN_TOKENS", DEFAULT_TPD_PLANNED_TOKENS
+        )
+        attested_required = window_value.get("plannedFullRunTokens")
+        if (
+            attested_required is not None
+            and _integer(attested_required, minimum=1) != configured_required
+        ):
+            return {"status": "UNKNOWN", "reason": "TPD_PLANNED_BUDGET_MISMATCH"}
+        required = _integer(
+            window_payload.get("plannedFullRunTokens", configured_required),
+            minimum=1,
+        )
+        if required != configured_required:
+            return {"status": "UNKNOWN", "reason": "TPD_PLANNED_BUDGET_MISMATCH"}
+        if required is None:
+            return {"status": "UNKNOWN", "reason": "TPD_PLANNED_BUDGET_UNAVAILABLE"}
+        try:
+            ledger_usage = ledger.usage_since(model, window_started_at, now=current)
+        except LedgerPersistenceError:
+            return {"status": "UNKNOWN", "reason": "TPD_LEDGER_UNAVAILABLE"}
+        known_used = baseline_usage + ledger_usage
+        remaining = daily_limit - known_used
+        results.append(
+            {
+                "model": model,
+                "dailyLimitTokens": daily_limit,
+                "baselineUsageTokens": baseline_usage,
+                "ledgerUsedTokens": ledger_usage,
+                "knownUsedTokens": known_used,
+                "calculatedRemainingTokens": remaining,
+                "plannedFullRunTokens": required,
+                "observedAt": window_payload.get("observedAt"),
+                "limitSource": limit_payload.get("source"),
+                "limitObservedAt": limit_payload.get("observedAt"),
+                "windowSource": window_payload.get("source"),
+                "windowObservedAt": window_payload.get("observedAt"),
+                "windowStartedAt": window_started_at.isoformat().replace("+00:00", "Z"),
+                "source": window_payload.get("source"),
+                "headroom": remaining >= required,
+            }
+        )
     return {
-        "status": "YES" if remaining >= required else "NO",
-        "reason": "ACCOUNT_TPD_ATTESTATION_EVALUATED",
+        "status": "YES" if all(item["headroom"] for item in results) else "NO",
+        "reason": "MODEL_TPD_ATTESTATION_EVALUATED",
+        "models": results,
     }
 
 
@@ -290,8 +452,18 @@ async def run_preflight(args: argparse.Namespace) -> int:
     first_probe = next((probe for probe in probes if probe["model"] == first_model), probes[0])
     first_headroom, remaining = first_request_tpm_headroom(first_probe, first_tokens)
     tpd = tpd_headroom(
-        args.tpd_attestation or os.getenv("RAGAS_GROQ_TPD_ATTESTATION_PATH"),
+        getattr(args, "tpd_attestation", None) or os.getenv("RAGAS_GROQ_TPD_ATTESTATION_PATH"),
         models,
+        ledger_path=getattr(args, "ledger_path", None) or os.getenv("RAGAS_GROQ_DAILY_LEDGER_PATH"),
+        limit_attestation_path=getattr(args, "tpd_limit_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_LIMIT_ATTESTATION_PATH"),
+        window_attestation_path=getattr(args, "tpd_window_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_WINDOW_ATTESTATION_PATH"),
+        cost_attestation_path=getattr(args, "tpd_cost_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_COST_ATTESTATION_PATH"),
+        usage_attestation_path=getattr(args, "tpd_usage_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"),
+        pricing_path=getattr(args, "pricing_path", None) or os.getenv("RAGAS_GROQ_PRICING_PATH"),
     )
     provider_reachable = all(probe["networkReachable"] for probe in probes)
     daily_quota_error = any(probe["dailyQuotaError"] for probe in probes)
@@ -311,6 +483,72 @@ async def run_preflight(args: argparse.Namespace) -> int:
     print(f"FIRST_REQUEST_TPM_HEADROOM={'YES' if first_headroom else 'NO'}")
     print(f"TPD_HEADROOM_FOR_FULL_RUN={tpd['status']}")
     print(f"TPD_HEADROOM_REASON={tpd['reason']}")
+    details = tpd.get("models", [{}])
+    first_tpd = details[0] if details and isinstance(details[0], dict) else {}
+    attestation_source = first_tpd.get("source", first_tpd.get("limitSource", "UNKNOWN"))
+    attestation_observed_at = first_tpd.get(
+        "observedAt", first_tpd.get("limitObservedAt", "UNKNOWN")
+    )
+    proven_remaining = first_tpd.get(
+        "minimumProvenRemainingTokens",
+        first_tpd.get("calculatedRemainingTokens", "UNKNOWN"),
+    )
+    calculated_remaining = first_tpd.get(
+        "calculatedRemainingTokens", first_tpd.get("minimumProvenRemainingTokens", "UNKNOWN")
+    )
+    print(f"TPD_ATTESTATION_SOURCE={attestation_source}")
+    print(f"TPD_ATTESTATION_OBSERVED_AT={attestation_observed_at}")
+    print(f"TPD_WINDOW_ATTESTATION_SOURCE={first_tpd.get('windowSource', 'UNKNOWN')}")
+    print(f"TPD_WINDOW_ATTESTATION_OBSERVED_AT={first_tpd.get('windowObservedAt', 'UNKNOWN')}")
+    print(f"TPD_BASELINE_METHOD={first_tpd.get('method', 'WINDOW_BASELINE_PLUS_LEDGER')}")
+    print(
+        "TPD_OBSERVED_EXACT_COST_USD="
+        f"{first_tpd.get('observedOrganizationModelCostUsd', 'UNKNOWN')}"
+    )
+    print(
+        "TPD_RATE_LIMITED_PRICE_FLOOR_USD_PER_MILLION="
+        f"{first_tpd.get('rateLimitedTokenPriceFloorUsdPerMillion', 'UNKNOWN')}"
+    )
+    print(
+        "MAX_RATE_LIMITED_TOKENS_FROM_COST="
+        f"{first_tpd.get('maxRateLimitedTokensFromCost', 'UNKNOWN')}"
+    )
+    print(
+        "CALCULATED_MINIMUM_REMAINING_TOKENS="
+        f"{first_tpd.get('calculatedMinimumRemainingTokens', 'UNKNOWN')}"
+    )
+    print(
+        "TPD_WINDOW_BASELINE_STATUS="
+        + (
+            "EXACT_USAGE_BASELINE_INITIALIZED_AND_LEDGER_ACCOUNTED"
+            if first_tpd.get("method") == "EXACT_TOKEN_USAGE_BASELINE"
+            else "COST_BOUND_INITIALIZED_AND_LEDGER_ACCOUNTED"
+            if first_tpd.get("method") == "COST_DERIVED_CONSERVATIVE_UPPER_BOUND"
+            else "ATTESTED_AND_LEDGER_ACCOUNTED"
+            if first_tpd
+            else "UNKNOWN"
+        )
+    )
+    print(f"TPD_EXACT_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
+    print(f"TPD_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
+    print(f"TPD_NON_CACHED_INPUT_TOKENS={first_tpd.get('nonCachedInputTokens', 'UNKNOWN')}")
+    print(f"TPD_CONTEXT_TOKENS={first_tpd.get('contextTokens', 'UNKNOWN')}")
+    print(f"TPD_CACHED_INPUT_TOKENS={first_tpd.get('cachedInputTokens', 'UNKNOWN')}")
+    print(f"TPD_GENERATED_TOKENS={first_tpd.get('generatedTokens', 'UNKNOWN')}")
+    print(f"TPD_USAGE_BUCKET_TIMESTAMP={first_tpd.get('usageBucketTimestamp', 'UNKNOWN')}")
+    print(f"TPD_WINDOW_DATE_UTC={first_tpd.get('windowDateUtc', 'UNKNOWN')}")
+    print(f"TPD_DAILY_LIMIT_TOKENS={first_tpd.get('dailyLimitTokens', 'UNKNOWN')}")
+    print(f"TPD_LEDGER_USED_TOKENS={first_tpd.get('ledgerUsedTokens', 'UNKNOWN')}")
+    print(f"TPD_CALCULATED_REMAINING_TOKENS={calculated_remaining}")
+    print(
+        "TPD_PLANNED_FULL_RUN_TOKENS="
+        f"{first_tpd.get('plannedFullRunTokens', DEFAULT_TPD_PLANNED_TOKENS)}"
+    )
+    print(
+        "TPD_CONSERVATIVE_USED_TOKEN_UPPER_BOUND="
+        f"{first_tpd.get('conservativeUsedTokensUpperBound', 'UNKNOWN')}"
+    )
+    print(f"TPD_MINIMUM_PROVEN_REMAINING_TOKENS={proven_remaining}")
     print(f"PREFLIGHT_PASS={'YES' if all_gates_pass else 'NO'}")
     if not all_gates_pass:
         print("FROZEN_V3_RUN_STARTED=NO")

@@ -8,8 +8,8 @@ device evidence must not be replaced with invented numbers.
 
 | Item | Baseline before this fix | Candidate after this fix |
 | --- | --- | --- |
-| Backend | `87688b2942c3383cffcc5929907b1a2e90210c81` | `6b3353d064bb92322988dc8b0e02df000e7701fc` |
-| Mobile | `0e7722076857e3e79625afc376dfd57b1a1b1207` | `07942a7436712241a6bf93a79f50d4d5c188f5f3` |
+| Backend | `87688b2942c3383cffcc5929907b1a2e90210c81` | `12be2c1040ac34894814ef7a0634686b0a714821` |
+| Mobile | `0e7722076857e3e79625afc376dfd57b1a1b1207` | `2c1f027bf5acf1b145c614aa9fe321b4391b9537` |
 | Captured at | 2026-09-14, Asia/Ho_Chi_Minh | 2026-09-14, Asia/Ho_Chi_Minh |
 
 The baseline SHAs are immutable source references. The baseline runtime
@@ -57,6 +57,7 @@ pnpm exec jest --runInBand \
   apps/call-service/test/unit/infrastructure/mediasoup-call.engine.spec.ts \
   apps/call-service/test/unit/infrastructure/call-ws-exception.filter.spec.ts \
   apps/call-service/test/unit/infrastructure/call-socket-config.spec.ts \
+  apps/call-service/test/unit/infrastructure/call-service-runtime-lease.spec.ts \
   apps/call-service/test/unit/application/video-call.use-case.spec.ts
 pnpm run build:call
 

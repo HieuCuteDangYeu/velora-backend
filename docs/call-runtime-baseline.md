@@ -18,6 +18,17 @@ physical iPhone is now available, but the manual matrix has not been executed;
 an iOS simulator cannot prove CallKit/PushKit behavior. Do not mark the
 real-device gate green until the matrix is rerun.
 
+## Candidate build evidence
+
+- The iPhone 17 simulator candidate built, installed and launched successfully
+  with `npx expo run:ios --device "iPhone 17" --no-bundler`.
+- The Debug `iphoneos` candidate built successfully with Xcode, and the same
+  `com.quan.velora.dev` app installed and launched on the paired physical
+  iPhone.
+- These are compile/install checks only. No call, network-loss, camera-toggle
+  or CallKit measurements are inferred from them; the physical matrix below
+  remains pending.
+
 ## Safe diagnostic contract
 
 Development diagnostics and release telemetry may contain only:

@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
+from rag_eval.groq_tpd_empty import EMPTY_BASELINE_SCHEMA, empty_usage_tpd_headroom
 from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter
 from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
@@ -235,6 +236,7 @@ def tpd_headroom(
     window_attestation_path: str | None = None,
     cost_attestation_path: str | None = None,
     usage_attestation_path: str | None = None,
+    empty_attestation_path: str | None = None,
     pricing_path: str | None = None,
     now: datetime | None = None,
     max_age_seconds: int | None = None,
@@ -250,14 +252,30 @@ def tpd_headroom(
     window_payload = _read_json(window_attestation_path)
     cost_payload = _read_json(cost_attestation_path)
     usage_payload = _read_json(usage_attestation_path)
+    empty_payload = _read_json(empty_attestation_path)
     if (
         usage_payload is None
         and legacy is not None
         and legacy.get("schemaVersion") == USAGE_BASELINE_SCHEMA
     ):
         usage_payload = legacy
-    if usage_attestation_path and usage_payload is None:
+    if (
+        empty_payload is None
+        and legacy is not None
+        and legacy.get("schemaVersion") == EMPTY_BASELINE_SCHEMA
+    ):
+        empty_payload = legacy
+    if (
+        usage_payload is not None
+        and usage_payload.get("schemaVersion") == EMPTY_BASELINE_SCHEMA
+        and empty_payload is None
+    ):
+        empty_payload = usage_payload
+        usage_payload = None
+    if usage_attestation_path and usage_payload is None and empty_payload is None:
         return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_UNREADABLE"}
+    if empty_attestation_path and empty_payload is None:
+        return {"status": "UNKNOWN", "reason": "TPD_EMPTY_BASELINE_UNREADABLE"}
     if usage_payload is not None:
         if usage_payload.get("schemaVersion") != USAGE_BASELINE_SCHEMA:
             return {"status": "UNKNOWN", "reason": "TPD_USAGE_BASELINE_INVALID"}
@@ -270,6 +288,24 @@ def tpd_headroom(
         )
         return exact_usage_tpd_headroom(
             usage_payload,
+            models,
+            ledger,
+            limit_payload=limit_payload,
+            now=current,
+            max_age_seconds=age_limit,
+        )
+    if empty_payload is not None:
+        if empty_payload.get("schemaVersion") != EMPTY_BASELINE_SCHEMA:
+            return {"status": "UNKNOWN", "reason": "TPD_EMPTY_BASELINE_INVALID"}
+        if limit_attestation_path and limit_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_LIMIT_ATTESTATION_UNREADABLE"}
+        if limit_payload is None and legacy is not None and legacy.get("scope") == "TPD_LIMIT":
+            limit_payload = legacy
+        ledger = (
+            GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+        )
+        return empty_usage_tpd_headroom(
+            empty_payload,
             models,
             ledger,
             limit_payload=limit_payload,
@@ -463,6 +499,8 @@ async def run_preflight(args: argparse.Namespace) -> int:
         or os.getenv("RAGAS_GROQ_TPD_COST_ATTESTATION_PATH"),
         usage_attestation_path=getattr(args, "tpd_usage_attestation", None)
         or os.getenv("RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"),
+        empty_attestation_path=getattr(args, "tpd_empty_attestation", None)
+        or os.getenv("RAGAS_GROQ_TPD_EMPTY_ATTESTATION_PATH"),
         pricing_path=getattr(args, "pricing_path", None) or os.getenv("RAGAS_GROQ_PRICING_PATH"),
     )
     provider_reachable = all(probe["networkReachable"] for probe in probes)
@@ -522,10 +560,29 @@ async def run_preflight(args: argparse.Namespace) -> int:
         + (
             "EXACT_USAGE_BASELINE_INITIALIZED_AND_LEDGER_ACCOUNTED"
             if first_tpd.get("method") == "EXACT_TOKEN_USAGE_BASELINE"
+            else "EMPTY_CURRENT_WINDOW_VERIFIED"
+            if first_tpd.get("method") == "EMPTY_CURRENT_WINDOW_VERIFIED"
             else "COST_BOUND_INITIALIZED_AND_LEDGER_ACCOUNTED"
             if first_tpd.get("method") == "COST_DERIVED_CONSERVATIVE_UPPER_BOUND"
             else "ATTESTED_AND_LEDGER_ACCOUNTED"
             if first_tpd
+            else "UNKNOWN"
+        )
+    )
+    print(
+        "USAGE_ENDPOINT_REACHABLE="
+        + ("YES" if first_tpd.get("responseStatus") == 200 else "UNKNOWN")
+    )
+    print(
+        "PREVIOUS_BUCKET_POSITIVE_CONTROL="
+        + ("YES" if first_tpd.get("previousBucketPositiveControl") is True else "UNKNOWN")
+    )
+    print(
+        "CURRENT_BUCKET_EMPTY="
+        + (
+            "YES"
+            if first_tpd.get("method") == "EMPTY_CURRENT_WINDOW_VERIFIED"
+            and first_tpd.get("currentRecordCount") == 0
             else "UNKNOWN"
         )
     )

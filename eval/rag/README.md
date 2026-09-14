@@ -175,6 +175,22 @@ ledger baseline and counts later evaluator requests after `observedAt`.
 Identifiers such as organization, project, or API-key IDs are rejected from
 the artifact and are never stored.
 
+If the authenticated Organization Usage API returns no rows for the current
+day, use a separate EMPTY baseline only after proving the endpoint is healthy.
+The EMPTY artifact must include the exact single-day query bounds, `HTTP 200`,
+an `object-list` response with zero records, `NO_USAGE_DATA_FOR_TODAY` UI
+agreement, `organizationLimitsVerified`, `verifiedNoGroqTrafficDuringQuietPeriod`,
+and a `previousBucketPositiveControl` containing the known Sep-13 non-empty
+120B row. It also requires a SHA-256 `usageQueryFingerprint` over the model,
+All-projects scope, and the exact day. Missing rows, failed or malformed
+responses, month-to-date queries, stale observations, or absent endpoint
+health/quiet-period proof remain `UNKNOWN`; an EMPTY artifact must not include
+the normal token fields.
+
+The accepted status is `EMPTY_CURRENT_WINDOW_VERIFIED`. Its zero baseline is
+stored as a non-counting ledger epoch for that UTC date, and any later evaluator
+request reduces the proven remaining capacity through the existing ledger.
+
 When the usage console exposes only precise organization-wide model cost, a
 cost-derived upper-bound artifact can be used instead of a token-count window
 baseline. It must carry the underlying decimal precision and an operator

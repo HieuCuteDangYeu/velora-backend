@@ -45,6 +45,7 @@ LEDGER_FIELDS = (
     "baselineUsedTokens",
     "dailyLimitTokens",
     "organizationScope",
+    "windowKey",
     "baselineFingerprint",
     "pricingVersion",
 )
@@ -139,6 +140,8 @@ class GroqDailyTokenLedger:
                 or record.get("dailyLimitTokens") <= 0
                 or not isinstance(record.get("organizationScope"), str)
                 or not record.get("organizationScope")
+                or not isinstance(record.get("windowKey"), str)
+                or not record.get("windowKey")
             ):
                 raise LedgerPersistenceError(
                     f"invalid Groq TPD baseline record at line {line_number}"
@@ -203,12 +206,13 @@ class GroqDailyTokenLedger:
         daily_limit_tokens: int,
         baseline_used_tokens: int,
         organization_scope: str,
+        window_key: str,
         baseline_fingerprint: str,
         pricing_version: str,
     ) -> str:
         """Persist one immutable quota baseline without counting it as a request."""
 
-        if provider != "groq" or not model or not organization_scope:
+        if provider != "groq" or not model or not organization_scope or not window_key:
             raise LedgerPersistenceError("Groq TPD baseline identity is invalid")
         if parse_timestamp(observed_at) is None:
             raise LedgerPersistenceError("Groq TPD baseline timestamp is invalid")
@@ -235,6 +239,7 @@ class GroqDailyTokenLedger:
                 str(baseline_used_tokens),
                 baseline_fingerprint,
                 pricing_version,
+                window_key,
             )
         )
         baseline_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
@@ -251,6 +256,7 @@ class GroqDailyTokenLedger:
             "baselineUsedTokens": baseline_used_tokens,
             "dailyLimitTokens": daily_limit_tokens,
             "organizationScope": organization_scope,
+            "windowKey": window_key,
             "baselineFingerprint": baseline_fingerprint,
             "pricingVersion": pricing_version,
         }
@@ -278,6 +284,7 @@ class GroqDailyTokenLedger:
                             "baselineUsedTokens",
                             "dailyLimitTokens",
                             "organizationScope",
+                            "windowKey",
                             "baselineFingerprint",
                             "pricingVersion",
                         )

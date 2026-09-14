@@ -466,6 +466,7 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--tpd-limit-attestation")
     preflight.add_argument("--tpd-window-attestation")
     preflight.add_argument("--tpd-cost-attestation")
+    preflight.add_argument("--tpd-usage-attestation")
     preflight.add_argument("--pricing-path")
     preflight.add_argument("--ledger-path")
     preflight.add_argument("--timeout", type=float, default=10.0)

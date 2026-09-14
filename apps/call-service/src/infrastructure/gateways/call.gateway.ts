@@ -52,6 +52,7 @@ import type { ICallStateRepository } from '../../domain/interfaces/call-state.re
 import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
 import { CallWsExceptionFilter } from './call-ws-exception.filter';
 import { getCallSocketHeartbeatConfig } from './call-socket-config';
+import { safeCallErrorCode, shortCallIdentifier } from './call-debug';
 import {
   getCallNoAnswerTimeoutMs,
   getSessionExpiryDate,
@@ -324,9 +325,7 @@ export class CallGateway
       // Startup must fail closed at the call level, not by leaving existing
       // active sessions pretending that their in-memory media still exists.
       this.logger.error(
-        `Failed to reconcile active calls after media startup: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Failed to reconcile active calls after media startup errorCode=${safeCallErrorCode(error)}`,
       );
       throw error;
     }
@@ -411,7 +410,7 @@ export class CallGateway
     client.emit('call_socket_ready', {
       recentTerminalCalls: this.getRecentTerminalCalls(userId),
     });
-    this.logger.log(`Socket connected ${client.id} user=${userId}`);
+    this.logger.log(`Socket connected ${shortCallIdentifier(client.id)}`);
   }
 
   async handleDisconnect(client: Socket) {
@@ -426,9 +425,7 @@ export class CallGateway
         await this.reconcileDisconnectedCall(callId, userId, client.id);
       } catch (error) {
         this.logger.warn(
-          `Disconnect cleanup failed for call ${callId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Disconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }
@@ -1531,9 +1528,7 @@ export class CallGateway
             }
           } catch (error) {
             this.logger.warn(
-              `Deferred disconnect cleanup failed for call ${callId}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+              `Deferred disconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
             );
           } finally {
             if (!rescheduled) {
@@ -1584,9 +1579,7 @@ export class CallGateway
       }
     } catch (error) {
       this.logger.warn(
-        `Durable unanswered-call sweep failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Durable unanswered-call sweep failed errorCode=${safeCallErrorCode(error)}`,
       );
     } finally {
       this.expirySweepInFlight = false;
@@ -1710,7 +1703,9 @@ export class CallGateway
     );
 
     if (!user?.id) {
-      this.logger.warn(`Socket ${client.id} provided an invalid access token`);
+      this.logger.warn(
+        `Socket ${shortCallIdentifier(client.id)} provided an invalid access token`,
+      );
       client.disconnect(true);
       return null;
     }

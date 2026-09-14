@@ -1,5 +1,10 @@
 # Call runtime rollout
 
+The source comparison point and real-device evidence ledger live in
+[`call-runtime-baseline.md`](./call-runtime-baseline.md). Keep that ledger
+with the release candidate; do not substitute simulator-only evidence for the
+physical CallKit gate.
+
 `call-service` currently owns Mediasoup rooms and Socket.IO call state in one
 process. It must run as one instance until a future release adds both a
 Socket.IO adapter and Mediasoup room affinity.

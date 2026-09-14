@@ -190,6 +190,33 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     ).resolves.toEqual({ closed: false });
   });
 
+  it('rolls back an in-memory producer when durable state persistence fails', async () => {
+    const { engine, stateRepository, producer } = await createConnectedEngine();
+    const persistenceError = new Error('redis unavailable');
+    stateRepository.saveProducerState.mockRejectedValueOnce(persistenceError);
+
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-persist-failure',
+      ),
+    ).rejects.toThrow(persistenceError);
+
+    expect(producer.close).toHaveBeenCalledTimes(1);
+    await expect(engine.listActiveProducers('call-producer')).resolves.toEqual(
+      [],
+    );
+    expect(stateRepository.removeProducerState).toHaveBeenCalledWith(
+      'call-producer',
+      'user-a',
+      'producer-1',
+    );
+  });
+
   it('coalesces concurrent producer creation before enforcing uniqueness', async () => {
     const { engine, transport, producer } = await createConnectedEngine();
     let resolveProduce: (value: typeof producer) => void = () => undefined;

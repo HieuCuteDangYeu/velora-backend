@@ -654,6 +654,76 @@ describe('CallGateway reconnect recovery', () => {
     );
   });
 
+  it('replays the authoritative camera state when a produce retry reuses a producer', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'producer-video', userId: 'user-a', kind: 'video' },
+        ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(videoSession),
+    };
+    const produceUseCase = {
+      execute: jest.fn().mockResolvedValue({ producerId: 'producer-video' }),
+    };
+    const peerEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video-retry',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+      to: jest.fn().mockReturnValue(peerEmitter),
+    });
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository,
+      produceUseCase,
+    });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(peerEmitter),
+    } as never;
+
+    await gateway.handleSetVideoEnabled(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        enabled: false,
+        revision: 1,
+        actionId: 'camera-off',
+        requestId: 'camera-off',
+      },
+      client,
+    );
+
+    await gateway.handleProduce(
+      {
+        callId: 'call-1',
+        transportId: 'transport-1',
+        kind: 'video',
+        rtpParameters: {},
+        requestId: 'produce-retry',
+      },
+      client,
+    );
+
+    expect(peerEmitter.emit).toHaveBeenCalledWith('new_producer', {
+      callId: 'call-1',
+      userId: 'user-a',
+      producerId: 'producer-video',
+      kind: 'video',
+      paused: true,
+      revision: 1,
+    });
+  });
+
   it('does not publish a camera update when the call terminates during media mutation', async () => {
     const videoSession = new CallSession({
       ...activeSession,
@@ -968,6 +1038,7 @@ describe('CallGateway reconnect recovery', () => {
 function createGateway(overrides?: {
   initiateCallUseCase?: { execute: jest.Mock };
   joinCallUseCase?: { execute: jest.Mock };
+  produceUseCase?: { execute: jest.Mock };
   leaveCallUseCase?: { execute: jest.Mock };
   rejectCallUseCase?: { execute: jest.Mock };
   acceptIncomingCallUseCase?: { execute: jest.Mock };
@@ -991,7 +1062,7 @@ function createGateway(overrides?: {
     (overrides?.joinCallUseCase ?? { execute: jest.fn() }) as never,
     {} as never,
     {} as never,
-    {} as never,
+    (overrides?.produceUseCase ?? { execute: jest.fn() }) as never,
     {} as never,
     (overrides?.leaveCallUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.rejectCallUseCase ?? { execute: jest.fn() }) as never,

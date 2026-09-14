@@ -246,6 +246,66 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     ]);
   });
 
+  it('replaces a producer left on an old send transport during a media rebuild', async () => {
+    const { engine, transport, producer } = await createConnectedEngine();
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-initial',
+      ),
+    ).resolves.toEqual({ producerId: 'producer-1' });
+
+    const replacementProducer = {
+      id: 'producer-2',
+      on: jest.fn(),
+      close: jest.fn(),
+    };
+    const replacementTransport = {
+      ...transport,
+      id: 'transport-2',
+      produce: jest.fn().mockResolvedValue(replacementProducer),
+    };
+    const room = (
+      engine as unknown as { rooms: Map<string, unknown> }
+    ).rooms.get('call-producer') as {
+      router: { createWebRtcTransport: jest.Mock };
+    };
+    room.router.createWebRtcTransport.mockResolvedValueOnce(
+      replacementTransport,
+    );
+
+    await engine.createSendTransport('call-producer', 'user-a');
+    await engine.connectTransport('call-producer', 'user-a', 'transport-2', {});
+
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-2',
+        'video',
+        {},
+        'request-rebuild',
+      ),
+    ).resolves.toEqual({
+      producerId: 'producer-2',
+      replacedProducerId: 'producer-1',
+    });
+    expect(producer.close).toHaveBeenCalledTimes(1);
+    expect(() => engine.listActiveProducers('call-producer')).not.toThrow();
+    await expect(engine.listActiveProducers('call-producer')).resolves.toEqual([
+      {
+        producerId: 'producer-2',
+        userId: 'user-a',
+        kind: 'video',
+        paused: false,
+      },
+    ]);
+  });
+
   it('does not resurrect a producer that finishes after terminal room cleanup', async () => {
     const { engine, transport, producer } = await createConnectedEngine();
     let resolveProduce: (value: typeof producer) => void = () => undefined;

@@ -710,28 +710,44 @@ export class CallGateway
       payload.requestId,
     );
 
+    const { producerId, replacedProducerId } = result;
+    if (replacedProducerId) {
+      client.to(payload.callId).emit('producer_closed', {
+        callId: payload.callId,
+        producerId: replacedProducerId,
+        kind: payload.kind,
+      });
+    }
+
     client.emit('producer_created', {
       callId: payload.callId,
       userId,
       transportId: payload.transportId,
-      ...result,
+      producerId,
       kind: payload.kind,
       ...(payload.requestId ? { requestId: payload.requestId } : {}),
     });
 
     if (payload.kind === 'video') {
-      const key = this.videoStateKey(payload.callId, result.producerId);
+      const key = this.videoStateKey(payload.callId, producerId);
       if (!this.videoStatesByProducer.has(key)) {
         this.videoStatesByProducer.set(key, { enabled: true, revision: 0 });
       }
     }
 
+    const videoState =
+      payload.kind === 'video'
+        ? this.getVideoState(payload.callId, producerId)
+        : undefined;
+
     client.to(payload.callId).emit('new_producer', {
       callId: payload.callId,
       userId,
-      producerId: result.producerId,
+      producerId,
       kind: payload.kind,
-      ...(payload.kind === 'video' ? { paused: false, revision: 0 } : {}),
+      ...(videoState
+        ? { paused: !videoState.enabled, revision: videoState.revision }
+        : {}),
     });
   }
 

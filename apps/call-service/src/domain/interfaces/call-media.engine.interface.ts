@@ -16,6 +16,13 @@ export interface CreateRecvTransportResult {
 
 export interface ProducedMediaResult {
   producerId: string;
+  /**
+   * Set when a media rebuild replaced a producer that was still attached to
+   * an older transport. The gateway uses this to notify peers before the new
+   * producer announcement so their consumer registry cannot retain a stale
+   * producer.
+   */
+  replacedProducerId?: string;
 }
 
 export interface ActiveProducerResult {

@@ -311,11 +311,6 @@ export class MediasoupCallMediaEngine
     }
 
     const producerKey = this.producerUserKindKey(userId, kind);
-    const existingProducerId = room.producerByUserKind.get(producerKey);
-    if (existingProducerId && room.producers.has(existingProducerId)) {
-      throw new Error('Media producer already exists');
-    }
-
     const creationKey = `${callId}:${producerKey}`;
     const pendingCreation = this.producerCreationPromises.get(creationKey);
     if (pendingCreation) {
@@ -331,7 +326,11 @@ export class MediasoupCallMediaEngine
       throw new Error('Media producer already exists');
     }
 
-    const creation = this.createProducer(
+    // Keep replacement and creation behind the same single-flight promise.
+    // A rebuild can race the old transport's close callback; serializing the
+    // close-before-create sequence prevents two producers for one participant
+    // and media kind even in that window.
+    const creation = this.createProducerAfterReplacement(
       room,
       callId,
       userId,
@@ -348,6 +347,43 @@ export class MediasoupCallMediaEngine
         this.producerCreationPromises.delete(creationKey);
       }
     }
+  }
+
+  private async createProducerAfterReplacement(
+    room: RoomRuntimeState,
+    callId: string,
+    userId: string,
+    transportId: string,
+    kind: MediaType,
+    rtpParameters: Record<string, unknown>,
+    requestId?: string,
+  ): Promise<ProducedMediaResult> {
+    const producerKey = this.producerUserKindKey(userId, kind);
+    const existingProducerId = room.producerByUserKind.get(producerKey);
+    let replacedProducerId: string | undefined;
+
+    if (existingProducerId && room.producers.has(existingProducerId)) {
+      const existingMeta = room.producerMeta.get(existingProducerId);
+      if (existingMeta?.transportId === transportId) {
+        throw new Error('Media producer already exists');
+      }
+
+      // A new send transport indicates a controlled media rebuild. Close the
+      // producer on the old transport before creating its replacement.
+      await this.closeProducer(callId, userId, existingProducerId);
+      replacedProducerId = existingProducerId;
+    }
+
+    const result = await this.createProducer(
+      room,
+      callId,
+      userId,
+      transportId,
+      kind,
+      rtpParameters,
+      requestId,
+    );
+    return replacedProducerId ? { ...result, replacedProducerId } : result;
   }
 
   private async createProducer(

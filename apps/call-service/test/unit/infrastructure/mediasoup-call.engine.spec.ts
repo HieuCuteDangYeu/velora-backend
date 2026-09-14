@@ -17,7 +17,7 @@ function createEngine(createRouter: jest.Mock) {
   const worker = { pid: 1, createRouter };
   (engine as unknown as { workers: unknown[] }).workers.push(worker);
 
-  return { engine, stateRepository };
+  return { engine, stateRepository, worker };
 }
 
 const waitForRoomAllocation = async () => {
@@ -437,5 +437,48 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     resolveProduce(producer);
     await expect(creation).rejects.toThrow('Call room not found');
     expect(producer.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('MediasoupCallMediaEngine fixed-port WebRtcServer', () => {
+  it('uses the worker WebRtcServer instead of allocating a per-transport port', async () => {
+    const transport = {
+      id: 'transport-fixed-port',
+      iceParameters: {},
+      iceCandidates: [],
+      dtlsParameters: {},
+      close: jest.fn(),
+      on: jest.fn(),
+      observer: { on: jest.fn() },
+    };
+    const router = {
+      id: 'router-fixed-port',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    };
+    const { engine, worker } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    const webRtcServer = { id: 'shared-udp-socket' };
+    (
+      engine as unknown as {
+        webRtcServers: Map<unknown, unknown>;
+      }
+    ).webRtcServers.set(worker, webRtcServer);
+
+    await engine.createRoom('call-fixed-port');
+    await engine.createSendTransport('call-fixed-port', 'user-a');
+
+    expect(router.createWebRtcTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        webRtcServer,
+        enableUdp: true,
+        enableTcp: false,
+      }),
+    );
+    expect(router.createWebRtcTransport.mock.calls[0][0]).not.toHaveProperty(
+      'listenIps',
+    );
   });
 });

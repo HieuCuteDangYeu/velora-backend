@@ -226,7 +226,7 @@ services:
     expose:
       - '3007'
     ports:
-      - '40000-40100:40000-40100/udp'
+      - '40000:40000/udp'
     environment:
       NODE_ENV: production
       CALL_SINGLE_INSTANCE_GUARD: 'true'

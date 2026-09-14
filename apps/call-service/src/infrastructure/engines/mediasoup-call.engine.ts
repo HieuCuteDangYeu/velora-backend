@@ -70,10 +70,19 @@ export class MediasoupCallMediaEngine
     Promise<ProducedMediaResult>
   >();
   private readonly workers: mediasoup.types.Worker[] = [];
+  private readonly webRtcServers = new Map<
+    mediasoup.types.Worker,
+    mediasoup.types.WebRtcServer
+  >();
   private workerCursor = 0;
   private readonly workerCount = Math.max(
     1,
     Number(process.env.MEDIASOUP_WORKERS || 1),
+  );
+  // A WebRtcServer multiplexes every transport for one worker over one UDP
+  // socket. This is useful behind routers that cannot forward a port range.
+  private readonly webRtcServerPort = this.readOptionalPort(
+    process.env.MEDIASOUP_WEBRTC_SERVER_PORT,
   );
 
   constructor(private readonly stateRepository: RedisCallStateRepository) {}
@@ -90,10 +99,17 @@ export class MediasoupCallMediaEngine
       );
     }
 
+    if (this.webRtcServerPort && this.workerCount !== 1) {
+      throw new Error(
+        'MEDIASOUP_WEBRTC_SERVER_PORT requires MEDIASOUP_WORKERS=1 because each worker needs its own UDP socket',
+      );
+    }
+
     await this.bootstrapWorkers(this.workerCount);
   }
 
   onModuleDestroy(): Promise<void> {
+    this.webRtcServers.forEach((webRtcServer) => webRtcServer.close());
     this.workers.forEach((worker) => worker.close());
     return Promise.resolve();
   }
@@ -763,8 +779,25 @@ export class MediasoupCallMediaEngine
 
       worker.on('died', () => {
         this.logger.error(`Mediasoup worker died pid=${worker.pid}`);
+        this.webRtcServers.get(worker)?.close();
+        this.webRtcServers.delete(worker);
         this.workers.splice(this.workers.indexOf(worker), 1);
       });
+
+      if (this.webRtcServerPort) {
+        const webRtcServer = await worker.createWebRtcServer({
+          listenInfos: [
+            {
+              protocol: 'udp',
+              ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
+              announcedAddress:
+                process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+              port: this.webRtcServerPort,
+            },
+          ],
+        });
+        this.webRtcServers.set(worker, webRtcServer);
+      }
 
       this.workers.push(worker);
     }
@@ -797,13 +830,18 @@ export class MediasoupCallMediaEngine
   ): Promise<CreateSendTransportResult | CreateRecvTransportResult> {
     const room = this.getRoomOrThrow(callId);
 
+    const webRtcServer = this.webRtcServers.get(room.worker);
     const transport = await room.router.createWebRtcTransport({
-      listenIps: [
-        {
-          ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
-        },
-      ],
+      ...(webRtcServer
+        ? { webRtcServer }
+        : {
+            listenIps: [
+              {
+                ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
+                announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+              },
+            ],
+          }),
       enableUdp: true,
       enableTcp: false,
       initialAvailableOutgoingBitrate: 800000,
@@ -848,6 +886,18 @@ export class MediasoupCallMediaEngine
       iceCandidates: transport.iceCandidates,
       dtlsParameters: transport.dtlsParameters,
     };
+  }
+
+  private readOptionalPort(value: string | undefined): number | undefined {
+    if (!value?.trim()) return undefined;
+
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(
+        'MEDIASOUP_WEBRTC_SERVER_PORT must be an integer between 1 and 65535',
+      );
+    }
+    return port;
   }
 
   private getRoomOrThrow(callId: string): RoomRuntimeState {

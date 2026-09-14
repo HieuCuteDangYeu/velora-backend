@@ -230,6 +230,8 @@ services:
     environment:
       NODE_ENV: production
       CALL_SINGLE_INSTANCE_GUARD: 'true'
+      MEDIASOUP_WEBRTC_SERVER_PORT: '40000'
+      MEDIASOUP_WORKERS: '1'
     env_file:
       - .env
     depends_on:

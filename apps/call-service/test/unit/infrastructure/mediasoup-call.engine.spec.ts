@@ -306,6 +306,77 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     ]);
   });
 
+  it('keeps old request ids idempotent after replacing a producer', async () => {
+    const { engine, transport } = await createConnectedEngine();
+    const initialProducer = {
+      id: 'producer-initial',
+      on: jest.fn(),
+      close: jest.fn(),
+    };
+    transport.produce.mockResolvedValueOnce(initialProducer);
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-1',
+        'video',
+        {},
+        'request-before-rebuild',
+      ),
+    ).resolves.toEqual({ producerId: 'producer-initial' });
+
+    const replacementProducer = {
+      id: 'producer-replacement',
+      on: jest.fn(),
+      close: jest.fn(),
+    };
+    const replacementTransport = {
+      ...transport,
+      id: 'transport-replacement',
+      produce: jest.fn().mockResolvedValue(replacementProducer),
+    };
+    const room = (
+      engine as unknown as { rooms: Map<string, unknown> }
+    ).rooms.get('call-producer') as {
+      router: { createWebRtcTransport: jest.Mock };
+    };
+    room.router.createWebRtcTransport.mockResolvedValueOnce(
+      replacementTransport,
+    );
+    await engine.createSendTransport('call-producer', 'user-a');
+    await engine.connectTransport(
+      'call-producer',
+      'user-a',
+      'transport-replacement',
+      {},
+    );
+
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-replacement',
+        'video',
+        {},
+        'request-after-rebuild',
+      ),
+    ).resolves.toEqual({
+      producerId: 'producer-replacement',
+      replacedProducerId: 'producer-initial',
+    });
+    await expect(
+      engine.produce(
+        'call-producer',
+        'user-a',
+        'transport-replacement',
+        'video',
+        {},
+        'request-before-rebuild',
+      ),
+    ).resolves.toEqual({ producerId: 'producer-replacement' });
+    expect(replacementTransport.produce).toHaveBeenCalledTimes(1);
+  });
+
   it('does not resurrect a producer that finishes after terminal room cleanup', async () => {
     const { engine, transport, producer } = await createConnectedEngine();
     let resolveProduce: (value: typeof producer) => void = () => undefined;

@@ -16,6 +16,7 @@ import type {
   RouterRtpCapabilitiesResult,
 } from '../../domain/interfaces/call-media.engine.interface';
 import { RedisCallStateRepository } from '../repositories/redis-call-state.repository';
+import { safeCallErrorCode, shortCallIdentifier } from '../gateways/call-debug';
 import {
   getAnnouncedIpAddressFamily,
   validateMediasoupNetworkConfiguration,
@@ -361,6 +362,17 @@ export class MediasoupCallMediaEngine
     const producerKey = this.producerUserKindKey(userId, kind);
     const existingProducerId = room.producerByUserKind.get(producerKey);
     let replacedProducerId: string | undefined;
+    let replacedProducerOperations: Array<
+      [
+        string,
+        {
+          producerId: string;
+          transportId: string;
+          userId: string;
+          kind: MediaType;
+        },
+      ]
+    > = [];
 
     if (existingProducerId && room.producers.has(existingProducerId)) {
       const existingMeta = room.producerMeta.get(existingProducerId);
@@ -370,6 +382,9 @@ export class MediasoupCallMediaEngine
 
       // A new send transport indicates a controlled media rebuild. Close the
       // producer on the old transport before creating its replacement.
+      replacedProducerOperations = [
+        ...room.producerOperations.entries(),
+      ].filter(([, operation]) => operation.producerId === existingProducerId);
       await this.closeProducer(callId, userId, existingProducerId);
       replacedProducerId = existingProducerId;
     }
@@ -383,6 +398,17 @@ export class MediasoupCallMediaEngine
       rtpParameters,
       requestId,
     );
+    // Keep request-id idempotency stable across a controlled replacement. A
+    // lost ACK from the old transport may arrive after the rebuild; replaying
+    // that request must resolve to the replacement rather than creating a
+    // second producer for the same participant/kind.
+    for (const [operationKey, operation] of replacedProducerOperations) {
+      room.producerOperations.set(operationKey, {
+        ...operation,
+        producerId: result.producerId,
+        transportId,
+      });
+    }
     return replacedProducerId ? { ...result, replacedProducerId } : result;
   }
 
@@ -449,9 +475,7 @@ export class MediasoupCallMediaEngine
         .removeProducerState(callId, userId, producer.id)
         .catch((error: unknown) => {
           this.logger.warn(
-            `Failed to remove producer state after transport close producer=${producer.id}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `Failed to remove producer state after transport close producer=${shortCallIdentifier(producer.id)} errorCode=${safeCallErrorCode(error)}`,
           );
         });
     });

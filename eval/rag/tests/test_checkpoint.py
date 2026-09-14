@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from rag_eval.checkpoint import JudgeCheckpointStore
@@ -60,6 +62,25 @@ def test_checkpoint_allows_revision_with_same_evaluator_compatibility(tmp_path):
     restored = JudgeCheckpointStore(path, {**IDENTITY, "evaluatorSha": "c" * 40})
 
     assert restored.get("IN1001-1", "faithfulness")["value"] == 0.8
+
+
+def test_legacy_checkpoint_lineage_id_is_stable_across_evaluator_revisions(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": "ragas-judge-checkpoint-v1",
+                "identity": IDENTITY,
+                "entries": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = JudgeCheckpointStore(path, IDENTITY)
+    second = JudgeCheckpointStore(path, {**IDENTITY, "evaluatorSha": "c" * 40})
+
+    assert first.checkpoint_id == second.checkpoint_id
 
 
 def test_checkpoint_rejects_different_evaluator_compatibility(tmp_path):

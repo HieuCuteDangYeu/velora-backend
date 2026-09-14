@@ -17,6 +17,12 @@ from dataclasses import dataclass
 from datetime import UTC
 from typing import Any
 
+from rag_eval.recovery import (
+    DailyRecoveryDeferred,
+    MultiDayRecoveryStore,
+    RecoveryStateError,
+    daily_safety_margin_tokens,
+)
 from rag_eval.tpd_ledger import (
     GroqDailyTokenLedger,
     LedgerPersistenceError,
@@ -477,6 +483,7 @@ class JudgeUsageTracker:
         self._ledger = (
             GroqDailyTokenLedger.from_env() if provider.strip().lower() == "groq" else None
         )
+        self._recovery_store: MultiDayRecoveryStore | None = None
         try:
             self._max_retries = max(0, int(os.getenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")))
         except ValueError:
@@ -498,16 +505,24 @@ class JudgeUsageTracker:
             except (TypeError, ValueError):
                 reserved_output = 256
             estimated_input = estimate_input_tokens(kwargs.get("messages", []))
-            reservation = await self._limiter.acquire(
+            request_reservation_tokens = (
                 estimated_input + reserved_output + self._limiter.safety_tokens
             )
+            reservation = await self._limiter.acquire(request_reservation_tokens)
             released = False
             key = _usage_key.get()
             metric = _metric_name.get()
             try:
                 for attempt in range(1, self._max_retries + 2):
+                    recovery_request_id = self._prepare_recovery_request(
+                        key=key,
+                        metric=metric,
+                        attempt=attempt,
+                        reservation_tokens=request_reservation_tokens,
+                    )
                     fallback_request_id = (
-                        self._ledger.new_request_id() if self._ledger is not None else None
+                        recovery_request_id
+                        or (self._ledger.new_request_id() if self._ledger is not None else None)
                     )
                     started = time.monotonic()
                     try:
@@ -538,6 +553,7 @@ class JudgeUsageTracker:
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,
+                                "reservationTokens": request_reservation_tokens,
                                 "inputTokens": input_tokens,
                                 "outputTokens": output_tokens,
                                 "totalTokens": actual_tokens,
@@ -556,11 +572,15 @@ class JudgeUsageTracker:
                             },
                         )
                         try:
-                            self._record_ledger(
+                            ledger_result = self._record_ledger(
                                 key=key,
                                 metric=metric,
                                 model=kwargs.get("model", "UNKNOWN"),
-                                request_id=getattr(response, "id", None) or fallback_request_id,
+                                request_id=(
+                                    fallback_request_id
+                                    if recovery_request_id
+                                    else getattr(response, "id", None) or fallback_request_id
+                                ),
                                 status="SUCCESS",
                                 provider_status=200,
                                 provider_category="SUCCESS",
@@ -571,14 +591,15 @@ class JudgeUsageTracker:
                                 output_tokens=output_tokens,
                                 total_tokens=actual_tokens,
                             )
-                        except LedgerPersistenceError:
+                            self._account_recovery(ledger_result)
+                        except (LedgerPersistenceError, RecoveryStateError):
                             await self._limiter.release(reservation, actual_tokens)
                             released = True
                             raise
                         await self._limiter.release(reservation, actual_tokens)
                         released = True
                         return response
-                    except LedgerPersistenceError:
+                    except (LedgerPersistenceError, RecoveryStateError):
                         raise
                     except Exception as error:
                         status = getattr(error, "status_code", None)
@@ -614,6 +635,7 @@ class JudgeUsageTracker:
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
                                 "reservedOutputTokens": reserved_output,
+                                "reservationTokens": request_reservation_tokens,
                                 "inputTokens": input_tokens,
                                 "outputTokens": output_tokens,
                                 "totalTokens": actual_tokens,
@@ -635,11 +657,15 @@ class JudgeUsageTracker:
                                 "configuredConcurrency": self._limiter.concurrency,
                             },
                         )
-                        self._record_ledger(
+                        ledger_result = self._record_ledger(
                             key=key,
                             metric=metric,
                             model=kwargs.get("model", "UNKNOWN"),
-                            request_id=getattr(error, "request_id", None) or fallback_request_id,
+                            request_id=(
+                                fallback_request_id
+                                if recovery_request_id
+                                else getattr(error, "request_id", None) or fallback_request_id
+                            ),
                             status="FAILURE",
                             provider_status=provider_status,
                             provider_category=category,
@@ -650,6 +676,7 @@ class JudgeUsageTracker:
                             output_tokens=output_tokens,
                             total_tokens=actual_tokens,
                         )
+                        self._account_recovery(ledger_result)
                         if not transient or attempt > self._max_retries:
                             await self._limiter.release(reservation)
                             released = True
@@ -666,6 +693,47 @@ class JudgeUsageTracker:
                 raise
 
         client.chat.completions.create = tracked_create
+
+    def configure_multiday_recovery(self, store: MultiDayRecoveryStore) -> None:
+        if self._ledger is None:
+            raise ValueError("multi-day semantic recovery requires Groq ledger accounting")
+        self._recovery_store = store
+        store.reconcile_ledger(self._ledger)
+
+    def _prepare_recovery_request(
+        self,
+        *,
+        key: str | None,
+        metric: str | None,
+        attempt: int,
+        reservation_tokens: int,
+    ) -> str | None:
+        if self._recovery_store is None:
+            return None
+        _run_id, separator, case_id = (key or "").rpartition(":")
+        if not separator or not case_id or not metric:
+            raise DailyRecoveryDeferred("RECOVERY_REQUEST_IDENTITY_INCOMPLETE")
+        prepared = self._recovery_store.prepare_request(
+            case_id=case_id,
+            metric=metric,
+            attempt=attempt,
+            reservation_tokens=reservation_tokens,
+            safety_margin_tokens=daily_safety_margin_tokens(),
+        )
+        return str(prepared["requestId"])
+
+    def _account_recovery(
+        self, ledger_result: tuple[str, int, str, str] | None
+    ) -> None:
+        if self._recovery_store is None or ledger_result is None:
+            return
+        request_id, counted_tokens, status, provider_category = ledger_result
+        self._recovery_store.mark_accounted(
+            request_id,
+            counted_tokens,
+            outcome_status=status,
+            provider_category=provider_category,
+        )
 
     def _record(self, key: str | None, call: dict[str, Any]) -> None:
         if key:
@@ -687,9 +755,9 @@ class JudgeUsageTracker:
         input_tokens: int | None,
         output_tokens: int | None,
         total_tokens: int | None,
-    ) -> None:
+    ) -> tuple[str, int, str, str] | None:
         if self._ledger is None:
-            return
+            return None
         run_id, separator, case_id = (key or "").rpartition(":")
         if not separator:
             run_id = key
@@ -710,29 +778,34 @@ class JudgeUsageTracker:
                 attempt=attempt,
             )
         )
-        self._ledger.record(
-            {
-                "schemaVersion": "groq-tpd-ledger-record-v1",
-                "requestId": stable_request_id,
-                "timestamp": utc_timestamp(),
-                "provider": "groq",
-                "model": model_name,
-                "inputTokens": input_tokens,
-                "outputTokens": output_tokens,
-                "totalTokens": total_tokens,
-                "estimatedInputTokens": estimated_input_tokens,
-                "reservedOutputTokens": reserved_output_tokens,
-                "countedTokens": counted_tokens,
-                "countingMode": "PROVIDER" if provider_total else "CONSERVATIVE_UPPER_BOUND",
-                "runId": run_id,
-                "caseId": case_id,
-                "judgeOperation": metric or "UNKNOWN",
-                "status": status,
-                "providerStatus": provider_status,
-                "providerCategory": provider_category,
-                "attempt": attempt,
-            }
-        )
+        record = {
+            "schemaVersion": "groq-tpd-ledger-record-v1",
+            "requestId": stable_request_id,
+            "timestamp": utc_timestamp(),
+            "provider": "groq",
+            "model": model_name,
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+            "totalTokens": total_tokens,
+            "estimatedInputTokens": estimated_input_tokens,
+            "reservedOutputTokens": reserved_output_tokens,
+            "countedTokens": counted_tokens,
+            "countingMode": "PROVIDER" if provider_total else "CONSERVATIVE_UPPER_BOUND",
+            "runId": run_id,
+            "caseId": case_id,
+            "judgeOperation": metric or "UNKNOWN",
+            "status": status,
+            "providerStatus": provider_status,
+            "providerCategory": provider_category,
+            "attempt": attempt,
+        }
+        if self._recovery_store is not None:
+            epoch = self._recovery_store.request_epoch(stable_request_id)
+            if epoch is None:
+                raise LedgerPersistenceError("recovery request epoch binding is missing")
+            record.update(epoch)
+        self._ledger.record(record)
+        return stable_request_id, counted_tokens, status, provider_category
 
     def begin(self, key: str) -> None:
         _usage_key.set(key)

@@ -16,6 +16,7 @@ from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
 from rag_eval.groq_tpd_empty import EMPTY_BASELINE_SCHEMA, empty_usage_tpd_headroom
 from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter
+from rag_eval.recovery import RecoveryOperation, multiday_tpd_preflight
 from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
 
 DEFAULT_PROBE_MODELS = ("openai/gpt-oss-120b",)
@@ -182,6 +183,46 @@ def _read_json(path: str | None) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _read_recovery_operations(path: str | None) -> list[RecoveryOperation] | None:
+    """Read a content-free pending-operation plan for multi-day preflight."""
+
+    if not path:
+        return None
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    raw_operations = payload.get("operations") if isinstance(payload, dict) else payload
+    if not isinstance(raw_operations, list):
+        return None
+    operations: list[RecoveryOperation] = []
+    seen: set[str] = set()
+    for item in raw_operations:
+        if not isinstance(item, dict):
+            return None
+        case_id = item.get("caseId")
+        metric_name = item.get("metricName")
+        reservation = item.get("reservationTokens")
+        status = item.get("status", "UNAVAILABLE")
+        if (
+            not isinstance(case_id, str)
+            or not case_id
+            or not isinstance(metric_name, str)
+            or not metric_name
+            or isinstance(reservation, bool)
+            or not isinstance(reservation, int)
+            or reservation <= 0
+            or status not in {"UNAVAILABLE", "NOT_EVALUATED"}
+        ):
+            return None
+        operation = RecoveryOperation(case_id, metric_name, reservation, status)
+        if operation.key in seen:
+            return None
+        seen.add(operation.key)
+        operations.append(operation)
+    return operations
 
 
 def _model_attestation(payload: dict[str, Any], model: str) -> dict[str, Any] | None:
@@ -508,7 +549,29 @@ async def run_preflight(args: argparse.Namespace) -> int:
     if daily_quota_error:
         tpd = {"status": "NO", "reason": "PROVIDER_DAILY_QUOTA_ERROR"}
     ready = scheduler_ready(snapshot)
-    all_gates_pass = provider_reachable and ready and first_headroom and tpd["status"] == "YES"
+    multi_day = bool(
+        getattr(args, "multi_day_recovery", False)
+        or os.getenv("RAGAS_MULTI_DAY_RECOVERY", "false").lower() == "true"
+    )
+    recovery_plan: dict[str, Any] | None = None
+    if multi_day:
+        operations_path = getattr(args, "recovery_operations", None) or os.getenv(
+            "RAGAS_MULTI_DAY_RECOVERY_OPERATIONS_PATH"
+        )
+        operations = _read_recovery_operations(operations_path)
+        if operations is None:
+            recovery_plan = {
+                "status": "UNKNOWN",
+                "reason": "MULTI_DAY_RECOVERY_OPERATIONS_REQUIRED",
+            }
+        else:
+            recovery_plan = multiday_tpd_preflight(tpd, operations)
+    tpd_gate = (
+        recovery_plan is not None and recovery_plan.get("status") == "YES"
+        if multi_day
+        else tpd["status"] == "YES"
+    )
+    all_gates_pass = provider_reachable and ready and first_headroom and tpd_gate
 
     print(f"PROVIDER_REACHABLE={'YES' if provider_reachable else 'NO'}")
     print(f"TPM_SCHEDULER_READY={'YES' if ready else 'NO'}")
@@ -606,13 +669,43 @@ async def run_preflight(args: argparse.Namespace) -> int:
         f"{first_tpd.get('conservativeUsedTokensUpperBound', 'UNKNOWN')}"
     )
     print(f"TPD_MINIMUM_PROVEN_REMAINING_TOKENS={proven_remaining}")
+    if multi_day:
+        assert recovery_plan is not None
+        print(
+            "CAN_RUN_SAFE_DAILY_SLICE="
+            f"{'YES' if recovery_plan.get('status') == 'YES' else 'NO'}"
+        )
+        print(
+            "DAILY_RECOVERY_SLICE_COMPLETE="
+            f"{'YES' if recovery_plan.get('waitingForNextTpdWindow') else 'NO'}"
+        )
+        print(
+            "DAILY_RECOVERY_STOP_REASON="
+            f"{recovery_plan.get('dailyRecoveryStopReason') or 'NONE'}"
+        )
+        print(
+            "CURRENT_DAY_SAFE_BUDGET_TOKENS="
+            f"{recovery_plan.get('currentDaySafeBudgetTokens', 'UNKNOWN')}"
+        )
+        print(
+            "CURRENT_DAY_SCHEDULED_RESERVATION_TOKENS="
+            f"{recovery_plan.get('scheduledReservationTokens', 'UNKNOWN')}"
+        )
+        print(
+            "REMAINING_RECOVERY_TOKENS_ESTIMATED="
+            f"{recovery_plan.get('remainingRecoveryEstimateTokens', 'UNKNOWN')}"
+        )
     print(f"PREFLIGHT_PASS={'YES' if all_gates_pass else 'NO'}")
     if not all_gates_pass:
         print("FROZEN_V3_RUN_STARTED=NO")
-        blocker = (
-            "GROQ_TPD_HEADROOM_UNAVAILABLE"
-            if tpd["status"] != "YES"
-            else "GROQ_TPM_PREFLIGHT_FAILED"
-        )
+        blocker = "GROQ_TPM_PREFLIGHT_FAILED"
+        if multi_day and recovery_plan is not None:
+            blocker = (
+                "GROQ_TPD_SLICE_UNAVAILABLE"
+                if recovery_plan.get("status") != "UNKNOWN"
+                else "GROQ_TPD_HEADROOM_UNAVAILABLE"
+            )
+        elif tpd["status"] != "YES":
+            blocker = "GROQ_TPD_HEADROOM_UNAVAILABLE"
         print(f"BLOCKER={blocker}")
     return 0 if all_gates_pass else 1

@@ -207,6 +207,8 @@ def test_process_restart_and_later_ledger_usage_preserve_epoch(tmp_path):
     assert resumed["models"][0]["baselineId"] == first["models"][0]["baselineId"]
     assert resumed["models"][0]["ledgerUsedTokens"] == 1_000
     assert resumed["models"][0]["minimumProvenRemainingTokens"] == 89_000
+    assert resumed["models"][0]["epochLedgerUsedTokens"] == 1_000
+    assert resumed["models"][0]["epochMinimumProvenRemainingTokens"] == 89_000
 
 
 def test_new_observation_cannot_silently_rebase_existing_epoch(tmp_path):

@@ -200,6 +200,9 @@ async def evaluate_case_async(
             },
         )
         result["semantic"] = metrics
+        result["semanticDiagnostics"] = semantic_suite.diagnostics_for(
+            f"{execution.runId}:{row.id}"
+        )
         result["execution"]["modelCalls"].extend(judge_calls)
         result["cost"] = aggregate_costs(
             result["execution"]["modelCalls"], catalog or load_pricing()

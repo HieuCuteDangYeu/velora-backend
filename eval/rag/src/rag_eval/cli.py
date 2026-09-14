@@ -22,12 +22,13 @@ from rag_eval.adapters.runner_output import (
     fixture_execution,
     invoke_typescript_runner,
     load_runner_report,
+    validate_semantic_context_artifact,
     validate_trace_provenance,
 )
 from rag_eval.checkpoint import JudgeCheckpointStore
 from rag_eval.compare import compare_files
 from rag_eval.config_snapshot import load_runtime_snapshot
-from rag_eval.dataset import ROOT, is_supported_live_dataset, load_dataset
+from rag_eval.dataset import ROOT, dataset_sha256, is_supported_live_dataset, load_dataset
 from rag_eval.experiment import rag_experiment
 from rag_eval.preflight import run_preflight
 from rag_eval.pricing import load_pricing
@@ -108,6 +109,7 @@ def _validate_source_summary(
     return {
         "runId": summary.get("runId"),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "datasetSha256": dataset_sha256(args.dataset),
     }
 
 
@@ -225,6 +227,13 @@ async def run_live(args: argparse.Namespace) -> Path:
         raise SystemExit("live mode requires a supported rag-frozen-ami dataset")
     if not args.definitions_report:
         raise SystemExit("LIVE requires --definitions-report")
+    if args.resume and not args.trace_file:
+        raise SystemExit("saved live evaluation requires --trace-file")
+    semantic_context_value = getattr(args, "semantic_context_file", None)
+    if semantic_context_value and not (args.resume and args.trace_file):
+        raise SystemExit(
+            "--semantic-context-file is supported only for saved --resume evaluations"
+        )
     dataset = load_dataset(args.dataset)
     rows = _rows(dataset)
     definitions_path = _repo_path(args.definitions_report)
@@ -235,6 +244,7 @@ async def run_live(args: argparse.Namespace) -> Path:
     snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, args.dataset)
     run_id, runner_args = _build_live_runner_args(args, definitions_path)
     source_attestation = None
+    source_summary_path = None
     if args.resume and args.trace_file:
         source_summary_value = args.source_summary or os.getenv("RAGAS_SOURCE_SUMMARY_PATH")
         if not source_summary_value:
@@ -269,7 +279,33 @@ async def run_live(args: argparse.Namespace) -> Path:
     if not args.trace_file:
         _export_trace_artifact(report_path, trace_path, args.env_file)
     validate_trace_provenance(trace_path, set(rows))
-    executions = load_runner_report(report_path, rows, trace_path, require_trace=True)
+    semantic_context_rows = None
+    semantic_context_binding = None
+    if semantic_context_value:
+        if source_summary_path is None:
+            raise ValueError("semantic context binding requires a saved source summary")
+        semantic_context_rows, semantic_context_binding = validate_semantic_context_artifact(
+            _repo_path(semantic_context_value),
+            report_path,
+            trace_path,
+            source_summary_path,
+            rows,
+            source_run_id=run_id,
+            production_sha=args.production_sha,
+            dataset_version=args.dataset,
+            dataset_sha256=dataset_sha256(args.dataset),
+        )
+    elif args.resume and args.live_judge:
+        raise SystemExit(
+            "saved semantic judge requires --semantic-context-file"
+        )
+    executions = load_runner_report(
+        report_path,
+        rows,
+        trace_path,
+        require_trace=True,
+        semantic_context_rows=semantic_context_rows,
+    )
     missing = set(rows) - set(executions)
     if missing:
         raise RuntimeError(f"runner report omitted cases: {sorted(missing)}")
@@ -291,6 +327,9 @@ async def run_live(args: argparse.Namespace) -> Path:
     if source_attestation:
         variant["savedSourceMode"] = "SAVED_RUN_ONLY"
         variant["sourceSummarySha256"] = source_attestation["sha256"]
+        variant["sourceDatasetSha256"] = source_attestation["datasetSha256"]
+    if semantic_context_binding:
+        variant["semanticContextBinding"] = semantic_context_binding
     result = await rag_experiment.arun(
         dataset,
         name=run_id,
@@ -448,6 +487,7 @@ def parser() -> argparse.ArgumentParser:
     live.add_argument("--definitions-report")
     live.add_argument("--env-file")
     live.add_argument("--trace-file")
+    live.add_argument("--semantic-context-file")
     live.add_argument("--live-judge", action="store_true")
     live.add_argument("--runtime-config-snapshot")
     live.add_argument("--source-summary")

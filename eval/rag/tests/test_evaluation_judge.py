@@ -1,6 +1,9 @@
+import instructor
 import pytest
+from openai import AsyncOpenAI
 
 import rag_eval.adapters.evaluation_judge as evaluation_judge
+import rag_eval.adapters.groq_judge as groq_judge
 from rag_eval.adapters.groq_judge import configured_max_completion_tokens
 
 
@@ -38,3 +41,19 @@ def test_groq_structured_output_budget_defaults_to_evidence_backed_value(monkeyp
 def test_groq_structured_output_budget_preserves_explicit_override(monkeypatch):
     monkeypatch.setenv("RAGAS_MAX_COMPLETION_TOKENS", "1024")
     assert configured_max_completion_tokens() == 1024
+
+
+def test_groq_structured_llm_uses_local_markdown_json_validation(monkeypatch):
+    client = AsyncOpenAI(api_key="test", base_url="http://127.0.0.1:9")
+    observed = {}
+    original = groq_judge.instructor.from_openai
+
+    def capture(value, *, mode):
+        observed["mode"] = mode
+        return original(value, mode=mode)
+
+    monkeypatch.setattr(groq_judge.instructor, "from_openai", capture)
+    llm = groq_judge.build_groq_structured_llm(client, "openai/gpt-oss-120b", 512)
+
+    assert observed["mode"] is instructor.Mode.MD_JSON
+    assert llm.model_args["max_tokens"] == 512

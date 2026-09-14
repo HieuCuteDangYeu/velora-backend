@@ -1,6 +1,6 @@
 import pytest
 
-from rag_eval.metrics.semantic import SemanticMetricSuite
+from rag_eval.metrics.semantic import SemanticMetricSuite, classify_metric_error
 
 
 class Result:
@@ -19,6 +19,11 @@ class Scorer:
         if self.fail:
             raise RuntimeError("temporary judge failure")
         return Result(self.value)
+
+
+class TimeoutScorer:
+    async def ascore(self, **_payload):
+        raise TimeoutError("embedding timed out")
 
 
 @pytest.mark.asyncio
@@ -65,3 +70,24 @@ async def test_completed_metric_checkpoint_is_not_rejudged(tmp_path):
     assert second["faithfulness"].calls == 0
     assert second["factual_correctness"].calls == 0
     assert second["response_relevancy"].calls == 1
+
+
+@pytest.mark.asyncio
+async def test_metric_timeout_is_distinguished_from_provider_timeout():
+    suite = SemanticMetricSuite({"response_relevancy": TimeoutScorer()})
+
+    result, _ = await suite.ascore_with_usage(
+        {"response_relevancy": {"value": 1}}, "run:IN1001-1"
+    )
+
+    assert result["response_relevancy"] is None
+    assert (
+        suite.diagnostics_for("run:IN1001-1")["response_relevancy"]["errorCategory"]
+        == "METRIC_TIMEOUT"
+    )
+    assert (
+        classify_metric_error(
+            TimeoutError("provider"), [{"providerStatus": "TIMEOUT"}]
+        )
+        == "PROVIDER_TIMEOUT"
+    )

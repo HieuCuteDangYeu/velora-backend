@@ -1,5 +1,6 @@
 """Normalize the TypeScript exactly-once runner's completed/reconciled rows."""
 
+import hashlib
 import json
 import re
 import subprocess
@@ -7,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from rag_eval.schemas import EvaluationRow, NormalizedExecutionResult
+
+SEMANTIC_CONTEXT_SCHEMA = "rag-eval-enriched-context-v1"
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[5]
 RUNNER = REPOSITORY_ROOT / "scripts/ops/run-existing-ami-rag-retest.cjs"
@@ -79,6 +82,227 @@ def load_json_or_jsonl(path: Path) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         return [value]
     raise ValueError(f"{path}: expected a JSON object, array, or JSONL object rows")
+
+
+def _load_semantic_context_rows(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load enriched rows and an optional artifact-level metadata envelope."""
+
+    try:
+        value = load_json(path)
+    except ValueError:
+        return load_jsonl(path), {}
+    if isinstance(value, dict) and isinstance(value.get("rows"), list):
+        rows = value["rows"]
+        if not all(isinstance(item, dict) for item in rows):
+            raise ValueError(f"{path}: enriched context rows must be objects")
+        return rows, value
+    if isinstance(value, dict):
+        return [value], {}
+    if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+        return value, {}
+    raise ValueError(f"{path}: enriched context artifact must contain object rows")
+
+
+def _required_string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_INVALID")
+    return value
+
+
+def _context_ids(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_MISSING")
+    ids: list[str] = []
+    for item in value:
+        if not isinstance(item, dict) or not isinstance(item.get("evidenceId"), str):
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_INVALID")
+        text = item.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_TEXT_MISSING")
+        ids.append(item["evidenceId"])
+    return ids
+
+
+def _safe_contexts(value: Any, field: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_MISSING")
+    output: list[dict[str, Any]] = []
+    for rank, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_INVALID")
+        evidence_id = item.get("evidenceId")
+        text = item.get("text")
+        if not isinstance(evidence_id, str) or not isinstance(text, str) or not text.strip():
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={field.upper()}_TEXT_MISSING")
+        output.append(
+            {
+                "evidenceId": evidence_id,
+                "reelId": item.get("reelId"),
+                "evidenceType": item.get("evidenceType"),
+                "text": text,
+                "rank": item.get("rank", rank),
+            }
+        )
+    return output
+
+
+def validate_semantic_context_artifact(
+    artifact_path: Path,
+    report_path: Path,
+    source_trace_path: Path,
+    source_summary_path: Path,
+    rows: dict[str, EvaluationRow],
+    *,
+    source_run_id: str,
+    production_sha: str,
+    dataset_version: str,
+    dataset_sha256: str,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Bind saved context text to one immutable production execution set."""
+
+    summary = load_json(source_summary_path)
+    if (
+        summary.get("runId") != source_run_id
+        or summary.get("dataset") != dataset_version
+        or summary.get("caseCount") != len(rows)
+        or summary.get("correctAndGrounded") != len(rows)
+        or summary.get("hardGatePassed") is not True
+        or summary.get("variant", {}).get("productionSha") != production_sha
+    ):
+        raise ValueError("SEMANTIC_CONTEXT_PROVENANCE=SOURCE_SUMMARY_MISMATCH")
+
+    report = load_json(report_path)
+    source_cases = report.get("cases")
+    if not isinstance(source_cases, list):
+        raise ValueError("SEMANTIC_CONTEXT_PROVENANCE=SOURCE_REPORT_INVALID")
+    source_case_ids = [item.get("caseId") for item in source_cases]
+    if len(source_case_ids) != len(set(source_case_ids)) or set(source_case_ids) != set(rows):
+        raise ValueError("SEMANTIC_CONTEXT_PROVENANCE=SOURCE_CASES_MISMATCH")
+    source_by_case = {item["caseId"]: item for item in source_cases}
+
+    trace_rows = load_json_or_jsonl(source_trace_path)
+    trace_ids = [item.get("caseId") for item in trace_rows]
+    if len(trace_ids) != len(set(trace_ids)) or set(trace_ids) != set(rows):
+        raise ValueError("SEMANTIC_CONTEXT_PROVENANCE=SOURCE_TRACES_MISMATCH")
+    trace_by_case = {item["caseId"]: item for item in trace_rows}
+
+    enriched_rows, envelope = _load_semantic_context_rows(artifact_path)
+    enriched_ids = [item.get("caseId") for item in enriched_rows]
+    if len(enriched_ids) != len(set(enriched_ids)) or set(enriched_ids) != set(rows):
+        raise ValueError("SEMANTIC_CONTEXT_PROVENANCE=ENRICHED_CASES_MISMATCH")
+    enriched_by_case = {item["caseId"]: item for item in enriched_rows}
+
+    expected_envelope = {
+        "sourceRunId": source_run_id,
+        "productionSha": production_sha,
+        "datasetVersion": dataset_version,
+        "datasetSha256": dataset_sha256,
+    }
+    for key, expected in expected_envelope.items():
+        if key in envelope and envelope[key] != expected:
+            label = re.sub(r"(?<!^)(?=[A-Z])", "_", key).upper()
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=ENVELOPE_{label}_MISMATCH")
+
+    artifact_sha256 = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+    bound: dict[str, dict[str, Any]] = {}
+    binding_cases: list[dict[str, Any]] = []
+    explicit_metadata = True
+    for case_id in sorted(rows):
+        source_case = source_by_case[case_id]
+        if (
+            source_case.get("status") != "EVALUATED"
+            or not isinstance(source_case.get("assistantMessageId"), str)
+            or not source_case.get("assistantMessageId")
+        ):
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=SOURCE_EXECUTION_INVALID:{case_id}")
+        source_execution_id = source_case["assistantMessageId"]
+        source_trace = trace_by_case[case_id]
+        source_trace_id = source_trace.get("traceId") or source_trace.get("ragTraceId")
+        if not isinstance(source_trace_id, str) or not source_trace_id:
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=SOURCE_TRACE_ID_MISSING:{case_id}")
+        enriched = enriched_by_case[case_id]
+
+        for key, expected in {
+            "sourceRunId": source_run_id,
+            "productionSha": production_sha,
+            "datasetVersion": dataset_version,
+            "datasetSha256": dataset_sha256,
+            "sourceExecutionId": source_execution_id,
+        }.items():
+            if key not in enriched:
+                explicit_metadata = False
+            elif enriched[key] != expected:
+                label = re.sub(r"(?<!^)(?=[A-Z])", "_", key).upper()
+                raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE={label}_MISMATCH:{case_id}")
+
+        enriched_trace_id = enriched.get("ragTraceId") or enriched.get("traceId")
+        if enriched_trace_id != source_trace_id:
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=RAG_TRACE_ID_MISMATCH:{case_id}")
+        source_retrieved = _required_string_list(
+            source_trace.get("retrievedChunkIds"), "source_retrieved_chunks"
+        )
+        source_reranked = _required_string_list(
+            source_trace.get("rerankedChunkIds"), "source_reranked_chunks"
+        )
+        enriched_retrieved = _required_string_list(
+            enriched.get("retrievedChunkIds"), "enriched_retrieved_chunks"
+        )
+        enriched_reranked = _required_string_list(
+            enriched.get("rerankedChunkIds"), "enriched_reranked_chunks"
+        )
+        if enriched_retrieved != source_retrieved:
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=RETRIEVED_CHUNKS_MISMATCH:{case_id}")
+        if enriched_reranked != source_reranked:
+            raise ValueError(f"SEMANTIC_CONTEXT_PROVENANCE=RERANKED_CHUNKS_MISMATCH:{case_id}")
+
+        retrieved_contexts = _safe_contexts(enriched.get("retrievedContexts"), "retrieved_contexts")
+        reranked_contexts = _safe_contexts(
+            enriched.get("rerankedContexts"), "reranked_contexts"
+        )
+        if _context_ids(retrieved_contexts, "retrieved_contexts") != source_retrieved:
+            raise ValueError(
+                "SEMANTIC_CONTEXT_PROVENANCE=RETRIEVED_CONTEXT_IDS_MISMATCH:"
+                f"{case_id}"
+            )
+        if _context_ids(reranked_contexts, "reranked_contexts") != source_reranked:
+            raise ValueError(
+                "SEMANTIC_CONTEXT_PROVENANCE=RERANKED_CONTEXT_IDS_MISMATCH:"
+                f"{case_id}"
+            )
+        bound[case_id] = {
+            "retrievedContexts": retrieved_contexts,
+            "rerankedContexts": reranked_contexts,
+        }
+        binding_cases.append(
+            {
+                "caseId": case_id,
+                "sourceExecutionId": source_execution_id,
+                "ragTraceId": source_trace_id,
+                "retrievedChunkIds": source_retrieved,
+                "rerankedChunkIds": source_reranked,
+            }
+        )
+
+    fingerprint_payload = {
+        "schemaVersion": SEMANTIC_CONTEXT_SCHEMA,
+        **expected_envelope,
+        "artifactSha256": artifact_sha256,
+        "cases": binding_cases,
+    }
+    binding_sha256 = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return bound, {
+        "schemaVersion": SEMANTIC_CONTEXT_SCHEMA,
+        "artifactSha256": artifact_sha256,
+        "bindingSha256": binding_sha256,
+        "sourceRunId": source_run_id,
+        "productionSha": production_sha,
+        "datasetVersion": dataset_version,
+        "datasetSha256": dataset_sha256,
+        "provenanceMode": "EXPLICIT" if explicit_metadata else "SOURCE_BOUND_LEGACY_ROWS",
+        "caseCount": len(binding_cases),
+    }
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -373,6 +597,7 @@ def load_runner_report(
     traces_path: Path | None = None,
     *,
     require_trace: bool = False,
+    semantic_context_rows: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, NormalizedExecutionResult]:
     report = load_json(report_path)
     if not isinstance(report, dict):
@@ -403,7 +628,19 @@ def load_runner_report(
         case_id = case.get("caseId")
         if case_id in rows:
             case["runId"] = report.get("runId")
-            output[case_id] = normalize_runner_case(rows[case_id], case, traces.get(case_id))
+            trace = traces.get(case_id)
+            if semantic_context_rows is not None:
+                semantic_context = semantic_context_rows.get(case_id)
+                if semantic_context is None:
+                    raise ValueError(
+                        f"SEMANTIC_CONTEXT_PROVENANCE=MISSING case={case_id}"
+                    )
+                trace = {
+                    **(trace or {}),
+                    "retrievedContexts": semantic_context["retrievedContexts"],
+                    "rerankedContexts": semantic_context["rerankedContexts"],
+                }
+            output[case_id] = normalize_runner_case(rows[case_id], case, trace)
     return output
 
 

@@ -335,5 +335,5 @@ async def test_timeout_is_bounded_and_recorded(monkeypatch):
     calls = tracker.take("run:case")
     assert len(calls) == 1
     assert calls[0]["providerStatus"] == "TIMEOUT"
-    assert calls[0]["providerCategory"] == "TRANSIENT_NETWORK_ERROR"
+    assert calls[0]["providerCategory"] == "PROVIDER_TIMEOUT"
     assert calls[0]["configuredTimeoutMs"] == 1000.0

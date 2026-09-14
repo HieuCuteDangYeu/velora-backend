@@ -34,17 +34,24 @@ the matrix is rerun.
 ## Deployment evidence
 
 - The functional backend candidate is
-  `11bd4341b61e0412b12c83507374792c0d97c122`. `homelab-deploy` is now the
-  docs-only descendant `b5fa5821b67e1f5b7515a33a625b119427496d60`; its
-  call-service image remains the functional candidate. `master` currently has
-  the unrelated follow-up `dd9034538313842390c3652b87e9f02647a15e50` on top.
+  `11bd4341b61e0412b12c83507374792c0d97c122`. The docs-only descendant
+  `b5fa5821b67e1f5b7515a33a625b119427496d60` advanced the deployment pointer,
+  and the subsequent master promotion is
+  `3889f134f2a6838c513e09d489dcc25bf2f8b0e4`. No call-service source changed
+  after the functional candidate; the running image is tagged with the
+  promoted SHA.
 - Homelab CI run `34819110593` and CD run `34819572841` passed, including the
   ARM64 `call-service` image build and promotion step.
 - The homelab deployment receipt
   `20260914T075755Z-11bd4341b61e-success.json` reports a successful transition
   from `46f70ea1d1c45e39c5d936fd267dadba4b595ba6` to the candidate in 72
-  seconds. `deployed-sha` and the running call-service image now report the
-  candidate; post-deploy root-disk headroom was 33 GB.
+  seconds. The subsequent docs-only receipt
+  `20260914T082100Z-b5fa5821b67e-success.json` advanced `deployed-sha` without
+  restarting call-service. The subsequent master promotion receipt
+  `20260914T083222Z-3889f134f2a6-success.json` completed successfully; the
+  running call-service image is now tagged
+  `3889f134f2a6838c513e09d489dcc25bf2f8b0e4`. Post-deploy root-disk headroom
+  was 42 GB.
 - Public Socket.IO handshake is healthy (`HTTP 200`, `pingInterval=25000`,
   `pingTimeout=20000`). The call-service `/metrics` endpoint exposes
   `velora_call_socket_disconnects_total`, `velora_call_socket_reconnects_total`

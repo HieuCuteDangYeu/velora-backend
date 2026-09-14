@@ -110,6 +110,13 @@ type ProducePayload = {
   requestId?: string;
 };
 
+type CloseProducerPayload = {
+  callId: string;
+  producerId: string;
+  kind: 'audio' | 'video';
+  requestId?: string;
+};
+
 type ConsumePayload = {
   callId: string;
   transportId: string;
@@ -157,6 +164,14 @@ type VideoStateUpdatedPayload = {
   revision: number;
   status: VideoStateUpdateStatus;
   actionId?: string;
+  requestId?: string;
+};
+
+type ProducerClosedAckPayload = {
+  callId: string;
+  producerId: string;
+  kind: 'audio' | 'video';
+  status: 'closed' | 'already_closed';
   requestId?: string;
 };
 
@@ -761,6 +776,73 @@ export class CallGateway
         ? { paused: !videoState.enabled, revision: videoState.revision }
         : {}),
     });
+  }
+
+  @SubscribeMessage('close_producer')
+  async handleCloseProducer(
+    @MessageBody() payload: CloseProducerPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    if (!session) {
+      throw new NotFoundException('Call not found');
+    }
+
+    // Cleanup can race a normal hangup or a call-type downgrade. Once the
+    // lifecycle is no longer active there is no media operation to perform,
+    // but the idempotent ACK still lets the client release its waiter.
+    if (session.status !== 'active') {
+      client.emit('producer_closed_ack', {
+        callId: payload.callId,
+        producerId: payload.producerId,
+        kind: payload.kind,
+        status: 'already_closed',
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+      } satisfies ProducerClosedAckPayload);
+      return;
+    }
+
+    if (session.initiatorId !== userId && session.targetUserId !== userId) {
+      throw new ForbiddenException('You are not part of this call');
+    }
+
+    const activeProducer = (
+      await this.mediaEngine.listActiveProducers(payload.callId)
+    ).find((producer) => producer.producerId === payload.producerId);
+    if (
+      activeProducer &&
+      (activeProducer.userId !== userId || activeProducer.kind !== payload.kind)
+    ) {
+      throw new ForbiddenException('Producer cannot be closed by this user');
+    }
+
+    const result = await this.mediaEngine.closeProducer(
+      payload.callId,
+      userId,
+      payload.producerId,
+    );
+    const status = result.closed ? 'closed' : 'already_closed';
+    if (result.closed) {
+      if (result.kind === 'video') {
+        this.clearVideoState(payload.callId, payload.producerId);
+      }
+      this.server.to(payload.callId).emit('producer_closed', {
+        callId: payload.callId,
+        producerId: payload.producerId,
+        kind: result.kind ?? payload.kind,
+      });
+    }
+
+    client.emit('producer_closed_ack', {
+      callId: payload.callId,
+      producerId: payload.producerId,
+      kind: result.kind ?? payload.kind,
+      status,
+      ...(payload.requestId ? { requestId: payload.requestId } : {}),
+    } satisfies ProducerClosedAckPayload);
   }
 
   @SubscribeMessage('consume')

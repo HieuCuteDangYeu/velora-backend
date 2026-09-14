@@ -665,17 +665,18 @@ export class MediasoupCallMediaEngine
     callId: string,
     userId: string,
     producerId: string,
-  ): Promise<void> {
+  ): Promise<{ closed: boolean; kind?: MediaType }> {
     const room = this.getRoomOrThrow(callId);
     const producer = room.producers.get(producerId);
     const meta = room.producerMeta.get(producerId);
 
-    if (
-      !producer ||
-      !meta ||
-      meta.callId !== callId ||
-      meta.userId !== userId
-    ) {
+    if (!producer || !meta || meta.callId !== callId) {
+      // Explicit client cleanup is intentionally idempotent. A transport
+      // close or a concurrent terminal transition may already have removed
+      // the producer by the time the cleanup command reaches the gateway.
+      return { closed: false };
+    }
+    if (meta.userId !== userId) {
       throw new Error('Producer not found');
     }
 
@@ -692,6 +693,7 @@ export class MediasoupCallMediaEngine
       }
     }
     await this.stateRepository.removeProducerState(callId, userId, producerId);
+    return { closed: true, kind: meta.kind };
   }
 
   closeRoom(callId: string): Promise<void> {

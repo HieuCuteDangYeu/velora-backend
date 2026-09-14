@@ -710,6 +710,83 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('acknowledges explicit producer cleanup and notifies peers without leaking stale video state', async () => {
+    const videoSession = new CallSession({
+      ...activeSession,
+      callType: 'VIDEO',
+    });
+    const mediaEngine = {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValueOnce([
+          { producerId: 'producer-video', userId: 'user-a', kind: 'video' },
+        ])
+        .mockResolvedValueOnce([]),
+      closeProducer: jest
+        .fn()
+        .mockResolvedValueOnce({ closed: true, kind: 'video' })
+        .mockResolvedValueOnce({ closed: false }),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(videoSession),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const client = createSocket({
+      id: 'socket-video-close',
+      userId: 'user-a',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ mediaEngine, sessionRepository });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(roomEmitter),
+    } as never;
+
+    await gateway.handleCloseProducer(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        kind: 'video',
+        requestId: 'close-video-1',
+      },
+      client,
+    );
+    await gateway.handleCloseProducer(
+      {
+        callId: 'call-1',
+        producerId: 'producer-video',
+        kind: 'video',
+        requestId: 'close-video-1',
+      },
+      client,
+    );
+
+    expect(mediaEngine.closeProducer).toHaveBeenCalledWith(
+      'call-1',
+      'user-a',
+      'producer-video',
+    );
+    expect(roomEmitter.emit).toHaveBeenCalledWith('producer_closed', {
+      callId: 'call-1',
+      producerId: 'producer-video',
+      kind: 'video',
+    });
+    expect(client.emit).toHaveBeenNthCalledWith(1, 'producer_closed_ack', {
+      callId: 'call-1',
+      producerId: 'producer-video',
+      kind: 'video',
+      status: 'closed',
+      requestId: 'close-video-1',
+    });
+    expect(client.emit).toHaveBeenNthCalledWith(2, 'producer_closed_ack', {
+      callId: 'call-1',
+      producerId: 'producer-video',
+      kind: 'video',
+      status: 'already_closed',
+      requestId: 'close-video-1',
+    });
+  });
+
   it('replays the authoritative camera state when a produce retry reuses a producer', async () => {
     const videoSession = new CallSession({
       ...activeSession,

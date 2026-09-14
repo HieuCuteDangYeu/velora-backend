@@ -25,6 +25,12 @@ export interface ProducedMediaResult {
   replacedProducerId?: string;
 }
 
+export interface ClosedMediaProducerResult {
+  /** Whether this call removed a producer that was still active. */
+  closed: boolean;
+  kind?: 'audio' | 'video';
+}
+
 export interface ActiveProducerResult {
   producerId: string;
   userId: string;
@@ -117,6 +123,6 @@ export abstract class ICallMediaEngine {
     callId: string,
     userId: string,
     producerId: string,
-  ): Promise<void>;
+  ): Promise<ClosedMediaProducerResult>;
   abstract closeRoom(callId: string): Promise<void>;
 }

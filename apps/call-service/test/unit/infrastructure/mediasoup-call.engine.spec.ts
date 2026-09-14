@@ -182,6 +182,14 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     expect(transport.produce).toHaveBeenCalledTimes(1);
   });
 
+  it('treats cleanup for an already removed producer as idempotent', async () => {
+    const { engine } = await createConnectedEngine();
+
+    await expect(
+      engine.closeProducer('call-producer', 'user-a', 'producer-missing'),
+    ).resolves.toEqual({ closed: false });
+  });
+
   it('coalesces concurrent producer creation before enforcing uniqueness', async () => {
     const { engine, transport, producer } = await createConnectedEngine();
     let resolveProduce: (value: typeof producer) => void = () => undefined;

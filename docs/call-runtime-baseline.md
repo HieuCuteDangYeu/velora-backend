@@ -13,9 +13,10 @@ device evidence must not be replaced with invented numbers.
 | Captured at | 2026-09-14, Asia/Ho_Chi_Minh | 2026-09-14, Asia/Ho_Chi_Minh |
 
 The baseline SHAs are immutable source references. The baseline runtime
-measurements below are **not captured** because the paired physical iPhone was
-offline during this audit and an iOS simulator cannot prove CallKit/PushKit
-behavior. Do not mark the real-device gate green until the matrix is rerun.
+measurements below were **not captured** during the source audit. The paired
+physical iPhone is now available, but the manual matrix has not been executed;
+an iOS simulator cannot prove CallKit/PushKit behavior. Do not mark the
+real-device gate green until the matrix is rerun.
 
 ## Safe diagnostic contract
 
@@ -36,7 +37,7 @@ diagnostic sites.
 
 | Scenario | Required evidence | Baseline status |
 | --- | --- | --- |
-| iPhone ↔ simulator video call | device/simulator build IDs, socket disconnects, ICE restarts, media rebuilds | not captured — physical iPhone unavailable |
+| iPhone ↔ simulator video call | device/simulator build IDs, socket disconnects, ICE restarts, media rebuilds | not captured — manual physical-device matrix pending |
 | 20 camera toggles | command/revision sequence and peer convergence | not captured |
 | inactive → active | producer/consumer count and camera revision | not captured |
 | 3–5 second network loss | control-plane recovery without CoreAudio/media teardown | not captured |

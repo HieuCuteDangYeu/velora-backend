@@ -53,6 +53,28 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('records the Socket.IO disconnect reason at the connection boundary', async () => {
+    const metrics = {
+      recordSocketDisconnect: jest.fn(),
+      recordSocketReconnect: jest.fn(),
+    };
+    const socket = createSocket({
+      id: 'socket-metrics',
+      userId: 'user-a',
+      callIds: [],
+    });
+    const gateway = createGateway({ metrics });
+
+    await gateway.handleConnection(socket);
+
+    const disconnectListener = (socket.once as jest.Mock).mock.calls.find(
+      ([event]) => event === 'disconnect',
+    )?.[1] as ((reason: string) => void) | undefined;
+    expect(disconnectListener).toBeDefined();
+    disconnectListener?.('ping timeout');
+    expect(metrics.recordSocketDisconnect).toHaveBeenCalledWith('ping timeout');
+  });
+
   it('does not start the durable expiry worker without the runtime lease', async () => {
     const runtimeLease = {
       acquire: jest.fn().mockResolvedValue(undefined),
@@ -480,12 +502,17 @@ describe('CallGateway reconnect recovery', () => {
       ]),
     };
     const peerEmitter = { emit: jest.fn() };
+    const metrics = {
+      recordSocketDisconnect: jest.fn(),
+      recordSocketReconnect: jest.fn(),
+    };
     const gateway = createGateway({
       joinCallUseCase,
       leaveCallUseCase,
       mediaEngine,
       sessionRepository,
       stateRepository,
+      metrics,
     });
     gateway.server = {
       to: jest.fn().mockReturnValue(peerEmitter),
@@ -508,6 +535,7 @@ describe('CallGateway reconnect recovery', () => {
       to: jest.fn().mockReturnValue(peerEmitter),
     });
 
+    await jest.advanceTimersByTimeAsync(1200);
     await gateway.handleRejoinCall({ callId: 'call-1' }, rejoiningSocket);
     await jest.advanceTimersByTimeAsync(15000);
 
@@ -542,6 +570,7 @@ describe('CallGateway reconnect recovery', () => {
     });
     expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
     expect(stateRepository.removeParticipant).not.toHaveBeenCalled();
+    expect(metrics.recordSocketReconnect).toHaveBeenCalledWith(1200);
   });
 
   it('serializes camera revisions, rejects stale updates, and makes retries idempotent', async () => {
@@ -1267,6 +1296,10 @@ function createGateway(overrides?: {
     upsertParticipant: jest.Mock;
     removeParticipant: jest.Mock;
   };
+  metrics?: {
+    recordSocketDisconnect: jest.Mock;
+    recordSocketReconnect: jest.Mock;
+  };
 }) {
   return new CallGateway(
     (overrides?.initiateCallUseCase ?? { execute: jest.fn() }) as never,
@@ -1304,6 +1337,10 @@ function createGateway(overrides?: {
       acquire: jest.fn().mockResolvedValue(undefined),
       assertHeld: jest.fn(),
     }) as never,
+    (overrides?.metrics ?? {
+      recordSocketDisconnect: jest.fn(),
+      recordSocketReconnect: jest.fn(),
+    }) as never,
   );
 }
 
@@ -1313,6 +1350,7 @@ function createSocket(input: {
   callIds: string[];
   emit?: jest.Mock;
   join?: jest.Mock;
+  once?: jest.Mock;
   to?: jest.Mock;
   disconnected?: boolean;
 }) {
@@ -1324,6 +1362,7 @@ function createSocket(input: {
     },
     emit: input.emit ?? jest.fn(),
     join: input.join ?? jest.fn().mockResolvedValue(undefined),
+    once: input.once ?? jest.fn(),
     to: input.to ?? jest.fn().mockReturnValue({ emit: jest.fn() }),
     disconnected: input.disconnected ?? false,
   } as unknown as Socket;

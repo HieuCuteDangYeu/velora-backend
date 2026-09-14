@@ -7,6 +7,10 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
 
   private readonly serviceName = 'call-service';
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  private readonly socketDisconnectsByReason = new Map<string, number>();
+  private socketReconnectCount = 0;
+  private socketReconnectDurationSecondsSum = 0;
+  private socketReconnectDurationSecondsMax = 0;
 
   constructor() {
     this.eventLoopDelay.enable();
@@ -14,6 +18,32 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
 
   onModuleDestroy() {
     this.eventLoopDelay.disable();
+  }
+
+  /**
+   * Record a bounded, low-cardinality Socket.IO disconnect reason. The raw
+   * Socket.IO reason is deliberately normalized before it can reach a metric
+   * label so transport/SDK text never becomes telemetry cardinality.
+   */
+  recordSocketDisconnect(reason: unknown): void {
+    const normalizedReason = this.normalizeDisconnectReason(reason);
+    this.socketDisconnectsByReason.set(
+      normalizedReason,
+      (this.socketDisconnectsByReason.get(normalizedReason) ?? 0) + 1,
+    );
+  }
+
+  /** Record the time spent from an active participant disconnect to rejoin. */
+  recordSocketReconnect(durationMs: number): void {
+    if (!Number.isFinite(durationMs) || durationMs < 0) return;
+
+    const durationSeconds = durationMs / 1000;
+    this.socketReconnectCount += 1;
+    this.socketReconnectDurationSecondsSum += durationSeconds;
+    this.socketReconnectDurationSecondsMax = Math.max(
+      this.socketReconnectDurationSecondsMax,
+      durationSeconds,
+    );
   }
 
   metrics(activeSocketConnections: number): string {
@@ -91,6 +121,47 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
       )}`,
     );
 
+    this.metricHeader(
+      lines,
+      'velora_call_socket_disconnects_total',
+      'Socket.IO disconnects observed by normalized reason.',
+      'counter',
+    );
+    for (const [reason, count] of this.socketDisconnectsByReason) {
+      lines.push(
+        `velora_call_socket_disconnects_total${this.labels({
+          service: this.serviceName,
+          reason,
+        })} ${count}`,
+      );
+    }
+
+    this.metricHeader(
+      lines,
+      'velora_call_socket_reconnects_total',
+      'Successful active-call socket rejoin operations.',
+      'counter',
+    );
+    lines.push(
+      `velora_call_socket_reconnects_total${labels} ${this.socketReconnectCount}`,
+    );
+
+    this.metricHeader(
+      lines,
+      'velora_call_socket_reconnect_duration_seconds',
+      'Time from an active participant socket disconnect to a successful rejoin.',
+      'summary',
+    );
+    lines.push(
+      `velora_call_socket_reconnect_duration_seconds_sum${labels} ${this.socketReconnectDurationSecondsSum}`,
+    );
+    lines.push(
+      `velora_call_socket_reconnect_duration_seconds_count${labels} ${this.socketReconnectCount}`,
+    );
+    lines.push(
+      `velora_call_socket_reconnect_duration_seconds_max${labels} ${this.socketReconnectDurationSecondsMax}`,
+    );
+
     this.eventLoopDelay.reset();
 
     return `${lines.join('\n')}\n`;
@@ -100,7 +171,7 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
     lines: string[],
     name: string,
     help: string,
-    type: 'counter' | 'gauge',
+    type: 'counter' | 'gauge' | 'summary',
   ) {
     lines.push(`# HELP ${name} ${help}`);
     lines.push(`# TYPE ${name} ${type}`);
@@ -114,10 +185,23 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
   }
 
   private escapeLabel(value: string) {
-    return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/\n/g, '\\n')
+      .replace(/"/g, '\\"');
   }
 
   private nanosecondsToSeconds(value: number) {
     return Number.isFinite(value) ? value / 1_000_000_000 : 0;
+  }
+
+  private normalizeDisconnectReason(reason: unknown): string {
+    const value = typeof reason === 'string' ? reason.toLowerCase() : '';
+    if (value.includes('ping timeout')) return 'ping_timeout';
+    if (value.includes('transport error')) return 'transport_error';
+    if (value.includes('transport close')) return 'transport_close';
+    if (value === 'io server disconnect') return 'server_disconnect';
+    if (value === 'io client disconnect') return 'client_disconnect';
+    return 'other';
   }
 }

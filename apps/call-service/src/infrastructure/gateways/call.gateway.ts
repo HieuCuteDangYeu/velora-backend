@@ -53,6 +53,7 @@ import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.s
 import { CallWsExceptionFilter } from './call-ws-exception.filter';
 import { getCallSocketHeartbeatConfig } from './call-socket-config';
 import { safeCallErrorCode, shortCallIdentifier } from './call-debug';
+import { CallPrometheusMetricsService } from '../metrics/call-prometheus-metrics.service';
 import {
   getCallNoAnswerTimeoutMs,
   getSessionExpiryDate,
@@ -266,6 +267,7 @@ export class CallGateway
     string,
     ReturnType<typeof setTimeout>
   >();
+  private readonly reconnectStartedAtByParticipant = new Map<string, number>();
   private readonly videoStatesByProducer = new Map<string, VideoStateRecord>();
   private readonly videoStateQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
@@ -295,6 +297,7 @@ export class CallGateway
     @Inject('AUTH_SERVICE_RMQ') private readonly authClient: ClientProxy,
     private readonly telemetryTokenService: CallTelemetryTokenService,
     private readonly runtimeLease: CallServiceRuntimeLease,
+    private readonly metrics: CallPrometheusMetricsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -324,6 +327,7 @@ export class CallGateway
       clearTimeout(timeoutId);
     }
     this.pendingUnansweredCalls.clear();
+    this.reconnectStartedAtByParticipant.clear();
     this.videoStatesByProducer.clear();
     this.videoStateQueues.clear();
   }
@@ -415,6 +419,13 @@ export class CallGateway
   }
 
   async handleConnection(client: Socket) {
+    // Nest's OnGatewayDisconnect hook does not pass Socket.IO's reason, so
+    // capture it at the socket boundary while keeping the metric label
+    // normalized inside CallPrometheusMetricsService.
+    client.once('disconnect', (reason: string) => {
+      this.metrics.recordSocketDisconnect(reason);
+    });
+
     const userId = await this.resolveUserId(client);
     if (!userId) {
       client.disconnect(true);
@@ -537,6 +548,7 @@ export class CallGateway
       return;
     }
     this.clearPendingDisconnect(payload.callId, userId);
+    this.recordSocketReconnect(payload.callId, userId);
 
     const activeProducers = this.decorateActiveProducers(
       payload.callId,
@@ -607,6 +619,7 @@ export class CallGateway
       return;
     }
     this.clearPendingDisconnect(payload.callId, userId);
+    this.recordSocketReconnect(payload.callId, userId);
 
     const activePeerProducers = this.decorateActiveProducers(
       payload.callId,
@@ -1238,6 +1251,7 @@ export class CallGateway
       return;
     }
     this.clearPendingDisconnect(payload.callId, userId);
+    this.recordSocketReconnect(payload.callId, userId);
     const answeredPayload = {
       callId: payload.callId,
       userId,
@@ -1301,6 +1315,7 @@ export class CallGateway
       return;
     }
     this.clearPendingDisconnect(payload.callId, userId);
+    this.recordSocketReconnect(payload.callId, userId);
 
     const activeProducers = result.activeProducers
       ? this.decorateActiveProducers(payload.callId, result.activeProducers)
@@ -1345,6 +1360,9 @@ export class CallGateway
 
     this.clearPendingUnansweredCall(payload.callId);
     this.clearPendingDisconnect(payload.callId, userId);
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(payload.callId, userId),
+    );
     this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
     if (result.shouldEmitPeerLeft) {
@@ -1370,6 +1388,9 @@ export class CallGateway
     );
     this.clearPendingUnansweredCall(payload.callId);
     this.clearPendingDisconnect(payload.callId, userId);
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(payload.callId, userId),
+    );
     this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
 
@@ -1393,6 +1414,12 @@ export class CallGateway
     this.clearPendingUnansweredCall(session.callId);
     this.clearPendingDisconnect(session.callId, session.initiatorId);
     this.clearPendingDisconnect(session.callId, session.targetUserId);
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(session.callId, session.initiatorId),
+    );
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(session.callId, session.targetUserId),
+    );
 
     const payload = {
       callId: session.callId,
@@ -1531,6 +1558,10 @@ export class CallGateway
 
     if (session.status === 'active') {
       const reconnectDeadlineAt = new Date(Date.now() + this.reconnectGraceMs);
+      const reconnectKey = this.disconnectKey(callId, userId);
+      if (!this.reconnectStartedAtByParticipant.has(reconnectKey)) {
+        this.reconnectStartedAtByParticipant.set(reconnectKey, Date.now());
+      }
       await this.stateRepository.upsertParticipant(
         new CallParticipant({
           ...participant,
@@ -1549,6 +1580,9 @@ export class CallGateway
       return;
     }
 
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(callId, userId),
+    );
     await this.stateRepository.removeParticipant(callId, userId);
     const result = await this.leaveCallUseCase.execute(
       callId,
@@ -1597,6 +1631,9 @@ export class CallGateway
             }
 
             await this.stateRepository.removeParticipant(callId, userId);
+            this.reconnectStartedAtByParticipant.delete(
+              this.disconnectKey(callId, userId),
+            );
             const result = await this.leaveCallUseCase.execute(
               callId,
               userId,
@@ -1677,6 +1714,15 @@ export class CallGateway
 
     clearTimeout(timeoutId);
     this.pendingDisconnects.delete(key);
+  }
+
+  private recordSocketReconnect(callId: string, userId: string): void {
+    const key = this.disconnectKey(callId, userId);
+    const startedAt = this.reconnectStartedAtByParticipant.get(key);
+    if (startedAt === undefined) return;
+
+    this.reconnectStartedAtByParticipant.delete(key);
+    this.metrics.recordSocketReconnect(Math.max(0, Date.now() - startedAt));
   }
 
   private clearPendingUnansweredCall(callId: string): void {

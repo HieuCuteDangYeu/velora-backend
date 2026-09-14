@@ -34,8 +34,10 @@ the matrix is rerun.
 ## Deployment evidence
 
 - The functional backend candidate is
-  `11bd4341b61e0412b12c83507374792c0d97c122`; `master` and `homelab-deploy`
-  both point to this source candidate.
+  `11bd4341b61e0412b12c83507374792c0d97c122`. `homelab-deploy` is now the
+  docs-only descendant `b5fa5821b67e1f5b7515a33a625b119427496d60`; its
+  call-service image remains the functional candidate. `master` currently has
+  the unrelated follow-up `dd9034538313842390c3652b87e9f02647a15e50` on top.
 - Homelab CI run `34819110593` and CD run `34819572841` passed, including the
   ARM64 `call-service` image build and promotion step.
 - The homelab deployment receipt

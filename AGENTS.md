@@ -17,13 +17,14 @@ Never override a higher-priority instruction with a lower-priority one.
 When the user explicitly asks to use the repository orchestrator, orchestration, or multi-agent execution:
 
 1. Use the `repository-orchestrator` skill before implementation or delegation.
-2. Follow that skill as the execution protocol for the task.
-3. Use Codex native subagents for Codex worker tasks when the host exposes them.
-4. Use `agent-harness orchestrate ...` only for shadow-repo/worktree state, Antigravity execution, deterministic verification, integration, review state, and delivery.
-5. Never launch a nested `codex exec` worker or use `codex-web-gpt` as a worker.
-6. Do not directly implement the same task while an assigned worker is active.
+2. That skill is a repository-policy wrapper around Orca. It must load Orca's live, version-matched `orchestration` guide before mutating orchestration state.
+3. Let Orca own task-level Runs, worktrees, worker sessions, messages, model/effort selection, and decision gates.
+4. Use Codex and Antigravity workers through Orca when the plan assigns them. Do not create sibling implementation workers outside Orca for the same Run.
+5. Do not use the removed `agent-harness orchestrate` runtime, the removed custom `agy` runner, or `codex-web-gpt` as a worker.
+6. Do not directly implement the same task while an Orca worker owns it.
+7. Do not push, merge, or create remote PRs unless the user explicitly requests it.
 
-If the `repository-orchestrator` skill or required executor capability is unavailable, report the problem instead of silently inventing another orchestration path.
+If Orca or its orchestration skill is unavailable, report the problem instead of silently inventing another orchestration path.
 
 For ordinary focused tasks, do not invoke multi-agent orchestration unless the user asks for it or splitting the work is materially useful.
 
@@ -41,11 +42,12 @@ Before implementation:
 
 Memory is advisory. Current code, tests, issue/PR requirements, and version-controlled project instructions are authoritative.
 
-Do not implement solely from an issue description or remembered summary when the repository can answer the question.
+Do not implement solely from the issue description or a remembered summary when the repository can answer the question.
 
 ## Capability selection
 
 - Use `repository-orchestrator` for explicit repository orchestration or multi-agent execution requests.
+- Use Orca's live `orchestration` skill for the actual Run/task/worker/gate command surface.
 - Use `skill-discovery` when a task would materially benefit from specialist external expertise such as UI/UX, accessibility, security, testing, migration, or framework-specific workflows.
 - Prefer a maintained trustworthy external skill over generating a weaker generic local duplicate.
 - Use `repo-skill-bootstrap` for repository-specific architecture, invariants, and workflows.
@@ -83,7 +85,7 @@ Simplicity must never remove required:
 - security controls
 - accessibility requirements
 
-Never put secrets into shared memory.
+Never put secrets into shared memory or orchestration task packets.
 
 ## Verification
 
@@ -96,6 +98,8 @@ Where applicable verify:
 3. lint
 4. integration tests
 5. broader repository tests only when necessary
+
+For Orca Runs, keep verification and final review as explicit tasks/gates rather than treating a worker's self-report as sufficient.
 
 Never claim a command succeeded unless it was actually executed successfully.
 

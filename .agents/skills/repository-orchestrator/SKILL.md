@@ -1,11 +1,11 @@
 ---
 name: repository-orchestrator
-description: Plan and execute substantial repository work with Codex native subagents plus Antigravity (`agy`), isolated worktrees, deterministic verification, skill maintenance, and final review.
+description: Apply repository-specific orchestration policy while Orca owns multi-agent Runs, worktrees, worker sessions, messages, and decision gates.
 ---
 
 # Repository Orchestrator
 
-Turn the user's request into the smallest safe task graph and execute it without making the user manage agents, worktrees, or plan JSON.
+Use this skill as the repository-policy wrapper for Orca orchestration. Orca is the execution engine; this skill supplies the repository rules that must survive across Orca versions and worker types.
 
 ## Read first
 
@@ -27,108 +27,106 @@ explicit task requirements
     > general research
 ```
 
-## Executors
+## Load Orca before mutating orchestration state
 
-Use the actual available executors:
+Orca's command surface is versioned. Do not hard-code old orchestration commands from memory.
 
-- **Codex (`codex`)** — use Codex's native subagent tools exposed by the current host (`spawn_agent`, `wait_agent`, `close_agent`, or their namespaced equivalents). Do not launch a nested `codex` CLI process.
-- **Antigravity (`agy`)** — use for independent UI-oriented work, focused tests, or secondary implementation/review when useful. Check `command -v agy` before assigning it.
+1. verify the CLI with `agent-harness orca status`
+2. if the runtime is not running, try `agent-harness orca open` once
+3. load the live guide with `agent-harness orca guide`
+4. follow that live guide for Run, task, supervised-worker, messaging, model/effort, and gate operations
+5. prefer Orca JSON output when the live guide supports it
 
-If native Codex subagent tools are unavailable, assign Codex work to `agy` when available. If neither native Codex subagents nor `agy` are available, report that repository orchestration cannot run instead of inventing another execution path.
+If the CLI or live orchestration guide remains unavailable, stop and report the problem. Do not fall back to the removed `agent-harness orchestrate` runtime, ad-hoc terminal prompting, or a custom worker launcher.
 
-`codex-web-gpt` is only the parent ChatGPT Web transport. Never launch or repair it as a worker.
+## Dirty working-tree rule
+
+Orca worktrees start from Git refs/commits and are clean checkouts. Uncommitted changes in the caller checkout are not automatically inherited by a newly-created Orca worktree.
+
+Before creating an Orca Run, inspect `git status --porcelain` in the source checkout. If relevant uncommitted changes exist:
+
+- do not pretend Orca workers can see them
+- do not stash, commit, or mutate the caller checkout without permission
+- ask the user to commit/snapshot the relevant state, or continue from an Orca-managed worktree/branch that already contains it
+
+Unrelated dirty files may remain untouched if the Run does not depend on them.
 
 ## Plan
 
-Build a compact schema-version-1 plan internally. Split only at real ownership or dependency boundaries.
+Build the smallest useful task graph. Split only at real ownership, dependency, or independent-verification boundaries.
 
-Each task contains:
+Use Orca task-level workers such as:
 
-- `id`
-- `agent`: `codex` or `agy`
-- focused task prompt
-- `dependsOn`
-- acceptance criteria
-- constraints/non-goals
-- deterministic verification commands
+- **Codex** for implementation, debugging, repository analysis, tests, or review
+- **Antigravity** for UI/device-oriented work, focused implementation, testing, or independent review when useful
 
-Respect `maxParallel`; do not spawn more live workers than the plan allows.
+Use per-worker model and reasoning-effort overrides only through the live Orca guide. Do not assume a model name or effort value is accepted merely because another session supports it.
 
-For substantial implementation, add a final `skill-maintenance` task after implementation/tests and before final review. It may change only `.agents/skills/` and should normally return `NO_SKILL_CHANGE` unless durable repository knowledge changed.
+Do not run duplicate workers on the same implementation task unless the user explicitly wants competing approaches. Orca owns task-level concurrency. A worker may use its own internal subagents only when that remains inside its assigned task and does not duplicate sibling Orca work.
 
-## Execute
+For substantial implementation, include:
 
-If the user asked only for a plan, show the concise graph and stop.
+1. implementation tasks
+2. meaningful verification tasks/checks
+3. a `skill-maintenance` task when durable repository knowledge may have changed
+4. an independent final review task
+5. a final decision gate that blocks completion when review or verification fails
 
-If implementation was requested:
+Do not configure automatic remote push/merge unless the user explicitly asked for it.
 
-1. save the internal plan under `${TMPDIR:-/tmp}/agent-harness-plans/`
-2. run `agent-harness orchestrate prepare <plan.json>` and capture the run id
-3. run `agent-harness orchestrate ready <run-id>`
-4. for each ready `codex` task, run `agent-harness orchestrate task <run-id> <task-id>`, then pass the printed task packet to a native Codex subagent
-5. for each ready `agy` task, run `agent-harness orchestrate agy <run-id> <task-id>`
-6. wait for native Codex subagents; when one completes, run `agent-harness orchestrate complete <run-id> <task-id>`; if it errors, run `agent-harness orchestrate fail <run-id> <task-id> <reason>`
-7. close completed native subagents so they do not consume the host concurrency limit
-8. repeat `ready` until every implementation task is successful or the run is blocked
-9. run final review
-10. after review passes, run `agent-harness orchestrate deliver <run-id>`
-11. inspect the applied caller-worktree diff and report the result
+## Execute with Orca
 
-The helper snapshots the caller's current committed, modified, deleted, and untracked non-ignored files into a temporary shadow repository. Every task gets an isolated worktree from that shadow repository. Deterministic verification and integration are performed by the helper, not trusted from an agent self-report.
+Use the live Orca orchestration guide to create and run the task graph. Keep these repository policies regardless of the current Orca command syntax:
 
-## Native Codex task rules
+- every task works in an Orca-managed isolated worktree/session
+- workers read that worktree's `AGENTS.md` and relevant skills before editing
+- workers do not edit the caller checkout
+- task prompts include acceptance criteria, constraints, non-goals, and verification expectations
+- dependencies are explicit
+- failed verification blocks dependent delivery
+- final review is independent from the implementation worker when practical
+- delivery/merge stays local unless remote operations were explicitly authorized
 
-A native Codex subagent inherits the parent session, so always give it the full task packet printed by `agent-harness orchestrate task`. The packet contains the absolute isolated worktree path.
+If a worker stalls, use Orca's current messaging/recovery controls from the live guide. Do not silently move the same task to another executor unless the user or plan explicitly authorizes reassignment.
 
-The subagent must:
+## Android/device work
 
-- work only in that worktree
-- read that worktree's `AGENTS.md` and relevant skills
-- not edit the caller checkout
-- not delegate to another agent
-- not push, merge, or create a PR
-- leave the worktree ready for harness verification
+When Android verification is relevant and Orca's Android skill is installed, load the current `orca-emulator-android` guide and use Orca's adb-connected device/emulator workflow. Device access is a host capability; do not claim ADB verification if the selected worker/runtime cannot see the device.
 
-Use `send_input`/follow-up messaging only when a running subagent genuinely needs correction. Do not duplicate the same task with another agent merely because it is slow.
+## Shared memory and repository skills
 
-After reconnecting to a Codex/Web session, inspect existing live agents and `agent-harness orchestrate status latest` before spawning anything new.
+Ponytail, agentmemory, and repository skills remain complementary to Orca:
 
-## Final review
-
-If the plan review agent is `codex`:
-
-1. run `agent-harness orchestrate review-task <run-id>`
-2. pass the printed review packet to a native Codex subagent
-3. require its final line to be exactly `VERDICT: PASS` or `VERDICT: BLOCK`
-4. record it with `agent-harness orchestrate review <run-id> PASS|BLOCK`
-5. close the reviewer subagent
-
-If the review agent is `agy`, run `agent-harness orchestrate review-agy <run-id>`.
-
-Deliver only after all tasks succeeded and final review returned `PASS`.
-
-## Runtime behavior
-
-Ponytail and agentmemory are host integrations; do not create setup tasks for them.
-
-- follow Ponytail minimal-change guidance when available
+- use repository skills for durable project-specific procedures and invariants
+- use agentmemory selectively for prior decisions that materially help
+- follow Ponytail minimal-change/YAGNI guidance when available
 - never simplify away auth, validation, transactions, concurrency/idempotency, data integrity, security, error handling, or accessibility
-- let agents query shared memory selectively when useful
 - save only concise, durable, verified lessons after meaningful work
 
-If device/emulator validation is blocked by the outer sandbox, report that limitation after completing deterministic checks that are available. Do not change harness infrastructure or bypass orchestration to work around it.
+## Final review and completion
+
+Before completion:
+
+1. ensure required verification actually ran
+2. inspect the integrated diff/result in Orca
+3. run the independent review task
+4. require the final decision gate to pass
+5. confirm no unauthorized remote push/merge occurred
+6. report the changed files, verification results, and remaining risks
 
 ## Never do these
 
-- launch nested `codex exec` workers
-- use native subagents without isolated harness worktrees for implementation
-- use `codex-web-gpt` as a worker
-- create temporary compatibility wrappers or patch harness internals during a product task
-- directly implement the same task while an assigned worker is active
+- use the removed `agent-harness orchestrate` runtime
+- launch the removed custom `agy` host runner
+- use `codex-web-gpt` as a repository worker
+- create sibling implementation workers outside Orca for an active Orca Run
+- assume caller uncommitted changes were copied into Orca worktrees
+- trust an agent self-report instead of required verification evidence
 - push or merge remotely unless explicitly requested
+- patch Orca or harness internals merely to bypass a product-task blocker
 
 Optimize for:
 
 ```text
-correctness > architecture consistency > simplicity > testability > token efficiency > speed
+correctness > architecture consistency > simplicity > testability > observability > speed
 ```

@@ -1,0 +1,348 @@
+{
+  "accessControlViolations": 0,
+  "caseCount": 8,
+  "correct": 8,
+  "correctAndGrounded": 8,
+  "cost": {
+    "answerCostUsd": null,
+    "averageProductionCostPerQuery": null,
+    "citationCostUsd": null,
+    "combinedExperimentCostUsd": null,
+    "costPerCorrectAnswer": null,
+    "costPerCorrectGroundedAnswer": null,
+    "costPerGroundedAnswer": null,
+    "costPerSuccessfulRetrieval": null,
+    "embeddingCostUsd": null,
+    "embeddingIndexCostUsd": null,
+    "escalationVerifierCostUsd": null,
+    "evaluationJudgeCostUsd": 0.0,
+    "evaluationJudgeInputTokens": 0,
+    "evaluationJudgeOutputTokens": 0,
+    "indexQualityCostUsd": null,
+    "metadataCostUsd": null,
+    "plannerCostUsd": null,
+    "pricingWarnings": [
+      "No catalog price for openai/gpt-oss-120b",
+      "No catalog price for openai/gpt-oss-20b",
+      "No catalog price for qwen/qwen3.8-27b"
+    ],
+    "primaryVerifierCostUsd": null,
+    "rerankerCostUsd": null,
+    "revisionCostUsd": null,
+    "roleCostsUsd": {
+      "ANSWER": null,
+      "CITATION_ATTRIBUTION": null,
+      "CONTEXT_SUFFICIENCY": null,
+      "RETRIEVAL_PLANNER": null,
+      "ROUTER": null,
+      "VERIFIER": null,
+      "VERIFIER_ESCALATION": null
+    },
+    "routerCostUsd": null,
+    "sectionSummaryCostUsd": null,
+    "sufficiencyCostUsd": null,
+    "toolCostUsd": null,
+    "totalIndexingCostUsd": 0.0,
+    "totalQueryCostUsd": null,
+    "transcriptionCostUsd": null,
+    "visionCostUsd": null
+  },
+  "dataset": "rag-frozen-ami-v3",
+  "executionFailureCount": 0,
+  "grounded": 8,
+  "hardGatePassed": true,
+  "judge": {
+    "accountLimitedCount": 0,
+    "callCount": 0,
+    "configuredTpmLimit": null,
+    "configuredTpmTarget": null,
+    "failureCategories": [],
+    "failureCount": 0,
+    "inputTokens": 0,
+    "latencyMs": 0,
+    "maxObservedEffectiveTpm": 0.0,
+    "model": null,
+    "networkErrorCount": 0,
+    "outputTokens": 0,
+    "provider": null,
+    "rateLimitErrorCount": 0,
+    "retryCount": 0,
+    "successCount": 0,
+    "timeoutCount": 0,
+    "totalTokens": 0,
+    "totalWaitMs": 0,
+    "waitCount": 0
+  },
+  "latencyMs": {
+    "byRole": {
+      "ANSWER": {
+        "max": 1758.0,
+        "p50": 1285.0,
+        "p90": 1679.6,
+        "p95": 1718.8
+      },
+      "CITATION_ATTRIBUTION": {
+        "max": 736.0,
+        "p50": 397.5,
+        "p90": 689.8,
+        "p95": 712.9
+      },
+      "CONTEXT_SUFFICIENCY": {
+        "max": 1318.0,
+        "p50": 542.0,
+        "p90": 1141.6,
+        "p95": 1229.8
+      },
+      "RETRIEVAL_PLANNER": {
+        "max": 974.0,
+        "p50": 660.0,
+        "p90": 947.4,
+        "p95": 960.6999999999999
+      },
+      "ROUTER": {
+        "max": 1537.0,
+        "p50": 945.0,
+        "p90": 1492.9,
+        "p95": 1514.95
+      },
+      "VERIFIER": {
+        "max": 1619.0,
+        "p50": 1384.0,
+        "p90": 1579.4,
+        "p95": 1599.2
+      },
+      "VERIFIER_ESCALATION": {
+        "max": 1061.0,
+        "p50": 505.0,
+        "p90": 949.8,
+        "p95": 1005.4
+      }
+    },
+    "endToEnd": {
+      "max": 22753.0,
+      "p50": 18402.0,
+      "p90": 22740.4,
+      "p95": 22746.7
+    }
+  },
+  "metrics": {
+    "accessControlViolations": 0.0,
+    "answerCorrect": 1.0,
+    "citationEvidenceHitRate": 1.0,
+    "citationPrecision": 0.75,
+    "citationRecall": 0.9375,
+    "correctAndGrounded": 1.0,
+    "evidenceHitRate": 1.0,
+    "grounded": 1.0,
+    "modalityAccuracy": 1.0,
+    "mrr": 1.0,
+    "ndcgAt10": 1.0,
+    "ndcgAt5": 1.0,
+    "recallAt1": 0.8125,
+    "recallAt10": 1.0,
+    "recallAt3": 1.0,
+    "recallAt5": 1.0,
+    "referenceTargetAccuracy": 1.0,
+    "requiredEvidenceAccuracy": 1.0,
+    "routerIntentAccuracy": 1.0,
+    "wrongModalityCitationCount": 0.0,
+    "wrongReelCitationCount": 0.0
+  },
+  "reliability": {
+    "accountLimitedCount": 0,
+    "answerRevisionRate": 0.0,
+    "http429Count": 19,
+    "invalidJsonCount": 0,
+    "outOfCapacityCount": 0,
+    "providerRequests": 48,
+    "providerRetries": 0,
+    "retrievalRetryRate": 0.0,
+    "routerFallbackRate": 0.0,
+    "schemaFailureCount": 0,
+    "timeoutCount": 0,
+    "truncationCount": 0,
+    "verifierEscalationRate": 0.0
+  },
+  "runId": "production-rag-frozen-ami-v3-a27fb356-20260912-02",
+  "schemaVersion": "rag-eval-summary-v1",
+  "semanticEvaluationComplete": false,
+  "semanticMetricCoverage": {
+    "context_precision": {
+      "available": 0,
+      "complete": false,
+      "total": 8
+    },
+    "context_recall": {
+      "available": 0,
+      "complete": false,
+      "total": 8
+    },
+    "factual_correctness": {
+      "available": 0,
+      "complete": false,
+      "total": 8
+    },
+    "faithfulness": {
+      "available": 0,
+      "complete": false,
+      "total": 8
+    },
+    "response_relevancy": {
+      "available": 0,
+      "complete": false,
+      "total": 8
+    }
+  },
+  "semanticMetrics": {
+    "context_precision": null,
+    "context_recall": null,
+    "factual_correctness": null,
+    "faithfulness": null,
+    "response_relevancy": null
+  },
+  "slices": {
+    "AMI": {
+      "accessControlViolations": 0,
+      "cases": 8,
+      "correctAndGroundedRate": 1.0
+    },
+    "short": {
+      "accessControlViolations": 0,
+      "cases": 8,
+      "correctAndGroundedRate": 1.0
+    },
+    "transcript": {
+      "accessControlViolations": 0,
+      "cases": 8,
+      "correctAndGroundedRate": 1.0
+    }
+  },
+  "variant": {
+    "answerModel": null,
+    "configSnapshot": {
+      "aiGatewayEnabled": true,
+      "datasetVersion": "rag-frozen-ami-v3",
+      "embedding": {
+        "dimensions": 1024,
+        "model": "BAAI/bge-m3",
+        "provider": "self-hosted-tei",
+        "version": "bge-m3-tei-v1"
+      },
+      "endpointContract": "CHAT_JSON_SCHEMA",
+      "gitSha": "a27fb35680d685321d2d408e17fc96d8bbe2b6b6",
+      "hierarchicalRetrievalEnabled": false,
+      "productionSha": "a27fb35680d685321d2d408e17fc96d8bbe2b6b6",
+      "provenance": "OPERATOR_SUPPLIED_DEPLOYMENT_SNAPSHOT",
+      "reranker": {
+        "enabled": true,
+        "maxLimit": 8,
+        "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        "provider": "tei"
+      },
+      "roles": {
+        "ANSWER": {
+          "maxCompletionTokens": 1536,
+          "model": "openai/gpt-oss-120b",
+          "timeoutMs": 45000
+        },
+        "ANSWER_REVISION": {
+          "maxCompletionTokens": 768,
+          "model": "qwen/qwen3.8-27b",
+          "timeoutMs": 30000
+        },
+        "CITATION_ATTRIBUTION": {
+          "maxCompletionTokens": 768,
+          "model": "openai/gpt-oss-20b",
+          "timeoutMs": 12000
+        },
+        "CONTEXT_SUFFICIENCY": {
+          "maxCompletionTokens": 512,
+          "model": "openai/gpt-oss-20b",
+          "timeoutMs": 12000
+        },
+        "EMBEDDING": {
+          "maxCompletionTokens": null,
+          "model": "BAAI/bge-m3",
+          "timeoutMs": 12000
+        },
+        "RERANKER": {
+          "maxCompletionTokens": null,
+          "model": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+          "timeoutMs": 5000
+        },
+        "RETRIEVAL_PLANNER": {
+          "maxCompletionTokens": 512,
+          "model": "qwen/qwen3.8-27b",
+          "timeoutMs": 8000
+        },
+        "RETRIEVAL_TOOL": {
+          "maxCompletionTokens": 500,
+          "model": "openai/gpt-oss-20b",
+          "timeoutMs": 8000
+        },
+        "ROUTER": {
+          "maxCompletionTokens": 512,
+          "model": "qwen/qwen3.8-27b",
+          "timeoutMs": 30000
+        },
+        "VERIFIER": {
+          "maxCompletionTokens": 1024,
+          "model": "openai/gpt-oss-120b",
+          "timeoutMs": 12000
+        },
+        "VERIFIER_ESCALATION": {
+          "maxCompletionTokens": 1024,
+          "model": "openai/gpt-oss-20b",
+          "timeoutMs": 30000
+        }
+      },
+      "routerFallbackModel": null,
+      "routerFallbackTimeoutMs": 60000,
+      "routerMaxCompletionTokens": 512,
+      "routerOutputContract": "CHAT_JSON_SCHEMA",
+      "routerPrimaryModel": "qwen/qwen3.8-27b",
+      "routerTimeoutMs": 30000,
+      "runtimeConfigSource": "ssh velora-homelab; active ai-service container and recovered host deployment configuration",
+      "schemaVersion": "rag-runtime-config-snapshot-v1",
+      "structuredMaxTokensParameter": "max_completion_tokens",
+      "structuredReasoningEffort": "low",
+      "toolCallingEnabled": true,
+      "unsetValuesUseTrackedCodeDefaults": true,
+      "variantName": "production-frozen-v3-full-ranked-evidence"
+    },
+    "datasetVersion": "rag-frozen-ami-v3",
+    "embeddingModel": null,
+    "embeddingProvider": null,
+    "evaluatorSha": "be26d9ff3752eb3b968a55833076211401232d8b",
+    "gitSha": "be26d9ff3752eb3b968a55833076211401232d8b",
+    "judgeModel": "openai/gpt-oss-120b",
+    "judgeProvider": "groq",
+    "plannerModel": null,
+    "pricingVersion": "cloudflare-workers-ai-2026-08-30-v1",
+    "productionSha": "a27fb35680d685321d2d408e17fc96d8bbe2b6b6",
+    "promptVersion": null,
+    "rerankK": null,
+    "retrievalK": null,
+    "routerModel": null,
+    "savedSourceMode": "SAVED_RUN_ONLY",
+    "semanticContextBinding": {
+      "artifactSha256": "f9b6519c95b6f0c58983f6a36c084b90f82788bcac58c556c9d5b6175a025941",
+      "bindingSha256": "b701b7ffbf5f74d5a7d0a8e5139332bfa868b48fb977b5d602e165e2c4dc35fc",
+      "caseCount": 8,
+      "datasetSha256": "856e34483522da55e8d09cf0ab542b29add224f49572ae98f363a9db2520d391",
+      "datasetVersion": "rag-frozen-ami-v3",
+      "productionSha": "a27fb35680d685321d2d408e17fc96d8bbe2b6b6",
+      "provenanceMode": "SOURCE_BOUND_LEGACY_ROWS",
+      "schemaVersion": "rag-eval-enriched-context-v1",
+      "sourceReportSha256": "2ba178b17d4599705a88f171e66c3b44acf579c1600283852a375eb7470d4cf8",
+      "sourceRunId": "production-rag-frozen-ami-v3-a27fb356-20260912-02",
+      "sourceSummarySha256": "e3ccff3374bf333142b6c430f76e1e1c0880945bb8b2334c53d57e4c215b4c3c",
+      "sourceTraceSha256": "cdd1fcd047c61b970441668a58a8c171e4eff10b10a9f5ec938d6ad6f6a95f82"
+    },
+    "sourceDatasetSha256": "856e34483522da55e8d09cf0ab542b29add224f49572ae98f363a9db2520d391",
+    "sourceSummarySha256": "e3ccff3374bf333142b6c430f76e1e1c0880945bb8b2334c53d57e4c215b4c3c",
+    "traceProvenance": "COMPLETE",
+    "variantName": "production-frozen-v3-full-ranked-evidence",
+    "verifierModel": null
+  }
+}

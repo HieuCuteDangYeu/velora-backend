@@ -15,9 +15,14 @@ from urllib.request import Request, urlopen
 from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
 from rag_eval.groq_tpd_empty import EMPTY_BASELINE_SCHEMA, empty_usage_tpd_headroom
 from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
-from rag_eval.judge_runtime import JudgeRateLimiter
+from rag_eval.judge_runtime import JudgeRateLimiter, estimate_input_tokens
 from rag_eval.recovery import RecoveryOperation, multiday_tpd_preflight
-from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
+from rag_eval.tpd_ledger import (
+    GroqDailyTokenLedger,
+    LedgerPersistenceError,
+    parse_timestamp,
+    utc_timestamp,
+)
 
 DEFAULT_PROBE_MODELS = ("openai/gpt-oss-120b",)
 RATE_LIMIT_HEADERS = (
@@ -57,6 +62,56 @@ def _header_map(headers: Any) -> dict[str, str]:
 
 def _response_headers(headers: Any) -> dict[str, str]:
     return {key: value for key, value in _header_map(headers).items()}
+
+
+def probe_reservation_tokens() -> int:
+    """Conservatively reserve the cheap probe before daily headroom is recomputed."""
+
+    messages = [{"role": "user", "content": "Reply OK."}]
+    return estimate_input_tokens(messages) + 1 + _nonnegative_int(
+        "RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", 256
+    )
+
+
+def account_groq_probe_requests(
+    probes: list[dict[str, Any]],
+    ledger_path: str | None = None,
+    *,
+    run_id: str = "preflight",
+) -> int:
+    """Record each probe's conservative usage before evaluating TPD headroom."""
+
+    if not probes:
+        return 0
+    ledger = GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
+    reservation = probe_reservation_tokens()
+    recorded = 0
+    for index, probe in enumerate(probes):
+        status = probe.get("status")
+        successful = isinstance(status, int) and status in range(200, 300)
+        ledger.record(
+            {
+                "schemaVersion": "groq-tpd-ledger-record-v1",
+                "requestId": ledger.new_request_id(),
+                "timestamp": utc_timestamp(),
+                "provider": "groq",
+                "model": probe.get("model", "UNKNOWN"),
+                "estimatedInputTokens": reservation - 1 - _nonnegative_int(
+                    "RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", 256
+                ),
+                "reservedOutputTokens": 1,
+                "countedTokens": reservation,
+                "countingMode": "CONSERVATIVE_UPPER_BOUND",
+                "runId": run_id,
+                "judgeOperation": "preflight_probe",
+                "status": "SUCCESS" if successful else "FAILURE",
+                "providerStatus": status,
+                "providerCategory": "SUCCESS" if successful else "PROBE_FAILURE",
+                "attempt": index + 1,
+            }
+        )
+        recorded += reservation
+    return recorded
 
 
 def _probe_sync(model: str, base_url: str, api_key: str, timeout: float) -> dict[str, Any]:
@@ -526,6 +581,11 @@ async def run_preflight(args: argparse.Namespace) -> int:
             for model in models
         ]
     )
+    probe_ledger_path = getattr(args, "ledger_path", None) or os.getenv(
+        "RAGAS_GROQ_DAILY_LEDGER_PATH"
+    )
+    if api_key:
+        account_groq_probe_requests(probes, probe_ledger_path)
     first_probe = next((probe for probe in probes if probe["model"] == first_model), probes[0])
     first_headroom, remaining = first_request_tpm_headroom(first_probe, first_tokens)
     tpd = tpd_headroom(

@@ -13,8 +13,24 @@ set -Eeuo pipefail
 # The script is intentionally conservative around cloud DB changes, RabbitMQ,
 # RAG workloads, profile-gated services, and worker configuration.
 
-readonly APP_DIR="${VELORA_APP_DIR:-/home/quan/apps/microservices-boilerplate}"
-readonly STATE_DIR="${VELORA_STATE_DIR:-/home/quan/.local/state/velora}"
+resolve_default_app_dir() {
+  local user_home="${HOME:-/home/quan}"
+  local candidate
+
+  for candidate in \
+    "$user_home/apps/microservices-boilerplate" \
+    "$user_home/GitHub/microservices-boilerplate"; do
+    if [[ -d "$candidate/.git" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "$user_home/apps/microservices-boilerplate"
+}
+
+readonly APP_DIR="${VELORA_APP_DIR:-$(resolve_default_app_dir)}"
+readonly STATE_DIR="${VELORA_STATE_DIR:-${HOME:-/home/quan}/.local/state/velora}"
 readonly STATE_FILE="$STATE_DIR/deployed-sha"
 readonly PREVIOUS_SHA_FILE="$STATE_DIR/previous-sha"
 readonly ENV_HASH_FILE="$STATE_DIR/env.sha256"

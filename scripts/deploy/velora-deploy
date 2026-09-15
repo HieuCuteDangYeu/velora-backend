@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+running_bash_dir="${BASH%/*}"
+if [[ -d "$running_bash_dir" && ":$PATH:" != *":$running_bash_dir:"* ]]; then
+  export PATH="$running_bash_dir:$PATH"
+fi
+
 if (( BASH_VERSINFO[0] < 4 )); then
   for bash_candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
     if [[ -x "$bash_candidate" ]]; then
+      export PATH="${bash_candidate%/*}:$PATH"
       exec "$bash_candidate" "$0" "$@"
     fi
   done

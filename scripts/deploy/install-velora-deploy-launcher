@@ -5,8 +5,35 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly LAUNCHER_SOURCE="$SCRIPT_DIR/velora-deploy-launcher"
 readonly INSTALL_PATH="${VELORA_DEPLOY_INSTALL_PATH:-/usr/local/bin/velora-deploy}"
 readonly SERVICE_USER="${VELORA_DEPLOY_USER:-quan}"
-readonly SERVICE_GROUP="${VELORA_DEPLOY_GROUP:-$SERVICE_USER}"
-readonly STATE_DIR="${VELORA_STATE_DIR:-/home/$SERVICE_USER/.local/state/velora}"
+
+resolve_service_home() {
+  local passwd_entry
+  local service_home
+
+  if command -v getent >/dev/null 2>&1; then
+    passwd_entry="$(getent passwd "$SERVICE_USER" 2>/dev/null || true)"
+    service_home="$(printf '%s\n' "$passwd_entry" | awk -F: 'NF >= 6 { print $6; exit }')"
+    if [[ -n "$service_home" ]]; then
+      printf '%s\n' "$service_home"
+      return
+    fi
+  fi
+
+  if command -v dscl >/dev/null 2>&1; then
+    service_home="$(dscl . -read "/Users/$SERVICE_USER" NFSHomeDirectory 2>/dev/null | awk 'NR == 1 { print $2 }')"
+    if [[ -n "$service_home" ]]; then
+      printf '%s\n' "$service_home"
+      return
+    fi
+  fi
+
+  printf '/home/%s\n' "$SERVICE_USER"
+}
+
+readonly SERVICE_HOME="${VELORA_DEPLOY_HOME:-$(resolve_service_home)}"
+readonly SERVICE_GROUP="${VELORA_DEPLOY_GROUP:-$(id -gn "$SERVICE_USER" 2>/dev/null || printf '%s' "$SERVICE_USER")}"
+readonly INSTALL_GROUP="${VELORA_DEPLOY_INSTALL_GROUP:-$(id -gn root 2>/dev/null || printf 'root')}"
+readonly STATE_DIR="${VELORA_STATE_DIR:-$SERVICE_HOME/.local/state/velora}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -15,8 +42,7 @@ fail() {
 
 [[ "$EUID" -eq 0 ]] || fail "run this installer with sudo/root privileges"
 [[ -f "$LAUNCHER_SOURCE" ]] || fail "launcher source missing: $LAUNCHER_SOURCE"
-getent passwd "$SERVICE_USER" >/dev/null || fail "deployment user does not exist: $SERVICE_USER"
-getent group "$SERVICE_GROUP" >/dev/null || fail "deployment group does not exist: $SERVICE_GROUP"
+id "$SERVICE_USER" >/dev/null 2>&1 || fail "deployment user does not exist: $SERVICE_USER"
 
 bash -n "$LAUNCHER_SOURCE"
 
@@ -24,7 +50,7 @@ install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$STATE_DIR"
 chown -R "$SERVICE_USER:$SERVICE_GROUP" "$STATE_DIR"
 chmod -R u+rwX,go-rwx "$STATE_DIR"
 
-install -o root -g root -m 0755 "$LAUNCHER_SOURCE" "$INSTALL_PATH"
+install -o root -g "$INSTALL_GROUP" -m 0755 "$LAUNCHER_SOURCE" "$INSTALL_PATH"
 
 if command -v systemctl >/dev/null 2>&1 && systemctl cat velora-deploy.service >/dev/null 2>&1; then
   if ! systemctl cat velora-deploy.service | grep -Fq "ExecStart=$INSTALL_PATH"; then

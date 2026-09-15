@@ -712,14 +712,47 @@ class MultiDayRecoveryStore:
             self._state["dailyRecoveryStopReason"] = None
             self._write()
 
-    def _request_key(self, case_id: str | None, metric: str | None, attempt: int, date: str) -> str:
-        return "\x1f".join((date, case_id or "", metric or "", str(attempt)))
+    def _request_key(
+        self,
+        case_id: str | None,
+        metric: str | None,
+        call_index: int,
+        attempt: int,
+        date: str,
+    ) -> str:
+        return "\x1f".join(
+            (date, case_id or "", metric or "", str(call_index), str(attempt))
+        )
+
+    def _next_attempt_unlocked(
+        self,
+        *,
+        case_id: str | None,
+        metric: str | None,
+        call_index: int,
+        attempt: int,
+        date: str,
+    ) -> int:
+        previous_attempts: list[int] = []
+        for request in self._state["requests"].values():
+            if (
+                request.get("windowDateUtc") != date
+                or request.get("caseId") != case_id
+                or request.get("metricName") != metric
+                or int(request.get("callIndex", 1)) != call_index
+            ):
+                continue
+            if request.get("status") == "DISPATCHED":
+                raise DailyRecoveryDeferred("RECOVERY_REQUEST_ALREADY_DISPATCHED")
+            previous_attempts.append(int(request.get("attempt", 0)))
+        return max(attempt, max(previous_attempts, default=0) + 1)
 
     def _ensure_capacity_unlocked(
         self,
         *,
         case_id: str | None,
         metric: str | None,
+        call_index: int,
         attempt: int,
         reservation_tokens: int,
         safety_margin_tokens: int,
@@ -740,6 +773,8 @@ class MultiDayRecoveryStore:
             )
             self._write()
             raise DailyRecoveryDeferred(WAITING_FOR_NEXT_TPD_WINDOW)
+        if isinstance(call_index, bool) or not isinstance(call_index, int) or call_index <= 0:
+            raise RecoveryStateError("recovery request call index is invalid")
         operation_key = f"{case_id}::{metric}"
         scheduled = epoch.get("scheduledOperationKeys")
         if isinstance(scheduled, list) and scheduled and operation_key not in scheduled:
@@ -748,7 +783,14 @@ class MultiDayRecoveryStore:
             self._state["dailyRecoveryStopReason"] = INSUFFICIENT_TPD_FOR_NEXT_OPERATION
             self._write()
             raise DailyRecoveryDeferred(INSUFFICIENT_TPD_FOR_NEXT_OPERATION)
-        key = self._request_key(case_id, metric, attempt, date)
+        effective_attempt = self._next_attempt_unlocked(
+            case_id=case_id,
+            metric=metric,
+            call_index=call_index,
+            attempt=attempt,
+            date=date,
+        )
+        key = self._request_key(case_id, metric, call_index, effective_attempt, date)
         existing = self._state["requests"].get(key)
         if isinstance(existing, dict) and existing.get("status") in {"DISPATCHED", "ACCOUNTED"}:
             raise DailyRecoveryDeferred("RECOVERY_REQUEST_ALREADY_DISPATCHED")
@@ -767,7 +809,8 @@ class MultiDayRecoveryStore:
                 epoch["ledgerEpoch"],
                 case_id or "",
                 metric or "",
-                str(attempt),
+                str(call_index),
+                str(effective_attempt),
             )
         )
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"velora-ragas-recovery:{material}"))
@@ -780,6 +823,7 @@ class MultiDayRecoveryStore:
         attempt: int,
         reservation_tokens: int,
         safety_margin_tokens: int,
+        call_index: int = 1,
         now: datetime | None = None,
     ) -> str:
         current = now or datetime.now(UTC)
@@ -787,6 +831,7 @@ class MultiDayRecoveryStore:
             return self._ensure_capacity_unlocked(
                 case_id=case_id,
                 metric=metric,
+                call_index=call_index,
                 attempt=attempt,
                 reservation_tokens=reservation_tokens,
                 safety_margin_tokens=safety_margin_tokens,
@@ -799,6 +844,7 @@ class MultiDayRecoveryStore:
         request_id: str,
         case_id: str | None,
         metric: str | None,
+        call_index: int,
         attempt: int,
         reservation_tokens: int,
         current: datetime,
@@ -808,7 +854,7 @@ class MultiDayRecoveryStore:
         epoch = self._active_epoch_unlocked()
         if epoch is None or epoch["windowDateUtc"] != date:
             raise DailyRecoveryDeferred(WAITING_FOR_NEXT_TPD_WINDOW)
-        key = self._request_key(case_id, metric, attempt, date)
+        key = self._request_key(case_id, metric, call_index, attempt, date)
         if key in self._state["requests"]:
             raise DailyRecoveryDeferred("RECOVERY_REQUEST_ALREADY_DISPATCHED")
         self._state["requests"][key] = {
@@ -817,6 +863,7 @@ class MultiDayRecoveryStore:
             "ledgerEpoch": epoch["ledgerEpoch"],
             "caseId": case_id,
             "metricName": metric,
+            "callIndex": call_index,
             "attempt": attempt,
             "reservationTokens": reservation_tokens,
             "countedTokens": None,
@@ -841,6 +888,8 @@ class MultiDayRecoveryStore:
             "requestId": request_id,
             "ledgerEpoch": epoch["ledgerEpoch"],
             "windowDateUtc": date,
+            "callIndex": call_index,
+            "attempt": attempt,
         }
 
     def prepare_request(
@@ -851,16 +900,25 @@ class MultiDayRecoveryStore:
         attempt: int,
         reservation_tokens: int,
         safety_margin_tokens: int,
+        call_index: int = 1,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         """Atomically reserve and persist one request before provider dispatch."""
 
         current = now or datetime.now(UTC)
         with self._lock:
+            effective_attempt = self._next_attempt_unlocked(
+                case_id=case_id,
+                metric=metric,
+                call_index=call_index,
+                attempt=attempt,
+                date=_utc_date(current),
+            )
             request_id = self._ensure_capacity_unlocked(
                 case_id=case_id,
                 metric=metric,
-                attempt=attempt,
+                call_index=call_index,
+                attempt=effective_attempt,
                 reservation_tokens=reservation_tokens,
                 safety_margin_tokens=safety_margin_tokens,
                 current=current,
@@ -869,7 +927,8 @@ class MultiDayRecoveryStore:
                 request_id=request_id,
                 case_id=case_id,
                 metric=metric,
-                attempt=attempt,
+                call_index=call_index,
+                attempt=effective_attempt,
                 reservation_tokens=reservation_tokens,
                 current=current,
             )
@@ -882,14 +941,23 @@ class MultiDayRecoveryStore:
         metric: str | None,
         attempt: int,
         reservation_tokens: int,
+        call_index: int = 1,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         current = now or datetime.now(UTC)
         with self._lock:
+            effective_attempt = self._next_attempt_unlocked(
+                case_id=case_id,
+                metric=metric,
+                call_index=call_index,
+                attempt=attempt,
+                date=_utc_date(current),
+            )
             self._ensure_capacity_unlocked(
                 case_id=case_id,
                 metric=metric,
-                attempt=attempt,
+                call_index=call_index,
+                attempt=effective_attempt,
                 reservation_tokens=reservation_tokens,
                 safety_margin_tokens=daily_safety_margin_tokens(),
                 current=current,
@@ -898,7 +966,8 @@ class MultiDayRecoveryStore:
                 request_id=request_id,
                 case_id=case_id,
                 metric=metric,
-                attempt=attempt,
+                call_index=call_index,
+                attempt=effective_attempt,
                 reservation_tokens=reservation_tokens,
                 current=current,
             )

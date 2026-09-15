@@ -36,6 +36,7 @@ LEDGER_FIELDS = (
     "runId",
     "caseId",
     "judgeOperation",
+    "callIndex",
     "status",
     "providerStatus",
     "providerCategory",

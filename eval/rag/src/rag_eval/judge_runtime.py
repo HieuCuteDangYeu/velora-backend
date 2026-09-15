@@ -484,6 +484,7 @@ class JudgeUsageTracker:
             GroqDailyTokenLedger.from_env() if provider.strip().lower() == "groq" else None
         )
         self._recovery_store: MultiDayRecoveryStore | None = None
+        self._call_indices: dict[tuple[str, str], int] = {}
         try:
             self._max_retries = max(0, int(os.getenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")))
         except ValueError:
@@ -512,14 +513,38 @@ class JudgeUsageTracker:
             released = False
             key = _usage_key.get()
             metric = _metric_name.get()
+            call_index = self._next_call_index(key, metric)
+            active_recovery_request: dict[str, Any] | None = None
             try:
                 for attempt in range(1, self._max_retries + 2):
-                    recovery_request_id = self._prepare_recovery_request(
+                    prepared_recovery_request = self._prepare_recovery_request(
                         key=key,
                         metric=metric,
+                        call_index=call_index,
                         attempt=attempt,
                         reservation_tokens=request_reservation_tokens,
                     )
+                    recovery_request_id = (
+                        prepared_recovery_request[0]
+                        if prepared_recovery_request is not None
+                        else None
+                    )
+                    request_attempt = (
+                        prepared_recovery_request[1]
+                        if prepared_recovery_request is not None
+                        else attempt
+                    )
+                    if recovery_request_id is not None:
+                        active_recovery_request = {
+                            "requestId": recovery_request_id,
+                            "key": key,
+                            "metric": metric,
+                            "callIndex": call_index,
+                            "attempt": request_attempt,
+                            "model": kwargs.get("model", "UNKNOWN"),
+                            "estimatedInputTokens": estimated_input,
+                            "reservedOutputTokens": reserved_output,
+                        }
                     fallback_request_id = (
                         recovery_request_id
                         or (self._ledger.new_request_id() if self._ledger is not None else None)
@@ -548,7 +573,8 @@ class JudgeUsageTracker:
                                 "metricName": metric,
                                 "provider": self._limiter.provider,
                                 "model": kwargs.get("model", "UNKNOWN"),
-                                "attempt": attempt,
+                                "callIndex": call_index,
+                                "attempt": request_attempt,
                                 "configuredTimeoutMs": self._timeout_seconds * 1000,
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
@@ -584,7 +610,8 @@ class JudgeUsageTracker:
                                 status="SUCCESS",
                                 provider_status=200,
                                 provider_category="SUCCESS",
-                                attempt=attempt,
+                                attempt=request_attempt,
+                                call_index=call_index,
                                 estimated_input_tokens=estimated_input,
                                 reserved_output_tokens=reserved_output,
                                 input_tokens=input_tokens,
@@ -592,6 +619,7 @@ class JudgeUsageTracker:
                                 total_tokens=actual_tokens,
                             )
                             self._account_recovery(ledger_result)
+                            active_recovery_request = None
                         except (LedgerPersistenceError, RecoveryStateError):
                             await self._limiter.release(reservation, actual_tokens)
                             released = True
@@ -630,7 +658,8 @@ class JudgeUsageTracker:
                                 "metricName": metric,
                                 "provider": self._limiter.provider,
                                 "model": kwargs.get("model", "UNKNOWN"),
-                                "attempt": attempt,
+                                "callIndex": call_index,
+                                "attempt": request_attempt,
                                 "configuredTimeoutMs": self._timeout_seconds * 1000,
                                 "configuredMaxCompletionTokens": reserved_output,
                                 "estimatedInputTokens": estimated_input,
@@ -669,7 +698,8 @@ class JudgeUsageTracker:
                             status="FAILURE",
                             provider_status=provider_status,
                             provider_category=category,
-                            attempt=attempt,
+                            attempt=request_attempt,
+                            call_index=call_index,
                             estimated_input_tokens=estimated_input,
                             reserved_output_tokens=reserved_output,
                             input_tokens=input_tokens,
@@ -677,6 +707,7 @@ class JudgeUsageTracker:
                             total_tokens=actual_tokens,
                         )
                         self._account_recovery(ledger_result)
+                        active_recovery_request = None
                         if not transient or attempt > self._max_retries:
                             await self._limiter.release(reservation)
                             released = True
@@ -687,6 +718,31 @@ class JudgeUsageTracker:
                             call[-1]["waitDurationMs"] = waited * 1000
                 raise RuntimeError("judge retry loop exhausted")
             except BaseException:
+                if active_recovery_request is not None and self._ledger is not None:
+                    try:
+                        ledger_result = self._record_ledger(
+                            key=active_recovery_request["key"],
+                            metric=active_recovery_request["metric"],
+                            model=active_recovery_request["model"],
+                            request_id=active_recovery_request["requestId"],
+                            status="FAILURE",
+                            provider_status="CANCELED",
+                            provider_category="REQUEST_CANCELED_AFTER_DISPATCH",
+                            attempt=active_recovery_request["attempt"],
+                            call_index=active_recovery_request["callIndex"],
+                            estimated_input_tokens=active_recovery_request[
+                                "estimatedInputTokens"
+                            ],
+                            reserved_output_tokens=active_recovery_request[
+                                "reservedOutputTokens"
+                            ],
+                            input_tokens=None,
+                            output_tokens=None,
+                            total_tokens=None,
+                        )
+                        self._account_recovery(ledger_result)
+                    except (LedgerPersistenceError, RecoveryStateError):
+                        pass
                 # The normal paths release the reservation; this protects cancellation.
                 if not released:
                     await self._limiter.release(reservation)
@@ -710,9 +766,10 @@ class JudgeUsageTracker:
         *,
         key: str | None,
         metric: str | None,
+        call_index: int,
         attempt: int,
         reservation_tokens: int,
-    ) -> str | None:
+    ) -> tuple[str, int] | None:
         if self._recovery_store is None:
             return None
         _run_id, separator, case_id = (key or "").rpartition(":")
@@ -721,11 +778,12 @@ class JudgeUsageTracker:
         prepared = self._recovery_store.prepare_request(
             case_id=case_id,
             metric=metric,
+            call_index=call_index,
             attempt=attempt,
             reservation_tokens=reservation_tokens,
             safety_margin_tokens=daily_safety_margin_tokens(),
         )
-        return str(prepared["requestId"])
+        return str(prepared["requestId"]), int(prepared["attempt"])
 
     def _account_recovery(
         self, ledger_result: tuple[str, int, str, str] | None
@@ -755,6 +813,7 @@ class JudgeUsageTracker:
         provider_status: Any,
         provider_category: str,
         attempt: int,
+        call_index: int = 1,
         estimated_input_tokens: int,
         reserved_output_tokens: int,
         input_tokens: int | None,
@@ -799,6 +858,7 @@ class JudgeUsageTracker:
             "runId": run_id,
             "caseId": case_id,
             "judgeOperation": metric or "UNKNOWN",
+            "callIndex": call_index,
             "status": status,
             "providerStatus": provider_status,
             "providerCategory": provider_category,
@@ -816,12 +876,25 @@ class JudgeUsageTracker:
         _usage_key.set(key)
         self._calls[key] = []
 
+    def _next_call_index(self, key: str | None, metric: str | None) -> int:
+        if not key or not metric:
+            return 1
+        identity = (key, metric)
+        next_index = self._call_indices.get(identity, 0) + 1
+        self._call_indices[identity] = next_index
+        return next_index
+
     def set_metric(self, name: str) -> None:
         _metric_name.set(name)
 
     def take(self, key: str) -> list[dict[str, Any]]:
         _usage_key.set(None)
         _metric_name.set(None)
+        self._call_indices = {
+            identity: value
+            for identity, value in self._call_indices.items()
+            if identity[0] != key
+        }
         return self._calls.pop(key, [])
 
     def calls_for(self, key: str, metric: str) -> list[dict[str, Any]]:

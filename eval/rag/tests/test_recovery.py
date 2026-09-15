@@ -1,4 +1,6 @@
+import asyncio
 import hashlib
+import json
 from argparse import Namespace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -347,6 +349,98 @@ def test_same_day_resume_requires_a_newer_baseline(tmp_path):
 
     with pytest.raises(RecoveryStateError, match="newer TPD baseline"):
         store.begin_epoch(baseline(TODAY), now=TODAY + timedelta(minutes=1))
+
+
+@pytest.mark.asyncio
+async def test_multiple_structured_calls_share_metric_and_get_distinct_call_indexes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    monkeypatch.setenv("RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", "0")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    store = runtime_store(tmp_path, monkeypatch, remaining=50_000)
+    client = FakeClient([judge_response(), judge_response()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.configure_multiday_recovery(store)
+    tracker.begin("run:case-1")
+    tracker.set_metric("faithfulness")
+    messages = [{"role": "user", "content": "judge"}]
+
+    await client.chat.completions.create(model=MODEL, messages=messages, max_tokens=32)
+    await client.chat.completions.create(model=MODEL, messages=messages, max_tokens=32)
+    calls = tracker.take("run:case-1")
+
+    assert [call["callIndex"] for call in calls] == [1, 2]
+    assert [call["attempt"] for call in calls] == [1, 1]
+    assert [
+        record["callIndex"]
+        for record in (
+            json.loads(line)
+            for line in (tmp_path / "ledger.jsonl").read_text().splitlines()
+        )
+        if record.get("recordType") == "REQUEST"
+    ] == [1, 2]
+    assert len(store.snapshot()["requests"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_resumed_metric_allocates_a_new_attempt_after_prior_accounting(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    monkeypatch.setenv("RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", "0")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    store = runtime_store(tmp_path, monkeypatch, remaining=50_000)
+    messages = [{"role": "user", "content": "judge"}]
+
+    first_client = FakeClient([judge_response()])
+    first = JudgeUsageTracker(first_client, provider="groq")
+    first.configure_multiday_recovery(store)
+    first.begin("run:case-1")
+    first.set_metric("faithfulness")
+    await first_client.chat.completions.create(model=MODEL, messages=messages, max_tokens=32)
+    first.take("run:case-1")
+
+    resumed_client = FakeClient([judge_response()])
+    resumed = JudgeUsageTracker(resumed_client, provider="groq")
+    resumed.configure_multiday_recovery(store)
+    resumed.begin("run:case-1")
+    resumed.set_metric("faithfulness")
+    await resumed_client.chat.completions.create(model=MODEL, messages=messages, max_tokens=32)
+    calls = resumed.take("run:case-1")
+
+    assert calls[0]["callIndex"] == 1
+    assert calls[0]["attempt"] == 2
+    requests = store.snapshot()["requests"]
+    assert sorted((item["callIndex"], item["attempt"]) for item in requests.values()) == [
+        (1, 1),
+        (1, 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_canceled_dispatched_request_is_conservatively_accounted(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "0")
+    monkeypatch.setenv("RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", "0")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    store = runtime_store(tmp_path, monkeypatch, remaining=50_000)
+    client = FakeClient([asyncio.CancelledError()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    tracker.configure_multiday_recovery(store)
+    tracker.begin("run:case-1")
+    tracker.set_metric("faithfulness")
+    messages = [{"role": "user", "content": "judge"}]
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.chat.completions.create(model=MODEL, messages=messages, max_tokens=32)
+
+    request = next(iter(store.snapshot()["requests"].values()))
+    assert request["status"] == "ACCOUNTED"
+    assert request["outcomeStatus"] == "FAILURE"
+    assert request["countedTokens"] == request["reservationTokens"]
+    assert request["reservationTokens"] > 0
+    assert request["callIndex"] == 1
+    assert store.snapshot()["epochs"][0]["reservedPendingTokens"] == 0
 
 
 def test_previous_epoch_is_immutable_after_rollover(tmp_path):

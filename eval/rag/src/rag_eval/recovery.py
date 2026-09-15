@@ -36,8 +36,8 @@ AUTHORIZED_JUDGE_PROVIDER = "groq"
 AUTHORIZED_JUDGE_MODEL = "openai/gpt-oss-120b"
 
 
-class DailyRecoveryDeferred(RuntimeError):
-    """The active UTC epoch cannot safely dispatch another judge request."""
+class DailyRecoveryDeferred(BaseException):
+    """Control-flow signal that must bypass provider retry wrappers."""
 
 
 class RecoveryStateError(RuntimeError):
@@ -626,6 +626,15 @@ class MultiDayRecoveryStore:
             epoch["scheduledReservationTokens"] = int(scheduled_reservation_tokens)
             epoch["totalRecoveryEstimateTokens"] = int(total_recovery_estimate_tokens)
             self._write()
+
+    def operation_is_scheduled(self, *, case_id: str, metric: str) -> bool:
+        """Return whether one unresolved operation was admitted to this daily slice."""
+
+        operation_key = f"{case_id}::{metric}"
+        with self._lock:
+            epoch = self._active_epoch_unlocked()
+            scheduled = epoch.get("scheduledOperationKeys") if epoch else None
+            return isinstance(scheduled, list) and operation_key in scheduled
 
     def close_current(self, reason: str, *, now: datetime | None = None) -> bool:
         with self._lock:

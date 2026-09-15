@@ -290,6 +290,22 @@ def test_daily_stop_persists_waiting_checkpoint(tmp_path):
     assert snapshot["epochs"][0]["closedAt"] is not None
 
 
+def test_daily_deferred_signal_bypasses_generic_provider_exception_handlers():
+    assert not isinstance(DailyRecoveryDeferred(INSUFFICIENT_TPD_FOR_NEXT_OPERATION), Exception)
+
+
+def test_daily_slice_membership_is_explicit(tmp_path):
+    store = make_store(tmp_path)
+    store.set_daily_plan(
+        scheduled_operation_keys=["case-1::faithfulness"],
+        deferred_operation_keys=["case-2::faithfulness"],
+        scheduled_reservation_tokens=8_000,
+    )
+
+    assert store.operation_is_scheduled(case_id="case-1", metric="faithfulness")
+    assert not store.operation_is_scheduled(case_id="case-2", metric="faithfulness")
+
+
 def test_new_utc_epoch_after_closed_previous_day(tmp_path):
     store = make_store(tmp_path)
     assert store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)

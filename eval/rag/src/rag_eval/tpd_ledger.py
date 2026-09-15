@@ -133,7 +133,19 @@ class GroqDailyTokenLedger:
             if record.get("recordType", "REQUEST") == "BASELINE" and (
                 not isinstance(record.get("baselineId"), str)
                 or not record.get("baselineId")
-                or record.get("ledgerEpoch") != record.get("baselineId")
+                or not isinstance(record.get("ledgerEpoch"), str)
+                or not record.get("ledgerEpoch")
+                or (
+                    record.get("baselineRefreshOf") is None
+                    and record.get("ledgerEpoch") != record.get("baselineId")
+                )
+                or (
+                    record.get("baselineRefreshOf") is not None
+                    and (
+                        not isinstance(record.get("baselineRefreshOf"), str)
+                        or not record.get("baselineRefreshOf")
+                    )
+                )
                 or not isinstance(record.get("baselineUsedTokens"), int)
                 or isinstance(record.get("baselineUsedTokens"), bool)
                 or record.get("baselineUsedTokens") < 0
@@ -307,6 +319,7 @@ class GroqDailyTokenLedger:
                             "conflicting Groq TPD baseline already exists for model/window"
                         )
                     baseline["baselineRefreshOf"] = matching[-1].get("baselineId")
+                    baseline["ledgerEpoch"] = self._baseline_root_epoch(records, matching[-1])
                 handle.seek(0, 2)
                 handle.write(json.dumps(baseline, sort_keys=True) + "\n")
                 handle.flush()
@@ -316,6 +329,28 @@ class GroqDailyTokenLedger:
         except OSError as error:
             raise LedgerPersistenceError(f"unable to write Groq TPD baseline: {error}") from error
         return baseline_id
+
+    @staticmethod
+    def _baseline_root_epoch(
+        records: list[dict[str, Any]], baseline: dict[str, Any]
+    ) -> str:
+        by_id = {
+            record.get("baselineId"): record
+            for record in records
+            if record.get("recordType", "REQUEST") == "BASELINE"
+        }
+        current = baseline
+        seen: set[str] = set()
+        while (
+            isinstance(current.get("baselineRefreshOf"), str)
+            and current.get("baselineRefreshOf") not in seen
+        ):
+            seen.add(str(current["baselineId"]))
+            parent = by_id.get(current["baselineRefreshOf"])
+            if parent is None:
+                break
+            current = parent
+        return str(current.get("ledgerEpoch") or current.get("baselineId"))
 
     def usage_since(
         self,
@@ -400,7 +435,11 @@ class GroqDailyTokenLedger:
                 and record.get("windowKey") == window_key
             )
         ]
-        return dict(matches[-1]) if matches else None
+        if not matches:
+            return None
+        latest = dict(matches[-1])
+        latest["ledgerEpoch"] = self._baseline_root_epoch(records, latest)
+        return latest
 
     def usage_between(
         self,

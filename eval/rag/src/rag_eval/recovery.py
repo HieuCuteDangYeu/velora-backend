@@ -561,8 +561,38 @@ class MultiDayRecoveryStore:
                     self._write()
                     raise DailyRecoveryDeferred(WAITING_FOR_NEXT_TPD_WINDOW)
                 self._close_epoch_unlocked(active, "UTC_WINDOW_ROLLOVER", current)
-            if any(epoch.get("windowDateUtc") == date for epoch in self._state["epochs"]):
-                raise RecoveryStateError("closed UTC epoch cannot be reopened or replaced")
+            closed_today = next(
+                (
+                    epoch
+                    for epoch in reversed(self._state["epochs"])
+                    if epoch.get("windowDateUtc") == date
+                ),
+                None,
+            )
+            if closed_today is not None:
+                if closed_today.get("closeReason") != INSUFFICIENT_TPD_FOR_NEXT_OPERATION:
+                    raise RecoveryStateError("closed UTC epoch cannot be reopened or replaced")
+                if closed_today.get("ledgerEpoch") != epoch_ledger_epoch:
+                    raise RecoveryStateError("current UTC epoch baseline cannot be replaced")
+                previous_observed = parse_timestamp(
+                    closed_today.get("latestBaselineObservedAt")
+                    or closed_today.get("baselineObservedAt")
+                )
+                if previous_observed is None or observed <= previous_observed:
+                    raise RecoveryStateError(
+                        "same-day recovery resume requires a newer TPD baseline"
+                    )
+                closed_today.setdefault("sliceCloseHistory", []).append(
+                    {
+                        "closedAt": closed_today.get("closedAt"),
+                        "closeReason": closed_today.get("closeReason"),
+                        "reopenedAt": _utc_timestamp(current),
+                        "baselineId": baseline_id,
+                    }
+                )
+                closed_today["closedAt"] = None
+                closed_today["closeReason"] = None
+                return self._refresh_epoch_unlocked(closed_today, baseline, current)
             epoch_ledger_used = int(
                 baseline.get("epochLedgerUsedTokens", baseline.get("ledgerUsedTokens", 0))
             )

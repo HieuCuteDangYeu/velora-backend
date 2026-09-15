@@ -41,6 +41,13 @@ const ALLOWED_METRICS = new Set([
   'call_memory',
   'call_event_loop_p99',
   'call_sockets',
+  'notification_cpu',
+  'notification_memory',
+  'notification_event_loop_p99',
+  'notification_database_up',
+  'notification_apns_request_rate',
+  'notification_apns_transport_failure_rate',
+  'notification_retry_scheduler_completion_age_seconds',
 ]);
 
 const ALLOWED_LOG_LEVELS = new Set(['all', 'error', 'warn', 'info', 'debug']);

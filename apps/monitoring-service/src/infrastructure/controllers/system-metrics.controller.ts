@@ -69,6 +69,19 @@ const RANGE_QUERIES = {
   call_event_loop_p99:
     'max(velora_nodejs_event_loop_lag_p99_seconds{service="call-service"})',
   call_sockets: 'sum(velora_call_socket_connections{service="call-service"})',
+  notification_cpu: processCpuUsageQuery('notification-service'),
+  notification_memory:
+    'sum(velora_process_resident_memory_bytes{service="notification-service"})',
+  notification_event_loop_p99:
+    'max(velora_nodejs_event_loop_lag_p99_seconds{service="notification-service"})',
+  notification_database_up:
+    'max(velora_notification_database_up{service="notification-service"})',
+  notification_apns_request_rate:
+    'sum(rate(velora_notification_apns_requests_total{service="notification-service"}[5m]))',
+  notification_apns_transport_failure_rate:
+    'sum(rate(velora_notification_apns_requests_total{service="notification-service",outcome=~"timeout|transport_error"}[5m]))',
+  notification_retry_scheduler_completion_age_seconds:
+    'max(time() - velora_notification_retry_scheduler_last_completion_timestamp_seconds{service="notification-service"})',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
@@ -249,6 +262,14 @@ export class SystemMetricsController {
           callResidentMemoryBytes,
           callEventLoopP99Seconds,
           callSocketConnections,
+          notificationUp,
+          notificationCpuUsageRatio,
+          notificationResidentMemoryBytes,
+          notificationEventLoopP99Seconds,
+          notificationDatabaseUp,
+          notificationApnsRequestsPerSecond,
+          notificationApnsTransportFailuresPerSecond,
+          notificationRetrySchedulerCompletionAgeSeconds,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -298,6 +319,18 @@ export class SystemMetricsController {
           this.prometheus.scalar(RANGE_QUERIES.call_memory),
           this.prometheus.scalar(RANGE_QUERIES.call_event_loop_p99),
           this.prometheus.scalar(RANGE_QUERIES.call_sockets),
+          this.prometheus.scalar('max(up{job="notification-service"})'),
+          this.prometheus.scalar(RANGE_QUERIES.notification_cpu),
+          this.prometheus.scalar(RANGE_QUERIES.notification_memory),
+          this.prometheus.scalar(RANGE_QUERIES.notification_event_loop_p99),
+          this.prometheus.scalar(RANGE_QUERIES.notification_database_up),
+          this.prometheus.scalar(RANGE_QUERIES.notification_apns_request_rate),
+          this.prometheus.scalar(
+            RANGE_QUERIES.notification_apns_transport_failure_rate,
+          ),
+          this.prometheus.scalar(
+            RANGE_QUERIES.notification_retry_scheduler_completion_age_seconds,
+          ),
         ]);
 
         const hostMemoryUsedBytes = subtractMetric(
@@ -370,6 +403,18 @@ export class SystemMetricsController {
             cpuUsageRatio: callCpuUsageRatio,
             eventLoopP99Seconds: callEventLoopP99Seconds,
             socketConnections: callSocketConnections,
+          },
+          notification: {
+            up: targetStatus(notificationUp),
+            residentMemoryBytes: notificationResidentMemoryBytes,
+            cpuUsageRatio: notificationCpuUsageRatio,
+            eventLoopP99Seconds: notificationEventLoopP99Seconds,
+            databaseUp: targetStatus(notificationDatabaseUp),
+            apnsRequestsPerSecond: notificationApnsRequestsPerSecond,
+            apnsTransportFailuresPerSecond:
+              notificationApnsTransportFailuresPerSecond,
+            retrySchedulerCompletionAgeSeconds:
+              notificationRetrySchedulerCompletionAgeSeconds,
           },
         };
       } catch (error) {

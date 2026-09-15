@@ -127,6 +127,13 @@ describe('SystemMetricsController container resources', () => {
       process: { cpuUsageRatio: 0 },
       conversation: { cpuUsageRatio: 0 },
       call: { cpuUsageRatio: 0 },
+      notification: {
+        cpuUsageRatio: 0,
+        databaseUp: false,
+        apnsRequestsPerSecond: 0,
+        apnsTransportFailuresPerSecond: 0,
+        retrySchedulerCompletionAgeSeconds: 0,
+      },
     });
 
     const processCpuQueries = prometheus.scalar.mock.calls
@@ -135,7 +142,7 @@ describe('SystemMetricsController container resources', () => {
         query.includes('velora_process_cpu_user_seconds_total'),
       );
 
-    expect(processCpuQueries).toHaveLength(3);
+    expect(processCpuQueries).toHaveLength(4);
     expect(
       processCpuQueries.every(
         (query) =>
@@ -144,5 +151,16 @@ describe('SystemMetricsController container resources', () => {
           ) && query.includes('/ clamp_min('),
       ),
     ).toBe(true);
+
+    expect(prometheus.scalar.mock.calls.map(([query]) => query)).toEqual(
+      expect.arrayContaining([
+        'max(up{job="notification-service"})',
+        expect.stringContaining('velora_notification_database_up'),
+        expect.stringContaining('velora_notification_apns_requests_total'),
+        expect.stringContaining(
+          'velora_notification_retry_scheduler_last_completion_timestamp_seconds',
+        ),
+      ]),
+    );
   });
 });

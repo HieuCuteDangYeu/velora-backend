@@ -106,7 +106,9 @@ def _repo_path(value: str) -> Path:
     return path if path.is_absolute() else ROOT.parents[1] / path
 
 
-def _saved_runner_report(run_id: str) -> Path:
+def _saved_runner_report(run_id: str, source_report: str | None = None) -> Path:
+    if source_report:
+        return _repo_path(source_report)
     return ROOT.parents[1] / "test-data/reel-integration/ami/reports" / f"{run_id}.json"
 
 
@@ -260,6 +262,10 @@ def _positive_float_from_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def _env_true(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
 def _print_multiday_recovery(
     store: MultiDayRecoveryStore,
     checkpoint: JudgeCheckpointStore,
@@ -358,7 +364,10 @@ async def run_live(args: argparse.Namespace) -> Path:
             )
         source_summary_path = _repo_path(source_summary_value)
         source_attestation = _validate_source_summary(source_summary_path, args, set(rows))
-        report_path = _saved_runner_report(run_id)
+        source_report_value = getattr(args, "source_report", None) or os.getenv(
+            "RAGAS_SOURCE_REPORT_PATH"
+        )
+        report_path = _saved_runner_report(run_id, source_report_value)
         if not report_path.exists():
             raise ValueError("saved runner report is missing for the requested source run")
         saved_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -515,6 +524,19 @@ async def run_live(args: argparse.Namespace) -> Path:
             usage_value = getattr(args, "tpd_usage_attestation", None) or os.getenv(
                 "RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"
             )
+            rolling_24h_value = getattr(args, "tpd_rolling_24h_metrics", None) or os.getenv(
+                "RAGAS_GROQ_TPD_ROLLING_24H_METRICS_PATH"
+            )
+            last_hour_value = getattr(args, "tpd_last_hour_metrics", None) or os.getenv(
+                "RAGAS_GROQ_TPD_LAST_HOUR_METRICS_PATH"
+            )
+            metrics_observed_at = getattr(args, "tpd_metrics_observed_at", None) or os.getenv(
+                "RAGAS_GROQ_TPD_METRICS_OBSERVED_AT"
+            )
+            metrics_all_projects = bool(
+                getattr(args, "tpd_metrics_all_projects", False)
+                or _env_true("RAGAS_GROQ_TPD_METRICS_ALL_PROJECTS")
+            )
             empty_value = getattr(args, "tpd_empty_attestation", None) or os.getenv(
                 "RAGAS_GROQ_TPD_EMPTY_ATTESTATION_PATH"
             )
@@ -535,6 +557,14 @@ async def run_live(args: argparse.Namespace) -> Path:
                 limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
                 usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
                 empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+                rolling_24h_metrics_path=(
+                    str(_repo_path(rolling_24h_value)) if rolling_24h_value else None
+                ),
+                last_hour_metrics_path=(
+                    str(_repo_path(last_hour_value)) if last_hour_value else None
+                ),
+                metrics_observed_at=metrics_observed_at,
+                metrics_all_projects=metrics_all_projects,
             )
             recovery_plan = multiday_tpd_preflight(tpd, operations)
             if recovery_plan["status"] == "UNKNOWN":
@@ -567,6 +597,14 @@ async def run_live(args: argparse.Namespace) -> Path:
                 limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
                 usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
                 empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+                rolling_24h_metrics_path=(
+                    str(_repo_path(rolling_24h_value)) if rolling_24h_value else None
+                ),
+                last_hour_metrics_path=(
+                    str(_repo_path(last_hour_value)) if last_hour_value else None
+                ),
+                metrics_observed_at=metrics_observed_at,
+                metrics_all_projects=metrics_all_projects,
             )
             recovery_plan = multiday_tpd_preflight(tpd, operations)
             if recovery_plan["status"] == "UNKNOWN":
@@ -790,7 +828,12 @@ def parser() -> argparse.ArgumentParser:
     live.add_argument("--tpd-limit-attestation")
     live.add_argument("--tpd-usage-attestation")
     live.add_argument("--tpd-empty-attestation")
+    live.add_argument("--tpd-rolling-24h-metrics")
+    live.add_argument("--tpd-last-hour-metrics")
+    live.add_argument("--tpd-metrics-observed-at")
+    live.add_argument("--tpd-metrics-all-projects", action="store_true")
     live.add_argument("--runtime-config-snapshot")
+    live.add_argument("--source-report")
     live.add_argument("--source-summary")
     report = commands.add_parser("report")
     report.add_argument("--run", required=True)
@@ -809,6 +852,10 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--tpd-cost-attestation")
     preflight.add_argument("--tpd-usage-attestation")
     preflight.add_argument("--tpd-empty-attestation")
+    preflight.add_argument("--tpd-rolling-24h-metrics")
+    preflight.add_argument("--tpd-last-hour-metrics")
+    preflight.add_argument("--tpd-metrics-observed-at")
+    preflight.add_argument("--tpd-metrics-all-projects", action="store_true")
     preflight.add_argument("--pricing-path")
     preflight.add_argument("--ledger-path")
     preflight.add_argument("--multi-day-recovery", action="store_true")

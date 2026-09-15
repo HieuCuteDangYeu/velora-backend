@@ -4,7 +4,10 @@ from openai import AsyncOpenAI
 
 import rag_eval.adapters.evaluation_judge as evaluation_judge
 import rag_eval.adapters.groq_judge as groq_judge
-from rag_eval.adapters.groq_judge import configured_max_completion_tokens
+from rag_eval.adapters.groq_judge import (
+    configured_faithfulness_completion_tokens,
+    configured_max_completion_tokens,
+)
 
 
 def test_selects_groq_provider(monkeypatch):
@@ -41,6 +44,17 @@ def test_groq_structured_output_budget_defaults_to_evidence_backed_value(monkeyp
 def test_groq_structured_output_budget_preserves_explicit_override(monkeypatch):
     monkeypatch.setenv("RAGAS_MAX_COMPLETION_TOKENS", "1024")
     assert configured_max_completion_tokens() == 1024
+
+
+def test_groq_faithfulness_budget_is_metric_specific(monkeypatch):
+    monkeypatch.delenv("RAGAS_FAITHFULNESS_MAX_COMPLETION_TOKENS", raising=False)
+    assert configured_faithfulness_completion_tokens() == 2048
+
+    monkeypatch.setenv("RAGAS_FAITHFULNESS_MAX_COMPLETION_TOKENS", "3072")
+    assert configured_faithfulness_completion_tokens() == 3072
+
+    monkeypatch.setenv("RAGAS_FAITHFULNESS_MAX_COMPLETION_TOKENS", "256")
+    assert configured_faithfulness_completion_tokens() == 1024
 
 
 def test_groq_structured_llm_uses_local_markdown_json_validation(monkeypatch):

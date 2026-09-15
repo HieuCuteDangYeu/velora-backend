@@ -450,6 +450,26 @@ def test_verified_empty_current_day_baseline_is_accepted():
     assert result["status"] == "YES"
 
 
+def test_same_day_baseline_refresh_keeps_one_recovery_epoch(tmp_path):
+    store = make_store(tmp_path)
+    old_epoch = store.active_epoch()
+    refreshed = baseline(TODAY, suffix="refresh")
+    refreshed["ledgerEpoch"] = old_epoch["ledgerEpoch"]
+    refreshed["effectiveCurrentDayUsedTokens"] = 270
+    refreshed["epochMinimumProvenRemainingTokens"] = 199_730
+    refreshed["minimumProvenRemainingTokens"] = 199_730
+    refreshed["baselineUsedTokens"] = 0
+
+    store.begin_epoch(refreshed, now=TODAY)
+
+    epochs = store.epochs()
+    assert len(epochs) == 1
+    assert epochs[0]["ledgerEpoch"] == old_epoch["ledgerEpoch"]
+    assert epochs[0]["latestBaselineId"] == refreshed["baselineId"]
+    assert epochs[0]["calculatedRemainingTokens"] == 199_730
+    assert len(epochs[0]["baselineRefreshes"]) == 1
+
+
 @pytest.mark.asyncio
 async def test_transient_retry_rechecks_and_obeys_daily_tpd(tmp_path, monkeypatch):
     monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "1")

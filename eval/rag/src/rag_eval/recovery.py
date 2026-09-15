@@ -442,6 +442,48 @@ class MultiDayRecoveryStore:
         with self._lock:
             return json.loads(json.dumps(self._state["epochs"]))
 
+    def _refresh_epoch_unlocked(
+        self, epoch: dict[str, Any], baseline: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        if int(epoch.get("reservedPendingTokens", 0)) > 0:
+            raise RecoveryStateError("cannot refresh a TPD epoch with in-flight requests")
+        baseline_id = str(baseline["baselineId"])
+        observed_at = str(baseline["observedAt"])
+        effective_used = int(
+            baseline.get(
+                "effectiveCurrentDayUsedTokens",
+                baseline["dailyLimitTokens"] - baseline["minimumProvenRemainingTokens"],
+            )
+        )
+        remaining = int(
+            baseline.get(
+                "epochMinimumProvenRemainingTokens",
+                baseline["minimumProvenRemainingTokens"],
+            )
+        )
+        refresh = {
+            "baselineId": baseline_id,
+            "baselineFingerprint": baseline["baselineFingerprint"],
+            "baselineObservedAt": observed_at,
+            "baselineCountedUsedTokens": int(baseline["baselineUsedTokens"]),
+            "effectiveCurrentDayUsedTokens": effective_used,
+            "calculatedRemainingTokens": remaining,
+        }
+        refreshes = epoch.setdefault("baselineRefreshes", [])
+        if not any(item.get("baselineId") == baseline_id for item in refreshes):
+            refreshes.append(refresh)
+        base_counted = int(epoch.get("baselineCountedUsedTokens", 0))
+        epoch["latestBaselineId"] = baseline_id
+        epoch["latestBaselineFingerprint"] = baseline["baselineFingerprint"]
+        epoch["latestBaselineObservedAt"] = observed_at
+        epoch["latestBaselineCountedUsedTokens"] = int(baseline["baselineUsedTokens"])
+        epoch["evaluatorCountedTokens"] = max(0, effective_used - base_counted)
+        epoch["calculatedRemainingTokens"] = remaining
+        self._state["status"] = "RUNNING"
+        self._state["dailyRecoveryStopReason"] = None
+        self._write()
+        return dict(epoch)
+
     def _close_epoch_unlocked(
         self, epoch: dict[str, Any], reason: str, now: datetime | None = None
     ) -> None:
@@ -476,15 +518,23 @@ class MultiDayRecoveryStore:
             or observed.astimezone(UTC).date().isoformat() != date
         ):
             raise RecoveryStateError("TPD baseline identity is incomplete or stale")
+        epoch_ledger_epoch = str(baseline.get("ledgerEpoch") or baseline_id)
         with self._lock:
             active = self._active_epoch_unlocked()
             if active and active["windowDateUtc"] == date:
-                if (
-                    active["ledgerEpoch"] != baseline_id
-                    or active["baselineFingerprint"] != fingerprint
-                    or active["baselineObservedAt"] != observed_at
-                ):
+                if active["ledgerEpoch"] != epoch_ledger_epoch:
                     raise RecoveryStateError("current UTC epoch baseline cannot be replaced")
+                if (
+                    active.get("latestBaselineId", active.get("baselineId")) == baseline_id
+                    and active.get("latestBaselineFingerprint", fingerprint) == fingerprint
+                    and active.get("latestBaselineObservedAt", active.get("baselineObservedAt"))
+                    == observed_at
+                ):
+                    self._state["status"] = "RUNNING"
+                    self._state["dailyRecoveryStopReason"] = None
+                    self._write()
+                    return dict(active)
+                return self._refresh_epoch_unlocked(active, baseline, current)
                 self._state["status"] = "RUNNING"
                 self._state["dailyRecoveryStopReason"] = None
                 self._write()
@@ -516,7 +566,13 @@ class MultiDayRecoveryStore:
                 "baselineObservedAt": observed_at,
                 "baselineCountedUsedTokens": int(baseline["baselineUsedTokens"]),
                 "baselineFingerprint": fingerprint,
-                "ledgerEpoch": baseline_id,
+                "baselineId": baseline_id,
+                "latestBaselineId": baseline_id,
+                "latestBaselineFingerprint": fingerprint,
+                "latestBaselineObservedAt": observed_at,
+                "latestBaselineCountedUsedTokens": int(baseline["baselineUsedTokens"]),
+                "baselineRefreshes": [],
+                "ledgerEpoch": epoch_ledger_epoch,
                 "initialLedgerUsedTokens": epoch_ledger_used,
                 "evaluatorCountedTokens": epoch_ledger_used,
                 "reservedPendingTokens": 0,
@@ -557,12 +613,14 @@ class MultiDayRecoveryStore:
             existing_scheduled = epoch.get("scheduledOperationKeys") or []
             existing_deferred = epoch.get("deferredOperationKeys") or []
             if existing_scheduled or existing_deferred:
+                previous = set(existing_scheduled) | set(existing_deferred)
                 if not (
                     set(scheduled).issubset(set(existing_scheduled))
-                    and set(deferred).issubset(set(existing_deferred))
+                    and set(deferred).issubset(previous)
                 ):
                     raise RecoveryStateError("current UTC epoch recovery plan cannot be replaced")
-                return
+                # A refreshed baseline may tighten the slice, but never expand
+                # it beyond work already admitted for this UTC epoch.
             epoch["scheduledOperationKeys"] = scheduled
             epoch["deferredOperationKeys"] = deferred
             epoch["scheduledReservationTokens"] = int(scheduled_reservation_tokens)

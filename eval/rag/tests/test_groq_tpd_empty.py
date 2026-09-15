@@ -243,6 +243,32 @@ def test_first_judge_usage_reduces_remaining_capacity(tmp_path):
     assert resumed["models"][0]["minimumProvenRemainingTokens"] == 199_000
 
 
+def test_same_day_empty_refresh_preserves_prior_uncertainty_without_second_epoch(tmp_path):
+    first = evaluate(tmp_path)
+    ledger = GroqDailyTokenLedger(tmp_path / "ledger.jsonl")
+    ledger.record(
+        {
+            "requestId": "timed-out-probe",
+            "timestamp": (NOW + timedelta(minutes=1)).isoformat(),
+            "provider": "groq",
+            "model": MODEL,
+            "countedTokens": 270,
+        }
+    )
+    refreshed = evaluate(
+        tmp_path,
+        payload=empty_payload(observedAt=(NOW + timedelta(minutes=2)).isoformat()),
+        now=NOW + timedelta(minutes=3),
+    )
+
+    assert refreshed["status"] == "YES"
+    assert refreshed["models"][0]["baselineId"] != first["models"][0]["baselineId"]
+    assert refreshed["models"][0]["baselineRefreshOf"] == first["models"][0]["baselineId"]
+    assert refreshed["models"][0]["ledgerEpoch"] == first["models"][0]["ledgerEpoch"]
+    assert refreshed["models"][0]["effectiveCurrentDayUsedTokens"] == 270
+    assert refreshed["models"][0]["minimumProvenRemainingTokens"] == 199_730
+
+
 def test_duplicate_ledger_accounting_is_idempotent(tmp_path):
     ledger = GroqDailyTokenLedger(tmp_path / "ledger.jsonl")
     request = {

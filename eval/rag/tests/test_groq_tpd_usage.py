@@ -207,12 +207,12 @@ def test_process_restart_and_later_ledger_usage_preserve_epoch(tmp_path):
     assert resumed["models"][0]["baselineId"] == first["models"][0]["baselineId"]
     assert resumed["models"][0]["ledgerUsedTokens"] == 1_000
     assert resumed["models"][0]["minimumProvenRemainingTokens"] == 89_000
-    assert resumed["models"][0]["epochLedgerUsedTokens"] == 1_000
+    assert resumed["models"][0]["epochLedgerUsedTokens"] == 111_000
     assert resumed["models"][0]["epochMinimumProvenRemainingTokens"] == 89_000
 
 
-def test_new_observation_cannot_silently_rebase_existing_epoch(tmp_path):
-    evaluate(tmp_path)
+def test_same_day_observation_refresh_preserves_epoch_and_avoids_double_counting(tmp_path):
+    first = evaluate(tmp_path)
     new_observation = usage_payload(
         observedAt=(NOW + timedelta(minutes=1)).isoformat(),
         generatedTokens=10_001,
@@ -221,4 +221,11 @@ def test_new_observation_cannot_silently_rebase_existing_epoch(tmp_path):
 
     result = evaluate(tmp_path, payload=new_observation, now=NOW + timedelta(minutes=2))
 
-    assert result == {"status": "UNKNOWN", "reason": "TPD_LEDGER_BASELINE_UNAVAILABLE"}
+    assert result["status"] == "YES"
+    assert result["models"][0]["baselineId"] != first["models"][0]["baselineId"]
+    assert result["models"][0]["baselineRefreshOf"] == first["models"][0]["baselineId"]
+    assert result["models"][0]["ledgerEpoch"] == first["models"][0]["ledgerEpoch"]
+    assert result["models"][0]["freshObservedUsedTokens"] == 110_001
+    assert result["models"][0]["effectiveCurrentDayUsedTokens"] == 110_001
+    assert result["models"][0]["unreconciledLedgerTokens"] == 0
+    assert len((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2

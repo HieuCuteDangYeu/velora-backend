@@ -15,8 +15,8 @@ import type {
   RestartIceResult,
   RouterRtpCapabilitiesResult,
 } from '../../domain/interfaces/call-media.engine.interface';
-import { RedisCallStateRepository } from '../repositories/redis-call-state.repository';
 import { safeCallErrorCode, shortCallIdentifier } from '../gateways/call-debug';
+import { RedisCallStateRepository } from '../repositories/redis-call-state.repository';
 import {
   getAnnouncedIpAddressFamily,
   validateMediasoupNetworkConfiguration,
@@ -790,8 +790,7 @@ export class MediasoupCallMediaEngine
             {
               protocol: 'udp',
               ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-              announcedAddress:
-                process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+              announcedAddress: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
               port: this.webRtcServerPort,
             },
           ],

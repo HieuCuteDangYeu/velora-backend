@@ -650,6 +650,9 @@ async def run_live(args: argparse.Namespace) -> Path:
                     total_operations=total_operations,
                     plan=recovery_plan,
                 )
+                if recovery_plan and recovery_plan.get("waitingForNextTpdWindow"):
+                    recovery_store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION)
+                    return directory
                 raise RuntimeError(
                     "semantic recovery remains incomplete after the scheduled slice; "
                     "final aggregates withheld"

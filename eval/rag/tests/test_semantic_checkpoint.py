@@ -26,6 +26,26 @@ class TimeoutScorer:
         raise TimeoutError("embedding timed out")
 
 
+class ScheduledTracker:
+    def __init__(self, scheduled):
+        self.scheduled = set(scheduled)
+
+    def begin(self, _key):
+        return None
+
+    def set_metric(self, _name):
+        return None
+
+    def operation_is_scheduled(self, case_id, metric):
+        return f"{case_id}::{metric}" in self.scheduled
+
+    def calls_for(self, _key, _metric):
+        return []
+
+    def take(self, _key):
+        return []
+
+
 @pytest.mark.asyncio
 async def test_completed_metric_checkpoint_is_not_rejudged(tmp_path):
     from rag_eval.checkpoint import JudgeCheckpointStore
@@ -91,3 +111,36 @@ async def test_metric_timeout_is_distinguished_from_provider_timeout():
         )
         == "PROVIDER_TIMEOUT"
     )
+
+
+@pytest.mark.asyncio
+async def test_deferred_daily_operation_is_not_recorded_as_metric_failure(tmp_path):
+    from rag_eval.checkpoint import JudgeCheckpointStore
+
+    identity = {
+        "sourceRunId": "run",
+        "productionSha": "a" * 40,
+        "datasetVersion": "rag-frozen-ami-v3",
+        "judgeProvider": "groq",
+        "judgeModel": "openai/gpt-oss-120b",
+        "evaluatorSha": "b" * 40,
+    }
+    checkpoint = JudgeCheckpointStore(tmp_path / "checkpoint.json", identity)
+    scorer = Scorer(0.8)
+    suite = SemanticMetricSuite({"faithfulness": scorer}, ScheduledTracker(set()))
+    suite.configure_checkpoint(checkpoint, identity)
+
+    result, _ = await suite.ascore_with_usage(
+        {"faithfulness": {"value": 1}},
+        "run:case-1",
+        {"sourceExecutionId": "assistant", "ragTraceId": "trace"},
+    )
+
+    assert result["faithfulness"] is None
+    assert scorer.calls == 0
+    assert checkpoint.entries() == []
+    assert suite.diagnostics_for("run:case-1")["faithfulness"] == {
+        "status": "NOT_EVALUATED",
+        "errorCategory": "DAILY_RECOVERY_DEFERRED",
+        "source": "DAILY_TPD_SLICE",
+    }

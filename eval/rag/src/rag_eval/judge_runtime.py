@@ -700,6 +700,11 @@ class JudgeUsageTracker:
         self._recovery_store = store
         store.reconcile_ledger(self._ledger)
 
+    def operation_is_scheduled(self, case_id: str, metric: str) -> bool:
+        if self._recovery_store is None:
+            return True
+        return self._recovery_store.operation_is_scheduled(case_id=case_id, metric=metric)
+
     def _prepare_recovery_request(
         self,
         *,

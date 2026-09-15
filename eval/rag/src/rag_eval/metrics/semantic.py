@@ -176,6 +176,19 @@ class SemanticMetricSuite:
                     }
                     continue
 
+                if (
+                    self.usage_tracker
+                    and hasattr(self.usage_tracker, "operation_is_scheduled")
+                    and not self.usage_tracker.operation_is_scheduled(case_id, name)
+                ):
+                    metrics[name] = None
+                    metric_diagnostics[name] = {
+                        "status": "NOT_EVALUATED",
+                        "errorCategory": "DAILY_RECOVERY_DEFERRED",
+                        "source": "DAILY_TPD_SLICE",
+                    }
+                    continue
+
                 if self.usage_tracker:
                     self.usage_tracker.set_metric(name)
                 caught_error: BaseException | None = None

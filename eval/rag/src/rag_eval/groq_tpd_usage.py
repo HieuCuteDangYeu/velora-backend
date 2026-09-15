@@ -159,7 +159,30 @@ def exact_usage_tpd_headroom(
     non_cached_tokens = _integer(
         _field(payload, "nonCachedInputTokens", "n_non_cached_context_tokens_total")
     )
-    cached_tokens = _integer(_field(payload, "cachedInputTokens", "n_cached_context_tokens_total"))
+    cached_normalized = payload.get("cachedInputTokens")
+    cached_raw = payload.get("n_cached_context_tokens_total")
+    if (
+        cached_normalized is not None
+        and cached_raw is not None
+        and cached_normalized != cached_raw
+    ):
+        return {"status": "UNKNOWN", "reason": "TPD_USAGE_CACHED_TOKEN_FIELDS_MISMATCH"}
+    cached_value = cached_normalized if cached_normalized is not None else cached_raw
+    cached_tokens = _integer(cached_value)
+    cached_tokens_omitted = cached_value is None
+    if cached_tokens_omitted:
+        if (
+            payload.get("cachedInputTokensOmitted") is not True
+            or payload.get("cachedInputTokensOmissionReason")
+            != "CONTEXT_EQUALS_NON_CACHED"
+            or context_tokens is None
+            or non_cached_tokens is None
+            or context_tokens != non_cached_tokens
+        ):
+            return {"status": "UNKNOWN", "reason": "TPD_USAGE_CACHED_TOKEN_FIELDS_INCOMPLETE"}
+        cached_tokens = 0
+    elif payload.get("cachedInputTokensOmitted") is True:
+        return {"status": "UNKNOWN", "reason": "TPD_USAGE_CACHED_TOKEN_OMISSION_INVALID"}
     generated_tokens = _integer(_field(payload, "generatedTokens", "n_generated_tokens_total"))
     counted_tokens = _integer(payload.get("rateLimitCountedUsedTokens"))
     if None in (context_tokens, non_cached_tokens, cached_tokens, generated_tokens, counted_tokens):
@@ -191,6 +214,12 @@ def exact_usage_tpd_headroom(
                 "contextTokens": context_tokens,
                 "nonCachedInputTokens": non_cached_tokens,
                 "cachedInputTokens": cached_tokens,
+                "cachedInputTokensOmitted": cached_tokens_omitted,
+                "cachedInputTokensSource": (
+                    "DERIVED_CONTEXT_MINUS_NON_CACHED"
+                    if cached_tokens_omitted
+                    else "PROVIDER"
+                ),
                 "generatedTokens": generated_tokens,
                 "countedTokens": counted_tokens,
             },
@@ -261,6 +290,12 @@ def exact_usage_tpd_headroom(
                 "contextTokens": context_tokens,
                 "nonCachedInputTokens": non_cached_tokens,
                 "cachedInputTokens": cached_tokens,
+                "cachedInputTokensOmitted": cached_tokens_omitted,
+                "cachedInputTokensSource": (
+                    "DERIVED_CONTEXT_MINUS_NON_CACHED"
+                    if cached_tokens_omitted
+                    else "PROVIDER"
+                ),
                 "generatedTokens": generated_tokens,
                 "rateLimitCountedUsedTokens": counted_tokens,
                 "baselineUsedTokens": counted_tokens,

@@ -79,6 +79,82 @@ def test_raw_usage_field_names_are_supported(tmp_path):
     assert result["models"][0]["usageBucketTimestamp"] == BUCKET_TIMESTAMP
 
 
+def test_omitted_cached_field_is_accepted_only_with_explicit_zero_proof(tmp_path):
+    payload = usage_payload(
+        timestamp=BUCKET_TIMESTAMP,
+        n_context_tokens_total=100_000,
+        n_non_cached_context_tokens_total=100_000,
+        n_generated_tokens_total=10_000,
+        cachedInputTokensOmitted=True,
+        cachedInputTokensOmissionReason="CONTEXT_EQUALS_NON_CACHED",
+    )
+    for field in (
+        "contextTokens",
+        "nonCachedInputTokens",
+        "cachedInputTokens",
+        "generatedTokens",
+    ):
+        del payload[field]
+
+    result = evaluate(tmp_path, payload=payload)
+
+    assert result["status"] == "YES"
+    assert result["models"][0]["cachedInputTokens"] == 0
+    assert result["models"][0]["cachedInputTokensOmitted"] is True
+    assert (
+        result["models"][0]["cachedInputTokensSource"]
+        == "DERIVED_CONTEXT_MINUS_NON_CACHED"
+    )
+
+
+def test_omitted_cached_field_without_zero_proof_fails_closed(tmp_path):
+    payload = usage_payload(
+        timestamp=BUCKET_TIMESTAMP,
+        n_context_tokens_total=100_000,
+        n_non_cached_context_tokens_total=100_000,
+        n_generated_tokens_total=10_000,
+    )
+    for field in (
+        "contextTokens",
+        "nonCachedInputTokens",
+        "cachedInputTokens",
+        "generatedTokens",
+    ):
+        del payload[field]
+
+    result = evaluate(tmp_path, payload=payload)
+
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "TPD_USAGE_CACHED_TOKEN_FIELDS_INCOMPLETE",
+    }
+
+
+def test_omitted_cached_field_with_nonzero_proven_remainder_fails_closed(tmp_path):
+    payload = usage_payload(
+        timestamp=BUCKET_TIMESTAMP,
+        n_context_tokens_total=102_000,
+        n_non_cached_context_tokens_total=100_000,
+        n_generated_tokens_total=10_000,
+        cachedInputTokensOmitted=True,
+        cachedInputTokensOmissionReason="CONTEXT_EQUALS_NON_CACHED",
+    )
+    for field in (
+        "contextTokens",
+        "nonCachedInputTokens",
+        "cachedInputTokens",
+        "generatedTokens",
+    ):
+        del payload[field]
+
+    result = evaluate(tmp_path, payload=payload)
+
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "TPD_USAGE_CACHED_TOKEN_FIELDS_INCOMPLETE",
+    }
+
+
 def test_context_breakdown_must_match(tmp_path):
     result = evaluate(tmp_path, payload=usage_payload(contextTokens=103_000))
 

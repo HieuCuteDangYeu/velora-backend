@@ -741,6 +741,7 @@ async def run_preflight(args: argparse.Namespace) -> int:
     print(f"TPD_NON_CACHED_INPUT_TOKENS={first_tpd.get('nonCachedInputTokens', 'UNKNOWN')}")
     print(f"TPD_CONTEXT_TOKENS={first_tpd.get('contextTokens', 'UNKNOWN')}")
     print(f"TPD_CACHED_INPUT_TOKENS={first_tpd.get('cachedInputTokens', 'UNKNOWN')}")
+    print(f"TPD_CACHED_INPUT_TOKEN_STATUS={first_tpd.get('cachedInputTokensSource', 'UNKNOWN')}")
     print(f"TPD_GENERATED_TOKENS={first_tpd.get('generatedTokens', 'UNKNOWN')}")
     print(f"TPD_USAGE_BUCKET_TIMESTAMP={first_tpd.get('usageBucketTimestamp', 'UNKNOWN')}")
     print(f"TPD_WINDOW_DATE_UTC={first_tpd.get('windowDateUtc', 'UNKNOWN')}")

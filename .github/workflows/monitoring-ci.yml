@@ -92,6 +92,9 @@ jobs:
           bash -n scripts/deploy/install-velora-deploy-launcher
           bash -n scripts/ops/check-monitoring-stack.sh
 
+          bash -c 'set -Eeuo pipefail; source scripts/deploy/velora-deploy-core; declare -F main >/dev/null'
+          scripts/deploy/velora-deploy --help >/dev/null
+
           grep -Fq 'homelab-deploy' scripts/deploy/velora-deploy-launcher
           grep -Fq 'git show "$approved_sha:$CONTROLLER_PATH"' scripts/deploy/velora-deploy-launcher
           grep -Fq 'git show "$approved_sha:$CORE_PATH"' scripts/deploy/velora-deploy-launcher

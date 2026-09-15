@@ -12,25 +12,16 @@ if (( BASH_VERSINFO[0] < 4 )); then
   exit 1
 fi
 
-# Load the previously battle-tested deployment controller, but suppress its
-# terminal main "$@" invocation so this file can override the small set of
-# functions needed for the first-class Loki/Alloy migration.
+# Load the previously battle-tested deployment controller as a library so this
+# file can override the small set of functions needed for the first-class
+# Loki/Alloy migration.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CORE_SCRIPT="$SCRIPT_DIR/velora-deploy-core"
 [[ -f "$CORE_SCRIPT" ]] || {
   printf 'ERROR: deployment core is missing: %s\n' "$CORE_SCRIPT" >&2
   exit 1
 }
-CORE_LIBRARY="$(mktemp "${TMPDIR:-/tmp}/velora-deploy-core.XXXXXXXX")"
-cleanup_core_library() {
-  rm -f -- "$CORE_LIBRARY"
-}
-trap cleanup_core_library EXIT HUP INT TERM
-
-# Bash on macOS does not reliably source a process-substitution FIFO. Materialize
-# the shared controller without its terminal `main "$@"` invocation instead.
-sed '$d' "$CORE_SCRIPT" >"$CORE_LIBRARY"
-source "$CORE_LIBRARY"
+source "$CORE_SCRIPT"
 
 compare_compose_models() {
   [[ -n "$LAST_DEPLOYED_SHA" ]] || return 0

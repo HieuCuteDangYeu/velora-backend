@@ -11,6 +11,8 @@ from ragas.llms.base import InstructorLLM, InstructorModelArgs
 from rag_eval.judge_runtime import JudgeUsageTracker
 from rag_eval.metrics.semantic import build_live_semantic_suite
 
+DEFAULT_FAITHFULNESS_MAX_COMPLETION_TOKENS = 2_048
+
 
 def configured_max_completion_tokens() -> int:
     """Return the Groq structured-output budget, preserving an explicit override."""
@@ -20,6 +22,21 @@ def configured_max_completion_tokens() -> int:
     except ValueError:
         configured = 512
     return min(4096, max(64, configured))
+
+
+def configured_faithfulness_completion_tokens() -> int:
+    """Use a larger budget for Faithfulness' multi-step structured outputs."""
+
+    try:
+        configured = int(
+            os.getenv(
+                "RAGAS_FAITHFULNESS_MAX_COMPLETION_TOKENS",
+                str(DEFAULT_FAITHFULNESS_MAX_COMPLETION_TOKENS),
+            )
+        )
+    except ValueError:
+        configured = DEFAULT_FAITHFULNESS_MAX_COMPLETION_TOKENS
+    return min(4096, max(1024, configured))
 
 
 def build_groq_structured_llm(
@@ -53,6 +70,7 @@ def build_live_judge() -> tuple[Any, Any, str]:
     embedding_model = os.getenv("RAG_EVAL_EMBEDDING_MODEL", "BAAI/bge-m3")
     embedding_base_url = os.environ["RAG_EVAL_TEI_EMBEDDING_BASE_URL"].rstrip("/")
     max_completion_tokens = configured_max_completion_tokens()
+    faithfulness_completion_tokens = configured_faithfulness_completion_tokens()
 
     judge_client = AsyncOpenAI(
         api_key=token,
@@ -66,13 +84,18 @@ def build_live_judge() -> tuple[Any, Any, str]:
     )
     usage_tracker = JudgeUsageTracker(judge_client, provider="groq")
     llm = build_groq_structured_llm(judge_client, judge_model, max_completion_tokens)
+    faithfulness_llm = build_groq_structured_llm(
+        judge_client, judge_model, faithfulness_completion_tokens
+    )
     embeddings = embedding_factory(
         provider="openai",
         model=embedding_model,
         client=embedding_client,
     )
     return (
-        build_live_semantic_suite(llm, embeddings, usage_tracker),
+        build_live_semantic_suite(
+            llm, embeddings, usage_tracker, faithfulness_llm=faithfulness_llm
+        ),
         judge_client,
         judge_model,
     )

@@ -53,7 +53,7 @@ def classify_metric_error(error: BaseException | None, calls: list[dict[str, Any
     ):
         return "METRIC_TIMEOUT"
     if "incompleteoutput" in error_name:
-        return "METRIC_OUTPUT_INCOMPLETE"
+        return "OUTPUT_TRUNCATED"
     return "METRIC_ERROR"
 
 
@@ -250,11 +250,17 @@ class SemanticMetricSuite:
 
 
 def build_live_semantic_suite(
-    llm: Any, embeddings: Any, usage_tracker: Any | None = None
+    llm: Any,
+    embeddings: Any,
+    usage_tracker: Any | None = None,
+    *,
+    faithfulness_llm: Any | None = None,
 ) -> SemanticMetricSuite:
     return SemanticMetricSuite(
         {
-            "faithfulness": Faithfulness(llm),
+            "faithfulness": Faithfulness(
+                faithfulness_llm if faithfulness_llm is not None else llm
+            ),
             "factual_correctness": FactualCorrectness(llm),
             "response_relevancy": AnswerRelevancy(llm, embeddings),
             "context_precision": ContextPrecision(llm),

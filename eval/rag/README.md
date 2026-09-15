@@ -337,14 +337,18 @@ RAGAS_GROQ_TPM_LIMIT=8000
 RAGAS_GROQ_TPM_TARGET=6000
 RAGAS_JUDGE_TIMEOUT_SECONDS=120
 RAGAS_MAX_COMPLETION_TOKENS=512
+RAGAS_FAITHFULNESS_MAX_COMPLETION_TOKENS=2048
+RAGAS_FAITHFULNESS_OPERATION_RESERVATION_TOKENS=12000
 ```
 
 This path uses `GROQ_API_KEY`/`GROQ_BASE_URL` for the judge and an
 OpenAI-compatible `/v1/embeddings` endpoint backed by the self-hosted TEI
 service. Groq returned structured-output truncation at 256 tokens in the
-accepted evaluation attempt, so this path defaults to 512 while preserving the
-explicit `RAGAS_MAX_COMPLETION_TOKENS` override. It does not fall back to
-Cloudflare or production RAG models.
+accepted evaluation attempt, so ordinary metrics default to 512 while
+Faithfulness uses an independent 2048-token budget for its two intermediate
+structured outputs. The Faithfulness logical-operation reservation defaults to
+12000 tokens and is rechecked per provider attempt; both settings have explicit
+overrides. It does not fall back to Cloudflare or production RAG models.
 
 Live semantic runs persist metric-level judge checkpoints at
 `RAGAS_JUDGE_CHECKPOINT_PATH`, or beside the result root by default. A

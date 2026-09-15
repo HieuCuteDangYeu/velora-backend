@@ -21,6 +21,7 @@ INSUFFICIENT_TPD_FOR_NEXT_OPERATION = "INSUFFICIENT_TPD_FOR_NEXT_OPERATION"
 MIDNIGHT_IN_FLIGHT_REQUESTS_PENDING = "MIDNIGHT_IN_FLIGHT_REQUESTS_PENDING"
 DEFAULT_DAILY_SAFETY_MARGIN_TOKENS = 10_000
 DEFAULT_OPERATION_RESERVATION_TOKENS = 8_000
+DEFAULT_FAITHFULNESS_OPERATION_RESERVATION_TOKENS = 12_000
 DEFAULT_TOTAL_RECOVERY_ESTIMATE_TOKENS = 231_125
 DEFAULT_TPD_BASELINE_MAX_AGE_SECONDS = 3_600
 ACCEPTED_BASELINE_METHODS = {
@@ -91,13 +92,21 @@ def tpd_baseline_max_age_seconds() -> int:
     )
 
 
-def planned_operation_reservation_tokens() -> int:
+def planned_operation_reservation_tokens(metric_name: str | None = None) -> int:
     """Return the planning fallback; actual requests are re-estimated before dispatch."""
 
     configured = _env_nonnegative_int(
         "RAGAS_MULTI_DAY_OPERATION_RESERVATION_TOKENS",
         _env_nonnegative_int("RAGAS_GROQ_TPM_LIMIT", DEFAULT_OPERATION_RESERVATION_TOKENS),
     )
+    if metric_name == "faithfulness":
+        configured = max(
+            configured,
+            _env_nonnegative_int(
+                "RAGAS_FAITHFULNESS_OPERATION_RESERVATION_TOKENS",
+                DEFAULT_FAITHFULNESS_OPERATION_RESERVATION_TOKENS,
+            ),
+        )
     return max(1, configured)
 
 
@@ -188,7 +197,6 @@ def recovery_operations(
 ) -> list[RecoveryOperation]:
     """Return deterministic unresolved case/metric operations only."""
 
-    fallback = reservation_tokens or planned_operation_reservation_tokens()
     by_key = {
         f"{entry.get('caseId')}::{entry.get('metricName')}": entry
         for entry in checkpoint_entries
@@ -205,11 +213,18 @@ def recovery_operations(
                 raise RecoveryStateError(
                     f"multi-day recovery refuses unsupported checkpoint status: {status}"
                 )
+            metric_fallback = max(
+                1,
+                reservation_tokens or 0,
+                planned_operation_reservation_tokens(metric_name),
+            )
             output.append(
                 RecoveryOperation(
                     case_id=case_id,
                     metric_name=metric_name,
-                    reservation_tokens=_historical_reservation(entry, max(1, fallback)),
+                    reservation_tokens=max(
+                        _historical_reservation(entry, metric_fallback), metric_fallback
+                    ),
                     status=status,
                 )
             )

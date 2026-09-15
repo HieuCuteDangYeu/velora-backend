@@ -1,8 +1,12 @@
 from types import SimpleNamespace
 
+from ragas.embeddings.base import embedding_factory
+from ragas.llms.base import InstructorLLM
+
 from rag_eval.metrics.semantic import (
     SEMANTIC_NAMES,
     SemanticMetricSuite,
+    build_live_semantic_suite,
     build_tool_metrics,
     current_ragas_metric_types,
     multimodal_support,
@@ -47,3 +51,15 @@ def test_current_ragas_builtin_agent_and_multimodal_types_are_wired():
     assert {"multi_modal_faithfulness", "multi_modal_relevance"} <= set(types)
     assert build_tool_metrics()["tool_call_accuracy"].strict_order is False
     assert multimodal_support(False) == "TEXT_GROUNDED_MODALITY_ONLY"
+
+
+def test_faithfulness_accepts_a_metric_specific_llm():
+    standard_llm = InstructorLLM(client=object(), model="test", provider="openai")
+    faithfulness_llm = InstructorLLM(client=object(), model="test", provider="openai")
+    embeddings = embedding_factory(provider="openai", model="test", client=object())
+    suite = build_live_semantic_suite(
+        standard_llm, embeddings, faithfulness_llm=faithfulness_llm
+    )
+
+    assert suite.scorers["faithfulness"].llm is faithfulness_llm
+    assert suite.scorers["factual_correctness"].llm is standard_llm

@@ -395,6 +395,18 @@ def test_completed_metrics_are_never_rescheduled():
     assert [item.key for item in operations] == ["case-1::context_recall"]
 
 
+def test_faithfulness_planning_reservation_covers_two_structured_calls(monkeypatch):
+    monkeypatch.delenv("RAGAS_FAITHFULNESS_OPERATION_RESERVATION_TOKENS", raising=False)
+    operations = recovery_operations(
+        ["case-1"],
+        ["faithfulness"],
+        [{"caseId": "case-1", "metricName": "faithfulness", "status": "UNAVAILABLE"}],
+        reservation_tokens=1_000,
+    )
+
+    assert operations[0].reservation_tokens == 12_000
+
+
 def test_authorization_is_consumed_only_when_first_dispatch_occurs(tmp_path):
     store = make_store(tmp_path)
     assert store.authorization_status == "UNCONSUMED"

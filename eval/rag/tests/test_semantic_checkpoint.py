@@ -1,4 +1,5 @@
 import pytest
+from instructor.v2.core.errors import IncompleteOutputException
 
 from rag_eval.metrics.semantic import SemanticMetricSuite, classify_metric_error
 
@@ -111,6 +112,10 @@ async def test_metric_timeout_is_distinguished_from_provider_timeout():
         )
         == "PROVIDER_TIMEOUT"
     )
+
+
+def test_incomplete_output_is_classified_as_truncation():
+    assert classify_metric_error(IncompleteOutputException(), []) == "OUTPUT_TRUNCATED"
 
 
 @pytest.mark.asyncio

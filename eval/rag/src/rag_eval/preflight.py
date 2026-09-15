@@ -73,29 +73,27 @@ def probe_reservation_tokens() -> int:
     )
 
 
-def account_groq_probe_requests(
-    probes: list[dict[str, Any]],
+def reserve_groq_probe_requests(
+    models: list[str] | tuple[str, ...],
     ledger_path: str | None = None,
     *,
     run_id: str = "preflight",
 ) -> int:
-    """Record each probe's conservative usage before evaluating TPD headroom."""
+    """Reserve each probe's conservative usage before provider dispatch."""
 
-    if not probes:
+    if not models:
         return 0
     ledger = GroqDailyTokenLedger(ledger_path) if ledger_path else GroqDailyTokenLedger.from_env()
     reservation = probe_reservation_tokens()
     recorded = 0
-    for index, probe in enumerate(probes):
-        status = probe.get("status")
-        successful = isinstance(status, int) and status in range(200, 300)
+    for index, model in enumerate(models):
         ledger.record(
             {
                 "schemaVersion": "groq-tpd-ledger-record-v1",
                 "requestId": ledger.new_request_id(),
                 "timestamp": utc_timestamp(),
                 "provider": "groq",
-                "model": probe.get("model", "UNKNOWN"),
+                "model": model,
                 "estimatedInputTokens": reservation - 1 - _nonnegative_int(
                     "RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", 256
                 ),
@@ -104,14 +102,29 @@ def account_groq_probe_requests(
                 "countingMode": "CONSERVATIVE_UPPER_BOUND",
                 "runId": run_id,
                 "judgeOperation": "preflight_probe",
-                "status": "SUCCESS" if successful else "FAILURE",
-                "providerStatus": status,
-                "providerCategory": "SUCCESS" if successful else "PROBE_FAILURE",
+                "status": "RESERVED",
+                "providerStatus": "PENDING",
+                "providerCategory": "PROBE_RESERVATION",
                 "attempt": index + 1,
             }
         )
         recorded += reservation
     return recorded
+
+
+def account_groq_probe_requests(
+    probes: list[dict[str, Any]],
+    ledger_path: str | None = None,
+    *,
+    run_id: str = "preflight",
+) -> int:
+    """Backward-compatible wrapper for callers that already have probe results."""
+
+    return reserve_groq_probe_requests(
+        tuple(str(probe.get("model", "UNKNOWN")) for probe in probes),
+        ledger_path,
+        run_id=run_id,
+    )
 
 
 def _probe_sync(model: str, base_url: str, api_key: str, timeout: float) -> dict[str, Any]:
@@ -567,6 +580,13 @@ async def run_preflight(args: argparse.Namespace) -> int:
     )
     api_key = os.getenv("GROQ_API_KEY")
     base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+    probe_ledger_path = getattr(args, "ledger_path", None) or os.getenv(
+        "RAGAS_GROQ_DAILY_LEDGER_PATH"
+    )
+    if api_key:
+        # Reserve before the network call so a timeout cannot leave an
+        # untracked probe between baseline and the TPD gate.
+        reserve_groq_probe_requests(models, probe_ledger_path)
     probes = (
         await probe_groq(models, base_url, api_key, args.timeout)
         if api_key
@@ -581,11 +601,6 @@ async def run_preflight(args: argparse.Namespace) -> int:
             for model in models
         ]
     )
-    probe_ledger_path = getattr(args, "ledger_path", None) or os.getenv(
-        "RAGAS_GROQ_DAILY_LEDGER_PATH"
-    )
-    if api_key:
-        account_groq_probe_requests(probes, probe_ledger_path)
     first_probe = next((probe for probe in probes if probe["model"] == first_model), probes[0])
     first_headroom, remaining = first_request_tpm_headroom(first_probe, first_tokens)
     tpd = tpd_headroom(

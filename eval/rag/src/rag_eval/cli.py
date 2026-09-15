@@ -32,9 +32,9 @@ from rag_eval.dataset import ROOT, dataset_sha256, is_supported_live_dataset, lo
 from rag_eval.experiment import rag_experiment
 from rag_eval.metrics.semantic import SEMANTIC_NAMES
 from rag_eval.preflight import (
-    account_groq_probe_requests,
     first_request_tpm_headroom,
     probe_groq,
+    reserve_groq_probe_requests,
     run_preflight,
     scheduler_ready,
     scheduler_snapshot,
@@ -522,6 +522,12 @@ async def run_live(args: argparse.Namespace) -> Path:
                 "RAGAS_GROQ_TPD_LIMIT_ATTESTATION_PATH"
             )
             ledger_path = os.getenv("RAGAS_GROQ_DAILY_LEDGER_PATH")
+            if os.getenv("GROQ_API_KEY"):
+                reserve_groq_probe_requests(
+                    (str(judge_model),),
+                    ledger_path,
+                    run_id=f"{run_id}:preflight",
+                )
             tpd = tpd_headroom(
                 None,
                 (str(judge_model),),
@@ -553,11 +559,6 @@ async def run_live(args: argparse.Namespace) -> Path:
                 )
                 if api_key
                 else []
-            )
-            account_groq_probe_requests(
-                probes,
-                ledger_path,
-                run_id=f"{run_id}:preflight",
             )
             tpd = tpd_headroom(
                 None,

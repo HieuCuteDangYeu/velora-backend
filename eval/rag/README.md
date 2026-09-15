@@ -368,6 +368,12 @@ text; an ID-only trace remains insufficient for context-bearing metrics. The
 evaluator loads the saved runner report directly and does not contact the
 production RAG API.
 
+Groq Usage responses that omit the cached-input field are accepted only through
+an explicit omission attestation: `cachedInputTokensOmitted=true`,
+`cachedInputTokensOmissionReason=CONTEXT_EQUALS_NON_CACHED`, and equal context
+and non-cached totals. The evaluator records cached input as derived zero and
+never treats an unmarked missing field as zero.
+
 ## Pricing, reports, and comparisons
 
 `config/cloudflare-pricing-v1.json` is a versioned snapshot of official Workers AI pricing. Update it only after checking the linked Cloudflare source, change the version and verification date, and add pricing tests. Unknown models or missing usage produce `costUsd=null` plus a warning, never a fabricated zero. Provider token counts remain labeled `PROVIDER`; explicit estimates are labeled `ESTIMATED`; absent usage is `UNAVAILABLE`.

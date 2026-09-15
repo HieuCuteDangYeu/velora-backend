@@ -14,6 +14,15 @@ type ApnsError = Error & {
   code?: string;
 };
 
+const DEFAULT_APNS_REQUEST_TIMEOUT_MS = 5_000;
+const MIN_APNS_REQUEST_TIMEOUT_MS = 1_000;
+const MAX_APNS_REQUEST_TIMEOUT_MS = 15_000;
+const APNS_INVALID_TOKEN_REASONS = new Set([
+  'BadDeviceToken',
+  'DeviceTokenNotForTopic',
+  'Unregistered',
+]);
+
 const APNS_HOSTS: Record<PushDeliveryEnvironment, string> = {
   development: 'https://api.sandbox.push.apple.com',
   production: 'https://api.push.apple.com',
@@ -29,25 +38,65 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
   async send(input: SendApnsVoipPushInput) {
     const jwt = this.getJwt();
     const url = APNS_HOSTS[input.deliveryEnvironment];
+    const timeoutMs = this.getRequestTimeoutMs();
     const session = http2.connect(url);
 
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const body = JSON.stringify(input.payload);
-      const request = session.request({
-        ':method': 'POST',
-        ':path': `/3/device/${input.token}`,
-        authorization: `bearer ${jwt}`,
-        'content-type': 'application/json',
-        'apns-push-type': 'voip',
-        'apns-priority': '10',
-        'apns-topic': `${input.bundleId}.voip`,
-        // A VoIP push is a wake-up signal for a live call, never a message to
-        // deliver later. The recipient validates the call expiry independently.
-        'apns-expiration': '0',
-      });
-
+      let settled = false;
+      let timeout: NodeJS.Timeout | undefined;
       let statusCode = 0;
       let responseBody = '';
+
+      const complete = (completion: () => void): boolean => {
+        if (settled) {
+          return false;
+        }
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        completion();
+        return true;
+      };
+
+      const fail = (error: ApnsError) => {
+        if (complete(() => rejectPromise(error))) {
+          session.destroy();
+        }
+      };
+
+      // A ClientHttp2Session emits `error` independently of its request
+      // streams. This listener must exist before request() so a connection
+      // failure can never become an unhandled EventEmitter error.
+      session.on('error', (error) => {
+        fail(this.buildTransportError(error));
+      });
+      session.on('goaway', () => {
+        fail(this.buildTransportError('APNs session received GOAWAY'));
+      });
+      session.on('close', () => {
+        fail(this.buildTransportError('APNs session closed before response'));
+      });
+
+      let request: http2.ClientHttp2Stream;
+      try {
+        request = session.request({
+          ':method': 'POST',
+          ':path': `/3/device/${input.token}`,
+          authorization: `bearer ${jwt}`,
+          'content-type': 'application/json',
+          'apns-push-type': 'voip',
+          'apns-priority': '10',
+          'apns-topic': `${input.bundleId}.voip`,
+          // A VoIP push is a wake-up signal for a live call, never a message
+          // to deliver later. The recipient validates the call expiry.
+          'apns-expiration': '0',
+        });
+      } catch (error) {
+        fail(this.buildTransportError(error));
+        return;
+      }
 
       request.setEncoding('utf8');
       request.on('response', (headers) => {
@@ -57,48 +106,92 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         }
       });
       request.on('data', (chunk: string) => {
+        // APNs returns a small JSON reason for non-2xx responses. It is used
+        // only to retire known-invalid tokens and is never logged or labeled.
         responseBody += chunk;
       });
       request.on('end', () => {
-        session.close();
-
         if (statusCode >= 200 && statusCode < 300) {
-          resolvePromise();
+          complete(resolvePromise);
+          session.close();
           return;
         }
 
-        rejectPromise(this.buildApnsError(statusCode, responseBody));
+        fail(this.buildApnsError(statusCode, responseBody));
+      });
+      request.on('close', () => {
+        fail(this.buildTransportError('APNs request closed before response'));
       });
       request.on('error', (error) => {
-        session.destroy();
-        rejectPromise(
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        fail(this.buildTransportError(error));
       });
+
+      timeout = setTimeout(() => {
+        const error = new Error(
+          `APNs VoIP push timed out after ${timeoutMs}ms`,
+        ) as ApnsError;
+        error.code = 'apns/timeout';
+        fail(error);
+      }, timeoutMs);
 
       request.end(body);
     });
   }
 
   private buildApnsError(statusCode: number, responseBody: string) {
-    let reason = 'Unknown';
+    const error = new Error(
+      `APNs VoIP push failed with HTTP status ${statusCode}`,
+    ) as ApnsError;
+    error.code = this.parseApnsErrorCode(responseBody);
+    return error;
+  }
 
+  private parseApnsErrorCode(responseBody: string) {
     try {
-      const parsed = JSON.parse(responseBody) as { reason?: string };
-      if (parsed.reason) {
-        reason = parsed.reason;
+      const parsed = JSON.parse(responseBody) as { reason?: unknown };
+      if (
+        typeof parsed.reason === 'string' &&
+        APNS_INVALID_TOKEN_REASONS.has(parsed.reason)
+      ) {
+        return `apns/${parsed.reason}`;
       }
     } catch {
-      if (responseBody.trim()) {
-        reason = responseBody.trim();
-      }
+      // Unknown response bodies are intentionally normalized below.
     }
 
-    const error = new Error(
-      `APNs VoIP push failed with status ${statusCode}: ${reason}`,
+    return 'apns/http_error';
+  }
+
+  private buildTransportError(error: unknown): ApnsError {
+    const message =
+      error instanceof Error && error.message
+        ? error.message
+        : 'APNs transport failed';
+    const transportError = new Error(
+      `APNs VoIP transport failed: ${message}`,
     ) as ApnsError;
-    error.code = `apns/${reason}`;
-    return error;
+    transportError.code = 'apns/transport_error';
+    return transportError;
+  }
+
+  private getRequestTimeoutMs() {
+    const configured = process.env.NOTIFICATION_APNS_REQUEST_TIMEOUT_MS;
+    if (configured === undefined || configured === '') {
+      return DEFAULT_APNS_REQUEST_TIMEOUT_MS;
+    }
+
+    const timeoutMs = Number(configured);
+    if (
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < MIN_APNS_REQUEST_TIMEOUT_MS ||
+      timeoutMs > MAX_APNS_REQUEST_TIMEOUT_MS
+    ) {
+      throw new Error(
+        `NOTIFICATION_APNS_REQUEST_TIMEOUT_MS must be an integer between ${MIN_APNS_REQUEST_TIMEOUT_MS} and ${MAX_APNS_REQUEST_TIMEOUT_MS}`,
+      );
+    }
+
+    return timeoutMs;
   }
 
   private getJwt() {

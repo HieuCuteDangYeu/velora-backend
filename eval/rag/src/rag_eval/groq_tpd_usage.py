@@ -14,6 +14,10 @@ USAGE_BASELINE_SCHEMA = "groq-tpd-usage-baseline-v1"
 DEFAULT_DAILY_LIMIT_TOKENS = 200_000
 DEFAULT_PLANNED_FULL_RUN_TOKENS = 54_048
 MIN_QUIET_PERIOD_SECONDS = 900
+EXACT_USAGE_SOURCES = {
+    "groq-console-organization-usage-api",
+    "groq-console-organization-rolling-metrics-api",
+}
 FORBIDDEN_IDENTIFIER_KEYS = {
     "organization_id",
     "organizationid",
@@ -104,7 +108,7 @@ def exact_usage_tpd_headroom(
         payload.get("schemaVersion") != USAGE_BASELINE_SCHEMA
         or payload.get("provider") != "groq"
         or payload.get("scope") != "TPD"
-        or payload.get("source") != "groq-console-organization-usage-api"
+        or payload.get("source") not in EXACT_USAGE_SOURCES
         or payload.get("organizationScope") != "all-projects"
         or len(models) != 1
         or payload.get("model") != models[0]

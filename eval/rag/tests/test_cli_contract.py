@@ -8,6 +8,7 @@ import pytest
 from rag_eval import cli
 from rag_eval.cli import (
     _build_live_runner_args,
+    _saved_runner_report,
     _validate_source_summary,
     validate_definitions_report,
 )
@@ -106,6 +107,12 @@ def test_live_rejects_ambiguous_run_id_and_resume():
         _build_live_runner_args(
             _runner_args(run_id="run-a", resume="run-b"), Path("/tmp/definitions.json")
         )
+
+
+def test_saved_resume_can_pin_immutable_runner_report(tmp_path):
+    report = tmp_path / "source-report.json"
+
+    assert _saved_runner_report("source-run", str(report)) == report
 
 
 def test_saved_source_summary_requires_exact_production_identity(tmp_path):

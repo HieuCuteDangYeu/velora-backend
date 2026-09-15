@@ -14,6 +14,10 @@ from urllib.request import Request, urlopen
 
 from rag_eval.groq_tpd_cost import COST_ATTESTATION_SCHEMA, cost_tpd_headroom
 from rag_eval.groq_tpd_empty import EMPTY_BASELINE_SCHEMA, empty_usage_tpd_headroom
+from rag_eval.groq_tpd_metrics import (
+    GroqMetricsBaselineError,
+    normalize_groq_rolling_metrics_baseline,
+)
 from rag_eval.groq_tpd_usage import USAGE_BASELINE_SCHEMA, exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeRateLimiter, estimate_input_tokens
 from rag_eval.recovery import RecoveryOperation, multiday_tpd_preflight
@@ -253,6 +257,15 @@ def _read_json(path: str | None) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _read_json_value(path: str | None) -> Any | None:
+    if not path:
+        return None
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _read_recovery_operations(path: str | None) -> list[RecoveryOperation] | None:
     """Read a content-free pending-operation plan for multi-day preflight."""
 
@@ -346,6 +359,10 @@ def tpd_headroom(
     cost_attestation_path: str | None = None,
     usage_attestation_path: str | None = None,
     empty_attestation_path: str | None = None,
+    rolling_24h_metrics_path: str | None = None,
+    last_hour_metrics_path: str | None = None,
+    metrics_observed_at: str | None = None,
+    metrics_all_projects: bool = False,
     pricing_path: str | None = None,
     now: datetime | None = None,
     max_age_seconds: int | None = None,
@@ -362,6 +379,33 @@ def tpd_headroom(
     cost_payload = _read_json(cost_attestation_path)
     usage_payload = _read_json(usage_attestation_path)
     empty_payload = _read_json(empty_attestation_path)
+    rolling_metrics_requested = bool(
+        rolling_24h_metrics_path
+        or last_hour_metrics_path
+        or metrics_observed_at
+        or metrics_all_projects
+    )
+    if rolling_metrics_requested:
+        if not (
+            rolling_24h_metrics_path
+            and last_hour_metrics_path
+            and metrics_observed_at
+            and metrics_all_projects
+        ):
+            return {"status": "UNKNOWN", "reason": "TPD_ROLLING_METRICS_INPUTS_INCOMPLETE"}
+        rolling_24h_payload = _read_json_value(rolling_24h_metrics_path)
+        last_hour_payload = _read_json_value(last_hour_metrics_path)
+        if rolling_24h_payload is None or last_hour_payload is None:
+            return {"status": "UNKNOWN", "reason": "TPD_ROLLING_METRICS_UNREADABLE"}
+        try:
+            usage_payload = normalize_groq_rolling_metrics_baseline(
+                rolling_24h_payload,
+                last_hour_payload,
+                observed_at=metrics_observed_at,
+                all_projects=metrics_all_projects,
+            )
+        except GroqMetricsBaselineError as error:
+            return {"status": "UNKNOWN", "reason": f"TPD_ROLLING_METRICS_INVALID:{error}"}
     if (
         usage_payload is None
         and legacy is not None
@@ -617,6 +661,17 @@ async def run_preflight(args: argparse.Namespace) -> int:
         or os.getenv("RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"),
         empty_attestation_path=getattr(args, "tpd_empty_attestation", None)
         or os.getenv("RAGAS_GROQ_TPD_EMPTY_ATTESTATION_PATH"),
+        rolling_24h_metrics_path=getattr(args, "tpd_rolling_24h_metrics", None)
+        or os.getenv("RAGAS_GROQ_TPD_ROLLING_24H_METRICS_PATH"),
+        last_hour_metrics_path=getattr(args, "tpd_last_hour_metrics", None)
+        or os.getenv("RAGAS_GROQ_TPD_LAST_HOUR_METRICS_PATH"),
+        metrics_observed_at=getattr(args, "tpd_metrics_observed_at", None)
+        or os.getenv("RAGAS_GROQ_TPD_METRICS_OBSERVED_AT"),
+        metrics_all_projects=bool(
+            getattr(args, "tpd_metrics_all_projects", False)
+            or os.getenv("RAGAS_GROQ_TPD_METRICS_ALL_PROJECTS", "false").strip().lower()
+            in {"1", "true", "yes"}
+        ),
         pricing_path=getattr(args, "pricing_path", None) or os.getenv("RAGAS_GROQ_PRICING_PATH"),
     )
     provider_reachable = all(probe["networkReachable"] for probe in probes)

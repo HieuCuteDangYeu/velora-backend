@@ -311,6 +311,7 @@ def multiday_tpd_preflight(
         return {"status": "UNKNOWN", "reason": "MULTI_DAY_TPD_LIMIT_INVALID"}
     if detail.get("source") not in {
         "groq-console-organization-usage-api",
+        "groq-console-organization-rolling-metrics-api",
         "operator-observed-fresh-window",
     }:
         return {"status": "UNKNOWN", "reason": "MULTI_DAY_TPD_SOURCE_INVALID"}

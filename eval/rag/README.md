@@ -147,8 +147,34 @@ The current-window artifact may use an explicitly observed fresh window:
 }
 ```
 
-When the Organization Usage API provides exact per-model token fields, prefer
-an exact-token baseline over cost conversion:
+For repeatable recovery, prefer saved Groq rolling-metrics responses over the
+older hand-normalized daily usage artifact. Supply the rolling 24-hour response,
+the matching last-hour response, the exact observation timestamp, and an
+explicit All-projects assertion:
+
+```bash
+rag-eval preflight \
+  --tpd-rolling-24h-metrics /secure/path/groq-rolling-24h.json \
+  --tpd-last-hour-metrics /secure/path/groq-last-hour.json \
+  --tpd-metrics-observed-at 2026-09-15T12:00:00Z \
+  --tpd-metrics-all-projects
+```
+
+The normalizer selects only `openai/gpt-oss-120b` buckets from current UTC
+midnight through the observation, aggregates repeated timestamps, validates
+`total_input_tokens == total_cached_input_tokens + total_uncached_input_tokens`,
+and counts only uncached input plus output toward TPD. The last-hour response
+must contain zero target-model usage. Groq's raw rolling-metrics response does
+not currently echo the selected dashboard time range, so passing a saved
+response through `--tpd-last-hour-metrics` is the operator assertion that it
+came from the Groq `Last hour` filter; `--tpd-metrics-observed-at` anchors that
+60-minute proof window. If the saved payload does contain explicit window
+metadata, the evaluator validates it and fails closed when it conflicts with
+the observation. Project/API-key identifiers in the raw saved responses are
+never copied into the normalized baseline or ledger.
+
+The older exact Organization Usage API artifact remains supported as a
+compatibility fallback:
 
 ```json
 {

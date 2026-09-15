@@ -320,6 +320,35 @@ def test_new_utc_epoch_after_closed_previous_day(tmp_path):
     assert epochs[1]["baselineCountedUsedTokens"] == 0
 
 
+def test_same_day_quota_slice_can_resume_with_newer_baseline(tmp_path):
+    store = make_store(tmp_path)
+    store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)
+    old_epoch = store.epochs()[0]
+    refreshed_at = TODAY + timedelta(minutes=1)
+    refreshed = baseline(refreshed_at, suffix="same-day-refresh")
+    refreshed["ledgerEpoch"] = old_epoch["ledgerEpoch"]
+    refreshed["effectiveCurrentDayUsedTokens"] = 1_000
+    refreshed["epochMinimumProvenRemainingTokens"] = 199_000
+    refreshed["minimumProvenRemainingTokens"] = 199_000
+
+    store.begin_epoch(refreshed, now=TODAY + timedelta(minutes=2))
+
+    epoch = store.epochs()[0]
+    assert epoch["closedAt"] is None
+    assert epoch["closeReason"] is None
+    assert epoch["latestBaselineId"] == refreshed["baselineId"]
+    assert epoch["calculatedRemainingTokens"] == 199_000
+    assert len(epoch["sliceCloseHistory"]) == 1
+
+
+def test_same_day_resume_requires_a_newer_baseline(tmp_path):
+    store = make_store(tmp_path)
+    store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)
+
+    with pytest.raises(RecoveryStateError, match="newer TPD baseline"):
+        store.begin_epoch(baseline(TODAY), now=TODAY + timedelta(minutes=1))
+
+
 def test_previous_epoch_is_immutable_after_rollover(tmp_path):
     store = make_store(tmp_path)
     store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)

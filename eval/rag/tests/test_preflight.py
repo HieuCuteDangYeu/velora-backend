@@ -362,6 +362,49 @@ async def test_run_preflight_does_not_pass_without_tpd_baseline(monkeypatch, cap
 
 
 @pytest.mark.asyncio
+async def test_run_preflight_reserves_before_provider_probe(monkeypatch, tmp_path):
+    observed_at = datetime.now(UTC)
+    ledger_path = tmp_path / "ledger.jsonl"
+    seen_before_probe = []
+
+    async def fake_probe(models, _base_url, _api_key, _timeout):
+        rows = [
+            json.loads(line)
+            for line in ledger_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        seen_before_probe.extend(rows)
+        return [probe() | {"model": model} for model in models]
+
+    monkeypatch.setenv("GROQ_API_KEY", "present-but-not-read")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    monkeypatch.setattr("rag_eval.preflight.probe_groq", fake_probe)
+    args = SimpleNamespace(
+        models=MODEL,
+        first_model=MODEL,
+        first_operation_tokens=6_000,
+        tpd_attestation=None,
+        tpd_limit_attestation=str(limit_attestation(tmp_path, observed_at=observed_at)),
+        tpd_window_attestation=str(window_attestation(tmp_path, observed_at=observed_at)),
+        tpd_cost_attestation=None,
+        tpd_usage_attestation=None,
+        tpd_empty_attestation=None,
+        pricing_path=None,
+        ledger_path=str(ledger_path),
+        timeout=1.0,
+        multi_day_recovery=False,
+    )
+
+    await run_preflight(args)
+
+    probe_rows = [
+        row for row in seen_before_probe if row.get("judgeOperation") == "preflight_probe"
+    ]
+    assert len(probe_rows) == 1
+    assert probe_rows[0]["status"] == "RESERVED"
+
+
+@pytest.mark.asyncio
 async def test_run_preflight_passes_with_limit_and_window_attestations(
     monkeypatch, capsys, tmp_path
 ):

@@ -183,6 +183,7 @@ def exact_usage_tpd_headroom(
         return {"status": "UNKNOWN", "reason": "TPD_PLANNED_BUDGET_MISMATCH"}
 
     observed_at_text = observed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    window_key = f"{window_date}:{bucket_timestamp}"
     fingerprint = hashlib.sha256(
         json.dumps(
             {
@@ -198,6 +199,12 @@ def exact_usage_tpd_headroom(
         ).encode("utf-8")
     ).hexdigest()
     try:
+        previous_baseline = ledger.latest_baseline(
+            provider="groq",
+            model=model,
+            organization_scope=payload["organizationScope"],
+            window_key=window_key,
+        )
         baseline_id = ledger.initialize_baseline(
             provider="groq",
             model=model,
@@ -205,22 +212,35 @@ def exact_usage_tpd_headroom(
             daily_limit_tokens=daily_limit,
             baseline_used_tokens=counted_tokens,
             organization_scope=payload["organizationScope"],
-            window_key=f"{window_date}:{bucket_timestamp}",
+            window_key=window_key,
             baseline_fingerprint=fingerprint,
             pricing_version=USAGE_BASELINE_SCHEMA,
+            allow_refresh=True,
         )
-        ledger_used = ledger.usage_since(model, observed_at, now=current)
-        # The baseline is allowed to resume an existing PR #107 ledger. Count
-        # every same-window request after the observation, including legacy rows
-        # that predate explicit recovery-epoch binding; ignoring those rows would
-        # overstate the safe daily budget on the first resumed invocation.
-        epoch_ledger_used = ledger_used
+        day_start = datetime.fromisoformat(f"{window_date}T00:00:00+00:00")
+        ledger_before_observation = ledger.usage_between(
+            model, day_start, observed_at, include_start=True, include_end=False
+        )
+        ledger_after_observation = ledger.usage_between(
+            model, observed_at, current, include_start=True, include_end=True
+        )
     except LedgerPersistenceError:
         return {"status": "UNKNOWN", "reason": "TPD_LEDGER_BASELINE_UNAVAILABLE"}
 
     cost_only_remaining = max(0, daily_limit - counted_tokens)
-    proven_remaining = max(0, cost_only_remaining - ledger_used)
-    epoch_proven_remaining = max(0, cost_only_remaining - epoch_ledger_used)
+    effective_used = max(counted_tokens, ledger_before_observation) + ledger_after_observation
+    ledger_used = ledger_before_observation + ledger_after_observation
+    proven_remaining = max(0, daily_limit - effective_used)
+    unreconciled_ledger = (
+        max(0, ledger_before_observation - counted_tokens) + ledger_after_observation
+    )
+    epoch_proven_remaining = proven_remaining
+    epoch_ledger_used = effective_used
+    epoch_ledger_epoch = (
+        previous_baseline.get("ledgerEpoch")
+        if previous_baseline is not None
+        else baseline_id
+    )
     return {
         "status": "YES" if proven_remaining >= planned else "NO",
         "reason": "EXACT_TOKEN_TPD_BASELINE_EVALUATED",
@@ -238,16 +258,24 @@ def exact_usage_tpd_headroom(
                 "rateLimitCountedUsedTokens": counted_tokens,
                 "baselineUsedTokens": counted_tokens,
                 "ledgerUsedTokens": ledger_used,
+                "ledgerBeforeObservationTokens": ledger_before_observation,
+                "ledgerAfterObservationTokens": ledger_after_observation,
+                "unreconciledLedgerTokens": unreconciled_ledger,
                 "epochLedgerUsedTokens": epoch_ledger_used,
-                "knownUsedTokens": counted_tokens + ledger_used,
+                "knownUsedTokens": effective_used,
                 "calculatedMinimumRemainingTokens": cost_only_remaining,
-                "conservativeUsedTokensUpperBound": counted_tokens + ledger_used,
+                "conservativeUsedTokensUpperBound": effective_used,
                 "minimumProvenRemainingTokens": proven_remaining,
                 "epochMinimumProvenRemainingTokens": epoch_proven_remaining,
+                "effectiveCurrentDayUsedTokens": effective_used,
+                "freshObservedUsedTokens": counted_tokens,
                 "plannedFullRunTokens": planned,
                 "baselineId": baseline_id,
                 "baselineFingerprint": fingerprint,
-                "ledgerEpoch": baseline_id,
+                "baselineRefreshOf": previous_baseline.get("baselineId")
+                if previous_baseline is not None
+                else None,
+                "ledgerEpoch": epoch_ledger_epoch,
                 "observedAt": observed_at_text,
                 "organizationScope": payload["organizationScope"],
                 "source": payload["source"],

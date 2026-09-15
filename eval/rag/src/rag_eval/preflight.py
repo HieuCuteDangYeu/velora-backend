@@ -726,6 +726,18 @@ async def run_preflight(args: argparse.Namespace) -> int:
     )
     print(f"TPD_EXACT_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
     print(f"TPD_COUNTED_USED_TOKENS={first_tpd.get('rateLimitCountedUsedTokens', 'UNKNOWN')}")
+    print(
+        "TPD_FRESH_OBSERVED_USED_TOKENS="
+        f"{first_tpd.get('freshObservedUsedTokens', 'UNKNOWN')}"
+    )
+    print(
+        "TPD_UNRECONCILED_LEDGER_TOKENS="
+        f"{first_tpd.get('unreconciledLedgerTokens', 'UNKNOWN')}"
+    )
+    print(
+        "TPD_EFFECTIVE_CURRENT_DAY_USED_TOKENS="
+        f"{first_tpd.get('effectiveCurrentDayUsedTokens', 'UNKNOWN')}"
+    )
     print(f"TPD_NON_CACHED_INPUT_TOKENS={first_tpd.get('nonCachedInputTokens', 'UNKNOWN')}")
     print(f"TPD_CONTEXT_TOKENS={first_tpd.get('contextTokens', 'UNKNOWN')}")
     print(f"TPD_CACHED_INPUT_TOKENS={first_tpd.get('cachedInputTokens', 'UNKNOWN')}")

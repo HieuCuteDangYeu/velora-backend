@@ -49,6 +49,7 @@ LEDGER_FIELDS = (
     "windowKey",
     "baselineFingerprint",
     "pricingVersion",
+    "baselineRefreshOf",
 )
 
 
@@ -210,6 +211,7 @@ class GroqDailyTokenLedger:
         window_key: str,
         baseline_fingerprint: str,
         pricing_version: str,
+        allow_refresh: bool = False,
     ) -> str:
         """Persist one immutable quota baseline without counting it as a request."""
 
@@ -300,9 +302,11 @@ class GroqDailyTokenLedger:
                         )
                     ):
                         return baseline_id
-                    raise LedgerPersistenceError(
-                        "conflicting Groq TPD baseline already exists for model/window"
-                    )
+                    if not allow_refresh:
+                        raise LedgerPersistenceError(
+                            "conflicting Groq TPD baseline already exists for model/window"
+                        )
+                    baseline["baselineRefreshOf"] = matching[-1].get("baselineId")
                 handle.seek(0, 2)
                 handle.write(json.dumps(baseline, sort_keys=True) + "\n")
                 handle.flush()
@@ -370,6 +374,72 @@ class GroqDailyTokenLedger:
                 ):
                     return dict(record)
         return None
+
+    def latest_baseline(
+        self,
+        *,
+        provider: str,
+        model: str,
+        organization_scope: str,
+        window_key: str,
+    ) -> dict[str, Any] | None:
+        """Return the newest baseline observation for one daily query window."""
+
+        if not self.path.exists():
+            return None
+        with self._locked("r") as handle:
+            records = self._read_records(handle)
+        matches = [
+            record
+            for record in records
+            if (
+                record.get("recordType", "REQUEST") == "BASELINE"
+                and record.get("provider") == provider
+                and record.get("model") == model
+                and record.get("organizationScope") == organization_scope
+                and record.get("windowKey") == window_key
+            )
+        ]
+        return dict(matches[-1]) if matches else None
+
+    def usage_between(
+        self,
+        model: str,
+        started_at: datetime,
+        ended_at: datetime,
+        *,
+        include_start: bool = False,
+        include_end: bool = True,
+    ) -> int:
+        """Count idempotent request usage in an explicit bounded interval."""
+
+        if ended_at < started_at:
+            raise LedgerPersistenceError("Groq TPD ledger interval is invalid")
+        if not self.path.exists():
+            return 0
+        with self._locked("r") as handle:
+            records = self._read_records(handle)
+        seen: set[str] = set()
+        total = 0
+        for record in records:
+            request_id = record.get("requestId")
+            if request_id in seen:
+                continue
+            seen.add(request_id)
+            if (
+                record.get("recordType", "REQUEST") != "REQUEST"
+                or record.get("provider") != "groq"
+                or record.get("model") != model
+            ):
+                continue
+            timestamp = parse_timestamp(record.get("timestamp"))
+            if timestamp is None:
+                raise LedgerPersistenceError("Groq TPD ledger contains an invalid timestamp")
+            after_start = timestamp >= started_at if include_start else timestamp > started_at
+            before_end = timestamp <= ended_at if include_end else timestamp < ended_at
+            if after_start and before_end:
+                total += int(record.get("countedTokens", 0))
+        return total
 
     def usage_for_epoch(self, model: str, ledger_epoch: str) -> int:
         """Count only requests explicitly bound to one immutable quota epoch."""

@@ -268,6 +268,7 @@ def empty_usage_tpd_headroom(
     observed_at = _fresh_observation(payload, current, max_age_seconds)
     assert observed_at is not None
     observed_at_text = observed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    window_key = f"{current_date}:{bucket_timestamp}"
     fingerprint = hashlib.sha256(
         json.dumps(
             {
@@ -284,6 +285,12 @@ def empty_usage_tpd_headroom(
         ).encode("utf-8")
     ).hexdigest()
     try:
+        previous_baseline = ledger.latest_baseline(
+            provider="groq",
+            model=MODEL,
+            organization_scope="all-projects",
+            window_key=window_key,
+        )
         baseline_id = ledger.initialize_baseline(
             provider="groq",
             model=MODEL,
@@ -291,18 +298,31 @@ def empty_usage_tpd_headroom(
             daily_limit_tokens=daily_limit,
             baseline_used_tokens=0,
             organization_scope="all-projects",
-            window_key=f"{current_date}:{bucket_timestamp}",
+            window_key=window_key,
             baseline_fingerprint=fingerprint,
             pricing_version=EMPTY_BASELINE_SCHEMA,
+            allow_refresh=True,
         )
-        ledger_used = ledger.usage_since(MODEL, observed_at, now=current)
-        # Include legacy same-window rows that were written before recovery
-        # epoch metadata existed; a resumed run must not ignore known usage.
-        epoch_ledger_used = ledger_used
+        day_start = datetime.fromisoformat(f"{current_date}T00:00:00+00:00")
+        ledger_before_observation = ledger.usage_between(
+            MODEL, day_start, observed_at, include_start=True, include_end=False
+        )
+        ledger_after_observation = ledger.usage_between(
+            MODEL, observed_at, current, include_start=True, include_end=True
+        )
     except LedgerPersistenceError:
         return _unknown("TPD_EMPTY_BASELINE_LEDGER_UNAVAILABLE")
-    proven_remaining = max(0, daily_limit - ledger_used)
-    epoch_proven_remaining = max(0, daily_limit - epoch_ledger_used)
+    effective_used = ledger_before_observation + ledger_after_observation
+    ledger_used = effective_used
+    proven_remaining = max(0, daily_limit - effective_used)
+    unreconciled_ledger = ledger_before_observation + ledger_after_observation
+    epoch_proven_remaining = proven_remaining
+    epoch_ledger_used = effective_used
+    epoch_ledger_epoch = (
+        previous_baseline.get("ledgerEpoch")
+        if previous_baseline is not None
+        else baseline_id
+    )
     return {
         "status": "YES" if proven_remaining >= planned else "NO",
         "reason": "EMPTY_CURRENT_WINDOW_TPD_BASELINE_EVALUATED",
@@ -316,16 +336,24 @@ def empty_usage_tpd_headroom(
                 "rateLimitCountedUsedTokens": 0,
                 "baselineUsedTokens": 0,
                 "ledgerUsedTokens": ledger_used,
+                "ledgerBeforeObservationTokens": ledger_before_observation,
+                "ledgerAfterObservationTokens": ledger_after_observation,
+                "unreconciledLedgerTokens": unreconciled_ledger,
                 "epochLedgerUsedTokens": epoch_ledger_used,
                 "knownUsedTokens": ledger_used,
                 "calculatedMinimumRemainingTokens": daily_limit,
                 "conservativeUsedTokensUpperBound": ledger_used,
                 "minimumProvenRemainingTokens": proven_remaining,
                 "epochMinimumProvenRemainingTokens": epoch_proven_remaining,
+                "effectiveCurrentDayUsedTokens": effective_used,
+                "freshObservedUsedTokens": 0,
                 "plannedFullRunTokens": planned,
                 "baselineId": baseline_id,
                 "baselineFingerprint": fingerprint,
-                "ledgerEpoch": baseline_id,
+                "baselineRefreshOf": previous_baseline.get("baselineId")
+                if previous_baseline is not None
+                else None,
+                "ledgerEpoch": epoch_ledger_epoch,
                 "observedAt": observed_at_text,
                 "organizationScope": "all-projects",
                 "source": payload["source"],

@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from rag_eval.preflight import (
+    account_groq_probe_requests,
     first_request_tpm_headroom,
+    probe_reservation_tokens,
     run_preflight,
     scheduler_ready,
     scheduler_snapshot,
@@ -128,7 +130,7 @@ def cost_attestation(tmp_path, *, observed_at):
             "organizationScope": "all-projects",
             "model": MODEL,
             "dailyLimitTokens": 200_000,
-            "observedOrganizationModelCostUsd": "0.0218928",
+            "observedOrganizationModelCostUsd": "0.0200000",
             "costValueSource": "groq-console-usage-raw",
             "costDecimalPlaces": 7,
             "rateLimitedTokenPriceFloorUsdPerMillion": "0.15",
@@ -265,6 +267,19 @@ def test_tpm_headers_can_never_alter_tpd_accounting(tmp_path):
     assert result["models"][0]["calculatedRemainingTokens"] == 200_000
 
 
+def test_groq_preflight_probe_is_recorded_conservatively(tmp_path):
+    path = tmp_path / "ledger.jsonl"
+    recorded = account_groq_probe_requests(
+        [{"model": MODEL, "status": 200}], str(path), run_id="preflight-test"
+    )
+
+    row = json.loads(path.read_text(encoding="utf-8").strip())
+    assert recorded == probe_reservation_tokens()
+    assert row["countedTokens"] == probe_reservation_tokens()
+    assert row["countingMode"] == "CONSERVATIVE_UPPER_BOUND"
+    assert row["judgeOperation"] == "preflight_probe"
+
+
 def test_unrelated_model_ledger_entries_are_not_attributed(tmp_path):
     ledger_path = tmp_path / "ledger.jsonl"
     GroqDailyTokenLedger(ledger_path).record(
@@ -376,7 +391,8 @@ async def test_run_preflight_passes_with_limit_and_window_attestations(
     output = capsys.readouterr().out
     assert "TPD_HEADROOM_FOR_FULL_RUN=YES" in output
     assert "TPD_HEADROOM_REASON=MODEL_TPD_ATTESTATION_EVALUATED" in output
-    assert "TPD_CALCULATED_REMAINING_TOKENS=200000" in output
+    assert "TPD_CALCULATED_REMAINING_TOKENS=199730" in output
+    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=199730" in output
     assert "PREFLIGHT_PASS=YES" in output
     assert "FROZEN_V3_RUN_STARTED" not in output
 
@@ -410,9 +426,9 @@ async def test_run_preflight_accepts_cost_upper_bound_attestation(monkeypatch, c
     assert result == 0
     output = capsys.readouterr().out
     assert "TPD_BASELINE_METHOD=COST_DERIVED_CONSERVATIVE_UPPER_BOUND" in output
-    assert "TPD_OBSERVED_EXACT_COST_USD=0.0218928" in output
-    assert "MAX_RATE_LIMITED_TOKENS_FROM_COST=145952" in output
-    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=54048" in output
+    assert "TPD_OBSERVED_EXACT_COST_USD=0.0200000" in output
+    assert "MAX_RATE_LIMITED_TOKENS_FROM_COST=133334" in output
+    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=66396" in output
     assert "PREFLIGHT_PASS=YES" in output
 
 
@@ -447,7 +463,7 @@ async def test_run_preflight_prefers_exact_usage_baseline(monkeypatch, capsys, t
     output = capsys.readouterr().out
     assert "TPD_BASELINE_METHOD=EXACT_TOKEN_USAGE_BASELINE" in output
     assert "TPD_EXACT_COUNTED_USED_TOKENS=110000" in output
-    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=90000" in output
+    assert "TPD_MINIMUM_PROVEN_REMAINING_TOKENS=89730" in output
     assert "PREFLIGHT_PASS=YES" in output
 
 

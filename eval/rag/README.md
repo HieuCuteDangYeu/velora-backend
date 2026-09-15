@@ -291,6 +291,11 @@ accounted to the active UTC epoch before provider dispatch and reconciled with
 the append-only Groq ledger after a restart; an in-flight request crossing
 midnight is handled conservatively.
 
+The canonical provider preflight also records each Groq reachability probe with
+the same conservative input/output reservation before recomputing TPD. This
+prevents a successful probe from creating an untracked race between the quota
+baseline and the first semantic request.
+
 The attestation and ledger are intentionally not committed with credentials or
 production data. A limit-only artifact, stale/incomplete evidence, a legacy
 `dailyRemainingTokens` artifact, or header-derived TPD evidence produces an

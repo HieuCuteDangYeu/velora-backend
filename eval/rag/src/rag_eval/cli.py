@@ -32,6 +32,7 @@ from rag_eval.dataset import ROOT, dataset_sha256, is_supported_live_dataset, lo
 from rag_eval.experiment import rag_experiment
 from rag_eval.metrics.semantic import SEMANTIC_NAMES
 from rag_eval.preflight import (
+    account_groq_probe_requests,
     first_request_tpm_headroom,
     probe_groq,
     run_preflight,
@@ -553,6 +554,25 @@ async def run_live(args: argparse.Namespace) -> Path:
                 if api_key
                 else []
             )
+            account_groq_probe_requests(
+                probes,
+                ledger_path,
+                run_id=f"{run_id}:preflight",
+            )
+            tpd = tpd_headroom(
+                None,
+                (str(judge_model),),
+                ledger_path=ledger_path,
+                limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
+                usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
+                empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+            )
+            recovery_plan = multiday_tpd_preflight(tpd, operations)
+            if recovery_plan["status"] == "UNKNOWN":
+                raise RecoveryStateError(
+                    f"multi-day recovery preflight failed after probe accounting: "
+                    f"{recovery_plan['reason']}"
+                )
             probe = probes[0] if probes else {"status": None, "headers": {}}
             provider_reachable = bool(probes and probe.get("networkReachable"))
             scheduler_pass = scheduler_ready(scheduler)

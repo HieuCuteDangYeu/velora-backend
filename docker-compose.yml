@@ -372,6 +372,9 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      NOTIFICATION_APNS_REQUEST_TIMEOUT_MS: ${NOTIFICATION_APNS_REQUEST_TIMEOUT_MS:-5000}
+      NOTIFICATION_RETRY_POLL_INTERVAL_MS: ${NOTIFICATION_RETRY_POLL_INTERVAL_MS:-3000}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -380,6 +383,12 @@ services:
     volumes:
       - ./apps/notification-service/secrets/firebase-admin.json:/usr/src/app/apps/notification-service/secrets/firebase-admin.json:ro
       - ./apps/notification-service/secrets/apns-private-key.p8:/usr/src/app/apps/notification-service/secrets/apns-private-key.p8:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:3015/health >/dev/null || exit 1']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
     networks:
       - microservices-net
 

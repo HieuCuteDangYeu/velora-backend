@@ -1,0 +1,102 @@
+rule_files:
+  - ../rules/velora-monitoring.yml
+
+evaluation_interval: 15s
+
+tests:
+  - name: notification service down after one minute
+    interval: 15s
+    input_series:
+      - series: 'up{job="notification-service"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraNotificationServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: notification-service
+              severity: critical
+              service: notification-service
+            exp_annotations:
+              summary: notification-service is unavailable
+              description: Prometheus has not been able to scrape notification-service for at least one minute.
+
+  - name: notification service one restart is a warning
+    interval: 15s
+    input_series:
+      - series: 'velora_process_start_time_seconds{service="notification-service"}'
+        values: '100+0x3 200+0x4'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: VeloraNotificationServiceRestarting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: notification-service
+            exp_annotations:
+              summary: notification-service restarted
+              description: notification-service has restarted one or two times during the last fifteen minutes.
+
+  - name: notification service three restarts are critical
+    interval: 15s
+    input_series:
+      - series: 'velora_process_start_time_seconds{service="notification-service"}'
+        values: '100 200 300 400+0x4'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: VeloraNotificationServiceRestartLoop
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: notification-service
+            exp_annotations:
+              summary: notification-service restart loop detected
+              description: notification-service has restarted at least three times during the last fifteen minutes.
+
+  - name: notification database outage becomes critical after two minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_notification_database_up{service="notification-service"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraNotificationDatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: notification-service
+            exp_annotations:
+              summary: notification-service database is unavailable
+              description: The notification retry scheduler has not been able to reach its database for two minutes.
+
+  - name: notification scheduler stalls after sixty seconds
+    interval: 15s
+    input_series:
+      - series: 'velora_notification_retry_scheduler_last_completion_timestamp_seconds{service="notification-service"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: VeloraNotificationRetrySchedulerStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: notification-service
+            exp_annotations:
+              summary: notification retry scheduler is stalled
+              description: The notification retry scheduler has not completed a database query for over sixty seconds.
+
+  - name: repeated APNs transport failures become a warning
+    interval: 15s
+    input_series:
+      - series: 'velora_notification_apns_requests_total{service="notification-service",outcome="timeout"}'
+        values: '0+1x5'
+    alert_rule_test:
+      - eval_time: 1m15s
+        alertname: VeloraNotificationApnsTransportFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: notification-service
+            exp_annotations:
+              summary: APNs VoIP transport failures are elevated
+              description: At least two APNs VoIP timeouts or transport failures occurred during the last five minutes.

@@ -106,5 +106,11 @@ jobs:
             prom/prometheus:latest \
             check config /etc/prometheus/prometheus.yml
 
+          docker run --rm \
+            --entrypoint /bin/promtool \
+            -v "$PWD/infra/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:latest \
+            test rules /etc/prometheus/tests/velora-monitoring.test.yml
+
       - name: Validate Grafana dashboard JSON
         run: jq -e . infra/monitoring/grafana/dashboards/velora-monitoring.json >/dev/null

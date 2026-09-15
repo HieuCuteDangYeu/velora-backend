@@ -79,6 +79,71 @@ groups:
           summary: call-service is unavailable
           description: Prometheus has not been able to scrape call-service for at least one minute.
 
+      - alert: VeloraNotificationServiceDown
+        expr: up{job="notification-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: notification-service
+        annotations:
+          summary: notification-service is unavailable
+          description: Prometheus has not been able to scrape notification-service for at least one minute.
+
+  - name: velora-notification-service
+    rules:
+      - alert: VeloraNotificationServiceRestarting
+        expr: |
+          changes(velora_process_start_time_seconds{service="notification-service"}[15m]) >= 1
+          unless changes(velora_process_start_time_seconds{service="notification-service"}[15m]) >= 3
+        labels:
+          severity: warning
+          service: notification-service
+        annotations:
+          summary: notification-service restarted
+          description: notification-service has restarted one or two times during the last fifteen minutes.
+
+      - alert: VeloraNotificationServiceRestartLoop
+        expr: changes(velora_process_start_time_seconds{service="notification-service"}[15m]) >= 3
+        labels:
+          severity: critical
+          service: notification-service
+        annotations:
+          summary: notification-service restart loop detected
+          description: notification-service has restarted at least three times during the last fifteen minutes.
+
+      - alert: VeloraNotificationDatabaseUnavailable
+        expr: velora_notification_database_up{service="notification-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: notification-service
+        annotations:
+          summary: notification-service database is unavailable
+          description: The notification retry scheduler has not been able to reach its database for two minutes.
+
+      - alert: VeloraNotificationRetrySchedulerStalled
+        expr: |
+          time() - velora_notification_retry_scheduler_last_completion_timestamp_seconds{service="notification-service"} > 60
+        labels:
+          severity: critical
+          service: notification-service
+        annotations:
+          summary: notification retry scheduler is stalled
+          description: The notification retry scheduler has not completed a database query for over sixty seconds.
+
+      - alert: VeloraNotificationApnsTransportFailures
+        expr: |
+          sum(increase(velora_notification_apns_requests_total{
+            service="notification-service",
+            outcome=~"timeout|transport_error"
+          }[5m])) >= 2
+        labels:
+          severity: warning
+          service: notification-service
+        annotations:
+          summary: APNs VoIP transport failures are elevated
+          description: At least two APNs VoIP timeouts or transport failures occurred during the last five minutes.
+
   - name: velora-monitoring-service
     rules:
       - alert: VeloraMonitoringServiceDown

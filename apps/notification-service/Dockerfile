@@ -36,4 +36,6 @@ COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
 
 USER node
 
+EXPOSE 3015
+
 CMD ["node", "dist/apps/notification-service/main.js"]

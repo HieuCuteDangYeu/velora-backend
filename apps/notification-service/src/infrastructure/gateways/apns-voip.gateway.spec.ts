@@ -63,10 +63,13 @@ describe('ApnsVoipGateway', () => {
     },
   });
 
+  const createGateway = () =>
+    new ApnsVoipGateway({ recordApnsRequest: jest.fn() } as never);
+
   it('signs APNs provider JWT with raw ES256 signature bytes', () => {
     configureApnsCredentials();
 
-    const gateway = new ApnsVoipGateway();
+    const gateway = createGateway();
     const token = (
       gateway as unknown as {
         getJwt: () => string;
@@ -86,7 +89,7 @@ describe('ApnsVoipGateway', () => {
     const session = createSession(request);
     const connect = jest.mocked(http2.connect);
     connect.mockReturnValue(session as unknown as http2.ClientHttp2Session);
-    const gateway = new ApnsVoipGateway();
+    const gateway = createGateway();
 
     const sending = gateway.send(sendInput());
     request.emit('response', { ':status': 200 });
@@ -113,7 +116,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     session.emit('error', new Error('connect ETIMEDOUT'));
 
     await expect(sending).rejects.toMatchObject({
@@ -133,7 +136,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     request.emit('error', new Error('stream reset'));
     session.emit('error', new Error('connect reset'));
 
@@ -155,7 +158,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     const assertion = expect(sending).rejects.toMatchObject({
       code: 'apns/timeout',
     });
@@ -176,7 +179,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     session.emit('goaway');
 
     await expect(sending).rejects.toMatchObject({
@@ -195,7 +198,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     request.emit('response', { ':status': 200 });
     request.emit('end');
 
@@ -216,7 +219,7 @@ describe('ApnsVoipGateway', () => {
       .mocked(http2.connect)
       .mockReturnValue(session as unknown as http2.ClientHttp2Session);
 
-    const sending = new ApnsVoipGateway().send(sendInput());
+    const sending = createGateway().send(sendInput());
     request.emit('response', { ':status': 410 });
     request.emit('data', JSON.stringify({ reason: 'Unregistered' }));
     request.emit('end');
@@ -228,7 +231,7 @@ describe('ApnsVoipGateway', () => {
     configureApnsCredentials();
     process.env.NOTIFICATION_APNS_REQUEST_TIMEOUT_MS = '999';
 
-    await expect(new ApnsVoipGateway().send(sendInput())).rejects.toThrow(
+    await expect(createGateway().send(sendInput())).rejects.toThrow(
       'NOTIFICATION_APNS_REQUEST_TIMEOUT_MS must be an integer between 1000 and 15000',
     );
   });

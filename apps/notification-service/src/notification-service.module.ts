@@ -13,10 +13,13 @@ import { SendNewMessageNotificationUseCase } from './application/use-cases/send-
 import { SendTestPushUseCase } from './application/use-cases/send-test-push.use-case';
 import { DevPushController } from './infrastructure/controllers/dev-push.controller';
 import { InternalNotificationsController } from './infrastructure/controllers/internal-notifications.controller';
+import { NotificationHealthController } from './infrastructure/controllers/notification-health.controller';
+import { NotificationMetricsController } from './infrastructure/controllers/notification-metrics.controller';
 import { PushTokensController } from './infrastructure/controllers/push-tokens.controller';
 import { ApnsVoipGateway } from './infrastructure/gateways/apns-voip.gateway';
 import { FirebaseAdminGateway } from './infrastructure/gateways/firebase-admin.gateway';
 import { PrismaService } from './infrastructure/prisma/prisma.service';
+import { NotificationPrometheusMetricsService } from './infrastructure/metrics/notification-prometheus-metrics.service';
 import { PrismaNotificationJobRepository } from './infrastructure/repositories/prisma-notification-job.repository';
 import { PrismaPushTokenRepository } from './infrastructure/repositories/prisma-push-token.repository';
 import { RedisPushTokenLifecycleRepository } from './infrastructure/repositories/redis-push-token-lifecycle.repository';
@@ -36,9 +39,12 @@ import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.s
     InternalNotificationsController,
     DevPushController,
     CallEventsSubscriber,
+    NotificationHealthController,
+    NotificationMetricsController,
   ],
   providers: [
     PrismaService,
+    NotificationPrometheusMetricsService,
     PrismaPushTokenRepository,
     PrismaNotificationJobRepository,
     RedisPushTokenLifecycleRepository,

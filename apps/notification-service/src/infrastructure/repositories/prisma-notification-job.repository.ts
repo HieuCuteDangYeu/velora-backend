@@ -180,9 +180,17 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
           },
         ],
       },
-      orderBy: {
-        createdAt: 'asc',
-      },
+      orderBy: [
+        {
+          expiresAt: {
+            sort: 'asc',
+            nulls: 'last',
+          },
+        },
+        {
+          createdAt: 'asc',
+        },
+      ],
       take: limit,
     });
 

@@ -9,6 +9,10 @@ import {
   SendApnsVoipPushInput,
 } from '../../domain/interfaces/apns-voip.gateway.interface';
 import { PushDeliveryEnvironment } from '../../domain/entities/push-token.entity';
+import {
+  ApnsRequestOutcome,
+  NotificationPrometheusMetricsService,
+} from '../metrics/notification-prometheus-metrics.service';
 
 type ApnsError = Error & {
   code?: string;
@@ -34,6 +38,8 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     token: string;
     expiresAt: number;
   };
+
+  constructor(private readonly metrics: NotificationPrometheusMetricsService) {}
 
   async send(input: SendApnsVoipPushInput) {
     const jwt = this.getJwt();
@@ -62,6 +68,7 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
 
       const fail = (error: ApnsError) => {
         if (complete(() => rejectPromise(error))) {
+          this.metrics.recordApnsRequest(this.apnsOutcome(error));
           session.destroy();
         }
       };
@@ -112,8 +119,10 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
       });
       request.on('end', () => {
         if (statusCode >= 200 && statusCode < 300) {
-          complete(resolvePromise);
-          session.close();
+          if (complete(resolvePromise)) {
+            this.metrics.recordApnsRequest('success');
+            session.close();
+          }
           return;
         }
 
@@ -160,6 +169,16 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     }
 
     return 'apns/http_error';
+  }
+
+  private apnsOutcome(error: ApnsError): ApnsRequestOutcome {
+    if (error.code === 'apns/timeout') {
+      return 'timeout';
+    }
+    if (error.code?.startsWith('apns/transport_')) {
+      return 'transport_error';
+    }
+    return 'http_error';
   }
 
   private buildTransportError(error: unknown): ApnsError {

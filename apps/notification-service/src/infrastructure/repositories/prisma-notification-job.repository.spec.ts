@@ -14,6 +14,9 @@ type UpdateManyInput = {
 
 type FindManyInput = {
   where: { AND: Array<{ OR: QueryCondition[] }> };
+  orderBy: Array<
+    { expiresAt: { sort: 'asc'; nulls: 'last' } } | { createdAt: 'asc' }
+  >;
 };
 
 describe('PrismaNotificationJobRepository', () => {
@@ -114,5 +117,20 @@ describe('PrismaNotificationJobRepository', () => {
     expect(leaseExpiry).toBeInstanceOf(Date);
     expect(leaseExpiry.getTime()).toBeGreaterThanOrEqual(before - 300_100);
     expect(leaseExpiry.getTime()).toBeLessThanOrEqual(Date.now() - 299_900);
+  });
+
+  it('prioritizes expiring notification jobs before durable non-expiring jobs', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaNotificationJobRepository({
+      notificationJob: { findMany },
+    } as never);
+
+    await repository.findRetryable(20);
+
+    const input = findMany.mock.calls[0]?.[0] as FindManyInput;
+    expect(input.orderBy).toEqual([
+      { expiresAt: { sort: 'asc', nulls: 'last' } },
+      { createdAt: 'asc' },
+    ]);
   });
 });

@@ -5,10 +5,28 @@ set -Eeuo pipefail
 # installed at /usr/local/bin/velora-deploy. The mutable deployment controller
 # is always loaded from the CI-approved homelab-deploy commit instead of being
 # copied permanently into /usr/local/bin.
-readonly APP_DIR="${VELORA_APP_DIR:-/home/quan/apps/microservices-boilerplate}"
+resolve_default_app_dir() {
+  local user_home="${HOME:-/home/quan}"
+  local candidate
+
+  for candidate in \
+    "$user_home/apps/microservices-boilerplate" \
+    "$user_home/GitHub/microservices-boilerplate"; do
+    if [[ -d "$candidate/.git" ]]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  printf '%s\n' "$user_home/apps/microservices-boilerplate"
+}
+
+readonly APP_DIR="${VELORA_APP_DIR:-$(resolve_default_app_dir)}"
 readonly REMOTE="${VELORA_DEPLOY_REMOTE:-origin}"
 readonly CONTROLLER_PATH="scripts/deploy/velora-deploy"
 readonly CORE_PATH="scripts/deploy/velora-deploy-core"
+
+export VELORA_APP_DIR="$APP_DIR"
 
 umask 077
 

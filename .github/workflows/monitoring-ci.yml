@@ -94,10 +94,19 @@ jobs:
 
           bash -c 'set -Eeuo pipefail; source scripts/deploy/velora-deploy-core; declare -F main >/dev/null'
           scripts/deploy/velora-deploy --help >/dev/null
+          env PATH="/usr/bin:/bin" scripts/deploy/velora-deploy --help >/dev/null
+
+          resolver_home="$(mktemp -d)"
+          trap 'rm -rf -- "$resolver_home"' EXIT
+          mkdir -p "$resolver_home/GitHub/microservices-boilerplate/.git"
+          resolved_app_dir="$(HOME="$resolver_home" bash -c 'source scripts/deploy/velora-deploy-core; printf "%s" "$APP_DIR"')"
+          test "$resolved_app_dir" = "$resolver_home/GitHub/microservices-boilerplate"
 
           grep -Fq 'homelab-deploy' scripts/deploy/velora-deploy-launcher
           grep -Fq 'git show "$approved_sha:$CONTROLLER_PATH"' scripts/deploy/velora-deploy-launcher
           grep -Fq 'git show "$approved_sha:$CORE_PATH"' scripts/deploy/velora-deploy-launcher
+          grep -Fq 'export VELORA_APP_DIR="$APP_DIR"' scripts/deploy/velora-deploy-launcher
+          grep -Fq 'export PATH="${bash_candidate%/*}:$PATH"' scripts/deploy/velora-deploy
 
       - name: Validate Prometheus configuration and rules
         shell: bash

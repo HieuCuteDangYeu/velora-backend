@@ -241,6 +241,13 @@ def exact_usage_tpd_headroom(
         if previous_baseline is not None
         else baseline_id
     )
+    baseline_refresh_of = (
+        previous_baseline.get("baselineId")
+        if previous_baseline is not None and previous_baseline.get("baselineId") != baseline_id
+        else previous_baseline.get("baselineRefreshOf")
+        if previous_baseline is not None
+        else None
+    )
     return {
         "status": "YES" if proven_remaining >= planned else "NO",
         "reason": "EXACT_TOKEN_TPD_BASELINE_EVALUATED",
@@ -272,9 +279,7 @@ def exact_usage_tpd_headroom(
                 "plannedFullRunTokens": planned,
                 "baselineId": baseline_id,
                 "baselineFingerprint": fingerprint,
-                "baselineRefreshOf": previous_baseline.get("baselineId")
-                if previous_baseline is not None
-                else None,
+                "baselineRefreshOf": baseline_refresh_of,
                 "ledgerEpoch": epoch_ledger_epoch,
                 "observedAt": observed_at_text,
                 "organizationScope": payload["organizationScope"],

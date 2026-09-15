@@ -343,6 +343,37 @@ def test_same_day_quota_slice_can_resume_with_newer_baseline(tmp_path):
     assert len(epoch["sliceCloseHistory"]) == 1
 
 
+def test_same_day_refresh_can_promote_previously_deferred_work(tmp_path):
+    store = make_store(tmp_path)
+    store.set_daily_plan(
+        scheduled_operation_keys=["case-1::faithfulness"],
+        deferred_operation_keys=["case-2::faithfulness"],
+        scheduled_reservation_tokens=8_000,
+    )
+    store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)
+    old_epoch = store.epochs()[0]
+    refreshed_at = TODAY + timedelta(minutes=1)
+    refreshed = baseline(refreshed_at, suffix="same-day-refresh")
+    refreshed["ledgerEpoch"] = old_epoch["ledgerEpoch"]
+
+    store.begin_epoch(refreshed, now=TODAY + timedelta(minutes=2))
+    store.set_daily_plan(
+        scheduled_operation_keys=["case-2::faithfulness"],
+        deferred_operation_keys=[],
+        scheduled_reservation_tokens=8_000,
+    )
+
+    epoch = store.epochs()[0]
+    assert epoch["scheduledOperationKeys"] == ["case-2::faithfulness"]
+    assert epoch["deferredOperationKeys"] == []
+    with pytest.raises(RecoveryStateError, match="cannot be replaced"):
+        store.set_daily_plan(
+            scheduled_operation_keys=["case-3::faithfulness"],
+            deferred_operation_keys=[],
+            scheduled_reservation_tokens=8_000,
+        )
+
+
 def test_same_day_resume_requires_a_newer_baseline(tmp_path):
     store = make_store(tmp_path)
     store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)

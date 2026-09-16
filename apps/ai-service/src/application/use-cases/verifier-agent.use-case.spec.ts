@@ -111,6 +111,37 @@ describe('VerifierAgentUseCase', () => {
     );
   });
 
+  it('fails closed when the semantic verifier accepts the wrong directional quantity', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            {
+              claim: 'The number of bands can go as low as 2.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+      ),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const input = state({
+      answer: 'The number of bands can go as low as 2.',
+      evidenceText:
+        'There are 2 controls on the panel. We can go down till like 12 bands and it is still okay.',
+    });
+    input.userMessage =
+      'How low can the number of bands go while still being okay?';
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      issues: [
+        'Answer model used a quantity unsupported by the requested relation',
+      ],
+    });
+  });
+
   it('persists safe primary verifier call diagnostics', async () => {
     const service = {
       generateObject: jest

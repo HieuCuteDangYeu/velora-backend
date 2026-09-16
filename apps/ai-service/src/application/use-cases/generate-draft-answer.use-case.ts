@@ -303,23 +303,25 @@ export class GenerateDraftAnswerUseCase {
     const questionTokens = new Set(answerContentTokens(question));
     const spans = candidates
       .flatMap((candidate, candidateIndex) =>
-        this.transcriptSpans(candidate.evidenceText).map((text, spanIndex) => {
-          const score = this.fallbackSpanScore(text, questionTokens);
-          return {
-            evidenceId: candidate.evidenceId,
-            text,
-            candidateIndex,
-            spanIndex,
-            directQuestionEcho: this.isQuestionEchoSpan(text, questionTokens),
-            score,
-            questionCoverage:
-              questionTokens.size === 0 ? 0 : score / questionTokens.size,
-            answerBearingRatio: this.fallbackAnswerBearingRatio(
+        this.transcriptSpans(candidate.evidenceText, question).map(
+          (text, spanIndex) => {
+            const score = this.fallbackSpanScore(text, questionTokens);
+            return {
+              evidenceId: candidate.evidenceId,
               text,
-              questionTokens,
-            ),
-          };
-        }),
+              candidateIndex,
+              spanIndex,
+              directQuestionEcho: this.isQuestionEchoSpan(text, questionTokens),
+              score,
+              questionCoverage:
+                questionTokens.size === 0 ? 0 : score / questionTokens.size,
+              answerBearingRatio: this.fallbackAnswerBearingRatio(
+                text,
+                questionTokens,
+              ),
+            };
+          },
+        ),
       )
       .filter(
         (span) =>
@@ -339,7 +341,11 @@ export class GenerateDraftAnswerUseCase {
           )
         ),
     );
-    const maxSpans = budget.shape === 'SHORT_FACT' ? 1 : 2;
+    const maxSpans =
+      budget.shape === 'SHORT_FACT' ||
+      /\b(?:why|reason|because)\b/i.test(question)
+        ? 1
+        : 2;
     const scored = eligibleSpans
       .filter((span) => span.score > 0)
       .sort(
@@ -370,11 +376,19 @@ export class GenerateDraftAnswerUseCase {
       .map(({ evidenceId, text }) => ({ evidenceId, text }));
   }
 
-  private transcriptSpans(text: string): string[] {
-    return text
+  private transcriptSpans(text: string, question: string): string[] {
+    const sentences = text
       .split(/(?<=[.!?])\s+|\n+/)
       .map((span) => span.trim())
       .filter(Boolean);
+    if (!/\b(?:why|reason|because)\b/i.test(question)) return sentences;
+
+    return sentences.flatMap((sentence) =>
+      sentence
+        .split(/\s+(?=(?:because|since|so|therefore)\b)/i)
+        .map((span) => span.trim())
+        .filter(Boolean),
+    );
   }
 
   private fallbackSpanScore(span: string, questionTokens: Set<string>): number {

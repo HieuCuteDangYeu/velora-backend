@@ -669,6 +669,49 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('extracts a compact causal proposition from punctuation-free ASR', () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const evidenceText =
+      "no CDs are not enough because one CD is how much it's not even one GB so then CDs are not enough phone book";
+
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        userMessage: 'Why do they say CDs are not enough for backing up data?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText,
+            chunkText: evidenceText,
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback).toMatchObject({
+      answer: "because one CD is how much it's not even one GB",
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it('uses extractive fallback for an evidence-dependent refusal', async () => {
     const refusal =
       'The transcript is too garbled to determine the requested label reliably.';

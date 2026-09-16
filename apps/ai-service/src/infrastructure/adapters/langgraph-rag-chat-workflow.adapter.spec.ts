@@ -468,100 +468,138 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).resolves.toMatchObject({ finalFailureSource: 'CITATION' });
   });
 
-  it('recovers a verifier provider outage with an authorized extractive fallback', async () => {
-    const fallback = {
-      answer: 'this one is said to be blue',
-      claims: [
-        {
-          claim: 'this one is said to be blue',
-          evidenceIds: ['e0'],
-        },
-      ],
-      modelRole: 'ANSWER' as const,
-      diagnostics: [],
-      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' as const,
-      fallbackReason: 'UNUSABLE_SYNTHESIS' as const,
-    };
-    const generateDraftAnswer = {
-      buildExtractiveFallback: jest.fn().mockReturnValue(fallback),
-    };
-    const buildCitations = {
-      execute: jest.fn().mockResolvedValue({
-        citations: [{ reelId: 'reel-1', evidenceId: 'chunk-1' }],
-        coverage: {
-          mode: 'FALLBACK',
-          coverage: 1,
-          factualClaimCount: 1,
-          supportedClaimCount: 1,
-          unsupportedClaims: [],
-        },
-      }),
-    };
-    const workflow = new LangGraphRagChatWorkflowAdapter(
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      generateDraftAnswer as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      buildCitations as never,
-      undefined as never,
-      { get: jest.fn() } as never,
-      undefined as never,
-    ) as unknown as {
-      createVerificationFailureNode: () => (
-        state: RagChatWorkflowState,
-      ) => Promise<Partial<RagChatWorkflowState>>;
-    };
-
-    const terminal = workflow.createVerificationFailureNode();
-    const result = await terminal(
-      state({
-        route: {
-          intent: 'REEL_VIDEO_QUESTION',
-          requiredEvidence: ['TRANSCRIPT'],
-        },
-        verification: {
-          passed: false,
+  it.each([
+    [
+      'provider outage',
+      {
+        passed: false,
+        confidence: 0,
+        issues: ['Required semantic answer verification was unavailable.'],
+        requiresRevision: false,
+        diagnostics: {
+          providerStatus: 'ERROR',
+          decisionSource: 'FAIL_CLOSED',
+          finalPassed: false,
           confidence: 0,
           issues: ['Required semantic answer verification was unavailable.'],
           requiresRevision: false,
-          diagnostics: {
-            providerStatus: 'ERROR',
-            decisionSource: 'FAIL_CLOSED',
-            finalPassed: false,
-            confidence: 0,
-            issues: ['Required semantic answer verification was unavailable.'],
-            requiresRevision: false,
-            exactProvenance: {
-              supported: false,
-              supportingEvidenceIndexes: [],
-            },
+          exactProvenance: {
+            supported: false,
+            supportingEvidenceIndexes: [],
           },
         },
-      }),
-    );
-
-    expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledWith(
-      expect.any(Object),
-      'UNUSABLE_SYNTHESIS',
-    );
-    expect(buildCitations.execute).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
-      answer: 'this one is said to be blue',
-      answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
-      verification: {
-        passed: true,
-        diagnostics: { decisionSource: 'EXACT_PROVENANCE' },
       },
-      finalFailureSource: 'NONE',
-    });
-  });
+    ],
+    [
+      'unexplained semantic false negative',
+      {
+        passed: false,
+        confidence: 0.65,
+        issues: [],
+        requiresRevision: true,
+        supportedClaimMappings: [
+          { claim: 'One CD is not even one GB.', evidenceIds: ['e0'] },
+        ],
+        contradictions: [],
+        diagnostics: {
+          providerStatus: 'SUCCESS',
+          decisionSource: 'LLM_ESCALATION',
+          providerPassed: false,
+          finalPassed: false,
+          confidence: 0.65,
+          issues: [],
+          requiresRevision: true,
+          supportedClaimMappings: [
+            { claim: 'One CD is not even one GB.', evidenceIds: ['e0'] },
+          ],
+          contradictions: [],
+          exactProvenance: {
+            supported: false,
+            supportingEvidenceIndexes: [],
+          },
+        },
+      },
+    ],
+  ])(
+    'recovers a verifier %s with an authorized extractive fallback',
+    async (_scenario, verification) => {
+      const fallback = {
+        answer: 'this one is said to be blue',
+        claims: [
+          {
+            claim: 'this one is said to be blue',
+            evidenceIds: ['e0'],
+          },
+        ],
+        modelRole: 'ANSWER' as const,
+        diagnostics: [],
+        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' as const,
+        fallbackReason: 'UNUSABLE_SYNTHESIS' as const,
+      };
+      const generateDraftAnswer = {
+        buildExtractiveFallback: jest.fn().mockReturnValue(fallback),
+      };
+      const buildCitations = {
+        execute: jest.fn().mockResolvedValue({
+          citations: [{ reelId: 'reel-1', evidenceId: 'chunk-1' }],
+          coverage: {
+            mode: 'FALLBACK',
+            coverage: 1,
+            factualClaimCount: 1,
+            supportedClaimCount: 1,
+            unsupportedClaims: [],
+          },
+        }),
+      };
+      const workflow = new LangGraphRagChatWorkflowAdapter(
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        generateDraftAnswer as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        buildCitations as never,
+        undefined as never,
+        { get: jest.fn() } as never,
+        undefined as never,
+      ) as unknown as {
+        createVerificationFailureNode: () => (
+          state: RagChatWorkflowState,
+        ) => Promise<Partial<RagChatWorkflowState>>;
+      };
+
+      const terminal = workflow.createVerificationFailureNode();
+      const result = await terminal(
+        state({
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          verification,
+        }),
+      );
+
+      expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledWith(
+        expect.any(Object),
+        'UNUSABLE_SYNTHESIS',
+      );
+      expect(buildCitations.execute).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        answer: 'this one is said to be blue',
+        answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+        verification: {
+          passed: true,
+          diagnostics: { decisionSource: 'EXACT_PROVENANCE' },
+        },
+        finalFailureSource: 'NONE',
+      });
+    },
+  );
 
   it('retains per-attempt citation diagnostics before a later attempt overwrites coverage', async () => {
     const firstAssessment: RagCitationAssessment = {

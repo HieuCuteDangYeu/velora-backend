@@ -20,6 +20,7 @@ import {
 import {
   ragAnswerBudget,
   ragAnswerDirectnessIssue,
+  validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
 import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 
@@ -478,10 +479,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     state: RagChatWorkflowState,
   ): RagVerificationResult {
     const bounds = readRagPromptBounds(this.config);
+    const boundedEvidence = boundEvidence(state.rerankedChunks ?? [], bounds);
     const allowedIds = new Set(
-      boundEvidence(state.rerankedChunks ?? [], bounds).map(
-        (_chunk, index) => `e${index}`,
-      ),
+      boundedEvidence.map((_chunk, index) => `e${index}`),
     );
     const rawMappings = Array.isArray(raw.supportedClaimMappings)
       ? raw.supportedClaimMappings
@@ -539,6 +539,22 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
           )
         : undefined;
     if (directnessIssue) answerQualityIssues.push(directnessIssue);
+    const groundingContractIssue =
+      raw.passed === true &&
+      !hasUnknownEvidenceId &&
+      contradictions.length === 0
+        ? validateRagAnswerContract({
+            answer: state.answer ?? '',
+            question: state.userMessage,
+            evidence: boundedEvidence.map(
+              (chunk) => chunk.evidenceText?.trim() || chunk.chunkText.trim(),
+            ),
+            evidenceRequired:
+              state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+              (state.route.requiredEvidence?.length ?? 0) > 0,
+          })
+        : undefined;
+    if (groundingContractIssue) issues.push(groundingContractIssue);
     const answerQualityPassed =
       raw.answerQualityPassed !== false && answerQualityIssues.length === 0;
     const confidence =
@@ -548,6 +564,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     const passed =
       raw.passed === true &&
       !hasUnknownEvidenceId &&
+      !groundingContractIssue &&
       contradictions.length === 0;
 
     const revisedInstruction =

@@ -6,6 +6,16 @@ const QUANTITY_QUESTION_PATTERN =
 const QUANTITY_RATIONALE_PATTERN =
   /\b(?:not enough|isn't enough|aren't enough|too (?:small|little|low)|(?:cannot|can't|won't|will not) (?:hold|store)|capacity)\b/i;
 
+const LOW_QUANTITY_QUESTION_PATTERN = /\bhow low\b/i;
+const HIGH_QUANTITY_QUESTION_PATTERN = /\bhow high\b/i;
+const LOW_QUANTITY_EVIDENCE_PATTERN =
+  /\b(?:down(?:\s+(?:to|till))?|as\s+low\s+as|minimum(?:\s+of)?)\b[^.!?\n]{0,96}/gi;
+const HIGH_QUANTITY_EVIDENCE_PATTERN =
+  /\b(?:up(?:\s+to)?|as\s+high\s+as|maximum(?:\s+of)?)\b[^.!?\n]{0,96}/gi;
+
+const EXACT_VALUE_QUESTION_PATTERN =
+  /\bwhat\b[^?\n]*\b(?:label|name|code|term|word)\b/i;
+
 const EVIDENCE_REFUSAL_PATTERN =
   /^(?:I\s+(?:do not|don't|cannot|can't|could not|couldn't|am unable to)\b|(?:the|this)\s+(?:transcript|audio|ASR|evidence)\s+(?:is|was)\s+(?:too\s+)?(?:garbled|unclear|unreadable|insufficient)\b)/i;
 
@@ -143,7 +153,11 @@ export function validateRagAnswerContract(
   }
 
   if (!hasSupportedQuantity(input.question, input.evidence, answer)) {
-    return 'Answer model omitted a directly supported quantity';
+    return 'Answer model used a quantity unsupported by the requested relation';
+  }
+
+  if (!hasSupportedRequestedValue(input.question, input.evidence, answer)) {
+    return 'Answer model introduced an unsupported requested label or name';
   }
 
   if (
@@ -177,7 +191,58 @@ function hasSupportedQuantity(
   if (!requiresQuantity) return true;
 
   const answerQuantities = quantityTokens(answer);
-  return [...answerQuantities].some((value) => evidenceQuantities.has(value));
+  const relationEvidenceQuantities = directionalQuantityTokens(
+    question,
+    evidence.join(' '),
+  );
+  if (relationEvidenceQuantities.size === 0) {
+    return [...answerQuantities].some((value) => evidenceQuantities.has(value));
+  }
+
+  const relationAnswerQuantities = directionalQuantityTokens(question, answer);
+  const quantitiesToCheck =
+    relationAnswerQuantities.size > 0
+      ? relationAnswerQuantities
+      : answerQuantities;
+  return [...quantitiesToCheck].some((value) =>
+    relationEvidenceQuantities.has(value),
+  );
+}
+
+function directionalQuantityTokens(
+  question: string,
+  value: string,
+): Set<string> {
+  const pattern = LOW_QUANTITY_QUESTION_PATTERN.test(question)
+    ? LOW_QUANTITY_EVIDENCE_PATTERN
+    : HIGH_QUANTITY_QUESTION_PATTERN.test(question)
+      ? HIGH_QUANTITY_EVIDENCE_PATTERN
+      : undefined;
+  if (!pattern) return new Set<string>();
+
+  pattern.lastIndex = 0;
+  return new Set(
+    [...value.matchAll(pattern)].flatMap((match) => [
+      ...quantityTokens(match[0]),
+    ]),
+  );
+}
+
+function hasSupportedRequestedValue(
+  question: string,
+  evidence: readonly string[],
+  answer: string,
+): boolean {
+  if (!EXACT_VALUE_QUESTION_PATTERN.test(question)) return true;
+
+  const questionTokens = new Set(answerContentTokens(question));
+  const evidenceTokens = new Set(
+    evidence.flatMap((value) => answerContentTokens(value)),
+  );
+  const primaryAnswer = answer.split(/[.!?\n]/, 1)[0] ?? answer;
+  return answerContentTokens(primaryAnswer).some(
+    (token) => !questionTokens.has(token) && evidenceTokens.has(token),
+  );
 }
 
 function quantityTokens(value: string): Set<string> {

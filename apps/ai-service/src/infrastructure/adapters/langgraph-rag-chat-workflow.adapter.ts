@@ -22,6 +22,7 @@ import type {
   RagChatWorkflowResult,
   RagChatWorkflowState,
   RagChatRouteDecision,
+  RagVerificationResult,
   RagRequiredEvidence,
   RagRouterSemanticInconsistencyDetails,
   RagRouterSemanticInconsistencyType,
@@ -694,9 +695,22 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
+      const failedVerification = state.verification;
+      const verifierUnavailable =
+        failedVerification?.diagnostics?.providerStatus === 'ERROR';
+      const verifierFalseNegativeCandidate =
+        failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
+        failedVerification.passed === false &&
+        (failedVerification.issues?.length ?? 0) === 0 &&
+        (failedVerification.contradictions?.length ?? 0) === 0 &&
+        (failedVerification.supportedClaimMappings?.some(
+          (mapping) => mapping.evidenceIds.length > 0,
+        ) ??
+          false);
       if (
         state.route?.intent === 'REEL_VIDEO_QUESTION' &&
-        state.verification?.diagnostics?.providerStatus === 'ERROR'
+        failedVerification &&
+        (verifierUnavailable || verifierFalseNegativeCandidate)
       ) {
         const fallback =
           this.generateDraftAnswerUseCase.buildExtractiveFallback(
@@ -714,11 +728,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               ),
             ),
           ];
-          const verification = {
+          const verification: RagVerificationResult = {
             passed: true,
             confidence: 1,
             issues: [
-              'Semantic verifier unavailable; recovered with an exact extractive transcript fallback.',
+              verifierUnavailable
+                ? 'Semantic verifier unavailable; recovered with an exact extractive transcript fallback.'
+                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive transcript fallback.',
             ],
             answerQualityPassed: true,
             answerQualityIssues: [],
@@ -726,7 +742,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             supportedClaimMappings: fallback.claims,
             contradictions: [],
             diagnostics: {
-              ...state.verification.diagnostics,
+              ...failedVerification.diagnostics,
+              providerStatus: verifierUnavailable ? 'ERROR' : 'SUCCESS',
               decisionSource: 'EXACT_PROVENANCE' as const,
               finalPassed: true,
               confidence: 1,

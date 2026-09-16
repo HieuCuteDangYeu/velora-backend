@@ -42,4 +42,3 @@ def test_saved_bb4782fb_separates_runner_corruption_from_rag_failures():
         assert case["execution"]["actual"]["answer"].startswith(
             "I do not have enough verified shared reel evidence"
         )
-

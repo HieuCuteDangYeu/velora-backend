@@ -1,74 +1,133 @@
-# Engineering Agent Contract
+# Engineering Workflow
 
 ## Instruction priority
 
 Apply instructions in this order:
 
-1. Explicit user/task requirements
-2. Repository `AGENTS.md`
-3. More specific nested `AGENTS.md` files
-4. Relevant Agent Skills
-5. Existing repository conventions
+1. explicit user/task requirements
+2. current repository code and tests
+3. repository `AGENTS.md` / more specific nested `AGENTS.md`
+4. relevant repository-specific skills
+5. agentmemory
+6. external/general research
 
-Never override a higher-priority instruction with a lower-priority one.
+Never let a lower-priority source override a higher-priority one.
 
-## Repository orchestration
+## Orca GUI is the human control plane
 
-When the user explicitly asks to use the repository orchestrator, orchestration, or multi-agent execution:
+Use the Orca desktop GUI as the normal workspace for:
 
-1. Use the `repository-orchestrator` skill before implementation or delegation.
-2. That skill is a repository-policy wrapper around Orca. It must load Orca's live, version-matched `orchestration` guide before mutating orchestration state.
-3. Let Orca own task-level Runs, worktrees, worker sessions, messages, model/effort selection, and decision gates.
-4. Use Codex and Antigravity workers through Orca when the plan assigns them. Do not create sibling implementation workers outside Orca for the same Run.
-5. Do not use the removed `agent-harness orchestrate` runtime, the removed custom `agy` runner, or `codex-web-gpt` as a worker.
-6. Do not directly implement the same task while an Orca worker owns it.
-7. Do not push, merge, or create remote PRs unless the user explicitly requests it.
+- repositories and worktrees
+- agent sessions
+- Runs/tasks and progress
+- model/effort choices exposed by Orca
+- browser/device/design surfaces
+- diff review
+- skill visibility/updates
+- commit/push/PR controls when explicitly authorized
 
-If Orca or its orchestration skill is unavailable, report the problem instead of silently inventing another orchestration path.
+Do not force the user to mirror normal GUI operations with `agent-harness` commands.
 
-For ordinary focused tasks, do not invoke multi-agent orchestration unless the user asks for it or splitting the work is materially useful.
+Agents may use Orca's CLI and installed Agent Skills for typed automation and live version-matched guides.
+
+## When to orchestrate
+
+For a small focused task, use one agent session directly unless splitting materially improves correctness, speed, or independent verification.
+
+For substantial work or when the user explicitly asks for multi-agent execution, use Orca's official `orchestration` skill. Before mutating Run/task state, load Orca's live, version-matched guide (`agent-harness orca guide` or the equivalent command documented by the installed Orca skill).
+
+Orca owns task-level:
+
+- Runs/task graphs
+- worktrees
+- worker sessions
+- messages/recovery
+- model and reasoning-effort selection
+- status/progress
+- decision gates
+
+Do not create a second orchestration DAG underneath Orca.
+
+## Worker policy
+
+- Codex is the default implementation, debugging, repository-analysis, testing, and code-review worker.
+- Use Antigravity when UI, device, emulator, visual verification, focused implementation, or independent review would materially benefit.
+- Use other Orca-supported agents only when they provide a meaningful capability or independence boundary.
+- Codex Web GPT is optional parent transport only; never use it as a repository worker.
+- Do not launch duplicate sibling workers on the same implementation unless the user explicitly requests competing approaches.
+- The parent must not directly implement the same task while an Orca worker owns it.
+
+For substantial implementation, prefer the smallest useful graph:
+
+```text
+implementation -> verification -> independent review -> PASS/BLOCK gate
+```
+
+Split further only at real ownership or dependency boundaries.
+
+## Skill policy
+
+Use existing Orca/Agent Skills before writing generic local skills.
+
+Search in this order:
+
+1. Orca Skills page / installed skills
+2. the active agent's discovered skill picker
+3. Orca's built-in skill discovery / Find Skills surface when available
+4. maintained external skills with inspectable provenance
+5. repository-local skills only for durable project-specific knowledge
+
+Do not create local skills for generic orchestration, generic skill discovery, generic language/framework knowledge, or generic memory usage when a maintained skill already covers them.
+
+Repository-local skills are justified for stable, non-obvious project invariants such as authentication rules, service ownership, event/outbox/idempotency guarantees, persistence conventions, media pipelines, or release procedures.
+
+Load only skills relevant to the active task.
 
 ## Context acquisition
 
 Before implementation:
 
-1. Understand the requested behavior.
-2. For substantial work, use agentmemory recall when its MCP tools are available and historical context could matter.
-3. Inspect the actual current execution path in the repository.
-4. Locate relevant tests.
-5. Search for an analogous existing implementation.
-6. Determine the smallest safe change.
-7. Identify assumptions that materially affect correctness.
+1. understand the requested behavior
+2. inspect the actual current execution path
+3. locate relevant tests
+4. find analogous existing implementations
+5. determine the smallest safe change
+6. identify assumptions that materially affect correctness
+7. use agentmemory only when prior decisions/failures materially help
+8. use external research only when repository evidence is insufficient or the task explicitly asks for it
 
-Memory is advisory. Current code, tests, issue/PR requirements, and version-controlled project instructions are authoritative.
+Do not implement solely from an issue description, memory summary, or stale documentation when the repository can answer the question.
 
-Do not implement solely from the issue description or a remembered summary when the repository can answer the question.
+## Dirty working-tree rule
 
-## Capability selection
+New Orca worktrees start from Git refs/commits. Uncommitted edits in another checkout are not automatically inherited.
 
-- Use `repository-orchestrator` for explicit repository orchestration or multi-agent execution requests.
-- Use Orca's live `orchestration` skill for the actual Run/task/worker/gate command surface.
-- Use `skill-discovery` when a task would materially benefit from specialist external expertise such as UI/UX, accessibility, security, testing, migration, or framework-specific workflows.
-- Prefer a maintained trustworthy external skill over generating a weaker generic local duplicate.
-- Use `repo-skill-bootstrap` for repository-specific architecture, invariants, and workflows.
-- Do not load unrelated skills merely because the project uses that technology somewhere.
+Before starting a Run that depends on current local edits, inspect `git status --porcelain` or equivalent.
 
-## Implementation
+If relevant uncommitted changes exist:
+
+- do not pretend workers can see them
+- do not silently stash, commit, or mutate the caller checkout
+- ask the user to commit/snapshot the relevant state, or continue from an Orca-managed worktree/branch that already contains it
+
+Unrelated dirty files should remain untouched.
+
+## Implementation discipline
 
 Prefer:
 
-existing implementation → existing utility → platform/native functionality → installed dependency → smallest new implementation
+existing implementation -> existing utility -> platform/native functionality -> installed dependency -> smallest new implementation
 
 Rules:
 
-- Keep changes surgical.
-- Do not perform unrelated refactors.
-- Preserve existing architecture and conventions.
-- Reuse existing abstractions before introducing new ones.
-- Do not introduce dependencies without necessity.
-- Preserve public interfaces unless the task explicitly changes them.
-- Follow applicable repository skills.
-- Follow Ponytail simplicity guidance when available.
+- keep changes surgical
+- do not perform unrelated refactors
+- preserve existing architecture and conventions
+- reuse existing abstractions before adding new ones
+- do not add dependencies without necessity
+- preserve public interfaces unless the task explicitly changes them
+- follow relevant repository-specific skills
+- follow Ponytail/minimal-change/YAGNI guidance when available
 
 ## Safety and correctness
 
@@ -85,42 +144,50 @@ Simplicity must never remove required:
 - security controls
 - accessibility requirements
 
-Never put secrets into shared memory or orchestration task packets.
+Never put secrets into memory, task packets, logs, or prompts intended for unrelated workers.
 
 ## Verification
 
-Run the narrowest meaningful checks first.
-
-Where applicable verify:
+Run the narrowest meaningful checks first:
 
 1. relevant tests
 2. typecheck
 3. lint
 4. integration tests
-5. broader repository tests only when necessary
+5. broader suites only when necessary
 
-For Orca Runs, keep verification and final review as explicit tasks/gates rather than treating a worker's self-report as sufficient.
+For substantial Orca Runs, keep verification and final review as explicit tasks. A worker saying "tests pass" is not sufficient when evidence is required.
 
-Never claim a command succeeded unless it was actually executed successfully.
+Failed required verification blocks PASS.
 
-## Scope discipline
+Use an independent reviewer when practical.
 
-Do not fix unrelated problems discovered during the task. Report them separately when materially important.
+## Memory
 
-## Durable learning
+agentmemory is advisory and selective.
 
-After a meaningful task is verified, use shared memory only when there is a concise lesson future agents are likely to reuse. Prefer recording the accepted decision/root cause/outcome, with a PR/issue/commit reference when available, rather than raw transcripts or logs.
+Use it to avoid repeating already-solved investigations, not as a substitute for current repository evidence.
 
-If a repeated workflow becomes stable procedural knowledge, propose it through `skill-maintenance` instead of repeatedly storing copies in memory.
+Save only concise, verified lessons future agents are likely to reuse. Prefer accepted decisions/root causes/outcomes with a commit, PR, or issue reference when available.
+
+Do not store secrets, raw transcripts, or reproducible logs merely because they exist.
+
+## Scope and remote operations
+
+Do not fix unrelated problems discovered during the task; report them separately when materially important.
+
+By default, delivery stays local. Do not push, create a remote PR, or merge unless the user explicitly requests it.
+
+When shipping is authorized, prefer Orca's GUI diff/commit/push/PR surfaces so the human can inspect the final integrated result.
 
 ## Completion
 
-Report:
+Report concisely:
 
 1. implementation summary
 2. files changed
 3. verification commands
 4. verification results
-5. remaining risks or assumptions
+5. remaining risks/assumptions
 
-Keep completion reports concise.
+Never claim a command, test, review, or device check succeeded unless it actually ran successfully.

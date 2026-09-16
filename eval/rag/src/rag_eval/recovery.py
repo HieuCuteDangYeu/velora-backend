@@ -661,12 +661,12 @@ class MultiDayRecoveryStore:
             if existing_scheduled or existing_deferred:
                 previous = set(existing_scheduled) | set(existing_deferred)
                 if not (
-                    set(scheduled).issubset(set(existing_scheduled))
+                    set(scheduled).issubset(previous)
                     and set(deferred).issubset(previous)
                 ):
                     raise RecoveryStateError("current UTC epoch recovery plan cannot be replaced")
-                # A refreshed baseline may tighten the slice, but never expand
-                # it beyond work already admitted for this UTC epoch.
+                # A refreshed baseline may rebalance scheduled/deferred work,
+                # but never introduce work outside this UTC epoch's original plan.
             epoch["scheduledOperationKeys"] = scheduled
             epoch["deferredOperationKeys"] = deferred
             epoch["scheduledReservationTokens"] = int(scheduled_reservation_tokens)

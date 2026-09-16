@@ -715,8 +715,13 @@ def print_terminal_summary(summary: dict[str, Any]) -> None:
     print(f"Dataset                        {summary['dataset']}")
     print(f"Variant                        {summary['variant'].get('variantName')}")
     print(f"Cases                          {summary['caseCount']}")
-    print(f"Correct                        {summary['correct']}/{summary['caseCount']}")
-    print(f"Correct + grounded             {summary['correctAndGrounded']}/{summary['caseCount']}")
+    print(
+        f"Lexical match (diagnostic)     {summary['lexicalMatch']}/{summary['caseCount']}"
+    )
+    print(
+        "Lexical match + grounded       "
+        f"{summary['lexicalMatchAndGrounded']}/{summary['caseCount']}"
+    )
     print(f"Faithfulness                   {semantic.get('faithfulness')}")
     print(f"Factual Correctness            {semantic.get('factual_correctness')}")
     print(f"Response Relevancy             {semantic.get('response_relevancy')}")

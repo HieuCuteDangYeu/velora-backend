@@ -1,6 +1,21 @@
-import { validateRagAnswerContract } from './rag-answer-contract';
+import {
+  ragRequestedFactSignalScore,
+  validateRagAnswerContract,
+} from './rag-answer-contract';
 
 describe('validateRagAnswerContract', () => {
+  it('ranks the requested directional quantity above an unrelated quantity', () => {
+    const question =
+      'How low does the speaker say the number of bands can go while still being okay?';
+    expect(
+      ragRequestedFactSignalScore(
+        question,
+        'We can go down till like 12 bands and it is still okay.',
+      ),
+    ).toBeGreaterThan(
+      ragRequestedFactSignalScore(question, 'There are 2 controls on the panel.'),
+    );
+  });
   it('rejects a competing quantity that does not satisfy the requested direction', () => {
     expect(
       validateRagAnswerContract({

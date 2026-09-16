@@ -138,6 +138,40 @@ export function ragAnswerDirectnessIssue(
 }
 
 /**
+ * Deterministic signal used only to rank extractive fallback spans. It does
+ * not decide semantic correctness; it prefers spans that contain the kind of
+ * fact explicitly requested by the question.
+ */
+export function ragRequestedFactSignalScore(
+  question: string,
+  value: string,
+): number {
+  let score = 0;
+  const asksForQuantity =
+    QUANTITY_QUESTION_PATTERN.test(question) ||
+    QUANTITY_RATIONALE_PATTERN.test(question);
+  if (asksForQuantity && quantityTokens(value).size > 0) score += 2;
+
+  if (
+    (LOW_QUANTITY_QUESTION_PATTERN.test(question) ||
+      HIGH_QUANTITY_QUESTION_PATTERN.test(question)) &&
+    directionalQuantityTokens(question, value).size > 0
+  ) {
+    score += 4;
+  }
+
+  if (EXACT_VALUE_QUESTION_PATTERN.test(question)) {
+    const questionTokens = new Set(answerContentTokens(question));
+    const novelTokens = answerContentTokens(value).filter(
+      (token) => !questionTokens.has(token),
+    );
+    if (novelTokens.length > 0) score += 3;
+  }
+
+  return score;
+}
+
+/**
  * Validates only bounded, semantics-preserving answer invariants. It does not
  * require literal answer/evidence overlap; the semantic verifier remains the
  * authority for ordinary paraphrases and claim support.

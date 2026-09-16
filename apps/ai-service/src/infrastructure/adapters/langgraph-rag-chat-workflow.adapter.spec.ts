@@ -601,6 +601,107 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     },
   );
 
+  it('recovers an unexplained verifier rejection when the current answer already has extractive provenance', async () => {
+    const fallback = {
+      answer: 'This one is said to be blue.',
+      claims: [
+        {
+          claim: 'This one is said to be blue.',
+          evidenceIds: ['e0'],
+        },
+      ],
+      modelRole: 'ANSWER' as const,
+      diagnostics: [],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' as const,
+      fallbackReason: 'UNUSABLE_SYNTHESIS' as const,
+    };
+    const generateDraftAnswer = {
+      buildExtractiveFallback: jest.fn().mockReturnValue(fallback),
+    };
+    const buildCitations = {
+      execute: jest.fn().mockResolvedValue({
+        citations: [{ reelId: 'reel-1', evidenceId: 'chunk-1' }],
+        coverage: {
+          mode: 'FALLBACK',
+          coverage: 1,
+          factualClaimCount: 1,
+          supportedClaimCount: 1,
+          unsupportedClaims: [],
+        },
+      }),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      generateDraftAnswer as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      buildCitations as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+    ) as unknown as {
+      createVerificationFailureNode: () => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+
+    const result = await workflow.createVerificationFailureNode()(
+      state({
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        answer: 'This one is said to be blue.',
+        answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+        answerClaims: [
+          {
+            claim: 'This one is said to be blue.',
+            evidenceIds: ['e0'],
+          },
+        ],
+        verification: {
+          passed: false,
+          confidence: 0.2,
+          issues: [],
+          contradictions: [],
+          supportedClaimMappings: [],
+          requiresRevision: true,
+          diagnostics: {
+            providerStatus: 'SUCCESS',
+            decisionSource: 'LLM_ESCALATION',
+            finalPassed: false,
+            confidence: 0.2,
+            issues: [],
+            contradictions: [],
+            supportedClaimMappings: [],
+            requiresRevision: true,
+            exactProvenance: {
+              supported: false,
+              supportingEvidenceIndexes: [],
+            },
+          },
+        },
+      }),
+    );
+
+    expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      answer: 'This one is said to be blue.',
+      finalFailureSource: 'NONE',
+      verification: {
+        passed: true,
+        diagnostics: { decisionSource: 'EXACT_PROVENANCE' },
+      },
+    });
+  });
+
   it('retains per-attempt citation diagnostics before a later attempt overwrites coverage', async () => {
     const firstAssessment: RagCitationAssessment = {
       citations: [],

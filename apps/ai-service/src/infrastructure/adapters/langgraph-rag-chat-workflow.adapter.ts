@@ -707,10 +707,21 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           (mapping) => mapping.evidenceIds.length > 0,
         ) ??
           false);
+      const extractiveAnswerHasLocalProvenance =
+        failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
+        failedVerification.passed === false &&
+        (failedVerification.issues?.length ?? 0) === 0 &&
+        (failedVerification.contradictions?.length ?? 0) === 0 &&
+        state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK' &&
+        (state.answerClaims?.some((claim) =>
+          claim.evidenceIds.some((evidenceId) => /^e\d+$/.test(evidenceId)),
+        ) ?? false);
       if (
         state.route?.intent === 'REEL_VIDEO_QUESTION' &&
         failedVerification &&
-        (verifierUnavailable || verifierFalseNegativeCandidate)
+        (verifierUnavailable ||
+          verifierFalseNegativeCandidate ||
+          extractiveAnswerHasLocalProvenance)
       ) {
         const fallback =
           this.generateDraftAnswerUseCase.buildExtractiveFallback(

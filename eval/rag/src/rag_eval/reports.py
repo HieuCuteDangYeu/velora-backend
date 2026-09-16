@@ -17,6 +17,13 @@ def _mean(values: list[float | None]) -> float | None:
     return fmean(available) if available else None
 
 
+def _lexical_metric(case: dict[str, Any], key: str, legacy_key: str) -> float | None:
+    """Read the renamed lexical diagnostic while remaining able to summarize old runs."""
+    deterministic = case["deterministic"]
+    value = deterministic.get(key)
+    return value if value is not None else deterministic.get(legacy_key)
+
+
 def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     cases = sorted(cases, key=lambda item: item["caseId"])
     executions = [item["execution"] for item in cases]
@@ -38,9 +45,18 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
     }
     calls = [call for execution in executions for call in execution.get("modelCalls", [])]
     costs = aggregate_costs(calls, load_pricing())
-    correct = sum(item["deterministic"].get("answerCorrect") == 1 for item in cases)
+    lexical_match = sum(
+        _lexical_metric(item, "lexicalAnswerMatch", "answerCorrect") == 1
+        for item in cases
+    )
     grounded = sum(item["deterministic"].get("grounded") == 1 for item in cases)
-    correct_grounded = sum(item["deterministic"].get("correctAndGrounded") == 1 for item in cases)
+    lexical_match_grounded = sum(
+        _lexical_metric(
+            item, "lexicalAnswerMatchAndGrounded", "correctAndGrounded"
+        )
+        == 1
+        for item in cases
+    )
     successful_retrieval = sum(item["deterministic"].get("evidenceHitRate") == 1 for item in cases)
     slices: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for case in cases:
@@ -55,9 +71,14 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "executionFailureCount": sum(
             item["execution"]["executionStatus"] not in {"COMPLETED", "FIXTURE"} for item in cases
         ),
-        "correct": correct,
+        # Binary semantic correctness is intentionally not inferred from the
+        # deterministic lexical-overlap heuristic. Consumers should use the
+        # semantic metrics once semanticEvaluationComplete is true.
+        "correct": None,
         "grounded": grounded,
-        "correctAndGrounded": correct_grounded,
+        "correctAndGrounded": None,
+        "lexicalMatch": lexical_match,
+        "lexicalMatchAndGrounded": lexical_match_grounded,
         "hardGatePassed": all(item["hardGatePassed"] for item in cases),
         "accessControlViolations": sum(
             item["deterministic"]["accessControlViolations"] for item in cases
@@ -73,11 +94,9 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "cost": {
             **costs,
             "averageProductionCostPerQuery": safe_cost_per(costs["totalQueryCostUsd"], len(cases)),
-            "costPerCorrectAnswer": safe_cost_per(costs["totalQueryCostUsd"], correct),
+            "costPerCorrectAnswer": None,
             "costPerGroundedAnswer": safe_cost_per(costs["totalQueryCostUsd"], grounded),
-            "costPerCorrectGroundedAnswer": safe_cost_per(
-                costs["totalQueryCostUsd"], correct_grounded
-            ),
+            "costPerCorrectGroundedAnswer": None,
             "costPerSuccessfulRetrieval": safe_cost_per(
                 costs["totalQueryCostUsd"], successful_retrieval
             ),
@@ -85,8 +104,15 @@ def build_summary(cases: list[dict[str, Any]], run_id: str) -> dict[str, Any]:
         "slices": {
             tag: {
                 "cases": len(items),
-                "correctAndGroundedRate": _mean(
-                    [item["deterministic"].get("correctAndGrounded") for item in items]
+                "lexicalMatchAndGroundedRate": _mean(
+                    [
+                        _lexical_metric(
+                            item,
+                            "lexicalAnswerMatchAndGrounded",
+                            "correctAndGrounded",
+                        )
+                        for item in items
+                    ]
                 ),
                 "accessControlViolations": sum(
                     item["deterministic"]["accessControlViolations"] for item in items
@@ -118,8 +144,8 @@ def write_report(cases: list[dict[str, Any]], run_id: str, output_root: Path) ->
         f"- Dataset: {summary['dataset']}",
         f"- Variant: {summary['variant'].get('variantName', 'offline-fixture')}",
         f"- Cases: {summary['caseCount']}",
-        f"- Correct: {summary['correct']}/{summary['caseCount']}",
-        f"- Correct and grounded: {summary['correctAndGrounded']}/{summary['caseCount']}",
+        f"- Lexical answer match (diagnostic): {summary['lexicalMatch']}/{summary['caseCount']}",
+        f"- Lexical match and grounded (diagnostic): {summary['lexicalMatchAndGrounded']}/{summary['caseCount']}",
         f"- Access violations: {summary['accessControlViolations']}",
         f"- Faithfulness: {semantic.get('faithfulness')}",
         f"- Factual correctness: {semantic.get('factual_correctness')}",

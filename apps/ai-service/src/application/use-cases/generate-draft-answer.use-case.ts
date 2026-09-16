@@ -21,6 +21,7 @@ import {
 import {
   answerContentTokens,
   ragAnswerBudget,
+  ragRequestedFactSignalScore,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
 
@@ -311,6 +312,7 @@ export class GenerateDraftAnswerUseCase {
               text,
               candidateIndex,
               spanIndex,
+              requestedFactSignal: ragRequestedFactSignalScore(question, text),
               directQuestionEcho: this.isQuestionEchoSpan(text, questionTokens),
               score,
               questionCoverage:
@@ -347,9 +349,12 @@ export class GenerateDraftAnswerUseCase {
         ? 1
         : 2;
     const scored = eligibleSpans
-      .filter((span) => span.score > 0)
+      .filter(
+        (span) => span.score > 0 || span.requestedFactSignal > 0,
+      )
       .sort(
         (left, right) =>
+          right.requestedFactSignal - left.requestedFactSignal ||
           right.answerBearingRatio - left.answerBearingRatio ||
           right.score - left.score ||
           left.candidateIndex - right.candidateIndex ||

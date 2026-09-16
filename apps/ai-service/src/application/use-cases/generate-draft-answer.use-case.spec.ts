@@ -712,6 +712,46 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('prefers the requested directional quantity over an unrelated number in fallback evidence', () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        userMessage:
+          'How low does the speaker say the number of bands can go while still being okay?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'There are 2 controls on the panel. We can go down till like 12 bands and it is still okay.',
+            chunkText:
+              'There are 2 controls on the panel. We can go down till like 12 bands and it is still okay.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback?.answer).toContain('12 bands');
+    expect(fallback?.answer).not.toBe('There are 2 controls on the panel.');
+    expect(fallback).toMatchObject({ claims: [{ evidenceIds: ['e0'] }] });
+  });
+
   it('uses extractive fallback for an evidence-dependent refusal', async () => {
     const refusal =
       'The transcript is too garbled to determine the requested label reliably.';

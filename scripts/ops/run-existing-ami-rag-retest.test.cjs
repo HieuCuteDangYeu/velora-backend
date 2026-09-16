@@ -265,6 +265,64 @@ test('response-present reconciliation records the bot result without resending',
   );
 });
 
+test('response reconciliation evaluates the decrypted public API representation, not stored content', () => {
+  const databaseMessage = {
+    id: 'assistant-1',
+    createdAt: '2026-08-25T00:01:00.000Z',
+    content: 'iv:auth-tag:ciphertext',
+  };
+  const publicMessage = runner.selectPublicAssistantMessage(databaseMessage, {
+    messages: [
+      {
+        id: 'assistant-1',
+        senderId: 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7',
+        createdAt: databaseMessage.createdAt,
+        content: 'The speaker is using fifteen frequency bands.',
+        metadata: { citations: [{ reelId: syntheticReelIds[0] }] },
+      },
+    ],
+  });
+  const result = runner.responseReconciledResult(
+    {
+      caseId: 'case-1',
+      reelId: syntheticReelIds[0],
+      question: 'How many bands?',
+      referenceAnswerText: 'Fifteen.',
+    },
+    {
+      status: 'IN_FLIGHT',
+      conversationId: 'conversation-1',
+      userMessageId: 'request-1',
+      requestStartedAt: '2026-08-25T00:00:00.000Z',
+    },
+    publicMessage,
+    syntheticReelIds,
+    'run-1',
+  );
+
+  assert.equal(result.finalAnswer, 'The speaker is using fifteen frequency bands.');
+  assert.notEqual(result.finalAnswer, databaseMessage.content);
+});
+
+test('response reconciliation refuses a public response that does not match the persisted bot message', () => {
+  assert.throws(
+    () =>
+      runner.selectPublicAssistantMessage(
+        { id: 'assistant-1' },
+        {
+          messages: [
+            {
+              id: 'assistant-2',
+              senderId: 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7',
+              content: 'Different response.',
+            },
+          ],
+        },
+      ),
+    /exactly one public API bot response matching/,
+  );
+});
+
 test('reconciliation records objective no-resend evidence after the quiet period', () => {
   const evidence = runner.buildReconciliationEvidence({
     runLockAcquired: true,
@@ -294,7 +352,6 @@ test('response-present reconciliation accepts one quiet bot response with trace 
       {
         id: 'assistant-1',
         createdAt: '2026-08-25T00:02:00.000Z',
-        content: 'answer',
       },
     ],
     traces: [{ createdAt: '2026-08-25T00:01:00.000Z', hasAnswer: true }],

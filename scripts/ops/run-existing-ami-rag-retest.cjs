@@ -149,6 +149,59 @@ function normalizeMongoConnectionUrl(value) {
   return parsed.toString();
 }
 
+function createPublicApiClient(baseUrl) {
+  let cookies = '';
+  return async function request(method, pathname, body) {
+    const response = await fetch(new URL(pathname, baseUrl), {
+      method,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(cookies ? { cookie: cookies } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const setCookie = response.headers.get('set-cookie');
+    if (setCookie)
+      cookies = setCookie
+        .split(/,(?=\s*[^;=]+=)/)
+        .map((value) => value.split(';')[0])
+        .join('; ');
+    const text = await response.text();
+    let payload;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = text;
+    }
+    if (!response.ok)
+      fail(
+        `${method} ${pathname} -> ${response.status}: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`,
+      );
+    return payload;
+  };
+}
+
+function selectPublicAssistantMessage(databaseMessage, apiPayload) {
+  if (!databaseMessage?.id) fail('database bot response is missing an ID');
+  const rows = Array.isArray(apiPayload)
+    ? apiPayload
+    : Array.isArray(apiPayload?.messages)
+      ? apiPayload.messages
+      : [];
+  const matches = rows.filter(
+    (message) =>
+      message?.id === databaseMessage.id && message?.senderId === BOT_USER_ID,
+  );
+  if (matches.length !== 1)
+    fail(
+      `expected exactly one public API bot response matching ${databaseMessage.id}, found ${matches.length}`,
+    );
+  const message = matches[0];
+  if (typeof message.content !== 'string' || !message.content.trim())
+    fail('public API bot response is missing decrypted content');
+  return message;
+}
+
 function buildReconciliationEvidence(input) {
   if (input.runLockAcquired !== true)
     fail('exclusive benchmark run lock was not acquired');
@@ -218,12 +271,7 @@ function buildResponseReconciliationEvidence(input) {
     );
 
   const botMessage = input.botMessages[0];
-  if (
-    !botMessage?.id ||
-    typeof botMessage.content !== 'string' ||
-    !botMessage.content.trim()
-  )
-    fail('bot response is missing a non-empty message');
+  if (!botMessage?.id) fail('bot response is missing an ID');
   if (input.traces.length === 0)
     fail('no persisted trace proves that the workflow ended');
   if (!input.traces.some((trace) => trace.hasAnswer))
@@ -336,7 +384,7 @@ async function reconcileInFlight(runId) {
             senderId: BOT_USER_ID,
             createdAt: { gte: new Date(progress?.requestStartedAt || 0) },
           },
-          select: { id: true, createdAt: true, content: true, metadata: true },
+          select: { id: true, createdAt: true },
         }),
         ai.ragTrace.findMany({
           where: { conversationId },
@@ -368,10 +416,33 @@ async function reconcileInFlight(runId) {
           nowMs: Date.now(),
           minimumQuietMs,
         });
+        const baseUrl = process.env.BACKEND_URL;
+        if (
+          !baseUrl ||
+          !process.env.VELORA_TEST_EMAIL ||
+          !process.env.VELORA_TEST_PASSWORD
+        ) {
+          fail(
+            'BACKEND_URL, VELORA_TEST_EMAIL, and VELORA_TEST_PASSWORD are required for response-present reconciliation',
+          );
+        }
+        const request = createPublicApiClient(baseUrl);
+        await request('POST', '/auth/login', {
+          email: process.env.VELORA_TEST_EMAIL,
+          password: process.env.VELORA_TEST_PASSWORD,
+        });
+        const publicMessages = await request(
+          'GET',
+          `/conversations/${conversationId}/messages?limit=50`,
+        );
+        const assistantMessage = selectPublicAssistantMessage(
+          botMessages[0],
+          publicMessages,
+        );
         const result = responseReconciledResult(
           definition,
           progress,
-          botMessages[0],
+          assistantMessage,
           extractDistinctReelIds(definitions),
           runId,
         );
@@ -379,7 +450,7 @@ async function reconcileInFlight(runId) {
           ...progress,
           status: 'COMPLETED',
           completedAt: new Date().toISOString(),
-          assistantMessageId: botMessages[0].id,
+          assistantMessageId: assistantMessage.id,
           ...evidence,
           result,
         };
@@ -530,35 +601,7 @@ async function main() {
       JSON.stringify({ benchmarkRunId, statePath: statePath(benchmarkRunId) }),
     );
 
-    let cookies = '';
-    async function request(method, pathname, body) {
-      const response = await fetch(new URL(pathname, baseUrl), {
-        method,
-        headers: {
-          ...(body ? { 'content-type': 'application/json' } : {}),
-          ...(cookies ? { cookie: cookies } : {}),
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      const setCookie = response.headers.get('set-cookie');
-      if (setCookie)
-        cookies = setCookie
-          .split(/,(?=\s*[^;=]+=)/)
-          .map((value) => value.split(';')[0])
-          .join('; ');
-      const text = await response.text();
-      let payload;
-      try {
-        payload = text ? JSON.parse(text) : null;
-      } catch {
-        payload = text;
-      }
-      if (!response.ok)
-        fail(
-          `${method} ${pathname} -> ${response.status}: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}`,
-        );
-      return payload;
-    }
+    const request = createPublicApiClient(baseUrl);
 
     await request('POST', '/auth/login', {
       email: process.env.VELORA_TEST_EMAIL,
@@ -753,6 +796,7 @@ module.exports = {
   reconciledResult,
   buildResponseReconciliationEvidence,
   responseReconciledResult,
+  selectPublicAssistantMessage,
   extractDistinctReelIds,
   readState,
   statePath,

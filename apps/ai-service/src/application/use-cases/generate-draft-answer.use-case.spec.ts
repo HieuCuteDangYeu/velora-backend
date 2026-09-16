@@ -11,7 +11,10 @@ describe('GenerateDraftAnswerUseCase', () => {
   const promptBuilder = { build: jest.fn(() => 'Grounding instructions.') };
   const state = {
     userMessage: 'What relation is asserted?',
-    route: { intent: 'REEL_VIDEO_QUESTION' },
+    route: {
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+    },
     rerankedChunks: [
       {
         evidenceType: 'TRANSCRIPT',
@@ -63,8 +66,10 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
     const request = service.generateObject.mock.calls[0]?.[0];
     expect(request.jsonSchema.properties.answer).toMatchObject({
-      maxLength: 2_500,
+      maxLength: 900,
     });
+    expect(request.userPrompt).toContain('"answerShape":"EXPLANATION"');
+    expect(request.userPrompt).toContain('"maxAnswerChars":900');
     expect(request.jsonSchema.properties.claims).toMatchObject({
       maxItems: 12,
     });
@@ -89,6 +94,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(request.systemPrompt).toContain(
       'reuse its distinctive nouns, names, values, and relations',
     );
+    expect(request.systemPrompt).toContain('shortest complete form');
     expect(request.jsonSchema.properties.claims.description).toContain(
       'Exhaustive atomic grounding mappings',
     );
@@ -103,6 +109,84 @@ describe('GenerateDraftAnswerUseCase', () => {
       includeRetrievedEvidence: false,
     });
   });
+
+  it.each([
+    {
+      name: 'entity',
+      question: 'Who supervised the project?',
+      evidence: 'Jean-Marc supervised the project.',
+      answer: 'Jean-Marc supervised the project.',
+    },
+    {
+      name: 'number',
+      question: 'How many backups do they keep?',
+      evidence: 'They keep 3 backups.',
+      answer: 'They keep 3 backups.',
+    },
+    {
+      name: 'short fact',
+      question: 'What storage medium is mentioned?',
+      evidence: 'The speaker mentions optical discs.',
+      answer: 'The speaker mentions optical discs.',
+    },
+    {
+      name: 'compound question',
+      question: 'Who supervised the project, and when did it begin?',
+      evidence: 'Jean-Marc supervised the project, which began in 2024.',
+      answer: 'Jean-Marc supervised the project, which began in 2024.',
+    },
+    {
+      name: 'non-English explanation',
+      question: 'Tại sao nhóm chuyển sang TypeScript?',
+      evidence: 'Nhóm chuyển sang TypeScript để giảm lỗi kiểu dữ liệu.',
+      answer: 'Nhóm chuyển sang TypeScript để giảm lỗi kiểu dữ liệu.',
+    },
+  ])(
+    'uses the semantic transcript-content budget for a $name question',
+    async (fixture) => {
+      const service = {
+        generateObject: jest.fn().mockResolvedValue({
+          answer: fixture.answer,
+          claims: [{ claim: fixture.answer, evidenceIds: ['e0'] }],
+        }),
+      };
+      const useCase = new GenerateDraftAnswerUseCase(
+        service as never,
+        promptBuilder,
+        config,
+      );
+
+      await expect(
+        useCase.execute({
+          ...state,
+          userMessage: fixture.question,
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          rerankedChunks: [
+            {
+              evidenceType: 'TRANSCRIPT',
+              evidenceText: fixture.evidence,
+              chunkText: fixture.evidence,
+              tags: [],
+            },
+          ],
+        } as unknown as RagChatWorkflowState),
+      ).resolves.toMatchObject({
+        answer: fixture.answer,
+        finalizationMode: 'SYNTHESIZED',
+      });
+
+      expect(
+        service.generateObject.mock.calls[0][0].jsonSchema.properties.answer,
+      ).toMatchObject({ maxLength: 900 });
+      expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+        '"answerShape":"EXPLANATION"',
+      );
+    },
+  );
 
   it('preserves a grounded transcript paraphrase instead of replacing it', async () => {
     const service = {
@@ -130,6 +214,7 @@ describe('GenerateDraftAnswerUseCase', () => {
         userMessage: 'Why did the speaker start learning TypeScript?',
         route: {
           intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
           requiredEvidence: ['TRANSCRIPT'],
         },
         rerankedChunks: [
@@ -342,7 +427,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
-  it('keeps the top two ranked windows from the same reel for fallback', async () => {
+  it('keeps only the top ranked source span for short factual fallback', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({
         answer: '',
@@ -366,8 +451,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         rerankedChunks: [
           {
             evidenceType: 'TRANSCRIPT',
-            evidenceText: 'Target evidence window one.',
-            chunkText: 'Target evidence window one.',
+            evidenceText: 'The asserted relation is coupled.',
+            chunkText: 'The asserted relation is coupled.',
             reelId: 'target-reel',
             tags: [],
           },
@@ -388,16 +473,134 @@ describe('GenerateDraftAnswerUseCase', () => {
         ],
       } as unknown as RagChatWorkflowState),
     ).resolves.toMatchObject({
-      answer: 'Target evidence window one.\nTarget evidence window two.',
+      answer: 'The asserted relation is coupled.',
       claims: [
         {
-          evidenceIds: ['e0', 'e1'],
+          evidenceIds: ['e0'],
         },
       ],
       finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
       fallbackReason: 'UNUSABLE_SYNTHESIS',
     });
   });
+
+  it('prefers answer-bearing evidence over a topical question echo in fallback', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'What storage medium is used for backups?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'What storage medium is used for backups? The backups use optical discs.',
+            chunkText:
+              'What storage medium is used for backups? The backups use optical discs.',
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The backups use optical discs.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+    });
+  });
+
+  it('prefers answer-bearing evidence over a paraphrased topical question echo in fallback', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        userMessage: 'What storage medium is used for backups?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'The video asks what storage medium is used for backups. The backups use optical discs.',
+            chunkText:
+              'The video asks what storage medium is used for backups. The backups use optical discs.',
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer: 'The backups use optical discs.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+    });
+  });
+
+  it.each([
+    'The video discusses the storage medium used for backups. The backups use optical discs.',
+    'Vídeo: storage medium used for backups. The backups use optical discs.',
+  ])(
+    'prefers answer-bearing evidence over a vocabulary-independent topical echo: %s',
+    async (evidenceText) => {
+      const service = {
+        generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
+      };
+      const useCase = new GenerateDraftAnswerUseCase(
+        service as never,
+        promptBuilder,
+        config,
+      );
+
+      await expect(
+        useCase.execute({
+          ...state,
+          userMessage: 'What storage medium is used for backups?',
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          rerankedChunks: [
+            {
+              evidenceType: 'TRANSCRIPT',
+              evidenceText,
+              chunkText: evidenceText,
+              reelId: 'target-reel',
+              tags: [],
+            },
+          ],
+        } as unknown as RagChatWorkflowState),
+      ).resolves.toMatchObject({
+        answer: 'The backups use optical discs.',
+        claims: [{ evidenceIds: ['e0'] }],
+        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      });
+    },
+  );
 
   it('uses extractive fallback when an empty answer remains unusable after retry', async () => {
     const service = {
@@ -584,6 +787,53 @@ describe('GenerateDraftAnswerUseCase', () => {
       fallbackReason: 'ANSWER_GENERATION_FAILURE',
     });
     expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries when the structured provider rejects the answer maxLength contract', async () => {
+    const schemaError = Object.assign(
+      new Error(
+        'Structured completion failed local schema validation (path=$.answer, constraint=maxLength)',
+      ),
+      {
+        name: 'GroqStructuredCompletionSchemaError',
+        code: 'STRUCTURED_COMPLETION_SCHEMA_INVALID',
+        path: '$.answer',
+        constraint: 'maxLength',
+      },
+    );
+    const answer = 'The zorb is coupled to the quasar.';
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(schemaError)
+        .mockResolvedValueOnce({
+          answer,
+          claims: [{ claim: answer, evidenceIds: ['e0'] }],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        ...state,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      } as unknown as RagChatWorkflowState),
+    ).resolves.toMatchObject({
+      answer,
+      finalizationMode: 'SYNTHESIZED',
+    });
+
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject.mock.calls[1][0].systemPrompt).toContain(
+      'shortest complete form within the supplied answer budget',
+    );
   });
 
   it('uses only sufficiency-authorized evidence for an extractive fallback', async () => {

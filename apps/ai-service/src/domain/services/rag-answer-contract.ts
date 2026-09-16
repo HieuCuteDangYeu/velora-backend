@@ -1,3 +1,5 @@
+import type { RagReelQuestionType } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+
 const QUANTITY_QUESTION_PATTERN =
   /\b(?:how many|how much|how low|how high|how long|how old|number of|what (?:number|percentage|percent|year|date))\b/i;
 
@@ -95,6 +97,34 @@ export interface RagAnswerContractInput {
   question: string;
   evidence: readonly string[];
   evidenceRequired: boolean;
+}
+
+export type RagAnswerShape = 'SHORT_FACT' | 'EXPLANATION' | 'SUMMARY';
+
+export interface RagAnswerBudget {
+  shape: RagAnswerShape;
+  maxChars: number;
+}
+
+export function ragAnswerBudget(
+  reelQuestionType: RagReelQuestionType | undefined,
+): RagAnswerBudget {
+  if (reelQuestionType === 'GENERAL_REEL_SUMMARY') {
+    return { shape: 'SUMMARY', maxChars: 1_400 };
+  }
+  if (reelQuestionType === 'REEL_METADATA') {
+    return { shape: 'SHORT_FACT', maxChars: 360 };
+  }
+  return { shape: 'EXPLANATION', maxChars: 900 };
+}
+
+export function ragAnswerDirectnessIssue(
+  answer: string,
+  budget: RagAnswerBudget,
+): string | undefined {
+  const { shape, maxChars } = budget;
+  if (answer.trim().length <= maxChars) return undefined;
+  return `${shape} answer exceeds the ${maxChars}-character direct-answer budget`;
 }
 
 /**

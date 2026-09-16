@@ -307,6 +307,41 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).toBe('prepareAnswerRevisionNode');
   });
 
+  it('routes a grounded answer-quality failure to answer revision', () => {
+    expect(
+      routeAfterVerifier.routeAfterVerifier(
+        state({
+          verification: {
+            passed: true,
+            confidence: 0.95,
+            issues: [],
+            answerQualityPassed: false,
+            answerQualityIssues: ['Answer is indirect.'],
+            requiresRevision: true,
+          },
+        }),
+      ),
+    ).toBe('prepareAnswerRevisionNode');
+  });
+
+  it('does not promote an exhausted answer-quality failure to citations', () => {
+    expect(
+      routeAfterVerifier.routeAfterVerifier(
+        state({
+          retryCount: 1,
+          verification: {
+            passed: true,
+            confidence: 0.95,
+            issues: [],
+            answerQualityPassed: false,
+            answerQualityIssues: ['Answer is indirect.'],
+            requiresRevision: true,
+          },
+        }),
+      ),
+    ).toBe('verificationFailureNode');
+  });
+
   it('routes an exhausted verifier failure to the generic refusal', () => {
     expect(
       routeAfterVerifier.routeAfterVerifier(

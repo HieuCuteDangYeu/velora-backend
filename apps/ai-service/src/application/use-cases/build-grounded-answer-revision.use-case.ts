@@ -12,7 +12,10 @@ import {
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
 } from '@ai/domain/services/rag-prompt-bounds';
-import { validateRagAnswerContract } from '@ai/domain/services/rag-answer-contract';
+import {
+  ragAnswerBudget,
+  validateRagAnswerContract,
+} from '@ai/domain/services/rag-answer-contract';
 
 interface RawGroundedAnswerRevision {
   answer?: unknown;
@@ -53,6 +56,7 @@ export class BuildGroundedAnswerRevisionUseCase {
     }
 
     const bounds = readRagPromptBounds(this.config);
+    const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
     const verifierIssues = boundTextItems(
       state.verification.issues ?? [],
       (issue) => issue,
@@ -105,7 +109,9 @@ export class BuildGroundedAnswerRevisionUseCase {
           'Answer the exact relation requested by the user, including noisy or punctuation-free ASR when the evidence semantically supports it.',
           'Reuse distinctive source wording, names, values, and relations when they directly answer the question; do not paraphrase away the decisive fact.',
           'Do not construct arbitrary source substrings and do not invent facts.',
-          'Return a concise revised answer and the smallest supporting evidence ID set.',
+          'Return the shortest complete revised answer for the supplied answer shape and budget, plus the smallest supporting evidence ID set.',
+          'If the current answer is supported but indirect, repetitive, or over-verbose, delete the unrelated material while preserving the supported fact that answers the question.',
+          'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
           'Never invent an evidence ID. Return only JSON matching the schema.',
         ].join(' '),
         userPrompt: JSON.stringify({
@@ -113,11 +119,21 @@ export class BuildGroundedAnswerRevisionUseCase {
             state.userMessage,
             bounds.maxUserMessageChars,
           ),
+          answerShape: answerBudget.shape,
+          maxAnswerChars: answerBudget.maxChars,
           currentAnswer: boundPromptText(
             state.answer ?? '',
             bounds.maxAnswerChars,
           ),
           verifierIssues,
+          answerQualityIssues: boundTextItems(
+            state.verification.answerQualityIssues ?? [],
+            (issue) => issue,
+            (_issue, text) => text,
+            bounds.maxClaims,
+            bounds.maxClaimChars,
+            bounds.maxClaimsTotalChars,
+          ),
           verifierInstruction: boundPromptText(
             state.verification.revisedInstruction ?? '',
             bounds.maxClaimChars,
@@ -129,7 +145,7 @@ export class BuildGroundedAnswerRevisionUseCase {
           additionalProperties: false,
           required: ['answer', 'evidenceIds'],
           properties: {
-            answer: { type: 'string', maxLength: 2_500 },
+            answer: { type: 'string', maxLength: answerBudget.maxChars },
             evidenceIds: {
               type: 'array',
               minItems: 1,

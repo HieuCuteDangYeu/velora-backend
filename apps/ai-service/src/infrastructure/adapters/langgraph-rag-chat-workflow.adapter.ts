@@ -916,6 +916,19 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     );
     if (
       state.verification?.passed &&
+      state.verification.answerQualityPassed === false
+    ) {
+      if (
+        state.verification.requiresRevision &&
+        state.retryCount < this.integer('AI_RAG_MAX_ANSWER_REVISIONS', 1, 0, 2)
+      ) {
+        return 'prepareAnswerRevisionNode';
+      }
+      return 'verificationFailureNode';
+    }
+
+    if (
+      state.verification?.passed &&
       state.verification.confidence >= minimumConfidence
     ) {
       return 'citationNode';

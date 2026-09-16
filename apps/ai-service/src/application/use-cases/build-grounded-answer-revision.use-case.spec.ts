@@ -23,6 +23,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       userMessage: input.question,
       route: {
         intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
         requiredEvidence: ['TRANSCRIPT'],
       },
       verification: {
@@ -96,6 +97,48 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       modelRole: 'ANSWER_REVISION',
       diagnostics: [],
     });
+  });
+
+  it('trims a supported but over-verbose answer without changing the answer fact', async () => {
+    const input = state({
+      question: 'Who supervised the project?',
+      evidence: ['Jean-Marc supervised the project.'],
+    });
+    input.answer = Array.from(
+      { length: 14 },
+      () => 'Jean-Marc supervised the project.',
+    ).join(' ');
+    input.verification = {
+      passed: true,
+      confidence: 0.95,
+      issues: [],
+      answerQualityPassed: false,
+      answerQualityIssues: [
+        'EXPLANATION answer exceeds the 900-character direct-answer budget',
+      ],
+      requiresRevision: true,
+      revisedInstruction:
+        'Keep the supported answer fact and remove unrelated repetition.',
+    };
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: 'Jean-Marc supervised the project.',
+      evidenceIds: ['e0'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      answer: 'Jean-Marc supervised the project.',
+      evidenceIds: ['e0'],
+    });
+
+    const request = structuredLlm.generateObject.mock.calls[0][0];
+    expect(request.jsonSchema.properties.answer).toMatchObject({
+      maxLength: 900,
+    });
+    expect(request.userPrompt).toContain('"answerShape":"EXPLANATION"');
+    expect(request.userPrompt).toContain('"answerQualityIssues"');
+    expect(request.systemPrompt).toContain(
+      'delete the unrelated material while preserving the supported fact',
+    );
   });
 
   it('rejects unknown evidence IDs returned by the model', async () => {

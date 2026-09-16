@@ -132,15 +132,6 @@ export class GenerateDraftAnswerUseCase {
         onDiagnostics: (call) => diagnostics.push(call),
       });
 
-    const fallbackCandidates =
-      answerEvidence.length > 0
-        ? answerEvidence
-        : answerEvidenceIds.size > 0
-          ? []
-          : boundedChunks.map((chunk, index) => ({
-              chunk,
-              evidenceId: `e${index}`,
-            }));
     const synthesized = (candidate: RawDraftAnswer): RagDraftAnswer => ({
       ...this.normalize(
         candidate,
@@ -153,26 +144,8 @@ export class GenerateDraftAnswerUseCase {
     });
     const fallback = (
       reason: RagAnswerFallbackReason,
-    ): RagDraftAnswer | undefined => {
-      const result = this.extractiveTranscriptFallback(
-        state,
-        fallbackCandidates,
-      );
-      if (!result) return undefined;
-      return {
-        answer: result.answer,
-        claims: [
-          {
-            claim: result.answer,
-            evidenceIds: result.evidenceIds,
-          },
-        ],
-        modelRole: 'ANSWER',
-        diagnostics,
-        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
-        fallbackReason: reason,
-      };
-    };
+    ): RagDraftAnswer | undefined =>
+      this.buildExtractiveFallback(state, reason, diagnostics);
 
     let raw: RawDraftAnswer;
     try {
@@ -195,6 +168,49 @@ export class GenerateDraftAnswerUseCase {
         throw retryError;
       }
     }
+  }
+
+  buildExtractiveFallback(
+    state: RagChatWorkflowState,
+    reason: RagAnswerFallbackReason,
+    diagnostics: StructuredLlmCallDiagnostics[] = [],
+  ): RagDraftAnswer | undefined {
+    const bounds = readRagPromptBounds(this.config);
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
+      preserveTail: true,
+      focusText: state.userMessage,
+    });
+    const answerEvidenceIds = selectRagAnswerEvidenceIds(
+      boundedChunks,
+      state.contextSufficiency,
+      state.route,
+    );
+    const candidates =
+      answerEvidenceIds.size > 0
+        ? boundedChunks.flatMap((chunk, index) =>
+            answerEvidenceIds.has(`e${index}`)
+              ? [{ chunk, evidenceId: `e${index}` }]
+              : [],
+          )
+        : boundedChunks.map((chunk, index) => ({
+            chunk,
+            evidenceId: `e${index}`,
+          }));
+    const result = this.extractiveTranscriptFallback(state, candidates);
+    if (!result) return undefined;
+    return {
+      answer: result.answer,
+      claims: [
+        {
+          claim: result.answer,
+          evidenceIds: result.evidenceIds,
+        },
+      ],
+      modelRole: 'ANSWER',
+      diagnostics,
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: reason,
+    };
   }
 
   private isRetryableAnswerContractError(error: unknown): boolean {
@@ -267,7 +283,9 @@ export class GenerateDraftAnswerUseCase {
 
     return {
       answer,
-      evidenceIds: selected.map((candidate) => candidate.evidenceId),
+      evidenceIds: [
+        ...new Set(selected.map((candidate) => candidate.evidenceId)),
+      ],
     };
   }
 

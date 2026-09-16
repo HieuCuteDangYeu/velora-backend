@@ -878,6 +878,48 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('builds an extractive verifier-outage fallback without another provider call', () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        userMessage: 'What example label is used for the marble?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText:
+              'This one is said to be blue. So I put it in the blue bag.',
+            chunkText:
+              'This one is said to be blue. So I put it in the blue bag.',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback).toMatchObject({
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+    expect(fallback?.answer.toLowerCase()).toContain('blue');
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'unknown evidence ID',

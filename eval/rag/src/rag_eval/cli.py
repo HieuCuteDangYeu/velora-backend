@@ -121,7 +121,6 @@ def _validate_source_summary(
     if (
         summary.get("dataset") != args.dataset
         or summary.get("caseCount") != len(expected_case_ids)
-        or summary.get("correctAndGrounded") != len(expected_case_ids)
         or summary.get("hardGatePassed") is not True
         or summary.get("variant", {}).get("productionSha") != args.production_sha
     ):

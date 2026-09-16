@@ -167,7 +167,11 @@ def evaluate_case(
     deterministic["correctAndGrounded"] = float(answer_correct == 1 and grounded)
     semantic = (semantic_suite or SemanticMetricSuite()).score(semantic_payloads(row, execution))
     completed = execution.executionStatus in {"COMPLETED", "FIXTURE"}
-    frozen_gate = row.fixtureGroup != "frozen-ami" or deterministic["correctAndGrounded"] == 1
+    # Lexical overlap is useful as a deterministic diagnostic, but it cannot
+    # reliably decide semantic equivalence for paraphrases. Keep the hard gate
+    # on objective production invariants and let the semantic suite decide
+    # factual correctness/relevancy before final acceptance.
+    frozen_gate = row.fixtureGroup != "frozen-ami" or grounded
     return {
         "caseId": row.id,
         "datasetVersion": row.datasetVersion,

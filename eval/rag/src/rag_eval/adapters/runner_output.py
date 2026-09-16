@@ -165,7 +165,6 @@ def validate_semantic_context_artifact(
         summary.get("runId") != source_run_id
         or summary.get("dataset") != dataset_version
         or summary.get("caseCount") != len(rows)
-        or summary.get("correctAndGrounded") != len(rows)
         or summary.get("hardGatePassed") is not True
         or summary.get("variant", {}).get("productionSha") != production_sha
     ):

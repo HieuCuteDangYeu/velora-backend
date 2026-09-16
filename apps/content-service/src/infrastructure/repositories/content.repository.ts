@@ -601,6 +601,11 @@ export class ContentRepository
   }
 
   async completeIndexing(input: CompleteReelIndexCommand): Promise<boolean> {
+    const transcriptSegmentsJson =
+      input.transcriptSegments === undefined
+        ? null
+        : JSON.stringify(input.transcriptSegments);
+
     return await this.$transaction(async (transaction) => {
       const current = await transaction.reel.findFirst({
         where: {
@@ -630,6 +635,15 @@ export class ContentRepository
           "indexEmbeddingModel" = ${input.embeddingModel},
           "indexEmbeddingDimensions" = ${input.embeddingDimensions},
           "indexEmbeddingVersion" = ${input.embeddingVersion},
+          "transcript" = CASE
+            WHEN ${input.transcript !== undefined} THEN ${input.transcript ?? null}
+            ELSE "transcript"
+          END,
+          "transcriptSegments" = CASE
+            WHEN ${input.transcriptSegments !== undefined}
+              THEN ${transcriptSegmentsJson}::jsonb
+            ELSE "transcriptSegments"
+          END,
           "indexStatus" = ${input.chunkCount > 0 ? 'COMPLETED' : 'DEGRADED'}::"ReelIndexStatus",
           "status" = 'COMPLETED'::"ProcessingStatus",
           "processingStage" = 'READY',

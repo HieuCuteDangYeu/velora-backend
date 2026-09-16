@@ -147,6 +147,15 @@ export class ContentController {
     };
   }
 
+  private toListSerializable(reel: Reel): Record<string, unknown> {
+    const result = this.toSerializable(reel);
+    delete result['transcript'];
+    delete result['transcriptVtt'];
+    delete result['transcriptSegments'];
+    delete result['transcriptionAudioManifestKey'];
+    return result;
+  }
+
   private serializeCursor(
     cursor: {
       createdAt: Date;
@@ -997,7 +1006,7 @@ export class ContentController {
       });
 
       return {
-        items: result.items.map((item) => this.toSerializable(item)),
+        items: result.items.map((item) => this.toListSerializable(item)),
         nextCursor: this.serializeCursor(result.nextCursor),
         feedSessionId: result.feedSessionId,
         algorithmVersion: result.algorithmVersion,
@@ -1044,7 +1053,7 @@ export class ContentController {
 
       const result = await this.listReelsUseCase.execute(query);
       return {
-        items: result.items.map((r) => this.toSerializable(r)),
+        items: result.items.map((r) => this.toListSerializable(r)),
         nextCursor: this.serializeCursor(result.nextCursor),
       };
     } catch (error: unknown) {
@@ -1489,7 +1498,7 @@ export class ContentController {
     });
 
     return {
-      items: result.items.map((reel) => this.toSerializable(reel)),
+      items: result.items.map((reel) => this.toListSerializable(reel)),
       nextCursor: this.serializeCursor(result.nextCursor),
     };
   }

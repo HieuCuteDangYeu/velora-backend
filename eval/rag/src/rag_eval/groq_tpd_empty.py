@@ -8,7 +8,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
-from rag_eval.tpd_ledger import GroqDailyTokenLedger, LedgerPersistenceError, parse_timestamp
+from rag_eval.tpd_ledger import GroqDailyTokenLedger, parse_timestamp
 
 EMPTY_BASELINE_SCHEMA = "groq-tpd-empty-usage-baseline-v1"
 MODEL = "openai/gpt-oss-120b"
@@ -264,111 +264,8 @@ def empty_usage_tpd_headroom(
         return _unknown("TPD_PLANNED_BUDGET_MISMATCH")
     if _integer(payload.get("rateLimitCountedUsedTokens")) != 0:
         return _unknown("TPD_EMPTY_BASELINE_COUNT_INVALID")
-
-    observed_at = _fresh_observation(payload, current, max_age_seconds)
-    assert observed_at is not None
-    observed_at_text = observed_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    window_key = f"{current_date}:{bucket_timestamp}"
-    fingerprint = hashlib.sha256(
-        json.dumps(
-            {
-                "queryShape": payload["queryShape"],
-                "queryFromDateUtc": payload["queryFromDateUtc"],
-                "queryToDateUtc": payload["queryToDateUtc"],
-                "usageQueryFingerprint": query_fingerprint,
-                "bucketTimestamp": bucket_timestamp,
-                "uiState": payload["uiState"],
-                "previousBucketPositiveControl": payload["previousBucketPositiveControl"],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    try:
-        previous_baseline = ledger.latest_baseline(
-            provider="groq",
-            model=MODEL,
-            organization_scope="all-projects",
-            window_key=window_key,
-        )
-        baseline_id = ledger.initialize_baseline(
-            provider="groq",
-            model=MODEL,
-            observed_at=observed_at_text,
-            daily_limit_tokens=daily_limit,
-            baseline_used_tokens=0,
-            organization_scope="all-projects",
-            window_key=window_key,
-            baseline_fingerprint=fingerprint,
-            pricing_version=EMPTY_BASELINE_SCHEMA,
-            allow_refresh=True,
-        )
-        day_start = datetime.fromisoformat(f"{current_date}T00:00:00+00:00")
-        ledger_before_observation = ledger.usage_between(
-            MODEL, day_start, observed_at, include_start=True, include_end=False
-        )
-        ledger_after_observation = ledger.usage_between(
-            MODEL, observed_at, current, include_start=True, include_end=True
-        )
-    except LedgerPersistenceError:
-        return _unknown("TPD_EMPTY_BASELINE_LEDGER_UNAVAILABLE")
-    effective_used = ledger_before_observation + ledger_after_observation
-    ledger_used = effective_used
-    proven_remaining = max(0, daily_limit - effective_used)
-    unreconciled_ledger = ledger_before_observation + ledger_after_observation
-    epoch_proven_remaining = proven_remaining
-    epoch_ledger_used = effective_used
-    epoch_ledger_epoch = (
-        previous_baseline.get("ledgerEpoch")
-        if previous_baseline is not None
-        else baseline_id
-    )
-    baseline_refresh_of = (
-        previous_baseline.get("baselineId")
-        if previous_baseline is not None and previous_baseline.get("baselineId") != baseline_id
-        else previous_baseline.get("baselineRefreshOf")
-        if previous_baseline is not None
-        else None
-    )
-    return {
-        "status": "YES" if proven_remaining >= planned else "NO",
-        "reason": "EMPTY_CURRENT_WINDOW_TPD_BASELINE_EVALUATED",
-        "models": [
-            {
-                "model": MODEL,
-                "method": "EMPTY_CURRENT_WINDOW_VERIFIED",
-                "dailyLimitTokens": daily_limit,
-                "usageBucketTimestamp": bucket_timestamp,
-                "windowDateUtc": current_date,
-                "rateLimitCountedUsedTokens": 0,
-                "baselineUsedTokens": 0,
-                "ledgerUsedTokens": ledger_used,
-                "ledgerBeforeObservationTokens": ledger_before_observation,
-                "ledgerAfterObservationTokens": ledger_after_observation,
-                "unreconciledLedgerTokens": unreconciled_ledger,
-                "epochLedgerUsedTokens": epoch_ledger_used,
-                "knownUsedTokens": ledger_used,
-                "calculatedMinimumRemainingTokens": daily_limit,
-                "conservativeUsedTokensUpperBound": ledger_used,
-                "minimumProvenRemainingTokens": proven_remaining,
-                "epochMinimumProvenRemainingTokens": epoch_proven_remaining,
-                "effectiveCurrentDayUsedTokens": effective_used,
-                "freshObservedUsedTokens": 0,
-                "plannedFullRunTokens": planned,
-                "baselineId": baseline_id,
-                "baselineFingerprint": fingerprint,
-                "baselineRefreshOf": baseline_refresh_of,
-                "ledgerEpoch": epoch_ledger_epoch,
-                "observedAt": observed_at_text,
-                "organizationScope": "all-projects",
-                "source": payload["source"],
-                "verifiedQuietPeriodSeconds": quiet_period,
-                "responseStatus": 200,
-                "currentRecordCount": 0,
-                "currentTargetModelRecordCount": 0,
-                "previousBucketPositiveControl": True,
-                "usageQueryFingerprint": query_fingerprint,
-                "headroom": proven_remaining >= planned,
-            }
-        ],
-    }
+    # A current UTC-day empty response proves only that this query returned no
+    # rows. Groq's effective TPD accounting can include an overlapping/rolling
+    # provider window, so zero current-day rows cannot prove zero TPD usage.
+    # Exact usage or rolling metrics must establish the effective-window bound.
+    return _unknown("TPD_EMPTY_BASELINE_EFFECTIVE_WINDOW_UNPROVEN")

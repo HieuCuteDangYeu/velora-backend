@@ -8,6 +8,7 @@ import pytest
 from rag_eval import cli
 from rag_eval.cli import (
     _build_live_runner_args,
+    _reuse_saved_deterministic_report,
     _saved_runner_report,
     _validate_source_summary,
     validate_definitions_report,
@@ -106,6 +107,49 @@ def test_live_rejects_ambiguous_run_id_and_resume():
     with pytest.raises(SystemExit, match="either --run-id or --resume"):
         _build_live_runner_args(
             _runner_args(run_id="run-a", resume="run-b"), Path("/tmp/definitions.json")
+        )
+
+
+def _saved_case(*, trace_id="trace-1"):
+    return {
+        "caseId": "IN1001-1",
+        "datasetVersion": "rag-frozen-ami-v3",
+        "variant": {"productionSha": "a" * 40},
+        "hardGatePassed": True,
+        "deterministic": {"grounded": 1, "accessControlViolations": 0},
+        "execution": {
+            "trace": {
+                "productionExecutionId": "execution-1",
+                "ragTraceId": trace_id,
+            }
+        },
+    }
+
+
+def test_saved_resume_reuses_existing_deterministic_report_when_provenance_matches(tmp_path):
+    directory = tmp_path / "source-run"
+    directory.mkdir()
+    case = _saved_case()
+    (directory / "cases.jsonl").write_text(json.dumps(case) + "\n")
+    summary = {"runId": "source-run", "caseCount": 1, "hardGatePassed": True}
+    (directory / "summary.json").write_text(json.dumps(summary))
+
+    assert _reuse_saved_deterministic_report(directory, [case], "source-run") == summary
+
+
+def test_saved_resume_rejects_existing_report_from_different_provenance(tmp_path):
+    directory = tmp_path / "source-run"
+    directory.mkdir()
+    (directory / "cases.jsonl").write_text(json.dumps(_saved_case()) + "\n")
+    (directory / "summary.json").write_text(
+        json.dumps({"runId": "source-run", "caseCount": 1, "hardGatePassed": True})
+    )
+
+    with pytest.raises(RuntimeError, match="provenance mismatch"):
+        _reuse_saved_deterministic_report(
+            directory,
+            [_saved_case(trace_id="trace-other")],
+            "source-run",
         )
 
 

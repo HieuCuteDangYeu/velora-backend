@@ -104,14 +104,16 @@ def evaluate(tmp_path, *, payload=None, now=NOW):
     )
 
 
-def test_authenticated_empty_current_day_response_establishes_zero_baseline(tmp_path):
+def test_authenticated_empty_current_day_response_does_not_prove_effective_tpd_headroom(
+    tmp_path,
+):
     result = evaluate(tmp_path)
 
-    assert result["status"] == "YES"
-    assert result["reason"] == "EMPTY_CURRENT_WINDOW_TPD_BASELINE_EVALUATED"
-    assert result["models"][0]["rateLimitCountedUsedTokens"] == 0
-    assert result["models"][0]["ledgerUsedTokens"] == 0
-    assert result["models"][0]["minimumProvenRemainingTokens"] == 200_000
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "TPD_EMPTY_BASELINE_EFFECTIVE_WINDOW_UNPROVEN",
+    }
+    assert not (tmp_path / "ledger.jsonl").exists()
 
 
 def test_missing_target_row_in_nonempty_response_does_not_imply_zero(tmp_path):
@@ -207,24 +209,16 @@ def test_current_empty_with_failed_health_control_is_unknown(tmp_path):
     }
 
 
-def test_zero_baseline_initializes_ledger_once(tmp_path):
+def test_empty_baseline_never_initializes_a_zero_usage_ledger(tmp_path):
     first = evaluate(tmp_path)
     second = evaluate(tmp_path)
-    rows = [
-        json.loads(line)
-        for line in (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
 
-    assert first["status"] == "YES"
-    assert second["models"][0]["baselineId"] == first["models"][0]["baselineId"]
-    assert len(rows) == 1
-    assert rows[0]["recordType"] == "BASELINE"
-    assert rows[0]["baselineUsedTokens"] == 0
-    assert rows[0]["windowKey"] == "2026-09-14:1789344000"
+    assert first["status"] == "UNKNOWN"
+    assert second == first
+    assert not (tmp_path / "ledger.jsonl").exists()
 
 
-def test_first_judge_usage_reduces_remaining_capacity(tmp_path):
-    first = evaluate(tmp_path)
+def test_existing_ledger_usage_cannot_make_empty_baseline_authoritative(tmp_path):
     GroqDailyTokenLedger(tmp_path / "ledger.jsonl").record(
         {
             "requestId": "judge-1",
@@ -237,14 +231,13 @@ def test_first_judge_usage_reduces_remaining_capacity(tmp_path):
 
     resumed = evaluate(tmp_path, now=NOW + timedelta(minutes=2))
 
-    assert resumed["status"] == "YES"
-    assert resumed["models"][0]["baselineId"] == first["models"][0]["baselineId"]
-    assert resumed["models"][0]["ledgerUsedTokens"] == 1_000
-    assert resumed["models"][0]["minimumProvenRemainingTokens"] == 199_000
+    assert resumed == {
+        "status": "UNKNOWN",
+        "reason": "TPD_EMPTY_BASELINE_EFFECTIVE_WINDOW_UNPROVEN",
+    }
 
 
-def test_same_day_empty_refresh_preserves_prior_uncertainty_without_second_epoch(tmp_path):
-    first = evaluate(tmp_path)
+def test_same_day_empty_refresh_remains_non_authoritative(tmp_path):
     ledger = GroqDailyTokenLedger(tmp_path / "ledger.jsonl")
     ledger.record(
         {
@@ -261,12 +254,10 @@ def test_same_day_empty_refresh_preserves_prior_uncertainty_without_second_epoch
         now=NOW + timedelta(minutes=3),
     )
 
-    assert refreshed["status"] == "YES"
-    assert refreshed["models"][0]["baselineId"] != first["models"][0]["baselineId"]
-    assert refreshed["models"][0]["baselineRefreshOf"] == first["models"][0]["baselineId"]
-    assert refreshed["models"][0]["ledgerEpoch"] == first["models"][0]["ledgerEpoch"]
-    assert refreshed["models"][0]["effectiveCurrentDayUsedTokens"] == 270
-    assert refreshed["models"][0]["minimumProvenRemainingTokens"] == 199_730
+    assert refreshed == {
+        "status": "UNKNOWN",
+        "reason": "TPD_EMPTY_BASELINE_EFFECTIVE_WINDOW_UNPROVEN",
+    }
 
 
 def test_duplicate_ledger_accounting_is_idempotent(tmp_path):
@@ -315,7 +306,10 @@ def test_tpm_and_rpd_headers_cannot_change_empty_tpd_baseline(tmp_path):
         ),
     )
 
-    assert result["status"] == "YES"
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "TPD_EMPTY_BASELINE_EFFECTIVE_WINDOW_UNPROVEN",
+    }
 
 
 def test_exact_usage_row_takes_precedence_over_empty_attestation(tmp_path):

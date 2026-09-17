@@ -69,6 +69,38 @@ def _dicts(experiment_result: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _deterministic_resume_signature(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "caseId": case.get("caseId"),
+            "datasetVersion": case.get("datasetVersion"),
+            "productionSha": case.get("variant", {}).get("productionSha"),
+            "hardGatePassed": case.get("hardGatePassed"),
+            "deterministic": case.get("deterministic"),
+            "productionExecutionId": case.get("execution", {})
+            .get("trace", {})
+            .get("productionExecutionId"),
+            "ragTraceId": case.get("execution", {}).get("trace", {}).get("ragTraceId"),
+        }
+        for case in sorted(cases, key=lambda item: str(item.get("caseId")))
+    ]
+
+
+def _reuse_saved_deterministic_report(
+    directory: Path, cases: list[dict[str, Any]], run_id: str
+) -> dict[str, Any]:
+    try:
+        existing_cases = load_cases(directory)
+        summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("existing deterministic report is unreadable") from error
+    if _deterministic_resume_signature(existing_cases) != _deterministic_resume_signature(cases):
+        raise RuntimeError("existing deterministic report provenance mismatch")
+    if summary.get("runId") != run_id or summary.get("caseCount") != len(cases):
+        raise RuntimeError("existing deterministic report summary mismatch")
+    return summary
+
+
 def _variant(args: argparse.Namespace) -> dict[str, Any]:
     try:
         git_sha = subprocess.run(
@@ -452,9 +484,9 @@ async def run_live(args: argparse.Namespace) -> Path:
     )
     deterministic_cases = _dicts(result)
     deterministic_directory = RESULTS / run_id
-    if multi_day_recovery and deterministic_directory.exists():
+    if args.resume and deterministic_directory.exists():
         directory = deterministic_directory
-        summary = build_summary(deterministic_cases, run_id)
+        summary = _reuse_saved_deterministic_report(directory, deterministic_cases, run_id)
     else:
         directory = write_report(deterministic_cases, run_id, RESULTS)
         summary = json.loads((directory / "summary.json").read_text())

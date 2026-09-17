@@ -42,6 +42,10 @@ _RATE_LIMIT_HEADERS = {
     "x-ratelimit-reset-tokens",
 }
 _RETRY_AFTER_BODY = re.compile(r"try again in\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|s|m)?", re.I)
+_ACCOUNT_TPD_BODY = re.compile(
+    r"limit\s+([0-9][0-9,]*)\s*,\s*used\s+([0-9][0-9,]*)\s*,\s*requested\s+([0-9][0-9,]*)",
+    re.I,
+)
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -210,6 +214,22 @@ def _is_account_quota_error(status: int | None, message: str, provider: dict[str
         return True
     return "quota" in normalized and any(
         marker in normalized for marker in ("exhausted", "exceeded", "reached")
+    )
+
+
+def _account_tpd_tokens(error: BaseException) -> tuple[int, int, int] | None:
+    provider = _provider_error(error)
+    try:
+        details = json.dumps(provider, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        details = ""
+    match = _ACCOUNT_TPD_BODY.search(f"{error} {details}")
+    if not match:
+        return None
+    return (
+        int(match.group(1).replace(",", "")),
+        int(match.group(2).replace(",", "")),
+        int(match.group(3).replace(",", "")),
     )
 
 
@@ -635,6 +655,9 @@ class JudgeUsageTracker:
                         _response_headers.set({})
                         category, transient, provider_code = classify_judge_error(status, error)
                         error_text = str(error)
+                        account_tpd = (
+                            _account_tpd_tokens(error) if category == "ACCOUNT_LIMITED" else None
+                        )
                         delay = retry_after_seconds(headers, error_text)
                         input_tokens = _usage_tokens(error, "prompt_tokens")
                         output_tokens = _usage_tokens(error, "completion_tokens")
@@ -684,6 +707,11 @@ class JudgeUsageTracker:
                                 "configuredTpmLimit": self._limiter.tpm_limit,
                                 "configuredTpmTarget": self._limiter.tpm_target,
                                 "configuredConcurrency": self._limiter.concurrency,
+                                "providerDailyLimitTokens": account_tpd[0] if account_tpd else None,
+                                "providerDailyUsedTokens": account_tpd[1] if account_tpd else None,
+                                "providerDailyRequestedTokens": (
+                                    account_tpd[2] if account_tpd else None
+                                ),
                             },
                         )
                         ledger_result = self._record_ledger(
@@ -705,9 +733,16 @@ class JudgeUsageTracker:
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             total_tokens=actual_tokens,
+                            counted_tokens_floor=account_tpd[2] if account_tpd else None,
+                            provider_quota=account_tpd,
                         )
                         self._account_recovery(ledger_result)
                         active_recovery_request = None
+                        if category == "ACCOUNT_LIMITED" and self._recovery_store is not None:
+                            self._recovery_store.close_current("ACCOUNT_TPD_EXHAUSTED")
+                            await self._limiter.release(reservation)
+                            released = True
+                            raise DailyRecoveryDeferred("ACCOUNT_TPD_EXHAUSTED") from error
                         if not transient or attempt > self._max_retries:
                             await self._limiter.release(reservation)
                             released = True
@@ -819,6 +854,8 @@ class JudgeUsageTracker:
         input_tokens: int | None,
         output_tokens: int | None,
         total_tokens: int | None,
+        counted_tokens_floor: int | None = None,
+        provider_quota: tuple[int, int, int] | None = None,
     ) -> tuple[str, int, str, str] | None:
         if self._ledger is None:
             return None
@@ -830,6 +867,8 @@ class JudgeUsageTracker:
         counted_tokens = provider_total or (
             estimated_input_tokens + reserved_output_tokens + self._limiter.safety_tokens
         )
+        if counted_tokens_floor is not None:
+            counted_tokens = max(counted_tokens, counted_tokens_floor)
         model_name = str(model)
         stable_request_id = (
             request_id
@@ -864,6 +903,14 @@ class JudgeUsageTracker:
             "providerCategory": provider_category,
             "attempt": attempt,
         }
+        if provider_quota is not None:
+            record.update(
+                {
+                    "providerDailyLimitTokens": provider_quota[0],
+                    "providerDailyUsedTokens": provider_quota[1],
+                    "providerDailyRequestedTokens": provider_quota[2],
+                }
+            )
         if self._recovery_store is not None:
             epoch = self._recovery_store.request_epoch(stable_request_id)
             if epoch is None:

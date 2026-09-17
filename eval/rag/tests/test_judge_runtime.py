@@ -12,6 +12,7 @@ from rag_eval.judge_runtime import (
     estimate_input_tokens,
     retry_after_seconds,
 )
+from rag_eval.recovery import DailyRecoveryDeferred
 
 
 @pytest.fixture(autouse=True)
@@ -154,6 +155,40 @@ class FakeDailyQuotaError(Exception):
             "x-ratelimit-reset-tokens": "17s",
         }
     )
+
+
+class FakeDetailedDailyQuotaError(FakeDailyQuotaError):
+    body = {
+        "error": {
+            "code": "rate_limit_exceeded",
+            "message": (
+                "Rate limit reached on tokens per day (TPD): "
+                "Limit 200000, Used 198956, Requested 1677"
+            ),
+        }
+    }
+
+
+class FakeRecoveryStore:
+    def __init__(self):
+        self.accounted = []
+        self.closed_reason = None
+
+    def reconcile_ledger(self, _ledger):
+        return 0
+
+    def prepare_request(self, **kwargs):
+        return {"requestId": "recovery-request-1", "attempt": kwargs["attempt"]}
+
+    def request_epoch(self, _request_id):
+        return {"ledgerEpoch": "epoch-1", "windowDateUtc": "2026-09-17"}
+
+    def mark_accounted(self, request_id, counted_tokens, **kwargs):
+        self.accounted.append((request_id, counted_tokens, kwargs))
+
+    def close_current(self, reason):
+        self.closed_reason = reason
+        return True
 
 
 class FakeGroqSchemaError(Exception):
@@ -327,6 +362,36 @@ async def test_daily_quota_429_is_not_retried(monkeypatch):
     assert client.chat.completions.calls == 1
     assert calls[0]["providerCategory"] == "ACCOUNT_LIMITED"
     assert tracker.limiter_stats()["providerRemainingTokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_authoritative_daily_quota_429_accounts_and_defers_recovery(monkeypatch):
+    monkeypatch.setenv("RAGAS_JUDGE_429_MAX_RETRIES", "2")
+    monkeypatch.setenv("RAGAS_RATE_LIMIT_JITTER_MAX_SECONDS", "0")
+    monkeypatch.setenv("RAGAS_TOKEN_ESTIMATE_SAFETY_TOKENS", "0")
+    client = FakeClient([FakeDetailedDailyQuotaError()])
+    tracker = JudgeUsageTracker(client, provider="groq")
+    recovery = FakeRecoveryStore()
+    tracker.configure_multiday_recovery(recovery)
+    tracker.begin("run:case")
+    tracker.set_metric("faithfulness")
+
+    with pytest.raises(DailyRecoveryDeferred, match="ACCOUNT_TPD_EXHAUSTED"):
+        await client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "judge"}],
+            max_tokens=32,
+        )
+
+    rows = ledger_rows()
+    assert client.chat.completions.calls == 1
+    assert recovery.closed_reason == "ACCOUNT_TPD_EXHAUSTED"
+    assert recovery.accounted[0][1] >= 1_677
+    assert rows[0]["providerCategory"] == "ACCOUNT_LIMITED"
+    assert rows[0]["providerDailyLimitTokens"] == 200_000
+    assert rows[0]["providerDailyUsedTokens"] == 198_956
+    assert rows[0]["providerDailyRequestedTokens"] == 1_677
+    assert rows[0]["countedTokens"] >= 1_677
 
 
 class SlowCompletions:

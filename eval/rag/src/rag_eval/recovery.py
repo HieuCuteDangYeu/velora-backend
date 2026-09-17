@@ -26,13 +26,10 @@ DEFAULT_TOTAL_RECOVERY_ESTIMATE_TOKENS = 231_125
 DEFAULT_TPD_BASELINE_MAX_AGE_SECONDS = 3_600
 ACCEPTED_BASELINE_METHODS = {
     "EXACT_TOKEN_USAGE_BASELINE",
-    "EMPTY_CURRENT_WINDOW_VERIFIED",
 }
 
 AUTHORIZED_DATASET_VERSION = "rag-frozen-ami-v3"
 AUTHORIZED_DATASET_SHA256 = "856e34483522da55e8d09cf0ab542b29add224f49572ae98f363a9db2520d391"
-AUTHORIZED_SOURCE_RUN_ID = "production-rag-frozen-ami-v3-a27fb356-20260912-02"
-AUTHORIZED_PRODUCTION_SHA = "a27fb35680d685321d2d408e17fc96d8bbe2b6b6"
 AUTHORIZED_JUDGE_PROVIDER = "groq"
 AUTHORIZED_JUDGE_MODEL = "openai/gpt-oss-120b"
 
@@ -128,8 +125,6 @@ def validate_authorized_recovery_identity(identity: dict[str, Any]) -> None:
     expected = {
         "datasetVersion": AUTHORIZED_DATASET_VERSION,
         "datasetSha256": AUTHORIZED_DATASET_SHA256,
-        "sourceRunId": AUTHORIZED_SOURCE_RUN_ID,
-        "productionSha": AUTHORIZED_PRODUCTION_SHA,
         "judgeProvider": AUTHORIZED_JUDGE_PROVIDER,
         "judgeModel": AUTHORIZED_JUDGE_MODEL,
     }
@@ -138,9 +133,23 @@ def validate_authorized_recovery_identity(identity: dict[str, Any]) -> None:
         raise RecoveryStateError(
             "multi-day recovery authorization identity mismatch: " + ",".join(sorted(mismatched))
         )
+    source_run_id = identity.get("sourceRunId")
+    if not isinstance(source_run_id, str) or not source_run_id.strip():
+        raise RecoveryStateError("multi-day recovery sourceRunId is missing")
+    production_sha = identity.get("productionSha")
+    if (
+        not isinstance(production_sha, str)
+        or len(production_sha) != 40
+        or any(character not in "0123456789abcdef" for character in production_sha.lower())
+    ):
+        raise RecoveryStateError("multi-day recovery productionSha is invalid")
     for key in ("sourceProvenanceFingerprint", "semanticContextBindingSha256"):
         value = identity.get(key)
-        if not isinstance(value, str) or len(value) != 64:
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value.lower())
+        ):
             raise RecoveryStateError(f"multi-day recovery {key} is missing")
 
 

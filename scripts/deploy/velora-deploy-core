@@ -616,8 +616,6 @@ normalize_compose_json() {
 }
 
 validate_target_files() {
-  local nginx_image prometheus_image
-
   log "==> Creating staging worktree for target $(safe_sha_prefix "$TARGET_SHA")..."
   STAGING_DIR="$(make_worktree "$TARGET_SHA" target)"
 
@@ -629,18 +627,24 @@ validate_target_files() {
 
   TARGET_COMPOSE_JSON="$STAGING_DIR/.velora-compose-target.json"
   render_compose_json "$STAGING_DIR" "__COMPARE__" >"$TARGET_COMPOSE_JSON"
+}
+
+validate_target_infrastructure() {
+  local nginx_image prometheus_image
 
   nginx_image="$(jq -r '.services.nginx.image // empty' "$TARGET_COMPOSE_JSON")"
   prometheus_image="$(jq -r '.services.prometheus.image // empty' "$TARGET_COMPOSE_JSON")"
 
-  if [[ -f "$STAGING_DIR/infra/nginx/nginx.conf" && -n "$nginx_image" ]]; then
+  if contains nginx "${INFRA_RECONCILE_SERVICES[@]}" \
+    && [[ -f "$STAGING_DIR/infra/nginx/nginx.conf" && -n "$nginx_image" ]]; then
     log "==> Validating target Nginx configuration with $nginx_image..."
     docker run --rm \
       -v "$STAGING_DIR/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
       "$nginx_image" nginx -t >/dev/null
   fi
 
-  if [[ -f "$STAGING_DIR/infra/monitoring/prometheus/prometheus.yml" && -n "$prometheus_image" ]]; then
+  if contains prometheus "${INFRA_RECONCILE_SERVICES[@]}" \
+    && [[ -f "$STAGING_DIR/infra/monitoring/prometheus/prometheus.yml" && -n "$prometheus_image" ]]; then
     log "==> Validating target Prometheus configuration with $prometheus_image..."
     docker run --rm \
       --user 0:0 \
@@ -1737,6 +1741,8 @@ perform_deployment() {
     warn "Review the .env change, then run: velora-deploy --force"
     exit 22
   fi
+
+  validate_target_infrastructure
 
   if [[ "$TARGET_SHA" == "$LAST_DEPLOYED_SHA" && "$FORCE" == true ]]; then
     CHANGED_FILES=""

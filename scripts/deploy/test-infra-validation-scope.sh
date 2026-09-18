@@ -65,14 +65,8 @@ docker() {
 }
 
 cleanup_unused_velora_application_sha_tags false
-grep -q '^running-id
-
-printf 'deploy scoping: PASS\n'
- "$calls"
-grep -q '^exited-id
-
-printf 'deploy scoping: PASS\n'
- "$calls"
+grep -q '^running-id$' "$calls"
+grep -q '^exited-id$' "$calls"
 ! grep -q 'created-id' "$calls"
 ! grep -q 'removing-id' "$calls"
 

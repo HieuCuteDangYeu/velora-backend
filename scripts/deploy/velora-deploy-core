@@ -1514,11 +1514,13 @@ cleanup_unused_velora_application_sha_tags() {
   keep_ids_file="$(mktemp)"
   : >"$keep_ids_file"
 
-  # Preserve every image referenced by any running/stopped container.
+  # Preserve images referenced by stable running/stopped containers. Incomplete
+  # Created/removing containers can block docker inspect indefinitely.
   while IFS= read -r image_id; do
     [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
   done < <(
-    docker ps -aq \
+    docker ps -a --format '{{.ID}} {{.State}}' \
+      | awk '$2 != "created" && $2 != "removing" { print $1 }' \
       | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null \
       | sort -u
   )

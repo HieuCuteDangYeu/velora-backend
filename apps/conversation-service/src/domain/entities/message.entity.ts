@@ -63,6 +63,9 @@ export interface MessageMedia {
   status?: 'ready' | 'processing' | 'failed';
   failureReason?: string;
   reelId?: string;
+  reelSourceOrientation?: 'PORTRAIT' | 'LANDSCAPE' | 'SQUARE';
+  reelSourceAspectRatio?: number;
+  reelPlaybackPresentation?: 'PORTRAIT_COVER' | 'FIT_WITH_LETTERBOX';
   reelOwnerId?: string;
   reelOwnerUsername?: string;
   reelOwnerAvatarUrl?: string;

@@ -1049,6 +1049,12 @@ export class PrismaChatRepository implements IChatRepository {
     const status = (value as Record<string, unknown>).status;
     const failureReason = (value as Record<string, unknown>).failureReason;
     const reelId = (value as Record<string, unknown>).reelId;
+    const reelSourceOrientation = (value as Record<string, unknown>)
+      .reelSourceOrientation;
+    const reelSourceAspectRatio = (value as Record<string, unknown>)
+      .reelSourceAspectRatio;
+    const reelPlaybackPresentation = (value as Record<string, unknown>)
+      .reelPlaybackPresentation;
     const reelOwnerId = (value as Record<string, unknown>).reelOwnerId;
     const reelOwnerUsername = (value as Record<string, unknown>)
       .reelOwnerUsername;
@@ -1074,6 +1080,18 @@ export class PrismaChatRepository implements IChatRepository {
         : {}),
       ...(typeof failureReason === 'string' ? { failureReason } : {}),
       ...(typeof reelId === 'string' ? { reelId } : {}),
+      ...(reelSourceOrientation === 'PORTRAIT' ||
+      reelSourceOrientation === 'LANDSCAPE' ||
+      reelSourceOrientation === 'SQUARE'
+        ? { reelSourceOrientation }
+        : {}),
+      ...(typeof reelSourceAspectRatio === 'number'
+        ? { reelSourceAspectRatio }
+        : {}),
+      ...(reelPlaybackPresentation === 'PORTRAIT_COVER' ||
+      reelPlaybackPresentation === 'FIT_WITH_LETTERBOX'
+        ? { reelPlaybackPresentation }
+        : {}),
       ...(typeof reelOwnerId === 'string' ? { reelOwnerId } : {}),
       ...(typeof reelOwnerUsername === 'string' ? { reelOwnerUsername } : {}),
       ...(typeof reelOwnerAvatarUrl === 'string' ? { reelOwnerAvatarUrl } : {}),

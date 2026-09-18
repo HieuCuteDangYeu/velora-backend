@@ -1,4 +1,5 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
+import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { PublicUserProfile } from '@common/user/interfaces/public-user-profile.types';
 import type { Reel } from '@content/domain/entities/reel.entity';
 import type {
@@ -91,6 +92,15 @@ export class ConversationMessageAdapter implements IConversationMessageService {
           mimeType: 'application/vnd.velora.reel',
           status: 'ready',
           reelId: input.reel.id,
+          width: input.reel.sourceEffectiveWidth,
+          height: input.reel.sourceEffectiveHeight,
+          reelSourceOrientation: input.reel.sourceOrientation,
+          reelSourceAspectRatio: input.reel.sourceAspectRatio,
+          reelPlaybackPresentation: resolveReelPlaybackPresentation({
+            mediaEdit: input.reel.mediaEdit,
+            sourceOrientation: input.reel.sourceOrientation,
+            sourceLengthClass: input.reel.sourceLengthClass,
+          }),
           reelOwnerId: input.reel.userId,
           ...(reelOwner?.username
             ? { reelOwnerUsername: reelOwner.username }

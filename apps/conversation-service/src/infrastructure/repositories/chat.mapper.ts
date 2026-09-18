@@ -120,6 +120,9 @@ export class ChatMapper {
     const status = record.status;
     const failureReason = record.failureReason;
     const reelId = record.reelId;
+    const reelSourceOrientation = record.reelSourceOrientation;
+    const reelSourceAspectRatio = record.reelSourceAspectRatio;
+    const reelPlaybackPresentation = record.reelPlaybackPresentation;
     const reelOwnerId = record.reelOwnerId;
     const reelOwnerUsername = record.reelOwnerUsername;
     const reelOwnerAvatarUrl = record.reelOwnerAvatarUrl;
@@ -141,6 +144,18 @@ export class ChatMapper {
         : {}),
       ...(typeof failureReason === 'string' ? { failureReason } : {}),
       ...(typeof reelId === 'string' ? { reelId } : {}),
+      ...(reelSourceOrientation === 'PORTRAIT' ||
+      reelSourceOrientation === 'LANDSCAPE' ||
+      reelSourceOrientation === 'SQUARE'
+        ? { reelSourceOrientation }
+        : {}),
+      ...(typeof reelSourceAspectRatio === 'number'
+        ? { reelSourceAspectRatio }
+        : {}),
+      ...(reelPlaybackPresentation === 'PORTRAIT_COVER' ||
+      reelPlaybackPresentation === 'FIT_WITH_LETTERBOX'
+        ? { reelPlaybackPresentation }
+        : {}),
       ...(typeof reelOwnerId === 'string' ? { reelOwnerId } : {}),
       ...(typeof reelOwnerUsername === 'string' ? { reelOwnerUsername } : {}),
       ...(typeof reelOwnerAvatarUrl === 'string' ? { reelOwnerAvatarUrl } : {}),

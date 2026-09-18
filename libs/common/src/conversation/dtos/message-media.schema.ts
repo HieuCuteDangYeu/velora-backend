@@ -18,6 +18,11 @@ export const MessageMediaSchema = z.object({
   status: MessageMediaStatusSchema.optional(),
   failureReason: z.string().min(1).optional(),
   reelId: z.string().min(1).optional(),
+  reelSourceOrientation: z.enum(['PORTRAIT', 'LANDSCAPE', 'SQUARE']).optional(),
+  reelSourceAspectRatio: z.number().finite().positive().optional(),
+  reelPlaybackPresentation: z
+    .enum(['PORTRAIT_COVER', 'FIT_WITH_LETTERBOX'])
+    .optional(),
   reelOwnerId: z.string().min(1).optional(),
   reelOwnerUsername: z.string().min(1).optional(),
   reelOwnerAvatarUrl: z.string().min(1).optional(),

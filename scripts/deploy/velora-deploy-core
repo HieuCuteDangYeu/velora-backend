@@ -1519,10 +1519,10 @@ cleanup_unused_velora_application_sha_tags() {
   while IFS= read -r image_id; do
     [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
   done < <(
-    docker ps -a --format '{{.ID}} {{.State}}' \
-      | awk '$2 != "created" && $2 != "removing" { print $1 }' \
-      | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null \
-      | sort -u
+    while read -r container_id state; do
+      [[ "$state" == "created" || "$state" == "removing" ]] && continue
+      docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true
+    done < <(docker ps -a --format '{{.ID}} {{.State}}')
   )
 
   # Preserve the exact previous-release images kept for one-step rollback.

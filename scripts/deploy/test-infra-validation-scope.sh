@@ -2,10 +2,10 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$repo_root/scripts/deploy/velora-deploy-core"
-
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+export VELORA_STATE_DIR="$tmp_dir/state"
+source "$repo_root/scripts/deploy/velora-deploy-core"
 
 STAGING_DIR="$tmp_dir/staging"
 TARGET_COMPOSE_JSON="$tmp_dir/compose.json"
@@ -35,4 +35,38 @@ validate_target_infrastructure
 grep -q 'nginx:alpine nginx -t' "$calls"
 ! grep -q 'prom/prometheus' "$calls"
 
-printf 'infra validation scoping: PASS\n'
+: >"$calls"
+read_env_value() {
+  return 0
+}
+
+docker() {
+  local command="$1"
+  shift
+
+  case "$command" in
+    ps)
+      printf '%s\n' \
+        'created-id created' \
+        'running-id running' \
+        'exited-id exited' \
+        'removing-id removing'
+      ;;
+    inspect)
+      [[ "$1" == "--format" ]]
+      shift 2
+      printf '%s\n' "$*" >>"$calls"
+      local id
+      for id in "$@"; do
+        printf 'image-%s\n' "$id"
+      done
+      ;;
+  esac
+}
+
+cleanup_unused_velora_application_sha_tags false
+grep -q 'running-id exited-id' "$calls"
+! grep -q 'created-id' "$calls"
+! grep -q 'removing-id' "$calls"
+
+printf 'deploy scoping: PASS\n'

@@ -21,6 +21,28 @@ const series = {
 };
 
 describe('ReelSeriesUseCase', () => {
+  it('lists only the current owner series with the requested cursor filters', async () => {
+    const cursor = { createdAt: new Date('2026-09-18T00:00:00.000Z'), id: 'series-0' };
+    const repository = {
+      listReelSeries: jest.fn().mockResolvedValue({ items: [series], nextCursor: cursor }),
+    };
+    const useCase = new ReelSeriesUseCase(repository as never, {} as never);
+
+    const result = await useCase.listOwned('user-1', {
+      visibility: 'friends',
+      limit: 12,
+      cursor,
+    });
+
+    expect(repository.listReelSeries).toHaveBeenCalledWith({
+      ownerId: 'user-1',
+      visibility: 'friends',
+      limit: 12,
+      cursor,
+    });
+    expect(result).toEqual({ items: [series], nextCursor: cursor });
+  });
+
   it('appends an owned reel using the next episode number', async () => {
     const repository = {
       findReelSeriesById: jest.fn().mockResolvedValue(series),

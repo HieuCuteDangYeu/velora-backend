@@ -1,6 +1,7 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
+import { ListReelSeriesQuerySchema } from '@common/content/dtos/list-reel-series.dto';
 import {
   AddReelToSeriesSchema,
   CreateReelSeriesSchema,
@@ -295,6 +296,29 @@ export class ContentController {
     } catch (error: unknown) {
       this.throwReelSeriesError(error, 'Create Reel Series');
     }
+  }
+
+  @MessagePattern('content.list_owned_reel_series')
+  async listOwnedReelSeries(
+    @Payload() data: { ownerId: string; query?: unknown },
+  ) {
+    const parsed = ListReelSeriesQuerySchema.safeParse(data?.query ?? {});
+    if (!data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series listing',
+      });
+    }
+
+    const result = await this.reelSeriesUseCase.listOwned(
+      data.ownerId.trim(),
+      parsed.data,
+    );
+
+    return {
+      items: result.items.map((series) => this.toReelSeriesSerializable(series)),
+      nextCursor: this.serializeCursor(result.nextCursor),
+    };
   }
 
   @MessagePattern('content.get_reel_series')

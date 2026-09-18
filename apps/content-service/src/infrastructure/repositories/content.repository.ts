@@ -26,6 +26,7 @@ import {
   ReelProfileContextQuery,
   ReelProfileContextResult,
   ReelSeriesCreateData,
+  ReelSeriesListQuery,
   ReelSeriesUpdateData,
   ReelShareCreateInput,
   ReelShareLinkCreateInput,
@@ -754,6 +755,13 @@ export class ContentRepository
 
   async findReelSeriesById(id: string): Promise<ReelSeries | null> {
     return this.reelSeriesRepository.findReelSeriesById(id);
+  }
+
+  async listReelSeries(query: ReelSeriesListQuery): Promise<{
+    items: ReelSeries[];
+    nextCursor: ReelCursor | null;
+  }> {
+    return this.reelSeriesRepository.listReelSeries(query);
   }
 
   async updateReelSeries(

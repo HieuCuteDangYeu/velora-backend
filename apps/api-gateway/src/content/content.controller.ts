@@ -10,13 +10,17 @@ import {
 } from '@common/content/dtos/reel-series.dto';
 import { FriendsReelsQueryDto } from '@common/content/dtos/friends-reels-query.dto';
 import { GetReelContextQueryDto } from '@common/content/dtos/get-reel-context.dto';
+import { ListReelSeriesQueryDto } from '@common/content/dtos/list-reel-series.dto';
 import { ListReelsQueryDto } from '@common/content/dtos/list-reels.dto';
 import { RecommendedReelsQueryDto } from '@common/content/dtos/recommended-reels-query.dto';
 import { ShareReelDto } from '@common/content/dtos/share-reel.dto';
 import { TrackReelEventsDto } from '@common/content/dtos/track-reel-events.dto';
 import { UpdateReelDto } from '@common/content/dtos/update-reel.dto';
 import { ReelProfileContextResponse } from '@common/content/interfaces/reel-context-response.interface';
-import { ReelSeriesResponse } from '@common/content/interfaces/reel-series.interface';
+import {
+  PaginatedReelSeries,
+  ReelSeriesResponse,
+} from '@common/content/interfaces/reel-series.interface';
 import { ReelProcessingStatus } from '@common/content/interfaces/reel-processing-status.interface';
 import {
   PaginatedReels,
@@ -156,6 +160,32 @@ export class ContentController {
     );
 
     return this.enrichReelSeries(series);
+  }
+
+  @Get('series')
+  @ApiOperation({ summary: 'List reel series owned by the current user' })
+  async listOwnedReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: ListReelSeriesQueryDto,
+  ): Promise<PaginatedReelSeries<ReelFeedListItem>> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<{ items: ReelSeries[]; nextCursor: string | null }>(
+          'content.list_owned_reel_series',
+          {
+            ownerId: request.user!.id,
+            query,
+          },
+        )
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return {
+      items: await Promise.all(
+        result.items.map((series) => this.enrichReelSeries(series)),
+      ),
+      nextCursor: result.nextCursor,
+    };
   }
 
   @Get('series/:id')

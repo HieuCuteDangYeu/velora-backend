@@ -33,6 +33,20 @@ export class ReelSeriesUseCase {
     });
   }
 
+  listOwned(
+    ownerId: string,
+    query: {
+      visibility?: 'public' | 'friends' | 'private';
+      limit?: number;
+      cursor?: { createdAt: Date; id: string };
+    },
+  ): Promise<{
+    items: ReelSeries[];
+    nextCursor: { createdAt: Date; id: string } | null;
+  }> {
+    return this.repository.listReelSeries({ ownerId, ...query });
+  }
+
   async get(
     id: string,
     viewerId: string,

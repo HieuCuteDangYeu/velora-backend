@@ -16,3 +16,8 @@ export interface ReelSeriesResponse<TReel> {
   updatedAt: string;
   reels: TReel[];
 }
+
+export interface PaginatedReelSeries<TReel> {
+  items: ReelSeriesResponse<TReel>[];
+  nextCursor: string | null;
+}

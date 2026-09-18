@@ -1,6 +1,7 @@
 import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import type {
   ReelSeriesCreateData,
+  ReelSeriesListQuery,
   ReelSeriesUpdateData,
 } from '@content/domain/interfaces/content.repository.interface';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
@@ -38,6 +39,49 @@ export class ReelSeriesRepository {
     });
 
     return record ? toReelSeriesDomain(record) : null;
+  }
+
+  async listReelSeries(query: ReelSeriesListQuery): Promise<{
+    items: ReelSeries[];
+    nextCursor: { createdAt: Date; id: string } | null;
+  }> {
+    const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
+    const cursorFilter = query.cursor
+      ? {
+          OR: [
+            { createdAt: { lt: query.cursor.createdAt } },
+            { createdAt: query.cursor.createdAt, id: { lt: query.cursor.id } },
+          ],
+        }
+      : {};
+
+    const records = await this.prisma.reelSeries.findMany({
+      where: {
+        ownerId: query.ownerId,
+        ...(query.visibility ? { visibility: query.visibility } : {}),
+        ...cursorFilter,
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      include: {
+        reels: {
+          orderBy: { episodeNumber: 'asc' },
+          select: REEL_LIST_SELECT,
+        },
+      },
+    });
+
+    const hasMore = records.length > limit;
+    const pageRecords = hasMore ? records.slice(0, limit) : records;
+    const lastRecord = pageRecords.at(-1);
+
+    return {
+      items: pageRecords.map(toReelSeriesDomain),
+      nextCursor:
+        hasMore && lastRecord
+          ? { createdAt: lastRecord.createdAt, id: lastRecord.id }
+          : null,
+    };
   }
 
   async updateReelSeries(

@@ -80,6 +80,13 @@ export interface ReelSeriesUpdateData {
   visibility?: 'public' | 'friends' | 'private';
 }
 
+export interface ReelSeriesListQuery {
+  ownerId: string;
+  visibility?: 'public' | 'friends' | 'private';
+  limit?: number;
+  cursor?: ReelCursor;
+}
+
 export interface ReelCursor {
   createdAt: Date;
   id: string;
@@ -263,6 +270,11 @@ export interface IContentRepository {
   createReelSeries(data: ReelSeriesCreateData): Promise<ReelSeries>;
 
   findReelSeriesById(id: string): Promise<ReelSeries | null>;
+
+  listReelSeries(query: ReelSeriesListQuery): Promise<{
+    items: ReelSeries[];
+    nextCursor: ReelCursor | null;
+  }>;
 
   updateReelSeries(
     id: string,

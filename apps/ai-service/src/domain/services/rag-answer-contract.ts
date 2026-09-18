@@ -1,8 +1,20 @@
+import type { RagReelQuestionType } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+
 const QUANTITY_QUESTION_PATTERN =
   /\b(?:how many|how much|how low|how high|how long|how old|number of|what (?:number|percentage|percent|year|date))\b/i;
 
 const QUANTITY_RATIONALE_PATTERN =
   /\b(?:not enough|isn't enough|aren't enough|too (?:small|little|low)|(?:cannot|can't|won't|will not) (?:hold|store)|capacity)\b/i;
+
+const LOW_QUANTITY_QUESTION_PATTERN = /\bhow low\b/i;
+const HIGH_QUANTITY_QUESTION_PATTERN = /\bhow high\b/i;
+const LOW_QUANTITY_EVIDENCE_PATTERN =
+  /\b(?:down(?:\s+(?:to|till))?|as\s+low\s+as|minimum(?:\s+of)?)\b[^.!?\n]{0,96}/gi;
+const HIGH_QUANTITY_EVIDENCE_PATTERN =
+  /\b(?:up(?:\s+to)?|as\s+high\s+as|maximum(?:\s+of)?)\b[^.!?\n]{0,96}/gi;
+
+const EXACT_VALUE_QUESTION_PATTERN =
+  /\bwhat\b[^?\n]*\b(?:label|name|code|term|word)\b/i;
 
 const EVIDENCE_REFUSAL_PATTERN =
   /^(?:I\s+(?:do not|don't|cannot|can't|could not|couldn't|am unable to)\b|(?:the|this)\s+(?:transcript|audio|ASR|evidence)\s+(?:is|was)\s+(?:too\s+)?(?:garbled|unclear|unreadable|insufficient)\b)/i;
@@ -97,6 +109,68 @@ export interface RagAnswerContractInput {
   evidenceRequired: boolean;
 }
 
+export type RagAnswerShape = 'SHORT_FACT' | 'EXPLANATION' | 'SUMMARY';
+
+export interface RagAnswerBudget {
+  shape: RagAnswerShape;
+  maxChars: number;
+}
+
+export function ragAnswerBudget(
+  reelQuestionType: RagReelQuestionType | undefined,
+): RagAnswerBudget {
+  if (reelQuestionType === 'GENERAL_REEL_SUMMARY') {
+    return { shape: 'SUMMARY', maxChars: 1_400 };
+  }
+  if (reelQuestionType === 'REEL_METADATA') {
+    return { shape: 'SHORT_FACT', maxChars: 360 };
+  }
+  return { shape: 'EXPLANATION', maxChars: 900 };
+}
+
+export function ragAnswerDirectnessIssue(
+  answer: string,
+  budget: RagAnswerBudget,
+): string | undefined {
+  const { shape, maxChars } = budget;
+  if (answer.trim().length <= maxChars) return undefined;
+  return `${shape} answer exceeds the ${maxChars}-character direct-answer budget`;
+}
+
+/**
+ * Deterministic signal used only to rank extractive fallback spans. It does
+ * not decide semantic correctness; it prefers spans that contain the kind of
+ * fact explicitly requested by the question.
+ */
+export function ragRequestedFactSignalScore(
+  question: string,
+  value: string,
+): number {
+  let score = 0;
+  const asksForQuantity =
+    QUANTITY_QUESTION_PATTERN.test(question) ||
+    QUANTITY_RATIONALE_PATTERN.test(question);
+  if (asksForQuantity && quantityTokens(value).size > 0) score += 2;
+
+  if (
+    (LOW_QUANTITY_QUESTION_PATTERN.test(question) ||
+      HIGH_QUANTITY_QUESTION_PATTERN.test(question)) &&
+    directionalQuantityTokens(question, value).size > 0
+  ) {
+    score += 4;
+  }
+
+  if (EXACT_VALUE_QUESTION_PATTERN.test(question)) {
+    const questionTokens = new Set(answerContentTokens(question));
+    const novelTokens = answerContentTokens(value).filter(
+      (token) => !questionTokens.has(token),
+    );
+    if (novelTokens.length > 0) score += 3;
+  }
+
+  return score;
+}
+
 /**
  * Validates only bounded, semantics-preserving answer invariants. It does not
  * require literal answer/evidence overlap; the semantic verifier remains the
@@ -113,7 +187,11 @@ export function validateRagAnswerContract(
   }
 
   if (!hasSupportedQuantity(input.question, input.evidence, answer)) {
-    return 'Answer model omitted a directly supported quantity';
+    return 'Answer model used a quantity unsupported by the requested relation';
+  }
+
+  if (!hasSupportedRequestedValue(input.question, input.evidence, answer)) {
+    return 'Answer model introduced an unsupported requested label or name';
   }
 
   if (
@@ -147,7 +225,58 @@ function hasSupportedQuantity(
   if (!requiresQuantity) return true;
 
   const answerQuantities = quantityTokens(answer);
-  return [...answerQuantities].some((value) => evidenceQuantities.has(value));
+  const relationEvidenceQuantities = directionalQuantityTokens(
+    question,
+    evidence.join(' '),
+  );
+  if (relationEvidenceQuantities.size === 0) {
+    return [...answerQuantities].some((value) => evidenceQuantities.has(value));
+  }
+
+  const relationAnswerQuantities = directionalQuantityTokens(question, answer);
+  const quantitiesToCheck =
+    relationAnswerQuantities.size > 0
+      ? relationAnswerQuantities
+      : answerQuantities;
+  return [...quantitiesToCheck].some((value) =>
+    relationEvidenceQuantities.has(value),
+  );
+}
+
+function directionalQuantityTokens(
+  question: string,
+  value: string,
+): Set<string> {
+  const pattern = LOW_QUANTITY_QUESTION_PATTERN.test(question)
+    ? LOW_QUANTITY_EVIDENCE_PATTERN
+    : HIGH_QUANTITY_QUESTION_PATTERN.test(question)
+      ? HIGH_QUANTITY_EVIDENCE_PATTERN
+      : undefined;
+  if (!pattern) return new Set<string>();
+
+  pattern.lastIndex = 0;
+  return new Set(
+    [...value.matchAll(pattern)].flatMap((match) => [
+      ...quantityTokens(match[0]),
+    ]),
+  );
+}
+
+function hasSupportedRequestedValue(
+  question: string,
+  evidence: readonly string[],
+  answer: string,
+): boolean {
+  if (!EXACT_VALUE_QUESTION_PATTERN.test(question)) return true;
+
+  const questionTokens = new Set(answerContentTokens(question));
+  const evidenceTokens = new Set(
+    evidence.flatMap((value) => answerContentTokens(value)),
+  );
+  const primaryAnswer = answer.split(/[.!?\n]/, 1)[0] ?? answer;
+  return answerContentTokens(primaryAnswer).some(
+    (token) => !questionTokens.has(token) && evidenceTokens.has(token),
+  );
 }
 
 function quantityTokens(value: string): Set<string> {

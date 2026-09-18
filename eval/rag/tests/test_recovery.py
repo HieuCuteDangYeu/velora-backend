@@ -16,8 +16,6 @@ from rag_eval.recovery import (
     AUTHORIZED_DATASET_VERSION,
     AUTHORIZED_JUDGE_MODEL,
     AUTHORIZED_JUDGE_PROVIDER,
-    AUTHORIZED_PRODUCTION_SHA,
-    AUTHORIZED_SOURCE_RUN_ID,
     INSUFFICIENT_TPD_FOR_NEXT_OPERATION,
     MIDNIGHT_IN_FLIGHT_REQUESTS_PENDING,
     WAITING_FOR_NEXT_TPD_WINDOW,
@@ -34,6 +32,8 @@ from rag_eval.recovery import (
 from rag_eval.tpd_ledger import GroqDailyTokenLedger
 
 MODEL = AUTHORIZED_JUDGE_MODEL
+SOURCE_RUN_ID = "production-rag-frozen-ami-v3-test"
+PRODUCTION_SHA = "a" * 40
 TODAY = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
 TOMORROW = TODAY + timedelta(days=1)
 YESTERDAY = TODAY - timedelta(days=1)
@@ -43,8 +43,8 @@ def identity(**overrides):
     value = {
         "datasetVersion": AUTHORIZED_DATASET_VERSION,
         "datasetSha256": AUTHORIZED_DATASET_SHA256,
-        "sourceRunId": AUTHORIZED_SOURCE_RUN_ID,
-        "productionSha": AUTHORIZED_PRODUCTION_SHA,
+        "sourceRunId": SOURCE_RUN_ID,
+        "productionSha": PRODUCTION_SHA,
         "judgeProvider": AUTHORIZED_JUDGE_PROVIDER,
         "judgeModel": AUTHORIZED_JUDGE_MODEL,
         "sourceProvenanceFingerprint": "a" * 64,
@@ -343,6 +343,37 @@ def test_same_day_quota_slice_can_resume_with_newer_baseline(tmp_path):
     assert len(epoch["sliceCloseHistory"]) == 1
 
 
+def test_same_day_refresh_can_promote_previously_deferred_work(tmp_path):
+    store = make_store(tmp_path)
+    store.set_daily_plan(
+        scheduled_operation_keys=["case-1::faithfulness"],
+        deferred_operation_keys=["case-2::faithfulness"],
+        scheduled_reservation_tokens=8_000,
+    )
+    store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)
+    old_epoch = store.epochs()[0]
+    refreshed_at = TODAY + timedelta(minutes=1)
+    refreshed = baseline(refreshed_at, suffix="same-day-refresh")
+    refreshed["ledgerEpoch"] = old_epoch["ledgerEpoch"]
+
+    store.begin_epoch(refreshed, now=TODAY + timedelta(minutes=2))
+    store.set_daily_plan(
+        scheduled_operation_keys=["case-2::faithfulness"],
+        deferred_operation_keys=[],
+        scheduled_reservation_tokens=8_000,
+    )
+
+    epoch = store.epochs()[0]
+    assert epoch["scheduledOperationKeys"] == ["case-2::faithfulness"]
+    assert epoch["deferredOperationKeys"] == []
+    with pytest.raises(RecoveryStateError, match="cannot be replaced"):
+        store.set_daily_plan(
+            scheduled_operation_keys=["case-3::faithfulness"],
+            deferred_operation_keys=[],
+            scheduled_reservation_tokens=8_000,
+        )
+
+
 def test_same_day_resume_requires_a_newer_baseline(tmp_path):
     store = make_store(tmp_path)
     store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION, now=TODAY)
@@ -455,8 +486,8 @@ def test_previous_epoch_is_immutable_after_rollover(tmp_path):
 
 def checkpoint_identity(**overrides):
     value = {
-        "sourceRunId": AUTHORIZED_SOURCE_RUN_ID,
-        "productionSha": AUTHORIZED_PRODUCTION_SHA,
+        "sourceRunId": SOURCE_RUN_ID,
+        "productionSha": PRODUCTION_SHA,
         "datasetVersion": AUTHORIZED_DATASET_VERSION,
         "judgeProvider": AUTHORIZED_JUDGE_PROVIDER,
         "judgeModel": AUTHORIZED_JUDGE_MODEL,
@@ -591,14 +622,17 @@ def test_exact_current_day_baseline_is_accepted():
     assert result["status"] == "YES"
 
 
-def test_verified_empty_current_day_baseline_is_accepted():
+def test_verified_empty_current_day_baseline_is_not_authoritative_for_multiday_headroom():
     result = multiday_tpd_preflight(
         tpd(baseline(TODAY, method="EMPTY_CURRENT_WINDOW_VERIFIED")),
         [RecoveryOperation("case-1", "faithfulness", 8_000)],
         now=TODAY,
     )
 
-    assert result["status"] == "YES"
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "MULTI_DAY_EXACT_TPD_BASELINE_REQUIRED",
+    }
 
 
 def test_same_day_baseline_refresh_keeps_one_recovery_epoch(tmp_path):
@@ -754,6 +788,21 @@ def test_source_and_enriched_context_fingerprints_are_stable_and_bound():
     assert first == second
     assert first != changed
     assert identity()["semanticContextBindingSha256"] == "b" * 64
+
+
+def test_new_saved_run_identity_is_allowed_when_immutable_provenance_is_complete(tmp_path):
+    current_identity = identity(
+        sourceRunId="production-rag-frozen-ami-v3-78a87bd4-20260916-01",
+        productionSha="78a87bd4457ac6e4f8f86e2e576422b7566bf62c",
+    )
+
+    store = MultiDayRecoveryStore(
+        tmp_path / "recovery.json",
+        current_identity,
+        checkpoint_id="checkpoint-current-run",
+    )
+
+    assert store.snapshot()["identity"] == current_identity
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Velora RAG Retrieval and Answer Assurance Workflow",
+    "quality_profile": "standard",
+    "output": "artifacts/archify/rag-system/rag-retrieval-complete.html"
+  },
+  "lanes": [
+    { "id": "orchestration", "label": "LangGraph orchestration" },
+    { "id": "recommendation_lane", "label": "Recommendation branch" },
+    { "id": "retrieval", "label": "Retrieval path" },
+    { "id": "retrieval_repair_lane", "label": "Retrieval repair" },
+    { "id": "retrieval_ready", "label": "Retrieval outcomes" },
+    { "id": "memory", "label": "Memory path" },
+    { "id": "answer_join_lane", "label": "Answer context join" },
+    { "id": "assurance", "label": "Draft, verification and citations" },
+    { "id": "citation_gate_lane", "label": "Citation coverage gate" },
+    { "id": "revisions", "label": "Grounded revision loops" },
+    { "id": "terminal", "label": "Terminal paths", "variant": "exception" },
+    { "id": "toolcalls", "label": "Focused retrieval tool calls" },
+    { "id": "internals", "label": "Retrieval internals and services" },
+    { "id": "rerank_internals", "label": "Reranker implementation" },
+    { "id": "observability", "label": "Trace persistence" }
+  ],
+  "groups": [
+    { "id": "retrieval-tools", "label": "Inside retrievalNode", "lane": "internals", "fromCol": 0, "toCol": 5, "variant": "dashed" }
+  ],
+  "nodes": [
+    { "id": "resolve_context", "lane": "orchestration", "col": 0, "type": "security", "label": "resolveReelContextNode", "sublabel": "resolveReelContextAccess(userId, conversationId)", "tag": "authorization scope", "width": 205 },
+    { "id": "query_router", "lane": "orchestration", "col": 1, "type": "backend", "label": "queryRouterNode", "sublabel": "intent + retrieval + recommendation decision", "tag": "QueryRouterAgentUseCase", "width": 205 },
+    { "id": "retrieval_planner", "lane": "retrieval", "col": 2, "type": "backend", "label": "retrievalPlannerNode", "sublabel": "mode, focused queries, limits, rerank flag", "tag": "structured LLM planner", "width": 205 },
+    { "id": "retrieval_node", "lane": "retrieval", "col": 3, "type": "backend", "label": "retrievalNode", "sublabel": "tool-agent retrieval; deterministic fallback", "tag": "RetrieveReelEvidenceUseCase", "width": 205 },
+    { "id": "neural_reranker", "lane": "retrieval", "col": 4, "type": "backend", "label": "neuralRerankerNode", "sublabel": "TEI neural relevance then MMR diversity", "tag": "fallback: deterministic", "width": 205 },
+    { "id": "context_sufficiency", "lane": "retrieval", "col": 5, "type": "security", "label": "contextSufficiencyNode", "sublabel": "evidence sufficiency + recommended action", "tag": "grounding gate", "width": 205 },
+    { "id": "retrieval_repair", "lane": "retrieval_repair_lane", "col": 2, "type": "messagebus", "label": "retrievalRepairNode", "sublabel": "rewrite query and replan", "tag": "bounded retry", "width": 205 },
+    { "id": "mark_retrieval_ready", "lane": "retrieval_ready", "col": 5, "type": "backend", "label": "markRetrievalReadyNode", "sublabel": "retrievalReady = true", "tag": "state flag", "width": 205 },
+    { "id": "memory_selector", "lane": "memory", "col": 1, "type": "database", "label": "memorySelectorNode", "sublabel": "conversation memory + user-memory selection", "tag": "MemoryAgentUseCase", "width": 205 },
+    { "id": "answer_context_join", "lane": "answer_join_lane", "col": 3, "type": "messagebus", "label": "answerContextJoinNode", "sublabel": "wait for memoryReady + retrievalReady", "tag": "barrier join", "width": 205 },
+    { "id": "draft_answer", "lane": "assurance", "col": 3, "type": "backend", "label": "draftAnswerNode", "sublabel": "grounded revision or generated draft", "tag": "claims + provenance", "width": 205 },
+    { "id": "verifier", "lane": "assurance", "col": 4, "type": "security", "label": "verifierNode", "sublabel": "semantic support, confidence, contradictions", "tag": "VerifierAgentUseCase", "width": 205 },
+    { "id": "answer_revision", "lane": "revisions", "col": 4, "type": "messagebus", "label": "prepareAnswerRevisionNode", "sublabel": "revision instruction -> new draft", "tag": "bounded retry", "width": 205 },
+    { "id": "citation", "lane": "assurance", "col": 5, "type": "backend", "label": "citationNode", "sublabel": "map factual claims to reel evidence", "tag": "BuildRagCitationsUseCase", "width": 205 },
+    { "id": "citation_coverage", "lane": "citation_gate_lane", "col": 5, "type": "security", "label": "citationCoverageGateNode", "sublabel": "coverage threshold + diagnostics", "tag": "production gate", "width": 205 },
+    { "id": "citation_revision", "lane": "revisions", "col": 2, "type": "messagebus", "label": "prepareCitationRevisionNode", "sublabel": "remove or qualify unsupported claims", "tag": "bounded retry", "width": 205 },
+    { "id": "verification_failure", "lane": "terminal", "col": 4, "type": "security", "label": "verificationFailureNode", "sublabel": "exact-provenance fallback or safe failure answer", "tag": "fail closed", "width": 205 },
+    { "id": "no_context", "lane": "retrieval_ready", "col": 4, "type": "security", "label": "noContextAnswerNode", "sublabel": "safe answer when evidence is insufficient", "tag": "NO_CONTEXT", "width": 205 },
+    { "id": "final_answer", "lane": "terminal", "col": 5, "type": "backend", "label": "finalAnswerNode", "sublabel": "stream finalized answer", "tag": "StreamFinalAnswerUseCase", "width": 205 },
+    { "id": "reel_recommendation", "lane": "recommendation_lane", "col": 2, "type": "cloud", "label": "reelRecommendationNode", "sublabel": "public search; personalized fallback; dedupe", "tag": "separate router branch", "width": 205 },
+
+    { "id": "retrieval_tool_agent", "lane": "internals", "col": 0, "type": "backend", "label": "Retrieval tool agent", "sublabel": "LLM tool loop; required first call; bounded steps", "tag": "IToolCallingLlmService", "width": 205 },
+    { "id": "tool_search", "lane": "internals", "col": 1, "type": "messagebus", "label": "search_reel_content", "sublabel": "all authorized reels; vector or hybrid", "tag": "tool", "width": 205 },
+    { "id": "tool_context", "lane": "toolcalls", "col": 1, "type": "messagebus", "label": "get_reel_context", "sublabel": "focused search inside one authorized reel", "tag": "tool", "width": 205 },
+    { "id": "bge_embedding", "lane": "internals", "col": 2, "type": "cloud", "label": "BGE-M3 query embedding", "sublabel": "TEI; RETRIEVAL_QUERY; 1024 dimensions", "tag": "BAAI/bge-m3", "width": 205 },
+    { "id": "hybrid_rrf", "lane": "internals", "col": 3, "type": "database", "label": "Hybrid semantic index search", "sublabel": "pgvector + PostgreSQL FTS + tag metadata", "tag": "RRF k=60", "width": 205 },
+    { "id": "hierarchy_expand", "lane": "internals", "col": 4, "type": "database", "label": "Hierarchy + neighbour expansion", "sublabel": "reel -> section -> chunk; adjacent chunks", "tag": "direct/shadow rollout", "width": 205 },
+    { "id": "tei_mmr", "lane": "rerank_internals", "col": 4, "type": "backend", "label": "Neural rerank + MMR", "sublabel": "TEI /rerank then diversity penalties", "tag": "lambda default 0.74", "width": 205 },
+    { "id": "trace", "lane": "observability", "col": 5, "type": "database", "label": "RagTrace persistence", "sublabel": "state + latency + per-node timings", "tag": "finally: SaveRagTraceUseCase", "width": 205 }
+  ],
+  "edges": [
+    { "id": "start_context", "from": "resolve_context", "to": "query_router", "variant": "emphasis" },
+    { "id": "router_retrieval", "from": "query_router", "to": "retrieval_planner", "label": "needsRetrieval", "variant": "emphasis" },
+    { "id": "router_memory", "from": "query_router", "to": "memory_selector", "label": "always", "variant": "default" },
+    { "id": "router_recommend", "from": "query_router", "to": "reel_recommendation", "label": "recommendationAction != NONE", "variant": "dashed", "role": "branch" },
+    { "id": "planner_retrieval", "from": "retrieval_planner", "to": "retrieval_node", "variant": "emphasis" },
+    { "id": "retrieval_rerank", "from": "retrieval_node", "to": "neural_reranker", "variant": "emphasis" },
+    { "id": "rerank_sufficiency", "from": "neural_reranker", "to": "context_sufficiency", "variant": "emphasis" },
+    { "id": "sufficiency_ready", "from": "context_sufficiency", "to": "mark_retrieval_ready", "label": "grounding allowed", "variant": "emphasis" },
+    { "id": "sufficiency_repair", "from": "context_sufficiency", "to": "retrieval_repair", "label": "REWRITE_AND_RETRY", "variant": "dashed", "role": "branch" },
+    { "id": "repair_planner", "from": "retrieval_repair", "to": "retrieval_planner", "label": "rewrite query and replan", "variant": "dashed", "role": "return" },
+    { "id": "sufficiency_no_context", "from": "context_sufficiency", "to": "no_context", "label": "insufficient / retries exhausted", "variant": "security", "role": "error" },
+    { "id": "ready_join", "from": "mark_retrieval_ready", "to": "answer_context_join", "variant": "emphasis" },
+    { "id": "memory_join", "from": "memory_selector", "to": "answer_context_join", "variant": "default" },
+    { "id": "join_draft", "from": "answer_context_join", "to": "draft_answer", "label": "both ready", "variant": "emphasis" },
+    { "id": "draft_verify", "from": "draft_answer", "to": "verifier", "variant": "emphasis" },
+    { "id": "verifier_citation", "from": "verifier", "to": "citation", "label": "pass + min confidence", "variant": "emphasis" },
+    { "id": "verifier_revision", "from": "verifier", "to": "answer_revision", "label": "requires revision", "variant": "dashed", "role": "branch" },
+    { "id": "answer_revision_loop", "from": "answer_revision", "to": "draft_answer", "label": "redraft", "variant": "dashed", "role": "return" },
+    { "id": "verifier_failure", "from": "verifier", "to": "verification_failure", "label": "failed / retries exhausted", "variant": "security", "role": "error", "fromSide": "top", "toSide": "left", "via": [[1225.7, 930], [2150, 930], [2150, 1460], [650, 1460], [650, 1380], [1090, 1380]] },
+    { "id": "citation_coverage_edge", "from": "citation", "to": "citation_coverage", "variant": "emphasis" },
+    { "id": "citation_final", "from": "citation_coverage", "to": "final_answer", "label": "coverage >= threshold", "variant": "emphasis", "fromSide": "right", "toSide": "right", "via": [[1900, 1128], [1900, 1380], [1700, 1380]] },
+    { "id": "citation_revision_edge", "from": "citation_coverage", "to": "citation_revision", "label": "coverage below threshold", "variant": "dashed", "role": "branch", "fromSide": "left", "toSide": "bottom", "via": [[1400, 1128], [1400, 1320], [702.5, 1320]] },
+    { "id": "citation_revision_loop", "from": "citation_revision", "to": "draft_answer", "label": "grounded rewrite", "variant": "dashed", "role": "return" },
+    { "id": "citation_failure", "from": "citation_coverage", "to": "verification_failure", "label": "retries exhausted", "variant": "security", "role": "error", "fromSide": "bottom", "toSide": "top", "via": [[1549.5, 1180], [1800, 1180], [1800, 1330], [1225.7, 1330]] },
+    { "id": "failure_final", "from": "verification_failure", "to": "final_answer", "variant": "security" },
+    { "id": "no_context_final", "from": "no_context", "to": "final_answer", "variant": "security", "fromSide": "bottom", "toSide": "bottom", "via": [[1225.7, 690], [2100, 690], [2100, 1450], [1549.5, 1450]] },
+
+    { "id": "tool_agent_search", "from": "retrieval_tool_agent", "to": "tool_search", "label": "normal reel question", "variant": "default" },
+    { "id": "tool_agent_context", "from": "retrieval_tool_agent", "to": "tool_context", "label": "deeper one-reel context", "variant": "default" },
+    { "id": "tool_search_embedding", "from": "tool_search", "to": "bge_embedding", "variant": "default" },
+    { "id": "tool_context_embedding", "from": "tool_context", "to": "bge_embedding", "variant": "default" },
+    { "id": "embedding_hybrid", "from": "bge_embedding", "to": "hybrid_rrf", "label": "query vector + text + #tags", "variant": "emphasis" },
+    { "id": "hybrid_expand", "from": "hybrid_rrf", "to": "hierarchy_expand", "label": "RRF candidates", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Hybrid retrieval used today",
+      "items": [
+        "REEL_HYBRID sends BGE-M3 vector + query text + explicit hashtag tags",
+        "PostgreSQL ranks pgvector distance, FTS ts_rank_cd, and tag overlap separately",
+        "Reciprocal Rank Fusion uses 1/(60 + rank) for vector, keyword, and metadata ranks"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Grounding and failure behavior",
+      "items": [
+        "Retrieval and answer/citation retries are bounded by configuration",
+        "Verifier failure can recover only through exact transcript provenance and passing citation coverage",
+        "SaveRagTraceUseCase runs from finally, including latency and node timings on failure"
+      ]
+    }
+  ]
+}

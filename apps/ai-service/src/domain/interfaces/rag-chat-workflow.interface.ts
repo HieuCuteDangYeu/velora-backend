@@ -189,6 +189,8 @@ export interface RagVerificationResult {
   passed: boolean;
   confidence: number;
   issues: string[];
+  answerQualityPassed?: boolean;
+  answerQualityIssues?: string[];
   requiresRevision: boolean;
   revisedInstruction?: string;
   supportedClaimMappings?: RagSupportedClaimMapping[];
@@ -217,6 +219,8 @@ export interface RagVerificationDiagnostics {
   finalPassed: boolean;
   confidence: number;
   issues: string[];
+  answerQualityPassed?: boolean;
+  answerQualityIssues?: string[];
   requiresRevision: boolean;
   revisedInstruction?: string;
   supportedClaimMappings?: RagSupportedClaimMapping[];

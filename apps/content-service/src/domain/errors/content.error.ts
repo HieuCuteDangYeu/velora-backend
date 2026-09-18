@@ -60,3 +60,24 @@ export class ReelShareLinkRevokedError extends Error {
     this.name = 'ReelShareLinkRevokedError';
   }
 }
+
+export class ReelSeriesNotFoundError extends Error {
+  constructor() {
+    super('Reel series not found.');
+    this.name = 'ReelSeriesNotFoundError';
+  }
+}
+
+export class ReelSeriesForbiddenError extends Error {
+  constructor(message = 'You are not allowed to modify this reel series.') {
+    super(message);
+    this.name = 'ReelSeriesForbiddenError';
+  }
+}
+
+export class ReelSeriesConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReelSeriesConflictError';
+  }
+}

@@ -1,0 +1,239 @@
+{
+  "accessControlViolations": 0,
+  "caseCount": 104,
+  "correct": 39,
+  "correctAndGrounded": 31,
+  "cost": {
+    "answerCostUsd": null,
+    "averageProductionCostPerQuery": 0.0,
+    "citationCostUsd": null,
+    "combinedExperimentCostUsd": 0.0,
+    "costPerCorrectAnswer": 0.0,
+    "costPerCorrectGroundedAnswer": 0.0,
+    "costPerGroundedAnswer": 0.0,
+    "costPerSuccessfulRetrieval": 0.0,
+    "embeddingCostUsd": null,
+    "embeddingIndexCostUsd": null,
+    "escalationVerifierCostUsd": null,
+    "evaluationJudgeCostUsd": 0.0,
+    "evaluationJudgeInputTokens": 0,
+    "evaluationJudgeOutputTokens": 0,
+    "indexQualityCostUsd": null,
+    "metadataCostUsd": null,
+    "plannerCostUsd": null,
+    "pricingWarnings": [],
+    "primaryVerifierCostUsd": null,
+    "rerankerCostUsd": null,
+    "revisionCostUsd": null,
+    "roleCostsUsd": {},
+    "routerCostUsd": null,
+    "sectionSummaryCostUsd": null,
+    "sufficiencyCostUsd": null,
+    "toolCostUsd": null,
+    "totalIndexingCostUsd": 0.0,
+    "totalQueryCostUsd": 0.0,
+    "transcriptionCostUsd": null,
+    "visionCostUsd": null
+  },
+  "dataset": "rag-generalization-v1",
+  "executionFailureCount": 0,
+  "grounded": 31,
+  "hardGatePassed": true,
+  "judge": {
+    "accountLimitedCount": 0,
+    "callCount": 0,
+    "configuredTpmLimit": null,
+    "configuredTpmTarget": null,
+    "failureCategories": [],
+    "failureCount": 0,
+    "inputTokens": 0,
+    "latencyMs": 0,
+    "maxObservedEffectiveTpm": 0.0,
+    "model": null,
+    "networkErrorCount": 0,
+    "outputTokens": 0,
+    "provider": null,
+    "rateLimitErrorCount": 0,
+    "retryCount": 0,
+    "successCount": 0,
+    "timeoutCount": 0,
+    "totalTokens": 0,
+    "totalWaitMs": 0,
+    "waitCount": 0
+  },
+  "latencyMs": {
+    "byRole": {},
+    "endToEnd": {
+      "max": 1.0,
+      "p50": 1.0,
+      "p90": 1.0,
+      "p95": 1.0
+    }
+  },
+  "metrics": {
+    "accessControlViolations": 0.0,
+    "answerCorrect": 1.0,
+    "citationEvidenceHitRate": 1.0,
+    "citationPrecision": 1.0,
+    "citationRecall": 1.0,
+    "correctAndGrounded": 0.2980769230769231,
+    "evidenceHitRate": 1.0,
+    "grounded": 0.2980769230769231,
+    "modalityAccuracy": 1.0,
+    "mrr": 1.0,
+    "ndcgAt10": 1.0,
+    "ndcgAt5": 1.0,
+    "recallAt1": 1.0,
+    "recallAt10": 1.0,
+    "recallAt3": 1.0,
+    "recallAt5": 1.0,
+    "referenceTargetAccuracy": 1.0,
+    "requiredEvidenceAccuracy": 1.0,
+    "routerIntentAccuracy": 1.0,
+    "wrongModalityCitationCount": 0.0,
+    "wrongReelCitationCount": 0.0
+  },
+  "reliability": {
+    "accountLimitedCount": 0,
+    "answerRevisionRate": 0.0,
+    "http429Count": 0,
+    "invalidJsonCount": 0,
+    "outOfCapacityCount": 0,
+    "providerRequests": 0,
+    "providerRetries": 0,
+    "retrievalRetryRate": 0.0,
+    "routerFallbackRate": 0.0,
+    "schemaFailureCount": 0,
+    "timeoutCount": 0,
+    "truncationCount": 0,
+    "verifierEscalationRate": 0.0
+  },
+  "runId": "offline-rag-generalization-v1-1789468283",
+  "schemaVersion": "rag-eval-summary-v1",
+  "semanticEvaluationComplete": false,
+  "semanticMetricCoverage": {
+    "context_precision": {
+      "available": 0,
+      "complete": false,
+      "total": 104
+    },
+    "context_recall": {
+      "available": 0,
+      "complete": false,
+      "total": 104
+    },
+    "factual_correctness": {
+      "available": 0,
+      "complete": false,
+      "total": 104
+    },
+    "faithfulness": {
+      "available": 0,
+      "complete": false,
+      "total": 104
+    },
+    "response_relevancy": {
+      "available": 0,
+      "complete": false,
+      "total": 104
+    }
+  },
+  "semanticMetrics": {
+    "context_precision": null,
+    "context_recall": null,
+    "factual_correctness": null,
+    "faithfulness": null,
+    "response_relevancy": null
+  },
+  "slices": {
+    "access-control": {
+      "accessControlViolations": 0,
+      "cases": 1,
+      "correctAndGroundedRate": 0.0
+    },
+    "causal": {
+      "accessControlViolations": 0,
+      "cases": 3,
+      "correctAndGroundedRate": 0.0
+    },
+    "metadata": {
+      "accessControlViolations": 0,
+      "cases": 4,
+      "correctAndGroundedRate": 0.0
+    },
+    "multilingual": {
+      "accessControlViolations": 0,
+      "cases": 5,
+      "correctAndGroundedRate": 0.0
+    },
+    "noisy-asr": {
+      "accessControlViolations": 0,
+      "cases": 1,
+      "correctAndGroundedRate": 1.0
+    },
+    "normal-chat": {
+      "accessControlViolations": 0,
+      "cases": 17,
+      "correctAndGroundedRate": 0.0
+    },
+    "provider-failure": {
+      "accessControlViolations": 0,
+      "cases": 16,
+      "correctAndGroundedRate": 0.9375
+    },
+    "quantitative": {
+      "accessControlViolations": 0,
+      "cases": 3,
+      "correctAndGroundedRate": 0.0
+    },
+    "relation": {
+      "accessControlViolations": 0,
+      "cases": 2,
+      "correctAndGroundedRate": 0.0
+    },
+    "retrieval": {
+      "accessControlViolations": 0,
+      "cases": 21,
+      "correctAndGroundedRate": 0.7142857142857143
+    },
+    "routing": {
+      "accessControlViolations": 0,
+      "cases": 65,
+      "correctAndGroundedRate": 0.0
+    },
+    "summary": {
+      "accessControlViolations": 0,
+      "cases": 3,
+      "correctAndGroundedRate": 0.0
+    },
+    "transcript": {
+      "accessControlViolations": 0,
+      "cases": 53,
+      "correctAndGroundedRate": 0.5471698113207547
+    },
+    "visual": {
+      "accessControlViolations": 0,
+      "cases": 9,
+      "correctAndGroundedRate": 0.1111111111111111
+    }
+  },
+  "variant": {
+    "answerModel": null,
+    "datasetVersion": "rag-generalization-v1",
+    "embeddingModel": null,
+    "embeddingProvider": null,
+    "evaluatorSha": "be26d9ff3752eb3b968a55833076211401232d8b",
+    "gitSha": "be26d9ff3752eb3b968a55833076211401232d8b",
+    "judgeModel": null,
+    "judgeProvider": null,
+    "plannerModel": null,
+    "pricingVersion": "cloudflare-workers-ai-2026-08-30-v1",
+    "productionSha": null,
+    "promptVersion": null,
+    "rerankK": null,
+    "retrievalK": null,
+    "routerModel": null,
+    "variantName": "offline-fixture",
+    "verifierModel": null
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Velora Reel Indexing — LangGraph Workflow",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "output": "artifacts/archify/reel-indexing-workflow.html",
+    "views": [
+      {
+        "id": "routing",
+        "label": "Routing + evidence",
+        "focus": [
+          "start",
+          "load_resume",
+          "classify",
+          "visual",
+          "metadata_only",
+          "short_transcribe",
+          "load_audio",
+          "transcribe_pending",
+          "merge_transcript",
+          "validate_transcript",
+          "evidence_join"
+        ],
+        "note": "Follow NO_AUDIO, SHORT, and LONG routes plus the parallel visual branch."
+      },
+      {
+        "id": "models",
+        "label": "Model-backed work",
+        "focus": [
+          "visual",
+          "short_transcribe",
+          "transcribe_pending",
+          "extract_metadata",
+          "detect_long_sections",
+          "validate_tokens",
+          "generate_embeddings",
+          "persisted_gate"
+        ],
+        "note": "Isolate vision, Whisper, GPT-OSS, and BGE-M3 work."
+      },
+      {
+        "id": "commit",
+        "label": "Candidate safety",
+        "focus": [
+          "embedding_gate",
+          "candidate_gate",
+          "persist_candidate",
+          "persisted_gate",
+          "commit_candidate",
+          "end"
+        ],
+        "note": "Follow validation, inactive persistence, activation, rollback, and completion."
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "routing", "label": "1 · Attempt & route" },
+    { "id": "early_terminal", "label": "Terminal · stale / duplicate", "variant": "exception" },
+    { "id": "visual_lane", "label": "2A · Visual evidence" },
+    { "id": "no_audio_lane", "label": "2B · No-audio route" },
+    { "id": "long_lane", "label": "2C · Long-audio route" },
+    { "id": "short_lane", "label": "2D · Short-audio route" },
+    { "id": "join_lane", "label": "3 · Evidence readiness" },
+    { "id": "incomplete_terminal", "label": "Terminal · incomplete arrival", "variant": "exception" },
+    { "id": "metadata_lane", "label": "4 · Metadata" },
+    { "id": "metadata_strong", "label": "4A · Strong metadata" },
+    { "id": "metadata_weak", "label": "4B · Weak metadata" },
+    { "id": "chunk_meta", "label": "5A · Metadata-only documents" },
+    { "id": "chunk_short", "label": "5B · Short evidence chunks" },
+    { "id": "chunk_long", "label": "5C · Long evidence chunks" },
+    { "id": "chunk_join", "label": "5D · Document token gate" },
+    { "id": "embedding_lane", "label": "6 · Embeddings & candidate validation" },
+    { "id": "persistence_lane", "label": "7 · Persistence & commit" }
+  ],
+  "nodes": [
+    { "id": "start", "lane": "routing", "col": 0, "type": "external", "label": "START", "tag": "ReelIndexJob · allowReclaim", "width": 150 },
+    { "id": "load_resume", "lane": "routing", "col": 1, "type": "database", "label": "load / resume attempt", "tag": "claim + checkpoint", "width": 175 },
+    { "id": "classify", "lane": "routing", "col": 2, "type": "backend", "label": "validate + classify", "tag": "audio route · ≤180s short", "width": 175 },
+    { "id": "end_early", "lane": "early_terminal", "col": 2, "type": "external", "label": "END", "tag": "DUPLICATE / STALE", "width": 150 },
+    { "id": "visual", "lane": "visual_lane", "col": 3, "type": "cloud", "label": "analyze visual frames", "tag": "Cloudflare · Llama 4 Scout", "width": 180 },
+    { "id": "metadata_only", "lane": "no_audio_lane", "col": 3, "type": "backend", "label": "metadata-only checkpoint", "tag": "empty transcript · no model", "width": 185 },
+    { "id": "short_transcribe", "lane": "short_lane", "col": 3, "type": "cloud", "label": "short transcription", "tag": "Groq · whisper-large-v3-turbo", "width": 180 },
+    { "id": "load_audio", "lane": "long_lane", "col": 3, "type": "backend", "label": "load audio manifest", "tag": "progress marker · no model", "width": 175 },
+    { "id": "transcribe_pending", "lane": "long_lane", "col": 4, "type": "cloud", "label": "pending segment ASR", "tag": "Groq · Whisper · retry ×3", "width": 180 },
+    { "id": "merge_transcript", "lane": "long_lane", "col": 5, "type": "backend", "label": "merge transcript", "tag": "≥80% overlap · SHA-256", "width": 170 },
+    { "id": "validate_transcript", "lane": "join_lane", "col": 4, "type": "security", "label": "transcript gate", "tag": "text/timed segments · fail closed", "width": 165 },
+    { "id": "evidence_join", "lane": "join_lane", "col": 5, "type": "messagebus", "label": "evidence ready join", "tag": "visualReady && transcriptReady", "width": 180 },
+    { "id": "end_incomplete", "lane": "incomplete_terminal", "col": 5, "type": "external", "label": "END", "tag": "incomplete arrival", "width": 150 },
+    { "id": "metadata_quality", "lane": "metadata_lane", "col": 0, "type": "security", "label": "metadata quality", "tag": "title≥8 · desc≥40 · tags≥3", "width": 170 },
+    { "id": "preserve_metadata", "lane": "metadata_strong", "col": 1, "type": "backend", "label": "preserve creator metadata", "tag": "trim + dedupe · authoritative", "width": 185 },
+    { "id": "extract_metadata", "lane": "metadata_weak", "col": 1, "type": "cloud", "label": "hierarchical metadata", "tag": "Groq · openai/gpt-oss-20b", "width": 180 },
+    { "id": "choose_chunking", "lane": "metadata_lane", "col": 2, "type": "backend", "label": "choose chunk strategy", "tag": "metadata-only / short / long", "width": 180 },
+    { "id": "build_metadata_doc", "lane": "chunk_meta", "col": 3, "type": "backend", "label": "metadata documents", "tag": "REEL + visual drafts + hashes", "width": 180 },
+    { "id": "build_short_chunks", "lane": "chunk_short", "col": 3, "type": "backend", "label": "short evidence chunks", "tag": "240 target · 340 max · 35 overlap", "width": 185 },
+    { "id": "detect_long_sections", "lane": "chunk_long", "col": 3, "type": "cloud", "label": "detect long sections", "tag": "BGE-M3 · cosine + pause + lexical", "width": 180 },
+    { "id": "section_gate", "lane": "chunk_long", "col": 4, "type": "security", "label": "section quality gate", "tag": "duration/coverage · fallback", "width": 180 },
+    { "id": "build_long_chunks", "lane": "chunk_long", "col": 5, "type": "backend", "label": "long evidence chunks", "tag": "per-section timed chunks", "width": 180 },
+    { "id": "validate_tokens", "lane": "chunk_join", "col": 5, "type": "security", "label": "document token gate", "tag": "BGE-M3 tokenizer · trim ≤3×", "width": 180 },
+    { "id": "generate_embeddings", "lane": "embedding_lane", "col": 0, "type": "cloud", "label": "generate embeddings", "tag": "TEI · BAAI/bge-m3 · batch 32", "width": 180 },
+    { "id": "embedding_gate", "lane": "embedding_lane", "col": 1, "type": "security", "label": "embedding quality gate", "tag": "dims · norm · finite · duplicates", "width": 180 },
+    { "id": "candidate_gate", "lane": "embedding_lane", "col": 2, "type": "security", "label": "candidate gate", "tag": "hierarchy · provenance · coverage", "width": 165 },
+    { "id": "persist_candidate", "lane": "persistence_lane", "col": 2, "type": "database", "label": "persist candidate", "tag": "Prisma + pgvector · advisory lock", "width": 170 },
+    { "id": "persisted_gate", "lane": "persistence_lane", "col": 3, "type": "security", "label": "persisted integrity gate", "tag": "DB counts · optional gpt-oss-20b", "width": 185 },
+    { "id": "commit_candidate", "lane": "persistence_lane", "col": 4, "type": "database", "label": "commit candidate", "tag": "activate · complete · cleanup", "width": 170 },
+    { "id": "end", "lane": "persistence_lane", "col": 5, "type": "external", "label": "END", "tag": "COMPLETED / STALE", "width": 150 }
+  ],
+  "edges": [
+    { "id": "e_start_load", "from": "start", "to": "load_resume", "role": "main" },
+    { "id": "e_load_classify", "from": "load_resume", "to": "classify", "label": "claimed", "role": "main" },
+    { "id": "e_load_end", "from": "load_resume", "to": "end_early", "label": "DUPLICATE / STALE", "variant": "dashed", "role": "branch" },
+    { "id": "e_class_visual", "from": "classify", "to": "visual", "label": "always, parallel", "role": "async" },
+    { "id": "e_class_noaudio", "from": "classify", "to": "metadata_only", "label": "NO_AUDIO", "role": "branch" },
+    { "id": "e_class_short", "from": "classify", "to": "short_transcribe", "label": "SHORT", "role": "main" },
+    { "id": "e_class_long", "from": "classify", "to": "load_audio", "label": "LONG", "role": "branch" },
+    { "id": "e_visual_join", "from": "visual", "to": "evidence_join", "label": "visualReady", "role": "async", "route": "outside-right" },
+    { "id": "e_noaudio_join", "from": "metadata_only", "to": "evidence_join", "label": "transcriptReady", "role": "branch", "route": "outside-right" },
+    { "id": "e_short_validate", "from": "short_transcribe", "to": "validate_transcript", "role": "main" },
+    { "id": "e_long_transcribe", "from": "load_audio", "to": "transcribe_pending", "role": "branch" },
+    { "id": "e_long_merge", "from": "transcribe_pending", "to": "merge_transcript", "role": "branch" },
+    { "id": "e_long_validate", "from": "merge_transcript", "to": "validate_transcript", "role": "branch" },
+    { "id": "e_validate_join", "from": "validate_transcript", "to": "evidence_join", "label": "transcriptReady", "role": "main" },
+    { "id": "e_join_quality", "from": "evidence_join", "to": "metadata_quality", "label": "both ready", "role": "main" },
+    { "id": "e_join_end", "from": "evidence_join", "to": "end_incomplete", "label": "incomplete arrival", "variant": "dashed", "role": "branch" },
+    { "id": "e_quality_preserve", "from": "metadata_quality", "to": "preserve_metadata", "label": "strong", "role": "branch" },
+    { "id": "e_quality_extract", "from": "metadata_quality", "to": "extract_metadata", "label": "weak", "role": "main" },
+    { "id": "e_preserve_choose", "from": "preserve_metadata", "to": "choose_chunking", "role": "branch" },
+    { "id": "e_extract_choose", "from": "extract_metadata", "to": "choose_chunking", "role": "main" },
+    { "id": "e_choose_meta", "from": "choose_chunking", "to": "build_metadata_doc", "label": "metadata-only", "role": "branch" },
+    { "id": "e_choose_short", "from": "choose_chunking", "to": "build_short_chunks", "label": "short", "role": "main" },
+    { "id": "e_choose_long", "from": "choose_chunking", "to": "detect_long_sections", "label": "long", "role": "branch" },
+    { "id": "e_detect_gate", "from": "detect_long_sections", "to": "section_gate", "role": "branch" },
+    { "id": "e_section_long", "from": "section_gate", "to": "build_long_chunks", "role": "branch" },
+    { "id": "e_meta_tokens", "from": "build_metadata_doc", "to": "validate_tokens", "role": "branch", "route": "outside-right" },
+    { "id": "e_short_tokens", "from": "build_short_chunks", "to": "validate_tokens", "role": "main", "route": "outside-right" },
+    { "id": "e_long_tokens", "from": "build_long_chunks", "to": "validate_tokens", "role": "branch" },
+    { "id": "e_tokens_embed", "from": "validate_tokens", "to": "generate_embeddings", "role": "main", "route": "return-left" },
+    { "id": "e_embed_quality", "from": "generate_embeddings", "to": "embedding_gate", "role": "main" },
+    { "id": "e_quality_candidate", "from": "embedding_gate", "to": "candidate_gate", "role": "main" },
+    { "id": "e_candidate_persist", "from": "candidate_gate", "to": "persist_candidate", "role": "main" },
+    { "id": "e_persist_gate", "from": "persist_candidate", "to": "persisted_gate", "role": "main" },
+    { "id": "e_gate_commit", "from": "persisted_gate", "to": "commit_candidate", "role": "main" },
+    { "id": "e_commit_end", "from": "commit_candidate", "to": "end", "label": "COMPLETED / STALE", "role": "main" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Model-backed work",
+      "items": [
+        "Vision: Cloudflare @cf/meta/llama-4-scout-17b-16e-instruct for caption, OCR, and objects.",
+        "Transcription: Groq whisper-large-v3-turbo with resumable per-segment checkpoints.",
+        "Metadata + optional index-quality review: openai/gpt-oss-20b through the structured LLM service.",
+        "Embeddings + adaptive boundary scoring: self-hosted TEI BAAI/bge-m3, 1024d, bge-m3-tei-v1."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Required system architecture",
+      "items": [
+        "Reel Indexing Service owns LangGraph and calls AI Service over RabbitMQ request/reply.",
+        "Artifact storage supplies transcription-audio and visual-frame manifests plus verified objects.",
+        "PostgreSQL/Prisma stores domain checkpoints, LangGraph state, embedding cache, semantic rows, and pgvector.",
+        "Content Service owns attempt claim, progress, and completion; semantic candidates stay inactive until final gates pass."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Durability + activation safety",
+      "items": [
+        "LangGraph thread_id = reelId:indexAttemptId:indexVersion; checkpoint namespace is reel-index-v2.",
+        "Embedding cache identity binds stable item, input hash, model identity, and index/chunk/summary versions.",
+        "Persistence uses a per-reel PostgreSQL advisory transaction lock; commit rechecks current-attempt ownership and can rollback/discard stale candidates."
+      ]
+    }
+  ]
+}

@@ -719,7 +719,12 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
     await this.checkpoints.setStage(state.job.indexAttemptId, 'PERSISTING');
     return {
       ...(await this.stageNode(state, 'persist_semantic_candidate', 95)),
-      indexCompletion: this.toCompletionCommand(state.job, documents),
+      indexCompletion: this.toCompletionCommand(
+        state.job,
+        documents,
+        checkpoint.mergedTranscript,
+        checkpoint.mergedSegments,
+      ),
     };
   }
 
@@ -763,6 +768,8 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
   private toCompletionCommand(
     job: ReelIndexJob,
     documents: ReelIndexDocument[],
+    transcript?: string,
+    transcriptSegments?: CompleteReelIndexCommand['transcriptSegments'],
   ): CompleteReelIndexCommand {
     const reelDocument = documents.find((document) => document.kind === 'REEL');
     if (!reelDocument) throw new Error('Semantic Reel document is missing');
@@ -782,6 +789,8 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
       embeddingDimensions: reelDocument.embeddingDimensions,
       embeddingVersion: reelDocument.embeddingVersion,
       indexedAt: new Date().toISOString(),
+      transcript,
+      transcriptSegments,
     };
   }
 

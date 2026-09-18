@@ -102,6 +102,7 @@ describe('CheckContextSufficiencyUseCase', () => {
         ),
       ).resolves.toMatchObject({
         sufficient,
+        missingEvidence: [],
         supportedEvidenceIds: sufficient ? ['e0'] : [],
         diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
       });
@@ -253,6 +254,7 @@ describe('CheckContextSufficiencyUseCase', () => {
     ).resolves.toMatchObject({
       sufficient: false,
       confidence: 0,
+      missingEvidence: [],
       supportedEvidenceIds: [],
       diagnostics: { providerStatus: 'ERROR', decisionSource: 'FAIL_CLOSED' },
     });

@@ -32,12 +32,25 @@ def test_frozen_rule_preserves_project_specific_threshold():
     )
 
 
+def test_frozen_hard_gate_does_not_treat_lexical_overlap_as_semantic_truth():
+    row = list(load_dataset("rag-frozen-ami-v1"))[0]
+    execution = fixture_execution(row, "semantic-gate", {"variantName": "semantic-gate"})
+    execution.actual["answer"] = "A lexically unrelated paraphrase placeholder."
+
+    result = evaluate_case(row, execution)
+
+    assert result["deterministic"]["lexicalAnswerMatch"] == 0
+    assert result["deterministic"]["grounded"] == 1
+    assert result["hardGatePassed"] is True
+
+
 def test_report_is_deterministic_and_sliced(tmp_path):
     cases = fixture_cases()
     first = build_summary(cases, "run-a")
     second = build_summary(list(reversed(cases)), "run-a")
     assert first == second
-    assert first["correctAndGrounded"] == 2
+    assert first["correctAndGrounded"] is None
+    assert first["lexicalMatchAndGrounded"] == 2
     assert first["slices"]["AMI"]["cases"] == 2
     directory = write_report(cases, "run-a", tmp_path)
     assert (directory / "summary.json").exists()
@@ -49,5 +62,5 @@ def test_variant_comparison_handles_null_semantic_metrics():
     baseline = build_summary(fixture_cases(), "baseline")
     candidate = build_summary(fixture_cases(), "candidate")
     comparison = compare_summaries(baseline, candidate)
-    assert comparison["deltas"]["correctAndGrounded"] == 0
+    assert comparison["deltas"]["lexicalMatchAndGrounded"] == 0
     assert comparison["deltas"]["faithfulness"] is None

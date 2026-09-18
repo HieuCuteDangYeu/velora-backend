@@ -2,14 +2,25 @@ import { isRpcError } from '@common/constants/rpc-error.types';
 import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { CreateReelShareLinkDto } from '@common/content/dtos/create-reel-share-link.dto';
 import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
+import {
+  AddReelToSeriesDto,
+  CreateReelSeriesDto,
+  ReorderReelSeriesDto,
+  UpdateReelSeriesDto,
+} from '@common/content/dtos/reel-series.dto';
 import { FriendsReelsQueryDto } from '@common/content/dtos/friends-reels-query.dto';
 import { GetReelContextQueryDto } from '@common/content/dtos/get-reel-context.dto';
+import { ListReelSeriesQueryDto } from '@common/content/dtos/list-reel-series.dto';
 import { ListReelsQueryDto } from '@common/content/dtos/list-reels.dto';
 import { RecommendedReelsQueryDto } from '@common/content/dtos/recommended-reels-query.dto';
 import { ShareReelDto } from '@common/content/dtos/share-reel.dto';
 import { TrackReelEventsDto } from '@common/content/dtos/track-reel-events.dto';
 import { UpdateReelDto } from '@common/content/dtos/update-reel.dto';
 import { ReelProfileContextResponse } from '@common/content/interfaces/reel-context-response.interface';
+import {
+  PaginatedReelSeries,
+  ReelSeriesResponse,
+} from '@common/content/interfaces/reel-series.interface';
 import { ReelProcessingStatus } from '@common/content/interfaces/reel-processing-status.interface';
 import {
   PaginatedReels,
@@ -21,6 +32,7 @@ import { ReelShareLinkResponse } from '@common/content/interfaces/reel-share-lin
 import { ReelShareResponse } from '@common/content/interfaces/reel-share.interface';
 import { TrackReelEventsResponse } from '@common/content/interfaces/track-reel-events-response.interface';
 import { Reel } from '@content/domain/entities/reel.entity';
+import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import {
   JwtAuthGuard,
   type AuthenticatedRequest,
@@ -130,6 +142,167 @@ export class ContentController {
     );
 
     return this._enrichReel(reel);
+  }
+
+  @Post('series')
+  @ApiOperation({ summary: 'Create a reel series' })
+  async createReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Body() body: CreateReelSeriesDto,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.create_reel_series', {
+          ownerId: request.user!.id,
+          payload: body,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
+  }
+
+  @Get('series')
+  @ApiOperation({ summary: 'List reel series owned by the current user' })
+  async listOwnedReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: ListReelSeriesQueryDto,
+  ): Promise<PaginatedReelSeries<ReelFeedListItem>> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<{ items: ReelSeries[]; nextCursor: string | null }>(
+          'content.list_owned_reel_series',
+          {
+            ownerId: request.user!.id,
+            query,
+          },
+        )
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return {
+      items: await Promise.all(
+        result.items.map((series) => this.enrichReelSeries(series)),
+      ),
+      nextCursor: result.nextCursor,
+    };
+  }
+
+  @Get('series/:id')
+  @ApiOperation({ summary: 'Get a reel series with ordered episodes' })
+  async getReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.get_reel_series', {
+          seriesId,
+          viewerId: request.user!.id,
+          isAdmin: request.user!.roles?.includes('ADMIN') === true,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
+  }
+
+  @Patch('series/:id')
+  @ApiOperation({ summary: 'Update a reel series (owner only)' })
+  async updateReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Body() body: UpdateReelSeriesDto,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.update_reel_series', {
+          seriesId,
+          ownerId: request.user!.id,
+          payload: body,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
+  }
+
+  @Delete('series/:id')
+  @ApiOperation({ summary: 'Delete a reel series and detach its reels' })
+  async deleteReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+  ) {
+    await lastValueFrom(
+      this.contentClient
+        .send<{ success: boolean }>('content.delete_reel_series', {
+          seriesId,
+          ownerId: request.user!.id,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return { success: true };
+  }
+
+  @Post('series/:id/reels')
+  @ApiOperation({ summary: 'Add an owned reel to a series' })
+  async addReelToSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Body() body: AddReelToSeriesDto,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.add_reel_to_series', {
+          seriesId,
+          ownerId: request.user!.id,
+          payload: body,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
+  }
+
+  @Delete('series/:id/reels/:reelId')
+  @ApiOperation({ summary: 'Remove a reel from a series' })
+  async removeReelFromSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Param('reelId') reelId: string,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.remove_reel_from_series', {
+          seriesId,
+          reelId,
+          ownerId: request.user!.id,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
+  }
+
+  @Patch('series/:id/reels/order')
+  @ApiOperation({ summary: 'Replace the episode order for a reel series' })
+  async reorderReelSeries(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Body() body: ReorderReelSeriesDto,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const series = await lastValueFrom(
+      this.contentClient
+        .send<ReelSeries>('content.reorder_reel_series', {
+          seriesId,
+          ownerId: request.user!.id,
+          payload: body,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return this.enrichReelSeries(series);
   }
 
   @Get('reels')
@@ -586,6 +759,7 @@ export class ContentController {
       sourceEffectiveHeight: reel.sourceEffectiveHeight,
       streamUrl,
       createdAt,
+      series: reel.series,
       recommendation: reel.recommendation,
     };
 
@@ -599,6 +773,30 @@ export class ContentController {
     }
 
     return result;
+  }
+
+  private async enrichReelSeries(
+    series: ReelSeries,
+  ): Promise<ReelSeriesResponse<ReelFeedListItem>> {
+    const createdAt =
+      series.createdAt instanceof Date
+        ? series.createdAt.toISOString()
+        : new Date(series.createdAt).toISOString();
+    const updatedAt =
+      series.updatedAt instanceof Date
+        ? series.updatedAt.toISOString()
+        : new Date(series.updatedAt).toISOString();
+
+    return {
+      id: series.id,
+      ownerId: series.ownerId,
+      title: series.title,
+      description: series.description,
+      visibility: series.visibility,
+      createdAt,
+      updatedAt,
+      reels: await this.enrichFeedItems(series.reels),
+    };
   }
 
   private async enrichFeedItems(reels: Reel[]): Promise<ReelFeedListItem[]> {

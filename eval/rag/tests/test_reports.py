@@ -3,9 +3,9 @@ from rag_eval.reports import build_summary
 
 def test_summary_reports_semantic_coverage_without_filling_missing_values():
     deterministic = {
-        "answerCorrect": 1,
+        "lexicalAnswerMatch": 1,
         "grounded": 1,
-        "correctAndGrounded": 1,
+        "lexicalAnswerMatchAndGrounded": 1,
         "accessControlViolations": 0,
         "recallAt1": 1,
         "recallAt3": 1,
@@ -48,3 +48,7 @@ def test_summary_reports_semantic_coverage_without_filling_missing_values():
     }
     assert summary["semanticEvaluationComplete"] is False
     assert summary["semanticMetrics"]["faithfulness"] is None
+    assert summary["correct"] is None
+    assert summary["correctAndGrounded"] is None
+    assert summary["lexicalMatch"] == 1
+    assert summary["lexicalMatchAndGrounded"] == 1

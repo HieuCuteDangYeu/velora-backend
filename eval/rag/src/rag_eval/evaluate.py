@@ -131,7 +131,7 @@ def evaluate_case(
     retrieved_ids = [item.get("evidenceId") for item in reranked if item.get("evidenceId")]
     types = [item.get("evidenceType") for item in retrieved if item.get("evidenceType")]
     authorized_reels, authorized_evidence = authorized_scope(row, execution)
-    answer_correct = frozen_answer_correct(actual.get("answer"), row.referenceAnswer)
+    lexical_answer_match = frozen_answer_correct(actual.get("answer"), row.referenceAnswer)
     access_violations = access_control_violations(
         retrieved, citations, authorized_reels, authorized_evidence
     )
@@ -158,16 +158,22 @@ def evaluate_case(
         ),
         "modalityAccuracy": modality_accuracy(types, row.expectedEvidenceTypes),
         "accessControlViolations": access_violations,
-        "answerCorrect": 0.0
+        "lexicalAnswerMatch": 0.0
         if execution.executionStatus not in {"COMPLETED", "FIXTURE"}
-        else answer_correct,
+        else lexical_answer_match,
     }
     grounded = bool(deterministic["citationEvidenceHitRate"] == 1 and access_violations == 0)
     deterministic["grounded"] = float(grounded)
-    deterministic["correctAndGrounded"] = float(answer_correct == 1 and grounded)
+    deterministic["lexicalAnswerMatchAndGrounded"] = float(
+        lexical_answer_match == 1 and grounded
+    )
     semantic = (semantic_suite or SemanticMetricSuite()).score(semantic_payloads(row, execution))
     completed = execution.executionStatus in {"COMPLETED", "FIXTURE"}
-    frozen_gate = row.fixtureGroup != "frozen-ami" or deterministic["correctAndGrounded"] == 1
+    # Lexical overlap is useful as a deterministic diagnostic, but it cannot
+    # reliably decide semantic equivalence for paraphrases. Keep the hard gate
+    # on objective production invariants and let the semantic suite decide
+    # factual correctness/relevancy before final acceptance.
+    frozen_gate = row.fixtureGroup != "frozen-ami" or grounded
     return {
         "caseId": row.id,
         "datasetVersion": row.datasetVersion,

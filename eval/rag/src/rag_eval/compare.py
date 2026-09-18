@@ -15,12 +15,27 @@ def compare_summaries(baseline: dict[str, Any], candidate: dict[str, Any]) -> di
         right = candidate.get(section, {}).get(key)
         return None if left is None or right is None else right - left
 
+    def lexical_match_grounded(summary: dict[str, Any]) -> float | None:
+        value = summary.get("lexicalMatchAndGrounded")
+        if value is not None:
+            return value
+        # Summaries written before the lexical diagnostic was renamed stored
+        # the same heuristic under this misleading legacy field.
+        return summary.get("correctAndGrounded")
+
+    baseline_lexical = lexical_match_grounded(baseline)
+    candidate_lexical = lexical_match_grounded(candidate)
+
     return {
         "schemaVersion": "rag-eval-comparison-v1",
         "baselineRunId": baseline["runId"],
         "candidateRunId": candidate["runId"],
         "deltas": {
-            "correctAndGrounded": candidate["correctAndGrounded"] - baseline["correctAndGrounded"],
+            "lexicalMatchAndGrounded": (
+                None
+                if baseline_lexical is None or candidate_lexical is None
+                else candidate_lexical - baseline_lexical
+            ),
             "recallAt5": delta("metrics", "recallAt5"),
             "mrr": delta("metrics", "mrr"),
             "faithfulness": delta("semanticMetrics", "faithfulness"),

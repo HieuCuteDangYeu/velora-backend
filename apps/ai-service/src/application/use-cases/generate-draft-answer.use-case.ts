@@ -20,6 +20,8 @@ import {
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
   answerContentTokens,
+  ragAnswerBudget,
+  ragRequestedFactSignalScore,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
 
@@ -82,6 +84,11 @@ export class GenerateDraftAnswerUseCase {
     const authorizedEvidenceText = authorizedEvidence.map(
       (item) => item.evidenceText,
     );
+    const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
+    const maxAnswerChars =
+      state.route?.intent === 'REEL_VIDEO_QUESTION'
+        ? answerBudget.maxChars
+        : 2_500;
     const allowedEvidenceIds = new Set(
       answerEvidence.map(({ evidenceId }) => evidenceId),
     );
@@ -96,6 +103,8 @@ export class GenerateDraftAnswerUseCase {
       'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
       'When the evidence directly states the requested fact, reuse its distinctive nouns, names, values, and relations instead of replacing them with broad synonyms or a high-level summary.',
       'For quantity, count, measurement, threshold, date, duration, or age questions, state the directly supported value and unit or relation explicitly. If evidence uses digits, preserve them or spell them out; never replace a supported quantity with a vague phrase.',
+      'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
+      'For SHORT_FACT questions, prefer one direct sentence. EXPLANATION and SUMMARY answers may be longer only when the question requires it.',
       'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
       'Normal conversational statements that do not depend on reel evidence may have no claims.',
     ].join('\n\n');
@@ -104,13 +113,18 @@ export class GenerateDraftAnswerUseCase {
         state.userMessage,
         bounds.maxUserMessageChars,
       ),
+      answerShape:
+        state.route?.intent === 'REEL_VIDEO_QUESTION'
+          ? answerBudget.shape
+          : 'CONVERSATIONAL',
+      maxAnswerChars,
       authorizedEvidence,
     });
     const request = (prompt: string) =>
       this.structuredLlmService.generateObject<RawDraftAnswer>({
         systemPrompt: prompt,
         userPrompt,
-        jsonSchema: this.schema(),
+        jsonSchema: this.schema(maxAnswerChars),
         model: this.config.model('ANSWER'),
         timeoutMs: this.config.timeoutMs('ANSWER'),
         temperature: 0,
@@ -119,15 +133,6 @@ export class GenerateDraftAnswerUseCase {
         onDiagnostics: (call) => diagnostics.push(call),
       });
 
-    const fallbackCandidates =
-      answerEvidence.length > 0
-        ? answerEvidence
-        : answerEvidenceIds.size > 0
-          ? []
-          : boundedChunks.map((chunk, index) => ({
-              chunk,
-              evidenceId: `e${index}`,
-            }));
     const synthesized = (candidate: RawDraftAnswer): RagDraftAnswer => ({
       ...this.normalize(
         candidate,
@@ -140,40 +145,22 @@ export class GenerateDraftAnswerUseCase {
     });
     const fallback = (
       reason: RagAnswerFallbackReason,
-    ): RagDraftAnswer | undefined => {
-      const result = this.extractiveTranscriptFallback(
-        state,
-        fallbackCandidates,
-      );
-      if (!result) return undefined;
-      return {
-        answer: result.answer,
-        claims: [
-          {
-            claim: result.answer,
-            evidenceIds: result.evidenceIds,
-          },
-        ],
-        modelRole: 'ANSWER',
-        diagnostics,
-        finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
-        fallbackReason: reason,
-      };
-    };
+    ): RagDraftAnswer | undefined =>
+      this.buildExtractiveFallback(state, reason, diagnostics);
 
     let raw: RawDraftAnswer;
     try {
       raw = await request(systemPrompt);
       return synthesized(raw);
     } catch (error: unknown) {
-      if (!(error instanceof DraftAnswerContractError)) {
+      if (!this.isRetryableAnswerContractError(error)) {
         const fallbackAnswer = fallback('ANSWER_GENERATION_FAILURE');
         if (fallbackAnswer) return fallbackAnswer;
         throw error;
       }
       try {
         raw = await request(
-          `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation with the supported value stated explicitly, then return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
+          `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation in the shortest complete form within the supplied answer budget, state any required supported quantity explicitly, and return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
         );
         return synthesized(raw);
       } catch (retryError: unknown) {
@@ -182,6 +169,60 @@ export class GenerateDraftAnswerUseCase {
         throw retryError;
       }
     }
+  }
+
+  buildExtractiveFallback(
+    state: RagChatWorkflowState,
+    reason: RagAnswerFallbackReason,
+    diagnostics: StructuredLlmCallDiagnostics[] = [],
+  ): RagDraftAnswer | undefined {
+    const bounds = readRagPromptBounds(this.config);
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
+      preserveTail: true,
+      focusText: state.userMessage,
+    });
+    const answerEvidenceIds = selectRagAnswerEvidenceIds(
+      boundedChunks,
+      state.contextSufficiency,
+      state.route,
+    );
+    const candidates =
+      answerEvidenceIds.size > 0
+        ? boundedChunks.flatMap((chunk, index) =>
+            answerEvidenceIds.has(`e${index}`)
+              ? [{ chunk, evidenceId: `e${index}` }]
+              : [],
+          )
+        : boundedChunks.map((chunk, index) => ({
+            chunk,
+            evidenceId: `e${index}`,
+          }));
+    const result = this.extractiveTranscriptFallback(state, candidates);
+    if (!result) return undefined;
+    return {
+      answer: result.answer,
+      claims: [
+        {
+          claim: result.answer,
+          evidenceIds: result.evidenceIds,
+        },
+      ],
+      modelRole: 'ANSWER',
+      diagnostics,
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      fallbackReason: reason,
+    };
+  }
+
+  private isRetryableAnswerContractError(error: unknown): boolean {
+    if (error instanceof DraftAnswerContractError) return true;
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as Record<string, unknown>;
+    return (
+      candidate['code'] === 'STRUCTURED_COMPLETION_SCHEMA_INVALID' &&
+      candidate['path'] === '$.answer' &&
+      candidate['constraint'] === 'maxLength'
+    );
   }
 
   private extractiveTranscriptFallback(
@@ -232,6 +273,7 @@ export class GenerateDraftAnswerUseCase {
     const selected = this.selectFallbackSpans(
       state.userMessage,
       scopedCandidates,
+      ragAnswerBudget(state.route.reelQuestionType),
     );
     const answer = selected
       .map((candidate) => candidate.text)
@@ -242,7 +284,9 @@ export class GenerateDraftAnswerUseCase {
 
     return {
       answer,
-      evidenceIds: selected.map((candidate) => candidate.evidenceId),
+      evidenceIds: [
+        ...new Set(selected.map((candidate) => candidate.evidenceId)),
+      ],
     };
   }
 
@@ -252,26 +296,71 @@ export class GenerateDraftAnswerUseCase {
       evidenceId: string;
       evidenceText: string;
     }>,
+    budget: {
+      shape: 'SHORT_FACT' | 'EXPLANATION' | 'SUMMARY';
+      maxChars: number;
+    },
   ): Array<{ evidenceId: string; text: string }> {
     const questionTokens = new Set(answerContentTokens(question));
-    const spans = candidates.flatMap((candidate, candidateIndex) =>
-      this.transcriptSpans(candidate.evidenceText).map((text, spanIndex) => ({
-        evidenceId: candidate.evidenceId,
-        text,
-        candidateIndex,
-        spanIndex,
-        score: this.fallbackSpanScore(text, questionTokens),
-      })),
+    const spans = candidates
+      .flatMap((candidate, candidateIndex) =>
+        this.transcriptSpans(candidate.evidenceText, question).map(
+          (text, spanIndex) => {
+            const score = this.fallbackSpanScore(text, questionTokens);
+            return {
+              evidenceId: candidate.evidenceId,
+              text,
+              candidateIndex,
+              spanIndex,
+              requestedFactSignal: ragRequestedFactSignalScore(question, text),
+              directQuestionEcho: this.isQuestionEchoSpan(text, questionTokens),
+              score,
+              questionCoverage:
+                questionTokens.size === 0 ? 0 : score / questionTokens.size,
+              answerBearingRatio: this.fallbackAnswerBearingRatio(
+                text,
+                questionTokens,
+              ),
+            };
+          },
+        ),
+      )
+      .filter(
+        (span) =>
+          budget.shape !== 'SHORT_FACT' || span.text.length <= budget.maxChars,
+      );
+    const eligibleSpans = spans.filter(
+      (span) =>
+        !span.directQuestionEcho &&
+        !(
+          span.questionCoverage >= 0.8 &&
+          spans.some(
+            (other) =>
+              other.candidateIndex === span.candidateIndex &&
+              other.spanIndex !== span.spanIndex &&
+              other.score > 0 &&
+              other.answerBearingRatio > span.answerBearingRatio,
+          )
+        ),
     );
-    const scored = spans
-      .filter((span) => span.score > 0)
+    const maxSpans =
+      budget.shape === 'SHORT_FACT' ||
+      /\b(?:why|reason|because)\b/i.test(question)
+        ? 1
+        : 2;
+    const scored = eligibleSpans
+      .filter(
+        (span) => span.score > 0 || span.requestedFactSignal > 0,
+      )
       .sort(
         (left, right) =>
+          right.requestedFactSignal - left.requestedFactSignal ||
+          right.answerBearingRatio - left.answerBearingRatio ||
           right.score - left.score ||
           left.candidateIndex - right.candidateIndex ||
           left.spanIndex - right.spanIndex,
       )
-      .slice(0, 2)
+      .slice(0, maxSpans)
       .sort(
         (left, right) =>
           left.candidateIndex - right.candidateIndex ||
@@ -282,17 +371,29 @@ export class GenerateDraftAnswerUseCase {
       return scored.map(({ evidenceId, text }) => ({ evidenceId, text }));
     }
 
-    return candidates.slice(0, 2).map(({ evidenceId, evidenceText }) => ({
-      evidenceId,
-      text: evidenceText,
-    }));
+    return eligibleSpans
+      .sort(
+        (left, right) =>
+          left.candidateIndex - right.candidateIndex ||
+          left.spanIndex - right.spanIndex,
+      )
+      .slice(0, maxSpans)
+      .map(({ evidenceId, text }) => ({ evidenceId, text }));
   }
 
-  private transcriptSpans(text: string): string[] {
-    return text
+  private transcriptSpans(text: string, question: string): string[] {
+    const sentences = text
       .split(/(?<=[.!?])\s+|\n+/)
       .map((span) => span.trim())
       .filter(Boolean);
+    if (!/\b(?:why|reason|because)\b/i.test(question)) return sentences;
+
+    return sentences.flatMap((sentence) =>
+      sentence
+        .split(/\s+(?=(?:because|since|so|therefore)\b)/i)
+        .map((span) => span.trim())
+        .filter(Boolean),
+    );
   }
 
   private fallbackSpanScore(span: string, questionTokens: Set<string>): number {
@@ -302,13 +403,37 @@ export class GenerateDraftAnswerUseCase {
     );
   }
 
-  private schema(): StructuredLlmJsonSchema {
+  private fallbackAnswerBearingRatio(
+    span: string,
+    questionTokens: Set<string>,
+  ): number {
+    const spanTokens = [...new Set(answerContentTokens(span))];
+    if (spanTokens.length === 0) return 0;
+    const overlap = spanTokens.filter((token) =>
+      questionTokens.has(token),
+    ).length;
+    return (spanTokens.length - overlap) / spanTokens.length;
+  }
+
+  private isQuestionEchoSpan(
+    span: string,
+    questionTokens: Set<string>,
+  ): boolean {
+    const spanTokens = [...new Set(answerContentTokens(span))];
+    if (questionTokens.size < 2 || spanTokens.length < 2) return false;
+    const overlap = spanTokens.filter((token) =>
+      questionTokens.has(token),
+    ).length;
+    return overlap >= 2 && overlap / spanTokens.length >= 0.8;
+  }
+
+  private schema(maxAnswerChars: number): StructuredLlmJsonSchema {
     return {
       type: 'object',
       additionalProperties: false,
       required: ['answer', 'claims'],
       properties: {
-        answer: { type: 'string', maxLength: 2_500 },
+        answer: { type: 'string', maxLength: maxAnswerChars },
         claims: {
           type: 'array',
           description:

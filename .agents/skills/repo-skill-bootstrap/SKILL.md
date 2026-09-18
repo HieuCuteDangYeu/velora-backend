@@ -1,101 +1,66 @@
 ---
 name: repo-skill-bootstrap
-description: Analyze a software repository and identify, propose, create, or update concise repository-specific Agent Skills for stable architecture, workflows, invariants, and domain conventions. Use when installing the engineering harness into a repository, onboarding agents to an unfamiliar codebase, or refreshing skills after significant architectural changes.
+description: Create or refresh only durable repository-specific Agent Skills after existing Orca/Agent Skills have been considered first.
 ---
 
 # Repository Skill Bootstrap
 
-Analyze the repository before creating skills.
+Use this only when the repository contains stable knowledge that generic Orca/Agent Skills cannot provide.
 
-The purpose is not to document the repository. The purpose is to expose non-obvious knowledge that materially changes how future coding agents should make decisions.
+## First use existing skills
 
-## Classify discovered knowledge
+Before creating anything local, check Orca's Skills page, the active agent's discovered skills, and Orca's built-in skill discovery / Find Skills surface when available.
 
-Classify each candidate rule as one of four categories.
+Do not duplicate generic orchestration, language/framework knowledge, testing, UI/UX, security, or memory guidance when a maintained skill already covers it.
 
-### AGENTS.md
+## Create a repository skill only when
 
-Use `AGENTS.md` when the rule applies to nearly every engineering task.
+At least one of these is true:
 
-### Agent Skill
+1. the repository has a non-obvious architectural invariant
+2. violating the rule risks correctness/security/data integrity
+3. several modules/services follow the same specialized workflow
+4. agents repeatedly need the same project-specific explanation
+5. the knowledge is stable enough to matter across future tasks
 
-Create a skill when the knowledge is specialized and relevant only to certain tasks, such as authentication invariants, messaging architecture, event publication rules, media processing, database ownership, or deployment procedures.
+Examples:
 
-### Deterministic tooling
+- project-specific auth/authorization rules
+- event/outbox/idempotency guarantees
+- service/data ownership boundaries
+- persistence conventions
+- media-processing pipelines
+- repository-specific deployment/release procedures
 
-Prefer linting, tests, CI, schemas, formatters, or static analysis when a rule can be enforced mechanically. Do not consume LLM context for something deterministic tooling can verify.
+## Do not create a skill when
 
-### Documentation
-
-Keep information as documentation when it primarily helps humans and does not materially alter agent decisions.
-
-## Repository discovery
-
-Inspect relevant sources including:
-
-- `AGENTS.md`
-- README and architecture documentation
-- package/workspace manifests
-- service/module structure
-- configuration
-- persistence layer
-- messaging/event infrastructure
-- authentication/authorization
-- background jobs
-- tests
-- CI workflows
-- recent meaningful git history
-
-Search for repeated implementation patterns before inferring conventions. Do not infer architecture from file names alone.
-
-## Skill creation threshold
-
-Create or propose a skill only when at least one condition holds:
-
-1. The repository contains a non-obvious architectural invariant.
-2. Violating the pattern would create correctness or security problems.
-3. Multiple parts of the repository follow the same specialized workflow.
-4. Agents repeatedly need the same project-specific explanation.
-5. The knowledge is reusable across multiple future tasks.
-
-Do not create a skill when:
-
-- it is generic language/framework knowledge
-- it merely restates source code
-- it applies to only one temporary issue
-- deterministic tooling can enforce it
+- nearby code/tests already make the rule obvious
+- deterministic tooling can enforce it better
+- it applies only to one temporary issue
+- it merely restates documentation
 - it duplicates `AGENTS.md`
 - it duplicates Ponytail
-- another existing skill already covers it
+- it duplicates an installed maintained skill
 
-## Skill design
+## Placement
 
-Use `.agents/skills/<skill-name>/SKILL.md` with lowercase hyphenated names.
+Use `AGENTS.md` for rules that apply to nearly every engineering task.
 
-Keep `SKILL.md` concise. Put large supporting material under `references/` and deterministic reusable helpers under `scripts/`.
+Use `.agents/skills/<name>/SKILL.md` only for specialized project knowledge that should load on relevant tasks.
 
-Assume the agent already understands common languages, frameworks, databases, and infrastructure. Explain only what is specific to this repository.
+Prefer tests, linting, schemas, CI, formatters, and static analysis when the rule can be enforced mechanically.
 
-## Generation workflow
+## Workflow
 
-First produce a proposal containing:
+For proposal-only requests, first return:
 
-- skill name
+- proposed skill name
 - trigger
 - repository evidence
 - important invariants
-- why it deserves a skill
+- why it deserves a local skill
 - likely source files
 
-Do not create skills during proposal-only requests.
+Do not create the skill until the user asks to apply the proposal.
 
-When explicitly asked to apply the proposal:
-
-1. Prefer updating an existing skill over creating a near-duplicate.
-2. Use the host's built-in skill creator when available.
-3. Otherwise create a valid Agent Skill directly.
-4. Write skills under `.agents/skills/`.
-5. Validate generated skills when validation tooling is available.
-6. Review generated skills for duplicated guidance.
-
-Never modify application code as part of skill generation unless the user explicitly requests it.
+When applying it, keep the skill concise, update an existing skill instead of creating an overlap, and never modify application code unless the user explicitly asks.

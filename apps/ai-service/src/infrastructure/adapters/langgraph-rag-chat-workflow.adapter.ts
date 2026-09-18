@@ -22,6 +22,7 @@ import type {
   RagChatWorkflowResult,
   RagChatWorkflowState,
   RagChatRouteDecision,
+  RagVerificationResult,
   RagRequiredEvidence,
   RagRouterSemanticInconsistencyDetails,
   RagRouterSemanticInconsistencyType,
@@ -691,21 +692,155 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private createVerificationFailureNode() {
-    return (state: RagChatWorkflowState): Partial<RagChatWorkflowState> => ({
-      answer:
-        state.route?.intent === 'REEL_VIDEO_QUESTION'
-          ? 'I do not have enough verified shared reel evidence to answer that reliably.'
-          : 'I could not verify that answer reliably from the available context.',
-      citations: [],
-      citationCoverage: {
-        mode: 'NOT_REQUIRED',
-        coverage: 1,
-        factualClaimCount: 0,
-        supportedClaimCount: 0,
-        unsupportedClaims: [],
-      },
-      finalFailureSource: state.citationCoverage ? 'CITATION' : 'VERIFIER',
-    });
+    return async (
+      state: RagChatWorkflowState,
+    ): Promise<Partial<RagChatWorkflowState>> => {
+      const failedVerification = state.verification;
+      const verifierUnavailable =
+        failedVerification?.diagnostics?.providerStatus === 'ERROR';
+      const verifierFalseNegativeCandidate =
+        failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
+        failedVerification.passed === false &&
+        (failedVerification.issues?.length ?? 0) === 0 &&
+        (failedVerification.contradictions?.length ?? 0) === 0 &&
+        (failedVerification.supportedClaimMappings?.some(
+          (mapping) => mapping.evidenceIds.length > 0,
+        ) ??
+          false);
+      const extractiveAnswerHasLocalProvenance =
+        failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
+        failedVerification.passed === false &&
+        (failedVerification.issues?.length ?? 0) === 0 &&
+        (failedVerification.contradictions?.length ?? 0) === 0 &&
+        state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK' &&
+        (state.answerClaims?.some((claim) =>
+          claim.evidenceIds.some((evidenceId) => /^e\d+$/.test(evidenceId)),
+        ) ?? false);
+      if (
+        state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+        failedVerification &&
+        (verifierUnavailable ||
+          verifierFalseNegativeCandidate ||
+          extractiveAnswerHasLocalProvenance)
+      ) {
+        const fallback =
+          this.generateDraftAnswerUseCase.buildExtractiveFallback(
+            state,
+            'UNUSABLE_SYNTHESIS',
+          );
+        if (fallback) {
+          const supportingEvidenceIndexes = [
+            ...new Set(
+              fallback.claims.flatMap((claim) =>
+                claim.evidenceIds.flatMap((evidenceId) => {
+                  const match = /^e(\d+)$/.exec(evidenceId);
+                  return match ? [Number(match[1])] : [];
+                }),
+              ),
+            ),
+          ];
+          const verification: RagVerificationResult = {
+            passed: true,
+            confidence: 1,
+            issues: [
+              verifierUnavailable
+                ? 'Semantic verifier unavailable; recovered with an exact extractive transcript fallback.'
+                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive transcript fallback.',
+            ],
+            answerQualityPassed: true,
+            answerQualityIssues: [],
+            requiresRevision: false,
+            supportedClaimMappings: fallback.claims,
+            contradictions: [],
+            diagnostics: {
+              ...failedVerification.diagnostics,
+              providerStatus: verifierUnavailable ? 'ERROR' : 'SUCCESS',
+              decisionSource: 'EXACT_PROVENANCE' as const,
+              finalPassed: true,
+              confidence: 1,
+              issues: [],
+              answerQualityPassed: true,
+              answerQualityIssues: [],
+              requiresRevision: false,
+              supportedClaimMappings: fallback.claims,
+              contradictions: [],
+              exactProvenance: {
+                supported: true,
+                supportingEvidenceIndexes,
+              },
+            },
+          };
+          const recoveredState: RagChatWorkflowState = {
+            ...state,
+            answer: fallback.answer,
+            answerClaims: fallback.claims,
+            answerGenerationMode: fallback.finalizationMode,
+            answerFallbackReason: fallback.fallbackReason,
+            verification,
+          };
+          const assessment =
+            await this.buildRagCitationsUseCase.execute(recoveredState);
+          const threshold = this.number(
+            'AI_RAG_CITATION_COVERAGE_THRESHOLD',
+            1,
+            0,
+            1,
+          );
+          if (assessment.coverage.coverage >= threshold) {
+            const citationDiagnostics = assessment.coverage.diagnostics;
+            return {
+              answer: fallback.answer,
+              answerClaims: fallback.claims,
+              answerGenerationMode: fallback.finalizationMode,
+              answerFallbackReason: fallback.fallbackReason,
+              verification,
+              citations: assessment.citations,
+              citationCoverage: assessment.coverage,
+              citationDiagnostics,
+              citationAttempts: [
+                ...state.citationAttempts,
+                {
+                  attempt: state.citationAttempts.length,
+                  decisionSource:
+                    citationDiagnostics?.decisionSource ??
+                    assessment.coverage.mode,
+                  coverage: assessment.coverage.coverage,
+                  selectedEvidenceIds:
+                    citationDiagnostics?.selectedEvidenceIds ?? [],
+                  deterministicSupportingEvidenceIds:
+                    citationDiagnostics?.deterministicSupportingEvidenceIds ??
+                    [],
+                  selectedEvidenceMappings:
+                    citationDiagnostics?.selectedEvidenceMappings ?? [],
+                  providerStatus: citationDiagnostics?.providerStatus,
+                  model: citationDiagnostics?.model,
+                  semanticCalls: citationDiagnostics?.semanticCalls ?? [],
+                  errorCode: citationDiagnostics?.errorCode,
+                  providerCategory: citationDiagnostics?.providerCategory,
+                },
+              ],
+              finalFailureSource: 'NONE',
+            };
+          }
+        }
+      }
+
+      return {
+        answer:
+          state.route?.intent === 'REEL_VIDEO_QUESTION'
+            ? 'I do not have enough verified shared reel evidence to answer that reliably.'
+            : 'I could not verify that answer reliably from the available context.',
+        citations: [],
+        citationCoverage: {
+          mode: 'NOT_REQUIRED',
+          coverage: 1,
+          factualClaimCount: 0,
+          supportedClaimCount: 0,
+          unsupportedClaims: [],
+        },
+        finalFailureSource: state.citationCoverage ? 'CITATION' : 'VERIFIER',
+      };
+    };
   }
 
   private createFinalAnswerNode(nodeTimings: Record<string, number>) {
@@ -914,6 +1049,22 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       0,
       1,
     );
+    if (
+      state.verification?.passed &&
+      state.verification.answerQualityPassed === false
+    ) {
+      if (
+        state.verification.requiresRevision &&
+        state.retryCount < this.integer('AI_RAG_MAX_ANSWER_REVISIONS', 1, 0, 2)
+      ) {
+        return 'prepareAnswerRevisionNode';
+      }
+      if (state.verification.confidence >= minimumConfidence) {
+        return 'citationNode';
+      }
+      return 'verificationFailureNode';
+    }
+
     if (
       state.verification?.passed &&
       state.verification.confidence >= minimumConfidence

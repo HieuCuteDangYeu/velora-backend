@@ -1,42 +1,32 @@
 ---
 name: skill-maintenance
-description: Review repository changes, commits, or pull requests to determine whether durable architecture or workflow knowledge changed and whether existing Agent Skills should be updated or a new skill should be proposed. Use after major feature work, architecture changes, or when auditing whether repository skills remain accurate.
+description: Review verified repository changes and update local skills only when durable project-specific engineering knowledge actually changed.
 ---
 
 # Skill Maintenance
 
-Inspect the actual repository change and determine whether it introduces or modifies reusable engineering knowledge.
+Repository skills should stay rare and small.
 
-Do not treat ordinary implementation details as skill-worthy.
-
-## Possible outcomes
-
-Return one of:
+After a substantial verified change, determine whether it modified a stable project-specific invariant or workflow. Return one of:
 
 - `NO_SKILL_CHANGE`
 - `UPDATE_SKILL <skill-name>`
 - `CREATE_SKILL <skill-name>`
 - `REMOVE_SKILL <skill-name>`
 
-## Update a skill only when
+`NO_SKILL_CHANGE` should be the normal result.
 
-The change modifies a stable:
+Update/create a local skill only for durable changes to things such as:
 
-- architectural invariant
-- cross-service convention
-- security requirement
-- persistence convention
-- messaging/event workflow
-- operational workflow
-- domain constraint
+- architecture boundaries
+- security/auth invariants
+- persistence ownership/conventions
+- messaging/outbox/idempotency rules
+- operational/release workflows
+- domain constraints future agents must know
 
-Do not update skills for:
+Do not update local skills for one-off fixes, refactors, renames, temporary migrations, generic framework behavior, or anything already covered by Orca/installed Agent Skills.
 
-- one-off bug fixes
-- variable/function renames
-- implementation details
-- temporary migrations
-- information obvious from local code
-- generic framework behavior
+Before creating a new local skill, use Orca's Skills UI / built-in discovery surfaces to check whether a maintained skill already covers the capability.
 
-When changes are necessary, keep the skill smaller than before when possible. Prefer editing an existing skill over creating overlapping skills.
+Prefer editing or shrinking an existing skill over adding an overlapping one.

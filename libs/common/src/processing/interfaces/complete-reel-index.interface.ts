@@ -1,3 +1,5 @@
+import type { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
+
 export interface CompleteReelIndexCommand {
   reelId: string;
   indexAttemptId: string;
@@ -10,4 +12,6 @@ export interface CompleteReelIndexCommand {
   embeddingDimensions: number;
   embeddingVersion: string;
   indexedAt: string;
+  transcript?: string;
+  transcriptSegments?: TranscriptSegment[];
 }

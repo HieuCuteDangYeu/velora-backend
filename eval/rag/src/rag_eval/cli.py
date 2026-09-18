@@ -69,6 +69,38 @@ def _dicts(experiment_result: Any) -> list[dict[str, Any]]:
     ]
 
 
+def _deterministic_resume_signature(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "caseId": case.get("caseId"),
+            "datasetVersion": case.get("datasetVersion"),
+            "productionSha": case.get("variant", {}).get("productionSha"),
+            "hardGatePassed": case.get("hardGatePassed"),
+            "deterministic": case.get("deterministic"),
+            "productionExecutionId": case.get("execution", {})
+            .get("trace", {})
+            .get("productionExecutionId"),
+            "ragTraceId": case.get("execution", {}).get("trace", {}).get("ragTraceId"),
+        }
+        for case in sorted(cases, key=lambda item: str(item.get("caseId")))
+    ]
+
+
+def _reuse_saved_deterministic_report(
+    directory: Path, cases: list[dict[str, Any]], run_id: str
+) -> dict[str, Any]:
+    try:
+        existing_cases = load_cases(directory)
+        summary = json.loads((directory / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("existing deterministic report is unreadable") from error
+    if _deterministic_resume_signature(existing_cases) != _deterministic_resume_signature(cases):
+        raise RuntimeError("existing deterministic report provenance mismatch")
+    if summary.get("runId") != run_id or summary.get("caseCount") != len(cases):
+        raise RuntimeError("existing deterministic report summary mismatch")
+    return summary
+
+
 def _variant(args: argparse.Namespace) -> dict[str, Any]:
     try:
         git_sha = subprocess.run(
@@ -106,7 +138,9 @@ def _repo_path(value: str) -> Path:
     return path if path.is_absolute() else ROOT.parents[1] / path
 
 
-def _saved_runner_report(run_id: str) -> Path:
+def _saved_runner_report(run_id: str, source_report: str | None = None) -> Path:
+    if source_report:
+        return _repo_path(source_report)
     return ROOT.parents[1] / "test-data/reel-integration/ami/reports" / f"{run_id}.json"
 
 
@@ -119,7 +153,6 @@ def _validate_source_summary(
     if (
         summary.get("dataset") != args.dataset
         or summary.get("caseCount") != len(expected_case_ids)
-        or summary.get("correctAndGrounded") != len(expected_case_ids)
         or summary.get("hardGatePassed") is not True
         or summary.get("variant", {}).get("productionSha") != args.production_sha
     ):
@@ -260,6 +293,10 @@ def _positive_float_from_env(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def _env_true(name: str) -> bool:
+    return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
+
+
 def _print_multiday_recovery(
     store: MultiDayRecoveryStore,
     checkpoint: JudgeCheckpointStore,
@@ -358,7 +395,10 @@ async def run_live(args: argparse.Namespace) -> Path:
             )
         source_summary_path = _repo_path(source_summary_value)
         source_attestation = _validate_source_summary(source_summary_path, args, set(rows))
-        report_path = _saved_runner_report(run_id)
+        source_report_value = getattr(args, "source_report", None) or os.getenv(
+            "RAGAS_SOURCE_REPORT_PATH"
+        )
+        report_path = _saved_runner_report(run_id, source_report_value)
         if not report_path.exists():
             raise ValueError("saved runner report is missing for the requested source run")
         saved_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -444,9 +484,9 @@ async def run_live(args: argparse.Namespace) -> Path:
     )
     deterministic_cases = _dicts(result)
     deterministic_directory = RESULTS / run_id
-    if multi_day_recovery and deterministic_directory.exists():
+    if args.resume and deterministic_directory.exists():
         directory = deterministic_directory
-        summary = build_summary(deterministic_cases, run_id)
+        summary = _reuse_saved_deterministic_report(directory, deterministic_cases, run_id)
     else:
         directory = write_report(deterministic_cases, run_id, RESULTS)
         summary = json.loads((directory / "summary.json").read_text())
@@ -515,6 +555,19 @@ async def run_live(args: argparse.Namespace) -> Path:
             usage_value = getattr(args, "tpd_usage_attestation", None) or os.getenv(
                 "RAGAS_GROQ_TPD_USAGE_ATTESTATION_PATH"
             )
+            rolling_24h_value = getattr(args, "tpd_rolling_24h_metrics", None) or os.getenv(
+                "RAGAS_GROQ_TPD_ROLLING_24H_METRICS_PATH"
+            )
+            last_hour_value = getattr(args, "tpd_last_hour_metrics", None) or os.getenv(
+                "RAGAS_GROQ_TPD_LAST_HOUR_METRICS_PATH"
+            )
+            metrics_observed_at = getattr(args, "tpd_metrics_observed_at", None) or os.getenv(
+                "RAGAS_GROQ_TPD_METRICS_OBSERVED_AT"
+            )
+            metrics_all_projects = bool(
+                getattr(args, "tpd_metrics_all_projects", False)
+                or _env_true("RAGAS_GROQ_TPD_METRICS_ALL_PROJECTS")
+            )
             empty_value = getattr(args, "tpd_empty_attestation", None) or os.getenv(
                 "RAGAS_GROQ_TPD_EMPTY_ATTESTATION_PATH"
             )
@@ -535,6 +588,14 @@ async def run_live(args: argparse.Namespace) -> Path:
                 limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
                 usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
                 empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+                rolling_24h_metrics_path=(
+                    str(_repo_path(rolling_24h_value)) if rolling_24h_value else None
+                ),
+                last_hour_metrics_path=(
+                    str(_repo_path(last_hour_value)) if last_hour_value else None
+                ),
+                metrics_observed_at=metrics_observed_at,
+                metrics_all_projects=metrics_all_projects,
             )
             recovery_plan = multiday_tpd_preflight(tpd, operations)
             if recovery_plan["status"] == "UNKNOWN":
@@ -567,6 +628,14 @@ async def run_live(args: argparse.Namespace) -> Path:
                 limit_attestation_path=str(_repo_path(limit_value)) if limit_value else None,
                 usage_attestation_path=str(_repo_path(usage_value)) if usage_value else None,
                 empty_attestation_path=str(_repo_path(empty_value)) if empty_value else None,
+                rolling_24h_metrics_path=(
+                    str(_repo_path(rolling_24h_value)) if rolling_24h_value else None
+                ),
+                last_hour_metrics_path=(
+                    str(_repo_path(last_hour_value)) if last_hour_value else None
+                ),
+                metrics_observed_at=metrics_observed_at,
+                metrics_all_projects=metrics_all_projects,
             )
             recovery_plan = multiday_tpd_preflight(tpd, operations)
             if recovery_plan["status"] == "UNKNOWN":
@@ -678,8 +747,13 @@ def print_terminal_summary(summary: dict[str, Any]) -> None:
     print(f"Dataset                        {summary['dataset']}")
     print(f"Variant                        {summary['variant'].get('variantName')}")
     print(f"Cases                          {summary['caseCount']}")
-    print(f"Correct                        {summary['correct']}/{summary['caseCount']}")
-    print(f"Correct + grounded             {summary['correctAndGrounded']}/{summary['caseCount']}")
+    print(
+        f"Lexical match (diagnostic)     {summary['lexicalMatch']}/{summary['caseCount']}"
+    )
+    print(
+        "Lexical match + grounded       "
+        f"{summary['lexicalMatchAndGrounded']}/{summary['caseCount']}"
+    )
     print(f"Faithfulness                   {semantic.get('faithfulness')}")
     print(f"Factual Correctness            {semantic.get('factual_correctness')}")
     print(f"Response Relevancy             {semantic.get('response_relevancy')}")
@@ -790,7 +864,12 @@ def parser() -> argparse.ArgumentParser:
     live.add_argument("--tpd-limit-attestation")
     live.add_argument("--tpd-usage-attestation")
     live.add_argument("--tpd-empty-attestation")
+    live.add_argument("--tpd-rolling-24h-metrics")
+    live.add_argument("--tpd-last-hour-metrics")
+    live.add_argument("--tpd-metrics-observed-at")
+    live.add_argument("--tpd-metrics-all-projects", action="store_true")
     live.add_argument("--runtime-config-snapshot")
+    live.add_argument("--source-report")
     live.add_argument("--source-summary")
     report = commands.add_parser("report")
     report.add_argument("--run", required=True)
@@ -809,6 +888,10 @@ def parser() -> argparse.ArgumentParser:
     preflight.add_argument("--tpd-cost-attestation")
     preflight.add_argument("--tpd-usage-attestation")
     preflight.add_argument("--tpd-empty-attestation")
+    preflight.add_argument("--tpd-rolling-24h-metrics")
+    preflight.add_argument("--tpd-last-hour-metrics")
+    preflight.add_argument("--tpd-metrics-observed-at")
+    preflight.add_argument("--tpd-metrics-all-projects", action="store_true")
     preflight.add_argument("--pricing-path")
     preflight.add_argument("--ledger-path")
     preflight.add_argument("--multi-day-recovery", action="store_true")

@@ -27,7 +27,12 @@ describe('VerifierAgentUseCase', () => {
     ({
       userMessage: 'Which novel relation is explicitly asserted?',
       answer: input.answer ?? 'The zorb is linked to the quasar.',
-      route: { needsVerification: input.needsVerification ?? true },
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        needsVerification: input.needsVerification ?? true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
       rerankedChunks: input.evidenceText
         ? [
             {
@@ -46,6 +51,8 @@ describe('VerifierAgentUseCase', () => {
     passed: true,
     confidence: 0.95,
     issues: [],
+    answerQualityPassed: true,
+    answerQualityIssues: [],
     requiresRevision: false,
     revisedInstruction: '',
     contradictions: [],
@@ -102,6 +109,37 @@ describe('VerifierAgentUseCase', () => {
         temperature: 0,
       }),
     );
+  });
+
+  it('fails closed when the semantic verifier accepts the wrong directional quantity', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            {
+              claim: 'The number of bands can go as low as 2.',
+              evidenceIds: ['e0'],
+            },
+          ],
+        }),
+      ),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const input = state({
+      answer: 'The number of bands can go as low as 2.',
+      evidenceText:
+        'There are 2 controls on the panel. We can go down till like 12 bands and it is still okay.',
+    });
+    input.userMessage =
+      'How low can the number of bands go while still being okay?';
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      issues: [
+        'Answer model used a quantity unsupported by the requested relation',
+      ],
+    });
   });
 
   it('persists safe primary verifier call diagnostics', async () => {
@@ -431,6 +469,52 @@ describe('VerifierAgentUseCase', () => {
     });
   });
 
+  it('keeps grounding pass separate from a directness revision in trace diagnostics', async () => {
+    const supportedClaim = 'The zorb is linked to the quasar.';
+    const verboseAnswer = Array.from({ length: 40 }, () => supportedClaim).join(
+      ' ',
+    );
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            { claim: supportedClaim, evidenceIds: ['e0'] },
+          ],
+        }),
+      ),
+    };
+    const noEscalationConfig = {
+      ...config,
+      boolean: jest.fn(() => false),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      noEscalationConfig,
+    );
+
+    await expect(
+      useCase.execute(
+        state({
+          answer: verboseAnswer,
+          evidenceText: supportedClaim,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      passed: true,
+      answerQualityPassed: false,
+      requiresRevision: true,
+      issues: [],
+      answerQualityIssues: [expect.stringContaining('direct-answer budget')],
+      revisedInstruction: expect.stringContaining('shortest complete answer'),
+      supportedClaimMappings: [{ claim: supportedClaim, evidenceIds: ['e0'] }],
+      diagnostics: {
+        finalPassed: true,
+        answerQualityPassed: false,
+        answerQualityIssues: [expect.stringContaining('direct-answer budget')],
+      },
+    });
+  });
+
   it('sends a bounded compact output schema', async () => {
     const service = { generateObject: jest.fn().mockResolvedValue(result()) };
     const useCase = new VerifierAgentUseCase(service as never, config);
@@ -444,6 +528,7 @@ describe('VerifierAgentUseCase', () => {
         jsonSchema: expect.objectContaining({
           properties: expect.objectContaining({
             issues: expect.objectContaining({ maxItems: 8 }),
+            answerQualityIssues: expect.objectContaining({ maxItems: 4 }),
             contradictions: expect.objectContaining({ maxItems: 8 }),
             supportedClaimMappings: expect.objectContaining({ maxItems: 12 }),
           }),
@@ -452,6 +537,12 @@ describe('VerifierAgentUseCase', () => {
     );
     expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
       'Do not accept an answer merely because a claim points to an evidence ID',
+    );
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+      'answer quality separately from factual grounding',
+    );
+    expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"answerShape":"EXPLANATION"',
     );
   });
 

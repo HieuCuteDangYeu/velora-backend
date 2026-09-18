@@ -17,12 +17,19 @@ import {
   boundPromptText,
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import {
+  ragAnswerBudget,
+  ragAnswerDirectnessIssue,
+  validateRagAnswerContract,
+} from '@ai/domain/services/rag-answer-contract';
 import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 
 interface RawVerificationResult {
   passed?: unknown;
   confidence?: unknown;
   issues?: unknown;
+  answerQualityPassed?: unknown;
+  answerQualityIssues?: unknown;
   requiresRevision?: unknown;
   revisedInstruction?: unknown;
   contradictions?: unknown;
@@ -269,6 +276,8 @@ export class VerifierAgentUseCase {
           finalPassed: result.passed,
           confidence: result.confidence,
           issues: result.issues,
+          answerQualityPassed: result.answerQualityPassed,
+          answerQualityIssues: result.answerQualityIssues ?? [],
           requiresRevision: result.requiresRevision,
           supportedClaimMappings: result.supportedClaimMappings ?? [],
           contradictions: result.contradictions ?? [],
@@ -347,6 +356,8 @@ export class VerifierAgentUseCase {
         finalPassed: result.passed,
         confidence: result.confidence,
         issues: result.issues,
+        answerQualityPassed: result.answerQualityPassed,
+        answerQualityIssues: result.answerQualityIssues ?? [],
         requiresRevision: result.requiresRevision,
         revisedInstruction: result.revisedInstruction,
         supportedClaimMappings: result.supportedClaimMappings ?? [],
@@ -366,12 +377,18 @@ Check every factual claim against the authorized evidence and requested relation
 
 Do not accept an answer merely because a claim points to an evidence ID. Compare each claim's proposition with the evidence and requested value, name, number, unit, relation, and direction. Every independently checkable factual assertion must be represented in supportedClaimMappings. If any assertion is not directly entailed or you are uncertain, return passed=false and requiresRevision=true.
 
+Evaluate answer quality separately from factual grounding. passed and issues describe grounding only. answerQualityPassed and answerQualityIssues describe whether the answer directly answers the exact question without unrelated supported facts, unnecessary transcript reproduction, or avoidable verbosity for the supplied answer shape and budget. A fully grounded but indirect answer must keep passed=true, set answerQualityPassed=false, and set requiresRevision=true with a brief trimming instruction that keeps the supported answer facts unchanged.
+
 Return only compact JSON matching the schema. Keep issues, contradictions, claims, and any revision instruction brief. Use only evidence IDs; do not repeat evidence text, rewrite the answer, invent IDs, or expose reasoning.
 `.trim();
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
     const bounds = readRagPromptBounds(this.config);
+    const answerBudget =
+      state.route?.intent === 'REEL_VIDEO_QUESTION'
+        ? ragAnswerBudget(state.route.reelQuestionType)
+        : undefined;
     const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveTail: true,
       focusText: state.userMessage,
@@ -379,6 +396,8 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({
       question: boundPromptText(state.userMessage, bounds.maxUserMessageChars),
+      answerShape: answerBudget?.shape,
+      maxAnswerChars: answerBudget?.maxChars,
       requiredEvidence: state.route?.requiredEvidence ?? [],
       answer: boundPromptText(state.answer ?? '', bounds.maxAnswerChars),
       proposedClaims,
@@ -406,6 +425,8 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         'passed',
         'confidence',
         'issues',
+        'answerQualityPassed',
+        'answerQualityIssues',
         'requiresRevision',
         'revisedInstruction',
         'contradictions',
@@ -417,6 +438,12 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         issues: {
           type: 'array',
           maxItems: 8,
+          items: { type: 'string', maxLength: 300 },
+        },
+        answerQualityPassed: { type: 'boolean' },
+        answerQualityIssues: {
+          type: 'array',
+          maxItems: 4,
           items: { type: 'string', maxLength: 300 },
         },
         requiresRevision: { type: 'boolean' },
@@ -452,10 +479,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     state: RagChatWorkflowState,
   ): RagVerificationResult {
     const bounds = readRagPromptBounds(this.config);
+    const boundedEvidence = boundEvidence(state.rerankedChunks ?? [], bounds);
     const allowedIds = new Set(
-      boundEvidence(state.rerankedChunks ?? [], bounds).map(
-        (_chunk, index) => `e${index}`,
-      ),
+      boundedEvidence.map((_chunk, index) => `e${index}`),
     );
     const rawMappings = Array.isArray(raw.supportedClaimMappings)
       ? raw.supportedClaimMappings
@@ -499,6 +525,38 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     issues.push(...contradictions);
     if (hasUnknownEvidenceId)
       issues.push('Verifier returned unknown evidence ID.');
+    const answerQualityIssues = Array.isArray(raw.answerQualityIssues)
+      ? raw.answerQualityIssues.filter(
+          (item): item is string =>
+            typeof item === 'string' && item.trim().length > 0,
+        )
+      : [];
+    const directnessIssue =
+      state.route?.intent === 'REEL_VIDEO_QUESTION'
+        ? ragAnswerDirectnessIssue(
+            state.answer ?? '',
+            ragAnswerBudget(state.route.reelQuestionType),
+          )
+        : undefined;
+    if (directnessIssue) answerQualityIssues.push(directnessIssue);
+    const groundingContractIssue =
+      raw.passed === true &&
+      !hasUnknownEvidenceId &&
+      contradictions.length === 0
+        ? validateRagAnswerContract({
+            answer: state.answer ?? '',
+            question: state.userMessage,
+            evidence: boundedEvidence.map(
+              (chunk) => chunk.evidenceText?.trim() || chunk.chunkText.trim(),
+            ),
+            evidenceRequired:
+              state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+              (state.route.requiredEvidence?.length ?? 0) > 0,
+          })
+        : undefined;
+    if (groundingContractIssue) issues.push(groundingContractIssue);
+    const answerQualityPassed =
+      raw.answerQualityPassed !== false && answerQualityIssues.length === 0;
     const confidence =
       typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
         ? Math.min(Math.max(raw.confidence, 0), 1)
@@ -506,21 +564,30 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     const passed =
       raw.passed === true &&
       !hasUnknownEvidenceId &&
+      !groundingContractIssue &&
       contradictions.length === 0;
+
+    const revisedInstruction =
+      typeof raw.revisedInstruction === 'string' &&
+      raw.revisedInstruction.trim()
+        ? raw.revisedInstruction.trim()
+        : !answerQualityPassed
+          ? 'Keep only the shortest complete answer to the exact question; remove transcript reproduction and unrelated supported details without changing the supported answer fact.'
+          : undefined;
 
     return {
       passed,
       confidence,
       issues,
+      answerQualityPassed,
+      answerQualityIssues,
       requiresRevision:
-        typeof raw.requiresRevision === 'boolean'
-          ? raw.requiresRevision
-          : !passed,
-      revisedInstruction:
-        typeof raw.revisedInstruction === 'string' &&
-        raw.revisedInstruction.trim()
-          ? raw.revisedInstruction.trim()
-          : undefined,
+        !passed || !answerQualityPassed
+          ? true
+          : typeof raw.requiresRevision === 'boolean'
+            ? raw.requiresRevision
+            : !passed,
+      revisedInstruction,
       supportedClaimMappings,
       contradictions,
     };

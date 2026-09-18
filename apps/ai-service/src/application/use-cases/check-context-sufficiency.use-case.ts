@@ -131,7 +131,7 @@ export class CheckContextSufficiencyUseCase {
         sufficient: false,
         confidence: 0,
         availableEvidence,
-        missingEvidence: this.getRequiredEvidence(state),
+        missingEvidence: this.getMissingRequiredEvidence(state, availableEvidence),
         supportedEvidenceIds: [],
         reason: 'Required semantic context sufficiency check was unavailable.',
         userFacingReason:
@@ -297,7 +297,10 @@ ${JSON.stringify(
         ? 'REWRITE_AND_RETRY'
         : 'REFUSE_NO_CONTEXT';
     const availableEvidence = this.getAvailableEvidence(state);
-    const missingEvidence = sufficient ? [] : this.getRequiredEvidence(state);
+    const missingEvidence = this.getMissingRequiredEvidence(
+      state,
+      availableEvidence,
+    );
     const allowedEvidenceIds = new Set(
       state.rerankedChunks.map((_chunk, index) => `e${index}`),
     );
@@ -338,6 +341,16 @@ ${JSON.stringify(
     return state.route?.requiredEvidence?.length
       ? state.route.requiredEvidence
       : ['TRANSCRIPT'];
+  }
+
+  private getMissingRequiredEvidence(
+    state: RagChatWorkflowState,
+    availableEvidence: RagRequiredEvidence[],
+  ): RagRequiredEvidence[] {
+    return this.getRequiredEvidence(state).filter(
+      (required) =>
+        required !== 'NONE' && !availableEvidence.includes(required),
+    );
   }
 
   private getAvailableEvidence(

@@ -127,14 +127,19 @@ model Reel {
   encodedMaxHeight      Int?
   encodedFps            Int?
 
+  seriesId      String?
+  episodeNumber Int?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  series       ReelSeries?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
   shares       ReelShare[]
   shareLinks   ReelShareLink[]
   viewEvents   ReelViewEvent[]
   viewSessions ReelViewSession[]
 
+  @@unique([seriesId, episodeNumber])
   @@index([userId])
   @@index([visibility, createdAt(sort: Desc)])
   @@index([userId, visibility, createdAt(sort: Desc)])
@@ -146,8 +151,24 @@ model Reel {
   @@index([mediaAttemptId])
   @@index([indexAttemptId])
   @@index([indexVersion])
+  @@index([seriesId, episodeNumber])
   @@index([status, processingStartedAt])
   @@index([status, visibility, createdAt(sort: Desc)])
+}
+
+model ReelSeries {
+  id          String   @id @default(uuid())
+  ownerId     String
+  title       String
+  description String?
+  visibility  String   @default("public")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reels Reel[]
+
+  @@index([ownerId])
+  @@index([visibility, createdAt(sort: Desc)])
 }
 
 model ReelShare {

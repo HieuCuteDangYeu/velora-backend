@@ -1,6 +1,12 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
+import {
+  AddReelToSeriesSchema,
+  CreateReelSeriesSchema,
+  ReorderReelSeriesSchema,
+  UpdateReelSeriesSchema,
+} from '@common/content/dtos/reel-series.dto';
 import { TrackReelEventPayload } from '@common/content/dtos/track-reel-events.dto';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
@@ -22,6 +28,7 @@ import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
+import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
 import { ResolveReelShareLinkUseCase } from '@content/application/use-cases/resolve-reel-share-link.use-case';
 import { ResolveReelContextAccessUseCase } from '@content/application/use-cases/resolve-reel-context-access.use-case';
 import { RevokeReelShareLinkUseCase } from '@content/application/use-cases/revoke-reel-share-link.use-case';
@@ -33,12 +40,16 @@ import { UpdateReelIndexStatusUseCase } from '@content/application/use-cases/upd
 import { UpdateReelMediaStatusUseCase } from '@content/application/use-cases/update-reel-media-status.use-case';
 import { UpdateReelUseCase } from '@content/application/use-cases/update-reel.use-case';
 import { ReelShareLink } from '@content/domain/entities/reel-share-link.entity';
+import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import { Reel } from '@content/domain/entities/reel.entity';
 import {
   InvalidMediaFileError,
   ReelAlreadyProcessingError,
   ReelNotFoundError,
   ReelReprocessForbiddenError,
+  ReelSeriesConflictError,
+  ReelSeriesForbiddenError,
+  ReelSeriesNotFoundError,
 } from '@content/domain/errors/content.error';
 import {
   ReelListQuery,
@@ -87,6 +98,7 @@ export class ContentController {
     private readonly searchPublicReelsUseCase: SearchPublicReelsUseCase,
     private readonly getSearchSuggestionsUseCase: GetSearchSuggestionsUseCase,
     private readonly getFriendsReelsUseCase: GetFriendsReelsUseCase,
+    private readonly reelSeriesUseCase: ReelSeriesUseCase,
   ) {}
 
   private toSerializable(reel: Reel): Record<string, unknown> {
@@ -143,8 +155,43 @@ export class ContentController {
       encodedVariantCount: reel.encodedVariantCount,
       encodedMaxHeight: reel.encodedMaxHeight,
       encodedFps: reel.encodedFps,
+      series: reel.series,
       recommendation: reel.recommendation,
     };
+  }
+
+  private toReelSeriesSerializable(series: ReelSeries) {
+    return {
+      id: series.id,
+      ownerId: series.ownerId,
+      title: series.title,
+      description: series.description,
+      visibility: series.visibility,
+      createdAt: series.createdAt,
+      updatedAt: series.updatedAt,
+      reels: series.reels.map((reel) => this.toListSerializable(reel)),
+    };
+  }
+
+  private throwReelSeriesError(error: unknown, operation: string): never {
+    if (
+      error instanceof ReelSeriesNotFoundError ||
+      error instanceof ReelNotFoundError
+    ) {
+      throw new RpcException({ statusCode: 404, message: error.message });
+    }
+    if (error instanceof ReelSeriesForbiddenError) {
+      throw new RpcException({ statusCode: 403, message: error.message });
+    }
+    if (error instanceof ReelSeriesConflictError) {
+      throw new RpcException({ statusCode: 409, message: error.message });
+    }
+
+    const err = error as Error;
+    throw new RpcException({
+      statusCode: 500,
+      message: `${operation} Error: ${err.message}`,
+    });
   }
 
   private toListSerializable(reel: Reel): Record<string, unknown> {
@@ -226,6 +273,181 @@ export class ContentController {
             : 'An unexpected error occurred while creating the reel',
         error: 'Internal Server Error',
       });
+    }
+  }
+
+  @MessagePattern('content.create_reel_series')
+  async createReelSeries(
+    @Payload() data: { ownerId: string; payload: unknown },
+  ) {
+    const parsed = CreateReelSeriesSchema.safeParse(data?.payload);
+    if (!data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series creation',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.create(data.ownerId.trim(), parsed.data),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Create Reel Series');
+    }
+  }
+
+  @MessagePattern('content.get_reel_series')
+  async getReelSeries(
+    @Payload()
+    data: {
+      seriesId: string;
+      viewerId: string;
+      isAdmin?: boolean;
+    },
+  ) {
+    if (!data?.seriesId?.trim() || !data?.viewerId?.trim()) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series lookup',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.get(
+          data.seriesId.trim(),
+          data.viewerId.trim(),
+          data.isAdmin === true,
+        ),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Get Reel Series');
+    }
+  }
+
+  @MessagePattern('content.update_reel_series')
+  async updateReelSeries(
+    @Payload() data: { seriesId: string; ownerId: string; payload: unknown },
+  ) {
+    const parsed = UpdateReelSeriesSchema.safeParse(data?.payload);
+    if (!data?.seriesId?.trim() || !data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series update',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.update(
+          data.seriesId.trim(),
+          data.ownerId.trim(),
+          parsed.data,
+        ),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Update Reel Series');
+    }
+  }
+
+  @MessagePattern('content.delete_reel_series')
+  async deleteReelSeries(
+    @Payload() data: { seriesId: string; ownerId: string },
+  ) {
+    if (!data?.seriesId?.trim() || !data?.ownerId?.trim()) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series deletion',
+      });
+    }
+
+    try {
+      await this.reelSeriesUseCase.delete(
+        data.seriesId.trim(),
+        data.ownerId.trim(),
+      );
+      return { success: true };
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Delete Reel Series');
+    }
+  }
+
+  @MessagePattern('content.add_reel_to_series')
+  async addReelToSeries(
+    @Payload() data: { seriesId: string; ownerId: string; payload: unknown },
+  ) {
+    const parsed = AddReelToSeriesSchema.safeParse(data?.payload);
+    if (!data?.seriesId?.trim() || !data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for adding reel to series',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.addReel(
+          data.seriesId.trim(),
+          data.ownerId.trim(),
+          parsed.data,
+        ),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Add Reel To Series');
+    }
+  }
+
+  @MessagePattern('content.remove_reel_from_series')
+  async removeReelFromSeries(
+    @Payload() data: { seriesId: string; reelId: string; ownerId: string },
+  ) {
+    if (
+      !data?.seriesId?.trim() ||
+      !data?.reelId?.trim() ||
+      !data?.ownerId?.trim()
+    ) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for removing reel from series',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.removeReel(
+          data.seriesId.trim(),
+          data.reelId.trim(),
+          data.ownerId.trim(),
+        ),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Remove Reel From Series');
+    }
+  }
+
+  @MessagePattern('content.reorder_reel_series')
+  async reorderReelSeries(
+    @Payload() data: { seriesId: string; ownerId: string; payload: unknown },
+  ) {
+    const parsed = ReorderReelSeriesSchema.safeParse(data?.payload);
+    if (!data?.seriesId?.trim() || !data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series reorder',
+      });
+    }
+
+    try {
+      return this.toReelSeriesSerializable(
+        await this.reelSeriesUseCase.reorder(
+          data.seriesId.trim(),
+          data.ownerId.trim(),
+          parsed.data,
+        ),
+      );
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'Reorder Reel Series');
     }
   }
 

@@ -1514,14 +1514,14 @@ cleanup_unused_velora_application_sha_tags() {
   keep_ids_file="$(mktemp)"
   : >"$keep_ids_file"
 
-  # Preserve every image referenced by any running/stopped container.
-  while IFS= read -r image_id; do
+  # Preserve every image referenced by any running/stopped container without
+  # inspecting container objects. A broken Created container can make
+  # `docker inspect <container>` block indefinitely on Docker Desktop.
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
     [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-  done < <(
-    docker ps -aq \
-      | xargs -r docker inspect --format '{{.Image}}' 2>/dev/null \
-      | sort -u
-  )
+  done < <(docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u)
 
   # Preserve the exact previous-release images kept for one-step rollback.
   if [[ -f "$PREVIOUS_RELEASE_FILE" ]]; then

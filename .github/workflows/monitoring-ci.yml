@@ -90,6 +90,7 @@ jobs:
           bash -n scripts/deploy/velora-deploy-core
           bash -n scripts/deploy/velora-deploy-launcher
           bash -n scripts/deploy/install-velora-deploy-launcher
+          bash scripts/deploy/test-infra-validation-scope.sh
           bash -n scripts/ops/check-monitoring-stack.sh
 
           bash -c 'set -Eeuo pipefail; source scripts/deploy/velora-deploy-core; declare -F main >/dev/null'

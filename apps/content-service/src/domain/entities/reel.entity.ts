@@ -10,6 +10,7 @@ import { ReelVisibility } from '@common/content/schemas/reel-visibility.schema';
 import type { RecommendationMetadata } from '@common/recommendation/interfaces/recommendation-metadata.interface';
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
 import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
+import type { ReelSeriesSummary } from '@common/content/interfaces/reel-series.interface';
 
 export class Reel {
   id: string;
@@ -67,6 +68,7 @@ export class Reel {
   encodedVariantCount?: number;
   encodedMaxHeight?: number;
   encodedFps?: number;
+  series?: ReelSeriesSummary;
   createdAt: Date;
   updatedAt: Date;
   recommendation?: RecommendationMetadata;

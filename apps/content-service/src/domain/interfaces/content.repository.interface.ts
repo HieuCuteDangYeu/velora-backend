@@ -15,6 +15,7 @@ import {
 } from '@common/search/interfaces/search-suggestions-response.interface';
 import { ReelShareLink } from '../entities/reel-share-link.entity';
 import { ReelShare } from '../entities/reel-share.entity';
+import { ReelSeries } from '../entities/reel-series.entity';
 import { Reel } from '../entities/reel.entity';
 
 export interface ReelProcessingMediaMetadata {
@@ -63,6 +64,19 @@ export interface ReelUpdateData {
   title?: string;
   description?: string;
   tags?: string[];
+  visibility?: 'public' | 'friends' | 'private';
+}
+
+export interface ReelSeriesCreateData {
+  ownerId: string;
+  title: string;
+  description?: string;
+  visibility: 'public' | 'friends' | 'private';
+}
+
+export interface ReelSeriesUpdateData {
+  title?: string;
+  description?: string;
   visibility?: 'public' | 'friends' | 'private';
 }
 
@@ -245,6 +259,37 @@ export interface IContentRepository {
   ): Promise<Reel>;
 
   findById(id: string): Promise<Reel | null>;
+
+  createReelSeries(data: ReelSeriesCreateData): Promise<ReelSeries>;
+
+  findReelSeriesById(id: string): Promise<ReelSeries | null>;
+
+  updateReelSeries(
+    id: string,
+    ownerId: string,
+    data: ReelSeriesUpdateData,
+  ): Promise<ReelSeries | null>;
+
+  deleteReelSeries(id: string, ownerId: string): Promise<boolean>;
+
+  addReelToSeries(input: {
+    seriesId: string;
+    reelId: string;
+    ownerId: string;
+    episodeNumber: number;
+  }): Promise<boolean>;
+
+  removeReelFromSeries(input: {
+    seriesId: string;
+    reelId: string;
+    ownerId: string;
+  }): Promise<boolean>;
+
+  reorderReelSeries(input: {
+    seriesId: string;
+    ownerId: string;
+    reelIds: string[];
+  }): Promise<boolean>;
 
   shareReel(input: ReelShareCreateInput): Promise<ReelShare>;
 

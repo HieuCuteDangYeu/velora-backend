@@ -8,6 +8,7 @@ import type {
   ReelSourceOrientation,
 } from '@common/content/interfaces/reel-state.interface';
 import type { RecommendationMetadata } from '@common/recommendation/interfaces/recommendation-metadata.interface';
+import type { ReelSeriesSummary } from '@common/content/interfaces/reel-series.interface';
 
 export type ReelVisibility = 'public' | 'friends' | 'private';
 export type ReelPlaybackPresentation = 'PORTRAIT_COVER' | 'FIT_WITH_LETTERBOX';
@@ -49,6 +50,7 @@ export interface ReelListItem {
   sourceEffectiveHeight?: number;
   streamUrl: string;
   createdAt: string;
+  series?: ReelSeriesSummary;
   recommendation?: RecommendationMetadata;
 }
 

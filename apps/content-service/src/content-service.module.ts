@@ -20,6 +20,7 @@ import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
+import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
 import { ResolveReelShareLinkUseCase } from '@content/application/use-cases/resolve-reel-share-link.use-case';
 import { ResolveReelContextAccessUseCase } from '@content/application/use-cases/resolve-reel-context-access.use-case';
 import { RevokeReelShareLinkUseCase } from '@content/application/use-cases/revoke-reel-share-link.use-case';
@@ -46,10 +47,14 @@ import { IndexingAttemptGuardController } from '@content/infrastructure/controll
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
+import { OutboxRepository } from '@content/infrastructure/repositories/outbox.repository';
 import { OptimizedRecommendationRepository } from '@content/infrastructure/repositories/optimized-recommendation.repository';
 import { PrismaIndexAttemptReadRepository } from '@content/infrastructure/repositories/prisma-index-attempt-read.repository';
 import { RecommendationRepository } from '@content/infrastructure/repositories/recommendation.repository';
 import { RedisRecommendationFeedSessionRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-session.repository';
+import { ReelFeedRepository } from '@content/infrastructure/repositories/reel-feed.repository';
+import { ReelSeriesRepository } from '@content/infrastructure/repositories/reel-series.repository';
+import { ReelViewEventRepository } from '@content/infrastructure/repositories/reel-view-event.repository';
 import { R2StorageService } from '@content/infrastructure/services/r2-storage.service';
 import { RecommendationConfigService } from '@content/infrastructure/services/recommendation-config.service';
 import { RecommendationRankingConfigService } from '@content/infrastructure/services/recommendation-ranking-config.service';
@@ -112,6 +117,10 @@ function createRmqClientRegistration(name: string, queue: string) {
   providers: [
     PrismaService,
     ContentRepository,
+    OutboxRepository,
+    ReelFeedRepository,
+    ReelSeriesRepository,
+    ReelViewEventRepository,
     PrismaIndexAttemptReadRepository,
     RecommendationRepository,
     OptimizedRecommendationRepository,
@@ -151,6 +160,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     GetRecommendedReelsUseCase,
     GetSearchSuggestionsUseCase,
     GetFriendsReelsUseCase,
+    ReelSeriesUseCase,
 
     {
       provide: 'REDIS_CLIENT',
@@ -194,11 +204,11 @@ function createRmqClientRegistration(name: string, queue: string) {
     },
     {
       provide: 'IReelViewEventRepository',
-      useExisting: ContentRepository,
+      useExisting: ReelViewEventRepository,
     },
     {
       provide: 'IOutboxRepository',
-      useExisting: ContentRepository,
+      useExisting: OutboxRepository,
     },
     {
       provide: 'IOutboxDispatchTrigger',

@@ -33,17 +33,10 @@ export const AddReelToSeriesSchema = z
 export class AddReelToSeriesDto extends createZodDto(AddReelToSeriesSchema) {}
 
 const ReelSeriesCursorSchema = z
-  .union([
-    z.string(),
-    z.object({
-      createdAt: z.coerce.date(),
-      id: z.string().trim().min(1),
-    }),
-  ])
+  .string()
   .optional()
   .transform((value) => {
     if (!value) return undefined;
-    if (typeof value !== 'string') return value;
 
     const [createdAt, id] = value.split('|');
     if (!createdAt || !id) return undefined;
@@ -53,6 +46,16 @@ const ReelSeriesCursorSchema = z
 
     return { createdAt: date, id };
   });
+
+export const ListReelSeriesCandidateReelsRpcQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(30),
+  cursor: z
+    .object({
+      createdAt: z.coerce.date(),
+      id: z.string().trim().min(1),
+    })
+    .optional(),
+});
 
 export const ListReelSeriesCandidateReelsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(30),

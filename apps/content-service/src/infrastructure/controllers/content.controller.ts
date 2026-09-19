@@ -5,7 +5,7 @@ import { ListReelSeriesQuerySchema } from '@common/content/dtos/list-reel-series
 import {
   AddReelToSeriesSchema,
   CreateReelSeriesSchema,
-  ListReelSeriesCandidateReelsQuerySchema,
+  ListReelSeriesCandidateReelsRpcQuerySchema,
   ReorderReelSeriesSchema,
   UpdateReelSeriesSchema,
 } from '@common/content/dtos/reel-series.dto';
@@ -362,7 +362,7 @@ export class ContentController {
       query?: unknown;
     },
   ) {
-    const parsed = ListReelSeriesCandidateReelsQuerySchema.safeParse(
+    const parsed = ListReelSeriesCandidateReelsRpcQuerySchema.safeParse(
       data?.query ?? {},
     );
     if (!data?.seriesId?.trim() || !data?.ownerId?.trim() || !parsed.success) {

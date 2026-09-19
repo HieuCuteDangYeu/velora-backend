@@ -5,6 +5,7 @@ import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
 import {
   AddReelToSeriesDto,
   CreateReelSeriesDto,
+  ListReelSeriesCandidateReelsQueryDto,
   ReorderReelSeriesDto,
   UpdateReelSeriesDto,
 } from '@common/content/dtos/reel-series.dto';
@@ -188,6 +189,32 @@ export class ContentController {
     };
   }
 
+  @Get('series/:id/candidate-reels')
+  @ApiOperation({ summary: 'List reels eligible to be added to a series' })
+  async listReelSeriesCandidateReels(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Query() query: ListReelSeriesCandidateReelsQueryDto,
+  ): Promise<PaginatedReels<ReelFeedListItem>> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<{ items: Reel[]; nextCursor: string | null }>(
+          'content.list_reel_series_candidates',
+          {
+            seriesId,
+            ownerId: request.user!.id,
+            query,
+          },
+        )
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return {
+      items: await this.enrichFeedItems(result.items),
+      nextCursor: result.nextCursor,
+    };
+  }
+
   @Get('series/:id')
   @ApiOperation({ summary: 'Get a reel series with ordered episodes' })
   async getReelSeries(
@@ -246,7 +273,7 @@ export class ContentController {
   }
 
   @Post('series/:id/reels')
-  @ApiOperation({ summary: 'Add an owned reel to a series' })
+  @ApiOperation({ summary: 'Add owned reels to a series' })
   async addReelToSeries(
     @Req() request: AuthenticatedRequest,
     @Param('id') seriesId: string,

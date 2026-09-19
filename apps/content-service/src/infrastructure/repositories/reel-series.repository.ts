@@ -1,13 +1,18 @@
 import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import type {
   ReelSeriesCreateData,
+  ReelSeriesCandidateQuery,
   ReelSeriesListQuery,
   ReelSeriesUpdateData,
 } from '@content/domain/interfaces/content.repository.interface';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/content-client';
-import { REEL_LIST_SELECT, toReelSeriesDomain } from './reel-record.mapper';
+import {
+  REEL_LIST_SELECT,
+  toReelDomain,
+  toReelSeriesDomain,
+} from './reel-record.mapper';
 
 @Injectable()
 export class ReelSeriesRepository {
@@ -84,6 +89,45 @@ export class ReelSeriesRepository {
     };
   }
 
+  async listReelSeriesCandidates(query: ReelSeriesCandidateQuery) {
+    const limit = Math.min(Math.max(query.limit ?? 30, 1), 50);
+    const cursorFilter = query.cursor
+      ? {
+          OR: [
+            { createdAt: { lt: query.cursor.createdAt } },
+            { createdAt: query.cursor.createdAt, id: { lt: query.cursor.id } },
+          ],
+        }
+      : {};
+
+    const records = await this.prisma.reel.findMany({
+      where: {
+        userId: query.ownerId,
+        visibility: query.visibility,
+        seriesId: null,
+        mediaStatus: 'COMPLETED',
+        ...cursorFilter,
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      select: REEL_LIST_SELECT,
+    });
+
+    const hasMore = records.length > limit;
+    const pageRecords = hasMore ? records.slice(0, limit) : records;
+    const lastRecord = pageRecords.at(-1);
+
+    return {
+      items: pageRecords.map((record) =>
+        toReelDomain(record as unknown as Record<string, unknown>),
+      ),
+      nextCursor:
+        hasMore && lastRecord
+          ? { createdAt: lastRecord.createdAt, id: lastRecord.id }
+          : null,
+    };
+  }
+
   async updateReelSeries(
     id: string,
     ownerId: string,
@@ -139,41 +183,87 @@ export class ReelSeriesRepository {
     });
   }
 
-  async addReelToSeries(input: {
+  async addReelsToSeries(input: {
     seriesId: string;
-    reelId: string;
+    reelIds: string[];
     ownerId: string;
-    episodeNumber: number;
   }): Promise<boolean> {
     try {
-      return await this.prisma.$transaction(async (transaction) => {
-        const series = await transaction.reelSeries.findFirst({
-          where: { id: input.seriesId, ownerId: input.ownerId },
-          select: { visibility: true },
-        });
-        if (!series) return false;
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          const series = await transaction.reelSeries.findFirst({
+            where: { id: input.seriesId, ownerId: input.ownerId },
+            select: { visibility: true },
+          });
+          if (!series) return false;
 
-        const updated = await transaction.reel.updateMany({
-          where: {
-            id: input.reelId,
-            userId: input.ownerId,
-            seriesId: null,
-            visibility: series.visibility,
-          },
-          data: {
-            seriesId: input.seriesId,
-            episodeNumber: input.episodeNumber,
-          },
-        });
+          const reels = await transaction.reel.findMany({
+            where: {
+              id: { in: input.reelIds },
+              userId: input.ownerId,
+            },
+            select: {
+              id: true,
+              seriesId: true,
+              visibility: true,
+              mediaStatus: true,
+            },
+          });
 
-        return updated.count === 1;
-      });
+          if (
+            reels.length !== input.reelIds.length ||
+            reels.some(
+              (reel) =>
+                reel.seriesId !== null ||
+                reel.visibility !== series.visibility ||
+                reel.mediaStatus !== 'COMPLETED',
+            )
+          ) {
+            return false;
+          }
+
+          const currentLast = await transaction.reel.aggregate({
+            where: { seriesId: input.seriesId, userId: input.ownerId },
+            _max: { episodeNumber: true },
+          });
+          const firstEpisodeNumber = (currentLast._max.episodeNumber ?? 0) + 1;
+
+          for (let index = 0; index < input.reelIds.length; index += 1) {
+            const updated = await transaction.reel.updateMany({
+              where: {
+                id: input.reelIds[index],
+                userId: input.ownerId,
+                seriesId: null,
+                visibility: series.visibility,
+                mediaStatus: 'COMPLETED',
+              },
+              data: {
+                seriesId: input.seriesId,
+                episodeNumber: firstEpisodeNumber + index,
+              },
+            });
+
+            if (updated.count !== 1) {
+              throw new Error('Series membership changed while adding reels.');
+            }
+          }
+
+          return true;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
     } catch (error: unknown) {
       if (
         typeof error === 'object' &&
         error !== null &&
         'code' in error &&
-        (error as { code?: string }).code === 'P2002'
+        ['P2002', 'P2034'].includes((error as { code?: string }).code ?? '')
+      ) {
+        return false;
+      }
+      if (
+        error instanceof Error &&
+        error.message === 'Series membership changed while adding reels.'
       ) {
         return false;
       }
@@ -186,16 +276,67 @@ export class ReelSeriesRepository {
     reelId: string;
     ownerId: string;
   }): Promise<boolean> {
-    const updated = await this.prisma.reel.updateMany({
-      where: {
-        id: input.reelId,
-        userId: input.ownerId,
-        seriesId: input.seriesId,
-      },
-      data: { seriesId: null, episodeNumber: null },
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          const reel = await transaction.reel.findFirst({
+            where: {
+              id: input.reelId,
+              userId: input.ownerId,
+              seriesId: input.seriesId,
+            },
+            select: { id: true },
+          });
+          if (!reel) return false;
+
+          await transaction.reel.update({
+            where: { id: input.reelId },
+            data: { seriesId: null, episodeNumber: null },
+          });
+          await this.normalizeEpisodeNumbers(
+            transaction,
+            input.seriesId,
+            input.ownerId,
+          );
+          return true;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+    } catch (error: unknown) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: string }).code === 'P2034'
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async normalizeEpisodeNumbers(
+    transaction: Prisma.TransactionClient,
+    seriesId: string,
+    ownerId: string,
+  ): Promise<void> {
+    const reels = await transaction.reel.findMany({
+      where: { seriesId, userId: ownerId },
+      orderBy: [{ episodeNumber: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      select: { id: true },
     });
 
-    return updated.count === 1;
+    await transaction.reel.updateMany({
+      where: { seriesId, userId: ownerId },
+      data: { episodeNumber: null },
+    });
+
+    for (let index = 0; index < reels.length; index += 1) {
+      await transaction.reel.update({
+        where: { id: reels[index].id },
+        data: { episodeNumber: index + 1 },
+      });
+    }
   }
 
   async reorderReelSeries(input: {

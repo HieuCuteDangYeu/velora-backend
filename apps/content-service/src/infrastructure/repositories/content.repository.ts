@@ -25,6 +25,7 @@ import {
   ReelProcessingMediaMetadata,
   ReelProfileContextQuery,
   ReelProfileContextResult,
+  ReelSeriesCandidateQuery,
   ReelSeriesCreateData,
   ReelSeriesListQuery,
   ReelSeriesUpdateData,
@@ -764,6 +765,13 @@ export class ContentRepository
     return this.reelSeriesRepository.listReelSeries(query);
   }
 
+  async listReelSeriesCandidates(query: ReelSeriesCandidateQuery): Promise<{
+    items: Reel[];
+    nextCursor: ReelCursor | null;
+  }> {
+    return this.reelSeriesRepository.listReelSeriesCandidates(query);
+  }
+
   async updateReelSeries(
     id: string,
     ownerId: string,
@@ -776,13 +784,12 @@ export class ContentRepository
     return this.reelSeriesRepository.deleteReelSeries(id, ownerId);
   }
 
-  async addReelToSeries(input: {
+  async addReelsToSeries(input: {
     seriesId: string;
-    reelId: string;
+    reelIds: string[];
     ownerId: string;
-    episodeNumber: number;
   }): Promise<boolean> {
-    return this.reelSeriesRepository.addReelToSeries(input);
+    return this.reelSeriesRepository.addReelsToSeries(input);
   }
 
   async removeReelFromSeries(input: {
@@ -919,12 +926,44 @@ export class ContentRepository
   }
 
   async deleteReel(id: string, userId: string): Promise<boolean> {
-    const reel = await this.reel.findUnique({ where: { id } });
-    if (!reel) return false;
-    if (reel.userId !== userId) return false;
+    return this.$transaction(
+      async (transaction) => {
+        const reel = await transaction.reel.findFirst({
+          where: { id, userId },
+          select: { id: true, seriesId: true },
+        });
+        if (!reel) return false;
 
-    await this.reel.delete({ where: { id } });
-    return true;
+        await transaction.reel.delete({ where: { id } });
+
+        if (reel.seriesId) {
+          const remaining = await transaction.reel.findMany({
+            where: { seriesId: reel.seriesId, userId },
+            orderBy: [
+              { episodeNumber: 'asc' },
+              { createdAt: 'asc' },
+              { id: 'asc' },
+            ],
+            select: { id: true },
+          });
+
+          await transaction.reel.updateMany({
+            where: { seriesId: reel.seriesId, userId },
+            data: { episodeNumber: null },
+          });
+
+          for (let index = 0; index < remaining.length; index += 1) {
+            await transaction.reel.update({
+              where: { id: remaining[index].id },
+              data: { episodeNumber: index + 1 },
+            });
+          }
+        }
+
+        return true;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
 
   private toReelShareDomain(record: Record<string, unknown>): ReelShare {

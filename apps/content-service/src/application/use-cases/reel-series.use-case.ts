@@ -47,6 +47,22 @@ export class ReelSeriesUseCase {
     return this.repository.listReelSeries({ ownerId, ...query });
   }
 
+  async listCandidates(
+    id: string,
+    ownerId: string,
+    query: {
+      limit?: number;
+      cursor?: { createdAt: Date; id: string };
+    },
+  ) {
+    const series = await this.getOwned(id, ownerId);
+    return this.repository.listReelSeriesCandidates({
+      ownerId,
+      visibility: series.visibility,
+      ...query,
+    });
+  }
+
   async get(
     id: string,
     viewerId: string,
@@ -91,56 +107,23 @@ export class ReelSeriesUseCase {
     }
   }
 
-  async addReel(
+  async addReels(
     id: string,
     ownerId: string,
     payload: AddReelToSeriesDto,
   ): Promise<ReelSeries> {
-    const series = await this.getOwned(id, ownerId);
-    const reel = await this.repository.findById(payload.reelId);
+    await this.getOwned(id, ownerId);
 
-    if (!reel) throw new ReelNotFoundError();
-    if (reel.userId !== ownerId) {
-      throw new ReelSeriesForbiddenError(
-        'Only reels owned by the series owner can be added.',
-      );
-    }
-    if (reel.series && reel.series.id !== id) {
-      throw new ReelSeriesConflictError(
-        'Reel already belongs to another series.',
-      );
-    }
-    if (reel.series?.id === id) {
-      throw new ReelSeriesConflictError('Reel already belongs to this series.');
-    }
-    if (reel.visibility !== series.visibility) {
-      throw new ReelSeriesConflictError(
-        'Reel visibility must match the series visibility.',
-      );
-    }
-
-    const episodeNumber =
-      payload.episodeNumber ??
-      series.reels.reduce(
-        (max, item) => Math.max(max, item.series?.episodeNumber ?? 0),
-        0,
-      ) + 1;
-
-    if (
-      series.reels.some((item) => item.series?.episodeNumber === episodeNumber)
-    ) {
-      throw new ReelSeriesConflictError('Episode number is already in use.');
-    }
-
-    const added = await this.repository.addReelToSeries({
+    const added = await this.repository.addReelsToSeries({
       seriesId: id,
-      reelId: reel.id,
+      reelIds: payload.reelIds,
       ownerId,
-      episodeNumber,
     });
 
     if (!added) {
-      throw new ReelSeriesConflictError('Unable to add reel to series.');
+      throw new ReelSeriesConflictError(
+        'Every reel must be completed, standalone, owned by you, and match the series visibility.',
+      );
     }
 
     return this.getExisting(id);

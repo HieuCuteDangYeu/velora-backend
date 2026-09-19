@@ -5,6 +5,7 @@ import { ListReelSeriesQuerySchema } from '@common/content/dtos/list-reel-series
 import {
   AddReelToSeriesSchema,
   CreateReelSeriesSchema,
+  ListReelSeriesCandidateReelsQuerySchema,
   ReorderReelSeriesSchema,
   UpdateReelSeriesSchema,
 } from '@common/content/dtos/reel-series.dto';
@@ -316,7 +317,9 @@ export class ContentController {
     );
 
     return {
-      items: result.items.map((series) => this.toReelSeriesSerializable(series)),
+      items: result.items.map((series) =>
+        this.toReelSeriesSerializable(series),
+      ),
       nextCursor: this.serializeCursor(result.nextCursor),
     };
   }
@@ -347,6 +350,41 @@ export class ContentController {
       );
     } catch (error: unknown) {
       this.throwReelSeriesError(error, 'Get Reel Series');
+    }
+  }
+
+  @MessagePattern('content.list_reel_series_candidates')
+  async listReelSeriesCandidates(
+    @Payload()
+    data: {
+      seriesId: string;
+      ownerId: string;
+      query?: unknown;
+    },
+  ) {
+    const parsed = ListReelSeriesCandidateReelsQuerySchema.safeParse(
+      data?.query ?? {},
+    );
+    if (!data?.seriesId?.trim() || !data?.ownerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series candidate listing',
+      });
+    }
+
+    try {
+      const result = await this.reelSeriesUseCase.listCandidates(
+        data.seriesId.trim(),
+        data.ownerId.trim(),
+        parsed.data,
+      );
+
+      return {
+        items: result.items.map((reel) => this.toListSerializable(reel)),
+        nextCursor: this.serializeCursor(result.nextCursor),
+      };
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'List Reel Series Candidates');
     }
   }
 
@@ -411,7 +449,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.addReel(
+        await this.reelSeriesUseCase.addReels(
           data.seriesId.trim(),
           data.ownerId.trim(),
           parsed.data,

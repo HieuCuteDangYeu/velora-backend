@@ -87,6 +87,13 @@ export interface ReelSeriesListQuery {
   cursor?: ReelCursor;
 }
 
+export interface ReelSeriesCandidateQuery {
+  ownerId: string;
+  visibility: 'public' | 'friends' | 'private';
+  limit?: number;
+  cursor?: ReelCursor;
+}
+
 export interface ReelCursor {
   createdAt: Date;
   id: string;
@@ -276,6 +283,11 @@ export interface IContentRepository {
     nextCursor: ReelCursor | null;
   }>;
 
+  listReelSeriesCandidates(query: ReelSeriesCandidateQuery): Promise<{
+    items: Reel[];
+    nextCursor: ReelCursor | null;
+  }>;
+
   updateReelSeries(
     id: string,
     ownerId: string,
@@ -284,11 +296,10 @@ export interface IContentRepository {
 
   deleteReelSeries(id: string, ownerId: string): Promise<boolean>;
 
-  addReelToSeries(input: {
+  addReelsToSeries(input: {
     seriesId: string;
-    reelId: string;
+    reelIds: string[];
     ownerId: string;
-    episodeNumber: number;
   }): Promise<boolean>;
 
   removeReelFromSeries(input: {

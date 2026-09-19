@@ -22,12 +22,46 @@ export const UpdateReelSeriesSchema = z
 
 export class UpdateReelSeriesDto extends createZodDto(UpdateReelSeriesSchema) {}
 
-export const AddReelToSeriesSchema = z.object({
-  reelId: z.string().trim().min(1),
-  episodeNumber: z.number().int().positive().optional(),
-});
+export const AddReelToSeriesSchema = z
+  .object({
+    reelIds: z.array(z.string().trim().min(1)).min(1).max(50),
+  })
+  .refine((data) => new Set(data.reelIds).size === data.reelIds.length, {
+    message: 'reelIds must not contain duplicates',
+  });
 
 export class AddReelToSeriesDto extends createZodDto(AddReelToSeriesSchema) {}
+
+const ReelSeriesCursorSchema = z
+  .union([
+    z.string(),
+    z.object({
+      createdAt: z.coerce.date(),
+      id: z.string().trim().min(1),
+    }),
+  ])
+  .optional()
+  .transform((value) => {
+    if (!value) return undefined;
+    if (typeof value !== 'string') return value;
+
+    const [createdAt, id] = value.split('|');
+    if (!createdAt || !id) return undefined;
+
+    const date = new Date(createdAt);
+    if (Number.isNaN(date.getTime())) return undefined;
+
+    return { createdAt: date, id };
+  });
+
+export const ListReelSeriesCandidateReelsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(30),
+  cursor: ReelSeriesCursorSchema,
+});
+
+export class ListReelSeriesCandidateReelsQueryDto extends createZodDto(
+  ListReelSeriesCandidateReelsQuerySchema,
+) {}
 
 export const ReorderReelSeriesSchema = z
   .object({

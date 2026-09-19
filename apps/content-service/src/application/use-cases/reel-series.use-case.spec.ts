@@ -22,9 +22,14 @@ const series = {
 
 describe('ReelSeriesUseCase', () => {
   it('lists only the current owner series with the requested cursor filters', async () => {
-    const cursor = { createdAt: new Date('2026-09-18T00:00:00.000Z'), id: 'series-0' };
+    const cursor = {
+      createdAt: new Date('2026-09-18T00:00:00.000Z'),
+      id: 'series-0',
+    };
     const repository = {
-      listReelSeries: jest.fn().mockResolvedValue({ items: [series], nextCursor: cursor }),
+      listReelSeries: jest
+        .fn()
+        .mockResolvedValue({ items: [series], nextCursor: cursor }),
     };
     const useCase = new ReelSeriesUseCase(repository as never, {} as never);
 
@@ -43,41 +48,61 @@ describe('ReelSeriesUseCase', () => {
     expect(result).toEqual({ items: [series], nextCursor: cursor });
   });
 
-  it('appends an owned reel using the next episode number', async () => {
+  it('lists only candidate reels matching the owned series visibility', async () => {
+    const cursor = {
+      createdAt: new Date('2026-09-18T00:00:00.000Z'),
+      id: 'reel-0',
+    };
     const repository = {
       findReelSeriesById: jest.fn().mockResolvedValue(series),
-      findById: jest.fn().mockResolvedValue({
-        id: 'reel-3',
-        userId: 'user-1',
-        visibility: 'public',
-      }),
-      addReelToSeries: jest.fn().mockResolvedValue(true),
+      listReelSeriesCandidates: jest
+        .fn()
+        .mockResolvedValue({ items: [], nextCursor: cursor }),
     };
     const useCase = new ReelSeriesUseCase(repository as never, {} as never);
 
-    await useCase.addReel('series-1', 'user-1', { reelId: 'reel-3' });
+    await useCase.listCandidates('series-1', 'user-1', {
+      limit: 12,
+      cursor,
+    });
 
-    expect(repository.addReelToSeries).toHaveBeenCalledWith({
-      seriesId: 'series-1',
-      reelId: 'reel-3',
+    expect(repository.listReelSeriesCandidates).toHaveBeenCalledWith({
       ownerId: 'user-1',
-      episodeNumber: 3,
+      visibility: 'public',
+      limit: 12,
+      cursor,
     });
   });
 
-  it('rejects a reel whose visibility differs from the series', async () => {
+  it('adds selected reels as one ordered batch', async () => {
     const repository = {
       findReelSeriesById: jest.fn().mockResolvedValue(series),
-      findById: jest.fn().mockResolvedValue({
-        id: 'reel-3',
-        userId: 'user-1',
-        visibility: 'private',
-      }),
+      addReelsToSeries: jest.fn().mockResolvedValue(true),
+    };
+    const useCase = new ReelSeriesUseCase(repository as never, {} as never);
+
+    await useCase.addReels('series-1', 'user-1', {
+      reelIds: ['reel-3', 'reel-4'],
+    });
+
+    expect(repository.addReelsToSeries).toHaveBeenCalledWith({
+      seriesId: 'series-1',
+      reelIds: ['reel-3', 'reel-4'],
+      ownerId: 'user-1',
+    });
+  });
+
+  it('rejects the whole batch when any selected reel is ineligible', async () => {
+    const repository = {
+      findReelSeriesById: jest.fn().mockResolvedValue(series),
+      addReelsToSeries: jest.fn().mockResolvedValue(false),
     };
     const useCase = new ReelSeriesUseCase(repository as never, {} as never);
 
     await expect(
-      useCase.addReel('series-1', 'user-1', { reelId: 'reel-3' }),
+      useCase.addReels('series-1', 'user-1', {
+        reelIds: ['reel-3', 'reel-4'],
+      }),
     ).rejects.toBeInstanceOf(ReelSeriesConflictError);
   });
 

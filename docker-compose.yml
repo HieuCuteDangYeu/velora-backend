@@ -301,11 +301,13 @@ services:
       - --path.sysfs=/host/sys
       - --path.rootfs=/rootfs
       - --no-collector.btrfs
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/.+)($|/)
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro,rslave
+      - ./infra/monitoring/node-exporter-textfile:/var/lib/node_exporter/textfile_collector:ro
     expose:
       - '9100'
     networks:

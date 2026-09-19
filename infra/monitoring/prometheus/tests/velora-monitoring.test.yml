@@ -4,6 +4,59 @@ rule_files:
 evaluation_interval: 15s
 
 tests:
+  - name: database gate is immediately critical
+    interval: 15s
+    input_series:
+      - series: 'velora_deployment_pending{status="database-gate"}'
+        values: '1'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: VeloraDeploymentDatabaseGate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: deployment
+              status: database-gate
+            exp_annotations:
+              summary: production deployment requires database approval
+              description: The CI-promoted release is blocked until its cloud database change is applied and approved.
+
+  - name: health check failure is immediately critical
+    interval: 15s
+    input_series:
+      - series: 'velora_deployment_pending{status="health-check"}'
+        values: '1'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: VeloraDeploymentHealthCheckFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: deployment
+              status: health-check
+            exp_annotations:
+              summary: production deployment failed health checks
+              description: The CI-promoted release did not become healthy; inspect the deployment receipt and blocked-release state.
+
+  - name: pending deployment warns after eleven minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_deployment_pending{status="pending"}'
+        values: '1+0x47'
+      - series: 'velora_deployment_pending_since_seconds'
+        values: '0+0x47'
+    alert_rule_test:
+      - eval_time: 11m15s
+        alertname: VeloraDeploymentStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: deployment
+              status: pending
+            exp_annotations:
+              summary: production deployment has not reached the promoted release
+              description: The CI-promoted release has been pending for more than ten minutes.
+
   - name: notification service down after one minute
     interval: 15s
     input_series:

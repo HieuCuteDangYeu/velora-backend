@@ -42,6 +42,11 @@ readonly STAGING_ROOT="$STATE_DIR/staging"
 readonly PREVIOUS_RELEASE_FILE="$STATE_DIR/previous-release.json"
 readonly RECEIPT_SCRIPT="${VELORA_RECEIPT_SCRIPT:-/usr/local/bin/velora-report-deployed}"
 readonly COMPOSE_PROJECT_NAME="${VELORA_COMPOSE_PROJECT_NAME:-microservices-boilerplate}"
+readonly DEPLOYMENT_METRICS_DIR="$APP_DIR/infra/monitoring/node-exporter-textfile"
+readonly DEPLOYMENT_METRICS_FILE="$DEPLOYMENT_METRICS_DIR/velora-deploy.prom"
+readonly PENDING_SHA_FILE="$STATE_DIR/pending-sha"
+readonly PENDING_SINCE_FILE="$STATE_DIR/pending-since"
+readonly PENDING_STATUS_FILE="$STATE_DIR/pending-status"
 
 readonly MIN_FREE_GB="${VELORA_MIN_FREE_GB:-20}"
 readonly MIN_AVAILABLE_RAM_MB="${VELORA_MIN_AVAILABLE_RAM_MB:-1024}"
@@ -460,6 +465,51 @@ load_state() {
       git fetch --no-tags origin "$LAST_DEPLOYED_SHA" || fail "last deployed SHA is not available locally"
     fi
   fi
+}
+
+publish_deployment_metrics() {
+  local requested_status="${1:-pending}" status pending=0 pending_since=0 existing_sha existing_status tmp_file
+  [[ -n "$TARGET_SHA" ]] || return 0
+
+  if [[ "$TARGET_SHA" != "$LAST_DEPLOYED_SHA" ]]; then
+    pending=1
+    existing_sha="$(cat "$PENDING_SHA_FILE" 2>/dev/null || true)"
+    existing_status="$(cat "$PENDING_STATUS_FILE" 2>/dev/null || true)"
+    if [[ "$existing_sha" != "$TARGET_SHA" ]]; then
+      printf '%s\n' "$TARGET_SHA" >"$PENDING_SHA_FILE"
+      date +%s >"$PENDING_SINCE_FILE"
+      existing_status=""
+    fi
+    status="${existing_status:-$requested_status}"
+    if [[ "$requested_status" != "pending" ]]; then
+      status="$requested_status"
+      printf '%s\n' "$status" >"$PENDING_STATUS_FILE"
+    fi
+    pending_since="$(cat "$PENDING_SINCE_FILE" 2>/dev/null || date +%s)"
+  else
+    status="success"
+    rm -f -- "$PENDING_SHA_FILE" "$PENDING_SINCE_FILE" "$PENDING_STATUS_FILE"
+  fi
+
+  mkdir -p "$DEPLOYMENT_METRICS_DIR"
+  tmp_file="$(mktemp "$DEPLOYMENT_METRICS_FILE.XXXXXX")"
+  {
+    printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
+    printf '# TYPE velora_deployment_pending gauge\n'
+    printf 'velora_deployment_pending{status="%s"} %s\n' "$status" "$pending"
+    printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
+    printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
+    printf 'velora_deployment_pending_since_seconds %s\n' "$pending_since"
+    printf '# HELP velora_deployment_target_info Current CI-promoted release.\n'
+    printf '# TYPE velora_deployment_target_info gauge\n'
+    printf 'velora_deployment_target_info{sha="%s"} 1\n' "$TARGET_SHA"
+    if [[ -n "$LAST_DEPLOYED_SHA" ]]; then
+      printf '# HELP velora_deployment_deployed_info Current healthy production release.\n'
+      printf '# TYPE velora_deployment_deployed_info gauge\n'
+      printf 'velora_deployment_deployed_info{sha="%s"} 1\n' "$LAST_DEPLOYED_SHA"
+    fi
+  } >"$tmp_file"
+  mv -f -- "$tmp_file" "$DEPLOYMENT_METRICS_FILE"
 }
 
 preflight_resources() {
@@ -908,6 +958,7 @@ ensure_manual_db_approval() {
   printf 'Automatic deployment is paused. This CD will not run SQL or prisma db push against cloud databases.\n' >&2
   printf 'After the responsible operator has applied/confirmed the cloud DB change, run:\n' >&2
   printf '  velora-deploy --approve-db-change %s\n\n' "$TARGET_SHA" >&2
+  publish_deployment_metrics "database-gate"
   exit 20
 }
 
@@ -927,6 +978,7 @@ check_blocked_release() {
 
   log "Release $TARGET_SHA is blocked after a previous release-specific failure."
   log "Use --retry-failed to deliberately retry it, or wait for CI to promote a newer SHA."
+  publish_deployment_metrics "health-check"
   exit 21
 }
 
@@ -1481,6 +1533,8 @@ persist_success_state() {
 
   promote_snapshot_to_previous_release
   rm -f -- "$(blocked_marker "$TARGET_SHA")"
+  LAST_DEPLOYED_SHA="$TARGET_SHA"
+  publish_deployment_metrics success
 }
 
 send_deployment_receipt() {
@@ -1739,6 +1793,7 @@ perform_deployment() {
     warn "CONFIG DRIFT DETECTED: .env changed since the last healthy release"
     warn "Automatic deployment is paused to avoid partially applying new environment values"
     warn "Review the .env change, then run: velora-deploy --force"
+    publish_deployment_metrics "config-drift"
     exit 22
   fi
 
@@ -1796,6 +1851,7 @@ perform_deployment() {
   if [[ "$DB_RISK" == true ]]; then
     ROLLBACK_RESULT="skipped-db-risk"
     block_release "post-deploy health failure after DB-impact change; blind rollback intentionally skipped"
+    publish_deployment_metrics "health-check"
     preserve_failed_snapshot
     save_local_deployment_receipt "failed-db-risk"
     fail "release failed after DB-impact change; SHA blocked and automatic rollback intentionally skipped"
@@ -1806,6 +1862,7 @@ perform_deployment() {
     if rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
       ROLLBACK_RESULT="success"
       block_release "post-deploy health failure; automatic rollback to previous healthy release succeeded"
+      publish_deployment_metrics "health-check"
       remove_snapshot_tags "$TEMP_SNAPSHOT"
       rm -f -- "$TEMP_SNAPSHOT"
       TEMP_SNAPSHOT=""
@@ -1817,6 +1874,7 @@ perform_deployment() {
 
   ROLLBACK_RESULT="failed"
   block_release "post-deploy health failure; automatic rollback was unavailable or failed"
+  publish_deployment_metrics "health-check"
   preserve_failed_snapshot
   save_local_deployment_receipt "failed-rollback-failed"
   fail "target release failed and automatic rollback did not restore health; operator intervention is required"
@@ -1837,6 +1895,7 @@ main() {
       fetch_release_refs
       validate_promoted_sha
       load_state
+      publish_deployment_metrics pending
       perform_deployment
       ;;
     *)

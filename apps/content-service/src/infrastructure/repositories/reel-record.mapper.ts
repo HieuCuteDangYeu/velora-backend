@@ -57,6 +57,7 @@ export const REEL_LIST_SELECT = {
       title: true,
     },
   },
+  transcriptSegments: true,
   createdAt: true,
   updatedAt: true,
 } as const;

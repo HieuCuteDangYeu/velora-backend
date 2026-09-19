@@ -52,6 +52,7 @@ export interface ReelListItem {
   createdAt: string;
   series?: ReelSeriesSummary;
   recommendation?: RecommendationMetadata;
+  transcriptSegments?: TranscriptSegment[];
 }
 
 export interface ReelDetail extends ReelListItem {

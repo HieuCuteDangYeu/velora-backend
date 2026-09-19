@@ -788,6 +788,7 @@ export class ContentController {
       createdAt,
       series: reel.series,
       recommendation: reel.recommendation,
+      transcriptSegments: reel.transcriptSegments,
     };
 
     if (opts.includeTranscript) {

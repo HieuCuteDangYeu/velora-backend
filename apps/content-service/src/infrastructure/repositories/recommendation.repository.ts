@@ -1,3 +1,4 @@
+import type { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import type { Reel } from '@content/domain/entities/reel.entity';
 import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type {
@@ -54,6 +55,15 @@ const REEL_SELECT = {
   encodedVariantCount: true,
   encodedMaxHeight: true,
   encodedFps: true,
+  seriesId: true,
+  episodeNumber: true,
+  series: {
+    select: {
+      id: true,
+      title: true,
+    },
+  },
+  transcriptSegments: true,
   createdAt: true,
   updatedAt: true,
 } as const satisfies Prisma.ReelSelect;
@@ -1280,6 +1290,12 @@ export class RecommendationRepository implements IRecommendationRepository {
   }
 
   private toDomain(record: ReelRecord): Reel {
+    const series = record.series as
+      | { id: string; title: string }
+      | null
+      | undefined;
+    const episodeNumber = record.episodeNumber ?? undefined;
+
     return {
       id: record.id,
       userId: record.userId,
@@ -1324,6 +1340,16 @@ export class RecommendationRepository implements IRecommendationRepository {
       encodedVariantCount: record.encodedVariantCount ?? undefined,
       encodedMaxHeight: record.encodedMaxHeight ?? undefined,
       encodedFps: record.encodedFps ?? undefined,
+      series:
+        series && episodeNumber !== undefined
+          ? {
+              id: series.id,
+              title: series.title,
+              episodeNumber,
+            }
+          : undefined,
+      transcriptSegments:
+        (record.transcriptSegments as TranscriptSegment[] | null) ?? undefined,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     };

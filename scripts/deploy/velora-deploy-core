@@ -181,6 +181,7 @@ START_EPOCH=""
 STAGING_DIR=""
 BASELINE_DIR=""
 TEMP_SNAPSHOT=""
+INFRA_VALIDATION_DIR=""
 TARGET_COMPOSE_JSON=""
 BASE_COMPOSE_JSON=""
 TARGET_SHA=""
@@ -341,6 +342,9 @@ cleanup_worktrees() {
 
 cleanup() {
   cleanup_worktrees || true
+  if [[ -n "$INFRA_VALIDATION_DIR" && -d "$INFRA_VALIDATION_DIR" ]]; then
+    rm -rf -- "$INFRA_VALIDATION_DIR" || true
+  fi
 }
 
 on_err() {
@@ -689,19 +693,26 @@ validate_target_infrastructure() {
 
   if contains nginx "${INFRA_RECONCILE_SERVICES[@]}" \
     && [[ -f "$STAGING_DIR/infra/nginx/nginx.conf" && -n "$nginx_image" ]]; then
+    [[ -n "$INFRA_VALIDATION_DIR" ]] \
+      || INFRA_VALIDATION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/velora-infra-validation.XXXXXXXX")"
+    cp "$STAGING_DIR/infra/nginx/nginx.conf" "$INFRA_VALIDATION_DIR/nginx.conf"
     log "==> Validating target Nginx configuration with $nginx_image..."
     docker run --rm \
-      -v "$STAGING_DIR/infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+      -v "$INFRA_VALIDATION_DIR/nginx.conf:/etc/nginx/nginx.conf:ro" \
       "$nginx_image" nginx -t >/dev/null
   fi
 
   if contains prometheus "${INFRA_RECONCILE_SERVICES[@]}" \
     && [[ -f "$STAGING_DIR/infra/monitoring/prometheus/prometheus.yml" && -n "$prometheus_image" ]]; then
+    [[ -n "$INFRA_VALIDATION_DIR" ]] \
+      || INFRA_VALIDATION_DIR="$(mktemp -d "${TMPDIR:-/tmp}/velora-infra-validation.XXXXXXXX")"
+    mkdir -p "$INFRA_VALIDATION_DIR/prometheus"
+    cp -R "$STAGING_DIR/infra/monitoring/prometheus/." "$INFRA_VALIDATION_DIR/prometheus/"
     log "==> Validating target Prometheus configuration with $prometheus_image..."
     docker run --rm \
       --user 0:0 \
       --entrypoint /bin/promtool \
-      -v "$STAGING_DIR/infra/monitoring/prometheus:/etc/prometheus:ro" \
+      -v "$INFRA_VALIDATION_DIR/prometheus:/etc/prometheus:ro" \
       "$prometheus_image" \
       check config /etc/prometheus/prometheus.yml >/dev/null
   fi
@@ -907,6 +918,11 @@ plan_from_changed_files() {
 
       infra/monitoring/grafana/*)
         add_unique grafana INFRA_RECONCILE_SERVICES
+        ;;
+
+      infra/monitoring/node-exporter-textfile/*)
+        # The generated metric is runtime state; Compose model changes decide
+        # whether node-exporter itself needs reconciliation.
         ;;
 
       infra/monitoring/alloy/*|infra/monitoring/loki/*|infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)

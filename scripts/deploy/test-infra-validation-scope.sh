@@ -4,8 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$repo_root/scripts/deploy/velora-deploy-core"
 
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+tmp_root="$(mktemp -d)"
+tmp_dir="$tmp_root/Application Support"
+mkdir -p "$tmp_dir"
+trap '[[ -z "${INFRA_VALIDATION_DIR:-}" ]] || rm -rf "$INFRA_VALIDATION_DIR"; rm -rf "$tmp_root"' EXIT
 
 STAGING_DIR="$tmp_dir/staging"
 TARGET_COMPOSE_JSON="$tmp_dir/compose.json"
@@ -34,5 +36,6 @@ INFRA_RECONCILE_SERVICES=(nginx)
 validate_target_infrastructure
 grep -q 'nginx:alpine nginx -t' "$calls"
 ! grep -q 'prom/prometheus' "$calls"
+! grep -q 'Application Support' "$calls"
 
 printf 'infra validation scoping: PASS\n'

@@ -200,7 +200,6 @@ export class ContentController {
     const result = this.toSerializable(reel);
     delete result['transcript'];
     delete result['transcriptVtt'];
-    delete result['transcriptSegments'];
     delete result['transcriptionAudioManifestKey'];
     return result;
   }

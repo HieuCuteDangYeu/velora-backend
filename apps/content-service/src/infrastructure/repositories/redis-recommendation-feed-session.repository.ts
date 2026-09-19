@@ -3,7 +3,15 @@ import type {
   RecommendationFeedSession,
 } from '@content/domain/interfaces/recommendation-feed-session.repository.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import type Redis from 'ioredis';
+
+const RELEASE_REFILL_LOCK_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`;
 
 @Injectable()
 export class RedisRecommendationFeedSessionRepository implements IRecommendationFeedSessionRepository {
@@ -67,6 +75,48 @@ export class RedisRecommendationFeedSessionRepository implements IRecommendation
     }
   }
 
+  async tryAcquireRefillLock(
+    feedSessionId: string,
+    ttlSeconds: number,
+  ): Promise<string | null> {
+    try {
+      await this.ensureConnected();
+      const lockToken = randomUUID();
+      const result = await this.redis.set(
+        this.refillLockKey(feedSessionId),
+        lockToken,
+        'EX',
+        Math.max(1, Math.floor(ttlSeconds)),
+        'NX',
+      );
+      return result === 'OK' ? lockToken : null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Unable to acquire recommendation refill lock ${feedSessionId}: ${this.describeError(error)}`,
+      );
+      return null;
+    }
+  }
+
+  async releaseRefillLock(
+    feedSessionId: string,
+    lockToken: string,
+  ): Promise<void> {
+    try {
+      await this.ensureConnected();
+      await this.redis.eval(
+        RELEASE_REFILL_LOCK_SCRIPT,
+        1,
+        this.refillLockKey(feedSessionId),
+        lockToken,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Unable to release recommendation refill lock ${feedSessionId}: ${this.describeError(error)}`,
+      );
+    }
+  }
+
   private parseSession(
     raw: string,
     expectedFeedSessionId: string,
@@ -78,6 +128,9 @@ export class RedisRecommendationFeedSessionRepository implements IRecommendation
       typeof parsed.viewerId !== 'string' ||
       typeof parsed.algorithmVersion !== 'string' ||
       typeof parsed.generatedAt !== 'string' ||
+      (parsed.excludedUserIds !== undefined &&
+        (!Array.isArray(parsed.excludedUserIds) ||
+          parsed.excludedUserIds.some((id) => typeof id !== 'string'))) ||
       !Array.isArray(parsed.items)
     ) {
       this.logger.warn(
@@ -97,6 +150,10 @@ export class RedisRecommendationFeedSessionRepository implements IRecommendation
 
   private key(feedSessionId: string): string {
     return `recommendation:reel-feed:v2:${feedSessionId}`;
+  }
+
+  private refillLockKey(feedSessionId: string): string {
+    return `${this.key(feedSessionId)}:refill-lock`;
   }
 
   private describeError(error: unknown): string {

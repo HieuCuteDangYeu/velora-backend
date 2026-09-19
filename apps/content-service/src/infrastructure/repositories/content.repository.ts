@@ -9,8 +9,9 @@ import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-o
 import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import { ReelShareLink } from '@content/domain/entities/reel-share-link.entity';
 import { ReelShare } from '@content/domain/entities/reel-share.entity';
+import type { IRecommendationFeedCacheRepository } from '@content/domain/interfaces/recommendation-feed-cache.repository.interface';
 import { mapReelLegacyStatus } from '@content/domain/reel-status-compatibility.mapper';
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, PrismaClient } from '@prisma/content-client';
 import { randomUUID } from 'crypto';
@@ -49,6 +50,8 @@ export class ContentRepository
     private readonly configService: ConfigService,
     private readonly reelSeriesRepository: ReelSeriesRepository,
     private readonly reelFeedRepository: ReelFeedRepository,
+    @Inject('IRecommendationFeedCacheRepository')
+    private readonly recommendationFeedCacheRepository: IRecommendationFeedCacheRepository,
   ) {
     super();
   }
@@ -200,6 +203,7 @@ export class ContentRepository
       return queuedRecord;
     });
 
+    await this.recommendationFeedCacheRepository.invalidateReels([reelId]);
     return toReelDomain(record);
   }
 
@@ -230,7 +234,13 @@ export class ContentRepository
       },
     });
 
-    return result.count > 0;
+    const claimed = result.count > 0;
+    if (claimed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return claimed;
   }
 
   async completeMediaProcessing(input: {
@@ -239,7 +249,7 @@ export class ContentRepository
     mediaMetadata: ReelProcessingMediaMetadata;
     mediaOutput: ReelMediaOutput;
   }): Promise<boolean> {
-    return await this.$transaction(async (transaction) => {
+    const completed = await this.$transaction(async (transaction) => {
       const completedAt = new Date();
       const result = await transaction.reel.updateMany({
         where: {
@@ -318,6 +328,13 @@ export class ContentRepository
 
       return true;
     });
+
+    if (completed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return completed;
   }
 
   async updateMediaStatus(input: {
@@ -351,7 +368,13 @@ export class ContentRepository
       },
     });
 
-    return result.count > 0;
+    const updated = result.count > 0;
+    if (updated) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return updated;
   }
 
   async updateIndexStatus(input: {
@@ -368,7 +391,13 @@ export class ContentRepository
       data: { indexStatus: input.indexStatus },
     });
 
-    return result.count > 0;
+    const updated = result.count > 0;
+    if (updated) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return updated;
   }
 
   async claimIndexingAttempt(input: {
@@ -394,7 +423,13 @@ export class ContentRepository
         processingErrorDetail: null,
       },
     });
-    return result.count > 0;
+    const claimed = result.count > 0;
+    if (claimed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return claimed;
   }
 
   async reportIndexingProgress(input: {
@@ -419,7 +454,13 @@ export class ContentRepository
         ),
       },
     });
-    return result.count > 0;
+    const updated = result.count > 0;
+    if (updated) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return updated;
   }
 
   async completeIndexing(input: CompleteReelIndexCommand): Promise<boolean> {
@@ -428,7 +469,7 @@ export class ContentRepository
         ? null
         : JSON.stringify(input.transcriptSegments);
 
-    return await this.$transaction(async (transaction) => {
+    const completed = await this.$transaction(async (transaction) => {
       const current = await transaction.reel.findFirst({
         where: {
           id: input.reelId,
@@ -484,6 +525,13 @@ export class ContentRepository
 
       return true;
     });
+
+    if (completed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return completed;
   }
 
   async failIndexing(input: {
@@ -509,11 +557,17 @@ export class ContentRepository
         processingErrorDetail: input.errorDetail.slice(0, 4000),
       },
     });
-    return result.count > 0;
+    const failed = result.count > 0;
+    if (failed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return failed;
   }
 
   async queueReelIndexingAttempt(reelId: string): Promise<string | null> {
-    return await this.$transaction(async (transaction) => {
+    const indexAttemptId = await this.$transaction(async (transaction) => {
       const reel = await transaction.reel.findFirst({
         where: { id: reelId, mediaStatus: 'COMPLETED' },
       });
@@ -587,6 +641,11 @@ export class ContentRepository
       });
       return indexAttemptId;
     });
+
+    if (indexAttemptId) {
+      await this.recommendationFeedCacheRepository.invalidateReels([reelId]);
+    }
+    return indexAttemptId;
   }
 
   async updateReelStatus(
@@ -731,6 +790,7 @@ export class ContentRepository
       });
     });
 
+    await this.recommendationFeedCacheRepository.invalidateReels([id]);
     return toReelDomain(updatedRecord);
   }
 
@@ -777,11 +837,31 @@ export class ContentRepository
     ownerId: string,
     data: ReelSeriesUpdateData,
   ): Promise<ReelSeries | null> {
-    return this.reelSeriesRepository.updateReelSeries(id, ownerId, data);
+    const updated = await this.reelSeriesRepository.updateReelSeries(
+      id,
+      ownerId,
+      data,
+    );
+    if (updated) {
+      await this.recommendationFeedCacheRepository.invalidateReels(
+        updated.reels.map((reel) => reel.id),
+      );
+    }
+    return updated;
   }
 
   async deleteReelSeries(id: string, ownerId: string): Promise<boolean> {
-    return this.reelSeriesRepository.deleteReelSeries(id, ownerId);
+    const existing = await this.reelSeriesRepository.findReelSeriesById(id);
+    const deleted = await this.reelSeriesRepository.deleteReelSeries(
+      id,
+      ownerId,
+    );
+    if (deleted && existing?.ownerId === ownerId) {
+      await this.recommendationFeedCacheRepository.invalidateReels(
+        existing.reels.map((reel) => reel.id),
+      );
+    }
+    return deleted;
   }
 
   async addReelsToSeries(input: {
@@ -789,7 +869,13 @@ export class ContentRepository
     reelIds: string[];
     ownerId: string;
   }): Promise<boolean> {
-    return this.reelSeriesRepository.addReelsToSeries(input);
+    const added = await this.reelSeriesRepository.addReelsToSeries(input);
+    if (added) {
+      await this.recommendationFeedCacheRepository.invalidateReels(
+        input.reelIds,
+      );
+    }
+    return added;
   }
 
   async removeReelFromSeries(input: {
@@ -797,7 +883,13 @@ export class ContentRepository
     reelId: string;
     ownerId: string;
   }): Promise<boolean> {
-    return this.reelSeriesRepository.removeReelFromSeries(input);
+    const removed = await this.reelSeriesRepository.removeReelFromSeries(input);
+    if (removed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return removed;
   }
 
   async reorderReelSeries(input: {
@@ -805,7 +897,13 @@ export class ContentRepository
     ownerId: string;
     reelIds: string[];
   }): Promise<boolean> {
-    return this.reelSeriesRepository.reorderReelSeries(input);
+    const reordered = await this.reelSeriesRepository.reorderReelSeries(input);
+    if (reordered) {
+      await this.recommendationFeedCacheRepository.invalidateReels(
+        input.reelIds,
+      );
+    }
+    return reordered;
   }
 
   async shareReel(input: ReelShareCreateInput): Promise<ReelShare> {
@@ -922,11 +1020,12 @@ export class ContentRepository
       },
     });
 
+    await this.recommendationFeedCacheRepository.invalidateReels([id]);
     return toReelDomain(updatedRecord);
   }
 
   async deleteReel(id: string, userId: string): Promise<boolean> {
-    return this.$transaction(
+    const deleted = await this.$transaction(
       async (transaction) => {
         const reel = await transaction.reel.findFirst({
           where: { id, userId },
@@ -964,6 +1063,11 @@ export class ContentRepository
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
+
+    if (deleted) {
+      await this.recommendationFeedCacheRepository.invalidateReels([id]);
+    }
+    return deleted;
   }
 
   private toReelShareDomain(record: Record<string, unknown>): ReelShare {

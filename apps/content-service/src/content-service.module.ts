@@ -18,6 +18,7 @@ import { GetSearchSuggestionsUseCase } from '@content/application/use-cases/get-
 import { IsReelIndexingAttemptCurrentUseCase } from '@content/application/use-cases/is-reel-indexing-attempt-current.use-case';
 import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-case';
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
+import { RefreshGlobalRecommendationSlateUseCase } from '@content/application/use-cases/refresh-global-recommendation-slate.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
 import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
@@ -45,12 +46,14 @@ import { UserServiceAdapter } from '@content/infrastructure/adapters/user-servic
 import { ContentController } from '@content/infrastructure/controllers/content.controller';
 import { IndexingAttemptGuardController } from '@content/infrastructure/controllers/indexing-attempt-guard.controller';
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
+import { RecommendationGlobalSlateRefreshService } from '@content/infrastructure/jobs/recommendation-global-slate-refresh.service';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
 import { OutboxRepository } from '@content/infrastructure/repositories/outbox.repository';
 import { OptimizedRecommendationRepository } from '@content/infrastructure/repositories/optimized-recommendation.repository';
 import { PrismaIndexAttemptReadRepository } from '@content/infrastructure/repositories/prisma-index-attempt-read.repository';
 import { RecommendationRepository } from '@content/infrastructure/repositories/recommendation.repository';
+import { RedisRecommendationFeedCacheRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-cache.repository';
 import { RedisRecommendationFeedSessionRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-session.repository';
 import { ReelFeedRepository } from '@content/infrastructure/repositories/reel-feed.repository';
 import { ReelSeriesRepository } from '@content/infrastructure/repositories/reel-series.repository';
@@ -127,6 +130,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     ReelMediaJobPublisherAdapter,
     ReelIndexJobPublisherAdapter,
     OutboxDispatcherService,
+    RecommendationGlobalSlateRefreshService,
 
     CreateReelUseCase,
     BuildReelMediaJobUseCase,
@@ -158,6 +162,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     UpdateReelIndexStatusUseCase,
     SearchPublicReelsUseCase,
     GetRecommendedReelsUseCase,
+    RefreshGlobalRecommendationSlateUseCase,
     GetSearchSuggestionsUseCase,
     GetFriendsReelsUseCase,
     ReelSeriesUseCase,
@@ -181,6 +186,10 @@ function createRmqClientRegistration(name: string, queue: string) {
     {
       provide: 'IRecommendationFeedSessionRepository',
       useClass: RedisRecommendationFeedSessionRepository,
+    },
+    {
+      provide: 'IRecommendationFeedCacheRepository',
+      useClass: RedisRecommendationFeedCacheRepository,
     },
     {
       provide: 'IRecommendationRepository',

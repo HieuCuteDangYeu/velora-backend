@@ -5,7 +5,7 @@ import type {
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
-import { catchError, firstValueFrom, of, timeout } from 'rxjs';
+import { catchError, firstValueFrom, of, throwError, timeout } from 'rxjs';
 
 @Injectable()
 export class FriendContentAccessAdapter implements IFriendContentAccessService {
@@ -31,10 +31,7 @@ export class FriendContentAccessAdapter implements IFriendContentAccessService {
               )}`,
             );
 
-            return of({
-              friendUserIds: [],
-              excludedUserIds: [],
-            });
+            return throwError(() => error);
           }),
         ),
     );

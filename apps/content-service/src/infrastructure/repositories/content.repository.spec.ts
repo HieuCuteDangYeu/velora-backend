@@ -19,6 +19,9 @@ describe('ContentRepository reel deletion', () => {
       $transaction: jest.fn((callback: (tx: typeof transaction) => unknown) =>
         callback(transaction),
       ),
+      recommendationFeedCacheRepository: {
+        invalidateReels: jest.fn().mockResolvedValue(undefined),
+      },
     } as unknown as ContentRepository;
 
     await expect(
@@ -37,5 +40,8 @@ describe('ContentRepository reel deletion', () => {
       where: { id: 'reel-3' },
       data: { episodeNumber: 2 },
     });
+    expect(
+      (repository as any).recommendationFeedCacheRepository.invalidateReels,
+    ).toHaveBeenCalledWith(['reel-2']);
   });
 });

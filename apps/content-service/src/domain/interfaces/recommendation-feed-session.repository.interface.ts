@@ -11,10 +11,16 @@ export interface RecommendationFeedSession {
   viewerId: string;
   algorithmVersion: string;
   generatedAt: string;
+  excludedUserIds?: string[];
   items: RecommendationFeedSessionItem[];
 }
 
 export interface IRecommendationFeedSessionRepository {
   get(feedSessionId: string): Promise<RecommendationFeedSession | null>;
   save(session: RecommendationFeedSession, ttlSeconds: number): Promise<void>;
+  tryAcquireRefillLock(
+    feedSessionId: string,
+    ttlSeconds: number,
+  ): Promise<string | null>;
+  releaseRefillLock(feedSessionId: string, lockToken: string): Promise<void>;
 }

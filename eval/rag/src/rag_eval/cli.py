@@ -765,6 +765,8 @@ async def run_live(args: argparse.Namespace) -> Path:
             return directory
         if recovery_store is not None:
             if not mandatory_metrics_complete(checkpoint.entries(), total_operations):
+                if recovery_plan and recovery_plan.get("waitingForNextTpdWindow"):
+                    recovery_store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION)
                 _print_multiday_recovery(
                     recovery_store,
                     checkpoint,
@@ -772,7 +774,6 @@ async def run_live(args: argparse.Namespace) -> Path:
                     plan=recovery_plan,
                 )
                 if recovery_plan and recovery_plan.get("waitingForNextTpdWindow"):
-                    recovery_store.close_current(INSUFFICIENT_TPD_FOR_NEXT_OPERATION)
                     return directory
                 raise RuntimeError(
                     "semantic recovery remains incomplete after the scheduled slice; "

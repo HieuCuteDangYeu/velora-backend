@@ -142,6 +142,29 @@ def test_recovery_larger_than_daily_limit_is_accepted_as_multiday_slice():
     assert result["deferredOperationKeys"]
 
 
+def test_same_external_baseline_refreshes_new_evaluator_usage(tmp_path):
+    initial = baseline(TODAY, remaining=100_000)
+    initial["effectiveCurrentDayUsedTokens"] = 100_000
+    store = MultiDayRecoveryStore(
+        tmp_path / "recovery.json",
+        identity(),
+        checkpoint_id="checkpoint-1",
+    )
+    store.begin_epoch(initial, now=TODAY)
+
+    refreshed = {
+        **initial,
+        "epochLedgerUsedTokens": 270,
+        "effectiveCurrentDayUsedTokens": 100_270,
+        "epochMinimumProvenRemainingTokens": 99_730,
+        "minimumProvenRemainingTokens": 99_730,
+    }
+    epoch = store.begin_epoch(refreshed, now=TODAY + timedelta(minutes=1))
+
+    assert epoch["evaluatorCountedTokens"] == 270
+    assert epoch["calculatedRemainingTokens"] == 99_730
+
+
 def test_one_day_known_231125_lower_bound_still_fails_200000_tpd(tmp_path, monkeypatch):
     midnight = TODAY.replace(hour=0)
     monkeypatch.setenv("RAGAS_GROQ_TPD_PLANNED_FULL_RUN_TOKENS", "231125")

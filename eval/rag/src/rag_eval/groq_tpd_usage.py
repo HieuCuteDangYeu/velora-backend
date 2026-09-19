@@ -238,6 +238,23 @@ def exact_usage_tpd_headroom(
             organization_scope=payload["organizationScope"],
             window_key=window_key,
         )
+        if previous_baseline is not None:
+            previous_observed_at = parse_timestamp(previous_baseline.get("timestamp"))
+            previous_used_tokens = _integer(previous_baseline.get("baselineUsedTokens"))
+            if previous_observed_at is None or previous_used_tokens is None:
+                return {"status": "UNKNOWN", "reason": "TPD_PREVIOUS_BASELINE_INVALID"}
+            known_since_previous = ledger.usage_between(
+                model,
+                previous_observed_at,
+                observed_at,
+                include_start=False,
+                include_end=False,
+            )
+            if counted_tokens < previous_used_tokens + known_since_previous:
+                return {
+                    "status": "UNKNOWN",
+                    "reason": "TPD_USAGE_BASELINE_LAGS_KNOWN_LEDGER",
+                }
         baseline_id = ledger.initialize_baseline(
             provider="groq",
             model=model,
@@ -268,7 +285,7 @@ def exact_usage_tpd_headroom(
         max(0, ledger_before_observation - counted_tokens) + ledger_after_observation
     )
     epoch_proven_remaining = proven_remaining
-    epoch_ledger_used = effective_used
+    epoch_ledger_used = unreconciled_ledger
     epoch_ledger_epoch = (
         previous_baseline.get("ledgerEpoch")
         if previous_baseline is not None

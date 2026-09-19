@@ -283,7 +283,7 @@ def test_process_restart_and_later_ledger_usage_preserve_epoch(tmp_path):
     assert resumed["models"][0]["baselineId"] == first["models"][0]["baselineId"]
     assert resumed["models"][0]["ledgerUsedTokens"] == 1_000
     assert resumed["models"][0]["minimumProvenRemainingTokens"] == 89_000
-    assert resumed["models"][0]["epochLedgerUsedTokens"] == 111_000
+    assert resumed["models"][0]["epochLedgerUsedTokens"] == 1_000
     assert resumed["models"][0]["epochMinimumProvenRemainingTokens"] == 89_000
 
 
@@ -304,4 +304,31 @@ def test_same_day_observation_refresh_preserves_epoch_and_avoids_double_counting
     assert result["models"][0]["freshObservedUsedTokens"] == 110_001
     assert result["models"][0]["effectiveCurrentDayUsedTokens"] == 110_001
     assert result["models"][0]["unreconciledLedgerTokens"] == 0
+    assert len((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_same_day_refresh_rejects_metrics_that_lag_known_ledger_usage(tmp_path):
+    evaluate(tmp_path)
+    ledger = GroqDailyTokenLedger(tmp_path / "ledger.jsonl")
+    ledger.record(
+        {
+            "requestId": "judge-after-baseline",
+            "timestamp": (NOW + timedelta(minutes=5)).isoformat(),
+            "provider": "groq",
+            "model": MODEL,
+            "countedTokens": 1_000,
+        }
+    )
+    stale_refresh = usage_payload(observedAt=(NOW + timedelta(minutes=10)).isoformat())
+
+    result = evaluate(
+        tmp_path,
+        payload=stale_refresh,
+        now=NOW + timedelta(minutes=11),
+    )
+
+    assert result == {
+        "status": "UNKNOWN",
+        "reason": "TPD_USAGE_BASELINE_LAGS_KNOWN_LEDGER",
+    }
     assert len((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2

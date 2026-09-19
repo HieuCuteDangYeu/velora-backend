@@ -12,11 +12,26 @@ const evaluationRoot = path.join(repositoryRoot, 'eval/rag');
 const mode = process.argv[2] ?? 'offline';
 const forwarded = process.argv.slice(3);
 
+const envFileIndex = forwarded.indexOf('--env-file');
+const forwardedEnvFile =
+  envFileIndex >= 0 && envFileIndex + 1 < forwarded.length
+    ? forwarded[envFileIndex + 1]
+    : undefined;
+
 if (mode === 'capacity-check' || mode === 'preflight') {
   dotenv.config({
     path:
       process.env.RAG_EVAL_ENV_FILE ||
       path.join(repositoryRoot, '.env.test.local'),
+  });
+} else if (
+  mode === 'live' &&
+  (forwardedEnvFile || process.env.RAG_EVAL_ENV_FILE)
+) {
+  dotenv.config({
+    path: forwardedEnvFile
+      ? path.resolve(repositoryRoot, forwardedEnvFile)
+      : process.env.RAG_EVAL_ENV_FILE,
   });
 }
 

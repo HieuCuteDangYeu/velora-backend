@@ -557,11 +557,31 @@ class MultiDayRecoveryStore:
             if active and active["windowDateUtc"] == date:
                 if active["ledgerEpoch"] != epoch_ledger_epoch:
                     raise RecoveryStateError("current UTC epoch baseline cannot be replaced")
+                effective_used = int(
+                    baseline.get(
+                        "effectiveCurrentDayUsedTokens",
+                        baseline["dailyLimitTokens"]
+                        - baseline["minimumProvenRemainingTokens"],
+                    )
+                )
+                remaining = int(
+                    baseline.get(
+                        "epochMinimumProvenRemainingTokens",
+                        baseline["minimumProvenRemainingTokens"],
+                    )
+                )
+                expected_evaluator_used = max(
+                    0,
+                    effective_used - int(active.get("baselineCountedUsedTokens", 0)),
+                )
                 if (
                     active.get("latestBaselineId", active.get("baselineId")) == baseline_id
                     and active.get("latestBaselineFingerprint", fingerprint) == fingerprint
                     and active.get("latestBaselineObservedAt", active.get("baselineObservedAt"))
                     == observed_at
+                    and int(active.get("evaluatorCountedTokens", 0))
+                    == expected_evaluator_used
+                    and int(active.get("calculatedRemainingTokens", 0)) == remaining
                 ):
                     self._state["status"] = "RUNNING"
                     self._state["dailyRecoveryStopReason"] = None

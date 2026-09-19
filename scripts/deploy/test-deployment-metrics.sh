@@ -19,12 +19,12 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   TARGET_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   LAST_DEPLOYED_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   publish_deployment_metrics database-gate
-  grep -Fq "velora_deployment_pending{status=\"database-gate\"} 1" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "velora_deployment_pending{status=\"database-gate\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$LAST_DEPLOYED_SHA\"} 1" "$DEPLOYMENT_METRICS_FILE"
   publish_deployment_metrics pending
-  grep -Fq "velora_deployment_pending{status=\"database-gate\"} 1" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "velora_deployment_pending{status=\"database-gate\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$LAST_DEPLOYED_SHA\"} 1" "$DEPLOYMENT_METRICS_FILE"
   LAST_DEPLOYED_SHA="$TARGET_SHA"
   publish_deployment_metrics success
-  grep -Fq "velora_deployment_pending{status=\"success\"} 0" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "velora_deployment_pending{status=\"success\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$TARGET_SHA\"} 0" "$DEPLOYMENT_METRICS_FILE"
 ' _ "$repo_root"
 
 printf 'deployment metrics: PASS\n'

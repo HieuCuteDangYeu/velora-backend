@@ -468,7 +468,7 @@ load_state() {
 }
 
 publish_deployment_metrics() {
-  local requested_status="${1:-pending}" status pending=0 pending_since=0 existing_sha existing_status tmp_file
+  local requested_status="${1:-pending}" status pending=0 pending_since=0 deployed_sha existing_sha existing_status tmp_file
   [[ -n "$TARGET_SHA" ]] || return 0
 
   if [[ "$TARGET_SHA" != "$LAST_DEPLOYED_SHA" ]]; then
@@ -492,11 +492,13 @@ publish_deployment_metrics() {
   fi
 
   mkdir -p "$DEPLOYMENT_METRICS_DIR"
+  deployed_sha="${LAST_DEPLOYED_SHA:-none}"
   tmp_file="$(mktemp "$DEPLOYMENT_METRICS_FILE.XXXXXX")"
   {
     printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
     printf '# TYPE velora_deployment_pending gauge\n'
-    printf 'velora_deployment_pending{status="%s"} %s\n' "$status" "$pending"
+    printf 'velora_deployment_pending{status="%s",target_sha="%s",deployed_sha="%s"} %s\n' \
+      "$status" "$TARGET_SHA" "$deployed_sha" "$pending"
     printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
     printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
     printf 'velora_deployment_pending_since_seconds %s\n' "$pending_since"

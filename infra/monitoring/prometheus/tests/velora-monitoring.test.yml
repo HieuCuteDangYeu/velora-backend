@@ -7,7 +7,7 @@ tests:
   - name: database gate is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="database-gate"}'
+      - series: 'velora_deployment_pending{status="database-gate",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -17,6 +17,8 @@ tests:
               severity: critical
               service: deployment
               status: database-gate
+              target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
             exp_annotations:
               summary: production deployment requires database approval
               description: The CI-promoted release is blocked until its cloud database change is applied and approved.
@@ -24,7 +26,7 @@ tests:
   - name: health check failure is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="health-check"}'
+      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -34,6 +36,8 @@ tests:
               severity: critical
               service: deployment
               status: health-check
+              target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
             exp_annotations:
               summary: production deployment failed health checks
               description: The CI-promoted release did not become healthy; inspect the deployment receipt and blocked-release state.
@@ -41,7 +45,7 @@ tests:
   - name: pending deployment warns after eleven minutes
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="pending"}'
+      - series: 'velora_deployment_pending{status="pending",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
         values: '1+0x47'
       - series: 'velora_deployment_pending_since_seconds'
         values: '0+0x47'
@@ -53,6 +57,8 @@ tests:
               severity: warning
               service: deployment
               status: pending
+              target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
             exp_annotations:
               summary: production deployment has not reached the promoted release
               description: The CI-promoted release has been pending for more than ten minutes.

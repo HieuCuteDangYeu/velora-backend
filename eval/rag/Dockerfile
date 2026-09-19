@@ -4,6 +4,8 @@ FROM node:20-bookworm-slim AS node-build
 
 ARG PNPM_VERSION=9.15.0
 
+ENV COREPACK_HOME=/opt/corepack
+
 WORKDIR /workspace
 
 RUN apt-get update \
@@ -29,7 +31,6 @@ FROM python:3.12-slim-bookworm AS runtime
 
 ARG EVALUATOR_SHA=unknown
 ARG PRODUCTION_SHA=unknown
-ARG PNPM_VERSION=9.15.0
 
 ENV COREPACK_HOME=/opt/corepack \
   DIAGNOSTIC_TOOL_SHA=${EVALUATOR_SHA} \
@@ -47,9 +48,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-build /usr/local /usr/local
-
-RUN corepack enable \
-  && corepack install --global pnpm@${PNPM_VERSION}
+COPY --from=node-build /opt/corepack /opt/corepack
 
 RUN addgroup --gid 1000 eval \
   && adduser --uid 1000 --gid 1000 --disabled-password --gecos '' eval \

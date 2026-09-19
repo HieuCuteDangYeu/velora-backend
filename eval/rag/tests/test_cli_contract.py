@@ -12,6 +12,7 @@ from rag_eval.cli import (
     _saved_runner_report,
     _validate_source_summary,
     validate_definitions_report,
+    validate_replay_dataset_compatibility,
 )
 from rag_eval.dataset import is_supported_live_dataset, load_dataset
 
@@ -55,7 +56,16 @@ def test_live_dataset_contract_accepts_supported_frozen_versions_only():
     assert is_supported_live_dataset("rag-frozen-ami-v1")
     assert is_supported_live_dataset("rag-frozen-ami-v2")
     assert is_supported_live_dataset("rag-frozen-ami-v3")
+    assert is_supported_live_dataset("rag-frozen-ami-v4")
     assert not is_supported_live_dataset("rag-generalization-v1")
+
+
+def test_v4_can_replay_v3_execution_contract_with_revised_references():
+    source = {row.id: row for row in load_dataset("rag-frozen-ami-v3")}
+    evaluation = {row.id: row for row in load_dataset("rag-frozen-ami-v4")}
+
+    validate_replay_dataset_compatibility(source, evaluation)
+    assert evaluation["IN1001-1"].referenceAnswer != source["IN1001-1"].referenceAnswer
 
 
 def test_definitions_reel_mismatch_is_rejected(tmp_path):
@@ -187,6 +197,36 @@ def test_saved_source_summary_requires_exact_production_identity(tmp_path):
             Namespace(**{**vars(args), "resume": "other-run"}),
             case_ids,
         )
+
+
+def test_saved_source_summary_can_pin_v3_while_evaluating_v4(tmp_path):
+    path = tmp_path / "summary.json"
+    path.write_text(
+        json.dumps(
+            {
+                "runId": "source-v3-run",
+                "dataset": "rag-frozen-ami-v3",
+                "caseCount": 8,
+                "hardGatePassed": True,
+                "variant": {"productionSha": "a" * 40},
+            }
+        )
+    )
+    args = Namespace(
+        dataset="rag-frozen-ami-v4",
+        production_sha="a" * 40,
+        resume="source-v3-run",
+    )
+
+    attestation = _validate_source_summary(
+        path,
+        args,
+        {f"C-{index}" for index in range(8)},
+        dataset_name="rag-frozen-ami-v3",
+        source_run_id="source-v3-run",
+    )
+
+    assert attestation["runId"] == "source-v3-run"
 
 
 def test_trace_export_accepts_structured_completion_marker(tmp_path, monkeypatch):

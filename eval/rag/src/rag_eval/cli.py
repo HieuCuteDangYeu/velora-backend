@@ -62,6 +62,33 @@ def _rows(dataset: Any) -> dict[str, EvaluationRow]:
     return {row.id: row for row in dataset}
 
 
+def validate_replay_dataset_compatibility(
+    source_rows: dict[str, EvaluationRow], evaluation_rows: dict[str, EvaluationRow]
+) -> None:
+    if set(source_rows) != set(evaluation_rows):
+        raise ValueError("evaluation dataset case IDs do not match the saved source dataset")
+    immutable_fields = (
+        "question",
+        "expectedIntent",
+        "expectedReferenceTarget",
+        "expectedReelQuestionType",
+        "expectedEvidenceTypes",
+        "expectedReelIds",
+        "relevantEvidenceIds",
+        "accessScope",
+    )
+    for case_id, source in source_rows.items():
+        evaluation = evaluation_rows[case_id]
+        for field in immutable_fields:
+            if getattr(source, field) != getattr(evaluation, field):
+                raise ValueError(
+                    f"evaluation dataset changed saved execution contract for {case_id}"
+                )
+        for key in ("referenceStartSec", "referenceEndSec"):
+            if source.metadata.get(key) != evaluation.metadata.get(key):
+                raise ValueError(f"evaluation dataset changed reference window for {case_id}")
+
+
 def _dicts(experiment_result: Any) -> list[dict[str, Any]]:
     return [
         item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
@@ -148,21 +175,26 @@ def _validate_source_summary(
     path: Path,
     args: argparse.Namespace,
     expected_case_ids: set[str],
+    *,
+    dataset_name: str | None = None,
+    source_run_id: str | None = None,
 ) -> dict[str, Any]:
     summary = json.loads(path.read_text(encoding="utf-8"))
+    expected_dataset = dataset_name or args.dataset
+    expected_run = source_run_id or args.resume
     if (
-        summary.get("dataset") != args.dataset
+        summary.get("dataset") != expected_dataset
         or summary.get("caseCount") != len(expected_case_ids)
         or summary.get("hardGatePassed") is not True
         or summary.get("variant", {}).get("productionSha") != args.production_sha
     ):
         raise ValueError("saved deterministic summary does not match the requested source run")
-    if summary.get("runId") != args.resume:
+    if summary.get("runId") != expected_run:
         raise ValueError("saved deterministic summary run ID does not match the source run")
     return {
         "runId": summary.get("runId"),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "datasetSha256": dataset_sha256(args.dataset),
+        "datasetSha256": dataset_sha256(expected_dataset),
     }
 
 
@@ -376,15 +408,26 @@ async def run_live(args: argparse.Namespace) -> Path:
         raise SystemExit(
             "--multi-day-recovery requires saved --resume --live-judge with --semantic-context-file"
         )
+    source_dataset_name = getattr(args, "source_dataset", None) or args.dataset
+    evaluation_run_id = getattr(args, "evaluation_run_id", None)
+    if source_dataset_name != args.dataset and not args.resume:
+        raise SystemExit("--source-dataset is supported only for saved --resume evaluations")
+    if evaluation_run_id and not args.resume:
+        raise SystemExit("--evaluation-run-id is supported only for saved --resume evaluations")
     dataset = load_dataset(args.dataset)
     rows = _rows(dataset)
+    source_dataset = load_dataset(source_dataset_name)
+    source_rows = _rows(source_dataset)
+    if source_dataset_name != args.dataset:
+        validate_replay_dataset_compatibility(source_rows, rows)
     definitions_path = _repo_path(args.definitions_report)
-    validate_definitions_report(str(definitions_path), rows)
+    validate_definitions_report(str(definitions_path), source_rows)
     snapshot_path = (
         str(_repo_path(args.runtime_config_snapshot)) if args.runtime_config_snapshot else None
     )
-    snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, args.dataset)
-    run_id, runner_args = _build_live_runner_args(args, definitions_path)
+    snapshot = load_runtime_snapshot(snapshot_path, args.production_sha, source_dataset_name)
+    source_run_id, runner_args = _build_live_runner_args(args, definitions_path)
+    run_id = evaluation_run_id or source_run_id
     source_attestation = None
     source_summary_path = None
     if args.resume and args.trace_file:
@@ -394,20 +437,26 @@ async def run_live(args: argparse.Namespace) -> Path:
                 "saved live evaluation requires --source-summary or RAGAS_SOURCE_SUMMARY_PATH"
             )
         source_summary_path = _repo_path(source_summary_value)
-        source_attestation = _validate_source_summary(source_summary_path, args, set(rows))
+        source_attestation = _validate_source_summary(
+            source_summary_path,
+            args,
+            set(source_rows),
+            dataset_name=source_dataset_name,
+            source_run_id=source_run_id,
+        )
         source_report_value = getattr(args, "source_report", None) or os.getenv(
             "RAGAS_SOURCE_REPORT_PATH"
         )
-        report_path = _saved_runner_report(run_id, source_report_value)
+        report_path = _saved_runner_report(source_run_id, source_report_value)
         if not report_path.exists():
             raise ValueError("saved runner report is missing for the requested source run")
         saved_report = json.loads(report_path.read_text(encoding="utf-8"))
         saved_cases = saved_report.get("cases")
         saved_ids = [case.get("caseId") for case in saved_cases or []]
         if (
-            saved_report.get("runId") != run_id
+            saved_report.get("runId") != source_run_id
             or len(saved_ids) != len(set(saved_ids))
-            or set(saved_ids) != set(rows)
+            or set(saved_ids) != set(source_rows)
             or any(
                 case.get("status") != "EVALUATED"
                 or not case.get("userMessageId")
@@ -423,7 +472,7 @@ async def run_live(args: argparse.Namespace) -> Path:
     )
     if not args.trace_file:
         _export_trace_artifact(report_path, trace_path, args.env_file)
-    validate_trace_provenance(trace_path, set(rows))
+    validate_trace_provenance(trace_path, set(source_rows))
     semantic_context_rows = None
     semantic_context_binding = None
     if semantic_context_value:
@@ -434,11 +483,11 @@ async def run_live(args: argparse.Namespace) -> Path:
             report_path,
             trace_path,
             source_summary_path,
-            rows,
-            source_run_id=run_id,
+            source_rows,
+            source_run_id=source_run_id,
             production_sha=args.production_sha,
-            dataset_version=args.dataset,
-            dataset_sha256=dataset_sha256(args.dataset),
+            dataset_version=source_dataset_name,
+            dataset_sha256=dataset_sha256(source_dataset_name),
         )
     elif args.resume and args.live_judge:
         raise SystemExit(
@@ -457,7 +506,7 @@ async def run_live(args: argparse.Namespace) -> Path:
     if source_attestation and (
         len(executions) != len(rows)
         or any(
-            execution.runId != run_id
+            execution.runId != source_run_id
             or execution.executionStatus != "COMPLETED"
             or not execution.trace.get("productionExecutionId")
             or not execution.trace.get("ragTraceId")
@@ -471,6 +520,8 @@ async def run_live(args: argparse.Namespace) -> Path:
     variant["traceProvenance"] = "COMPLETE"
     if source_attestation:
         variant["savedSourceMode"] = "SAVED_RUN_ONLY"
+        variant["sourceRunId"] = source_run_id
+        variant["sourceDatasetVersion"] = source_dataset_name
         variant["sourceSummarySha256"] = source_attestation["sha256"]
         variant["sourceDatasetSha256"] = source_attestation["datasetSha256"]
     if semantic_context_binding:
@@ -510,9 +561,10 @@ async def run_live(args: argparse.Namespace) -> Path:
         checkpoint = JudgeCheckpointStore(
             checkpoint_path,
             {
-                "sourceRunId": run_id,
+                "sourceRunId": source_run_id,
                 "productionSha": args.production_sha,
                 "datasetVersion": args.dataset,
+                "sourceDatasetVersion": source_dataset_name,
                 "judgeProvider": os.getenv("RAG_EVAL_JUDGE_PROVIDER", "cloudflare"),
                 "judgeModel": os.getenv("RAG_EVAL_JUDGE_MODEL"),
                 "evaluatorSha": variant.get("evaluatorSha"),
@@ -530,7 +582,7 @@ async def run_live(args: argparse.Namespace) -> Path:
             judge_provider = os.getenv("RAG_EVAL_JUDGE_PROVIDER", "cloudflare")
             judge_model = os.getenv("RAG_EVAL_JUDGE_MODEL")
             recovery_identity = {
-                "sourceRunId": run_id,
+                "sourceRunId": source_run_id,
                 "productionSha": args.production_sha,
                 "datasetVersion": args.dataset,
                 "datasetSha256": dataset_sha256(args.dataset),
@@ -853,6 +905,8 @@ def parser() -> argparse.ArgumentParser:
     live = commands.add_parser("live", parents=[common])
     live.add_argument("--confirm-live", action="store_true")
     live.add_argument("--resume")
+    live.add_argument("--source-dataset")
+    live.add_argument("--evaluation-run-id")
     live.add_argument("--definitions-report")
     live.add_argument("--env-file")
     live.add_argument("--trace-file")

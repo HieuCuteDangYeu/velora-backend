@@ -13,6 +13,7 @@ from rag_eval.groq_tpd_usage import exact_usage_tpd_headroom
 from rag_eval.judge_runtime import JudgeUsageTracker, estimate_input_tokens
 from rag_eval.recovery import (
     AUTHORIZED_DATASET_SHA256,
+    AUTHORIZED_DATASET_SHA256_BY_VERSION,
     AUTHORIZED_DATASET_VERSION,
     AUTHORIZED_JUDGE_MODEL,
     AUTHORIZED_JUDGE_PROVIDER,
@@ -800,6 +801,23 @@ def test_new_saved_run_identity_is_allowed_when_immutable_provenance_is_complete
         tmp_path / "recovery.json",
         current_identity,
         checkpoint_id="checkpoint-current-run",
+    )
+
+    assert store.snapshot()["identity"] == current_identity
+
+
+def test_v4_evaluator_dataset_is_authorized_for_multiday_replay(tmp_path):
+    current_identity = identity(
+        datasetVersion="rag-frozen-ami-v4",
+        datasetSha256=AUTHORIZED_DATASET_SHA256_BY_VERSION["rag-frozen-ami-v4"],
+        sourceRunId="production-rag-frozen-ami-v3-78a87bd4-20260916-01",
+        productionSha="78a87bd4457ac6e4f8f86e2e576422b7566bf62c",
+    )
+
+    store = MultiDayRecoveryStore(
+        tmp_path / "recovery.json",
+        current_identity,
+        checkpoint_id="checkpoint-v4-replay",
     )
 
     assert store.snapshot()["identity"] == current_identity

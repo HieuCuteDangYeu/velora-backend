@@ -261,7 +261,11 @@ def build_live_semantic_suite(
             "faithfulness": Faithfulness(
                 faithfulness_llm if faithfulness_llm is not None else llm
             ),
-            "factual_correctness": FactualCorrectness(llm),
+            "factual_correctness": FactualCorrectness(
+                llm,
+                atomicity="high",
+                coverage="high",
+            ),
             "response_relevancy": AnswerRelevancy(llm, embeddings),
             "context_precision": ContextPrecision(llm),
             "context_recall": ContextRecall(llm),

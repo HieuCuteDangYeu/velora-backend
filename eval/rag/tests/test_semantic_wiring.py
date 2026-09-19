@@ -63,3 +63,15 @@ def test_faithfulness_accepts_a_metric_specific_llm():
 
     assert suite.scorers["faithfulness"].llm is faithfulness_llm
     assert suite.scorers["factual_correctness"].llm is standard_llm
+
+
+def test_factual_correctness_uses_atomic_claim_decomposition():
+    standard_llm = InstructorLLM(client=object(), model="test", provider="openai")
+    embeddings = embedding_factory(provider="openai", model="test", client=object())
+
+    factual = build_live_semantic_suite(standard_llm, embeddings).scorers[
+        "factual_correctness"
+    ]
+
+    assert factual.atomicity == "high"
+    assert factual.coverage == "high"

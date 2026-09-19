@@ -9,10 +9,12 @@ def test_versioned_dataset_counts_and_frozen_contract():
     frozen = list(load_dataset("rag-frozen-ami-v1"))
     frozen_v2 = list(load_dataset("rag-frozen-ami-v2"))
     frozen_v3 = list(load_dataset("rag-frozen-ami-v3"))
+    frozen_v4 = list(load_dataset("rag-frozen-ami-v4"))
     generic = list(load_dataset("rag-generalization-v1"))
     assert len(frozen) == 8
     assert len(frozen_v2) == 8
     assert len(frozen_v3) == 8
+    assert len(frozen_v4) == 8
     assert len(generic) == 104
     assert [row.id for row in frozen] == [
         "IN1001-1",
@@ -28,8 +30,10 @@ def test_versioned_dataset_counts_and_frozen_contract():
     assert frozen[-1].referenceAnswer == "Down to about twelve bands."
     assert [row.id for row in frozen_v2] == [row.id for row in frozen]
     assert [row.id for row in frozen_v3] == [row.id for row in frozen_v2]
+    assert [row.id for row in frozen_v4] == [row.id for row in frozen_v3]
     assert all(row.datasetVersion == "rag-frozen-ami-v2" for row in frozen_v2)
     assert all(row.datasetVersion == "rag-frozen-ami-v3" for row in frozen_v3)
+    assert all(row.datasetVersion == "rag-frozen-ami-v4" for row in frozen_v4)
     assert sum(row.fixtureGroup == "router" for row in generic) == 65
     assert sum(row.fixtureGroup == "sufficiency" for row in generic) == 20
     assert sum(row.fixtureGroup == "verifier" for row in generic) == 15
@@ -161,6 +165,54 @@ def test_frozen_v3_preserves_semantics_and_tracks_current_canonical_index():
     )
 
 
+def test_frozen_v4_uses_self_contained_factual_correctness_references():
+    v3 = {row.id: row for row in load_dataset("rag-frozen-ami-v3")}
+    v4 = {row.id: row for row in load_dataset("rag-frozen-ami-v4")}
+    expected_references = {
+        "IN1001-1": "The video shot detector is being presented to Olivier.",
+        "IN1001-2": (
+            "The video shot detector project was carried out during an internship at EDIAP "
+            "under Jean-Marc's supervision."
+        ),
+        "IN1002-1": "They protect the data by keeping backups in different physical places.",
+        "IN1002-2": (
+            "They say CDs are not enough for backups because one CD holds less than one gigabyte."
+        ),
+        "IN1005-1": (
+            "Someone tells the algorithm that the two marbles share a salient feature and should "
+            "be in the same cluster."
+        ),
+        "IN1005-2": "The example label used for the marble put into a bag is blue.",
+        "IN1007-1": "The speaker is currently using fifteen frequency bands.",
+        "IN1007-2": (
+            "The speaker says the number of bands can go down to about twelve and still be okay."
+        ),
+    }
+
+    assert set(v4) == set(v3) == set(expected_references)
+    for case_id, old in v3.items():
+        new = v4[case_id]
+        assert new.referenceAnswer == expected_references[case_id]
+        assert new.question == old.question
+        assert new.expectedIntent == old.expectedIntent
+        assert new.expectedReferenceTarget == old.expectedReferenceTarget
+        assert new.expectedReelQuestionType == old.expectedReelQuestionType
+        assert new.expectedEvidenceTypes == old.expectedEvidenceTypes
+        assert new.expectedReelIds == old.expectedReelIds
+        assert new.relevantEvidenceIds == old.relevantEvidenceIds
+        assert new.metadata["immutable"] is True
+        assert new.metadata["previousDatasetVersion"] == "rag-frozen-ami-v3"
+        assert new.metadata["replacementReason"] == (
+            "SELF_CONTAINED_FACTUAL_CORRECTNESS_REFERENCES"
+        )
+
+    assert v4["IN1001-2"].metadata["expectedConcepts"] == [
+        "EDIAP",
+        "Jean-Marc",
+        "internship",
+    ]
+
+
 def test_historical_frozen_files_remain_byte_identical():
     dataset_root = Path(__file__).parents[1].joinpath("datasets")
 
@@ -175,6 +227,15 @@ def test_historical_frozen_files_remain_byte_identical():
     )
     assert digest("rag-frozen-ami-v2-index-snapshot.json") == (
         "7449f0a22f9d580076924195025358562b016105a670cf4a049e919393986ff6"
+    )
+    assert digest("rag-frozen-ami-v3.jsonl") == (
+        "856e34483522da55e8d09cf0ab542b29add224f49572ae98f363a9db2520d391"
+    )
+    assert digest("rag-frozen-ami-v3-index-snapshot.json") == (
+        "dcaf9b73a67ce0e872a4731912161e9a81f6d7822b1586539deb45c8e645061f"
+    )
+    assert digest("rag-frozen-ami-v4.jsonl") == (
+        "1af3b6762bea8ea13dfcf361ccf5552a7be3ccd9967fb870d2a78a95831bfc32"
     )
 
 

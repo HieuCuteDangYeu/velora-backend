@@ -12,6 +12,7 @@ KNOWN_DATASETS = {
     "rag-frozen-ami-v1": 8,
     "rag-frozen-ami-v2": 8,
     "rag-frozen-ami-v3": 8,
+    "rag-frozen-ami-v4": 8,
     "rag-generalization-v1": 104,
 }
 FROZEN_AMI_DATASET_PREFIX = "rag-frozen-ami-"

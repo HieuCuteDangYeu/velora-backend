@@ -30,6 +30,10 @@ ACCEPTED_BASELINE_METHODS = {
 
 AUTHORIZED_DATASET_VERSION = "rag-frozen-ami-v3"
 AUTHORIZED_DATASET_SHA256 = "856e34483522da55e8d09cf0ab542b29add224f49572ae98f363a9db2520d391"
+AUTHORIZED_DATASET_SHA256_BY_VERSION = {
+    AUTHORIZED_DATASET_VERSION: AUTHORIZED_DATASET_SHA256,
+    "rag-frozen-ami-v4": "1af3b6762bea8ea13dfcf361ccf5552a7be3ccd9967fb870d2a78a95831bfc32",
+}
 AUTHORIZED_JUDGE_PROVIDER = "groq"
 AUTHORIZED_JUDGE_MODEL = "openai/gpt-oss-120b"
 
@@ -122,13 +126,17 @@ def _canonical_hash(value: Any) -> str:
 
 
 def validate_authorized_recovery_identity(identity: dict[str, Any]) -> None:
+    dataset_version = identity.get("datasetVersion")
+    expected_dataset_sha = AUTHORIZED_DATASET_SHA256_BY_VERSION.get(dataset_version)
     expected = {
-        "datasetVersion": AUTHORIZED_DATASET_VERSION,
-        "datasetSha256": AUTHORIZED_DATASET_SHA256,
         "judgeProvider": AUTHORIZED_JUDGE_PROVIDER,
         "judgeModel": AUTHORIZED_JUDGE_MODEL,
     }
     mismatched = [key for key, value in expected.items() if identity.get(key) != value]
+    if expected_dataset_sha is None:
+        mismatched.append("datasetVersion")
+    elif identity.get("datasetSha256") != expected_dataset_sha:
+        mismatched.append("datasetSha256")
     if mismatched:
         raise RecoveryStateError(
             "multi-day recovery authorization identity mismatch: " + ",".join(sorted(mismatched))

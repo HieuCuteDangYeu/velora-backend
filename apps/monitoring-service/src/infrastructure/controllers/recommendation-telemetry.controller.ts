@@ -73,7 +73,10 @@ export class RecommendationTelemetryController {
     });
   }
 
-  private async measure<T>(pattern: string, operation: () => Promise<T>): Promise<T> {
+  private async measure<T>(
+    pattern: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const startedAt = process.hrtime.bigint();
     let status: 'success' | 'error' = 'success';
 

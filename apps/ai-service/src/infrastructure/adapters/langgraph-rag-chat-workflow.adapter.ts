@@ -715,7 +715,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK' &&
         (state.answerClaims?.some((claim) =>
           claim.evidenceIds.some((evidenceId) => /^e\d+$/.test(evidenceId)),
-        ) ?? false);
+        ) ??
+          false);
       if (
         state.route?.intent === 'REEL_VIDEO_QUESTION' &&
         failedVerification &&

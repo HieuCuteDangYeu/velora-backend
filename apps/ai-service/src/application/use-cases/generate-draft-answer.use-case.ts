@@ -349,9 +349,7 @@ export class GenerateDraftAnswerUseCase {
         ? 1
         : 2;
     const scored = eligibleSpans
-      .filter(
-        (span) => span.score > 0 || span.requestedFactSignal > 0,
-      )
+      .filter((span) => span.score > 0 || span.requestedFactSignal > 0)
       .sort(
         (left, right) =>
           right.requestedFactSignal - left.requestedFactSignal ||

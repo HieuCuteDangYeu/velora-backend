@@ -131,7 +131,10 @@ export class CheckContextSufficiencyUseCase {
         sufficient: false,
         confidence: 0,
         availableEvidence,
-        missingEvidence: this.getMissingRequiredEvidence(state, availableEvidence),
+        missingEvidence: this.getMissingRequiredEvidence(
+          state,
+          availableEvidence,
+        ),
         supportedEvidenceIds: [],
         reason: 'Required semantic context sufficiency check was unavailable.',
         userFacingReason:

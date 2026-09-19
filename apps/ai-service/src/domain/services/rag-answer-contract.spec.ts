@@ -13,7 +13,10 @@ describe('validateRagAnswerContract', () => {
         'We can go down till like 12 bands and it is still okay.',
       ),
     ).toBeGreaterThan(
-      ragRequestedFactSignalScore(question, 'There are 2 controls on the panel.'),
+      ragRequestedFactSignalScore(
+        question,
+        'There are 2 controls on the panel.',
+      ),
     );
   });
   it('rejects a competing quantity that does not satisfy the requested direction', () => {

@@ -691,7 +691,9 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
       }),
     );
 
-    expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledTimes(1);
+    expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledTimes(
+      1,
+    );
     expect(result).toMatchObject({
       answer: 'This one is said to be blue.',
       finalFailureSource: 'NONE',

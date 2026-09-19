@@ -64,9 +64,9 @@ export class LokiQueryService {
     url.searchParams.set('limit', String(limit));
     url.searchParams.set('direction', 'backward');
 
-    const envelope = await this.request<LokiSuccessResponse | LokiErrorResponse>(
-      url,
-    );
+    const envelope = await this.request<
+      LokiSuccessResponse | LokiErrorResponse
+    >(url);
 
     if (envelope.status !== 'success') {
       throw new Error(

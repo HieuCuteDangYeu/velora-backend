@@ -15,15 +15,7 @@ export class PrometheusMetricsService implements OnModuleDestroy {
 
   private readonly serviceName = 'monitoring-service';
   private readonly durationBuckets = [
-    0.01,
-    0.025,
-    0.05,
-    0.1,
-    0.25,
-    0.5,
-    1,
-    2,
-    5,
+    0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5,
   ];
   private readonly rpcRequestCounts = new Map<string, number>();
   private readonly rpcDurations = new Map<string, HistogramState>();
@@ -74,7 +66,9 @@ export class PrometheusMetricsService implements OnModuleDestroy {
     const serviceLabels = this.labels({ service: this.serviceName });
     const cpu = process.cpuUsage();
     const memory = process.memoryUsage();
-    const eventLoopMeanSeconds = this.nanosecondsToSeconds(this.eventLoopDelay.mean);
+    const eventLoopMeanSeconds = this.nanosecondsToSeconds(
+      this.eventLoopDelay.mean,
+    );
     const eventLoopP99Seconds = this.nanosecondsToSeconds(
       this.eventLoopDelay.percentile(99),
     );
@@ -143,7 +137,9 @@ export class PrometheusMetricsService implements OnModuleDestroy {
       'Monitoring service process uptime in seconds.',
       'gauge',
     );
-    lines.push(`velora_process_uptime_seconds${serviceLabels} ${process.uptime()}`);
+    lines.push(
+      `velora_process_uptime_seconds${serviceLabels} ${process.uptime()}`,
+    );
 
     this.metricHeader(
       lines,
@@ -263,7 +259,10 @@ export class PrometheusMetricsService implements OnModuleDestroy {
   }
 
   private escapeLabel(value: string) {
-    return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/\n/g, '\\n')
+      .replace(/"/g, '\\"');
   }
 
   private nanosecondsToSeconds(value: number) {

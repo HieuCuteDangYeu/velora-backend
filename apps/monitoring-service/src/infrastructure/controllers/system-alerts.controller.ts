@@ -38,8 +38,10 @@ export class SystemAlertsController {
             total: alerts.length,
             firing: alerts.filter((alert) => alert.state === 'firing').length,
             pending: alerts.filter((alert) => alert.state === 'pending').length,
-            critical: alerts.filter((alert) => alert.severity === 'critical').length,
-            warning: alerts.filter((alert) => alert.severity === 'warning').length,
+            critical: alerts.filter((alert) => alert.severity === 'critical')
+              .length,
+            warning: alerts.filter((alert) => alert.severity === 'warning')
+              .length,
           },
           alerts,
         };
@@ -53,7 +55,10 @@ export class SystemAlertsController {
     const severity = this.normalizeSeverity(alert.labels.severity);
     const name = alert.labels.alertname || 'Unnamed alert';
     const service =
-      alert.labels.service || alert.labels.job || alert.labels.instance || 'unknown';
+      alert.labels.service ||
+      alert.labels.job ||
+      alert.labels.instance ||
+      'unknown';
 
     return {
       name,

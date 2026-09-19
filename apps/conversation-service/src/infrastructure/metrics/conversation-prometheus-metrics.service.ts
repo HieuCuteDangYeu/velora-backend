@@ -20,16 +20,7 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     'error',
   ];
   private readonly durationBuckets = [
-    0.005,
-    0.01,
-    0.025,
-    0.05,
-    0.1,
-    0.25,
-    0.5,
-    1,
-    2,
-    5,
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5,
   ];
   private readonly sendMessageCounts = new Map<SendMessageStatus, number>();
   private readonly sendMessageDurations = new Map<
@@ -186,10 +177,12 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
 
       this.durationBuckets.forEach((bucket, index) => {
         lines.push(
-          `velora_conversation_send_message_duration_seconds_bucket${this.labels({
-            ...baseLabels,
-            le: String(bucket),
-          })} ${state.bucketCounts[index]}`,
+          `velora_conversation_send_message_duration_seconds_bucket${this.labels(
+            {
+              ...baseLabels,
+              le: String(bucket),
+            },
+          )} ${state.bucketCounts[index]}`,
         );
       });
       lines.push(
@@ -244,7 +237,10 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
   }
 
   private escapeLabel(value: string) {
-    return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/\n/g, '\\n')
+      .replace(/"/g, '\\"');
   }
 
   private nanosecondsToSeconds(value: number) {

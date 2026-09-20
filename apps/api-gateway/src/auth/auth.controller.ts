@@ -250,6 +250,8 @@ export class AuthController {
     @Req() request: AuthenticatedRequest,
     @Res({ passthrough: true }) response: ExpressResponse,
   ) {
+    this.setNoStore(response);
+
     const incomingRefreshToken = request.cookies['refresh_token'];
 
     if (!incomingRefreshToken) {

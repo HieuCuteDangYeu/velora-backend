@@ -1,12 +1,15 @@
 import type { IUserRoleRepository } from '@auth/domain/interfaces/user-role.repository,interface';
 import { JwtPayload } from '@common/auth/interfaces/jwt-payload.interface';
 import { TokenResponse } from '@common/auth/interfaces/token.interface';
+import type { ValidateUserResponse } from '@common/user/interfaces/validate-user-response.types';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { InvalidTokenError } from '../../domain/errors/invalid-token.error';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
+
+const REFRESH_TOKEN_ROTATION_GRACE_MS = 60_000;
 
 @Injectable()
 export class RefreshTokenUseCase {
@@ -29,17 +32,37 @@ export class RefreshTokenUseCase {
         await this.authRepository.findRefreshToken(incomingRefreshToken);
 
       if (!storedToken || storedToken.revoked) {
-        await this.authRepository.revokeAllUserTokens(payload.sub);
-        throw new InvalidTokenError();
+        if (!storedToken || !this.isRecoverableRotation(storedToken)) {
+          await this.authRepository.revokeAllUserTokens(payload.sub);
+          throw new InvalidTokenError();
+        }
+
+        const replacementToken = await this.authRepository.findRefreshToken(
+          storedToken.replacedByToken!,
+        );
+
+        if (!replacementToken?.isActive()) {
+          await this.authRepository.revokeAllUserTokens(payload.sub);
+          throw new InvalidTokenError();
+        }
+
+        const user = await this.userService.findById(payload.sub);
+
+        if (!user) {
+          throw new InvalidTokenError();
+        }
+
+        const accessToken = await this.jwtService.signAsync(
+          this.createJwtPayload(user),
+          { expiresIn: '15m' },
+        );
+
+        return { accessToken, refreshToken: replacementToken.token };
       }
 
       if (storedToken.expiresAt < new Date()) {
         throw new InvalidTokenError();
       }
-
-      await this.authRepository.updateRefreshToken(storedToken.id, {
-        revoked: true,
-      });
 
       const roles = await this.authRepository.getUserRole(payload.sub);
 
@@ -59,14 +82,7 @@ export class RefreshTokenUseCase {
         throw new InvalidTokenError();
       }
 
-      const newPayload: JwtPayload = {
-        sub: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        username: user.username,
-        picture: user.picture ?? undefined,
-        isVerified: user.isVerified,
-      };
+      const newPayload = this.createJwtPayload(user);
 
       const accessToken = await this.jwtService.signAsync(newPayload, {
         expiresIn: '15m',
@@ -79,13 +95,17 @@ export class RefreshTokenUseCase {
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
 
-      await this.authRepository.createRefreshToken(
-        payload.sub,
-        refreshToken,
-        expiresAt,
-      );
+      const persistedRefreshToken =
+        await this.authRepository.rotateRefreshToken(
+          storedToken.id,
+          refreshToken,
+          expiresAt,
+        );
 
-      return { accessToken, refreshToken };
+      return {
+        accessToken,
+        refreshToken: persistedRefreshToken.token,
+      };
     } catch (error) {
       if (!(error instanceof InvalidTokenError)) {
         this.logger.error(
@@ -96,5 +116,33 @@ export class RefreshTokenUseCase {
 
       throw new InvalidTokenError();
     }
+  }
+
+  private isRecoverableRotation(storedToken: {
+    revoked: boolean;
+    replacedByToken: string | null;
+    rotatedAt: Date | null;
+  }): boolean {
+    if (
+      !storedToken.revoked ||
+      !storedToken.replacedByToken ||
+      !storedToken.rotatedAt
+    ) {
+      return false;
+    }
+
+    const age = Date.now() - storedToken.rotatedAt.getTime();
+    return age >= 0 && age <= REFRESH_TOKEN_ROTATION_GRACE_MS;
+  }
+
+  private createJwtPayload(user: ValidateUserResponse): JwtPayload {
+    return {
+      sub: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      username: user.username,
+      picture: user.picture ?? undefined,
+      isVerified: user.isVerified,
+    };
   }
 }

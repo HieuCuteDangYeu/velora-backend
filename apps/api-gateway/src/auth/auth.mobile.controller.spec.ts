@@ -323,6 +323,10 @@ describe('AuthController browser authentication regression coverage', () => {
     expect(authClient.send).toHaveBeenCalledWith('auth.refresh', {
       refreshToken: 'browser-refresh-token',
     });
+    expect(response.setHeader).toHaveBeenCalledWith(
+      'Cache-Control',
+      'no-store',
+    );
     expect(response.cookie).toHaveBeenCalledTimes(2);
     expect(response.clearCookie).not.toHaveBeenCalled();
   });

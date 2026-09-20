@@ -26,15 +26,17 @@ model UserRole {
   userId String // Logical Link to User Service (UUID)
   roleId Int
   role   Role   @relation(fields: [roleId], references: [id])
-  
+
   @@unique([userId, roleId])
 }
 
 model RefreshToken {
-  id        String   @id @default(uuid())
-  userId    String
-  token     String   @unique // Hashed
-  expiresAt DateTime
-  revoked   Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id              String    @id @default(uuid())
+  userId          String
+  token           String    @unique // Hashed
+  expiresAt       DateTime
+  revoked         Boolean   @default(false)
+  replacedByToken String?
+  rotatedAt       DateTime?
+  createdAt       DateTime  @default(now())
 }

@@ -11,6 +11,11 @@ export interface IAuthRepository {
   ): Promise<RefreshToken>;
   getUserRole(userId: string): Promise<string[]>;
   findRefreshToken(token: string): Promise<RefreshToken | null>;
+  rotateRefreshToken(
+    id: string,
+    token: string,
+    expiresAt: Date,
+  ): Promise<RefreshToken>;
   updateRefreshToken(id: string, data: Partial<RefreshToken>): Promise<void>;
   revokeAllUserTokens(userId: string): Promise<void>;
   deleteExpiredAndRevokedTokens(): Promise<number>;

@@ -46,14 +46,7 @@ export class AuthRepository implements IAuthRepository {
         },
       });
 
-    return new RefreshToken(
-      savedToken.id,
-      savedToken.userId,
-      savedToken.token,
-      savedToken.expiresAt,
-      savedToken.revoked,
-      savedToken.createdAt,
-    );
+    return this.toDomain(savedToken);
   }
 
   async getUserRole(userId: string): Promise<string[]> {
@@ -72,14 +65,57 @@ export class AuthRepository implements IAuthRepository {
 
     if (!found) return null;
 
-    return new RefreshToken(
-      found.id,
-      found.userId,
-      found.token,
-      found.expiresAt,
-      found.revoked,
-      found.createdAt,
+    return this.toDomain(found);
+  }
+
+  async rotateRefreshToken(
+    id: string,
+    token: string,
+    expiresAt: Date,
+  ): Promise<RefreshToken> {
+    const persistedToken = await this.prisma.$transaction(
+      async (transaction) => {
+        const rotatedAt = new Date();
+        const consumed = await transaction.refreshToken.updateMany({
+          where: { id, revoked: false },
+          data: {
+            revoked: true,
+            replacedByToken: token,
+            rotatedAt,
+          },
+        });
+
+        if (consumed.count === 1) {
+          return transaction.refreshToken.create({
+            data: {
+              userId: (
+                await transaction.refreshToken.findUniqueOrThrow({
+                  where: { id },
+                  select: { userId: true },
+                })
+              ).userId,
+              token,
+              expiresAt,
+              revoked: false,
+            },
+          });
+        }
+
+        const currentToken = await transaction.refreshToken.findUnique({
+          where: { id },
+        });
+
+        if (!currentToken?.replacedByToken) {
+          throw new Error('Refresh token was revoked before rotation');
+        }
+
+        return transaction.refreshToken.findUniqueOrThrow({
+          where: { token: currentToken.replacedByToken },
+        });
+      },
     );
+
+    return this.toDomain(persistedToken);
   }
 
   async updateRefreshToken(
@@ -109,5 +145,18 @@ export class AuthRepository implements IAuthRepository {
     });
 
     return result.count;
+  }
+
+  private toDomain(token: PrismaRefreshToken): RefreshToken {
+    return new RefreshToken(
+      token.id,
+      token.userId,
+      token.token,
+      token.expiresAt,
+      token.revoked,
+      token.createdAt,
+      token.replacedByToken,
+      token.rotatedAt,
+    );
   }
 }

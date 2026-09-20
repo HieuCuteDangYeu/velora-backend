@@ -143,9 +143,14 @@ export class AuthController {
   }
 
   @MessagePattern('auth.refresh')
-  async refresh(@Payload() data: { refreshToken: string }) {
+  async refresh(
+    @Payload() data: { refreshToken: string; refreshRequestId?: string },
+  ) {
     try {
-      return await this.refreshTokenUseCase.execute(data.refreshToken);
+      return await this.refreshTokenUseCase.execute(
+        data.refreshToken,
+        data.refreshRequestId,
+      );
     } catch (error) {
       console.error(error);
       throw new RpcException({

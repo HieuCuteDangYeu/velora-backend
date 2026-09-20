@@ -207,6 +207,13 @@ export class AuthController {
     return type === 'Bearer' ? token : undefined;
   }
 
+  private getRefreshRequestId(
+    request: AuthenticatedRequest,
+  ): string | undefined {
+    const requestId = request.headers?.['x-refresh-request-id'];
+    return Array.isArray(requestId) ? requestId[0] : requestId;
+  }
+
   @Post('confirm')
   @ApiOperation({ summary: 'Confirm user account' })
   async confirmAccount(@Body() dto: ConfirmAccountDto) {
@@ -261,10 +268,12 @@ export class AuthController {
       );
     }
 
+    const refreshRequestId = this.getRefreshRequestId(request);
     const tokens = await lastValueFrom(
       this.authClient
         .send<TokenResponse>('auth.refresh', {
           refreshToken: incomingRefreshToken,
+          ...(refreshRequestId ? { refreshRequestId } : {}),
         })
         .pipe(
           catchError(() => {

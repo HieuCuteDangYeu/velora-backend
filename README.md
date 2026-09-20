@@ -157,7 +157,8 @@ MAIL_QUEUE_PORT=6379
 MAIL_QUEUE_PASSWORD=
 
 # JWT
-JWT_SECRET=your_super_secret_jwt_key
+JWT_SECRET=replace_with_at_least_32_random_characters
+# Required by Auth Service; do not use the example value in deployed environments.
 
 # Seeded system identities (generate a unique UUIDv4 for each environment)
 DEFAULT_ADMIN_ID=replace_with_a_uuidv4

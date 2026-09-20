@@ -10,6 +10,18 @@ describe('mobile auth DTO validation', () => {
     expect(
       MobileRefreshSchema.safeParse({ refreshToken: 'refresh-token' }).success,
     ).toBe(true);
+    expect(
+      MobileRefreshSchema.safeParse({
+        refreshToken: 'refresh-token',
+        refreshRequestId: '00000000-0000-4000-8000-000000000000',
+      }).success,
+    ).toBe(true);
+    expect(
+      MobileRefreshSchema.safeParse({
+        refreshToken: 'refresh-token',
+        refreshRequestId: 'not-a-uuid',
+      }).success,
+    ).toBe(false);
   });
 
   it('requires a non-empty refresh token for mobile logout', () => {

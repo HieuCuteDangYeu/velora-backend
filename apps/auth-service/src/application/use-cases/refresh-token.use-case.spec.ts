@@ -23,6 +23,7 @@ const user = {
 const createUseCase = () => {
   const authRepository = {
     findRefreshToken: jest.fn(),
+    recoverRotatedRefreshToken: jest.fn(),
     updateRefreshToken: jest.fn(),
     rotateRefreshToken: jest.fn(),
     revokeAllUserTokens: jest.fn(),
@@ -71,23 +72,26 @@ describe('RefreshTokenUseCase', () => {
     jwtService.verifyAsync.mockResolvedValue(payload);
     authRepository.findRefreshToken.mockResolvedValue(storedToken);
     authRepository.getUserRole.mockResolvedValue(['USER']);
-    authRepository.rotateRefreshToken.mockResolvedValue(
-      new RefreshToken(
+    authRepository.rotateRefreshToken.mockResolvedValue({
+      token: new RefreshToken(
         'new-token-1',
         'user-1',
-        'new-refresh-token',
+        'new-token-hash',
         new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         false,
         new Date(),
       ),
-    );
+      refreshToken: 'new-refresh-token',
+    });
     roleCache.setUserRoles.mockResolvedValue(undefined);
     userService.findById.mockResolvedValue(user);
     jwtService.signAsync
       .mockResolvedValueOnce('new-access-token')
       .mockResolvedValueOnce('new-refresh-token');
 
-    await expect(useCase.execute(incomingRefreshToken)).resolves.toEqual({
+    await expect(
+      useCase.execute(incomingRefreshToken, 'request-1'),
+    ).resolves.toEqual({
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
     });
@@ -101,10 +105,49 @@ describe('RefreshTokenUseCase', () => {
       'stored-token-1',
       'new-refresh-token',
       expect.any(Date),
+      expect.any(Date),
+      'request-1',
     );
   });
 
-  it('recovers a recently rotated token and returns its replacement', async () => {
+  it('caps refresh-token lifetime at the absolute session expiry', async () => {
+    const { authRepository, jwtService, roleCache, userService, useCase } =
+      createUseCase();
+    const absoluteExpiresAt = new Date(Date.now() + 120_000);
+    const storedToken = new RefreshToken(
+      'stored-token-1',
+      'user-1',
+      'incoming-refresh-token',
+      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      false,
+      new Date(),
+      null,
+      null,
+      null,
+      absoluteExpiresAt,
+    );
+
+    jwtService.verifyAsync.mockResolvedValue(payload);
+    authRepository.findRefreshToken.mockResolvedValue(storedToken);
+    authRepository.getUserRole.mockResolvedValue(['USER']);
+    authRepository.rotateRefreshToken.mockResolvedValue({
+      token: storedToken,
+      refreshToken: 'new-refresh-token',
+    });
+    roleCache.setUserRoles.mockResolvedValue(undefined);
+    userService.findById.mockResolvedValue(user);
+    jwtService.signAsync
+      .mockResolvedValueOnce('new-access-token')
+      .mockResolvedValueOnce('new-refresh-token');
+
+    await useCase.execute('incoming-refresh-token', 'request-1');
+
+    const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
+    expect(refreshSignOptions.expiresIn).toBeGreaterThanOrEqual(119);
+    expect(refreshSignOptions.expiresIn).toBeLessThanOrEqual(120);
+  });
+
+  it('recovers a rotated token when the request ID is retried', async () => {
     const { authRepository, jwtService, userService, useCase } =
       createUseCase();
     const incomingRefreshToken = 'stale-refresh-token';
@@ -115,35 +158,35 @@ describe('RefreshTokenUseCase', () => {
       new Date(Date.now() + 60_000),
       true,
       new Date(),
-      'replacement-refresh-token',
-      new Date(Date.now() - 1_000),
-    );
-    const replacementToken = new RefreshToken(
-      'stored-token-2',
-      'user-1',
-      'replacement-refresh-token',
-      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      false,
+      'replacement-token-1',
+      'request-1',
       new Date(),
     );
 
     jwtService.verifyAsync.mockResolvedValue(payload);
-    authRepository.findRefreshToken
-      .mockResolvedValueOnce(storedToken)
-      .mockResolvedValueOnce(replacementToken);
+    authRepository.findRefreshToken.mockResolvedValue(storedToken);
+    authRepository.recoverRotatedRefreshToken.mockResolvedValue(
+      'replacement-refresh-token',
+    );
     userService.findById.mockResolvedValue(user);
     jwtService.signAsync.mockResolvedValue('recovered-access-token');
 
-    await expect(useCase.execute(incomingRefreshToken)).resolves.toEqual({
+    await expect(
+      useCase.execute(incomingRefreshToken, 'request-1'),
+    ).resolves.toEqual({
       accessToken: 'recovered-access-token',
       refreshToken: 'replacement-refresh-token',
     });
 
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
     expect(authRepository.rotateRefreshToken).not.toHaveBeenCalled();
+    expect(authRepository.recoverRotatedRefreshToken).toHaveBeenCalledWith(
+      'stored-token-1',
+      'request-1',
+    );
   });
 
-  it('revokes the token family when a replay is outside the recovery window', async () => {
+  it('revokes all user tokens when a replay uses a different request ID', async () => {
     const { authRepository, jwtService, useCase } = createUseCase();
     const storedToken = new RefreshToken(
       'stored-token-1',
@@ -152,17 +195,19 @@ describe('RefreshTokenUseCase', () => {
       new Date(Date.now() + 60_000),
       true,
       new Date(),
-      'replacement-refresh-token',
-      new Date(Date.now() - 61_000),
+      'replacement-token-1',
+      'request-1',
+      new Date(),
     );
 
     jwtService.verifyAsync.mockResolvedValue(payload);
     authRepository.findRefreshToken.mockResolvedValue(storedToken);
+    authRepository.recoverRotatedRefreshToken.mockResolvedValue(null);
     authRepository.revokeAllUserTokens.mockResolvedValue(undefined);
 
-    await expect(useCase.execute('stale-refresh-token')).rejects.toBeInstanceOf(
-      InvalidTokenError,
-    );
+    await expect(
+      useCase.execute('stale-refresh-token', 'request-2'),
+    ).rejects.toBeInstanceOf(InvalidTokenError);
 
     expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith('user-1');
     expect(authRepository.rotateRefreshToken).not.toHaveBeenCalled();

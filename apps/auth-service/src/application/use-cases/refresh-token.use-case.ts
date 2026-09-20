@@ -5,11 +5,13 @@ import type { ValidateUserResponse } from '@common/user/interfaces/validate-user
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
+import {
+  getRefreshTokenExpiresAt,
+  getRefreshTokenExpiresInSeconds,
+} from '../../domain/refresh-token.constants';
 import { InvalidTokenError } from '../../domain/errors/invalid-token.error';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
-
-const REFRESH_TOKEN_ROTATION_GRACE_MS = 60_000;
 
 @Injectable()
 export class RefreshTokenUseCase {
@@ -23,7 +25,10 @@ export class RefreshTokenUseCase {
     private readonly jwtService: JwtService,
   ) {}
 
-  async execute(incomingRefreshToken: string): Promise<TokenResponse> {
+  async execute(
+    incomingRefreshToken: string,
+    refreshRequestId?: string,
+  ): Promise<TokenResponse> {
     try {
       const payload =
         await this.jwtService.verifyAsync<JwtPayload>(incomingRefreshToken);
@@ -31,17 +36,24 @@ export class RefreshTokenUseCase {
       const storedToken =
         await this.authRepository.findRefreshToken(incomingRefreshToken);
 
-      if (!storedToken || storedToken.revoked) {
-        if (!storedToken || !this.isRecoverableRotation(storedToken)) {
+      if (!storedToken) {
+        await this.authRepository.revokeAllUserTokens(payload.sub);
+        throw new InvalidTokenError();
+      }
+
+      if (storedToken.revoked) {
+        if (!refreshRequestId) {
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
 
-        const replacementToken = await this.authRepository.findRefreshToken(
-          storedToken.replacedByToken!,
-        );
+        const replacementToken =
+          await this.authRepository.recoverRotatedRefreshToken(
+            storedToken.id,
+            refreshRequestId,
+          );
 
-        if (!replacementToken?.isActive()) {
+        if (!replacementToken) {
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
@@ -57,10 +69,14 @@ export class RefreshTokenUseCase {
           { expiresIn: '15m' },
         );
 
-        return { accessToken, refreshToken: replacementToken.token };
+        return { accessToken, refreshToken: replacementToken };
       }
 
-      if (storedToken.expiresAt < new Date()) {
+      if (
+        !storedToken.isActive() ||
+        (storedToken.absoluteExpiresAt !== null &&
+          storedToken.absoluteExpiresAt <= new Date())
+      ) {
         throw new InvalidTokenError();
       }
 
@@ -84,27 +100,36 @@ export class RefreshTokenUseCase {
 
       const newPayload = this.createJwtPayload(user);
 
+      const now = new Date();
+      const absoluteExpiresAt =
+        storedToken.absoluteExpiresAt ?? storedToken.expiresAt;
+      const expiresAt = getRefreshTokenExpiresAt(now, absoluteExpiresAt);
+
       const accessToken = await this.jwtService.signAsync(newPayload, {
         expiresIn: '15m',
       });
       const refreshToken = await this.jwtService.signAsync(newPayload, {
-        expiresIn: '7d',
+        expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
         jwtid: randomUUID(),
       });
-
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
 
       const persistedRefreshToken =
         await this.authRepository.rotateRefreshToken(
           storedToken.id,
           refreshToken,
           expiresAt,
+          absoluteExpiresAt,
+          refreshRequestId,
         );
+
+      if (!persistedRefreshToken) {
+        await this.authRepository.revokeAllUserTokens(payload.sub);
+        throw new InvalidTokenError();
+      }
 
       return {
         accessToken,
-        refreshToken: persistedRefreshToken.token,
+        refreshToken: persistedRefreshToken.refreshToken,
       };
     } catch (error) {
       if (!(error instanceof InvalidTokenError)) {
@@ -116,23 +141,6 @@ export class RefreshTokenUseCase {
 
       throw new InvalidTokenError();
     }
-  }
-
-  private isRecoverableRotation(storedToken: {
-    revoked: boolean;
-    replacedByToken: string | null;
-    rotatedAt: Date | null;
-  }): boolean {
-    if (
-      !storedToken.revoked ||
-      !storedToken.replacedByToken ||
-      !storedToken.rotatedAt
-    ) {
-      return false;
-    }
-
-    const age = Date.now() - storedToken.rotatedAt.getTime();
-    return age >= 0 && age <= REFRESH_TOKEN_ROTATION_GRACE_MS;
   }
 
   private createJwtPayload(user: ValidateUserResponse): JwtPayload {

@@ -6,6 +6,11 @@ import { UpdateUserPayload } from '@common/user/interfaces/update-user.types';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
+import {
+  getRefreshSessionExpiresAt,
+  getRefreshTokenExpiresAt,
+  getRefreshTokenExpiresInSeconds,
+} from '../../domain/refresh-token.constants';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
 
@@ -90,20 +95,23 @@ export class GoogleLoginUseCase {
         isVerified: user.isVerified,
       };
 
+      const now = new Date();
+      const absoluteExpiresAt = getRefreshSessionExpiresAt(now);
+      const expiresAt = getRefreshTokenExpiresAt(now, absoluteExpiresAt);
+
       const accessToken = await this.jwtService.signAsync(payload, {
         expiresIn: '15m',
       });
       const refreshToken = await this.jwtService.signAsync(payload, {
-        expiresIn: '7d',
+        expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
         jwtid: randomUUID(),
       });
 
-      const expiresAt = new Date();
-      expiresAt.setDate(expiresAt.getDate() + 7);
       await this.authRepository.createRefreshToken(
         userId,
         refreshToken,
         expiresAt,
+        absoluteExpiresAt,
       );
 
       return { accessToken, refreshToken };

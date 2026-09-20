@@ -6,8 +6,11 @@ export class RefreshToken {
     public readonly expiresAt: Date,
     public readonly revoked: boolean,
     public readonly createdAt: Date,
-    public readonly replacedByToken: string | null = null,
+    public readonly replacedByTokenId: string | null = null,
+    public readonly rotationRequestId: string | null = null,
     public readonly rotatedAt: Date | null = null,
+    public readonly absoluteExpiresAt: Date | null = null,
+    public readonly rotationRequestExpiresAt: Date | null = null,
   ) {}
 
   isActive(): boolean {

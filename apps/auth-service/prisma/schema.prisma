@@ -31,12 +31,17 @@ model UserRole {
 }
 
 model RefreshToken {
-  id              String    @id @default(uuid())
-  userId          String
-  token           String    @unique // Hashed
-  expiresAt       DateTime
-  revoked         Boolean   @default(false)
-  replacedByToken String?
-  rotatedAt       DateTime?
-  createdAt       DateTime  @default(now())
+  id                String    @id @default(uuid())
+  userId            String
+  token             String    @unique // SHA-256 hash; legacy rows may contain raw JWTs until upgraded
+  encryptedToken    String?
+  expiresAt         DateTime
+  absoluteExpiresAt DateTime?
+  revoked           Boolean   @default(false)
+  replacedByToken   String? // Legacy rotation metadata
+  replacedByTokenId String?
+  rotationRequestId String?
+  rotationRequestExpiresAt DateTime?
+  rotatedAt         DateTime?
+  createdAt         DateTime  @default(now())
 }

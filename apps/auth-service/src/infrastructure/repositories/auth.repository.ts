@@ -1,13 +1,36 @@
 import { RefreshToken } from '@auth/domain/entities/refresh-token.entity';
+import { ConfigService } from '@nestjs/config';
 import { Injectable } from '@nestjs/common';
 import { RefreshToken as PrismaRefreshToken } from '@prisma/auth-client';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+  randomUUID,
+} from 'crypto';
 import { Role } from '../../domain/entities/role.entity';
-import { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
+import { getRefreshRequestExpiresAt } from '../../domain/refresh-token.constants';
+import {
+  IAuthRepository,
+  RefreshTokenRotationResult,
+} from '../../domain/interfaces/auth.repository.interface';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AuthRepository implements IAuthRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly tokenEncryptionKey: Buffer;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    configService: ConfigService,
+  ) {
+    this.tokenEncryptionKey = createHash('sha256')
+      .update(
+        `velora-refresh-token:${configService.getOrThrow<string>('JWT_SECRET')}`,
+      )
+      .digest();
+  }
 
   async assignRole(userId: string, roleName: string): Promise<Role> {
     const role = await this.prisma.role.findUnique({
@@ -35,13 +58,16 @@ export class AuthRepository implements IAuthRepository {
     userId: string,
     token: string,
     expiresAt: Date,
+    absoluteExpiresAt: Date,
   ): Promise<RefreshToken> {
     const savedToken: PrismaRefreshToken =
       await this.prisma.refreshToken.create({
         data: {
           userId,
-          token,
+          token: this.hashToken(token),
+          encryptedToken: this.encryptToken(token),
           expiresAt,
+          absoluteExpiresAt,
           revoked: false,
         },
       });
@@ -59,20 +85,74 @@ export class AuthRepository implements IAuthRepository {
   }
 
   async findRefreshToken(token: string): Promise<RefreshToken | null> {
-    const found = await this.prisma.refreshToken.findUnique({
-      where: { token },
+    let found = await this.prisma.refreshToken.findUnique({
+      where: { token: this.hashToken(token) },
     });
+
+    if (!found) {
+      found = await this.prisma.refreshToken.findUnique({ where: { token } });
+    }
 
     if (!found) return null;
 
+    if (found.token !== this.hashToken(token) || !found.encryptedToken) {
+      found = await this.prisma.refreshToken.update({
+        where: { id: found.id },
+        data: {
+          token: this.hashToken(token),
+          encryptedToken: this.encryptToken(token),
+          replacedByToken: null,
+        },
+      });
+    }
+
     return this.toDomain(found);
+  }
+
+  async recoverRotatedRefreshToken(
+    id: string,
+    requestId: string,
+  ): Promise<string | null> {
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { id },
+    });
+
+    if (
+      !storedToken ||
+      !storedToken.revoked ||
+      storedToken.rotationRequestId !== requestId ||
+      !storedToken.replacedByTokenId ||
+      !storedToken.rotationRequestExpiresAt ||
+      storedToken.rotationRequestExpiresAt <= new Date()
+    ) {
+      return null;
+    }
+
+    const replacement = await this.prisma.refreshToken.findUnique({
+      where: { id: storedToken.replacedByTokenId },
+    });
+
+    if (
+      !replacement ||
+      replacement.revoked ||
+      replacement.expiresAt <= new Date() ||
+      !replacement.encryptedToken
+    ) {
+      return null;
+    }
+
+    return this.decryptToken(replacement.encryptedToken);
   }
 
   async rotateRefreshToken(
     id: string,
     token: string,
     expiresAt: Date,
-  ): Promise<RefreshToken> {
+    absoluteExpiresAt: Date,
+    requestId?: string,
+  ): Promise<RefreshTokenRotationResult | null> {
+    const replacementId = randomUUID();
+    const tokenHash = this.hashToken(token);
     const persistedToken = await this.prisma.$transaction(
       async (transaction) => {
         const rotatedAt = new Date();
@@ -80,22 +160,31 @@ export class AuthRepository implements IAuthRepository {
           where: { id, revoked: false },
           data: {
             revoked: true,
-            replacedByToken: token,
+            replacedByTokenId: replacementId,
+            rotationRequestId: requestId ?? null,
+            rotationRequestExpiresAt: requestId
+              ? getRefreshRequestExpiresAt(rotatedAt)
+              : null,
             rotatedAt,
           },
         });
 
         if (consumed.count === 1) {
+          const currentToken = await transaction.refreshToken.findUniqueOrThrow(
+            {
+              where: { id },
+              select: { userId: true },
+            },
+          );
+
           return transaction.refreshToken.create({
             data: {
-              userId: (
-                await transaction.refreshToken.findUniqueOrThrow({
-                  where: { id },
-                  select: { userId: true },
-                })
-              ).userId,
-              token,
+              id: replacementId,
+              userId: currentToken.userId,
+              token: tokenHash,
+              encryptedToken: this.encryptToken(token),
               expiresAt,
+              absoluteExpiresAt,
               revoked: false,
             },
           });
@@ -105,17 +194,31 @@ export class AuthRepository implements IAuthRepository {
           where: { id },
         });
 
-        if (!currentToken?.replacedByToken) {
-          throw new Error('Refresh token was revoked before rotation');
+        if (
+          !requestId ||
+          currentToken?.rotationRequestId !== requestId ||
+          !currentToken.replacedByTokenId ||
+          !currentToken.rotationRequestExpiresAt ||
+          currentToken.rotationRequestExpiresAt <= new Date()
+        ) {
+          return null;
         }
 
         return transaction.refreshToken.findUniqueOrThrow({
-          where: { token: currentToken.replacedByToken },
+          where: { id: currentToken.replacedByTokenId },
         });
       },
     );
 
-    return this.toDomain(persistedToken);
+    if (!persistedToken) return null;
+
+    return {
+      token: this.toDomain(persistedToken),
+      refreshToken:
+        persistedToken.token === tokenHash
+          ? token
+          : this.decryptToken(persistedToken.encryptedToken!),
+    };
   }
 
   async updateRefreshToken(
@@ -140,7 +243,7 @@ export class AuthRepository implements IAuthRepository {
   async deleteExpiredAndRevokedTokens(): Promise<number> {
     const result = await this.prisma.refreshToken.deleteMany({
       where: {
-        AND: [{ revoked: true }, { expiresAt: { lt: new Date() } }],
+        expiresAt: { lt: new Date() },
       },
     });
 
@@ -155,8 +258,49 @@ export class AuthRepository implements IAuthRepository {
       token.expiresAt,
       token.revoked,
       token.createdAt,
-      token.replacedByToken,
+      token.replacedByTokenId,
+      token.rotationRequestId,
       token.rotatedAt,
+      token.absoluteExpiresAt,
+      token.rotationRequestExpiresAt,
     );
+  }
+
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private encryptToken(token: string): string {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', this.tokenEncryptionKey, iv);
+    const encrypted = Buffer.concat([
+      cipher.update(token, 'utf8'),
+      cipher.final(),
+    ]);
+
+    return [
+      iv.toString('base64url'),
+      cipher.getAuthTag().toString('base64url'),
+      encrypted.toString('base64url'),
+    ].join('.');
+  }
+
+  private decryptToken(value: string): string {
+    const [ivValue, authTagValue, encryptedValue] = value.split('.');
+    if (!ivValue || !authTagValue || !encryptedValue) {
+      throw new Error('Invalid encrypted refresh token');
+    }
+
+    const decipher = createDecipheriv(
+      'aes-256-gcm',
+      this.tokenEncryptionKey,
+      Buffer.from(ivValue, 'base64url'),
+    );
+    decipher.setAuthTag(Buffer.from(authTagValue, 'base64url'));
+
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedValue, 'base64url')),
+      decipher.final(),
+    ]).toString('utf8');
   }
 }

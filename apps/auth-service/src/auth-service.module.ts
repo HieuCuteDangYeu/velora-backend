@@ -60,10 +60,20 @@ import { AuthRepository } from './infrastructure/repositories/auth.repository';
       },
     ]),
     ScheduleModule.forRoot(),
-    JwtModule.register({
+    JwtModule.registerAsync({
       global: true,
-      secret: process.env.JWT_SECRET || 'super_secret_key',
-      signOptions: { expiresIn: '15m' },
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => {
+        const secret = config.getOrThrow<string>('JWT_SECRET');
+        if (secret.length < 32) {
+          throw new Error('JWT_SECRET must contain at least 32 characters');
+        }
+
+        return {
+          secret,
+          signOptions: { expiresIn: '15m' },
+        };
+      },
     }),
   ],
   controllers: [AuthController, RoleController],

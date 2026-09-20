@@ -38,7 +38,6 @@ model RefreshToken {
   expiresAt         DateTime
   absoluteExpiresAt DateTime?
   revoked           Boolean   @default(false)
-  replacedByToken   String? // Legacy rotation metadata
   replacedByTokenId String?
   rotationRequestId String?
   rotationRequestExpiresAt DateTime?

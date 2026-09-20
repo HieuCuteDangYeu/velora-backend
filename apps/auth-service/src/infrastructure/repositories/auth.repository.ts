@@ -101,7 +101,6 @@ export class AuthRepository implements IAuthRepository {
         data: {
           token: this.hashToken(token),
           encryptedToken: this.encryptToken(token),
-          replacedByToken: null,
         },
       });
     }

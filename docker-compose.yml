@@ -414,7 +414,7 @@ services:
       - microservices-net
 
   rag-embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     env_file:
       - .env
     command:
@@ -439,7 +439,7 @@ services:
       - microservices-net
 
   rag-reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.6
     env_file:
       - .env
     command:

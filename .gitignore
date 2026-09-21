@@ -85,3 +85,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Local notification service secrets
 apps/notification-service/secrets/
+
+# Narto scraper data & checkpoints
+scripts/narto-scraper/*.json
+

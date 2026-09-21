@@ -7,7 +7,7 @@ tests:
   - name: database gate is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="database-gate",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+      - series: 'velora_deployment_pending{status="database-gate",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Database approval is required.",action="Approve the database change."}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -19,14 +19,17 @@ tests:
               status: database-gate
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reason: Database approval is required.
+              action: Approve the database change.
             exp_annotations:
               summary: production deployment requires database approval
-              description: The CI-promoted release is blocked until its cloud database change is applied and approved.
+              description: Database approval is required.
+              action: Approve the database change.
 
   - name: health check failure is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="notification-service is unhealthy.",action="Inspect notification-service logs."}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -38,14 +41,39 @@ tests:
               status: health-check
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reason: notification-service is unhealthy.
+              action: Inspect notification-service logs.
             exp_annotations:
               summary: production deployment failed health checks
-              description: The CI-promoted release did not become healthy; inspect the deployment receipt and blocked-release state.
+              description: notification-service is unhealthy.
+              action: Inspect notification-service logs.
+
+  - name: controller error is immediately actionable
+    interval: 15s
+    input_series:
+      - series: 'velora_deployment_pending{status="error",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Image pull failed.",action="Check Docker Hub and retry."}'
+        values: '1'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: VeloraDeploymentControllerBlocked
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: deployment
+              status: error
+              target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reason: Image pull failed.
+              action: Check Docker Hub and retry.
+            exp_annotations:
+              summary: production deployment controller is blocked
+              description: Image pull failed.
+              action: Check Docker Hub and retry.
 
   - name: pending deployment warns after eleven minutes
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="pending",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
+      - series: 'velora_deployment_pending{status="pending",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Deployment is still running.",action="Inspect the deploy service."}'
         values: '1+0x47'
       - series: 'velora_deployment_pending_since_seconds'
         values: '0+0x47'
@@ -59,9 +87,24 @@ tests:
               status: pending
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              reason: Deployment is still running.
+              action: Inspect the deploy service.
             exp_annotations:
               summary: production deployment has not reached the promoted release
-              description: The CI-promoted release has been pending for more than ten minutes.
+              description: Deployment is still running.
+              action: Inspect the deploy service.
+
+  - name: failed deployment does not also fire stalled
+    interval: 15s
+    input_series:
+      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Service is unhealthy.",action="Inspect service logs."}'
+        values: '1+0x47'
+      - series: 'velora_deployment_pending_since_seconds'
+        values: '0+0x47'
+    alert_rule_test:
+      - eval_time: 11m15s
+        alertname: VeloraDeploymentStalled
+        exp_alerts: []
 
   - name: notification service down after one minute
     interval: 15s

@@ -25,15 +25,71 @@ readonly APP_DIR="${VELORA_APP_DIR:-$(resolve_default_app_dir)}"
 readonly REMOTE="${VELORA_DEPLOY_REMOTE:-origin}"
 readonly CONTROLLER_PATH="scripts/deploy/velora-deploy"
 readonly CORE_PATH="scripts/deploy/velora-deploy-core"
+readonly STATE_DIR="${VELORA_STATE_DIR:-${HOME:-/home/quan}/.local/state/velora}"
+readonly DEPLOYMENT_METRICS_DIR="$APP_DIR/infra/monitoring/node-exporter-textfile"
+readonly DEPLOYMENT_METRICS_FILE="$DEPLOYMENT_METRICS_DIR/velora-deploy.prom"
 
 export VELORA_APP_DIR="$APP_DIR"
 
 umask 077
 
+publish_launcher_failure() {
+  local reason="$1"
+  local action="Run journalctl -u velora-deploy.service -n 100 --no-pager, restore Git connectivity or the approved controller, then wait for the timer or rerun velora-deploy."
+  local target_sha deployed_sha pending_since tmp_file
+  [[ -d "$APP_DIR" ]] || return 0
+
+  target_sha="$(git -C "$APP_DIR" rev-parse "refs/remotes/$REMOTE/homelab-deploy" 2>/dev/null || true)"
+  target_sha="${target_sha:-unknown}"
+  deployed_sha="$(cat "$STATE_DIR/deployed-sha" 2>/dev/null || true)"
+  deployed_sha="${deployed_sha:-none}"
+
+  mkdir -p "$STATE_DIR" "$DEPLOYMENT_METRICS_DIR"
+  if [[ "$(cat "$STATE_DIR/pending-sha" 2>/dev/null || true)" != "$target_sha" ]]; then
+    printf '%s\n' "$target_sha" >"$STATE_DIR/pending-sha"
+    date +%s >"$STATE_DIR/pending-since"
+  fi
+  pending_since="$(cat "$STATE_DIR/pending-since" 2>/dev/null || date +%s)"
+  printf 'error\n' >"$STATE_DIR/pending-status"
+  printf '%s\n' "$reason" >"$STATE_DIR/pending-reason"
+  printf '%s\n' "$action" >"$STATE_DIR/pending-action"
+
+  reason="${reason//\\/\\\\}"
+  reason="${reason//\"/\\\"}"
+  reason="${reason//$'\n'/\\n}"
+  action="${action//\\/\\\\}"
+  action="${action//\"/\\\"}"
+  tmp_file="$(mktemp "$DEPLOYMENT_METRICS_FILE.XXXXXX")"
+  {
+    printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
+    printf '# TYPE velora_deployment_pending gauge\n'
+    printf 'velora_deployment_pending{status="error",target_sha="%s",deployed_sha="%s",reason="%s",action="%s"} 1\n' \
+      "$target_sha" "$deployed_sha" "$reason" "$action"
+    printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
+    printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
+    printf 'velora_deployment_pending_since_seconds %s\n' "$pending_since"
+  } >"$tmp_file"
+  mv -f -- "$tmp_file" "$DEPLOYMENT_METRICS_FILE"
+}
+
 fail() {
-  printf 'ERROR: %s\n' "$*" >&2
+  local message="$*"
+  publish_launcher_failure "$message" || true
+  printf 'ERROR: %s\n' "$message" >&2
   exit 1
 }
+
+on_err() {
+  local status=$?
+  local line_no="$1"
+  local command="${2:-unknown command}"
+  trap - ERR
+  publish_launcher_failure "Launcher command failed at line $line_no (exit $status): ${command:0:200}" || true
+  printf 'ERROR: launcher command failed at line %s (exit %s): %s\n' "$line_no" "$status" "$command" >&2
+  return "$status"
+}
+
+trap 'on_err "$LINENO" "$BASH_COMMAND"' ERR
 
 command -v git >/dev/null 2>&1 || fail "git is required"
 [[ -d "$APP_DIR/.git" ]] || fail "Velora repository not found at $APP_DIR"

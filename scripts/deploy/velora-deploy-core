@@ -47,6 +47,8 @@ readonly DEPLOYMENT_METRICS_FILE="$DEPLOYMENT_METRICS_DIR/velora-deploy.prom"
 readonly PENDING_SHA_FILE="$STATE_DIR/pending-sha"
 readonly PENDING_SINCE_FILE="$STATE_DIR/pending-since"
 readonly PENDING_STATUS_FILE="$STATE_DIR/pending-status"
+readonly PENDING_REASON_FILE="$STATE_DIR/pending-reason"
+readonly PENDING_ACTION_FILE="$STATE_DIR/pending-action"
 
 readonly MIN_FREE_GB="${VELORA_MIN_FREE_GB:-20}"
 readonly MIN_AVAILABLE_RAM_MB="${VELORA_MIN_AVAILABLE_RAM_MB:-1024}"
@@ -229,7 +231,13 @@ warn() {
 }
 
 fail() {
-  printf 'ERROR: %s\n' "$*" >&2
+  local message="$*"
+  printf 'ERROR: %s\n' "$message" >&2
+  if declare -F publish_deployment_metrics >/dev/null; then
+    publish_deployment_metrics "${DEPLOYMENT_FAILURE_STATUS:-error}" \
+      "${DEPLOYMENT_FAILURE_DETAIL:-$message}" \
+      "${DEPLOYMENT_FAILURE_ACTION:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported error, then wait for the timer or rerun velora-deploy.}" || true
+  fi
   exit 1
 }
 
@@ -350,11 +358,16 @@ cleanup() {
 on_err() {
   local status=$?
   local line_no="$1"
-  warn "deployment command failed at line $line_no (exit $status)."
+  local command="${2:-unknown command}"
+  trap - ERR
+  publish_deployment_metrics "${DEPLOYMENT_FAILURE_STATUS:-error}" \
+    "${DEPLOYMENT_FAILURE_DETAIL:-Deployment command failed at line $line_no (exit $status): ${command:0:200}}" \
+    "${DEPLOYMENT_FAILURE_ACTION:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported command, then wait for the timer or rerun velora-deploy.}" || true
+  warn "deployment command failed at line $line_no (exit $status): $command"
   return "$status"
 }
 
-trap 'on_err "$LINENO"' ERR
+trap 'on_err "$LINENO" "$BASH_COMMAND"' ERR
 trap cleanup EXIT
 
 parse_args() {
@@ -472,37 +485,82 @@ load_state() {
 }
 
 publish_deployment_metrics() {
-  local requested_status="${1:-pending}" status pending=0 pending_since=0 deployed_sha existing_sha existing_status tmp_file
+  local requested_status="${1:-pending}" reason="${2:-}" action="${3:-}"
+  local status pending=0 pending_since=0 deployed_sha existing_sha existing_status tmp_file
+  if [[ -z "$TARGET_SHA" ]]; then
+    TARGET_SHA="$(git -C "$APP_DIR" rev-parse refs/remotes/origin/homelab-deploy 2>/dev/null || true)"
+  fi
   [[ -n "$TARGET_SHA" ]] || return 0
+  if [[ -z "$LAST_DEPLOYED_SHA" ]]; then
+    LAST_DEPLOYED_SHA="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  fi
 
-  if [[ "$TARGET_SHA" != "$LAST_DEPLOYED_SHA" ]]; then
+  if [[ "$TARGET_SHA" != "$LAST_DEPLOYED_SHA" || ( "$requested_status" != "pending" && "$requested_status" != "success" ) ]]; then
     pending=1
     existing_sha="$(cat "$PENDING_SHA_FILE" 2>/dev/null || true)"
     existing_status="$(cat "$PENDING_STATUS_FILE" 2>/dev/null || true)"
     if [[ "$existing_sha" != "$TARGET_SHA" ]]; then
       printf '%s\n' "$TARGET_SHA" >"$PENDING_SHA_FILE"
       date +%s >"$PENDING_SINCE_FILE"
+      rm -f -- "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE"
       existing_status=""
     fi
     status="${existing_status:-$requested_status}"
     if [[ "$requested_status" != "pending" ]]; then
       status="$requested_status"
       printf '%s\n' "$status" >"$PENDING_STATUS_FILE"
+      [[ -z "$reason" ]] || printf '%s\n' "$reason" >"$PENDING_REASON_FILE"
+      [[ -z "$action" ]] || printf '%s\n' "$action" >"$PENDING_ACTION_FILE"
     fi
+    reason="${reason:-$(cat "$PENDING_REASON_FILE" 2>/dev/null || true)}"
+    action="${action:-$(cat "$PENDING_ACTION_FILE" 2>/dev/null || true)}"
     pending_since="$(cat "$PENDING_SINCE_FILE" 2>/dev/null || date +%s)"
   else
     status="success"
-    rm -f -- "$PENDING_SHA_FILE" "$PENDING_SINCE_FILE" "$PENDING_STATUS_FILE"
+    rm -f -- "$PENDING_SHA_FILE" "$PENDING_SINCE_FILE" "$PENDING_STATUS_FILE" "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE"
   fi
+
+  case "$status" in
+    pending)
+      reason="${reason:-The promoted release is waiting for the deployment controller to finish.}"
+      action="${action:-Run systemctl status velora-deploy.service and journalctl -u velora-deploy.service -n 100 --no-pager.}"
+      ;;
+    database-gate)
+      reason="${reason:-The release changes a cloud database and requires explicit operator approval before deployment.}"
+      action="${action:-Apply or verify the database change, then run velora-deploy --approve-db-change $TARGET_SHA.}"
+      ;;
+    config-drift)
+      reason="${reason:-The production .env changed since the last healthy release.}"
+      action="${action:-Review the .env change, then run velora-deploy --force if it is intentional.}"
+      ;;
+    health-check)
+      reason="${reason:-The promoted release failed post-deployment health verification.}"
+      action="${action:-Inspect docker compose ps and journalctl -u velora-deploy.service -n 100 --no-pager, fix the failing probe, then run velora-deploy --retry-failed.}"
+      ;;
+    error)
+      reason="${reason:-The deployment controller stopped with an error.}"
+      action="${action:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported error, then wait for the timer or rerun velora-deploy.}"
+      ;;
+    success)
+      reason="${reason:-Production is running the promoted release.}"
+      action="${action:-No action required.}"
+      ;;
+  esac
 
   mkdir -p "$DEPLOYMENT_METRICS_DIR"
   deployed_sha="${LAST_DEPLOYED_SHA:-none}"
+  reason="${reason//\\/\\\\}"
+  reason="${reason//\"/\\\"}"
+  reason="${reason//$'\n'/\\n}"
+  action="${action//\\/\\\\}"
+  action="${action//\"/\\\"}"
+  action="${action//$'\n'/\\n}"
   tmp_file="$(mktemp "$DEPLOYMENT_METRICS_FILE.XXXXXX")"
   {
     printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
     printf '# TYPE velora_deployment_pending gauge\n'
-    printf 'velora_deployment_pending{status="%s",target_sha="%s",deployed_sha="%s"} %s\n' \
-      "$status" "$TARGET_SHA" "$deployed_sha" "$pending"
+    printf 'velora_deployment_pending{status="%s",target_sha="%s",deployed_sha="%s",reason="%s",action="%s"} %s\n' \
+      "$status" "$TARGET_SHA" "$deployed_sha" "$reason" "$action" "$pending"
     printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
     printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
     printf 'velora_deployment_pending_since_seconds %s\n' "$pending_since"
@@ -985,7 +1043,7 @@ blocked_marker() {
 }
 
 check_blocked_release() {
-  local marker
+  local marker reason action
   marker="$(blocked_marker "$TARGET_SHA")"
   [[ -f "$marker" ]] || return 0
 
@@ -996,7 +1054,9 @@ check_blocked_release() {
 
   log "Release $TARGET_SHA is blocked after a previous release-specific failure."
   log "Use --retry-failed to deliberately retry it, or wait for CI to promote a newer SHA."
-  publish_deployment_metrics "health-check"
+  reason="$(cat "$PENDING_REASON_FILE" 2>/dev/null || jq -r '.reason // "This release is blocked after a previous deployment failure."' "$marker")"
+  action="$(cat "$PENDING_ACTION_FILE" 2>/dev/null || printf '%s' 'Inspect journalctl -u velora-deploy.service -n 100 --no-pager, fix the original failure, then run velora-deploy --retry-failed.')"
+  publish_deployment_metrics "health-check" "$reason" "$action"
   exit 21
 }
 
@@ -1279,6 +1339,8 @@ wait_for_running_services() {
   done
 
   docker compose ps >&2 || true
+  DEPLOYMENT_FAILURE_DETAIL="Compose services did not reach running state: ${bad[*]}."
+  DEPLOYMENT_FAILURE_ACTION="Run docker compose ps and docker compose logs --tail=200 for the listed services, then run velora-deploy --retry-failed."
   return 1
 }
 
@@ -1298,11 +1360,13 @@ wait_for_docker_health() {
         log "$service Docker health is healthy."
         break
       fi
-      if [[ "$health" == "unhealthy" && $attempt -eq $HTTP_ATTEMPTS ]]; then
-        return 1
-      fi
       sleep "$HTTP_RETRY_SECONDS"
     done
+    if [[ "$health" != "healthy" ]]; then
+      DEPLOYMENT_FAILURE_DETAIL="$service Docker health remained ${health:-unknown}."
+      DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 $service, fix its health check failure, then run velora-deploy --retry-failed."
+      return 1
+    fi
   done
 }
 
@@ -1321,6 +1385,8 @@ check_http() {
     log "$name not ready (HTTP ${code:-none}), attempt $attempt/$HTTP_ATTEMPTS..."
     sleep "$HTTP_RETRY_SECONDS"
   done
+  DEPLOYMENT_FAILURE_DETAIL="$name did not return an allowed HTTP status; last response was ${code:-none}."
+  DEPLOYMENT_FAILURE_ACTION="Inspect the reverse proxy and service logs shown in the deployment journal, then run velora-deploy --retry-failed."
   return 1
 }
 
@@ -1349,6 +1415,8 @@ NODE
     fi
     sleep "$HTTP_RETRY_SECONDS"
   done
+  DEPLOYMENT_FAILURE_DETAIL="$service internal HTTP check on port $port failed; last response was ${code:-none}."
+  DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 $service, fix its startup error, then run velora-deploy --retry-failed."
   return 1
 }
 
@@ -1364,7 +1432,11 @@ check_rabbitmq_consumers() {
 
   for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
     not_ready=()
-    queues="$(rabbitmq_queue_consumers)" || return 1
+    if ! queues="$(rabbitmq_queue_consumers)"; then
+      DEPLOYMENT_FAILURE_DETAIL="RabbitMQ queue readiness command failed."
+      DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 rabbitmq and verify rabbitmqctl access, then run velora-deploy --retry-failed."
+      return 1
+    fi
 
     for service in "${!RMQ_QUEUE_BY_SERVICE[@]}"; do
       queue="${RMQ_QUEUE_BY_SERVICE[$service]}"
@@ -1388,6 +1460,8 @@ check_rabbitmq_consumers() {
   done
 
   warn "RabbitMQ consumers did not become ready: ${not_ready[*]}"
+  DEPLOYMENT_FAILURE_DETAIL="RabbitMQ consumers did not become ready: ${not_ready[*]}."
+  DEPLOYMENT_FAILURE_ACTION="Inspect RabbitMQ and the listed service logs, then run velora-deploy --retry-failed."
   return 1
 }
 
@@ -1405,12 +1479,17 @@ verify_gateway_replicas() {
   count="$(docker compose ps --status running -q api-gateway | wc -l | tr -d ' ')"
   [[ "$count" == "2" ]] || {
     warn "expected 2 running API Gateway replicas, found $count"
+    DEPLOYMENT_FAILURE_DETAIL="Expected 2 running API Gateway replicas, found $count."
+    DEPLOYMENT_FAILURE_ACTION="Run docker compose ps api-gateway and docker compose logs --tail=200 api-gateway, then run velora-deploy --retry-failed."
     return 1
   }
 }
 
 verify_deployment_health() {
   log "==> Verifying deployment health..."
+  DEPLOYMENT_FAILURE_STATUS="health-check"
+  DEPLOYMENT_FAILURE_DETAIL=""
+  DEPLOYMENT_FAILURE_ACTION=""
 
   wait_for_running_services || return 1
   wait_for_docker_health || return 1
@@ -1423,8 +1502,13 @@ verify_deployment_health() {
   check_internal_http_from_service payment-service 3006 "200 201 202 204 400 401 403 404 405" || return 1
   check_internal_http_from_service notification-service 3015 "200 201 202 204 400 401 403 404 405" || return 1
   verify_gateway_replicas || return 1
-  verify_monitoring_stack || return 1
+  verify_monitoring_stack || {
+    DEPLOYMENT_FAILURE_DETAIL="The monitoring stack smoke check failed."
+    DEPLOYMENT_FAILURE_ACTION="Run scripts/ops/check-monitoring-stack.sh, fix the reported component, then run velora-deploy --retry-failed."
+    return 1
+  }
 
+  DEPLOYMENT_FAILURE_STATUS=""
   return 0
 }
 
@@ -1869,7 +1953,7 @@ perform_deployment() {
   if [[ "$DB_RISK" == true ]]; then
     ROLLBACK_RESULT="skipped-db-risk"
     block_release "post-deploy health failure after DB-impact change; blind rollback intentionally skipped"
-    publish_deployment_metrics "health-check"
+    publish_deployment_metrics "health-check" "$DEPLOYMENT_FAILURE_DETAIL" "$DEPLOYMENT_FAILURE_ACTION"
     preserve_failed_snapshot
     save_local_deployment_receipt "failed-db-risk"
     fail "release failed after DB-impact change; SHA blocked and automatic rollback intentionally skipped"
@@ -1880,7 +1964,7 @@ perform_deployment() {
     if rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
       ROLLBACK_RESULT="success"
       block_release "post-deploy health failure; automatic rollback to previous healthy release succeeded"
-      publish_deployment_metrics "health-check"
+      publish_deployment_metrics "health-check" "$DEPLOYMENT_FAILURE_DETAIL" "$DEPLOYMENT_FAILURE_ACTION"
       remove_snapshot_tags "$TEMP_SNAPSHOT"
       rm -f -- "$TEMP_SNAPSHOT"
       TEMP_SNAPSHOT=""
@@ -1892,7 +1976,7 @@ perform_deployment() {
 
   ROLLBACK_RESULT="failed"
   block_release "post-deploy health failure; automatic rollback was unavailable or failed"
-  publish_deployment_metrics "health-check"
+  publish_deployment_metrics "health-check" "$DEPLOYMENT_FAILURE_DETAIL" "$DEPLOYMENT_FAILURE_ACTION"
   preserve_failed_snapshot
   save_local_deployment_receipt "failed-rollback-failed"
   fail "target release failed and automatic rollback did not restore health; operator intervention is required"

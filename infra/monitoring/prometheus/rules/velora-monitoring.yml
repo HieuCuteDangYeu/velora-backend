@@ -67,7 +67,8 @@ groups:
           service: deployment
         annotations:
           summary: production deployment requires database approval
-          description: The CI-promoted release is blocked until its cloud database change is applied and approved.
+          description: '{{ $labels.reason }}'
+          action: '{{ $labels.action }}'
 
       - alert: VeloraDeploymentHealthCheckFailed
         expr: velora_deployment_pending{status="health-check"} == 1
@@ -77,11 +78,23 @@ groups:
           service: deployment
         annotations:
           summary: production deployment failed health checks
-          description: The CI-promoted release did not become healthy; inspect the deployment receipt and blocked-release state.
+          description: '{{ $labels.reason }}'
+          action: '{{ $labels.action }}'
+
+      - alert: VeloraDeploymentControllerBlocked
+        expr: velora_deployment_pending{status=~"config-drift|error"} == 1
+        for: 0m
+        labels:
+          severity: critical
+          service: deployment
+        annotations:
+          summary: production deployment controller is blocked
+          description: '{{ $labels.reason }}'
+          action: '{{ $labels.action }}'
 
       - alert: VeloraDeploymentStalled
         expr: |
-          velora_deployment_pending == 1
+          velora_deployment_pending{status="pending"} == 1
           and on() (time() - velora_deployment_pending_since_seconds) > 600
         for: 1m
         labels:
@@ -89,7 +102,8 @@ groups:
           service: deployment
         annotations:
           summary: production deployment has not reached the promoted release
-          description: The CI-promoted release has been pending for more than ten minutes.
+          description: '{{ $labels.reason }}'
+          action: '{{ $labels.action }}'
 
       - alert: VeloraConversationServiceDown
         expr: up{job="conversation-service"} == 0

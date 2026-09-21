@@ -277,7 +277,7 @@ export class GenerateDraftAnswerUseCase {
     );
     const answer = selected
       .map((candidate) => candidate.text)
-      .join('\n')
+      .join(' ')
       .slice(0, 2_500)
       .trim();
     if (!answer) return undefined;
@@ -343,18 +343,14 @@ export class GenerateDraftAnswerUseCase {
           )
         ),
     );
-    const maxSpans =
-      budget.shape === 'SHORT_FACT' ||
-      /\b(?:why|reason|because)\b/i.test(question)
-        ? 1
-        : 2;
+    const maxSpans = budget.shape === 'SUMMARY' ? 2 : 1;
     const scored = eligibleSpans
       .filter((span) => span.score > 0 || span.requestedFactSignal > 0)
       .sort(
         (left, right) =>
           right.requestedFactSignal - left.requestedFactSignal ||
-          right.answerBearingRatio - left.answerBearingRatio ||
           right.score - left.score ||
+          right.answerBearingRatio - left.answerBearingRatio ||
           left.candidateIndex - right.candidateIndex ||
           left.spanIndex - right.spanIndex,
       )

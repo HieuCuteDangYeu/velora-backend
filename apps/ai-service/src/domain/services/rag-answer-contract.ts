@@ -162,10 +162,16 @@ export function ragRequestedFactSignalScore(
 
   if (EXACT_VALUE_QUESTION_PATTERN.test(question)) {
     const questionTokens = new Set(answerContentTokens(question));
-    const novelTokens = answerContentTokens(value).filter(
+    const valueTokens = answerContentTokens(value);
+    const novelTokens = valueTokens.filter(
       (token) => !questionTokens.has(token),
     );
-    if (novelTokens.length > 0) score += 3;
+    const questionOverlap = valueTokens.filter((token) =>
+      questionTokens.has(token),
+    ).length;
+    if (questionOverlap > 0 && novelTokens.length > 0) {
+      score += 3 + questionOverlap;
+    }
   }
 
   return score;

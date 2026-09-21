@@ -602,6 +602,52 @@ describe('GenerateDraftAnswerUseCase', () => {
     },
   );
 
+  it('returns one direct answer-bearing span instead of transcript-shaped fallback text', () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const evidenceText =
+      "salient features that they share in common. I would like them to be in the same cluster. And those two, one of them is labeled and the other is not labeled. So you look at that and you say, oh, someone told this one was very similar and this one is said to be blue, for example. I don't know if it's the label. So I put it in the blue bag. But you never use the blue bag.";
+
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        userMessage:
+          'What example label is used for a marble that is put into a bag?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText,
+            chunkText: evidenceText,
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback).toMatchObject({
+      answer: 'So I put it in the blue bag.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+    });
+    expect(fallback?.answer).not.toContain('\n');
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it('uses extractive fallback when an empty answer remains unusable after retry', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({ answer: '', claims: [] }),
@@ -750,6 +796,51 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(fallback?.answer).toContain('12 bands');
     expect(fallback?.answer).not.toBe('There are 2 controls on the panel.');
     expect(fallback).toMatchObject({ claims: [{ evidenceIds: ['e0'] }] });
+  });
+
+  it('returns only the current-band proposition from a noisy quantity transcript', () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const evidenceText =
+      "With, I don't know, the compression, number of bands and... Number of bands and... What you were playing with and what are the results, like what to use? Now what I am using are 15 frequency bands, which seems to me quite reasonable. We can go down till like 12 and still okay I would say.";
+
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        userMessage: 'How many frequency bands is the speaker currently using?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            evidenceType: 'TRANSCRIPT',
+            evidenceText,
+            chunkText: evidenceText,
+            reelId: 'target-reel',
+            tags: [],
+          },
+        ],
+      } as unknown as RagChatWorkflowState,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback).toMatchObject({
+      answer:
+        'Now what I am using are 15 frequency bands, which seems to me quite reasonable.',
+      claims: [{ evidenceIds: ['e0'] }],
+    });
+    expect(fallback?.answer).not.toContain('12');
+    expect(service.generateObject).not.toHaveBeenCalled();
   });
 
   it('uses extractive fallback for an evidence-dependent refusal', async () => {

@@ -247,7 +247,15 @@ export class TikTokCdnService implements ITikTokCdnService {
     filePath: string,
     filename: string,
   ): Promise<SegmentUploadResult> {
-    const tsData = fs.readFileSync(filePath);
+    let tsData = fs.readFileSync(filePath);
+    if (tsData.includes('FFmpeg')) {
+      tsData = Buffer.from(tsData);
+      let idx = 0;
+      while ((idx = tsData.indexOf('FFmpeg', idx)) !== -1) {
+        tsData.write('velora', idx);
+        idx += 6;
+      }
+    }
     const originalSize = tsData.length;
 
     // Prepend the 67-byte PNG mask to the TS data

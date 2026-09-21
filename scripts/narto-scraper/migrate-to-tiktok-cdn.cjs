@@ -37,7 +37,11 @@ const PNG_MASK_SIZE = 67;
 
 const CHECKPOINT_FILE = path.join(__dirname, '.migrate-checkpoint.json');
 
-const prisma = new PrismaClient();
+// Ensure connection_limit=1 to prevent PostgreSQL connection exhaustion
+const dbUrl = new URL(process.env.CONTENT_DATABASE_URL);
+dbUrl.searchParams.set('connection_limit', '1');
+const prisma = new PrismaClient({ datasources: { db: { url: dbUrl.toString() } } });
+
 const s3Client = new S3Client({
   region: 'auto',
   endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -47,26 +51,69 @@ const s3Client = new S3Client({
   },
 });
 
-async function downloadFile(url, dest) {
+function fetchUrl(url, maxRedirects = 3) {
   return new Promise((resolve, reject) => {
     const protocol = url.startsWith('https') ? https : http;
-    protocol.get(url, (response) => {
-      if (response.statusCode === 301 || response.statusCode === 302) {
-        return downloadFile(response.headers.location, dest).then(resolve).catch(reject);
-      }
-      if (response.statusCode !== 200) {
-        return reject(new Error(`Failed to download: ${response.statusCode}`));
-      }
-      const file = fs.createWriteStream(dest);
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
-    }).on('error', (err) => {
-      fs.unlink(dest, () => reject(err));
-    });
+    protocol
+      .get(
+        url,
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        },
+        (res) => {
+          if (
+            (res.statusCode === 301 || res.statusCode === 302) &&
+            res.headers.location &&
+            maxRedirects > 0
+          ) {
+            return fetchUrl(res.headers.location, maxRedirects - 1)
+              .then(resolve)
+              .catch(reject);
+          }
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => resolve(data));
+        },
+      )
+      .on('error', reject);
   });
+}
+
+const seriesItemsCache = new Map();
+
+async function resolveCleanStreamUrl(reel) {
+  // Find series slug from tags (e.g. ['narto-drama', 'short-drama', 'slug'])
+  const seriesSlug = reel.tags?.find((t) => t !== 'narto-drama' && t !== 'short-drama');
+  if (!seriesSlug) return reel.mediaKey;
+
+  let items = seriesItemsCache.get(seriesSlug);
+  if (!items) {
+    const watchUrl = `https://narto-drama.com/detail/watch/${seriesSlug}/1?lang=id-ID`;
+    try {
+      const html = await fetchUrl(watchUrl);
+      const match = html.match(/const\s+episodeItemsRaw\s*=\s*(\[.*?\]);/s);
+      if (match) {
+        items = JSON.parse(match[1]);
+        seriesItemsCache.set(seriesSlug, items);
+      }
+    } catch (err) {
+      console.warn(`Could not fetch watch page for series ${seriesSlug}:`, err.message);
+    }
+  }
+
+  if (items) {
+    const epItem = items.find(
+      (i) => (i.number || i.route_episode_number) === reel.episodeNumber,
+    );
+    if (epItem?.play_url && epItem.play_url.startsWith('http')) {
+      return epItem.play_url;
+    }
+  }
+
+  return reel.mediaKey;
 }
 
 function loadCheckpoint() {
@@ -86,13 +133,21 @@ function saveCheckpoint(checkpoint) {
 }
 
 async function uploadSegmentToTikTok(filePath, filename) {
-  const tsData = fs.readFileSync(filePath);
+  let tsData = fs.readFileSync(filePath);
+  if (tsData.includes('FFmpeg')) {
+    tsData = Buffer.from(tsData);
+    let idx = 0;
+    while ((idx = tsData.indexOf('FFmpeg', idx)) !== -1) {
+      tsData.write('velora', idx);
+      idx += 6;
+    }
+  }
   const originalSize = tsData.length;
   const spoofed = Buffer.concat([PNG_MASK, tsData]);
   const uploadFilename = filename.replace(/\.ts$/, '.png');
 
   const form = new FormData();
-  const blob = new Blob([spoofed], { type: 'image/png' });
+  const blob = new Blob([new Uint8Array(spoofed)], { type: 'image/png' });
   form.append('Filedata', blob, uploadFilename);
 
   const res = await fetch(TIKTOK_CDN_UPLOAD_ENDPOINT, {
@@ -124,24 +179,25 @@ async function uploadSegmentToTikTok(filePath, filename) {
 
 async function processReel(reel, checkpoint) {
   const startTime = Date.now();
-  const tempFile = `/tmp/velora-migrate-${reel.id}.mp4`;
   const hlsDir = `/tmp/velora-hls-${reel.id}`;
 
   try {
+    const inputUrl = await resolveCleanStreamUrl(reel);
+    const isCleanStream = inputUrl !== reel.mediaKey;
+
     if (DRY_RUN) {
-      console.log(`[DRY-RUN] Would process reel ${reel.id} (${reel.mediaKey})`);
+      console.log(`[DRY-RUN] Would process reel ${reel.id} (${isCleanStream ? 'Clean Stream: ' : 'Direct: '}${inputUrl})`);
       checkpoint.processedReelIds.push(reel.id);
       checkpoint.stats.processed++;
       return;
     }
 
-    await downloadFile(reel.mediaKey, tempFile);
     fs.mkdirSync(hlsDir, { recursive: true });
 
-    // Slice to HLS with FFmpeg
+    // Slice to HLS with FFmpeg directly from inputUrl
     const m3u8Path = path.join(hlsDir, 'index.m3u8');
     const cropArg = CROP ? '-vf "crop=iw:ih-110:0:40" -c:v libx264 -preset fast -crf 23 -c:a copy' : '-codec: copy';
-    await execAsync(`ffmpeg -y -i ${tempFile} ${cropArg} -map_metadata -1 -start_number 0 -hls_time 5 -hls_list_size 0 -f hls ${m3u8Path}`);
+    await execAsync(`ffmpeg -y -i "${inputUrl}" ${cropArg} -map_metadata -1 -metadata service_provider=velora -metadata service_name=velora -start_number 0 -hls_time 5 -hls_list_size 0 -f hls ${m3u8Path}`);
 
     // Upload segments
     const files = fs.readdirSync(hlsDir);
@@ -193,7 +249,6 @@ async function processReel(reel, checkpoint) {
     checkpoint.failedReelIds.push(reel.id);
     checkpoint.stats.failed++;
   } finally {
-    if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
     if (fs.existsSync(hlsDir)) fs.rmSync(hlsDir, { recursive: true, force: true });
   }
 }

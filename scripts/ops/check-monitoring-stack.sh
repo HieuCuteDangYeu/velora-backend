@@ -226,37 +226,40 @@ require_command curl
 require_command jq
 require_command docker
 
-echo "[1/10] Checking Prometheus readiness..."
+echo "[1/11] Checking Prometheus readiness..."
 curl --fail --silent --show-error "${PROMETHEUS_URL}/-/ready" >/dev/null
 echo "      Prometheus is ready"
 
-echo "[2/10] Checking monitoring-service scrape target..."
+echo "[2/11] Checking monitoring-service scrape target..."
 wait_for_prometheus_target "monitoring-service" "monitoring-service"
 
-echo "[3/10] Checking conversation-service scrape target..."
+echo "[3/11] Checking conversation-service scrape target..."
 wait_for_prometheus_target "conversation-service" "conversation-service"
 
-echo "[4/10] Checking call-service scrape target..."
+echo "[4/11] Checking call-service scrape target..."
 wait_for_prometheus_target "call-service" "call-service"
 
-echo "[5/10] Checking host node-exporter scrape target..."
+echo "[5/11] Checking notification-service scrape target..."
+wait_for_prometheus_target "notification-service" "notification-service"
+
+echo "[6/11] Checking host node-exporter scrape target..."
 wait_for_prometheus_target "node-exporter" "node-exporter"
 
-echo "[6/10] Checking Docker Engine API access..."
+echo "[7/11] Checking Docker Engine API access..."
 check_docker_engine_access
 
-echo "[7/10] Checking Loki readiness..."
+echo "[8/11] Checking Loki readiness..."
 wait_for_loki_ready
 
-echo "[8/10] Checking monitoring-service to Loki Docker DNS/network..."
+echo "[9/11] Checking monitoring-service to Loki Docker DNS/network..."
 check_loki_from_monitoring_service
 
-echo "[9/10] Checking Alloy log collector..."
+echo "[10/11] Checking Alloy log collector..."
 check_alloy_running
 
-echo "[10/10] Checking Grafana health..."
+echo "[11/11] Checking Grafana health..."
 wait_for_grafana_health
 
 echo
-printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNode exporter:        UP\nDocker Engine:        UP\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
+printf 'Monitoring smoke check passed.\nPrometheus:           %s\nMonitoring service:   UP\nConversation service: UP\nCall service:         UP\nNotification service: UP\nNode exporter:        UP\nDocker Engine:        UP\nLoki:                 %s\nAlloy:                UP\nGrafana:              %s\n' \
   "$PROMETHEUS_URL" "$LOKI_URL" "$GRAFANA_URL"

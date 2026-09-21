@@ -20,6 +20,7 @@ import { JobConcurrencyLimiterService } from './infrastructure/services/job-conc
 import { ProcessingMetricsService } from './infrastructure/services/processing-metrics.service';
 import { R2Service } from './infrastructure/services/r2.service';
 import { TempFileService } from './infrastructure/services/temp-file.service';
+import { TikTokCdnService } from './infrastructure/services/tiktok-cdn.service';
 
 @Module({
   imports: [
@@ -131,6 +132,11 @@ import { TempFileService } from './infrastructure/services/temp-file.service';
     {
       provide: 'IConversationMediaService',
       useClass: ConversationMediaAdapter,
+    },
+    TikTokCdnService,
+    {
+      provide: 'ITikTokCdnService',
+      useExisting: TikTokCdnService,
     },
   ],
 })

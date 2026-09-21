@@ -914,6 +914,7 @@ compare_compose_models() {
     fi
 
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
+      DEPLOYMENT_FAILURE_ACTION="Review the Compose diff for '$service'. Restore its previous configuration or deploy the protected service manually, then rerun velora-deploy."
       fail "Compose configuration changed for protected/worker service '$service'; manual review is required"
     fi
 
@@ -927,6 +928,7 @@ compare_compose_models() {
       continue
     fi
 
+    DEPLOYMENT_FAILURE_ACTION="Review the Compose diff for '$service'. Add it to the managed service policy or deploy it manually, then rerun velora-deploy."
     fail "Compose configuration changed for unmanaged service '$service'; manual review is required"
   done < <(
     jq -n -r --slurpfile a "$base_normal" --slurpfile b "$target_normal" '

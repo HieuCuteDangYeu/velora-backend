@@ -99,5 +99,6 @@ if VELORA_APP_DIR="$tmp_dir/launcher-app" VELORA_STATE_DIR="$tmp_dir/launcher-st
 fi
 grep -Fq 'status="error"' "$tmp_dir/launcher-app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
 grep -Fq 'reason="Launcher command failed at line' "$tmp_dir/launcher-app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
+grep -Fq 'if "$controller" "$@"; then' "$repo_root/scripts/deploy/velora-deploy-launcher"
 
 printf 'deployment metrics: PASS\n'

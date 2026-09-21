@@ -132,4 +132,10 @@ bash -n "$controller" || fail "approved deployment controller failed syntax vali
 bash -n "$core" || fail "approved deployment core failed syntax validation"
 
 printf '==> Launcher executing controller from approved SHA %s...\n' "$approved_sha"
-"$controller" "$@"
+if "$controller" "$@"; then
+  exit 0
+else
+  status=$?
+  printf 'ERROR: approved deployment controller exited with status %s\n' "$status" >&2
+  exit "$status"
+fi

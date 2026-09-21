@@ -8,21 +8,21 @@ const fetchUrl = (url, maxRedirects = 5) => {
     if (maxRedirects === 0) {
       return reject(new Error(`Too many redirects for ${url}`));
     }
-    
+
     https.get(url, (res) => {
       const { statusCode } = res;
-      
+
       if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
         // Handle redirect
         const redirectUrl = new URL(res.headers.location, url).href;
         return fetchUrl(redirectUrl, maxRedirects - 1).then(resolve).catch(reject);
       }
-      
+
       if (statusCode !== 200) {
         res.resume();
         return reject(new Error(`Request Failed for ${url}. Status Code: ${statusCode}`));
       }
-      
+
       let rawData = '';
       res.on('data', (chunk) => { rawData += chunk; });
       res.on('end', () => {
@@ -45,12 +45,12 @@ const fetchSitemapIndex = async (baseUrl) => {
     const sitemapUrl = baseUrl.endsWith('/sitemap.xml') ? baseUrl : `${baseUrl}/sitemap.xml`;
     const xmlData = await fetchUrl(sitemapUrl);
     const result = parser.parse(xmlData);
-    
+
     if (result && result.sitemapindex && result.sitemapindex.sitemap) {
-      const sitemaps = Array.isArray(result.sitemapindex.sitemap) 
-        ? result.sitemapindex.sitemap 
+      const sitemaps = Array.isArray(result.sitemapindex.sitemap)
+        ? result.sitemapindex.sitemap
         : [result.sitemapindex.sitemap];
-      
+
       return sitemaps.map(s => s.loc);
     }
     return [];
@@ -64,28 +64,28 @@ const fetchEpisodeSitemap = async (url) => {
   try {
     const xmlData = await fetchUrl(url);
     const result = parser.parse(xmlData);
-    
+
     if (!result || !result.urlset || !result.urlset.url) {
       return [];
     }
-    
+
     const episodes = [];
     for (const urlEntry of result.urlset.url) {
       try {
         const playerUrl = urlEntry.loc;
         if (!playerUrl) continue;
-        
+
         // Extract seriesSlug and episodeNumber from playerUrl
         // https://narto-drama.com/detail/watch/{slug}/{episode}?lang=id-ID
         const match = playerUrl.match(/\/detail\/watch\/([^\/]+)\/([^\/?]+)/);
         if (!match) continue;
-        
+
         const seriesSlug = match[1];
         const episodeNumber = parseInt(match[2], 10) || match[2]; // fallback to string if not int
-        
+
         const imageInfo = urlEntry['image:image'] || {};
         const videoInfo = urlEntry['video:video'] || {};
-        
+
         episodes.push({
           seriesSlug,
           episodeNumber: typeof episodeNumber === 'number' ? episodeNumber : Number(episodeNumber),

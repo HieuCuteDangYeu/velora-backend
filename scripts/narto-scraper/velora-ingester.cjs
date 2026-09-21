@@ -33,7 +33,7 @@ function createIngester() {
 
     async upsertSeries(botUserId, series) {
       if (!prisma) throw new Error('Not connected');
-      
+
       try {
         const existing = await prisma.reelSeries.findFirst({
           where: { ownerId: botUserId, title: series.title },

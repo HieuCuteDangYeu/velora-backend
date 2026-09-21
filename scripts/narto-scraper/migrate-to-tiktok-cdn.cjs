@@ -258,7 +258,8 @@ async function main() {
 
   const where = {
     mediaKey: { startsWith: 'http' },
-    id: { notIn: checkpoint.processedReelIds },
+    hlsMasterKey: null,
+    ...(checkpoint.failedReelIds?.length > 0 ? { id: { notIn: checkpoint.failedReelIds } } : {}),
   };
 
   if (SERIES_SLUG) {

@@ -200,12 +200,12 @@ async function processReel(reel, checkpoint) {
 
 async function main() {
   const checkpoint = loadCheckpoint();
-  
+
   const where = {
     mediaKey: { startsWith: 'http' },
     id: { notIn: checkpoint.processedReelIds },
   };
-  
+
   if (SERIES_SLUG) {
     where.tags = { has: SERIES_SLUG };
   }

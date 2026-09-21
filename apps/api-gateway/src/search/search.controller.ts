@@ -160,7 +160,10 @@ export class SearchController {
   private enrichReel(reel: SearchableReel): Omit<ReelFeedListItem, 'author'> {
     const streamUrl = this.buildStreamUrl(reel.hlsMasterKey ?? reel.mediaKey);
     const thumbnailUrl = reel.thumbnailKey
-      ? `${this.cdnDomain}/${reel.thumbnailKey}`
+      ? reel.thumbnailKey.startsWith('http://') ||
+        reel.thumbnailKey.startsWith('https://')
+        ? reel.thumbnailKey
+        : `${this.cdnDomain}/${reel.thumbnailKey}`
       : undefined;
 
     const createdAt =
@@ -208,6 +211,10 @@ export class SearchController {
   }
 
   private buildStreamUrl(mediaKey: string): string {
+    if (mediaKey.startsWith('http://') || mediaKey.startsWith('https://')) {
+      return mediaKey;
+    }
+
     if (mediaKey.endsWith('.m3u8')) {
       return `${this.cdnDomain}/${mediaKey.replace(/^\/+/, '')}`;
     }

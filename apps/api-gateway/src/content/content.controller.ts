@@ -600,7 +600,10 @@ export class ContentController {
       hlsMasterKey: status.hlsMasterKey,
       thumbnailKey: status.thumbnailKey,
       thumbnailUrl: status.thumbnailKey
-        ? `${this.cdnDomain}/${status.thumbnailKey}`
+        ? status.thumbnailKey.startsWith('http://') ||
+          status.thumbnailKey.startsWith('https://')
+          ? status.thumbnailKey
+          : `${this.cdnDomain}/${status.thumbnailKey}`
         : undefined,
       streamUrl:
         status.hlsMasterKey || status.mediaKey
@@ -743,7 +746,10 @@ export class ContentController {
   ): ReelListItem | ReelDetail {
     const streamUrl = this.buildStreamUrl(reel.hlsMasterKey ?? reel.mediaKey);
     const thumbnailUrl = reel.thumbnailKey
-      ? `${this.cdnDomain}/${reel.thumbnailKey}`
+      ? reel.thumbnailKey.startsWith('http://') ||
+        reel.thumbnailKey.startsWith('https://')
+        ? reel.thumbnailKey
+        : `${this.cdnDomain}/${reel.thumbnailKey}`
       : undefined;
     const createdAt =
       reel.createdAt instanceof Date
@@ -839,6 +845,10 @@ export class ContentController {
   }
 
   private buildStreamUrl(mediaKey: string): string {
+    if (mediaKey.startsWith('http://') || mediaKey.startsWith('https://')) {
+      return mediaKey;
+    }
+
     if (mediaKey.endsWith('.m3u8')) {
       return `${this.cdnDomain}/${mediaKey.replace(/^\/+/, '')}`;
     }

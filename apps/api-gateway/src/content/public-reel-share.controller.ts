@@ -74,7 +74,10 @@ export class PublicReelShareController {
         description: result.reel.description,
         tags: result.reel.tags,
         thumbnailUrl: result.reel.thumbnailKey
-          ? `${this.cdnDomain}/${result.reel.thumbnailKey}`
+          ? result.reel.thumbnailKey.startsWith('http://') ||
+            result.reel.thumbnailKey.startsWith('https://')
+            ? result.reel.thumbnailKey
+            : `${this.cdnDomain}/${result.reel.thumbnailKey}`
           : undefined,
         streamUrl: this.buildStreamUrl(
           result.reel.hlsMasterKey ?? result.reel.mediaKey,
@@ -93,6 +96,10 @@ export class PublicReelShareController {
   }
 
   private buildStreamUrl(mediaKey: string): string {
+    if (mediaKey.startsWith('http://') || mediaKey.startsWith('https://')) {
+      return mediaKey;
+    }
+
     if (mediaKey.endsWith('.m3u8')) {
       return `${this.cdnDomain}/${mediaKey.replace(/^\/+/, '')}`;
     }

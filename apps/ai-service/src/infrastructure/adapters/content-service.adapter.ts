@@ -207,6 +207,10 @@ export class ContentServiceAdapter implements IContentService {
   }
 
   private buildStreamUrl(mediaKey: string): string {
+    if (mediaKey.startsWith('http://') || mediaKey.startsWith('https://')) {
+      return mediaKey;
+    }
+
     const extIndex = mediaKey.lastIndexOf('.');
     const folderPath =
       extIndex !== -1 ? mediaKey.substring(0, extIndex) : mediaKey;

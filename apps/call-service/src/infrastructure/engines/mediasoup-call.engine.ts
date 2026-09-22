@@ -7,6 +7,7 @@ import {
 import * as mediasoup from 'mediasoup';
 import type {
   ActiveProducerResult,
+  ClosedMediaConsumerResult,
   ConsumedMediaResult,
   CreateRecvTransportResult,
   CreateSendTransportResult,
@@ -590,6 +591,23 @@ export class MediasoupCallMediaEngine
       },
     });
 
+    // Terminal cleanup can race an in-flight mediasoup allocation. Never
+    // resurrect a Consumer after the room that authorized it was removed.
+    if (this.rooms.get(callId) !== room) {
+      consumer.close();
+      throw new Error('Call room not found');
+    }
+
+    // A signaling reconnect intentionally keeps the receiver transport alive
+    // while the mobile client discards its local Consumers. If the explicit
+    // cleanup packet is lost, replace the stale server Consumer here. Create
+    // the replacement first so a failed allocation never tears down the last
+    // working media path.
+    for (const [consumerId, meta] of room.consumerMeta) {
+      if (meta.userId !== userId || meta.producerId !== producerId) continue;
+      this.closeRuntimeConsumer(room, consumerId);
+    }
+
     room.consumers.set(consumer.id, consumer);
     room.consumerMeta.set(consumer.id, {
       callId,
@@ -599,13 +617,11 @@ export class MediasoupCallMediaEngine
     });
 
     consumer.on('transportclose', () => {
-      room.consumers.delete(consumer.id);
-      room.consumerMeta.delete(consumer.id);
+      this.forgetRuntimeConsumer(room, consumer.id);
     });
 
     consumer.on('producerclose', () => {
-      room.consumers.delete(consumer.id);
-      room.consumerMeta.delete(consumer.id);
+      this.forgetRuntimeConsumer(room, consumer.id);
       consumer.close();
     });
 
@@ -636,6 +652,54 @@ export class MediasoupCallMediaEngine
     }
 
     await consumer.resume();
+  }
+
+  closeConsumer(
+    callId: string,
+    userId: string,
+    consumerId: string,
+  ): Promise<ClosedMediaConsumerResult> {
+    const room = this.rooms.get(callId);
+    if (!room) {
+      return Promise.resolve({ closed: false });
+    }
+
+    const consumer = room.consumers.get(consumerId);
+    const meta = room.consumerMeta.get(consumerId);
+    if (!consumer || !meta) {
+      this.forgetRuntimeConsumer(room, consumerId);
+      return Promise.resolve({ closed: false });
+    }
+    if (meta.callId !== callId || meta.userId !== userId) {
+      throw new Error('Consumer not found');
+    }
+
+    this.closeRuntimeConsumer(room, consumerId);
+    return Promise.resolve({ closed: true });
+  }
+
+  private forgetRuntimeConsumer(
+    room: RoomRuntimeState,
+    consumerId: string,
+  ): void {
+    room.consumers.delete(consumerId);
+    room.consumerMeta.delete(consumerId);
+  }
+
+  private closeRuntimeConsumer(
+    room: RoomRuntimeState,
+    consumerId: string,
+  ): boolean {
+    const consumer = room.consumers.get(consumerId);
+    this.forgetRuntimeConsumer(room, consumerId);
+    if (!consumer) return false;
+
+    try {
+      consumer.close();
+    } catch {
+      // A producer/transport close may have won the cleanup race.
+    }
+    return true;
   }
 
   listActiveProducers(

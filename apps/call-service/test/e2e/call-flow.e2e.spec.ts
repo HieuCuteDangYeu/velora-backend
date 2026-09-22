@@ -1058,6 +1058,13 @@ class FakeCallMediaEngine {
       throw new Error('Producer not found');
     }
 
+    for (const [consumerId, consumer] of room.consumers) {
+      if (consumer.userId === userId && consumer.producerId === producerId) {
+        consumer.closed = true;
+        room.consumers.delete(consumerId);
+      }
+    }
+
     this.consumerCounter += 1;
     const consumerId = `consumer-${this.consumerCounter}`;
     room.consumers.set(consumerId, {
@@ -1088,6 +1095,25 @@ class FakeCallMediaEngine {
     }
     consumer.paused = false;
     return Promise.resolve();
+  }
+
+  closeConsumer(
+    callId: string,
+    userId: string,
+    consumerId: string,
+  ): Promise<{ closed: boolean }> {
+    const room = this.rooms.get(callId);
+    if (!room) return Promise.resolve({ closed: false });
+
+    const consumer = room.consumers.get(consumerId);
+    if (!consumer) return Promise.resolve({ closed: false });
+    if (consumer.userId !== userId) {
+      throw new Error('Consumer not found');
+    }
+
+    consumer.closed = true;
+    room.consumers.delete(consumerId);
+    return Promise.resolve({ closed: true });
   }
 
   listActiveProducers(
@@ -1780,6 +1806,48 @@ describe('Call Service P0 flow (e2e)', () => {
     expect(
       mediaEngine.getConsumerState(callId, consumer.consumerId)?.paused,
     ).toBe(false);
+
+    const replacementConsumerCreated = onceEvent<{
+      callId: string;
+      consumerId: string;
+      producerId: string;
+    }>(callee, 'consumer_created');
+    callee.emit('consume', {
+      callId,
+      transportId: calleeRecvTransport.transportId,
+      producerId: producerNotice.producerId,
+      rtpCapabilities: validRtpCapabilities,
+    });
+    const replacementConsumer = await replacementConsumerCreated;
+
+    expect(replacementConsumer.consumerId).not.toBe(consumer.consumerId);
+    expect(
+      mediaEngine.getConsumerState(callId, consumer.consumerId),
+    ).toBeUndefined();
+    expect(
+      [...(mediaEngine.getRoomState(callId)?.consumers.values() ?? [])].filter(
+        (entry) => !entry.closed,
+      ),
+    ).toHaveLength(1);
+
+    const consumerClosed = onceEvent<{
+      callId: string;
+      consumerId: string;
+      status: 'closed' | 'already_closed';
+    }>(callee, 'consumer_closed_ack');
+    callee.emit('close_consumer', {
+      callId,
+      consumerId: replacementConsumer.consumerId,
+    });
+
+    await expect(consumerClosed).resolves.toEqual({
+      callId,
+      consumerId: replacementConsumer.consumerId,
+      status: 'closed',
+    });
+    expect(
+      mediaEngine.getConsumerState(callId, replacementConsumer.consumerId),
+    ).toBeUndefined();
   });
 
   it('cancels a call when the caller leaves before answer and clears live media state', async () => {

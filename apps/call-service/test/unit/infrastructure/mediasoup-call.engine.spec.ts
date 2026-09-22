@@ -440,6 +440,140 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
   });
 });
 
+describe('MediasoupCallMediaEngine consumer lifecycle', () => {
+  const createConsumerEngine = async () => {
+    const consumers = [
+      {
+        id: 'consumer-1',
+        rtpParameters: { codecs: [] },
+        on: jest.fn(),
+        close: jest.fn(),
+        resume: jest.fn().mockResolvedValue(undefined),
+      },
+      {
+        id: 'consumer-2',
+        rtpParameters: { codecs: [] },
+        on: jest.fn(),
+        close: jest.fn(),
+        resume: jest.fn().mockResolvedValue(undefined),
+      },
+    ];
+    const recvTransport = {
+      id: 'recv-1',
+      consume: jest
+        .fn()
+        .mockResolvedValueOnce(consumers[0])
+        .mockResolvedValueOnce(consumers[1]),
+    };
+    const producer = { id: 'producer-1', kind: 'audio' as const };
+    const router = {
+      id: 'router-consumer',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      canConsume: jest.fn().mockReturnValue(true),
+    };
+    const { engine } = createEngine(jest.fn().mockResolvedValue(router));
+    await engine.createRoom('call-consumer');
+
+    const room = (
+      engine as unknown as {
+        rooms: Map<
+          string,
+          {
+            transports: Map<string, unknown>;
+            transportMeta: Map<string, unknown>;
+            producers: Map<string, unknown>;
+            producerMeta: Map<string, unknown>;
+            consumers: Map<string, unknown>;
+          }
+        >;
+      }
+    ).rooms.get('call-consumer');
+    if (!room) throw new Error('test room missing');
+
+    room.transports.set(recvTransport.id, recvTransport);
+    room.transportMeta.set(recvTransport.id, {
+      callId: 'call-consumer',
+      userId: 'user-b',
+      direction: 'recv',
+      connected: true,
+    });
+    room.producers.set(producer.id, producer);
+    room.producerMeta.set(producer.id, {
+      callId: 'call-consumer',
+      userId: 'user-a',
+      transportId: 'send-1',
+      kind: 'audio',
+    });
+
+    return { engine, recvTransport, consumers, room };
+  };
+
+  it('replaces a stale receiver consumer after the replacement was allocated', async () => {
+    const { engine, recvTransport, consumers, room } =
+      await createConsumerEngine();
+
+    await expect(
+      engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {}),
+    ).resolves.toEqual(expect.objectContaining({ consumerId: 'consumer-1' }));
+    await expect(
+      engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {}),
+    ).resolves.toEqual(expect.objectContaining({ consumerId: 'consumer-2' }));
+
+    expect(recvTransport.consume).toHaveBeenCalledTimes(2);
+    expect(consumers[0].close).toHaveBeenCalledTimes(1);
+    expect(room.consumers.size).toBe(1);
+    expect(room.consumers.has('consumer-1')).toBe(false);
+    expect(room.consumers.has('consumer-2')).toBe(true);
+  });
+
+  it('does not tear down the working consumer when replacement allocation fails', async () => {
+    const { engine, recvTransport, consumers, room } =
+      await createConsumerEngine();
+
+    await engine.consume(
+      'call-consumer',
+      'user-b',
+      'recv-1',
+      'producer-1',
+      {},
+    );
+    recvTransport.consume.mockRejectedValueOnce(new Error('allocation failed'));
+
+    await expect(
+      engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {}),
+    ).rejects.toThrow('allocation failed');
+
+    expect(consumers[0].close).not.toHaveBeenCalled();
+    expect(room.consumers.has('consumer-1')).toBe(true);
+  });
+
+  it('closes explicit consumer cleanup idempotently and enforces ownership', async () => {
+    const { engine, consumers, room } = await createConsumerEngine();
+
+    await engine.consume(
+      'call-consumer',
+      'user-b',
+      'recv-1',
+      'producer-1',
+      {},
+    );
+
+    await expect(
+      engine.closeConsumer('call-consumer', 'user-a', 'consumer-1'),
+    ).rejects.toThrow('Consumer not found');
+    await expect(
+      engine.closeConsumer('call-consumer', 'user-b', 'consumer-1'),
+    ).resolves.toEqual({ closed: true });
+    await expect(
+      engine.closeConsumer('call-consumer', 'user-b', 'consumer-1'),
+    ).resolves.toEqual({ closed: false });
+
+    expect(consumers[0].close).toHaveBeenCalledTimes(1);
+    expect(room.consumers.size).toBe(0);
+  });
+});
+
 describe('MediasoupCallMediaEngine fixed-port WebRtcServer', () => {
   it('uses the worker WebRtcServer instead of allocating a per-transport port', async () => {
     const transport = {

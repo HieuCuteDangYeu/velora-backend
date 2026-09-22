@@ -31,6 +31,11 @@ export interface ClosedMediaProducerResult {
   kind?: 'audio' | 'video';
 }
 
+export interface ClosedMediaConsumerResult {
+  /** Whether this call removed a consumer that was still active. */
+  closed: boolean;
+}
+
 export interface ActiveProducerResult {
   producerId: string;
   userId: string;
@@ -105,6 +110,11 @@ export abstract class ICallMediaEngine {
     userId: string,
     consumerId: string,
   ): Promise<void>;
+  abstract closeConsumer(
+    callId: string,
+    userId: string,
+    consumerId: string,
+  ): Promise<ClosedMediaConsumerResult>;
   abstract listActiveProducers(
     callId: string,
     excludingUserId?: string,

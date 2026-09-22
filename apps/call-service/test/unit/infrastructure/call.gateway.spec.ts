@@ -816,6 +816,61 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('acknowledges consumer cleanup idempotently without notifying the peer', async () => {
+    const mediaEngine = {
+      closeConsumer: jest
+        .fn()
+        .mockResolvedValueOnce({ closed: true })
+        .mockResolvedValueOnce({ closed: false }),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(activeSession),
+    };
+    const client = createSocket({
+      id: 'socket-consumer-close',
+      userId: 'user-b',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ mediaEngine, sessionRepository });
+
+    await gateway.handleCloseConsumer(
+      {
+        callId: 'call-1',
+        consumerId: 'consumer-1',
+        requestId: 'close-consumer-1',
+      },
+      client,
+    );
+    await gateway.handleCloseConsumer(
+      {
+        callId: 'call-1',
+        consumerId: 'consumer-1',
+        requestId: 'close-consumer-1',
+      },
+      client,
+    );
+
+    expect(mediaEngine.closeConsumer).toHaveBeenCalledTimes(2);
+    expect(mediaEngine.closeConsumer).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'consumer-1',
+    );
+    expect(client.emit).toHaveBeenNthCalledWith(1, 'consumer_closed_ack', {
+      callId: 'call-1',
+      consumerId: 'consumer-1',
+      status: 'closed',
+      requestId: 'close-consumer-1',
+    });
+    expect(client.emit).toHaveBeenNthCalledWith(2, 'consumer_closed_ack', {
+      callId: 'call-1',
+      consumerId: 'consumer-1',
+      status: 'already_closed',
+      requestId: 'close-consumer-1',
+    });
+  });
+
   it('replays the authoritative camera state when a produce retry reuses a producer', async () => {
     const videoSession = new CallSession({
       ...activeSession,

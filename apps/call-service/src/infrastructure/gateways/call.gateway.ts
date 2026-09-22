@@ -130,6 +130,19 @@ type ResumeConsumerPayload = {
   consumerId: string;
 };
 
+type CloseConsumerPayload = {
+  callId: string;
+  consumerId: string;
+  requestId?: string;
+};
+
+type ConsumerClosedAckPayload = {
+  callId: string;
+  consumerId: string;
+  status: 'closed' | 'already_closed';
+  requestId?: string;
+};
+
 type RestartIcePayload = {
   callId: string;
   transportId: string;
@@ -898,6 +911,42 @@ export class CallGateway
       callId: payload.callId,
       consumerId: payload.consumerId,
     });
+  }
+
+  @SubscribeMessage('close_consumer')
+  async handleCloseConsumer(
+    @MessageBody() payload: CloseConsumerPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    if (!session) {
+      throw new NotFoundException('Call not found');
+    }
+    if (session.initiatorId !== userId && session.targetUserId !== userId) {
+      throw new ForbiddenException('You are not part of this call');
+    }
+
+    // Cleanup may race terminal call teardown. The idempotent ACK lets a
+    // client release local resources without turning a normal race into an
+    // exception after the room has already gone away.
+    const result =
+      session.status === 'active'
+        ? await this.mediaEngine.closeConsumer(
+            payload.callId,
+            userId,
+            payload.consumerId,
+          )
+        : { closed: false };
+
+    client.emit('consumer_closed_ack', {
+      callId: payload.callId,
+      consumerId: payload.consumerId,
+      status: result.closed ? 'closed' : 'already_closed',
+      ...(payload.requestId ? { requestId: payload.requestId } : {}),
+    } satisfies ConsumerClosedAckPayload);
   }
 
   @SubscribeMessage('restart_ice')

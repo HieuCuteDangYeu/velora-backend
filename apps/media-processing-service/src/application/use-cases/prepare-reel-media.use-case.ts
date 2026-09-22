@@ -19,6 +19,7 @@ import type {
   VideoMetadata,
 } from '../../domain/interfaces/video-processing.service.interface';
 import * as path from 'node:path';
+import type { ITikTokCdnService } from '../../domain/interfaces/tiktok-cdn.service.interface';
 import { formatProcessingError } from '../utils/format-processing-error';
 import { BuildTranscriptionAudioManifestUseCase } from './build-transcription-audio-manifest.use-case';
 import {
@@ -95,6 +96,8 @@ export class PrepareReelMediaUseCase {
     private readonly selectReelEncodingProfileUseCase: SelectReelEncodingProfileUseCase,
     private readonly classifyReelMediaUseCase: ClassifyReelMediaUseCase,
     private readonly buildTranscriptionAudioManifestUseCase: BuildTranscriptionAudioManifestUseCase,
+    @Inject('ITikTokCdnService')
+    private readonly tiktokCdnService: ITikTokCdnService,
   ) {}
 
   async execute(data: {
@@ -298,14 +301,49 @@ export class PrepareReelMediaUseCase {
         data.metricsContext,
         'HLS_UPLOAD',
       );
-      await this.mediaStorageService.uploadHlsDirectory(
-        data.hlsOutputDir,
-        storagePrefix,
-      );
-      uploadTimer.succeed({
-        hlsObjectCount: hlsStats.fileCount,
-        hlsTotalBytes: hlsStats.totalBytes,
-      });
+
+      const isTikTokCdnEnabled =
+        this.configService.get<string>('TIKTOK_CDN_ENABLED') !== 'false' &&
+        this.tiktokCdnService.validateConfig();
+
+      if (isTikTokCdnEnabled) {
+        try {
+          const cdnResult = await this.tiktokCdnService.uploadHlsDirectory(
+            data.hlsOutputDir,
+          );
+          await this.mediaStorageService.uploadHlsDirectory(
+            data.hlsOutputDir,
+            storagePrefix,
+          );
+          uploadTimer.succeed({
+            hlsObjectCount: cdnResult.segmentCount,
+            hlsTotalBytes: hlsStats.totalBytes,
+            tiktokCdn: true,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            `TikTok CDN upload failed for reel ${data.reelId}, falling back to R2: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          await this.mediaStorageService.uploadHlsDirectory(
+            data.hlsOutputDir,
+            storagePrefix,
+          );
+          uploadTimer.succeed({
+            hlsObjectCount: hlsStats.fileCount,
+            hlsTotalBytes: hlsStats.totalBytes,
+            tiktokCdnFallback: true,
+          });
+        }
+      } else {
+        await this.mediaStorageService.uploadHlsDirectory(
+          data.hlsOutputDir,
+          storagePrefix,
+        );
+        uploadTimer.succeed({
+          hlsObjectCount: hlsStats.fileCount,
+          hlsTotalBytes: hlsStats.totalBytes,
+        });
+      }
 
       currentProgress = 72;
       currentStage = 'GENERATING_THUMBNAIL';

@@ -122,6 +122,12 @@ export function buildHlsTranscodeArguments(input: {
   }
 
   args.push(
+    '-map_metadata',
+    '-1',
+    '-metadata',
+    'service_provider=velora',
+    '-metadata',
+    'service_name=velora',
     '-start_number',
     '0',
     '-hls_time',

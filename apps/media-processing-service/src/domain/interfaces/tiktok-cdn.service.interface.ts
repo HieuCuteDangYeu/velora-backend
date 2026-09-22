@@ -14,34 +14,22 @@ export interface TikTokCdnProcessOptions {
 }
 
 export interface ITikTokCdnService {
-  /**
-   * Slices video into HLS .ts segments and uploads them to TikTok CDN masked with 67-byte PNG headers.
-   * Returns rewritten M3U8 playlist with #EXT-X-BYTERANGE:<size>@67 and TikTok CDN URLs.
-   */
+  // Slices video to HLS and uploads segments to TikTok CDN.
   processAndUploadVideoHls(
     inputPath: string,
     outputDir: string,
     options?: TikTokCdnProcessOptions,
   ): Promise<TikTokCdnUploadResult>;
 
-  /**
-   * Upload an existing directory of HLS segments (.ts) and index.m3u8 to TikTok CDN.
-   * Returns rewritten M3U8 playlist with #EXT-X-BYTERANGE:<size>@67 and TikTok CDN URLs.
-   */
-  uploadHlsDirectory(
-    hlsDir: string,
-  ): Promise<TikTokCdnUploadResult>;
+  // Uploads existing HLS directory segments to TikTok CDN and returns rewritten M3U8.
+  uploadHlsDirectory(hlsDir: string): Promise<TikTokCdnUploadResult>;
 
-  /**
-   * Upload an image directly to TikTok CDN without masking.
-   */
+  // Uploads image directly to TikTok CDN.
   uploadImage(
     imagePath: string,
     contentType?: string,
   ): Promise<TikTokCdnImageResult>;
 
-  /**
-   * Validate that TikTok CDN credentials are configured.
-   */
+  // Validates required TikTok CDN credentials.
   validateConfig(): boolean;
 }

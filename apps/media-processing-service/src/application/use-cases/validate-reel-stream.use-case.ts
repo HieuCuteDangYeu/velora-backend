@@ -111,9 +111,22 @@ export class ValidateReelStreamUseCase {
 
       const firstSegment = segmentReferences[0];
 
-      const firstSegmentExists = await this.mediaStorageService.objectExists(
-        firstSegment.key,
-      );
+      let firstSegmentExists = false;
+      if (/^https?:\/\//i.test(firstSegment.line)) {
+        try {
+          const res = await fetch(firstSegment.line, {
+            method: 'GET',
+            headers: { Range: 'bytes=0-0' },
+          });
+          firstSegmentExists = res.ok || res.status === 206;
+        } catch {
+          firstSegmentExists = false;
+        }
+      } else {
+        firstSegmentExists = await this.mediaStorageService.objectExists(
+          firstSegment.key,
+        );
+      }
 
       if (!firstSegmentExists) {
         this.logger.warn(

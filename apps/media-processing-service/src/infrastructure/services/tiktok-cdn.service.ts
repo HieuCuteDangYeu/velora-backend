@@ -10,10 +10,7 @@ import {
   TikTokCdnUploadResult,
 } from '../../domain/interfaces/tiktok-cdn.service.interface';
 
-/**
- * The complete, mathematically perfect 1x1 RGBA PNG (67 bytes).
- * Used as a prefix mask so the TikTok Ads CDN sees a valid PNG image header.
- */
+// 1x1 PNG header (67 bytes) used as image prefix mask.
 const PNG_HEX =
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082';
 const PNG_MASK = Buffer.from(PNG_HEX, 'hex');
@@ -23,6 +20,19 @@ interface SegmentUploadResult {
   filename: string;
   remoteUrl: string;
   originalSize: number;
+}
+
+interface TikTokUploadApiResponse {
+  code?: number;
+  msg?: string;
+  data?: {
+    url?: string;
+    image_info?: {
+      size?: number;
+      width?: number;
+      height?: number;
+    };
+  };
 }
 
 @Injectable()
@@ -57,8 +67,7 @@ export class TikTokCdnService implements ITikTokCdnService {
         this.configService.get<string>('HLS_SEGMENT_DURATION') ||
         '5',
     );
-    this.ffmpegPath =
-      this.configService.get<string>('FFMPEG_PATH') || 'ffmpeg';
+    this.ffmpegPath = this.configService.get<string>('FFMPEG_PATH') || 'ffmpeg';
   }
 
   validateConfig(): boolean {
@@ -67,101 +76,88 @@ export class TikTokCdnService implements ITikTokCdnService {
     );
   }
 
-  /**
-   * Slices video into HLS .ts segments and uploads them to TikTok CDN masked as PNG.
-   * Returns rewritten M3U8 playlist with #EXT-X-BYTERANGE:<size>@67 and TikTok CDN URLs.
-   */
+  // Slices video into HLS .ts segments and uploads them to TikTok CDN masked as PNG.
   async processAndUploadVideoHls(
     inputPath: string,
     outputDir: string,
     options: TikTokCdnProcessOptions = {},
   ): Promise<TikTokCdnUploadResult> {
     if (!this.validateConfig()) {
-      throw new Error(
-        'TikTok CDN credentials are not properly configured. Check TIKTOK_CDN_UPLOAD_ENDPOINT, TIKTOK_CDN_CSRF_TOKEN, TIKTOK_CDN_UUID, and TIKTOK_CDN_COOKIE.',
-      );
+      throw new Error('TikTok CDN credentials are not properly configured.');
     }
 
     fs.mkdirSync(outputDir, { recursive: true });
-
     const segmentDuration =
       options.segmentDuration ?? this.defaultSegmentDuration;
-    this.logger.log(
-      `Slicing video ${inputPath} to HLS (segmentDuration: ${segmentDuration}s, crop: ${options.cropFilter || 'none'})`,
+    await this.sliceVideoToHls(
+      inputPath,
+      outputDir,
+      segmentDuration,
+      options.cropFilter,
     );
-
-    await this.sliceVideoToHls(inputPath, outputDir, segmentDuration, options.cropFilter);
-
     return await this.uploadHlsDirectory(outputDir);
   }
 
-  /**
-   * Upload an existing directory of HLS segments (.ts) and index.m3u8 to TikTok CDN.
-   * Returns rewritten M3U8 playlist with #EXT-X-BYTERANGE:<size>@67 and TikTok CDN URLs.
-   */
+  // Uploads HLS segments to TikTok CDN and rewrites playlist files on disk.
   async uploadHlsDirectory(hlsDir: string): Promise<TikTokCdnUploadResult> {
     if (!this.validateConfig()) {
       throw new Error('TikTok CDN credentials are not configured.');
     }
 
-    const files = fs.readdirSync(hlsDir);
-    const tsFiles = files
-      .filter((file) => file.endsWith('.ts'))
-      .sort((a, b) => {
-        // Natural numeric sort: index0.ts, index1.ts, index2.ts, ...
-        const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
-        const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
-        return numA - numB;
-      });
-
+    const tsFiles = this.findFilesRecursively(hlsDir, '.ts');
     if (tsFiles.length === 0) {
       throw new Error(`No .ts segments found in directory: ${hlsDir}`);
     }
 
-    this.logger.log(`Found ${tsFiles.length} HLS segments to upload to TikTok CDN`);
-
-    // Upload segments with controlled concurrency (3 parallel uploads)
     const uploadResults: SegmentUploadResult[] = [];
     const concurrency = 3;
 
     for (let i = 0; i < tsFiles.length; i += concurrency) {
       const batch = tsFiles.slice(i, i + concurrency);
       const batchResults = await Promise.all(
-        batch.map(async (filename) => {
-          const filePath = path.join(hlsDir, filename);
+        batch.map(async (filePath) => {
+          const filename = path.basename(filePath);
           return await this.uploadSegment(filePath, filename);
         }),
       );
       uploadResults.push(...batchResults);
     }
 
-    // Locate playlist file
-    const playlistFile = files.find(
-      (f) => f === 'index.m3u8' || f === 'master.m3u8' || f.endsWith('.m3u8'),
-    );
-    if (!playlistFile) {
+    const m3u8Files = this.findFilesRecursively(hlsDir, '.m3u8');
+    if (m3u8Files.length === 0) {
       throw new Error(`No .m3u8 playlist found in directory: ${hlsDir}`);
     }
 
-    const playlistPath = path.join(hlsDir, playlistFile);
-    const rewrittenM3u8 = this.rewritePlaylist(playlistPath, uploadResults);
+    for (const m3u8Path of m3u8Files) {
+      this.rewritePlaylistOnDisk(m3u8Path, uploadResults);
+    }
 
+    for (const tsFile of tsFiles) {
+      try {
+        fs.unlinkSync(tsFile);
+      } catch (err) {
+        this.logger.warn(
+          `Failed to unlink uploaded segment ${tsFile}: ${String(err)}`,
+        );
+      }
+    }
+
+    const masterFile =
+      m3u8Files.find((f) => path.basename(f) === 'master.m3u8') ||
+      m3u8Files.find((f) => path.basename(f) === 'index.m3u8') ||
+      m3u8Files[0];
+
+    const masterContent = fs.readFileSync(masterFile, 'utf8');
     const segmentUrls = uploadResults.map((r) => r.remoteUrl);
 
-    this.logger.log(
-      `Successfully processed and uploaded ${uploadResults.length} segments to TikTok CDN`,
-    );
-
     return {
-      playlistContent: rewrittenM3u8,
+      playlistContent: masterContent,
       segmentCount: uploadResults.length,
       segmentUrls,
     };
   }
 
-  /**
-   * Upload an image directly to TikTok CDN without masking.
-   */
+  // Uploads image directly to TikTok CDN without masking.
   async uploadImage(
     imagePath: string,
     contentType?: string,
@@ -174,9 +170,6 @@ export class TikTokCdnService implements ITikTokCdnService {
     const detectedType =
       contentType || this.detectMimeType(filename) || 'image/jpeg';
     const data = fs.readFileSync(imagePath);
-
-    this.logger.log(`Uploading image ${filename} (${data.length} bytes) to TikTok CDN`);
-
     const remoteUrl = await this.sendMultipartUpload(
       filename,
       data,
@@ -186,9 +179,23 @@ export class TikTokCdnService implements ITikTokCdnService {
     return { cdnUrl: remoteUrl };
   }
 
-  /**
-   * Slice video into MPEG-TS segments using FFmpeg.
-   */
+  // Recursively finds all files matching a specific extension.
+  private findFilesRecursively(dir: string, ext: string): string[] {
+    const results: string[] = [];
+    if (!fs.existsSync(dir)) return results;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...this.findFilesRecursively(fullPath, ext));
+      } else if (entry.name.endsWith(ext)) {
+        results.push(fullPath);
+      }
+    }
+    return results;
+  }
+
+  // Slices video to HLS with FFmpeg.
   private async sliceVideoToHls(
     inputPath: string,
     outputDir: string,
@@ -196,11 +203,9 @@ export class TikTokCdnService implements ITikTokCdnService {
     cropFilter?: string,
   ): Promise<void> {
     const m3u8Path = path.join(outputDir, 'index.m3u8');
-
     const args: string[] = ['-y', '-i', inputPath];
 
     if (cropFilter) {
-      // Re-encode video with crop filter
       args.push(
         '-vf',
         cropFilter,
@@ -214,11 +219,9 @@ export class TikTokCdnService implements ITikTokCdnService {
         'copy',
       );
     } else {
-      // Fast stream copy (no re-encoding)
       args.push('-codec:', 'copy');
     }
 
-    // Strip metadata, set HLS parameters
     args.push(
       '-map_metadata',
       '-1',
@@ -240,9 +243,7 @@ export class TikTokCdnService implements ITikTokCdnService {
     await this.runProcess(this.ffmpegPath, args);
   }
 
-  /**
-   * Upload a single TS segment prepended with the 67-byte PNG mask.
-   */
+  // Uploads TS segment prepended with 67-byte PNG mask.
   private async uploadSegment(
     filePath: string,
     filename: string,
@@ -257,8 +258,6 @@ export class TikTokCdnService implements ITikTokCdnService {
       }
     }
     const originalSize = tsData.length;
-
-    // Prepend the 67-byte PNG mask to the TS data
     const spoofed = Buffer.concat([PNG_MASK, tsData]);
     const uploadFilename = filename.replace(/\.ts$/, '.png');
 
@@ -268,10 +267,6 @@ export class TikTokCdnService implements ITikTokCdnService {
       'image/png',
     );
 
-    this.logger.log(
-      `Uploaded segment ${filename} (${originalSize} bytes + ${PNG_MASK_SIZE} mask) -> ${remoteUrl.substring(0, 80)}...`,
-    );
-
     return {
       filename,
       remoteUrl,
@@ -279,31 +274,25 @@ export class TikTokCdnService implements ITikTokCdnService {
     };
   }
 
-  /**
-   * Rewrite M3U8 playlist with #EXT-X-BYTERANGE:<size>@67 directives pointing to remote CDN URLs.
-   */
-  private rewritePlaylist(
+  // Rewrites playlist on disk with #EXT-X-BYTERANGE directives pointing to CDN URLs.
+  private rewritePlaylistOnDisk(
     playlistPath: string,
     results: SegmentUploadResult[],
-  ): string {
+  ): void {
     let m3u8 = fs.readFileSync(playlistPath, 'utf8');
 
     for (const result of results) {
-      // Replace local filename with BYTERANGE tag + remote URL
-      // BYTERANGE: <size>@<offset> -> size = original TS bytes, offset = 67 (skip PNG header)
-      const byterangeBlock = `#EXT-X-BYTERANGE:${result.originalSize}@${PNG_MASK_SIZE}\n${result.remoteUrl}`;
-      m3u8 = m3u8.replace(result.filename, byterangeBlock);
+      if (m3u8.includes(result.filename)) {
+        const byterangeBlock = `#EXT-X-BYTERANGE:${result.originalSize}@${PNG_MASK_SIZE}\n${result.remoteUrl}`;
+        m3u8 = m3u8.replace(result.filename, byterangeBlock);
+      }
     }
 
-    // Upgrade HLS version to 4 for BYTERANGE support if version is 3
     m3u8 = m3u8.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:4');
-
-    return m3u8;
+    fs.writeFileSync(playlistPath, m3u8, 'utf8');
   }
 
-  /**
-   * Sends multipart POST request directly to TikTok Ads Material Image Upload API.
-   */
+  // Sends multipart upload directly to TikTok Ads API.
   private async sendMultipartUpload(
     filename: string,
     fileBuffer: Buffer,
@@ -326,16 +315,13 @@ export class TikTokCdnService implements ITikTokCdnService {
     });
 
     const bodyText = await response.text();
-
     if (!response.ok) {
-      throw new Error(
-        `TikTok CDN HTTP ${response.status}: ${bodyText}`,
-      );
+      throw new Error(`TikTok CDN HTTP ${response.status}: ${bodyText}`);
     }
 
-    let parsed: any;
+    let parsed: TikTokUploadApiResponse;
     try {
-      parsed = JSON.parse(bodyText);
+      parsed = JSON.parse(bodyText) as TikTokUploadApiResponse;
     } catch {
       throw new Error(`Failed to parse TikTok CDN response: ${bodyText}`);
     }
@@ -344,9 +330,7 @@ export class TikTokCdnService implements ITikTokCdnService {
       return parsed.data.url;
     }
 
-    throw new Error(
-      `TikTok CDN rejected upload for ${filename}: ${bodyText}`,
-    );
+    throw new Error(`TikTok CDN rejected upload for ${filename}: ${bodyText}`);
   }
 
   private detectMimeType(filename: string): string {
@@ -368,10 +352,12 @@ export class TikTokCdnService implements ITikTokCdnService {
 
   private async runProcess(executable: string, args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(executable, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
 
       let stderr = '';
-      child.stderr.on('data', (chunk) => {
+      child.stderr.on('data', (chunk: Buffer) => {
         stderr += chunk.toString();
       });
 
@@ -380,9 +366,7 @@ export class TikTokCdnService implements ITikTokCdnService {
           resolve();
         } else {
           reject(
-            new Error(
-              `FFmpeg exited with code ${code}: ${stderr.slice(-500)}`,
-            ),
+            new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-500)}`),
           );
         }
       });

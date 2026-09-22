@@ -43,6 +43,9 @@ type CallStateLookupResponse =
         status: string;
         initiatorDisplayName: string;
         initiatorAvatarUrl?: string;
+        isGroupCall?: boolean;
+        groupName?: string;
+        groupAvatarUrl?: string;
         ringTimeoutMs: number;
         expiresAt: string;
       };

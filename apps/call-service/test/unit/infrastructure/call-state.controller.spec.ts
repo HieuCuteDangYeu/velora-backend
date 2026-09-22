@@ -58,6 +58,31 @@ describe('CallStateController', () => {
     });
   });
 
+  it('keeps an invited group member ringing until they join the active room', async () => {
+    const groupSession = new CallSession({
+      ...session,
+      status: 'active',
+      isGroupCall: true,
+      groupName: 'Core team',
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      participantIds: ['user-a'],
+    });
+    const { controller } = createController(groupSession);
+
+    await expect(
+      controller.getCallState({ callId: 'call-1', userId: 'user-c' }),
+    ).resolves.toEqual({
+      found: true,
+      authorized: true,
+      call: expect.objectContaining({
+        status: 'ringing',
+        recipientUserId: 'user-c',
+        isGroupCall: true,
+        groupName: 'Core team',
+      }),
+    });
+  });
+
   it('rejects users outside the call', async () => {
     const { controller } = createController(session);
 

@@ -19,6 +19,10 @@ export class CallSession {
   conversationId!: string;
   initiatorId!: string;
   targetUserId!: string;
+  isGroupCall?: boolean;
+  invitedUserIds!: string[];
+  groupName?: string;
+  groupAvatarUrl?: string;
   initiatorDisplayName?: string;
   initiatorAvatarUrl?: string;
   ringTimeoutMs?: number;
@@ -61,6 +65,13 @@ export class CallSession {
     this.endedAt = this.toDate(partial.endedAt);
     this.expiresAt = this.toDate(partial.expiresAt);
     this.participantIds = partial.participantIds ?? [];
+    this.invitedUserIds = partial.invitedUserIds ?? [
+      ...new Set(
+        [partial.initiatorId, partial.targetUserId].filter(
+          (userId): userId is string => Boolean(userId),
+        ),
+      ),
+    ];
     this.lifecycleRevision = partial.lifecycleRevision ?? 0;
   }
 

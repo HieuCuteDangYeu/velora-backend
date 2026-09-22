@@ -8,6 +8,7 @@ import * as mediasoup from 'mediasoup';
 import type {
   ActiveProducerResult,
   ClosedMediaConsumerResult,
+  ClosedParticipantMediaResult,
   ConsumedMediaResult,
   CreateRecvTransportResult,
   CreateSendTransportResult,
@@ -854,6 +855,28 @@ export class MediasoupCallMediaEngine
     }
     await this.stateRepository.removeProducerState(callId, userId, producerId);
     return { closed: true, kind: meta.kind };
+  }
+
+  async closeParticipant(
+    callId: string,
+    userId: string,
+  ): Promise<ClosedParticipantMediaResult> {
+    const room = this.getRoomOrThrow(callId);
+    const producers = [...room.producerMeta.entries()]
+      .filter(([, meta]) => meta.userId === userId)
+      .map(([producerId, meta]) => ({ producerId, kind: meta.kind }));
+
+    for (const producer of producers) {
+      await this.closeProducer(callId, userId, producer.producerId);
+    }
+    for (const [transportId, meta] of [...room.transportMeta.entries()]) {
+      if (meta.userId === userId) room.transports.get(transportId)?.close();
+    }
+    for (const [consumerId, meta] of [...room.consumerMeta.entries()]) {
+      if (meta.userId === userId) room.consumers.get(consumerId)?.close();
+    }
+
+    return { producers };
   }
 
   closeRoom(callId: string): Promise<void> {

@@ -54,20 +54,37 @@ if session.expiresAt and session.expiresAt <= now and (session.status == 'initia
   end
   return {'expired', encoded, '0'}
 end
-if userId ~= session.initiatorId and userId ~= session.targetUserId then
+local isInvited = userId == session.initiatorId or userId == session.targetUserId
+for _, invitedUserId in ipairs(session.invitedUserIds or {}) do
+  if invitedUserId == userId then
+    isInvited = true
+    break
+  end
+end
+if not isInvited then
   return {'forbidden', raw, '0'}
 end
 if session.status == 'ended' or session.status == 'cancelled' or session.status == 'rejected' then
   return {'terminal', raw, '0'}
 end
-
-local joinedNow = true
+local isAlreadyParticipant = false
 for _, participantId in ipairs(session.participantIds or {}) do
   if participantId == userId then
-    joinedNow = false
+    isAlreadyParticipant = true
     break
   end
 end
+if session.isGroupCall and not isAlreadyParticipant and session.expiresAt and session.expiresAt <= now then
+  return {'invitation_expired', raw, '0'}
+end
+if session.isGroupCall then
+  local activeCallId = redis.call('HGET', KEYS[5], userId)
+  if activeCallId and activeCallId ~= session.callId then
+    return {'busy', raw, '0'}
+  end
+end
+
+local joinedNow = not isAlreadyParticipant
 if joinedNow then
   table.insert(session.participantIds, userId)
 end
@@ -81,6 +98,9 @@ local ttl = redis.call('TTL', KEYS[1])
 if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
 local encoded = cjson.encode(session)
 redis.call('SET', KEYS[1], encoded, 'EX', ttl)
+if session.isGroupCall then
+  redis.call('HSET', KEYS[5], userId, session.callId)
+end
 return {'joined', encoded, joinedNow and '1' or '0'}
 `;
 
@@ -418,6 +438,23 @@ else
   if isTerminal then
     return {'already_terminal', raw, session.terminalReason or '', '0'}
   end
+  if session.isGroupCall and userId ~= session.initiatorId then
+    local remaining = {}
+    for _, participantId in ipairs(session.participantIds or {}) do
+      if participantId ~= userId then table.insert(remaining, participantId) end
+    end
+    session.participantIds = remaining
+    session.updatedAt = now
+    session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
+    local ttl = redis.call('TTL', KEYS[1])
+    if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
+    local encoded = cjson.encode(session)
+    redis.call('SET', KEYS[1], encoded, 'EX', ttl)
+    if redis.call('HGET', KEYS[5], userId) == session.callId then
+      redis.call('HDEL', KEYS[5], userId)
+    end
+    return {'participant_left', encoded, requestedReason ~= '' and requestedReason or 'left', '1'}
+  end
   local reason = requestedReason
   if reason == '' then
     if session.status == 'active' then
@@ -446,11 +483,10 @@ redis.call('ZREM', KEYS[2], session.callId)
 redis.call('ZREM', KEYS[3], session.callId)
 redis.call('ZREM', KEYS[4], session.callId)
 redis.call('ZADD', KEYS[6], nowMs, session.callId)
-if redis.call('HGET', KEYS[5], session.initiatorId) == session.callId then
-  redis.call('HDEL', KEYS[5], session.initiatorId)
-end
-if redis.call('HGET', KEYS[5], session.targetUserId) == session.callId then
-  redis.call('HDEL', KEYS[5], session.targetUserId)
+for _, participantId in ipairs(session.participantIds or {}) do
+  if redis.call('HGET', KEYS[5], participantId) == session.callId then
+    redis.call('HDEL', KEYS[5], participantId)
+  end
 end
 return {'transitioned', encoded, session.terminalReason or '', wasActive and '1' or '0'}
 `;
@@ -627,16 +663,13 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
         (session.answeredAt ?? session.updatedAt).getTime(),
         session.callId,
       );
-      transaction.hset(
-        ACTIVE_CALLS_BY_USER_KEY,
-        session.initiatorId,
-        session.callId,
-      );
-      transaction.hset(
-        ACTIVE_CALLS_BY_USER_KEY,
-        session.targetUserId,
-        session.callId,
-      );
+      for (const participantId of new Set(session.participantIds)) {
+        transaction.hset(
+          ACTIVE_CALLS_BY_USER_KEY,
+          participantId,
+          session.callId,
+        );
+      }
     } else {
       transaction.zrem(ACTIVE_CALLS_KEY, session.callId);
     }
@@ -967,13 +1000,17 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   }
 
   private async clearActiveUserIndex(session: CallSession): Promise<void> {
-    await this.redis.eval(
-      CLEAR_ACTIVE_CALL_USER_INDEX_SCRIPT,
-      1,
-      ACTIVE_CALLS_BY_USER_KEY,
-      session.callId,
-      session.initiatorId,
-      session.targetUserId,
+    await Promise.all(
+      [...new Set(session.participantIds)].map((userId) =>
+        this.redis.eval(
+          CLEAR_ACTIVE_CALL_USER_INDEX_SCRIPT,
+          1,
+          ACTIVE_CALLS_BY_USER_KEY,
+          session.callId,
+          userId,
+          userId,
+        ),
+      ),
     );
   }
 }

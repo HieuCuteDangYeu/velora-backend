@@ -40,6 +40,10 @@ export class ChangeCallTypeUseCase {
       );
     }
 
+    if (session.isGroupCall && callType === 'VIDEO') {
+      throw new ForbiddenException('Group calls currently support voice only');
+    }
+
     const allowedUsers = new Set([session.initiatorId, session.targetUserId]);
     if (!allowedUsers.has(userId)) {
       throw new ForbiddenException('You are not part of this call');

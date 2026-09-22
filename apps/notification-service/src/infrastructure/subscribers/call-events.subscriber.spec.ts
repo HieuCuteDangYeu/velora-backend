@@ -100,6 +100,23 @@ describe('CallEventsSubscriber', () => {
     expect(ack).toHaveBeenCalledTimes(2);
   });
 
+  it('fans group terminal state out to the authoritative invite roster', async () => {
+    const invitedUserIds = [
+      payload.initiatorId,
+      payload.targetUserId,
+      '33333333-3333-4333-8333-333333333333',
+    ];
+
+    await subscriber.handleCallEnded(
+      { ...payload, invitedUserIds, reason: 'ended' },
+      context(),
+    );
+
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ recipientUserIds: invitedUserIds }),
+    );
+  });
+
   it('requeues a valid event when its durable notification handoff fails', async () => {
     sendCallStateUpdate.execute.mockRejectedValueOnce(
       new Error('database unavailable'),

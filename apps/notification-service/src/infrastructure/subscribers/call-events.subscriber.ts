@@ -12,6 +12,7 @@ const callLifecyclePayloadSchema = z.object({
   initiatorId: z.string().min(1),
   targetUserId: z.string().min(1),
   recipientUserId: z.string().min(1),
+  invitedUserIds: z.array(z.string().min(1)).optional(),
   userId: z.string().min(1),
   callType: z.enum(['VOICE', 'VIDEO']),
   initiatorDisplayName: z.string().min(1),
@@ -101,7 +102,10 @@ export class CallEventsSubscriber {
         });
       } else {
         await this.sendCallStateUpdate.execute({
-          recipientUserIds: [parsed.data.initiatorId, parsed.data.targetUserId],
+          recipientUserIds: parsed.data.invitedUserIds ?? [
+            parsed.data.initiatorId,
+            parsed.data.targetUserId,
+          ],
           ...(event === 'call.answered'
             ? { iosRecipientUserIds: [parsed.data.targetUserId] }
             : {}),

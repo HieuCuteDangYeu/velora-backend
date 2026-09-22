@@ -36,6 +36,10 @@ export interface ClosedMediaConsumerResult {
   closed: boolean;
 }
 
+export interface ClosedParticipantMediaResult {
+  producers: Array<{ producerId: string; kind: 'audio' | 'video' }>;
+}
+
 export interface ActiveProducerResult {
   producerId: string;
   userId: string;
@@ -134,5 +138,9 @@ export abstract class ICallMediaEngine {
     userId: string,
     producerId: string,
   ): Promise<ClosedMediaProducerResult>;
+  abstract closeParticipant(
+    callId: string,
+    userId: string,
+  ): Promise<ClosedParticipantMediaResult>;
   abstract closeRoom(callId: string): Promise<void>;
 }

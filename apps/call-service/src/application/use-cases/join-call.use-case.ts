@@ -71,6 +71,12 @@ export class JoinCallUseCase {
     if (transition.outcome === 'terminal') {
       throw new ForbiddenException('Call is no longer active');
     }
+    if (transition.outcome === 'busy') {
+      throw new ForbiddenException('You are already in another call');
+    }
+    if (transition.outcome === 'invitation_expired') {
+      throw new ForbiddenException('Group call invitation expired');
+    }
     if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('You are not part of this call');
     }

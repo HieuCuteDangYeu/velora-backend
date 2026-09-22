@@ -39,6 +39,7 @@ export class CallStateController {
     const authorized =
       payload.userId === session.initiatorId ||
       payload.userId === session.targetUserId ||
+      session.invitedUserIds.includes(payload.userId) ||
       session.participantIds.includes(payload.userId);
 
     if (!authorized) {
@@ -56,11 +57,18 @@ export class CallStateController {
         conversationId: session.conversationId,
         initiatorId: session.initiatorId,
         targetUserId: session.targetUserId,
-        recipientUserId: session.targetUserId,
+        recipientUserId: payload.userId,
         callType: session.callType,
-        status: session.status,
+        status:
+          session.isGroupCall &&
+          !session.participantIds.includes(payload.userId)
+            ? 'ringing'
+            : session.status,
         initiatorDisplayName: session.initiatorDisplayName ?? 'Incoming call',
         initiatorAvatarUrl: session.initiatorAvatarUrl,
+        isGroupCall: session.isGroupCall,
+        groupName: session.groupName,
+        groupAvatarUrl: session.groupAvatarUrl,
         ringTimeoutMs: getSessionRingTimeoutMs(session.ringTimeoutMs),
         expiresAt: getSessionExpiryDate(
           session.expiresAt,

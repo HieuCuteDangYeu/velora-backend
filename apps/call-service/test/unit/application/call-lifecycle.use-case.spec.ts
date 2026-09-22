@@ -113,6 +113,87 @@ describe('Call lifecycle use cases', () => {
     expect(result.role).toBe('host');
   });
 
+  it('starts one active voice room and invites every other group member', async () => {
+    const sessionRepository = {
+      save: jest.fn((session: CallSession) => Promise.resolve(session)),
+    };
+    const stateRepository = { upsertParticipant: jest.fn() };
+    const eventPublisher = { publish: jest.fn() };
+    const mediaEngine = {
+      createRoom: jest.fn(),
+      getRouterRtpCapabilities: jest
+        .fn()
+        .mockResolvedValue({ codecs: [], headerExtensions: [] }),
+    };
+    const conversationClient = {
+      send: jest.fn().mockReturnValue(
+        of({
+          id: 'group-1',
+          participantIds: ['user-a', 'user-b', 'user-c'],
+          participants: [{ id: 'user-a', name: 'Ada' }],
+          isGroup: true,
+          name: 'Core team',
+        }),
+      ),
+    };
+    const useCase = new InitiateCallUseCase(
+      sessionRepository as never,
+      stateRepository as never,
+      eventPublisher,
+      mediaEngine as never,
+      conversationClient as never,
+    );
+
+    const result = await useCase.execute(
+      'group-1',
+      'user-a',
+      undefined,
+      'VOICE',
+      'socket-a',
+    );
+
+    expect(result.session).toEqual(
+      expect.objectContaining({
+        isGroupCall: true,
+        groupName: 'Core team',
+        status: 'active',
+        participantIds: ['user-a'],
+        invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      }),
+    );
+    expect(eventPublisher.publish).toHaveBeenCalledTimes(2);
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'call.initiated',
+      expect.objectContaining({ recipientUserId: 'user-b' }),
+    );
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'call.initiated',
+      expect.objectContaining({ recipientUserId: 'user-c' }),
+    );
+  });
+
+  it('rejects group video until the voice MVP is expanded', async () => {
+    const useCase = new InitiateCallUseCase(
+      { save: jest.fn() } as never,
+      { upsertParticipant: jest.fn() } as never,
+      { publish: jest.fn() },
+      { createRoom: jest.fn() } as never,
+      {
+        send: jest.fn().mockReturnValue(
+          of({
+            id: 'group-1',
+            participantIds: ['user-a', 'user-b', 'user-c'],
+            isGroup: true,
+          }),
+        ),
+      } as never,
+    );
+
+    await expect(
+      useCase.execute('group-1', 'user-a', undefined, 'VIDEO', 'socket-a'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
   it('terminalizes an unpublished call without deleting its late-action tombstone', async () => {
     const sessionRepository = {
       save: jest.fn((session: CallSession) => Promise.resolve(session)),
@@ -427,6 +508,35 @@ describe('Call lifecycle use cases', () => {
       'user-b',
       expect.any(Date),
     );
+  });
+
+  it('rejects a stale group invitation without closing the active room', async () => {
+    const sessionRepository = {
+      joinParticipant: jest.fn().mockResolvedValue({
+        outcome: 'invitation_expired',
+        session: new CallSession({
+          ...baseSession,
+          status: 'active',
+          isGroupCall: true,
+          invitedUserIds: ['user-a', 'user-b', 'user-c'],
+        }),
+        joinedNow: false,
+      }),
+    };
+    const mediaEngine = {
+      closeRoom: jest.fn(),
+      getRouterRtpCapabilities: jest.fn(),
+    };
+    const useCase = new JoinCallUseCase(
+      sessionRepository as never,
+      { clearCallState: jest.fn() } as never,
+      mediaEngine as never,
+    );
+
+    await expect(
+      useCase.execute('call-1', 'user-c', 'socket-c'),
+    ).rejects.toThrow('Group call invitation expired');
+    expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
   });
 
   it('merges socket ids and clears reconnect state when an existing participant rejoins', async () => {
@@ -1095,6 +1205,58 @@ describe('Call lifecycle use cases', () => {
         expiresAt: '2026-01-01T00:00:30.000Z',
       }),
     );
+  });
+
+  it('lets a group guest leave without closing the shared room', async () => {
+    const groupSession = new CallSession({
+      ...baseSession,
+      callType: 'VOICE',
+      status: 'active',
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      participantIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const sessionRepository = {
+      transitionToTerminal: jest.fn().mockResolvedValue({
+        outcome: 'participant_left',
+        session: new CallSession({
+          ...groupSession,
+          participantIds: ['user-a', 'user-c'],
+        }),
+        reason: 'left',
+        wasActive: true,
+      }),
+    };
+    const stateRepository = {
+      removeParticipant: jest.fn(),
+      clearCallState: jest.fn(),
+    };
+    const eventPublisher = { publish: jest.fn() };
+    const mediaEngine = {
+      closeParticipant: jest.fn().mockResolvedValue({
+        producers: [{ producerId: 'audio-b', kind: 'audio' }],
+      }),
+      closeRoom: jest.fn(),
+    };
+    const useCase = new LeaveCallUseCase(
+      sessionRepository as never,
+      stateRepository as never,
+      eventPublisher,
+      mediaEngine as never,
+    );
+
+    const result = await useCase.execute('call-1', 'user-b');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        didTransition: false,
+        shouldEmitPeerLeft: true,
+        closedProducers: [{ producerId: 'audio-b', kind: 'audio' }],
+      }),
+    );
+    expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
+    expect(stateRepository.clearCallState).not.toHaveBeenCalled();
+    expect(eventPublisher.publish).not.toHaveBeenCalled();
   });
 
   it('returns expired sessions even if cleanup or lifecycle fan-out temporarily fails', async () => {

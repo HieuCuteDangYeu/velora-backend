@@ -1,7 +1,14 @@
 import { CallSession } from '../entities/call-session.entity';
 
 export type CallJoinTransition = {
-  outcome: 'joined' | 'terminal' | 'expired' | 'forbidden' | 'not_found';
+  outcome:
+    | 'joined'
+    | 'terminal'
+    | 'expired'
+    | 'invitation_expired'
+    | 'busy'
+    | 'forbidden'
+    | 'not_found';
   session: CallSession | null;
   joinedNow: boolean;
 };
@@ -38,6 +45,7 @@ export type CallTerminalTransition = {
     | 'transitioned'
     | 'already_terminal'
     | 'active'
+    | 'participant_left'
     | 'stale'
     | 'forbidden'
     | 'not_found';

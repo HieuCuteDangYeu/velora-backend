@@ -14,6 +14,7 @@ export function buildCallLifecycleMetadata(session: CallSession, now: Date) {
 
   return {
     recipientUserId: session.targetUserId,
+    invitedUserIds: session.invitedUserIds,
     initiatorDisplayName: session.initiatorDisplayName ?? 'Incoming call',
     initiatorAvatarUrl: session.initiatorAvatarUrl,
     ringTimeoutMs,

@@ -35,6 +35,8 @@ interface ConversationDetailResponse {
     avatar?: string;
   }>;
   isGroup?: boolean;
+  name?: string;
+  picture?: string;
 }
 
 export interface InitiateCallResult {
@@ -63,7 +65,7 @@ export class InitiateCallUseCase {
   async execute(
     conversationId: string,
     initiatorId: string,
-    targetUserId: string,
+    targetUserId: string | undefined,
     callType: CallType,
     socketId: string,
   ): Promise<InitiateCallResult> {
@@ -81,15 +83,21 @@ export class InitiateCallUseCase {
       );
     }
 
-    if (conversation.isGroup || participantIds.length !== 2) {
+    const isGroupCall = conversation.isGroup === true;
+    if (isGroupCall && callType !== 'VOICE') {
+      throw new BadRequestException('Group calls currently support voice only');
+    }
+
+    if (!isGroupCall && participantIds.length !== 2) {
       throw new BadRequestException(
-        'Call initiation is only supported for direct conversations',
+        'Direct calls require exactly two participants',
       );
     }
 
-    const resolvedTargetUserId = participantIds.find(
+    const invitedUserIds = participantIds.filter(
       (participantId) => participantId !== initiatorId,
     );
+    const resolvedTargetUserId = invitedUserIds[0];
 
     if (!resolvedTargetUserId) {
       throw new BadRequestException(
@@ -97,7 +105,7 @@ export class InitiateCallUseCase {
       );
     }
 
-    if (targetUserId !== resolvedTargetUserId) {
+    if (!isGroupCall && targetUserId !== resolvedTargetUserId) {
       throw new BadRequestException(
         'Target user does not match the direct conversation participant',
       );
@@ -125,13 +133,22 @@ export class InitiateCallUseCase {
         conversationId,
         initiatorId,
         targetUserId: resolvedTargetUserId,
+        isGroupCall,
+        invitedUserIds: participantIds,
+        groupName: isGroupCall
+          ? conversation.name?.trim() || 'Group call'
+          : undefined,
+        groupAvatarUrl: isGroupCall
+          ? conversation.picture?.trim() || undefined
+          : undefined,
         initiatorDisplayName,
         initiatorAvatarUrl: initiatorDisplay?.avatar?.trim() || undefined,
         ringTimeoutMs: this.ringTimeoutMs,
         expiresAt,
         callType,
-        status: 'initiated',
+        status: isGroupCall ? 'active' : 'initiated',
         participantIds: [initiatorId],
+        answeredAt: isGroupCall ? now : undefined,
         createdAt: now,
         updatedAt: now,
       });
@@ -150,20 +167,25 @@ export class InitiateCallUseCase {
       );
 
       initiationPublishAttempted = true;
-      await this.eventPublisher.publish('call.initiated', {
-        callId,
-        conversationId,
-        initiatorId,
-        targetUserId: resolvedTargetUserId,
-        recipientUserId: resolvedTargetUserId,
-        userId: initiatorId,
-        callType,
-        initiatorDisplayName,
-        initiatorAvatarUrl: session.initiatorAvatarUrl,
-        ringTimeoutMs: this.ringTimeoutMs,
-        expiresAt: expiresAt.toISOString(),
-        at: now.toISOString(),
-      });
+      await Promise.all(
+        invitedUserIds.map((recipientUserId) =>
+          this.eventPublisher.publish('call.initiated', {
+            callId,
+            conversationId,
+            initiatorId,
+            targetUserId: recipientUserId,
+            recipientUserId,
+            invitedUserIds: participantIds,
+            userId: initiatorId,
+            callType,
+            initiatorDisplayName,
+            initiatorAvatarUrl: initiatorDisplay?.avatar?.trim() || undefined,
+            ringTimeoutMs: this.ringTimeoutMs,
+            expiresAt: expiresAt.toISOString(),
+            at: now.toISOString(),
+          }),
+        ),
+      );
 
       return {
         role: 'host',

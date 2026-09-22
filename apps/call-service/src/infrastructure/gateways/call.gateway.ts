@@ -62,7 +62,7 @@ import {
 
 type InitiateCallPayload = {
   conversationId: string;
-  targetUserId: string;
+  targetUserId?: string;
   callType: 'VOICE' | 'VIDEO';
 };
 
@@ -515,21 +515,32 @@ export class CallGateway
       result.session.expiresAt,
       ringTimeoutMs,
     );
-    this.server.to(result.session.targetUserId).emit('incoming_call', {
-      callId: result.session.callId,
-      conversationId: result.session.conversationId,
-      initiatorId: result.session.initiatorId,
-      targetUserId: result.session.targetUserId,
-      recipientUserId: result.session.targetUserId,
-      initiatorDisplayName:
-        result.session.initiatorDisplayName ?? 'Incoming call',
-      initiatorAvatarUrl: result.session.initiatorAvatarUrl,
-      ringTimeoutMs,
-      expiresAt: expiresAt.toISOString(),
-      callType: result.session.callType,
-    });
+    const recipients = result.session.isGroupCall
+      ? result.session.invitedUserIds.filter(
+          (recipientUserId) => recipientUserId !== result.session.initiatorId,
+        )
+      : [result.session.targetUserId];
+    for (const recipientUserId of recipients) {
+      this.server.to(recipientUserId).emit('incoming_call', {
+        callId: result.session.callId,
+        conversationId: result.session.conversationId,
+        initiatorId: result.session.initiatorId,
+        targetUserId: recipientUserId,
+        recipientUserId,
+        initiatorDisplayName:
+          result.session.initiatorDisplayName ?? 'Incoming call',
+        initiatorAvatarUrl: result.session.initiatorAvatarUrl,
+        ringTimeoutMs,
+        expiresAt: expiresAt.toISOString(),
+        callType: result.session.callType,
+        isGroupCall: result.session.isGroupCall,
+        groupName: result.session.groupName,
+        groupAvatarUrl: result.session.groupAvatarUrl,
+      });
+    }
 
-    this.scheduleUnansweredCallTimeout(result.session);
+    if (!result.session.isGroupCall)
+      this.scheduleUnansweredCallTimeout(result.session);
   }
 
   @SubscribeMessage('join_call')
@@ -1327,6 +1338,62 @@ export class CallGateway
       throw new BadRequestException('A call action id is required');
     }
 
+    const existingSession = await this.sessionRepository.findByCallId(
+      payload.callId,
+    );
+    if (existingSession?.isGroupCall) {
+      let joined: Awaited<ReturnType<JoinCallUseCase['execute']>>;
+      try {
+        joined = await this.joinCallUseCase.execute(
+          payload.callId,
+          userId,
+          client.id,
+        );
+      } catch (error) {
+        client.emit('incoming_call_acceptance', {
+          callId: payload.callId,
+          outcome:
+            error instanceof ForbiddenException &&
+            /another call/i.test(error.message)
+              ? 'busy'
+              : error instanceof ForbiddenException &&
+                  /invitation expired/i.test(error.message)
+                ? 'expired'
+                : 'unauthorized',
+        } satisfies IncomingCallAcceptanceSocketPayload);
+        return;
+      }
+      if (!(await this.attachLiveSocketToCall(client, payload.callId, userId)))
+        return;
+      const activeProducers = this.decorateActiveProducers(
+        payload.callId,
+        await this.mediaEngine.listActiveProducers(payload.callId, userId),
+      );
+      client.emit('incoming_call_acceptance', {
+        callId: payload.callId,
+        outcome: 'accepted',
+        role: 'guest',
+        session: joined.session,
+        rtpCapabilities: joined.rtpCapabilities,
+        activeProducers,
+        telemetryToken: this.telemetryTokenService.issue(
+          payload.callId,
+          'guest',
+        ),
+      } satisfies IncomingCallAcceptanceSocketPayload);
+      if (joined.shouldEmitNewPeer) {
+        client
+          .to(payload.callId)
+          .emit('new_peer', { callId: payload.callId, userId });
+      }
+      this.server.to(userId).emit('call_answered', {
+        callId: payload.callId,
+        userId,
+        answerActionId: actionId,
+      });
+      return;
+    }
+
     const result = await this.acceptIncomingCallUseCase.execute(
       payload.callId,
       userId,
@@ -1417,6 +1484,14 @@ export class CallGateway
     this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
     if (result.shouldEmitPeerLeft) {
+      for (const producer of result.closedProducers ?? []) {
+        this.server.to(payload.callId).emit('producer_closed', {
+          callId: payload.callId,
+          producerId: producer.producerId,
+          kind: producer.kind,
+          userId,
+        });
+      }
       this.emitPeerLeft(payload.callId, userId, result.endedReason);
     }
     if (result.didTransition !== false) {
@@ -1431,6 +1506,16 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+
+    const existingSession = await this.sessionRepository.findByCallId(
+      payload.callId,
+    );
+    if (existingSession?.isGroupCall) {
+      if (!existingSession.invitedUserIds.includes(userId)) {
+        throw new ForbiddenException('You are not invited to this call');
+      }
+      return;
+    }
 
     const result = await this.rejectCallUseCase.execute(
       payload.callId,
@@ -1463,14 +1548,12 @@ export class CallGateway
   private emitCallEnded(session: CallSession, reason: string): void {
     this.clearVideoState(session.callId);
     this.clearPendingUnansweredCall(session.callId);
-    this.clearPendingDisconnect(session.callId, session.initiatorId);
-    this.clearPendingDisconnect(session.callId, session.targetUserId);
-    this.reconnectStartedAtByParticipant.delete(
-      this.disconnectKey(session.callId, session.initiatorId),
-    );
-    this.reconnectStartedAtByParticipant.delete(
-      this.disconnectKey(session.callId, session.targetUserId),
-    );
+    for (const userId of session.invitedUserIds) {
+      this.clearPendingDisconnect(session.callId, userId);
+      this.reconnectStartedAtByParticipant.delete(
+        this.disconnectKey(session.callId, userId),
+      );
+    }
 
     const payload = {
       callId: session.callId,
@@ -1479,7 +1562,7 @@ export class CallGateway
     this.rememberRecentTerminalCall(session, payload);
 
     this.server
-      .to([session.callId, session.initiatorId, session.targetUserId])
+      .to([session.callId, ...session.invitedUserIds])
       .emit('call_ended', payload);
   }
 
@@ -1489,7 +1572,7 @@ export class CallGateway
   ): void {
     const expiresAtMs = Date.now() + this.terminalReplayTtlMs;
 
-    for (const userId of new Set([session.initiatorId, session.targetUserId])) {
+    for (const userId of new Set(session.invitedUserIds)) {
       const calls =
         this.recentTerminalCallsByUser.get(userId) ??
         new Map<string, StoredRecentTerminalCall>();

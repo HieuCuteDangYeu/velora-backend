@@ -12,6 +12,7 @@ export interface CallLifecyclePayload {
   initiatorId: string;
   targetUserId: string;
   recipientUserId: string;
+  invitedUserIds?: string[];
   userId: string;
   callType: CallType;
   initiatorDisplayName: string;

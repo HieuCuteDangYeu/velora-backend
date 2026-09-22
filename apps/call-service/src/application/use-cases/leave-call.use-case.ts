@@ -17,6 +17,7 @@ export interface LeaveCallResult {
   endedReason: string;
   shouldEmitPeerLeft: boolean;
   didTransition: boolean;
+  closedProducers?: Array<{ producerId: string; kind: 'audio' | 'video' }>;
 }
 
 @Injectable()
@@ -52,6 +53,17 @@ export class LeaveCallUseCase {
     }
     if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('You are not part of this call');
+    }
+    if (transition.outcome === 'participant_left') {
+      const media = await this.mediaEngine.closeParticipant(callId, userId);
+      await this.stateRepository.removeParticipant(callId, userId);
+      return {
+        session,
+        endedReason: transition.reason ?? 'left',
+        shouldEmitPeerLeft: true,
+        didTransition: false,
+        closedProducers: media.producers,
+      };
     }
     if (transition.outcome === 'already_terminal') {
       return {

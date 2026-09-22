@@ -201,6 +201,7 @@ PULL_SERVICES=()
 RECONCILE_SERVICES=()
 INFRA_RECONCILE_SERVICES=()
 DB_IMPACT_SERVICES=()
+RABBITMQ_PROMETHEUS_MIGRATION=false
 
 usage() {
   cat <<'USAGE'
@@ -749,6 +750,38 @@ normalize_compose_json() {
   ' "$input_json" >"$output_json"
 }
 
+is_approved_rabbitmq_prometheus_migration() {
+  local base_normal="$1"
+  local target_normal="$2"
+
+  jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
+    ($a[0].services.rabbitmq // null) as $base
+    | ($b[0].services.rabbitmq // null) as $target
+    | ($base != null and $target != null)
+      and ((($base.expose // []) | index("15692")) == null)
+      and (((($base.volumes // []) | map(select(.target == "/etc/rabbitmq/enabled_plugins"))) | length) == 0)
+      and ((($target.expose // []) | index("15692")) != null)
+      and (((($target.volumes // []) | map(select(
+        .type == "bind"
+        and .source == "./infra/rabbitmq/enabled_plugins"
+        and .target == "/etc/rabbitmq/enabled_plugins"
+        and .read_only == true
+      ))) | length) == 1)
+      and (
+        ($target
+          | .expose = ((.expose // []) - ["15692"])
+          | .volumes = ((.volumes // []) | map(select(.target != "/etc/rabbitmq/enabled_plugins")))
+        ) == $base
+      )
+  ' >/dev/null
+}
+
+is_expected_rabbitmq_plugins_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  [[ "$(tr -d '[:space:]' <"$file")" == '[rabbitmq_management,rabbitmq_prometheus].' ]]
+}
+
 validate_target_files() {
   log "==> Creating staging worktree for target $(safe_sha_prefix "$TARGET_SHA")..."
   STAGING_DIR="$(make_worktree "$TARGET_SHA" target)"
@@ -934,6 +967,15 @@ compare_compose_models() {
     fi
 
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
+      if [[ "$service" == "rabbitmq" ]] \
+        && is_approved_rabbitmq_prometheus_migration "$base_normal" "$target_normal" \
+        && is_expected_rabbitmq_plugins_file "$STAGING_DIR/infra/rabbitmq/enabled_plugins"; then
+        RABBITMQ_PROMETHEUS_MIGRATION=true
+        add_unique rabbitmq INFRA_RECONCILE_SERVICES
+        log "RabbitMQ Prometheus exporter migration is approved; scheduling a guarded RabbitMQ recreate."
+        continue
+      fi
+
       DEPLOYMENT_FAILURE_ACTION="Review the Compose diff for '$service'. Restore its previous configuration or deploy the protected service manually, then rerun velora-deploy."
       DEPLOYMENT_FAILURE_SERVICE="$service"
       fail "Compose configuration changed for protected/worker service '$service'; manual review is required"
@@ -1005,6 +1047,11 @@ plan_from_changed_files() {
       infra/monitoring/node-exporter-textfile/*)
         # The generated metric is runtime state; Compose model changes decide
         # whether node-exporter itself needs reconciliation.
+        ;;
+
+      infra/rabbitmq/enabled_plugins)
+        [[ "$RABBITMQ_PROMETHEUS_MIGRATION" == true ]] \
+          || fail "RabbitMQ plugin configuration changed outside the approved Prometheus exporter migration"
         ;;
 
       infra/monitoring/alloy/*|infra/monitoring/loki/*|infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)
@@ -1331,6 +1378,10 @@ reconcile_infrastructure() {
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
+        ;;
+      rabbitmq)
+        log "==> Recreating RabbitMQ for the approved Prometheus exporter migration..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps rabbitmq
         ;;
       *)
         fail "no infrastructure reconcile handler for $service"

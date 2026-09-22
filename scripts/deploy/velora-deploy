@@ -91,6 +91,15 @@ compare_compose_models() {
     fi
 
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
+      if [[ "$service" == "rabbitmq" ]] \
+        && is_approved_rabbitmq_prometheus_migration "$base_normal" "$target_normal" \
+        && is_expected_rabbitmq_plugins_file "$STAGING_DIR/infra/rabbitmq/enabled_plugins"; then
+        RABBITMQ_PROMETHEUS_MIGRATION=true
+        add_unique rabbitmq INFRA_RECONCILE_SERVICES
+        log "RabbitMQ Prometheus exporter migration is approved; scheduling a guarded RabbitMQ recreate."
+        continue
+      fi
+
       fail "Compose configuration changed for protected/worker service '$service'; manual review is required"
     fi
 
@@ -157,6 +166,10 @@ plan_from_changed_files() {
         ;;
       infra/monitoring/alloy/*)
         add_unique alloy INFRA_RECONCILE_SERVICES
+        ;;
+      infra/rabbitmq/enabled_plugins)
+        [[ "$RABBITMQ_PROMETHEUS_MIGRATION" == true ]] \
+          || fail "RabbitMQ plugin configuration changed outside the approved Prometheus exporter migration"
         ;;
       infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh)
         # The former overlay is removed by this migration. Root Compose model

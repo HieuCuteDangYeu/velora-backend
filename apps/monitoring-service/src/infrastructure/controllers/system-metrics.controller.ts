@@ -1,3 +1,8 @@
+import {
+  MONITORING_METRICS,
+  MONITORING_METRIC_SET,
+  type MonitoringMetric,
+} from '@common/monitoring/monitoring-metrics';
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
@@ -82,6 +87,71 @@ const RANGE_QUERIES = {
     'sum(rate(velora_notification_apns_requests_total{service="notification-service",outcome=~"timeout|transport_error"}[5m]))',
   notification_retry_scheduler_completion_age_seconds:
     'max(time() - velora_notification_retry_scheduler_last_completion_timestamp_seconds{service="notification-service"})',
+  auth_cpu: processCpuUsageQuery('auth-service'),
+  auth_memory:
+    'sum(velora_process_resident_memory_bytes{service="auth-service"})',
+  auth_event_loop_p99:
+    'max(velora_nodejs_event_loop_lag_p99_seconds{service="auth-service"})',
+  auth_database_up: 'max(velora_auth_database_up{service="auth-service"})',
+  auth_redis_up: 'max(velora_auth_redis_up{service="auth-service"})',
+  auth_request_rate:
+    'sum(rate(velora_auth_requests_total{service="auth-service"}[5m]))',
+  auth_error_rate:
+    '(sum(rate(velora_auth_requests_total{service="auth-service",outcome="error"}[5m])) / clamp_min(sum(rate(velora_auth_requests_total{service="auth-service"}[5m])), 0.000001)) and on() (sum(rate(velora_auth_requests_total{service="auth-service"}[5m])) > 0)',
+  auth_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_auth_request_duration_seconds_bucket{service="auth-service"}[5m])))',
+  auth_login_request_rate:
+    'sum(rate(velora_auth_requests_total{service="auth-service",operation="login"}[5m]))',
+  auth_login_success_rate:
+    '(sum(rate(velora_auth_requests_total{service="auth-service",operation="login",outcome="success"}[5m])) / clamp_min(sum(rate(velora_auth_requests_total{service="auth-service",operation="login"}[5m])), 0.000001)) and on() (sum(rate(velora_auth_requests_total{service="auth-service",operation="login"}[5m])) > 0)',
+  auth_refresh_request_rate:
+    'sum(rate(velora_auth_requests_total{service="auth-service",operation="refresh"}[5m]))',
+  auth_refresh_success_rate:
+    '(sum(rate(velora_auth_refresh_rotations_total{service="auth-service",outcome=~"success|recovered"}[5m])) / clamp_min(sum(rate(velora_auth_requests_total{service="auth-service",operation="refresh"}[5m])), 0.000001)) and on() (sum(rate(velora_auth_requests_total{service="auth-service",operation="refresh"}[5m])) > 0)',
+  auth_refresh_recovered_rate:
+    'sum(rate(velora_auth_refresh_rotations_total{service="auth-service",outcome="recovered"}[5m]))',
+  auth_refresh_replay_rate:
+    'sum(rate(velora_auth_refresh_rotations_total{service="auth-service",outcome="replay_detected"}[5m]))',
+  auth_cleanup_age_seconds:
+    'max(time() - velora_auth_token_cleanup_last_success_timestamp_seconds{service="auth-service"})',
+  auth_queue_ready:
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-auth-user",queue="auth_queue"})',
+  auth_queue_unacked:
+    'sum(rabbitmq_detailed_queue_messages_unacked{job="rabbitmq-auth-user",queue="auth_queue"})',
+  auth_consumers:
+    'sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="auth_queue"})',
+  user_cpu: processCpuUsageQuery('user-service'),
+  user_memory:
+    'sum(velora_process_resident_memory_bytes{service="user-service"})',
+  user_event_loop_p99:
+    'max(velora_nodejs_event_loop_lag_p99_seconds{service="user-service"})',
+  user_database_up: 'max(velora_user_database_up{service="user-service"})',
+  user_request_rate:
+    'sum(rate(velora_user_requests_total{service="user-service"}[5m]))',
+  user_error_rate:
+    '(sum(rate(velora_user_requests_total{service="user-service",outcome="error"}[5m])) / clamp_min(sum(rate(velora_user_requests_total{service="user-service"}[5m])), 0.000001)) and on() (sum(rate(velora_user_requests_total{service="user-service"}[5m])) > 0)',
+  user_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service"}[5m])))',
+  user_create_request_rate:
+    'sum(rate(velora_user_requests_total{service="user-service",operation="create"}[5m]))',
+  user_search_request_rate:
+    'sum(rate(velora_user_requests_total{service="user-service",operation="search"}[5m]))',
+  user_search_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service",operation="search"}[5m])))',
+  user_recommendation_request_rate:
+    'sum(rate(velora_user_requests_total{service="user-service",operation="recommendations"}[5m]))',
+  user_recommendation_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service",operation="recommendations"}[5m])))',
+  user_recommendation_candidates:
+    '(sum(rate(velora_user_recommendation_candidates_total{service="user-service"}[5m])) / clamp_min(sum(rate(velora_user_requests_total{service="user-service",operation="recommendations",outcome="success"}[5m])), 0.000001)) and on() (sum(rate(velora_user_requests_total{service="user-service",operation="recommendations",outcome="success"}[5m])) > 0)',
+  user_storage_failure_rate:
+    '(sum(rate(velora_user_storage_operations_total{service="user-service",outcome="error"}[5m])) / clamp_min(sum(rate(velora_user_storage_operations_total{service="user-service"}[5m])), 0.000001)) and on() (sum(rate(velora_user_storage_operations_total{service="user-service"}[5m])) > 0)',
+  user_queue_ready:
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-auth-user",queue="user_queue"})',
+  user_queue_unacked:
+    'sum(rabbitmq_detailed_queue_messages_unacked{job="rabbitmq-auth-user",queue="user_queue"})',
+  user_consumers:
+    'sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="user_queue"})',
   rag_request_rate:
     'sum(rate(velora_rag_requests_total{service="ai-service"}[5m]))',
   rag_failure_rate:
@@ -183,9 +253,7 @@ const RANGE_QUERIES = {
     'sum(rate(rabbitmq_detailed_queue_messages_published_total{queue=~"reel_index_.*"}[5m]))',
   reel_index_delivery_rate:
     'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{queue=~"reel_index_.*"}[5m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{queue=~"reel_index_.*"}[5m]))',
-} as const;
-
-type RangeMetric = keyof typeof RANGE_QUERIES;
+} as const satisfies Record<MonitoringMetric, string>;
 type ScalarMetric = number | null;
 
 type TimeseriesPayload = {
@@ -422,6 +490,43 @@ export class SystemMetricsController {
           reelIndexDlqDepth,
           reelIndexPublishRate,
           reelIndexDeliveryRate,
+          authUp,
+          authCpuUsageRatio,
+          authResidentMemoryBytes,
+          authEventLoopP99Seconds,
+          authDatabaseUp,
+          authRedisUp,
+          authRequestsPerSecond,
+          authErrorRate,
+          authP95LatencySeconds,
+          authLoginRequestsPerSecond,
+          authLoginSuccessRate,
+          authRefreshRequestsPerSecond,
+          authRefreshSuccessRate,
+          authRefreshRecoveriesPerSecond,
+          authRefreshReplayDetectionsPerSecond,
+          authCleanupAgeSeconds,
+          authQueueReady,
+          authQueueUnacked,
+          authConsumers,
+          userUp,
+          userCpuUsageRatio,
+          userResidentMemoryBytes,
+          userEventLoopP99Seconds,
+          userDatabaseUp,
+          userRequestsPerSecond,
+          userErrorRate,
+          userP95LatencySeconds,
+          userCreateRequestsPerSecond,
+          userSearchRequestsPerSecond,
+          userSearchP95LatencySeconds,
+          userRecommendationRequestsPerSecond,
+          userRecommendationP95LatencySeconds,
+          userRecommendationCandidates,
+          userStorageFailureRate,
+          userQueueReady,
+          userQueueUnacked,
+          userConsumers,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -534,6 +639,43 @@ export class SystemMetricsController {
           this.prometheus.scalar(RANGE_QUERIES.reel_index_dlq_depth),
           this.prometheus.scalar(RANGE_QUERIES.reel_index_publish_rate),
           this.prometheus.scalar(RANGE_QUERIES.reel_index_delivery_rate),
+          this.prometheus.scalar('max(up{job="auth-service"})'),
+          this.prometheus.scalar(RANGE_QUERIES.auth_cpu),
+          this.prometheus.scalar(RANGE_QUERIES.auth_memory),
+          this.prometheus.scalar(RANGE_QUERIES.auth_event_loop_p99),
+          this.prometheus.scalar(RANGE_QUERIES.auth_database_up),
+          this.prometheus.scalar(RANGE_QUERIES.auth_redis_up),
+          this.prometheus.scalar(RANGE_QUERIES.auth_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_error_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.auth_login_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_login_success_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_refresh_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_refresh_success_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_refresh_recovered_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_refresh_replay_rate),
+          this.prometheus.scalar(RANGE_QUERIES.auth_cleanup_age_seconds),
+          this.prometheus.scalar(RANGE_QUERIES.auth_queue_ready),
+          this.prometheus.scalar(RANGE_QUERIES.auth_queue_unacked),
+          this.prometheus.scalar(RANGE_QUERIES.auth_consumers),
+          this.prometheus.scalar('max(up{job="user-service"})'),
+          this.prometheus.scalar(RANGE_QUERIES.user_cpu),
+          this.prometheus.scalar(RANGE_QUERIES.user_memory),
+          this.prometheus.scalar(RANGE_QUERIES.user_event_loop_p99),
+          this.prometheus.scalar(RANGE_QUERIES.user_database_up),
+          this.prometheus.scalar(RANGE_QUERIES.user_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_error_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.user_create_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_search_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_search_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.user_recommendation_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_recommendation_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.user_recommendation_candidates),
+          this.prometheus.scalar(RANGE_QUERIES.user_storage_failure_rate),
+          this.prometheus.scalar(RANGE_QUERIES.user_queue_ready),
+          this.prometheus.scalar(RANGE_QUERIES.user_queue_unacked),
+          this.prometheus.scalar(RANGE_QUERIES.user_consumers),
         ]);
 
         const hostMemoryUsedBytes = subtractMetric(
@@ -618,6 +760,48 @@ export class SystemMetricsController {
               notificationApnsTransportFailuresPerSecond,
             retrySchedulerCompletionAgeSeconds:
               notificationRetrySchedulerCompletionAgeSeconds,
+          },
+          auth: {
+            up: targetStatus(authUp),
+            residentMemoryBytes: authResidentMemoryBytes,
+            cpuUsageRatio: authCpuUsageRatio,
+            eventLoopP99Seconds: authEventLoopP99Seconds,
+            databaseUp: targetStatus(authDatabaseUp),
+            redisUp: targetStatus(authRedisUp),
+            requestsPerSecond: authRequestsPerSecond,
+            errorRate: authErrorRate,
+            p95LatencySeconds: authP95LatencySeconds,
+            loginRequestsPerSecond: authLoginRequestsPerSecond,
+            loginSuccessRate: authLoginSuccessRate,
+            refreshRequestsPerSecond: authRefreshRequestsPerSecond,
+            refreshSuccessRate: authRefreshSuccessRate,
+            refreshRecoveriesPerSecond: authRefreshRecoveriesPerSecond,
+            replayDetectionsPerSecond: authRefreshReplayDetectionsPerSecond,
+            cleanupAgeSeconds: authCleanupAgeSeconds,
+            queueReady: authQueueReady,
+            queueUnacked: authQueueUnacked,
+            consumers: authConsumers,
+          },
+          user: {
+            up: targetStatus(userUp),
+            residentMemoryBytes: userResidentMemoryBytes,
+            cpuUsageRatio: userCpuUsageRatio,
+            eventLoopP99Seconds: userEventLoopP99Seconds,
+            databaseUp: targetStatus(userDatabaseUp),
+            requestsPerSecond: userRequestsPerSecond,
+            errorRate: userErrorRate,
+            p95LatencySeconds: userP95LatencySeconds,
+            createRequestsPerSecond: userCreateRequestsPerSecond,
+            searchRequestsPerSecond: userSearchRequestsPerSecond,
+            searchP95LatencySeconds: userSearchP95LatencySeconds,
+            recommendationRequestsPerSecond: userRecommendationRequestsPerSecond,
+            recommendationP95LatencySeconds:
+              userRecommendationP95LatencySeconds,
+            recommendationCandidates: userRecommendationCandidates,
+            storageFailureRate: userStorageFailureRate,
+            queueReady: userQueueReady,
+            queueUnacked: userQueueUnacked,
+            consumers: userConsumers,
           },
           rag: {
             requestsPerSecond: ragRequestsPerSecond,
@@ -719,11 +903,11 @@ export class SystemMetricsController {
 
     if (
       typeof metric !== 'string' ||
-      !Object.prototype.hasOwnProperty.call(RANGE_QUERIES, metric)
+      !MONITORING_METRIC_SET.has(metric)
     ) {
       throw new RpcException({
         statusCode: 400,
-        message: `metric must be one of: ${Object.keys(RANGE_QUERIES).join(', ')}`,
+        message: `metric must be one of: ${MONITORING_METRICS.join(', ')}`,
       });
     }
 
@@ -762,7 +946,7 @@ export class SystemMetricsController {
     }
 
     return {
-      metric: metric as RangeMetric,
+      metric: metric as MonitoringMetric,
       from,
       to,
       stepSeconds: requestedStep,

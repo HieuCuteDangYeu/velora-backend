@@ -335,7 +335,10 @@ describe('AuthController browser authentication regression coverage', () => {
     const { authClient, controller } = createController();
     const response = createResponse();
     authClient.send.mockReturnValueOnce(
-      throwError(() => new Error('invalid refresh token')),
+      throwError(() => ({
+        statusCode: 401,
+        message: 'Invalid or expired refresh token',
+      })),
     );
 
     await expect(
@@ -343,10 +346,36 @@ describe('AuthController browser authentication regression coverage', () => {
         { cookies: { refresh_token: 'browser-refresh-token' } } as never,
         response as never,
       ),
-    ).rejects.toMatchObject({ message: 'Invalid refresh token', status: 401 });
+    ).rejects.toMatchObject({
+      message: 'Invalid or expired refresh token',
+      status: 401,
+    });
 
     expect(response.clearCookie).toHaveBeenNthCalledWith(1, 'access_token');
     expect(response.clearCookie).toHaveBeenNthCalledWith(2, 'refresh_token');
+  });
+
+  it('preserves browser cookies when refresh fails for an infrastructure reason', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    authClient.send.mockReturnValueOnce(
+      throwError(() => ({
+        statusCode: 500,
+        message: 'Failed to refresh session',
+      })),
+    );
+
+    await expect(
+      controller.refresh(
+        { cookies: { refresh_token: 'browser-refresh-token' } } as never,
+        response as never,
+      ),
+    ).rejects.toMatchObject({
+      message: 'Failed to refresh session',
+      status: 500,
+    });
+
+    expect(response.clearCookie).not.toHaveBeenCalled();
   });
 
   it('keeps browser logout cookie clearing behavior unchanged', async () => {

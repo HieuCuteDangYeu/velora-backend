@@ -35,6 +35,18 @@ scrape_configs:
       - targets:
           - notification-service:3015
 
+  - job_name: auth-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - auth-service:3017
+
+  - job_name: user-service
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - user-service:3018
+
   - job_name: rabbitmq-reels
     metrics_path: /metrics/detailed
     params:
@@ -47,8 +59,24 @@ scrape_configs:
       - targets:
           - rabbitmq:15692
     metric_relabel_configs:
-      - source_labels: [queue]
-        regex: reel_(media|index)_.+
+      - source_labels: [__name__, queue]
+        separator: ';'
+        regex: 'up;|rabbitmq_detailed_.*;reel_(media|index)_.+'
+        action: keep
+
+  - job_name: rabbitmq-auth-user
+    metrics_path: /metrics/detailed
+    params:
+      family:
+        - queue_coarse_metrics
+        - queue_consumer_count
+    static_configs:
+      - targets:
+          - rabbitmq:15692
+    metric_relabel_configs:
+      - source_labels: [__name__, queue]
+        separator: ';'
+        regex: 'up;|rabbitmq_detailed_.*;(auth_queue|user_queue)'
         action: keep
 
   - job_name: node-exporter

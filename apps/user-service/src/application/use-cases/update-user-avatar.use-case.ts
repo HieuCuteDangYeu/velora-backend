@@ -4,12 +4,14 @@ import { InvalidAvatarFileError } from '@user/domain/errors/invalid-avatar-file.
 import { UserNotFoundError } from '@user/domain/errors/user-not-found.error';
 import type { IStorageService } from '../../domain/interfaces/storage.service.interface';
 import type { IUserRepository } from '../../domain/interfaces/user.repository.interface';
+import { UserPrometheusMetricsService } from '../../infrastructure/metrics/user-prometheus-metrics.service';
 
 @Injectable()
 export class UpdateUserAvatarUseCase {
   constructor(
     @Inject('IUserRepository') private readonly userRepository: IUserRepository,
     @Inject('IStorageService') private readonly storageService: IStorageService,
+    private readonly metrics: UserPrometheusMetricsService,
   ) {}
 
   async execute(userId: string, payload: UpdateAvatarDto) {
@@ -19,9 +21,14 @@ export class UpdateUserAvatarUseCase {
       throw new UserNotFoundError(userId);
     }
 
-    const fileExists = await this.storageService.checkFileExists(
-      payload.avatarKey,
-    );
+    let fileExists: boolean;
+    try {
+      fileExists = await this.storageService.checkFileExists(payload.avatarKey);
+      this.metrics.recordStorage('success');
+    } catch (error) {
+      this.metrics.recordStorage('error');
+      throw error;
+    }
 
     if (!fileExists) {
       throw new InvalidAvatarFileError();

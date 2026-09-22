@@ -35,6 +35,8 @@ services:
       args:
         ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
     restart: always
+    expose:
+      - '3018'
     env_file:
       - .env
     depends_on:
@@ -67,6 +69,8 @@ services:
       args:
         ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
     restart: always
+    expose:
+      - '3017'
     env_file:
       - .env
     depends_on:

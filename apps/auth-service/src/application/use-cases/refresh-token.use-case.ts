@@ -12,6 +12,11 @@ import {
 import { InvalidTokenError } from '../../domain/errors/invalid-token.error';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
+import {
+  type AuthOutcome,
+  AuthPrometheusMetricsService,
+  type RefreshOutcome,
+} from '../../infrastructure/metrics/auth-prometheus-metrics.service';
 
 @Injectable()
 export class RefreshTokenUseCase {
@@ -23,26 +28,39 @@ export class RefreshTokenUseCase {
     @Inject('IUserRoleRepository')
     private readonly roleCache: IUserRoleRepository,
     private readonly jwtService: JwtService,
+    private readonly metrics: AuthPrometheusMetricsService,
   ) {}
 
   async execute(
     incomingRefreshToken: string,
     refreshRequestId?: string,
   ): Promise<TokenResponse> {
+    const startedAt = process.hrtime.bigint();
+    let requestOutcome: AuthOutcome = 'error';
+    let refreshOutcome: RefreshOutcome | null = null;
+
     try {
-      const payload =
-        await this.jwtService.verifyAsync<JwtPayload>(incomingRefreshToken);
+      let payload: JwtPayload;
+      try {
+        payload =
+          await this.jwtService.verifyAsync<JwtPayload>(incomingRefreshToken);
+      } catch {
+        refreshOutcome = 'invalid';
+        throw new InvalidTokenError();
+      }
 
       const storedToken =
         await this.authRepository.findRefreshToken(incomingRefreshToken);
 
       if (!storedToken) {
+        refreshOutcome = 'replay_detected';
         await this.authRepository.revokeAllUserTokens(payload.sub);
         throw new InvalidTokenError();
       }
 
       if (storedToken.revoked) {
         if (!refreshRequestId) {
+          refreshOutcome = 'replay_detected';
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
@@ -54,6 +72,7 @@ export class RefreshTokenUseCase {
           );
 
         if (!replacementToken) {
+          refreshOutcome = 'replay_detected';
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
@@ -61,6 +80,7 @@ export class RefreshTokenUseCase {
         const user = await this.userService.findById(payload.sub);
 
         if (!user) {
+          refreshOutcome = 'invalid';
           throw new InvalidTokenError();
         }
 
@@ -69,6 +89,8 @@ export class RefreshTokenUseCase {
           { expiresIn: '15m' },
         );
 
+        requestOutcome = 'success';
+        refreshOutcome = 'recovered';
         return { accessToken, refreshToken: replacementToken };
       }
 
@@ -77,6 +99,7 @@ export class RefreshTokenUseCase {
         (storedToken.absoluteExpiresAt !== null &&
           storedToken.absoluteExpiresAt <= new Date())
       ) {
+        refreshOutcome = 'invalid';
         throw new InvalidTokenError();
       }
 
@@ -95,6 +118,7 @@ export class RefreshTokenUseCase {
       const user = await this.userService.findById(payload.sub);
 
       if (!user) {
+        refreshOutcome = 'invalid';
         throw new InvalidTokenError();
       }
 
@@ -123,23 +147,37 @@ export class RefreshTokenUseCase {
         );
 
       if (!persistedRefreshToken) {
+        refreshOutcome = 'replay_detected';
         await this.authRepository.revokeAllUserTokens(payload.sub);
         throw new InvalidTokenError();
       }
 
+      requestOutcome = 'success';
+      refreshOutcome = 'success';
       return {
         accessToken,
         refreshToken: persistedRefreshToken.refreshToken,
       };
     } catch (error) {
-      if (!(error instanceof InvalidTokenError)) {
+      if (error instanceof InvalidTokenError) {
+        requestOutcome = 'rejected';
+        refreshOutcome ??= 'invalid';
+      } else {
+        requestOutcome = 'error';
         this.logger.error(
           'Failed to refresh token',
           error instanceof Error ? error.stack : undefined,
         );
       }
 
-      throw new InvalidTokenError();
+      throw error;
+    } finally {
+      const durationSeconds =
+        Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
+      this.metrics.recordRequest('refresh', requestOutcome, durationSeconds);
+      if (refreshOutcome) {
+        this.metrics.recordRefresh(refreshOutcome, durationSeconds);
+      }
     }
   }
 

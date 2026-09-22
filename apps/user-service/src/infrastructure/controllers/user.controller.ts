@@ -40,6 +40,10 @@ import { UserAlreadyExistsError } from '@user/domain/errors/user-already-exists.
 import { UserNotFoundError } from '@user/domain/errors/user-not-found.error';
 import { UsernameAlreadyTakenError } from '@user/domain/errors/username-already-taken.error';
 import { UsernameNotFoundError } from '@user/domain/errors/username-not-found.error';
+import {
+  type UserOperation,
+  UserPrometheusMetricsService,
+} from '../metrics/user-prometheus-metrics.service';
 
 @Controller()
 export class UserController {
@@ -61,12 +65,15 @@ export class UserController {
     private readonly searchPublicUsersUseCase: SearchPublicUsersUseCase,
     private readonly checkUsernameAvailabilityUseCase: CheckUsernameAvailabilityUseCase,
     private readonly getRecommendedPublicUsersUseCase: GetRecommendedPublicUsersUseCase,
+    private readonly metrics: UserPrometheusMetricsService,
   ) {}
 
   @MessagePattern('create_user')
   async handleCreateUser(@Payload() data: CreateUserPayloadDto) {
     try {
-      return await this.createUserUseCase.execute(data);
+      return await this.observe('create', () =>
+        this.createUserUseCase.execute(data),
+      );
     } catch (error) {
       this.handleDomainError(error);
     }
@@ -74,13 +81,15 @@ export class UserController {
 
   @MessagePattern('find_all_users')
   async handleFindAllUsers(@Payload() data: FindAllUsersPayload) {
-    return this.findAllUsersUseCase.execute(data);
+    return this.observe('find_all', () => this.findAllUsersUseCase.execute(data));
   }
 
   @MessagePattern('update_user')
   async handleUpdateUser(@Payload() payload: UpdateUserPayload) {
     try {
-      return await this.updateUserUseCase.execute(payload);
+      return await this.observe('update', () =>
+        this.updateUserUseCase.execute(payload),
+      );
     } catch (error) {
       this.handleDomainError(error);
     }
@@ -89,7 +98,9 @@ export class UserController {
   @MessagePattern('delete_user')
   async handleDeleteUser(@Payload() payload: DeleteUserPayload) {
     try {
-      return await this.deleteUserUseCase.execute(payload);
+      return await this.observe('delete', () =>
+        this.deleteUserUseCase.execute(payload),
+      );
     } catch (error) {
       this.handleDomainError(error);
     }
@@ -97,22 +108,28 @@ export class UserController {
 
   @MessagePattern('validate_user')
   async validateUser(@Payload() dto: LoginDto) {
-    return await this.validateUserUseCase.execute(dto);
+    return await this.observe('validate', () =>
+      this.validateUserUseCase.execute(dto),
+    );
   }
 
   @MessagePattern('verify_user')
   async handleVerifyUser(@Payload() id: string) {
-    return await this.verifyUserUseCase.execute(id);
+    return await this.observe('verify', () => this.verifyUserUseCase.execute(id));
   }
 
   @MessagePattern('user.find_by_email')
   async findByEmail(@Payload() data: { email: string }) {
-    return await this.findUserByEmailUseCase.execute(data.email);
+    return await this.observe('find_by_email', () =>
+      this.findUserByEmailUseCase.execute(data.email),
+    );
   }
 
   @MessagePattern('user.create_social')
   async createSocialUser(@Payload() dto: CreateSocialUserDto) {
-    return await this.createSocialUserUseCase.execute(dto);
+    return await this.observe('create_social', () =>
+      this.createSocialUserUseCase.execute(dto),
+    );
   }
 
   @EventPattern('user.rollback')
@@ -129,9 +146,8 @@ export class UserController {
     },
   ) {
     try {
-      return await this.updateUserAvatarUseCase.execute(
-        data.userId,
-        data.payload,
+      return await this.observe('avatar_update', () =>
+        this.updateUserAvatarUseCase.execute(data.userId, data.payload),
       );
     } catch (error) {
       this.handleDomainError(error);
@@ -140,23 +156,31 @@ export class UserController {
 
   @MessagePattern('user.find_by_id')
   async findById(@Payload() id: string): Promise<ValidateUserResponse | null> {
-    return await this.findUserByIdUseCase.execute(id);
+    return await this.observe('find_by_id', () =>
+      this.findUserByIdUseCase.execute(id),
+    );
   }
 
   @MessagePattern('user.find_by_ids')
   async findByIds(@Payload() ids: string[]) {
-    return await this.findUsersByIdsUseCase.execute(ids);
+    return await this.observe('find_by_ids', () =>
+      this.findUsersByIdsUseCase.execute(ids),
+    );
   }
 
   @MessagePattern('user.find_public_by_ids')
   async findPublicByIds(@Payload() ids: string[]) {
-    return await this.findPublicUsersByIdsUseCase.execute(ids);
+    return await this.observe('public_profile', () =>
+      this.findPublicUsersByIdsUseCase.execute(ids),
+    );
   }
 
   @MessagePattern('user.find_public_by_username')
   async findPublicByUsername(@Payload() data: { username: string }) {
     try {
-      return await this.findPublicUserByUsernameUseCase.execute(data.username);
+      return await this.observe('public_profile', () =>
+        this.findPublicUserByUsernameUseCase.execute(data.username),
+      );
     } catch (error) {
       this.handleDomainError(error);
     }
@@ -169,10 +193,12 @@ export class UserController {
       viewerId: string;
     },
   ) {
-    return await this.searchPublicUsersUseCase.execute(
-      data.query,
-      data.limit,
-      data.viewerId,
+    return await this.observe('search', () =>
+      this.searchPublicUsersUseCase.execute(
+        data.query,
+        data.limit,
+        data.viewerId,
+      ),
     );
   }
 
@@ -185,11 +211,15 @@ export class UserController {
       feedSessionId?: string;
     },
   ) {
-    return await this.getRecommendedPublicUsersUseCase.execute({
-      viewerId: data.viewerId,
-      limit: data.limit,
-      feedSessionId: data.feedSessionId,
-    });
+    const result = await this.observe('recommendations', () =>
+      this.getRecommendedPublicUsersUseCase.execute({
+        viewerId: data.viewerId,
+        limit: data.limit,
+        feedSessionId: data.feedSessionId,
+      }),
+    );
+    this.metrics.recordRecommendationCandidates(result.length);
+    return result;
   }
 
   @MessagePattern('user.check_username_availability')
@@ -198,7 +228,9 @@ export class UserController {
     data: CheckUsernameAvailabilityDto,
   ) {
     try {
-      return await this.checkUsernameAvailabilityUseCase.execute(data.username);
+      return await this.observe('username_availability', () =>
+        this.checkUsernameAvailabilityUseCase.execute(data.username),
+      );
     } catch (error) {
       this.handleDomainError(error);
     }
@@ -208,7 +240,48 @@ export class UserController {
   async handleValidateList(
     @Payload() data: { ids: string[] },
   ): Promise<boolean> {
-    return await this.validateUsersListUseCase.execute(data.ids);
+    return await this.observe('validate_list', () =>
+      this.validateUsersListUseCase.execute(data.ids),
+    );
+  }
+
+  private async observe<T>(
+    operation: UserOperation,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = process.hrtime.bigint();
+    try {
+      const result = await action();
+      this.metrics.recordRequest(
+        operation,
+        'success',
+        this.elapsedSeconds(startedAt),
+      );
+      return result;
+    } catch (error) {
+      this.metrics.recordRequest(
+        operation,
+        this.isRejected(error) ? 'rejected' : 'error',
+        this.elapsedSeconds(startedAt),
+      );
+      throw error;
+    }
+  }
+
+  private isRejected(error: unknown): boolean {
+    return (
+      error instanceof UserNotFoundError ||
+      error instanceof UsernameNotFoundError ||
+      error instanceof UserAlreadyExistsError ||
+      error instanceof UsernameAlreadyTakenError ||
+      error instanceof InvalidAvatarFileError ||
+      error instanceof InvalidUsernameError ||
+      error instanceof InvalidFullNameError
+    );
+  }
+
+  private elapsedSeconds(startedAt: bigint): number {
+    return Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
   }
 
   private handleDomainError(error: unknown): never {

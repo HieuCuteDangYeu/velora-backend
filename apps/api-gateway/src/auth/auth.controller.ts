@@ -276,13 +276,13 @@ export class AuthController {
           ...(refreshRequestId ? { refreshRequestId } : {}),
         })
         .pipe(
-          catchError(() => {
-            response.clearCookie('access_token');
-            response.clearCookie('refresh_token');
-            throw new HttpException(
-              'Invalid refresh token',
-              HttpStatus.UNAUTHORIZED,
-            );
+          catchError((error) => {
+            if (isRpcError(error) && error.statusCode === 401) {
+              response.clearCookie('access_token');
+              response.clearCookie('refresh_token');
+            }
+
+            this.handleMicroserviceError(error);
           }),
         ),
     );

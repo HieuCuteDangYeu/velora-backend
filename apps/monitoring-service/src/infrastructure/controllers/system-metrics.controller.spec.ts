@@ -142,7 +142,7 @@ describe('SystemMetricsController container resources', () => {
         query.includes('velora_process_cpu_user_seconds_total'),
       );
 
-    expect(processCpuQueries).toHaveLength(4);
+    expect(processCpuQueries).toHaveLength(6);
     expect(
       processCpuQueries.every(
         (query) =>

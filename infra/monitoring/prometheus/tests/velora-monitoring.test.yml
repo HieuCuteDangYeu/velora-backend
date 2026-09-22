@@ -360,3 +360,70 @@ tests:
             exp_annotations:
               summary: Reel worker failure rate is elevated
               description: Reel INDEX processing has stayed above a 20 percent failure rate for five minutes with at least five recent jobs.
+
+  - name: Auth database outage becomes critical
+    interval: 15s
+    input_series:
+      - series: 'velora_auth_database_up{service="auth-service"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraAuthDatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: auth-service
+            exp_annotations:
+              summary: auth-service database is unavailable
+              description: Auth PostgreSQL health checks have failed for two minutes.
+
+  - name: Refresh replay produces an Auth warning
+    interval: 15s
+    input_series:
+      - series: 'velora_auth_refresh_rotations_total{service="auth-service",outcome="replay_detected"}'
+        values: '0+1x21'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VeloraAuthRefreshReplayDetected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: auth-service
+              outcome: replay_detected
+            exp_annotations:
+              summary: Refresh-token replay was detected
+              description: Auth detected at least one refresh-token replay during the last five minutes.
+
+  - name: User database outage becomes critical
+    interval: 15s
+    input_series:
+      - series: 'velora_user_database_up{service="user-service"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraUserDatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: user-service
+            exp_annotations:
+              summary: user-service database is unavailable
+              description: User PostgreSQL health checks have failed for two minutes.
+
+  - name: User queue backlog without consumers becomes critical
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-auth-user",queue="user_queue"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="user_queue"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraUserQueueBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: user-service
+            exp_annotations:
+              summary: user_queue has backlog with no consumers
+              description: User requests are queued but user_queue has no consumers for two minutes.

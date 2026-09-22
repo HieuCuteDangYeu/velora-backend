@@ -26,6 +26,8 @@ import { AuthServiceAdapter } from '@user/infrastructure/adapters/auth-service.a
 import { FriendDiscoveryServiceAdapter } from '@user/infrastructure/adapters/friend-discovery-service.adapter';
 import { RecommendationTelemetryServiceAdapter } from '@user/infrastructure/adapters/recommendation-telemetry-service.adapter';
 import { UserController } from '@user/infrastructure/controllers/user.controller';
+import { UserMetricsController } from '@user/infrastructure/controllers/user-metrics.controller';
+import { UserPrometheusMetricsService } from '@user/infrastructure/metrics/user-prometheus-metrics.service';
 import { PrismaService } from '@user/infrastructure/prisma/prisma.service';
 import { UserRepository } from '@user/infrastructure/repositories/user.repository';
 import { R2StorageService } from '@user/infrastructure/services/r2-storage.service';
@@ -63,9 +65,10 @@ function createRmqClientRegistration(
       createRmqClientRegistration('FRIEND_SERVICE_RMQ', 'friend_queue'),
     ]),
   ],
-  controllers: [UserController],
+  controllers: [UserController, UserMetricsController],
   providers: [
     PrismaService,
+    UserPrometheusMetricsService,
     CreateUserUseCase,
     FindAllUsersUseCase,
     UpdateUserUseCase,

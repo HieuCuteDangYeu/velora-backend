@@ -40,6 +40,10 @@ const createUseCase = () => {
     verifyAsync: jest.fn(),
     signAsync: jest.fn(),
   };
+  const metrics = {
+    recordRequest: jest.fn(),
+    recordRefresh: jest.fn(),
+  };
 
   return {
     authRepository,
@@ -51,6 +55,7 @@ const createUseCase = () => {
       userService as never,
       roleCache as never,
       jwtService as never,
+      metrics as never,
     ),
   };
 };
@@ -267,5 +272,17 @@ describe('RefreshTokenUseCase', () => {
 
     expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it('preserves infrastructure failures instead of reporting an invalid token', async () => {
+    const { authRepository, jwtService, useCase } = createUseCase();
+    const databaseError = new Error('database unavailable');
+
+    jwtService.verifyAsync.mockResolvedValue(payload);
+    authRepository.findRefreshToken.mockRejectedValue(databaseError);
+
+    await expect(
+      useCase.execute('valid-refresh-token', 'request-1'),
+    ).rejects.toBe(databaseError);
   });
 });

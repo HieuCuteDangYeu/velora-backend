@@ -11,8 +11,10 @@ import { ResetPasswordUseCase } from '@auth/application/use-cases/reset-password
 import { VerifyGoogleTokenUseCase } from '@auth/application/use-cases/verify-google-token.use-case';
 import { VerifyTokenUseCase } from '@auth/application/use-cases/verify-token.use-case';
 import { MailServiceAdapter } from '@auth/infrastructure/adapters/mail-service.adapter';
+import { AuthMetricsController } from '@auth/infrastructure/controllers/auth-metrics.controller';
 import { RoleController } from '@auth/infrastructure/controllers/role.controller';
 import { TokenCleanupService } from '@auth/infrastructure/jobs/token-cleanup.service';
+import { AuthPrometheusMetricsService } from '@auth/infrastructure/metrics/auth-prometheus-metrics.service';
 import { RedisUserRoleRepository } from '@auth/infrastructure/repositories/redis-user-role.repository';
 import { RedisVerificationCodeRepository } from '@auth/infrastructure/repositories/redis-verification-code.repository';
 import { Module } from '@nestjs/common';
@@ -76,9 +78,10 @@ import { AuthRepository } from './infrastructure/repositories/auth.repository';
       },
     }),
   ],
-  controllers: [AuthController, RoleController],
+  controllers: [AuthController, AuthMetricsController, RoleController],
   providers: [
     PrismaService,
+    AuthPrometheusMetricsService,
     TokenCleanupService,
     RegisterUseCase,
     LoginUseCase,

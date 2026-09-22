@@ -28,6 +28,10 @@ import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { UserAlreadyExistsError } from '@user/domain/errors/user-already-exists.error';
 import { UsernameAlreadyTakenError } from '@user/domain/errors/username-already-taken.error';
 import { RegisterUseCase } from '../../application/use-cases/register.use-case';
+import {
+  type AuthOperation,
+  AuthPrometheusMetricsService,
+} from '../metrics/auth-prometheus-metrics.service';
 
 @Controller()
 export class AuthController {
@@ -43,12 +47,15 @@ export class AuthController {
     private readonly resetPasswordUseCase: ResetPasswordUseCase,
     private readonly verifyTokenUseCase: VerifyTokenUseCase,
     private readonly verifyGoogleTokenUseCase: VerifyGoogleTokenUseCase,
+    private readonly metrics: AuthPrometheusMetricsService,
   ) {}
 
   @MessagePattern('auth.register')
   async register(@Payload() dto: RegisterDto) {
     try {
-      return await this.registerUseCase.execute(dto);
+      return await this.observe('register', () =>
+        this.registerUseCase.execute(dto),
+      );
     } catch (error) {
       if (
         error instanceof UserAlreadyExistsError ||
@@ -77,7 +84,7 @@ export class AuthController {
   @MessagePattern('auth.login')
   async login(@Payload() dto: LoginDto) {
     try {
-      return await this.loginUseCase.execute(dto);
+      return await this.observe('login', () => this.loginUseCase.execute(dto));
     } catch (error) {
       if (error instanceof AccountNotVerifiedError) {
         throw new RpcException({
@@ -105,7 +112,11 @@ export class AuthController {
   @MessagePattern('auth.verify_token')
   async verifyToken(@Payload() data: { token: string }) {
     try {
-      return await this.verifyTokenUseCase.execute(data.token);
+      return await this.observe(
+        'verify_token',
+        () => this.verifyTokenUseCase.execute(data.token),
+        true,
+      );
     } catch {
       throw new RpcException({
         statusCode: 401,
@@ -117,7 +128,9 @@ export class AuthController {
   @MessagePattern('auth.confirm_account')
   async handleConfirmAccount(@Payload() dto: ConfirmAccountDto) {
     try {
-      return await this.confirmAccountUseCase.execute(dto);
+      return await this.observe('confirm_account', () =>
+        this.confirmAccountUseCase.execute(dto),
+      );
     } catch (error) {
       if (error instanceof InvalidTokenError) {
         throw new RpcException({
@@ -132,7 +145,9 @@ export class AuthController {
   @MessagePattern('auth.resend_verification')
   async handleResendVerification(@Payload() dto: ResendVerificationDto) {
     try {
-      return await this.resendVerificationUseCase.execute(dto);
+      return await this.observe('resend_verification', () =>
+        this.resendVerificationUseCase.execute(dto),
+      );
     } catch (error) {
       console.error(error);
       throw new RpcException({
@@ -152,7 +167,14 @@ export class AuthController {
         data.refreshRequestId,
       );
     } catch (error) {
-      console.error(error);
+      if (!(error instanceof InvalidTokenError)) {
+        console.error(error);
+        throw new RpcException({
+          statusCode: 500,
+          message: 'Failed to refresh session',
+        });
+      }
+
       throw new RpcException({
         statusCode: 401,
         message: 'Invalid or expired refresh token',
@@ -162,23 +184,31 @@ export class AuthController {
 
   @MessagePattern('auth.logout')
   async logout(@Payload() data: { refreshToken: string }) {
-    return await this.logoutUseCase.execute(data.refreshToken);
+    return await this.observe('logout', () =>
+      this.logoutUseCase.execute(data.refreshToken),
+    );
   }
 
   @MessagePattern('auth.login_google')
   async loginGoogle(@Payload() profile: GoogleProfile) {
-    return await this.googleLoginUseCase.execute(profile);
+    return await this.observe('login_google', () =>
+      this.googleLoginUseCase.execute(profile),
+    );
   }
 
   @MessagePattern('auth.forgot_password')
   async handleForgotPassword(@Payload() dto: ForgotPasswordDto) {
-    return await this.forgotPasswordUseCase.execute(dto);
+    return await this.observe('forgot_password', () =>
+      this.forgotPasswordUseCase.execute(dto),
+    );
   }
 
   @MessagePattern('auth.reset_password')
   async handleResetPassword(@Payload() dto: ResetPasswordDto) {
     try {
-      return await this.resetPasswordUseCase.execute(dto);
+      return await this.observe('reset_password', () =>
+        this.resetPasswordUseCase.execute(dto),
+      );
     } catch (error) {
       if (error instanceof InvalidResetTokenError) {
         throw new RpcException({
@@ -197,7 +227,9 @@ export class AuthController {
   @MessagePattern('auth.verify_google_token')
   async verifyGoogleToken(@Payload() dto: VerifyGoogleTokenDto) {
     try {
-      return await this.verifyGoogleTokenUseCase.execute(dto.idToken);
+      return await this.observe('verify_google_token', () =>
+        this.verifyGoogleTokenUseCase.execute(dto.idToken),
+      );
     } catch (error) {
       console.error(error);
 
@@ -227,5 +259,45 @@ export class AuthController {
         message: 'Internal Server Error',
       });
     }
+  }
+
+  private async observe<T>(
+    operation: AuthOperation,
+    action: () => Promise<T>,
+    allErrorsAreRejected = false,
+  ): Promise<T> {
+    const startedAt = process.hrtime.bigint();
+    try {
+      const result = await action();
+      this.metrics.recordRequest(
+        operation,
+        'success',
+        this.elapsedSeconds(startedAt),
+      );
+      return result;
+    } catch (error) {
+      this.metrics.recordRequest(
+        operation,
+        allErrorsAreRejected || this.isRejected(error) ? 'rejected' : 'error',
+        this.elapsedSeconds(startedAt),
+      );
+      throw error;
+    }
+  }
+
+  private isRejected(error: unknown): boolean {
+    return (
+      error instanceof AccountNotVerifiedError ||
+      error instanceof InvalidCredentialsError ||
+      error instanceof InvalidGoogleTokenError ||
+      error instanceof InvalidResetTokenError ||
+      error instanceof InvalidTokenError ||
+      error instanceof UserAlreadyExistsError ||
+      error instanceof UsernameAlreadyTakenError
+    );
+  }
+
+  private elapsedSeconds(startedAt: bigint): number {
+    return Number(process.hrtime.bigint() - startedAt) / 1_000_000_000;
   }
 }

@@ -410,3 +410,203 @@ groups:
         annotations:
           summary: Reel queue wait p95 is elevated
           description: Reel {{ $labels.pipeline }} p95 queue wait has stayed above two minutes for five minutes with at least five recent jobs.
+
+  - name: velora-auth-service
+    rules:
+      - alert: VeloraAuthServiceDown
+        expr: up{job="auth-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: auth-service
+        annotations:
+          summary: auth-service is unavailable
+          description: Prometheus has not been able to scrape auth-service for two minutes.
+
+      - alert: VeloraAuthDatabaseUnavailable
+        expr: velora_auth_database_up{service="auth-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: auth-service
+        annotations:
+          summary: auth-service database is unavailable
+          description: Auth PostgreSQL health checks have failed for two minutes.
+
+      - alert: VeloraAuthRedisUnavailable
+        expr: velora_auth_redis_up{service="auth-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: auth-service
+        annotations:
+          summary: auth-service Redis is unavailable
+          description: Auth Redis health checks have failed for two minutes.
+
+      - alert: VeloraAuthQueueBacklogWithoutConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-auth-user",queue="auth_queue"}) > 0
+          and on()
+          sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="auth_queue"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: auth-service
+        annotations:
+          summary: auth_queue has backlog with no consumers
+          description: Auth requests are queued but auth_queue has no consumers for two minutes.
+
+      - alert: VeloraAuthHighInternalErrorRate
+        expr: |
+          (
+            sum(rate(velora_auth_requests_total{service="auth-service",outcome="error"}[5m]))
+            /
+            clamp_min(sum(rate(velora_auth_requests_total{service="auth-service"}[5m])), 0.000001)
+          ) > 0.05
+          and on()
+          sum(increase(velora_auth_requests_total{service="auth-service"}[5m])) >= 20
+        for: 5m
+        labels:
+          severity: warning
+          service: auth-service
+        annotations:
+          summary: auth-service internal error rate is elevated
+          description: Internal Auth failures have stayed above five percent with at least twenty requests in the rolling window.
+
+      - alert: VeloraAuthHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(velora_auth_request_duration_seconds_bucket{service="auth-service"}[5m]))
+          ) > 1
+          and on()
+          sum(increase(velora_auth_requests_total{service="auth-service"}[5m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+          service: auth-service
+        annotations:
+          summary: auth-service p95 latency is above one second
+          description: Auth RPC p95 latency has stayed above one second with at least ten recent requests.
+
+      - alert: VeloraAuthRefreshReplayDetected
+        expr: increase(velora_auth_refresh_rotations_total{service="auth-service",outcome="replay_detected"}[5m]) > 0
+        labels:
+          severity: warning
+          service: auth-service
+        annotations:
+          summary: Refresh-token replay was detected
+          description: Auth detected at least one refresh-token replay during the last five minutes.
+
+      - alert: VeloraAuthTokenCleanupStale
+        expr: |
+          time() - velora_auth_token_cleanup_last_success_timestamp_seconds{service="auth-service"} > 129600
+          and on()
+          velora_process_uptime_seconds{service="auth-service"} > 129600
+        for: 15m
+        labels:
+          severity: warning
+          service: auth-service
+        annotations:
+          summary: Auth token cleanup has not succeeded recently
+          description: auth-service has been running for more than 36 hours without a successful refresh-token cleanup.
+
+  - name: velora-user-service
+    rules:
+      - alert: VeloraUserServiceDown
+        expr: up{job="user-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: user-service
+        annotations:
+          summary: user-service is unavailable
+          description: Prometheus has not been able to scrape user-service for two minutes.
+
+      - alert: VeloraUserDatabaseUnavailable
+        expr: velora_user_database_up{service="user-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: user-service
+        annotations:
+          summary: user-service database is unavailable
+          description: User PostgreSQL health checks have failed for two minutes.
+
+      - alert: VeloraUserQueueBacklogWithoutConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-auth-user",queue="user_queue"}) > 0
+          and on()
+          sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="user_queue"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: user-service
+        annotations:
+          summary: user_queue has backlog with no consumers
+          description: User requests are queued but user_queue has no consumers for two minutes.
+
+      - alert: VeloraUserHighInternalErrorRate
+        expr: |
+          (
+            sum(rate(velora_user_requests_total{service="user-service",outcome="error"}[5m]))
+            /
+            clamp_min(sum(rate(velora_user_requests_total{service="user-service"}[5m])), 0.000001)
+          ) > 0.05
+          and on()
+          sum(increase(velora_user_requests_total{service="user-service"}[5m])) >= 20
+        for: 5m
+        labels:
+          severity: warning
+          service: user-service
+        annotations:
+          summary: user-service internal error rate is elevated
+          description: Internal User failures have stayed above five percent with at least twenty requests in the rolling window.
+
+      - alert: VeloraUserHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service"}[5m]))
+          ) > 1
+          and on()
+          sum(increase(velora_user_requests_total{service="user-service"}[5m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+          service: user-service
+        annotations:
+          summary: user-service p95 latency is above one second
+          description: User RPC p95 latency has stayed above one second with at least ten recent requests.
+
+      - alert: VeloraUserSearchHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service",operation="search"}[5m]))
+          ) > 1
+          and on()
+          sum(increase(velora_user_requests_total{service="user-service",operation="search"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: user-service
+        annotations:
+          summary: User search p95 latency is elevated
+          description: Public user search p95 latency has stayed above one second with at least five recent searches.
+
+      - alert: VeloraUserRecommendationHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(velora_user_request_duration_seconds_bucket{service="user-service",operation="recommendations"}[5m]))
+          ) > 2
+          and on()
+          sum(increase(velora_user_requests_total{service="user-service",operation="recommendations"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: user-service
+        annotations:
+          summary: User recommendation p95 latency is elevated
+          description: User recommendation p95 latency has stayed above two seconds with at least five recent requests.

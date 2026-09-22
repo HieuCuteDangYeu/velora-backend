@@ -6,5 +6,7 @@ export interface IReelIndexWorkflow {
   execute(input: {
     job: ReelIndexJob;
     allowReclaim: boolean;
+    retryNumber?: number;
+    queuedAt?: string;
   }): Promise<ReelIndexWorkflowStatus>;
 }

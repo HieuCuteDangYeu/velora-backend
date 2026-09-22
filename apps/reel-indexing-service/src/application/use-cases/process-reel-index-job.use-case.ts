@@ -28,11 +28,15 @@ export class ProcessReelIndexJobUseCase {
     job: ReelIndexJob;
     allowReclaim: boolean;
     allowRetry: boolean;
+    retryNumber?: number;
+    queuedAt?: string;
   }): Promise<ProcessReelIndexJobResult> {
     try {
       const status = await this.workflow.execute({
         job: input.job,
         allowReclaim: input.allowReclaim,
+        retryNumber: input.retryNumber,
+        queuedAt: input.queuedAt,
       });
       return { status };
     } catch (error: unknown) {

@@ -241,3 +241,172 @@ groups:
         annotations:
           summary: monitoring-service resident memory is above 512 MiB
           description: monitoring-service has used more than 512 MiB of resident memory for ten minutes.
+
+  - name: velora-rag
+    rules:
+      - alert: VeloraRagHighFailureRate
+        expr: |
+          (
+            sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[5m]))
+            /
+            clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)
+          ) > 0.10
+          and on()
+          sum(increase(velora_rag_requests_total{service="ai-service"}[5m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+          service: ai-service
+        annotations:
+          summary: RAG failure rate is above 10 percent
+          description: More than 10 percent of RAG requests have failed for five minutes with at least ten requests in the rolling window.
+
+      - alert: VeloraRagHighP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(velora_rag_request_duration_seconds_bucket{service="ai-service"}[5m])
+            )
+          ) > 20
+          and on()
+          sum(increase(velora_rag_requests_total{service="ai-service"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: ai-service
+        annotations:
+          summary: RAG p95 latency is above 20 seconds
+          description: RAG p95 end-to-end latency has remained above 20 seconds for five minutes with at least five recent requests.
+
+  - name: velora-reel-pipeline
+    rules:
+      - alert: VeloraReelMonitoringSnapshotUnavailable
+        expr: velora_reel_pipeline_snapshot_up{service="content-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: content-service
+        annotations:
+          summary: Reel pipeline monitoring snapshot is unavailable
+          description: monitoring-service has been unable to fetch a Reel pipeline snapshot from content-service for two minutes.
+
+      - alert: VeloraReelPipelineStalled
+        expr: velora_reel_pipeline_items{service="content-service",state="stalled"} > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: content-service
+        annotations:
+          summary: Reel pipeline has stalled work
+          description: At least one queued or processing Reel has not changed for more than ten minutes.
+
+      - alert: VeloraReelPipelineRecentFailures
+        expr: velora_reel_pipeline_recent_failures{service="content-service"} > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: content-service
+        annotations:
+          summary: Reel pipeline recorded a recent failure
+          description: At least one Reel recorded processingFailedAt during the last fifteen minutes.
+
+      - alert: VeloraReelRabbitMqUnavailable
+        expr: up{job="rabbitmq-reels"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: rabbitmq
+        annotations:
+          summary: Reel RabbitMQ metrics are unavailable
+          description: Prometheus has not been able to scrape the RabbitMQ Reel queue metrics endpoint for two minutes.
+
+      - alert: VeloraReelMediaBacklogWithoutConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_jobs"}) > 0
+          and on()
+          sum(rabbitmq_detailed_queue_consumers{queue=~"reel_media_(short|long)_jobs"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: media-processing-service
+        annotations:
+          summary: Reel media jobs are queued with no consumers
+          description: Primary Reel media queues contain ready work but have no consumers for two minutes.
+
+      - alert: VeloraReelIndexBacklogWithoutConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_jobs"}) > 0
+          and on()
+          sum(rabbitmq_detailed_queue_consumers{queue=~"reel_index_(short|long)_jobs"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: reel-indexing-service
+        annotations:
+          summary: Reel index jobs are queued with no consumers
+          description: Primary Reel index queues contain ready work but have no consumers for two minutes.
+
+      - alert: VeloraReelMediaDlqNotEmpty
+        expr: sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_dlq"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: media-processing-service
+        annotations:
+          summary: Reel media dead-letter queue is not empty
+          description: At least one Reel media job exhausted queue retry handling and is waiting in a dead-letter queue.
+
+      - alert: VeloraReelIndexDlqNotEmpty
+        expr: sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_dlq"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: reel-indexing-service
+        annotations:
+          summary: Reel index dead-letter queue is not empty
+          description: At least one Reel index job exhausted queue retry handling and is waiting in a dead-letter queue.
+
+      - alert: VeloraReelWorkerExhaustedRetries
+        expr: sum by (pipeline) (increase(velora_reel_worker_exhausted_retries_total[5m])) > 0
+        labels:
+          severity: warning
+          service: reel-pipeline
+        annotations:
+          summary: Reel worker retries were exhausted
+          description: Reel {{ $labels.pipeline }} processing exhausted its retry budget during the last five minutes.
+
+      - alert: VeloraReelWorkerHighFailureRate
+        expr: |
+          (
+            sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE",outcome="FAILED"}[5m]))
+            /
+            clamp_min(sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE"}[5m])), 0.000001)
+          ) > 0.20
+          and on(pipeline)
+          sum by (pipeline) (increase(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: reel-pipeline
+        annotations:
+          summary: Reel worker failure rate is elevated
+          description: Reel {{ $labels.pipeline }} processing has stayed above a 20 percent failure rate for five minutes with at least five recent jobs.
+
+      - alert: VeloraReelWorkerHighQueueWait
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (pipeline, le) (
+              rate(velora_reel_worker_stage_duration_seconds_bucket{stage="QUEUE_WAIT"}[5m])
+            )
+          ) > 120
+          and on(pipeline)
+          sum by (pipeline) (increase(velora_reel_worker_stage_runs_total{stage="QUEUE_WAIT"}[5m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+          service: reel-pipeline
+        annotations:
+          summary: Reel queue wait p95 is elevated
+          description: Reel {{ $labels.pipeline }} p95 queue wait has stayed above two minutes for five minutes with at least five recent jobs.

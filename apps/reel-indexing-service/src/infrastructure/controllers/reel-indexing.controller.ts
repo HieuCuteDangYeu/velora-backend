@@ -41,6 +41,8 @@ export class ReelIndexingController {
         job: payload,
         allowReclaim: message.fields.redelivered,
         allowRetry: nextRetryNumber !== undefined,
+        retryNumber,
+        queuedAt: this.getQueuedAt(message, payload.createdAt),
       });
       if (result.status === 'RETRY' && nextRetryNumber !== undefined) {
         await this.retryPublisher.publishRetry(payload, nextRetryNumber);
@@ -69,6 +71,13 @@ export class ReelIndexingController {
       message.properties.headers?.['x-reel-index-retry-count'],
     );
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  private getQueuedAt(message: ConsumeMessage, fallback: string): string {
+    const timestamp = Number(message.properties.timestamp);
+    return Number.isFinite(timestamp) && timestamp > 0
+      ? new Date(timestamp).toISOString()
+      : fallback;
   }
 
   private getDelivery(context: RmqContext): {

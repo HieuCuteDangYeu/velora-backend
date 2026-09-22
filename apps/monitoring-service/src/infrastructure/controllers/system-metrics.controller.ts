@@ -82,6 +82,107 @@ const RANGE_QUERIES = {
     'sum(rate(velora_notification_apns_requests_total{service="notification-service",outcome=~"timeout|transport_error"}[5m]))',
   notification_retry_scheduler_completion_age_seconds:
     'max(time() - velora_notification_retry_scheduler_last_completion_timestamp_seconds{service="notification-service"})',
+  rag_request_rate:
+    'sum(rate(velora_rag_requests_total{service="ai-service"}[5m]))',
+  rag_failure_rate:
+    '(sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_rag_request_duration_seconds_bucket{service="ai-service"}[5m])))',
+  rag_avg_retrieved_chunks:
+    '(sum(rate(velora_rag_retrieved_chunks_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_context_insufficient_rate:
+    '(sum(rate(velora_rag_context_insufficient_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_verifier_failure_rate:
+    '(sum(rate(velora_rag_verifier_failures_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_fallback_rate:
+    '(sum(rate(velora_rag_fallbacks_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_retries_per_request:
+    '(sum(rate(velora_rag_retries_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_input_token_rate:
+    'sum(rate(velora_rag_input_tokens_total{service="ai-service"}[5m]))',
+  rag_output_token_rate:
+    'sum(rate(velora_rag_output_tokens_total{service="ai-service"}[5m]))',
+  rag_total_token_rate:
+    'sum(rate(velora_rag_tokens_total{service="ai-service"}[5m]))',
+  rag_avg_tokens_per_request:
+    '(sum(rate(velora_rag_tokens_total{service="ai-service"}[5m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[5m])) > 0)',
+  rag_p95_tokens_per_request:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_rag_request_tokens_bucket{service="ai-service"}[5m])))',
+  reel_snapshot_up:
+    'max(velora_reel_pipeline_snapshot_up{service="content-service"})',
+  reel_queued:
+    'max(velora_reel_pipeline_items{service="content-service",state="queued"})',
+  reel_processing:
+    'max(velora_reel_pipeline_items{service="content-service",state="processing"})',
+  reel_ready:
+    'max(velora_reel_pipeline_items{service="content-service",state="ready"})',
+  reel_failed:
+    'max(velora_reel_pipeline_items{service="content-service",state="failed"})',
+  reel_degraded:
+    'max(velora_reel_pipeline_items{service="content-service",state="degraded"})',
+  reel_stalled:
+    'max(velora_reel_pipeline_items{service="content-service",state="stalled"})',
+  reel_recent_failed:
+    'max(velora_reel_pipeline_recent_failures{service="content-service"})',
+  reel_ready_latency_p95:
+    'max(velora_reel_pipeline_ready_latency_p95_seconds{service="content-service"})',
+  reel_media_throughput:
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[5m]))',
+  reel_media_failure_rate:
+    '(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE",outcome="FAILED"}[5m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[5m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[5m])) > 0)',
+  reel_media_retry_rate:
+    '(sum(rate(velora_reel_worker_retries_total{pipeline="MEDIA"}[5m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[5m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[5m])) > 0)',
+  reel_media_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[5m])))',
+  reel_media_queue_wait_p95:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="MEDIA",stage="QUEUE_WAIT"}[5m])))',
+  reel_media_exhausted_retry_rate:
+    'sum(rate(velora_reel_worker_exhausted_retries_total{pipeline="MEDIA"}[5m]))',
+  reel_index_throughput:
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[5m]))',
+  reel_index_failure_rate:
+    '(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="FAILED"}[5m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[5m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[5m])) > 0)',
+  reel_index_retry_rate:
+    '(sum(rate(velora_reel_worker_retries_total{pipeline="INDEX"}[5m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[5m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[5m])) > 0)',
+  reel_index_p95_latency:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="INDEX",stage="TOTAL_PIPELINE"}[5m])))',
+  reel_index_queue_wait_p95:
+    'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="INDEX",stage="QUEUE_WAIT"}[5m])))',
+  reel_index_exhausted_retry_rate:
+    'sum(rate(velora_reel_worker_exhausted_retries_total{pipeline="INDEX"}[5m]))',
+  reel_index_chunk_rate:
+    'sum(rate(velora_reel_index_items_total{kind="chunk"}[5m]))',
+  reel_index_zero_chunk_rate:
+    '(sum(rate(velora_reel_index_zero_chunk_total[5m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[5m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[5m])) > 0)',
+  reel_rabbitmq_up: 'max(up{job="rabbitmq-reels"})',
+  reel_media_queue_ready:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_jobs"})',
+  reel_media_queue_unacked:
+    'sum(rabbitmq_detailed_queue_messages_unacked{queue=~"reel_media_(short|long)_jobs"})',
+  reel_media_consumers:
+    'sum(rabbitmq_detailed_queue_consumers{queue=~"reel_media_(short|long)_jobs"})',
+  reel_media_retry_queue_depth:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
+  reel_media_dlq_depth:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_dlq"})',
+  reel_media_publish_rate:
+    'sum(rate(rabbitmq_detailed_queue_messages_published_total{queue=~"reel_media_.*"}[5m]))',
+  reel_media_delivery_rate:
+    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{queue=~"reel_media_.*"}[5m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{queue=~"reel_media_.*"}[5m]))',
+  reel_index_queue_ready:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_jobs"})',
+  reel_index_queue_unacked:
+    'sum(rabbitmq_detailed_queue_messages_unacked{queue=~"reel_index_(short|long)_jobs"})',
+  reel_index_consumers:
+    'sum(rabbitmq_detailed_queue_consumers{queue=~"reel_index_(short|long)_jobs"})',
+  reel_index_retry_queue_depth:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
+  reel_index_dlq_depth:
+    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_dlq"})',
+  reel_index_publish_rate:
+    'sum(rate(rabbitmq_detailed_queue_messages_published_total{queue=~"reel_index_.*"}[5m]))',
+  reel_index_delivery_rate:
+    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{queue=~"reel_index_.*"}[5m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{queue=~"reel_index_.*"}[5m]))',
 } as const;
 
 type RangeMetric = keyof typeof RANGE_QUERIES;
@@ -270,6 +371,57 @@ export class SystemMetricsController {
           notificationApnsRequestsPerSecond,
           notificationApnsTransportFailuresPerSecond,
           notificationRetrySchedulerCompletionAgeSeconds,
+          ragRequestsPerSecond,
+          ragFailureRate,
+          ragP95LatencySeconds,
+          ragAvgRetrievedChunks,
+          ragContextInsufficientRate,
+          ragVerifierFailureRate,
+          ragFallbackRate,
+          ragRetriesPerRequest,
+          ragInputTokensPerSecond,
+          ragOutputTokensPerSecond,
+          ragTotalTokensPerSecond,
+          ragAvgTokensPerRequest,
+          ragP95TokensPerRequest,
+          reelSnapshotUp,
+          reelQueued,
+          reelProcessing,
+          reelReady,
+          reelFailed,
+          reelDegraded,
+          reelStalled,
+          reelRecentFailed,
+          reelReadyLatencyP95Seconds,
+          reelRabbitmqUp,
+          reelMediaThroughputPerSecond,
+          reelMediaFailureRate,
+          reelMediaRetryRate,
+          reelMediaP95LatencySeconds,
+          reelMediaQueueWaitP95Seconds,
+          reelMediaExhaustedRetriesPerSecond,
+          reelMediaQueueReady,
+          reelMediaQueueUnacked,
+          reelMediaConsumers,
+          reelMediaRetryQueueDepth,
+          reelMediaDlqDepth,
+          reelMediaPublishRate,
+          reelMediaDeliveryRate,
+          reelIndexThroughputPerSecond,
+          reelIndexFailureRate,
+          reelIndexRetryRate,
+          reelIndexP95LatencySeconds,
+          reelIndexQueueWaitP95Seconds,
+          reelIndexExhaustedRetriesPerSecond,
+          reelIndexChunksPerSecond,
+          reelIndexZeroChunkRate,
+          reelIndexQueueReady,
+          reelIndexQueueUnacked,
+          reelIndexConsumers,
+          reelIndexRetryQueueDepth,
+          reelIndexDlqDepth,
+          reelIndexPublishRate,
+          reelIndexDeliveryRate,
         ] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
           this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -331,6 +483,57 @@ export class SystemMetricsController {
           this.prometheus.scalar(
             RANGE_QUERIES.notification_retry_scheduler_completion_age_seconds,
           ),
+          this.prometheus.scalar(RANGE_QUERIES.rag_request_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_failure_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.rag_avg_retrieved_chunks),
+          this.prometheus.scalar(RANGE_QUERIES.rag_context_insufficient_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_verifier_failure_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_fallback_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_retries_per_request),
+          this.prometheus.scalar(RANGE_QUERIES.rag_input_token_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_output_token_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_total_token_rate),
+          this.prometheus.scalar(RANGE_QUERIES.rag_avg_tokens_per_request),
+          this.prometheus.scalar(RANGE_QUERIES.rag_p95_tokens_per_request),
+          this.prometheus.scalar(RANGE_QUERIES.reel_snapshot_up),
+          this.prometheus.scalar(RANGE_QUERIES.reel_queued),
+          this.prometheus.scalar(RANGE_QUERIES.reel_processing),
+          this.prometheus.scalar(RANGE_QUERIES.reel_ready),
+          this.prometheus.scalar(RANGE_QUERIES.reel_failed),
+          this.prometheus.scalar(RANGE_QUERIES.reel_degraded),
+          this.prometheus.scalar(RANGE_QUERIES.reel_stalled),
+          this.prometheus.scalar(RANGE_QUERIES.reel_recent_failed),
+          this.prometheus.scalar(RANGE_QUERIES.reel_ready_latency_p95),
+          this.prometheus.scalar(RANGE_QUERIES.reel_rabbitmq_up),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_throughput),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_failure_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_retry_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_queue_wait_p95),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_exhausted_retry_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_queue_ready),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_queue_unacked),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_consumers),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_retry_queue_depth),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_dlq_depth),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_publish_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_media_delivery_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_throughput),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_failure_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_retry_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_p95_latency),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_queue_wait_p95),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_exhausted_retry_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_chunk_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_zero_chunk_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_queue_ready),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_queue_unacked),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_consumers),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_retry_queue_depth),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_dlq_depth),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_publish_rate),
+          this.prometheus.scalar(RANGE_QUERIES.reel_index_delivery_rate),
         ]);
 
         const hostMemoryUsedBytes = subtractMetric(
@@ -415,6 +618,65 @@ export class SystemMetricsController {
               notificationApnsTransportFailuresPerSecond,
             retrySchedulerCompletionAgeSeconds:
               notificationRetrySchedulerCompletionAgeSeconds,
+          },
+          rag: {
+            requestsPerSecond: ragRequestsPerSecond,
+            failureRate: ragFailureRate,
+            p95LatencySeconds: ragP95LatencySeconds,
+            avgRetrievedChunks: ragAvgRetrievedChunks,
+            contextInsufficientRate: ragContextInsufficientRate,
+            verifierFailureRate: ragVerifierFailureRate,
+            fallbackRate: ragFallbackRate,
+            retriesPerRequest: ragRetriesPerRequest,
+            inputTokensPerSecond: ragInputTokensPerSecond,
+            outputTokensPerSecond: ragOutputTokensPerSecond,
+            totalTokensPerSecond: ragTotalTokensPerSecond,
+            avgTokensPerRequest: ragAvgTokensPerRequest,
+            p95TokensPerRequest: ragP95TokensPerRequest,
+          },
+          reels: {
+            snapshotUp: targetStatus(reelSnapshotUp),
+            rabbitmqUp: targetStatus(reelRabbitmqUp),
+            queued: reelQueued,
+            processing: reelProcessing,
+            ready: reelReady,
+            failed: reelFailed,
+            degraded: reelDegraded,
+            stalled: reelStalled,
+            recentFailed: reelRecentFailed,
+            readyLatencyP95Seconds: reelReadyLatencyP95Seconds,
+            media: {
+              throughputPerSecond: reelMediaThroughputPerSecond,
+              failureRate: reelMediaFailureRate,
+              retryRate: reelMediaRetryRate,
+              p95LatencySeconds: reelMediaP95LatencySeconds,
+              queueWaitP95Seconds: reelMediaQueueWaitP95Seconds,
+              exhaustedRetriesPerSecond: reelMediaExhaustedRetriesPerSecond,
+              queueReady: reelMediaQueueReady,
+              queueUnacked: reelMediaQueueUnacked,
+              consumers: reelMediaConsumers,
+              retryQueueDepth: reelMediaRetryQueueDepth,
+              dlqDepth: reelMediaDlqDepth,
+              publishRate: reelMediaPublishRate,
+              deliveryRate: reelMediaDeliveryRate,
+            },
+            index: {
+              throughputPerSecond: reelIndexThroughputPerSecond,
+              failureRate: reelIndexFailureRate,
+              retryRate: reelIndexRetryRate,
+              p95LatencySeconds: reelIndexP95LatencySeconds,
+              queueWaitP95Seconds: reelIndexQueueWaitP95Seconds,
+              exhaustedRetriesPerSecond: reelIndexExhaustedRetriesPerSecond,
+              chunksPerSecond: reelIndexChunksPerSecond,
+              zeroChunkRate: reelIndexZeroChunkRate,
+              queueReady: reelIndexQueueReady,
+              queueUnacked: reelIndexQueueUnacked,
+              consumers: reelIndexConsumers,
+              retryQueueDepth: reelIndexRetryQueueDepth,
+              dlqDepth: reelIndexDlqDepth,
+              publishRate: reelIndexPublishRate,
+              deliveryRate: reelIndexDeliveryRate,
+            },
           },
         };
       } catch (error) {

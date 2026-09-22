@@ -28,6 +28,7 @@ import type {
 } from '@indexing/domain/interfaces/reel-index-workflow.interface';
 import type { ISemanticIndexRepository } from '@indexing/domain/interfaces/semantic-index.repository.interface';
 import { PrismaLangGraphCheckpointSaver } from '@indexing/infrastructure/repositories/prisma-langgraph-checkpoint-saver';
+import { IndexingMetricsService } from '@indexing/infrastructure/services/indexing-metrics.service';
 import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -57,6 +58,7 @@ export function routeIndexing(input: {
 export interface ReelIndexGraphState {
   job: ReelIndexJob;
   allowReclaim: boolean;
+  retryNumber: number;
   route?: ReelIndexRoute;
   currentStage?: string;
   progress: number;
@@ -79,6 +81,7 @@ export interface ReelIndexGraphState {
 const ReelIndexGraphStateSchema = new StateSchema({
   job: z.any(),
   allowReclaim: z.boolean().default(false),
+  retryNumber: z.number().int().nonnegative().default(0),
   route: z.enum(['NO_AUDIO', 'SHORT', 'LONG']).optional(),
   currentStage: z.string().optional(),
   progress: z.number().default(0),
@@ -129,6 +132,7 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
     private readonly content: IIndexingContentService,
     @Inject('ISemanticIndexRepository')
     private readonly semanticIndex: ISemanticIndexRepository,
+    private readonly indexingMetrics: IndexingMetricsService,
   ) {
     const graph = this.buildGraph().compile({
       checkpointer: this.checkpointer,
@@ -140,110 +144,263 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
   async execute(input: {
     job: ReelIndexJob;
     allowReclaim: boolean;
+    retryNumber?: number;
+    queuedAt?: string;
   }): Promise<ReelIndexWorkflowStatus> {
-    const result = await this.invokeGraph(
-      {
-        job: input.job,
-        allowReclaim: input.allowReclaim,
-        progress: 0,
-        visualScenes: [],
-        visualReady: false,
-        transcriptReady: false,
-        warnings: [],
-      },
-      {
-        configurable: {
-          thread_id: [
-            input.job.reelId,
-            input.job.indexAttemptId,
-            input.job.indexVersion,
-          ].join(':'),
+    const retryNumber = input.retryNumber ?? 0;
+    const queuedAtMs = Date.parse(input.queuedAt ?? input.job.createdAt);
+    this.indexingMetrics.record({
+      job: input.job,
+      retryNumber,
+      stage: 'QUEUE_WAIT',
+      success: Number.isFinite(queuedAtMs),
+      durationMs: Number.isFinite(queuedAtMs)
+        ? Math.max(0, Date.now() - queuedAtMs)
+        : 0,
+    });
+
+    const startedAt = Date.now();
+    try {
+      const result = await this.invokeGraph(
+        {
+          job: input.job,
+          allowReclaim: input.allowReclaim,
+          retryNumber,
+          progress: 0,
+          visualScenes: [],
+          visualReady: false,
+          transcriptReady: false,
+          warnings: [],
         },
-      },
-    );
-    if (!result.status) {
-      throw new Error('Reel indexing workflow ended without a status');
+        {
+          configurable: {
+            thread_id: [
+              input.job.reelId,
+              input.job.indexAttemptId,
+              input.job.indexVersion,
+            ].join(':'),
+          },
+        },
+      );
+      if (!result.status) {
+        throw new Error('Reel indexing workflow ended without a status');
+      }
+      if (result.status === 'COMPLETED') {
+        this.indexingMetrics.record({
+          job: input.job,
+          retryNumber,
+          stage: 'TOTAL_PIPELINE',
+          success: true,
+          durationMs: Date.now() - startedAt,
+          ...(result.indexCompletion
+            ? {
+                itemCounts: {
+                  reelDocuments: result.indexCompletion.reelDocumentCount,
+                  sections: result.indexCompletion.sectionCount,
+                  chunks: result.indexCompletion.chunkCount,
+                },
+              }
+            : {}),
+        });
+      }
+      return result.status;
+    } catch (error) {
+      this.indexingMetrics.record({
+        job: input.job,
+        retryNumber,
+        stage: 'TOTAL_PIPELINE',
+        success: false,
+        durationMs: Date.now() - startedAt,
+      });
+      throw error;
     }
-    return result.status;
   }
 
   private buildGraph() {
+    const timed =
+      (
+        stage: string,
+        handler: (
+          state: ReelIndexGraphState,
+        ) =>
+          | Promise<Partial<ReelIndexGraphState>>
+          | Partial<ReelIndexGraphState>,
+      ) =>
+      async (state: unknown): Promise<Partial<ReelIndexGraphState>> => {
+        const value = state as ReelIndexGraphState;
+        const startedAt = Date.now();
+        try {
+          const result = await handler(value);
+          this.indexingMetrics.record({
+            job: value.job,
+            retryNumber: value.retryNumber,
+            stage,
+            success: true,
+            durationMs: Date.now() - startedAt,
+          });
+          return result;
+        } catch (error) {
+          this.indexingMetrics.record({
+            job: value.job,
+            retryNumber: value.retryNumber,
+            stage,
+            success: false,
+            durationMs: Date.now() - startedAt,
+          });
+          throw error;
+        }
+      };
+
     return new StateGraph(ReelIndexGraphStateSchema)
-      .addNode('load_or_resume_attempt', (state) =>
-        this.loadOrResume(state as ReelIndexGraphState),
+      .addNode(
+        'load_or_resume_attempt',
+        timed('LOAD_OR_RESUME_ATTEMPT', (state) => this.loadOrResume(state)),
       )
-      .addNode('validate_and_classify', (state) =>
-        this.validateAndClassify(state as ReelIndexGraphState),
+      .addNode(
+        'validate_and_classify',
+        timed('VALIDATE_AND_CLASSIFY', (state) =>
+          this.validateAndClassify(state),
+        ),
       )
-      .addNode('analyze_visual_frames', (state) =>
-        this.analyzeVisualEvidence(state as ReelIndexGraphState),
+      .addNode(
+        'analyze_visual_frames',
+        timed('ANALYZE_VISUAL_FRAMES', (state) =>
+          this.analyzeVisualEvidence(state),
+        ),
       )
-      .addNode('build_metadata_only_index', (state) =>
-        this.buildMetadataOnlyIndex(state as ReelIndexGraphState),
+      .addNode(
+        'build_metadata_only_index',
+        timed('BUILD_METADATA_ONLY_INDEX', (state) =>
+          this.buildMetadataOnlyIndex(state),
+        ),
       )
-      .addNode('transcribe_short_video', (state) =>
-        this.transcribeShortVideo(state as ReelIndexGraphState),
+      .addNode(
+        'transcribe_short_video',
+        timed('TRANSCRIBE_SHORT_VIDEO', (state) =>
+          this.transcribeShortVideo(state),
+        ),
       )
-      .addNode('load_audio_manifest', (state) =>
-        this.stageNode(state as ReelIndexGraphState, 'load_audio_manifest', 15),
+      .addNode(
+        'load_audio_manifest',
+        timed('LOAD_AUDIO_MANIFEST', (state) =>
+          this.stageNode(state, 'load_audio_manifest', 15),
+        ),
       )
-      .addNode('transcribe_pending_segments', (state) =>
-        this.transcribePendingSegments(state as ReelIndexGraphState),
+      .addNode(
+        'transcribe_pending_segments',
+        timed('TRANSCRIBE_PENDING_SEGMENTS', (state) =>
+          this.transcribePendingSegments(state),
+        ),
       )
-      .addNode('merge_transcript_segments', (state) =>
-        this.mergeTranscriptSegments(state as ReelIndexGraphState),
+      .addNode(
+        'merge_transcript_segments',
+        timed('MERGE_TRANSCRIPT_SEGMENTS', (state) =>
+          this.mergeTranscriptSegments(state),
+        ),
       )
-      .addNode('validate_transcript', (state) =>
-        this.validateTranscript(state as ReelIndexGraphState),
+      .addNode(
+        'validate_transcript',
+        timed('VALIDATE_TRANSCRIPT', (state) => this.validateTranscript(state)),
       )
-      .addNode('evidence_ready_join', () => ({}))
-      .addNode('evaluate_metadata_quality', (state) =>
-        this.evaluateMetadataQuality(state as ReelIndexGraphState),
+      .addNode(
+        'evidence_ready_join',
+        timed('EVIDENCE_READY_JOIN', () => ({})),
       )
-      .addNode('preserve_user_metadata', (state) =>
-        this.preserveUserMetadata(state as ReelIndexGraphState),
+      .addNode(
+        'evaluate_metadata_quality',
+        timed('EVALUATE_METADATA_QUALITY', (state) =>
+          this.evaluateMetadataQuality(state),
+        ),
       )
-      .addNode('extract_hierarchical_metadata', (state) =>
-        this.extractHierarchicalMetadata(state as ReelIndexGraphState),
+      .addNode(
+        'preserve_user_metadata',
+        timed('PRESERVE_USER_METADATA', (state) =>
+          this.preserveUserMetadata(state),
+        ),
       )
-      .addNode('choose_chunking_strategy', (state) =>
-        this.chooseChunkingStrategy(state as ReelIndexGraphState),
+      .addNode(
+        'extract_hierarchical_metadata',
+        timed('EXTRACT_HIERARCHICAL_METADATA', (state) =>
+          this.extractHierarchicalMetadata(state),
+        ),
       )
-      .addNode('build_metadata_document', (state) =>
-        this.buildDocumentDrafts(state as ReelIndexGraphState, []),
+      .addNode(
+        'choose_chunking_strategy',
+        timed('CHOOSE_CHUNKING_STRATEGY', (state) =>
+          this.chooseChunkingStrategy(state),
+        ),
       )
-      .addNode('build_short_evidence_chunks', (state) =>
-        this.buildDocumentDrafts(state as ReelIndexGraphState, []),
+      .addNode(
+        'build_metadata_document',
+        timed('BUILD_METADATA_DOCUMENT', (state) =>
+          this.buildDocumentDrafts(state, []),
+        ),
       )
-      .addNode('detect_long_sections', (state) =>
-        this.detectLongSections(state as ReelIndexGraphState),
+      .addNode(
+        'build_short_evidence_chunks',
+        timed('BUILD_SHORT_EVIDENCE_CHUNKS', (state) =>
+          this.buildDocumentDrafts(state, []),
+        ),
       )
-      .addNode('section_quality_gate', (state) =>
-        this.sectionQualityGate(state as ReelIndexGraphState),
+      .addNode(
+        'detect_long_sections',
+        timed('DETECT_LONG_SECTIONS', (state) =>
+          this.detectLongSections(state),
+        ),
       )
-      .addNode('build_long_evidence_chunks', (state) =>
-        this.buildLongDocumentDrafts(state as ReelIndexGraphState),
+      .addNode(
+        'section_quality_gate',
+        timed('SECTION_QUALITY_GATE', (state) =>
+          this.sectionQualityGate(state),
+        ),
       )
-      .addNode('validate_document_tokens', (state) =>
-        this.validateDocumentTokens(state as ReelIndexGraphState),
+      .addNode(
+        'build_long_evidence_chunks',
+        timed('BUILD_LONG_EVIDENCE_CHUNKS', (state) =>
+          this.buildLongDocumentDrafts(state),
+        ),
       )
-      .addNode('generate_missing_embeddings', (state) =>
-        this.generateMissingEmbeddings(state as ReelIndexGraphState),
+      .addNode(
+        'validate_document_tokens',
+        timed('VALIDATE_DOCUMENT_TOKENS', (state) =>
+          this.validateDocumentTokens(state),
+        ),
       )
-      .addNode('embedding_quality_gate', (state) =>
-        this.embeddingQualityGate(state as ReelIndexGraphState),
+      .addNode(
+        'generate_missing_embeddings',
+        timed('GENERATE_MISSING_EMBEDDINGS', (state) =>
+          this.generateMissingEmbeddings(state),
+        ),
       )
-      .addNode('validate_index_candidate', (state) =>
-        this.validateIndexCandidate(state as ReelIndexGraphState),
+      .addNode(
+        'embedding_quality_gate',
+        timed('EMBEDDING_QUALITY_GATE', (state) =>
+          this.embeddingQualityGate(state),
+        ),
       )
-      .addNode('persist_semantic_candidate', (state) =>
-        this.persistSemanticCandidate(state as ReelIndexGraphState),
+      .addNode(
+        'validate_index_candidate',
+        timed('VALIDATE_INDEX_CANDIDATE', (state) =>
+          this.validateIndexCandidate(state),
+        ),
       )
-      .addNode('persisted_candidate_integrity_gate', (state) =>
-        this.persistedCandidateIntegrityGate(state as ReelIndexGraphState),
+      .addNode(
+        'persist_semantic_candidate',
+        timed('PERSIST_SEMANTIC_CANDIDATE', (state) =>
+          this.persistSemanticCandidate(state),
+        ),
       )
-      .addNode('commit_semantic_candidate', (state) =>
-        this.commitSemanticCandidate(state as ReelIndexGraphState),
+      .addNode(
+        'persisted_candidate_integrity_gate',
+        timed('PERSISTED_CANDIDATE_INTEGRITY_GATE', (state) =>
+          this.persistedCandidateIntegrityGate(state),
+        ),
+      )
+      .addNode(
+        'commit_semantic_candidate',
+        timed('COMMIT_SEMANTIC_CANDIDATE', (state) =>
+          this.commitSemanticCandidate(state),
+        ),
       )
       .addEdge(START, 'load_or_resume_attempt')
       .addConditionalEdges(

@@ -2,7 +2,9 @@ import type {
   ReelPipelineMetricContext,
   ReelPipelineMetricRecord,
 } from '@common/processing/interfaces/reel-pipeline-metric.interface';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { ClientProxy } from '@nestjs/microservices';
+import { randomUUID } from 'node:crypto';
 import type {
   IProcessingMetrics,
   IProcessingStageTimer,
@@ -54,6 +56,11 @@ export class ProcessingStageTimer implements IProcessingStageTimer {
 @Injectable()
 export class ProcessingMetricsService implements IProcessingMetrics {
   private readonly logger = new Logger('ReelPipelineMetrics');
+
+  constructor(
+    @Inject('MONITORING_SERVICE_RMQ')
+    private readonly monitoringClient: ClientProxy,
+  ) {}
 
   startStage(
     context: ReelPipelineMetricContext,
@@ -107,6 +114,23 @@ export class ProcessingMetricsService implements IProcessingMetrics {
     };
 
     this.logger.log(JSON.stringify(record));
+    this.monitoringClient
+      .emit('reel.pipeline.telemetry.ingest', {
+        eventId: randomUUID(),
+        pipeline: 'MEDIA',
+        lane: context.mediaClass,
+        stage: input.stage,
+        outcome: input.success ? 'SUCCEEDED' : 'FAILED',
+        durationMs: record.durationMs,
+        retryNumber: record.retryNumber,
+        occurredAt: record.timestamp,
+      })
+      .subscribe({
+        error: (error: unknown) => {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`Reel telemetry publish failed: ${detail}`);
+        },
+      });
     return record;
   }
 

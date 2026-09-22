@@ -1,6 +1,7 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import type { CompleteReelIndexCommand } from '@common/processing/interfaces/complete-reel-index.interface';
 import type { ReelContextAccessRequest } from '@common/content/interfaces/reel-context-search-request.interface';
+import type { ReelMonitoringSnapshot } from '@common/content/dtos/reel-monitoring-snapshot.dto';
 import type {
   ReelIndexStatus,
   ReelMediaStatus,
@@ -193,6 +194,8 @@ export interface FriendsReelsQuery {
 }
 
 export interface IContentRepository {
+  getReelMonitoringSnapshot(): Promise<ReelMonitoringSnapshot>;
+
   createReelWithMediaJob(
     reel: Partial<Reel>,
     outboxEvent: ReelMediaOutboxEventInput,

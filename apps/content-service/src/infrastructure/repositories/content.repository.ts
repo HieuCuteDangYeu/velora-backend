@@ -1,4 +1,5 @@
 import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
+import type { ReelMonitoringSnapshot } from '@common/content/dtos/reel-monitoring-snapshot.dto';
 import type { CompleteReelIndexCommand } from '@common/processing/interfaces/complete-reel-index.interface';
 import {
   REEL_INDEX_JOB_EVENT_TYPE,
@@ -62,6 +63,132 @@ export class ContentRepository
 
   async onModuleDestroy() {
     await this.$disconnect();
+  }
+
+  async getReelMonitoringSnapshot(): Promise<ReelMonitoringSnapshot> {
+    const now = new Date();
+    const stalledBefore = new Date(now.getTime() - 10 * 60 * 1000);
+    const recentFailureSince = new Date(now.getTime() - 15 * 60 * 1000);
+    const recentSince = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const [
+      mediaGroups,
+      indexGroups,
+      queued,
+      processing,
+      ready,
+      failed,
+      recentFailed,
+      degraded,
+      stalled,
+      recentReady,
+    ] = await Promise.all([
+      this.reel.groupBy({ by: ['mediaStatus'], _count: { _all: true } }),
+      this.reel.groupBy({ by: ['indexStatus'], _count: { _all: true } }),
+      this.reel.count({
+        where: { processingStage: { in: ['QUEUED', 'INDEX_QUEUED'] } },
+      }),
+      this.reel.count({
+        where: {
+          OR: [
+            { mediaStatus: { in: ['PROBING', 'PROCESSING'] } },
+            { indexStatus: 'PROCESSING' },
+          ],
+        },
+      }),
+      this.reel.count({ where: { processingStage: 'READY' } }),
+      this.reel.count({
+        where: {
+          OR: [
+            { status: 'FAILED' },
+            { mediaStatus: 'FAILED' },
+            { indexStatus: 'FAILED' },
+          ],
+        },
+      }),
+      this.reel.count({
+        where: { processingFailedAt: { gte: recentFailureSince } },
+      }),
+      this.reel.count({ where: { indexStatus: 'DEGRADED' } }),
+      this.reel.count({
+        where: {
+          updatedAt: { lte: stalledBefore },
+          OR: [
+            { processingStage: { in: ['QUEUED', 'INDEX_QUEUED'] } },
+            { mediaStatus: { in: ['PROBING', 'PROCESSING'] } },
+            { indexStatus: 'PROCESSING' },
+          ],
+        },
+      }),
+      this.reel.findMany({
+        where: {
+          processingStage: 'READY',
+          createdAt: { gte: recentSince },
+        },
+        select: {
+          createdAt: true,
+          updatedAt: true,
+          indexCompletedAt: true,
+          processingCompletedAt: true,
+          processingFailedAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 1000,
+      }),
+    ]);
+
+    const media = {
+      PENDING: 0,
+      PROBING: 0,
+      PROCESSING: 0,
+      COMPLETED: 0,
+      FAILED: 0,
+    };
+    for (const group of mediaGroups) {
+      media[group.mediaStatus] = group._count._all;
+    }
+
+    const index = {
+      NOT_REQUESTED: 0,
+      PENDING: 0,
+      PROCESSING: 0,
+      COMPLETED: 0,
+      DEGRADED: 0,
+      FAILED: 0,
+    };
+    for (const group of indexGroups) {
+      index[group.indexStatus] = group._count._all;
+    }
+
+    const readinessSeconds = recentReady
+      .map((reel) => {
+        const readyAt =
+          reel.indexCompletedAt ??
+          reel.processingFailedAt ??
+          reel.processingCompletedAt ??
+          reel.updatedAt;
+        return Math.max(
+          0,
+          (readyAt.getTime() - reel.createdAt.getTime()) / 1000,
+        );
+      })
+      .sort((left, right) => left - right);
+    const p95Index = Math.max(0, Math.ceil(readinessSeconds.length * 0.95) - 1);
+
+    return {
+      generatedAt: now.toISOString(),
+      queued,
+      processing,
+      ready,
+      failed,
+      recentFailed,
+      degraded,
+      stalled,
+      readyLatencyP95Seconds:
+        readinessSeconds.length > 0 ? readinessSeconds[p95Index] : null,
+      media,
+      index,
+    };
   }
 
   private toMediaMetadataData(

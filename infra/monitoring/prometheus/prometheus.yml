@@ -35,6 +35,22 @@ scrape_configs:
       - targets:
           - notification-service:3015
 
+  - job_name: rabbitmq-reels
+    metrics_path: /metrics/detailed
+    params:
+      family:
+        - queue_coarse_metrics
+        - queue_consumer_count
+        - channel_queue_metrics
+        - channel_queue_exchange_metrics
+    static_configs:
+      - targets:
+          - rabbitmq:15692
+    metric_relabel_configs:
+      - source_labels: [queue]
+        regex: reel_(media|index)_.+
+        action: keep
+
   - job_name: node-exporter
     static_configs:
       - targets:

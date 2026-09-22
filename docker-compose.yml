@@ -498,11 +498,13 @@ services:
       - .env
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     ports:
       - '127.0.0.1:15672:15672'
       - '127.0.0.1:5672:5672'
     expose:
       - '5672'
+      - '15692'
     healthcheck:
       test:
         [

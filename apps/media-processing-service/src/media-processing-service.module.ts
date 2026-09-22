@@ -80,6 +80,32 @@ import { TikTokCdnService } from './infrastructure/services/tiktok-cdn.service';
         },
         inject: [ConfigService],
       },
+      {
+        name: 'MONITORING_SERVICE_RMQ',
+        useFactory: (configService: ConfigService) => {
+          const heartbeat = Number(
+            configService.get<string>('RABBITMQ_HEARTBEAT_SECONDS') ?? '300',
+          );
+
+          return {
+            transport: Transport.RMQ,
+            options: {
+              urls: [
+                configService.get<string>('RABBITMQ_URL') ||
+                  'amqp://localhost:5672',
+              ],
+              queue: 'monitoring_queue',
+              queueOptions: { durable: true },
+              heartbeat:
+                Number.isFinite(heartbeat) && heartbeat > 0 ? heartbeat : 300,
+              retryAttempts: 10,
+              retryDelay: 3000,
+              persistent: true,
+            },
+          };
+        },
+        inject: [ConfigService],
+      },
     ]),
   ],
   controllers: [MediaProcessingController],

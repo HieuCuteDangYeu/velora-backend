@@ -30,9 +30,16 @@ import type {
   RagRetrievalExecutionDiagnostics,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import type { StructuredLlmCallDiagnostics } from '@ai/domain/interfaces/structured-llm.service.interface';
+import type {
+  RagTelemetryEvent,
+  RagTelemetryTokenUsage,
+} from '@common/ai/dtos/rag-telemetry.dto';
 import { END, START, StateGraph, StateSchema } from '@langchain/langgraph';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ClientProxy } from '@nestjs/microservices';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
 import {
   boundRecentMessages,
@@ -104,6 +111,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       route?: RagChatRouteDecision;
       retrievalPlan?: RagRetrievalPlan;
       retrievalExecution?: RagRetrievalExecutionDiagnostics;
+      tokenUsage: RagTelemetryTokenUsage[];
     }
   >();
 
@@ -126,6 +134,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     @Inject('IContentService')
     private readonly contentService: IContentService,
     private readonly buildGroundedAnswerRevisionUseCase?: BuildGroundedAnswerRevisionUseCase,
+    @Optional()
+    @Inject('MONITORING_SERVICE_RMQ')
+    private readonly monitoringClient?: ClientProxy,
   ) {}
 
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
@@ -135,7 +146,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       route?: RagChatRouteDecision;
       retrievalPlan?: RagRetrievalPlan;
       retrievalExecution?: RagRetrievalExecutionDiagnostics;
-    } = {};
+      tokenUsage: RagTelemetryTokenUsage[];
+    } = { tokenUsage: [] };
     this.executionContexts.set(nodeTimings, executionContext);
     const graph = this.buildGraph(nodeTimings);
     const startedAt = Date.now();
@@ -166,9 +178,11 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     };
 
     let result: RagChatWorkflowState = initialState;
+    let outcome: RagTelemetryEvent['outcome'] = 'FAILED';
 
     try {
       result = await graph.invoke(initialState, { recursionLimit: 64 });
+      outcome = 'SUCCEEDED';
 
       return {
         answer: result.answer?.trim() ?? '',
@@ -191,15 +205,120 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           executionContext.failedNode,
         ),
       };
+      this.recordTokenUsage(
+        nodeTimings,
+        result.failureDiagnostics?.semanticCalls,
+      );
       throw error;
     } finally {
+      const latencyMs = Date.now() - startedAt;
+      const tokenUsage = executionContext.tokenUsage;
       this.executionContexts.delete(nodeTimings);
       await this.saveRagTraceUseCase.execute({
         state: result,
-        latencyMs: Date.now() - startedAt,
+        latencyMs,
         nodeTimings,
       });
+      this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
     }
+  }
+
+  private publishRagTelemetry(
+    state: RagChatWorkflowState,
+    latencyMs: number,
+    outcome: RagTelemetryEvent['outcome'],
+    tokenUsage: RagTelemetryTokenUsage[],
+  ): void {
+    if (!this.monitoringClient) return;
+
+    const routeDecisionSource = state.route?.diagnostics?.decisionSource;
+    const event: RagTelemetryEvent = {
+      eventId: randomUUID(),
+      outcome,
+      reelQuestionType: state.route?.reelQuestionType ?? 'NONE',
+      latencyMs,
+      retrievedChunks:
+        state.retrievalExecution?.retrievedCount ??
+        state.retrievedChunks.length,
+      contextSufficient: state.contextSufficiency?.sufficient,
+      verifierPassed: state.verification?.passed,
+      fallbackUsed:
+        state.answerFallbackReason !== undefined ||
+        routeDecisionSource === 'LLM_FALLBACK' ||
+        routeDecisionSource === 'FAIL_SAFE',
+      retryCount: state.retryCount,
+      retrievalRetryCount: state.retrievalRetryCount,
+      citationRetryCount: state.citationRetryCount,
+      finalFailureSource: state.finalFailureSource,
+      tokenUsage,
+      occurredAt: new Date().toISOString(),
+    };
+
+    try {
+      this.monitoringClient.emit('rag.telemetry.ingest', event).subscribe({
+        error: (error: unknown) => {
+          this.logger.warn(
+            `RAG telemetry publish failed: ${this.errorMessage(error)}`,
+          );
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `RAG telemetry publish failed: ${this.errorMessage(error)}`,
+      );
+    }
+  }
+
+  private recordTokenUsage(
+    nodeTimings: Record<string, number>,
+    calls?: readonly StructuredLlmCallDiagnostics[],
+  ): void {
+    const executionContext = this.executionContexts.get(nodeTimings);
+    if (!executionContext) return;
+    executionContext.tokenUsage.push(...this.tokenUsageFromCalls(calls));
+  }
+
+  private tokenUsageFromCalls(
+    calls?: readonly StructuredLlmCallDiagnostics[],
+  ): RagTelemetryTokenUsage[] {
+    return (calls ?? []).flatMap((call) => {
+      const usage = call.usage;
+      if (!usage) return [];
+
+      const inputTokens = this.nonNegativeInteger(usage.inputTokens);
+      const outputTokens = this.nonNegativeInteger(usage.outputTokens);
+      const explicitTotal = this.nonNegativeInteger(usage.totalTokens);
+      const totalTokens =
+        explicitTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0);
+      if (
+        inputTokens === undefined &&
+        outputTokens === undefined &&
+        explicitTotal === undefined
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          modelRole: call.modelRole?.trim() || 'UNKNOWN',
+          model: call.model.trim() || 'unknown',
+          inputTokens: inputTokens ?? 0,
+          outputTokens: outputTokens ?? 0,
+          totalTokens,
+          reasoningTokens: this.nonNegativeInteger(usage.reasoningTokens),
+        },
+      ];
+    });
+  }
+
+  private nonNegativeInteger(value: number | undefined): number | undefined {
+    return Number.isFinite(value) && value !== undefined && value >= 0
+      ? Math.floor(value)
+      : undefined;
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : 'unknown error';
   }
 
   private buildGraph(nodeTimings: Record<string, number>) {
@@ -241,7 +360,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         'prepareCitationRevisionNode',
         this.createPrepareCitationRevisionNode(),
       )
-      .addNode('verificationFailureNode', this.createVerificationFailureNode())
+      .addNode(
+        'verificationFailureNode',
+        this.createVerificationFailureNode(nodeTimings),
+      )
       .addNode(
         'noContextAnswerNode',
         this.createNoContextAnswerNode(nodeTimings),
@@ -323,6 +445,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       );
       const executionContext = this.executionContexts.get(nodeTimings);
       if (executionContext) executionContext.route = route;
+      this.recordTokenUsage(nodeTimings, route.diagnostics?.semanticCalls);
 
       return { route };
     };
@@ -371,6 +494,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       );
       const executionContext = this.executionContexts.get(nodeTimings);
       if (executionContext) executionContext.retrievalPlan = retrievalPlan;
+      this.recordTokenUsage(
+        nodeTimings,
+        retrievalPlan.diagnostics?.semanticCalls,
+      );
       return { retrievalPlan };
     };
   }
@@ -471,6 +598,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       this.logger.debug(
         `[RagGraph] context sufficient=${contextSufficiency.sufficient} action=${contextSufficiency.recommendedAction}`,
       );
+      this.recordTokenUsage(
+        nodeTimings,
+        contextSufficiency.diagnostics?.semanticCalls,
+      );
 
       return { contextSufficiency };
     };
@@ -549,6 +680,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       const answerGenerationMode = groundedRevision
         ? 'SYNTHESIZED'
         : (draft!.finalizationMode ?? 'SYNTHESIZED');
+      this.recordTokenUsage(
+        nodeTimings,
+        groundedRevision?.diagnostics ?? draft?.diagnostics,
+      );
 
       return {
         answer,
@@ -600,6 +735,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       this.logger.debug(
         `[RagGraph] verification passed=${verification.passed} confidence=${verification.confidence.toFixed(2)} revision=${verification.requiresRevision}`,
       );
+      this.recordTokenUsage(
+        nodeTimings,
+        verification.diagnostics?.semanticCalls,
+      );
 
       return { verification };
     };
@@ -621,6 +760,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     ): Promise<Partial<RagChatWorkflowState>> => {
       const assessment = await this.timed('citationNode', nodeTimings, () =>
         this.buildRagCitationsUseCase.execute(state),
+      );
+      this.recordTokenUsage(
+        nodeTimings,
+        assessment.coverage.diagnostics?.semanticCalls,
       );
 
       return {
@@ -691,7 +834,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     };
   }
 
-  private createVerificationFailureNode() {
+  private createVerificationFailureNode(nodeTimings: Record<string, number>) {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
@@ -781,6 +924,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           };
           const assessment =
             await this.buildRagCitationsUseCase.execute(recoveredState);
+          this.recordTokenUsage(
+            nodeTimings,
+            assessment.coverage.diagnostics?.semanticCalls,
+          );
           const threshold = this.number(
             'AI_RAG_CITATION_COVERAGE_THRESHOLD',
             1,

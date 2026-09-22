@@ -47,7 +47,7 @@ export class MediaProcessingController {
         mediaKey: job.mediaKey,
         userId: job.userId,
         processingAttemptId: job.mediaAttemptId,
-        queuedAt: job.createdAt,
+        queuedAt: this.getQueuedAt(message, job.createdAt),
         expectedLengthClass: job.expectedLengthClass,
         queueName: queue.queue,
         retryNumber,
@@ -127,6 +127,13 @@ export class MediaProcessingController {
     const parsed = Number(value);
 
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  private getQueuedAt(message: ConsumeMessage, fallback: string): string {
+    const timestamp = Number(message.properties.timestamp);
+    return Number.isFinite(timestamp) && timestamp > 0
+      ? new Date(timestamp).toISOString()
+      : fallback;
   }
 
   private getDelivery(context: RmqContext): {

@@ -12,11 +12,14 @@ import { CallTelemetryController } from '@monitoring/infrastructure/controllers/
 import { MonitoringHealthController } from '@monitoring/infrastructure/controllers/health.controller';
 import { MetricsController } from '@monitoring/infrastructure/controllers/metrics.controller';
 import { RecommendationTelemetryController } from '@monitoring/infrastructure/controllers/recommendation-telemetry.controller';
+import { RagTelemetryController } from '@monitoring/infrastructure/controllers/rag-telemetry.controller';
+import { ReelPipelineTelemetryController } from '@monitoring/infrastructure/controllers/reel-pipeline-telemetry.controller';
 import { SystemAlertsController } from '@monitoring/infrastructure/controllers/system-alerts.controller';
 import { SystemLogsController } from '@monitoring/infrastructure/controllers/system-logs.controller';
 import { SystemMetricsController } from '@monitoring/infrastructure/controllers/system-metrics.controller';
 import { CallTelemetryRetentionJob } from '@monitoring/infrastructure/jobs/call-telemetry-retention.job';
 import { RecommendationTelemetryCleanupJob } from '@monitoring/infrastructure/jobs/recommendation-telemetry-cleanup.job';
+import { ReelMonitoringPollerJob } from '@monitoring/infrastructure/jobs/reel-monitoring-poller.job';
 import { PrometheusMetricsService } from '@monitoring/infrastructure/metrics/prometheus-metrics.service';
 import { MonitoringPrismaService } from '@monitoring/infrastructure/prisma/monitoring-prisma.service';
 import { PrismaService } from '@monitoring/infrastructure/prisma/prisma.service';
@@ -26,7 +29,8 @@ import { DockerEngineService } from '@monitoring/infrastructure/services/docker-
 import { LokiQueryService } from '@monitoring/infrastructure/services/loki-query.service';
 import { PrometheusQueryService } from '@monitoring/infrastructure/services/prometheus-query.service';
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
@@ -36,10 +40,30 @@ import { ScheduleModule } from '@nestjs/schedule';
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
+    ClientsModule.registerAsync([
+      {
+        name: 'CONTENT_SERVICE_RMQ',
+        useFactory: (config: ConfigService) => ({
+          transport: Transport.RMQ,
+          options: {
+            urls: [
+              config.get<string>('RABBITMQ_URL') || 'amqp://localhost:5672',
+            ],
+            queue: 'content_queue',
+            queueOptions: { durable: true },
+            retryAttempts: 3,
+            retryDelay: 1000,
+          },
+        }),
+        inject: [ConfigService],
+      },
+    ]),
   ],
   controllers: [
     CallTelemetryController,
     RecommendationTelemetryController,
+    RagTelemetryController,
+    ReelPipelineTelemetryController,
     MonitoringHealthController,
     MetricsController,
     SystemMetricsController,
@@ -61,6 +85,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     GetRecommendationTelemetrySummaryUseCase,
     RemoveExpiredRecommendationTelemetryUseCase,
     RecommendationTelemetryCleanupJob,
+    ReelMonitoringPollerJob,
     IngestCallTelemetryUseCase,
     GetCallTelemetrySummaryUseCase,
     GetCallTimelineUseCase,

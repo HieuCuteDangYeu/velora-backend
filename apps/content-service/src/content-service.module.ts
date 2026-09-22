@@ -13,6 +13,7 @@ import { FailReelIndexingUseCase } from '@content/application/use-cases/fail-ree
 import { GetProfileReelContextUseCase } from '@content/application/use-cases/get-profile-reel-context.use-case';
 import { GetRecommendedReelsUseCase } from '@content/application/use-cases/get-recommended-reels.use-case';
 import { GetReelStatusUseCase } from '@content/application/use-cases/get-reel-status.use-case';
+import { GetReelMonitoringSnapshotUseCase } from '@content/application/use-cases/get-reel-monitoring-snapshot.use-case';
 import { GetReelUseCase } from '@content/application/use-cases/get-reel.use-case';
 import { GetSearchSuggestionsUseCase } from '@content/application/use-cases/get-search-suggestions.use-case';
 import { IsReelIndexingAttemptCurrentUseCase } from '@content/application/use-cases/is-reel-indexing-attempt-current.use-case';
@@ -143,6 +144,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     DeleteReelUseCase,
     UpdateReelStatusUseCase,
     GetReelStatusUseCase,
+    GetReelMonitoringSnapshotUseCase,
     ResolveReelContextAccessUseCase,
     ShareReelUseCase,
     CreateReelShareLinkUseCase,

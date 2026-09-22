@@ -206,3 +206,157 @@ tests:
             exp_annotations:
               summary: APNs VoIP transport failures are elevated
               description: At least two APNs VoIP timeouts or transport failures occurred during the last five minutes.
+
+  - name: RAG failure alert requires traffic volume
+    interval: 15s
+    input_series:
+      - series: 'velora_rag_requests_total{service="ai-service",outcome="FAILED"}'
+        values: '0+1x40'
+      - series: 'velora_rag_requests_total{service="ai-service",outcome="SUCCEEDED"}'
+        values: '0+4x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraRagHighFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: ai-service
+            exp_annotations:
+              summary: RAG failure rate is above 10 percent
+              description: More than 10 percent of RAG requests have failed for five minutes with at least ten requests in the rolling window.
+
+  - name: Reel monitoring snapshot outage becomes critical
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_pipeline_snapshot_up{service="content-service"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMonitoringSnapshotUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: content-service
+            exp_annotations:
+              summary: Reel pipeline monitoring snapshot is unavailable
+              description: monitoring-service has been unable to fetch a Reel pipeline snapshot from content-service for two minutes.
+
+  - name: stalled Reel pipeline work warns after two minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_pipeline_items{service="content-service",state="stalled"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelPipelineStalled
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: content-service
+              state: stalled
+            exp_annotations:
+              summary: Reel pipeline has stalled work
+              description: At least one queued or processing Reel has not changed for more than ten minutes.
+
+  - name: recent Reel failure warns after one minute
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_pipeline_recent_failures{service="content-service"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraReelPipelineRecentFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: content-service
+            exp_annotations:
+              summary: Reel pipeline recorded a recent failure
+              description: At least one Reel recorded processingFailedAt during the last fifteen minutes.
+
+  - name: Reel RabbitMQ scrape outage becomes critical
+    interval: 15s
+    input_series:
+      - series: 'up{job="rabbitmq-reels"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelRabbitMqUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: rabbitmq
+              job: rabbitmq-reels
+            exp_annotations:
+              summary: Reel RabbitMQ metrics are unavailable
+              description: Prometheus has not been able to scrape the RabbitMQ Reel queue metrics endpoint for two minutes.
+
+  - name: Reel media backlog without consumers becomes critical
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{queue="reel_media_short_jobs"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{queue="reel_media_short_jobs"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMediaBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: media-processing-service
+            exp_annotations:
+              summary: Reel media jobs are queued with no consumers
+              description: Primary Reel media queues contain ready work but have no consumers for two minutes.
+
+  - name: Reel index dead letter work becomes critical
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{queue="reel_index_long_dlq"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraReelIndexDlqNotEmpty
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: reel-indexing-service
+            exp_annotations:
+              summary: Reel index dead-letter queue is not empty
+              description: At least one Reel index job exhausted queue retry handling and is waiting in a dead-letter queue.
+
+  - name: exhausted Reel retries warn with pipeline context
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_worker_exhausted_retries_total{pipeline="MEDIA",lane="SHORT"}'
+        values: '0+1x21'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VeloraReelWorkerExhaustedRetries
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-pipeline
+              pipeline: MEDIA
+            exp_annotations:
+              summary: Reel worker retries were exhausted
+              description: Reel MEDIA processing exhausted its retry budget during the last five minutes.
+
+  - name: Reel worker failure alert requires recent volume
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="FAILED",retry_number="0"}'
+        values: '0+1x40'
+      - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="SUCCEEDED",retry_number="0"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraReelWorkerHighFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-pipeline
+              pipeline: INDEX
+            exp_annotations:
+              summary: Reel worker failure rate is elevated
+              description: Reel INDEX processing has stayed above a 20 percent failure rate for five minutes with at least five recent jobs.

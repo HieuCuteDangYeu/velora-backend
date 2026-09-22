@@ -32,6 +32,7 @@ import { PrismaSemanticCandidateInspector } from './infrastructure/repositories/
 import { PrismaSemanticCandidateLifecycle } from './infrastructure/repositories/prisma-semantic-candidate-lifecycle';
 import { PrismaSemanticIndexRepository } from './infrastructure/repositories/prisma-semantic-index.repository';
 import { PrismaIndexQualityReviewRepository } from './infrastructure/repositories/prisma-index-quality-review.repository';
+import { IndexingMetricsService } from './infrastructure/services/indexing-metrics.service';
 import { ReelIndexLangGraphWorkflow } from './infrastructure/workflows/reel-index-langgraph.workflow';
 
 const rabbitClient = (name: string, queue: string) => ({
@@ -65,6 +66,7 @@ const rabbitClient = (name: string, queue: string) => ({
     ClientsModule.registerAsync([
       rabbitClient('AI_SERVICE_RMQ', 'ai_queue'),
       rabbitClient('CONTENT_SERVICE_RMQ', 'content_queue'),
+      rabbitClient('MONITORING_SERVICE_RMQ', 'monitoring_queue'),
     ]),
   ],
   controllers: [ReelIndexingController, SemanticIndexController],
@@ -110,6 +112,7 @@ const rabbitClient = (name: string, queue: string) => ({
     PrismaSemanticCandidateInspector,
     PrismaSemanticCandidateLifecycle,
     PrismaIndexQualityReviewRepository,
+    IndexingMetricsService,
     { provide: 'IIndexingAiService', useExisting: AiServiceAdapter },
     { provide: 'IIndexingContentService', useExisting: ContentServiceAdapter },
     {

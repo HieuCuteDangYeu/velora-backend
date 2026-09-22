@@ -317,8 +317,9 @@ async function main() {
     ...(LIMIT ? { take: LIMIT } : {}),
   });
 
-  checkpoint.stats.total = (checkpoint.stats.total || 0) + reels.length;
-  console.log(`Found ${reels.length} reels to migrate.`);
+  const totalInDb = await prisma.reel.count({ where: { mediaKey: { startsWith: 'http' } } });
+  checkpoint.stats.total = totalInDb;
+  console.log(`Found ${reels.length} reels remaining to process (total external: ${totalInDb}).`);
 
   for (let i = 0; i < reels.length; i += CONCURRENCY) {
     const batch = reels.slice(i, i + CONCURRENCY);

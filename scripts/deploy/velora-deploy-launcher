@@ -30,12 +30,21 @@ readonly DEPLOYMENT_METRICS_DIR="$APP_DIR/infra/monitoring/node-exporter-textfil
 readonly DEPLOYMENT_METRICS_FILE="$DEPLOYMENT_METRICS_DIR/velora-deploy.prom"
 
 export VELORA_APP_DIR="$APP_DIR"
+export VELORA_STATE_DIR="$STATE_DIR"
 
 umask 077
 
+deployment_log_action() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf 'Run sudo launchctl print system/com.velora.deploy and tail -n 100 "$HOME/Library/Logs/Velora/deploy.err.log".'
+  else
+    printf 'Run systemctl status velora-deploy.service and journalctl -u velora-deploy.service -n 100 --no-pager.'
+  fi
+}
+
 publish_launcher_failure() {
   local reason="$1"
-  local action="Run journalctl -u velora-deploy.service -n 100 --no-pager, restore Git connectivity or the approved controller, then wait for the timer or rerun velora-deploy."
+  local action="$(deployment_log_action) Restore Git connectivity or the approved controller, then wait for the timer or rerun velora-deploy."
   local target_sha deployed_sha pending_since tmp_file
   [[ -d "$APP_DIR" ]] || return 0
 
@@ -63,7 +72,7 @@ publish_launcher_failure() {
   {
     printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
     printf '# TYPE velora_deployment_pending gauge\n'
-    printf 'velora_deployment_pending{status="error",target_sha="%s",deployed_sha="%s",reason="%s",action="%s"} 1\n' \
+    printf 'velora_deployment_pending{status="error",target_sha="%s",deployed_sha="%s",failed_service="deployment",reason="%s",action="%s"} 1\n' \
       "$target_sha" "$deployed_sha" "$reason" "$action"
     printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
     printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
@@ -84,7 +93,7 @@ on_err() {
   local line_no="$1"
   local command="${2:-unknown command}"
   trap - ERR
-  publish_launcher_failure "Launcher command failed at line $line_no (exit $status): ${command:0:200}" || true
+  publish_launcher_failure "Launcher command failed at line $line_no (exit $status)." || true
   printf 'ERROR: launcher command failed at line %s (exit %s): %s\n' "$line_no" "$status" "$command" >&2
   return "$status"
 }

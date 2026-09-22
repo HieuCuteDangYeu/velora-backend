@@ -7,7 +7,7 @@ tests:
   - name: database gate is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="database-gate",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Database approval is required.",action="Approve the database change."}'
+      - series: 'velora_deployment_pending{status="database-gate",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",failed_service="none",reason="Database approval is required.",action="Approve the database change."}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -19,6 +19,7 @@ tests:
               status: database-gate
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              failed_service: none
               reason: Database approval is required.
               action: Approve the database change.
             exp_annotations:
@@ -29,7 +30,7 @@ tests:
   - name: health check failure is immediately critical
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="notification-service is unhealthy.",action="Inspect notification-service logs."}'
+      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",failed_service="notification-service",reason="notification-service is unhealthy.",action="Inspect notification-service logs."}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -41,6 +42,7 @@ tests:
               status: health-check
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              failed_service: notification-service
               reason: notification-service is unhealthy.
               action: Inspect notification-service logs.
             exp_annotations:
@@ -51,7 +53,7 @@ tests:
   - name: controller error is immediately actionable
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="error",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Image pull failed.",action="Check Docker Hub and retry."}'
+      - series: 'velora_deployment_pending{status="error",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",failed_service="api-gateway",reason="Image pull failed.",action="Check Docker Hub and retry."}'
         values: '1'
     alert_rule_test:
       - eval_time: 0m
@@ -63,6 +65,7 @@ tests:
               status: error
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              failed_service: api-gateway
               reason: Image pull failed.
               action: Check Docker Hub and retry.
             exp_annotations:
@@ -73,7 +76,7 @@ tests:
   - name: pending deployment warns after eleven minutes
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="pending",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Deployment is still running.",action="Inspect the deploy service."}'
+      - series: 'velora_deployment_pending{status="pending",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",failed_service="none",reason="Deployment is still running.",action="Inspect the deploy service."}'
         values: '1+0x47'
       - series: 'velora_deployment_pending_since_seconds'
         values: '0+0x47'
@@ -87,6 +90,7 @@ tests:
               status: pending
               target_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
               deployed_sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+              failed_service: none
               reason: Deployment is still running.
               action: Inspect the deploy service.
             exp_annotations:
@@ -97,7 +101,7 @@ tests:
   - name: failed deployment does not also fire stalled
     interval: 15s
     input_series:
-      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",reason="Service is unhealthy.",action="Inspect service logs."}'
+      - series: 'velora_deployment_pending{status="health-check",target_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",deployed_sha="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",failed_service="notification-service",reason="Service is unhealthy.",action="Inspect service logs."}'
         values: '1+0x47'
       - series: 'velora_deployment_pending_since_seconds'
         values: '0+0x47'

@@ -19,16 +19,16 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   TARGET_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   LAST_DEPLOYED_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   publish_deployment_metrics database-gate
-  grep -Fq "velora_deployment_pending{status=\"database-gate\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$LAST_DEPLOYED_SHA\",reason=\"The release changes a cloud database" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "velora_deployment_pending{status=\"database-gate\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$LAST_DEPLOYED_SHA\",failed_service=\"none\",reason=\"The release changes a cloud database" "$DEPLOYMENT_METRICS_FILE"
   grep -Fq "velora-deploy --approve-db-change $TARGET_SHA" "$DEPLOYMENT_METRICS_FILE"
   publish_deployment_metrics pending
   grep -Fq "status=\"database-gate\"" "$DEPLOYMENT_METRICS_FILE"
-  publish_deployment_metrics error "pull failed for \"api-gateway\"" "check docker"
+  publish_deployment_metrics error "pull failed for \"api-gateway\"" "check docker" api-gateway
   publish_deployment_metrics pending
-  grep -Fq "reason=\"pull failed for \\\"api-gateway\\\"\",action=\"check docker\"" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "failed_service=\"api-gateway\",reason=\"pull failed for \\\"api-gateway\\\"\",action=\"check docker\"" "$DEPLOYMENT_METRICS_FILE"
   LAST_DEPLOYED_SHA="$TARGET_SHA"
   publish_deployment_metrics success
-  grep -Fq "velora_deployment_pending{status=\"success\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$TARGET_SHA\",reason=\"Production is running the promoted release.\",action=\"No action required.\"} 0" "$DEPLOYMENT_METRICS_FILE"
+  grep -Fq "velora_deployment_pending{status=\"success\",target_sha=\"$TARGET_SHA\",deployed_sha=\"$TARGET_SHA\",failed_service=\"none\",reason=\"Production is running the promoted release.\",action=\"No action required.\"} 0" "$DEPLOYMENT_METRICS_FILE"
 ' _ "$repo_root"
 
 if VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
@@ -60,13 +60,21 @@ if VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   TARGET_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   LAST_DEPLOYED_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   publish_deployment_metrics pending
-  false
+  false "do-not-expose-this-marker"
 ' _ "$repo_root" 2>/dev/null; then
   printf 'raw command was expected to exit non-zero\n' >&2
   exit 1
 fi
 grep -Fq 'status="error"' "$tmp_dir/app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
 grep -Fq 'reason="Deployment command failed at line' "$tmp_dir/app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
+! grep -Fq 'do-not-expose-this-marker' "$tmp_dir/app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
+
+VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
+  source "$1/scripts/deploy/velora-deploy-core"
+  uname() { printf "Darwin\n"; }
+  [[ "$(deployment_log_action)" == *"launchctl print system/com.velora.deploy"* ]]
+  [[ "$(deployment_log_action)" == *"Library/Logs/Velora/deploy.err.log"* ]]
+' _ "$repo_root"
 
 VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   source "$1/scripts/deploy/velora-deploy-core"
@@ -79,6 +87,7 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
     exit 1
   fi
   [[ "$DEPLOYMENT_FAILURE_DETAIL" == "rabbitmq Docker health remained starting." ]]
+  [[ "$DEPLOYMENT_FAILURE_SERVICE" == "rabbitmq" ]]
 ' _ "$repo_root"
 
 VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
@@ -89,6 +98,7 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
     exit 1
   fi
   [[ "$DEPLOYMENT_FAILURE_DETAIL" == "RabbitMQ queue readiness command failed." ]]
+  [[ "$DEPLOYMENT_FAILURE_SERVICE" == "rabbitmq" ]]
 ' _ "$repo_root"
 
 VELORA_HTTP_ATTEMPTS=1 VELORA_HTTP_RETRY_SECONDS=0 \
@@ -111,6 +121,7 @@ VELORA_HTTP_ATTEMPTS=1 VELORA_HTTP_RETRY_SECONDS=0 \
     exit 1
   fi
   [[ "$DEPLOYMENT_FAILURE_DETAIL" == *"reel-indexing-long-service(state=restarting,exit=1)"* ]]
+  [[ "$DEPLOYMENT_FAILURE_SERVICE" == "reel-indexing-long-service" ]]
 ' _ "$repo_root"
 
 mkdir -p "$tmp_dir/launcher-app/.git" "$tmp_dir/launcher-state"
@@ -121,6 +132,7 @@ if VELORA_APP_DIR="$tmp_dir/launcher-app" VELORA_STATE_DIR="$tmp_dir/launcher-st
 fi
 grep -Fq 'status="error"' "$tmp_dir/launcher-app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
 grep -Fq 'reason="Launcher command failed at line' "$tmp_dir/launcher-app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
+grep -Fq 'failed_service="deployment"' "$tmp_dir/launcher-app/infra/monitoring/node-exporter-textfile/velora-deploy.prom"
 grep -Fq 'if "$controller" "$@"; then' "$repo_root/scripts/deploy/velora-deploy-launcher"
 
 printf 'deployment metrics: PASS\n'

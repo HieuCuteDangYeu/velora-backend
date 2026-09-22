@@ -34,6 +34,7 @@ readonly SERVICE_HOME="${VELORA_DEPLOY_HOME:-$(resolve_service_home)}"
 readonly SERVICE_GROUP="${VELORA_DEPLOY_GROUP:-$(id -gn "$SERVICE_USER" 2>/dev/null || printf '%s' "$SERVICE_USER")}"
 readonly INSTALL_GROUP="${VELORA_DEPLOY_INSTALL_GROUP:-$(id -gn root 2>/dev/null || printf 'root')}"
 readonly STATE_DIR="${VELORA_STATE_DIR:-$SERVICE_HOME/.local/state/velora}"
+readonly LAUNCHD_PLIST="${VELORA_DEPLOY_LAUNCHD_PLIST:-/Library/LaunchDaemons/com.velora.deploy.plist}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -43,6 +44,13 @@ fail() {
 [[ "$EUID" -eq 0 ]] || fail "run this installer with sudo/root privileges"
 [[ -f "$LAUNCHER_SOURCE" ]] || fail "launcher source missing: $LAUNCHER_SOURCE"
 id "$SERVICE_USER" >/dev/null 2>&1 || fail "deployment user does not exist: $SERVICE_USER"
+
+if [[ "$(uname -s)" == "Darwin" && -f "$LAUNCHD_PLIST" ]]; then
+  launchd_state="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:VELORA_STATE_DIR' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [[ -n "$launchd_state" && "$launchd_state" != "$STATE_DIR" ]]; then
+    fail "launchd VELORA_STATE_DIR is '$launchd_state', expected '$STATE_DIR'; migrate the state and update $LAUNCHD_PLIST first"
+  fi
+fi
 
 bash -n "$LAUNCHER_SOURCE"
 

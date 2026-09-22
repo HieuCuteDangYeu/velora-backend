@@ -49,6 +49,7 @@ readonly PENDING_SINCE_FILE="$STATE_DIR/pending-since"
 readonly PENDING_STATUS_FILE="$STATE_DIR/pending-status"
 readonly PENDING_REASON_FILE="$STATE_DIR/pending-reason"
 readonly PENDING_ACTION_FILE="$STATE_DIR/pending-action"
+readonly PENDING_FAILED_SERVICE_FILE="$STATE_DIR/pending-failed-service"
 
 readonly MIN_FREE_GB="${VELORA_MIN_FREE_GB:-20}"
 readonly MIN_AVAILABLE_RAM_MB="${VELORA_MIN_AVAILABLE_RAM_MB:-1024}"
@@ -193,6 +194,7 @@ STORED_ENV_HASH=""
 DB_RISK=false
 MANUAL_DB_CHANGE=false
 ROLLBACK_RESULT="not-needed"
+DEPLOYMENT_FAILURE_SERVICE=""
 
 CHANGED_FILES=""
 PULL_SERVICES=()
@@ -230,13 +232,22 @@ warn() {
   printf 'WARNING: %s\n' "$*" >&2
 }
 
+deployment_log_action() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf 'Run sudo launchctl print system/com.velora.deploy and tail -n 100 "$HOME/Library/Logs/Velora/deploy.err.log".'
+  else
+    printf 'Run systemctl status velora-deploy.service and journalctl -u velora-deploy.service -n 100 --no-pager.'
+  fi
+}
+
 fail() {
   local message="$*"
   printf 'ERROR: %s\n' "$message" >&2
   if declare -F publish_deployment_metrics >/dev/null; then
     publish_deployment_metrics "${DEPLOYMENT_FAILURE_STATUS:-error}" \
       "${DEPLOYMENT_FAILURE_DETAIL:-$message}" \
-      "${DEPLOYMENT_FAILURE_ACTION:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported error, then wait for the timer or rerun velora-deploy.}" || true
+      "${DEPLOYMENT_FAILURE_ACTION:-$(deployment_log_action) Fix the reported error, then wait for the timer or rerun velora-deploy.}" \
+      "${DEPLOYMENT_FAILURE_SERVICE:-}" || true
   fi
   exit 1
 }
@@ -361,8 +372,9 @@ on_err() {
   local command="${2:-unknown command}"
   trap - ERR
   publish_deployment_metrics "${DEPLOYMENT_FAILURE_STATUS:-error}" \
-    "${DEPLOYMENT_FAILURE_DETAIL:-Deployment command failed at line $line_no (exit $status): ${command:0:200}}" \
-    "${DEPLOYMENT_FAILURE_ACTION:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported command, then wait for the timer or rerun velora-deploy.}" || true
+    "${DEPLOYMENT_FAILURE_DETAIL:-Deployment command failed at line $line_no (exit $status).}" \
+    "${DEPLOYMENT_FAILURE_ACTION:-$(deployment_log_action) Fix the reported command, then wait for the timer or rerun velora-deploy.}" \
+    "${DEPLOYMENT_FAILURE_SERVICE:-}" || true
   warn "deployment command failed at line $line_no (exit $status): $command"
   return "$status"
 }
@@ -486,6 +498,7 @@ load_state() {
 
 publish_deployment_metrics() {
   local requested_status="${1:-pending}" reason="${2:-}" action="${3:-}"
+  local failed_service="${4:-${DEPLOYMENT_FAILURE_SERVICE:-}}"
   local status pending=0 pending_since=0 deployed_sha existing_sha existing_status tmp_file
   if [[ -z "$TARGET_SHA" ]]; then
     TARGET_SHA="$(git -C "$APP_DIR" rev-parse refs/remotes/origin/homelab-deploy 2>/dev/null || true)"
@@ -502,7 +515,7 @@ publish_deployment_metrics() {
     if [[ "$existing_sha" != "$TARGET_SHA" ]]; then
       printf '%s\n' "$TARGET_SHA" >"$PENDING_SHA_FILE"
       date +%s >"$PENDING_SINCE_FILE"
-      rm -f -- "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE"
+      rm -f -- "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE" "$PENDING_FAILED_SERVICE_FILE"
       existing_status=""
     fi
     status="${existing_status:-$requested_status}"
@@ -511,19 +524,21 @@ publish_deployment_metrics() {
       printf '%s\n' "$status" >"$PENDING_STATUS_FILE"
       [[ -z "$reason" ]] || printf '%s\n' "$reason" >"$PENDING_REASON_FILE"
       [[ -z "$action" ]] || printf '%s\n' "$action" >"$PENDING_ACTION_FILE"
+      [[ -z "$failed_service" ]] || printf '%s\n' "$failed_service" >"$PENDING_FAILED_SERVICE_FILE"
     fi
     reason="${reason:-$(cat "$PENDING_REASON_FILE" 2>/dev/null || true)}"
     action="${action:-$(cat "$PENDING_ACTION_FILE" 2>/dev/null || true)}"
+    failed_service="${failed_service:-$(cat "$PENDING_FAILED_SERVICE_FILE" 2>/dev/null || true)}"
     pending_since="$(cat "$PENDING_SINCE_FILE" 2>/dev/null || date +%s)"
   else
     status="success"
-    rm -f -- "$PENDING_SHA_FILE" "$PENDING_SINCE_FILE" "$PENDING_STATUS_FILE" "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE"
+    rm -f -- "$PENDING_SHA_FILE" "$PENDING_SINCE_FILE" "$PENDING_STATUS_FILE" "$PENDING_REASON_FILE" "$PENDING_ACTION_FILE" "$PENDING_FAILED_SERVICE_FILE"
   fi
 
   case "$status" in
     pending)
       reason="${reason:-The promoted release is waiting for the deployment controller to finish.}"
-      action="${action:-Run systemctl status velora-deploy.service and journalctl -u velora-deploy.service -n 100 --no-pager.}"
+      action="${action:-$(deployment_log_action)}"
       ;;
     database-gate)
       reason="${reason:-The release changes a cloud database and requires explicit operator approval before deployment.}"
@@ -535,17 +550,19 @@ publish_deployment_metrics() {
       ;;
     health-check)
       reason="${reason:-The promoted release failed post-deployment health verification.}"
-      action="${action:-Inspect docker compose ps and journalctl -u velora-deploy.service -n 100 --no-pager, fix the failing probe, then run velora-deploy --retry-failed.}"
+      action="${action:-Inspect docker compose ps. $(deployment_log_action) Fix the failing probe, then run velora-deploy --retry-failed.}"
       ;;
     error)
       reason="${reason:-The deployment controller stopped with an error.}"
-      action="${action:-Run journalctl -u velora-deploy.service -n 100 --no-pager, fix the reported error, then wait for the timer or rerun velora-deploy.}"
+      action="${action:-$(deployment_log_action) Fix the reported error, then wait for the timer or rerun velora-deploy.}"
       ;;
     success)
       reason="${reason:-Production is running the promoted release.}"
       action="${action:-No action required.}"
       ;;
   esac
+
+  failed_service="${failed_service:-none}"
 
   mkdir -p "$DEPLOYMENT_METRICS_DIR"
   deployed_sha="${LAST_DEPLOYED_SHA:-none}"
@@ -555,12 +572,14 @@ publish_deployment_metrics() {
   action="${action//\\/\\\\}"
   action="${action//\"/\\\"}"
   action="${action//$'\n'/\\n}"
+  failed_service="${failed_service//\\/\\\\}"
+  failed_service="${failed_service//\"/\\\"}"
   tmp_file="$(mktemp "$DEPLOYMENT_METRICS_FILE.XXXXXX")"
   {
     printf '# HELP velora_deployment_pending Promoted release has not reached a healthy production deployment.\n'
     printf '# TYPE velora_deployment_pending gauge\n'
-    printf 'velora_deployment_pending{status="%s",target_sha="%s",deployed_sha="%s",reason="%s",action="%s"} %s\n' \
-      "$status" "$TARGET_SHA" "$deployed_sha" "$reason" "$action" "$pending"
+    printf 'velora_deployment_pending{status="%s",target_sha="%s",deployed_sha="%s",failed_service="%s",reason="%s",action="%s"} %s\n' \
+      "$status" "$TARGET_SHA" "$deployed_sha" "$failed_service" "$reason" "$action" "$pending"
     printf '# HELP velora_deployment_pending_since_seconds Unix timestamp when the current promoted release became pending.\n'
     printf '# TYPE velora_deployment_pending_since_seconds gauge\n'
     printf 'velora_deployment_pending_since_seconds %s\n' "$pending_since"
@@ -687,6 +706,7 @@ validate_rabbitmq_live() {
     rabbitmqctl -q list_user_permissions "$RABBITMQ_DEFAULT_USER" \
       | awk -v v="$RABBITMQ_DEFAULT_VHOST" '\''$1 == v { found=1 } END { exit(found ? 0 : 1) }'\''
   '; then
+    DEPLOYMENT_FAILURE_SERVICE="rabbitmq"
     fail "RabbitMQ is running but Velora application credentials/vhost permissions are invalid"
   fi
 
@@ -915,6 +935,7 @@ compare_compose_models() {
 
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
       DEPLOYMENT_FAILURE_ACTION="Review the Compose diff for '$service'. Restore its previous configuration or deploy the protected service manually, then rerun velora-deploy."
+      DEPLOYMENT_FAILURE_SERVICE="$service"
       fail "Compose configuration changed for protected/worker service '$service'; manual review is required"
     fi
 
@@ -929,6 +950,7 @@ compare_compose_models() {
     fi
 
     DEPLOYMENT_FAILURE_ACTION="Review the Compose diff for '$service'. Add it to the managed service policy or deploy it manually, then rerun velora-deploy."
+    DEPLOYMENT_FAILURE_SERVICE="$service"
     fail "Compose configuration changed for unmanaged service '$service'; manual review is required"
   done < <(
     jq -n -r --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
@@ -1057,7 +1079,7 @@ check_blocked_release() {
   log "Release $TARGET_SHA is blocked after a previous release-specific failure."
   log "Use --retry-failed to deliberately retry it, or wait for CI to promote a newer SHA."
   reason="$(cat "$PENDING_REASON_FILE" 2>/dev/null || jq -r '.reason // "This release is blocked after a previous deployment failure."' "$marker")"
-  action="$(cat "$PENDING_ACTION_FILE" 2>/dev/null || printf '%s' 'Inspect journalctl -u velora-deploy.service -n 100 --no-pager, fix the original failure, then run velora-deploy --retry-failed.')"
+  action="$(cat "$PENDING_ACTION_FILE" 2>/dev/null || printf '%s' "$(deployment_log_action) Fix the original failure, then run velora-deploy --retry-failed.")"
   publish_deployment_metrics "health-check" "$reason" "$action"
   exit 21
 }
@@ -1115,6 +1137,7 @@ prepull_target_images() {
 
   log "==> Pre-pulling immutable application images before production mutation..."
   for service in "${PULL_SERVICES[@]}"; do
+    DEPLOYMENT_FAILURE_SERVICE="$service"
     image="$(
       (cd "$STAGING_DIR" && VELORA_IMAGE_TAG="$TARGET_SHA" docker compose config --format json) \
         | jq -r --arg service "$service" '.services[$service].image // empty'
@@ -1133,6 +1156,7 @@ prepull_target_images() {
       sleep $((attempt * 5))
     done
   done
+  DEPLOYMENT_FAILURE_SERVICE=""
 }
 
 prepull_managed_infra() {
@@ -1355,6 +1379,7 @@ wait_for_running_services() {
   done
   DEPLOYMENT_FAILURE_DETAIL="Compose services did not reach running state: ${bad_details[*]}."
   DEPLOYMENT_FAILURE_ACTION="Run docker compose ps and docker compose logs --tail=200 for the listed services, then run velora-deploy --retry-failed."
+  DEPLOYMENT_FAILURE_SERVICE="${bad_services[0]:-}"
   return 1
 }
 
@@ -1379,6 +1404,7 @@ wait_for_docker_health() {
     if [[ "$health" != "healthy" ]]; then
       DEPLOYMENT_FAILURE_DETAIL="$service Docker health remained ${health:-unknown}."
       DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 $service, fix its health check failure, then run velora-deploy --retry-failed."
+      DEPLOYMENT_FAILURE_SERVICE="$service"
       return 1
     fi
   done
@@ -1388,6 +1414,7 @@ check_http() {
   local name="$1"
   local url="$2"
   local allowed_codes="$3"
+  local service="${4:-}"
   local code attempt
 
   for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
@@ -1401,6 +1428,7 @@ check_http() {
   done
   DEPLOYMENT_FAILURE_DETAIL="$name did not return an allowed HTTP status; last response was ${code:-none}."
   DEPLOYMENT_FAILURE_ACTION="Inspect the reverse proxy and service logs shown in the deployment journal, then run velora-deploy --retry-failed."
+  DEPLOYMENT_FAILURE_SERVICE="$service"
   return 1
 }
 
@@ -1431,6 +1459,7 @@ NODE
   done
   DEPLOYMENT_FAILURE_DETAIL="$service internal HTTP check on port $port failed; last response was ${code:-none}."
   DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 $service, fix its startup error, then run velora-deploy --retry-failed."
+  DEPLOYMENT_FAILURE_SERVICE="$service"
   return 1
 }
 
@@ -1449,6 +1478,7 @@ check_rabbitmq_consumers() {
     if ! queues="$(rabbitmq_queue_consumers)"; then
       DEPLOYMENT_FAILURE_DETAIL="RabbitMQ queue readiness command failed."
       DEPLOYMENT_FAILURE_ACTION="Run docker compose logs --tail=200 rabbitmq and verify rabbitmqctl access, then run velora-deploy --retry-failed."
+      DEPLOYMENT_FAILURE_SERVICE="rabbitmq"
       return 1
     fi
 
@@ -1476,6 +1506,7 @@ check_rabbitmq_consumers() {
   warn "RabbitMQ consumers did not become ready: ${not_ready[*]}"
   DEPLOYMENT_FAILURE_DETAIL="RabbitMQ consumers did not become ready: ${not_ready[*]}."
   DEPLOYMENT_FAILURE_ACTION="Inspect RabbitMQ and the listed service logs, then run velora-deploy --retry-failed."
+  DEPLOYMENT_FAILURE_SERVICE="rabbitmq"
   return 1
 }
 
@@ -1495,6 +1526,7 @@ verify_gateway_replicas() {
     warn "expected 2 running API Gateway replicas, found $count"
     DEPLOYMENT_FAILURE_DETAIL="Expected 2 running API Gateway replicas, found $count."
     DEPLOYMENT_FAILURE_ACTION="Run docker compose ps api-gateway and docker compose logs --tail=200 api-gateway, then run velora-deploy --retry-failed."
+    DEPLOYMENT_FAILURE_SERVICE="api-gateway"
     return 1
   }
 }
@@ -1504,25 +1536,28 @@ verify_deployment_health() {
   DEPLOYMENT_FAILURE_STATUS="health-check"
   DEPLOYMENT_FAILURE_DETAIL=""
   DEPLOYMENT_FAILURE_ACTION=""
+  DEPLOYMENT_FAILURE_SERVICE=""
 
   wait_for_running_services || return 1
   wait_for_docker_health || return 1
   validate_rabbitmq_live || return 1
   check_rabbitmq_consumers || return 1
 
-  check_http "API Gateway via Nginx" "http://127.0.0.1/" "200 404" || return 1
-  check_http "Conversation Socket.IO" "http://127.0.0.1/socket.io/?EIO=4&transport=polling" "200" || return 1
-  check_http "Call Socket.IO" "http://127.0.0.1/call/socket.io/?EIO=4&transport=polling" "200" || return 1
+  check_http "API Gateway via Nginx" "http://127.0.0.1/" "200 404" api-gateway || return 1
+  check_http "Conversation Socket.IO" "http://127.0.0.1/socket.io/?EIO=4&transport=polling" "200" conversation-service || return 1
+  check_http "Call Socket.IO" "http://127.0.0.1/call/socket.io/?EIO=4&transport=polling" "200" call-service || return 1
   check_internal_http_from_service payment-service 3006 "200 201 202 204 400 401 403 404 405" || return 1
   check_internal_http_from_service notification-service 3015 "200 201 202 204 400 401 403 404 405" || return 1
   verify_gateway_replicas || return 1
   verify_monitoring_stack || {
     DEPLOYMENT_FAILURE_DETAIL="The monitoring stack smoke check failed."
     DEPLOYMENT_FAILURE_ACTION="Run scripts/ops/check-monitoring-stack.sh, fix the reported component, then run velora-deploy --retry-failed."
+    DEPLOYMENT_FAILURE_SERVICE="monitoring-service"
     return 1
   }
 
   DEPLOYMENT_FAILURE_STATUS=""
+  DEPLOYMENT_FAILURE_SERVICE=""
   return 0
 }
 

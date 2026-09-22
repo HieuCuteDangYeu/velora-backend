@@ -1316,11 +1316,12 @@ reconcile_infrastructure() {
 }
 
 wait_for_running_services() {
-  local attempt service expected running
-  local -a bad=()
+  local attempt service expected running container_id state exit_code
+  local -a bad=() bad_services=() bad_details=()
 
   for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
     bad=()
+    bad_services=()
     while IFS= read -r service; do
       [[ -n "$service" ]] || continue
       expected=1
@@ -1328,6 +1329,7 @@ wait_for_running_services() {
       running="$(docker compose ps --status running -q "$service" | wc -l | tr -d ' ')"
       if (( running < expected )); then
         bad+=("${service}(${running}/${expected})")
+        bad_services+=("$service")
       fi
     done < <(docker compose config --services)
 
@@ -1341,7 +1343,17 @@ wait_for_running_services() {
   done
 
   docker compose ps >&2 || true
-  DEPLOYMENT_FAILURE_DETAIL="Compose services did not reach running state: ${bad[*]}."
+  for service in "${bad_services[@]}"; do
+    container_id="$(docker compose ps -aq "$service" | head -n 1)"
+    if [[ -n "$container_id" ]]; then
+      state="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+      exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$container_id" 2>/dev/null || true)"
+      bad_details+=("$service(state=${state:-unknown},exit=${exit_code:-unknown})")
+    else
+      bad_details+=("$service(state=missing,exit=unknown)")
+    fi
+  done
+  DEPLOYMENT_FAILURE_DETAIL="Compose services did not reach running state: ${bad_details[*]}."
   DEPLOYMENT_FAILURE_ACTION="Run docker compose ps and docker compose logs --tail=200 for the listed services, then run velora-deploy --retry-failed."
   return 1
 }
@@ -1948,6 +1960,8 @@ perform_deployment() {
   fi
 
   warn "target release failed post-deployment health verification"
+  local target_failure_detail="$DEPLOYMENT_FAILURE_DETAIL"
+  local target_failure_action="$DEPLOYMENT_FAILURE_ACTION"
 
   # A release with DB-impact may have changed cloud schema already (either via
   # self-migration or external operator action). Blind application rollback can
@@ -1964,8 +1978,11 @@ perform_deployment() {
   if [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" && -n "$LAST_DEPLOYED_SHA" ]]; then
     warn "attempting automatic rollback to $LAST_DEPLOYED_SHA"
     if rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
+      DEPLOYMENT_FAILURE_STATUS="health-check"
+      DEPLOYMENT_FAILURE_DETAIL="$target_failure_detail"
+      DEPLOYMENT_FAILURE_ACTION="$target_failure_action"
       ROLLBACK_RESULT="success"
-      block_release "post-deploy health failure; automatic rollback to previous healthy release succeeded"
+      block_release "$target_failure_detail Automatic rollback to the previous healthy release succeeded."
       publish_deployment_metrics "health-check" "$DEPLOYMENT_FAILURE_DETAIL" "$DEPLOYMENT_FAILURE_ACTION"
       remove_snapshot_tags "$TEMP_SNAPSHOT"
       rm -f -- "$TEMP_SNAPSHOT"
@@ -1976,8 +1993,11 @@ perform_deployment() {
     fi
   fi
 
+  DEPLOYMENT_FAILURE_STATUS="health-check"
+  DEPLOYMENT_FAILURE_DETAIL="$target_failure_detail"
+  DEPLOYMENT_FAILURE_ACTION="$target_failure_action"
   ROLLBACK_RESULT="failed"
-  block_release "post-deploy health failure; automatic rollback was unavailable or failed"
+  block_release "$target_failure_detail Automatic rollback was unavailable or failed."
   publish_deployment_metrics "health-check" "$DEPLOYMENT_FAILURE_DETAIL" "$DEPLOYMENT_FAILURE_ACTION"
   preserve_failed_snapshot
   save_local_deployment_receipt "failed-rollback-failed"

@@ -91,6 +91,28 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   [[ "$DEPLOYMENT_FAILURE_DETAIL" == "RabbitMQ queue readiness command failed." ]]
 ' _ "$repo_root"
 
+VELORA_HTTP_ATTEMPTS=1 VELORA_HTTP_RETRY_SECONDS=0 \
+  VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
+  source "$1/scripts/deploy/velora-deploy-core"
+  docker() {
+    case "$*" in
+      "compose config --services") printf "reel-indexing-long-service\n" ;;
+      "compose ps --status running -q reel-indexing-long-service") : ;;
+      "compose ps -aq reel-indexing-long-service") printf "container-id\n" ;;
+      "inspect --format {{.State.Status}} container-id") printf "restarting\n" ;;
+      "inspect --format {{.State.ExitCode}} container-id") printf "1\n" ;;
+      "compose ps") : ;;
+      *) return 1 ;;
+    esac
+  }
+  sleep() { :; }
+  if wait_for_running_services; then
+    printf "non-running service was expected to fail\n" >&2
+    exit 1
+  fi
+  [[ "$DEPLOYMENT_FAILURE_DETAIL" == *"reel-indexing-long-service(state=restarting,exit=1)"* ]]
+' _ "$repo_root"
+
 mkdir -p "$tmp_dir/launcher-app/.git" "$tmp_dir/launcher-state"
 if VELORA_APP_DIR="$tmp_dir/launcher-app" VELORA_STATE_DIR="$tmp_dir/launcher-state" VELORA_DEPLOY_REMOTE=missing \
   "$BASH" "$repo_root/scripts/deploy/velora-deploy-launcher" 2>/dev/null; then

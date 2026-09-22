@@ -1,4 +1,4 @@
-// Usage: node scripts/narto-scraper/migrate-to-tiktok-cdn.cjs [--concurrency=3] [--crop] [--limit=100] [--dry-run] [--series=slug]
+// Usage: node scripts/narto-scraper/migrate-to-tiktok-cdn.cjs [--concurrency=3] [--crop] [--limit=100] [--dry-run] [--series=slug] [--retry-failed]
 // Migrates existing Narto Drama reels from external CDN URLs to TikTok CDN via the video-hls-api Rust tool.
 
 require('dotenv').config();
@@ -20,6 +20,7 @@ const CROP = args.includes('--crop');
 const LIMIT = parseInt(args.find(a => a.startsWith('--limit='))?.split('=')[1] || '0', 10);
 const DRY_RUN = args.includes('--dry-run');
 const SERIES_SLUG = args.find(a => a.startsWith('--series='))?.split('=')[1];
+const RETRY_FAILED = args.includes('--retry-failed');
 
 const TIKTOK_CDN_UPLOAD_ENDPOINT =
   process.env.TIKTOK_CDN_UPLOAD_ENDPOINT || process.env.CDN_UPLOAD_ENDPOINT;
@@ -250,15 +251,24 @@ async function processReel(reel, checkpoint) {
       data: { hlsMasterKey },
     });
 
-    checkpoint.processedReelIds.push(reel.id);
-    checkpoint.stats.processed++;
+    const failedIdx = checkpoint.failedReelIds.indexOf(reel.id);
+    if (failedIdx !== -1) {
+      checkpoint.failedReelIds.splice(failedIdx, 1);
+      if (checkpoint.stats.failed > 0) checkpoint.stats.failed--;
+    }
+    if (!checkpoint.processedReelIds.includes(reel.id)) {
+      checkpoint.processedReelIds.push(reel.id);
+      checkpoint.stats.processed++;
+    }
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`[${checkpoint.stats.processed}/${checkpoint.stats.total}] Migrated reel ${reel.id} from ${reel.series?.title || 'Unknown'} ep ${reel.episodeNumber} (${duration}s)`);
   } catch (error) {
     console.error(`Failed to process reel ${reel.id}:`, error);
-    checkpoint.failedReelIds.push(reel.id);
-    checkpoint.stats.failed++;
+    if (!checkpoint.failedReelIds.includes(reel.id)) {
+      checkpoint.failedReelIds.push(reel.id);
+      checkpoint.stats.failed++;
+    }
   } finally {
     if (fs.existsSync(hlsDir)) fs.rmSync(hlsDir, { recursive: true, force: true });
   }
@@ -267,11 +277,25 @@ async function processReel(reel, checkpoint) {
 async function main() {
   const checkpoint = loadCheckpoint();
 
-  const where = {
-    mediaKey: { startsWith: 'http' },
-    hlsMasterKey: null,
-    ...(checkpoint.failedReelIds?.length > 0 ? { id: { notIn: checkpoint.failedReelIds } } : {}),
-  };
+  let where;
+  if (RETRY_FAILED) {
+    if (!checkpoint.failedReelIds || checkpoint.failedReelIds.length === 0) {
+      console.log('No failed reels found in checkpoint to retry.');
+      await prisma.$disconnect();
+      return;
+    }
+    where = {
+      id: { in: checkpoint.failedReelIds },
+      hlsMasterKey: null,
+    };
+    console.log(`Retrying ${checkpoint.failedReelIds.length} failed reels from checkpoint...`);
+  } else {
+    where = {
+      mediaKey: { startsWith: 'http' },
+      hlsMasterKey: null,
+      ...(checkpoint.failedReelIds?.length > 0 ? { id: { notIn: checkpoint.failedReelIds } } : {}),
+    };
+  }
 
   if (SERIES_SLUG) {
     where.tags = { has: SERIES_SLUG };
@@ -294,7 +318,10 @@ async function main() {
     saveCheckpoint(checkpoint);
   }
 
-  console.log('Migration complete!');
+  console.log(`\nMigration run complete! Processed: ${checkpoint.stats.processed}, Failed: ${checkpoint.stats.failed}`);
+  if (checkpoint.failedReelIds?.length > 0) {
+    console.log(`To retry the ${checkpoint.failedReelIds.length} failed reels, run: node scripts/narto-scraper/migrate-to-tiktok-cdn.cjs --retry-failed`);
+  }
   await prisma.$disconnect();
 }
 

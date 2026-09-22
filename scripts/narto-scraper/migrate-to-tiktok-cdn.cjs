@@ -110,7 +110,9 @@ async function resolveCleanStreamUrl(reel) {
       (i) => (i.number || i.route_episode_number) === reel.episodeNumber,
     );
     if (epItem?.play_url && epItem.play_url.startsWith('http')) {
-      return epItem.play_url;
+      if (!epItem.play_url.includes('dramabox-stream.narto-drama.com')) {
+        return epItem.play_url;
+      }
     }
   }
 
@@ -222,10 +224,16 @@ async function processReel(reel, checkpoint) {
     }
 
     const uploadResults = [];
-    for (const tsFile of tsFiles) {
-      const segmentPath = path.join(hlsDir, tsFile);
-      const result = await uploadSegmentToTikTok(segmentPath, tsFile);
-      uploadResults.push(result);
+    const SEGMENT_CONCURRENCY = 4;
+    for (let i = 0; i < tsFiles.length; i += SEGMENT_CONCURRENCY) {
+      const batch = tsFiles.slice(i, i + SEGMENT_CONCURRENCY);
+      const batchResults = await Promise.all(
+        batch.map((tsFile) => {
+          const segmentPath = path.join(hlsDir, tsFile);
+          return uploadSegmentToTikTok(segmentPath, tsFile);
+        }),
+      );
+      uploadResults.push(...batchResults);
     }
 
     // Rewrite playlist

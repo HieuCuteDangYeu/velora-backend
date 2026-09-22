@@ -197,7 +197,18 @@ async function processReel(reel, checkpoint) {
     // Slice to HLS with FFmpeg directly from inputUrl
     const m3u8Path = path.join(hlsDir, 'index.m3u8');
     const cropArg = CROP ? '-vf "crop=iw:ih-110:0:40" -c:v libx264 -preset fast -crf 23 -c:a copy' : '-codec: copy';
-    await execAsync(`ffmpeg -y -i "${inputUrl}" ${cropArg} -map_metadata -1 -metadata service_provider=velora -metadata service_name=velora -start_number 0 -hls_time 5 -hls_list_size 0 -f hls ${m3u8Path}`);
+    const ffmpegCmd = (url) => `ffmpeg -y -rw_timeout 15000000 -i "${url}" ${cropArg} -map_metadata -1 -metadata service_provider=velora -metadata service_name=velora -start_number 0 -hls_time 5 -hls_list_size 0 -f hls ${m3u8Path}`;
+
+    try {
+      await execAsync(ffmpegCmd(inputUrl), { timeout: 180000 });
+    } catch (sliceErr) {
+      if (isCleanStream && reel.mediaKey && reel.mediaKey !== inputUrl && reel.mediaKey.startsWith('http')) {
+        console.warn(`Clean stream failed for reel ${reel.id}, falling back to mediaKey...`);
+        await execAsync(ffmpegCmd(reel.mediaKey), { timeout: 180000 });
+      } else {
+        throw sliceErr;
+      }
+    }
 
     // Upload segments
     const files = fs.readdirSync(hlsDir);

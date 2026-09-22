@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$repo_root/scripts/deploy/velora-deploy-core"
+source "$repo_root/scripts/deploy/velora-deploy"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
@@ -52,5 +52,15 @@ printf '%s\n' '[rabbitmq_management,rabbitmq_prometheus].' >"$plugins"
 is_expected_rabbitmq_plugins_file "$plugins"
 printf '%s\n' '[rabbitmq_management,rabbitmq_prometheus,rabbitmq_shovel].' >"$plugins"
 ! is_expected_rabbitmq_plugins_file "$plugins"
+
+docker_calls="$tmp_dir/docker-calls"
+docker() {
+  printf '%s\n' "$*" >>"$docker_calls"
+}
+
+TARGET_SHA="0123456789abcdef0123456789abcdef01234567"
+INFRA_RECONCILE_SERVICES=(rabbitmq)
+reconcile_infrastructure
+grep -Fxq 'compose up -d --force-recreate --no-deps rabbitmq' "$docker_calls"
 
 echo "RabbitMQ Prometheus migration guard tests passed."

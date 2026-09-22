@@ -308,6 +308,10 @@ reconcile_infrastructure() {
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
         ;;
+      rabbitmq)
+        log "==> Recreating RabbitMQ for the approved Prometheus exporter migration..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps rabbitmq
+        ;;
       loki)
         log "==> Force-recreating Loki to refresh logging configuration..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps loki
@@ -374,4 +378,6 @@ rollback_from_snapshot() {
   verify_deployment_health
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

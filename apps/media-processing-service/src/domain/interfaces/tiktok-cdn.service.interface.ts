@@ -13,6 +13,12 @@ export interface TikTokCdnProcessOptions {
   cropFilter?: string;
 }
 
+export interface TikTokCdnPingResult {
+  isAlive: boolean;
+  message: string;
+  statusCode?: number;
+}
+
 export interface ITikTokCdnService {
   // Slices video to HLS and uploads segments to TikTok CDN.
   processAndUploadVideoHls(
@@ -32,4 +38,7 @@ export interface ITikTokCdnService {
 
   // Validates required TikTok CDN credentials.
   validateConfig(): boolean;
+
+  // Pings TikTok Ads API to keep session cookies alive.
+  pingSession(): Promise<TikTokCdnPingResult>;
 }

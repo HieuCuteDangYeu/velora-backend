@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BuildVisualFrameManifestUseCase } from '@processing/application/use-cases/build-visual-frame-manifest.use-case';
 import { ClassifyReelMediaUseCase } from '@processing/application/use-cases/classify-reel-media.use-case';
 import { SelectReelEncodingProfileUseCase } from '@processing/application/use-cases/select-reel-encoding-profile.use-case';
@@ -20,11 +21,13 @@ import { JobConcurrencyLimiterService } from './infrastructure/services/job-conc
 import { ProcessingMetricsService } from './infrastructure/services/processing-metrics.service';
 import { R2Service } from './infrastructure/services/r2.service';
 import { TempFileService } from './infrastructure/services/temp-file.service';
+import { TikTokCdnKeepaliveJob } from './infrastructure/jobs/tiktok-cdn-keepalive.job';
 import { TikTokCdnService } from './infrastructure/services/tiktok-cdn.service';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
+    ScheduleModule.forRoot(),
     ClientsModule.registerAsync([
       {
         name: 'CONTENT_RMQ',
@@ -138,6 +141,7 @@ import { TikTokCdnService } from './infrastructure/services/tiktok-cdn.service';
       provide: 'ITikTokCdnService',
       useExisting: TikTokCdnService,
     },
+    TikTokCdnKeepaliveJob,
   ],
 })
 export class MediaProcessingServiceModule {}

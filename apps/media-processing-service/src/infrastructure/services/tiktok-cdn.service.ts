@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import {
   ITikTokCdnService,
   TikTokCdnImageResult,
+  TikTokCdnPingResult,
   TikTokCdnProcessOptions,
   TikTokCdnUploadResult,
 } from '../../domain/interfaces/tiktok-cdn.service.interface';
@@ -74,6 +75,63 @@ export class TikTokCdnService implements ITikTokCdnService {
     return Boolean(
       this.uploadEndpoint && this.csrfToken && this.uuid && this.cookie,
     );
+  }
+
+  // Pings TikTok Ads API to keep session cookies alive and verify health.
+  async pingSession(): Promise<TikTokCdnPingResult> {
+    if (!this.validateConfig()) {
+      return {
+        isAlive: false,
+        message: 'TikTok CDN credentials are not configured.',
+      };
+    }
+
+    try {
+      const urlObj = new URL(this.uploadEndpoint);
+      const pingUrl = `${urlObj.protocol}//${urlObj.host}/api/v2/i18n/advertiser/info/`;
+
+      const response = await fetch(pingUrl, {
+        method: 'GET',
+        headers: {
+          'x-ttam-uuid': this.uuid,
+          'x-csrftoken': this.csrfToken,
+          Cookie: this.cookie,
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
+
+      const bodyText = await response.text();
+      let parsed: { code?: number; msg?: string } = {};
+      try {
+        parsed = JSON.parse(bodyText) as { code?: number; msg?: string };
+      } catch {
+        return {
+          isAlive: false,
+          statusCode: response.status,
+          message: `Failed to parse response: ${bodyText.slice(0, 100)}`,
+        };
+      }
+
+      if (parsed.code === 0) {
+        return {
+          isAlive: true,
+          statusCode: response.status,
+          message: 'Session active',
+        };
+      }
+
+      return {
+        isAlive: false,
+        statusCode: response.status,
+        message: parsed.msg || `TikTok error code ${parsed.code}`,
+      };
+    } catch (err) {
+      return {
+        isAlive: false,
+        message: `Network error: ${String(err)}`,
+      };
+    }
   }
 
   // Slices video into HLS .ts segments and uploads them to TikTok CDN masked as PNG.

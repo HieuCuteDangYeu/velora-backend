@@ -1319,6 +1319,7 @@ export class ContentController {
       userId?: string;
       viewerId?: string;
       visibility?: 'public' | 'private';
+      seriesId?: string;
       limit?: number;
       cursor?: { createdAt: string; id: string };
       onlyPublished?: boolean;
@@ -1330,6 +1331,7 @@ export class ContentController {
         userId: data.userId,
         viewerId: data.viewerId,
         visibility: data.visibility,
+        seriesId: data.seriesId,
         limit: data.limit ?? 20,
         cursor: data.cursor
           ? {

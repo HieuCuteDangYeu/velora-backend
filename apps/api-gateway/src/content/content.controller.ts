@@ -356,6 +356,7 @@ export class ContentController {
           nextCursor: string | null;
         }>('content.list_reels', {
           userId: query.userId,
+          seriesId: query.seriesId,
           viewerId: request.user!.id,
           visibility: effectiveVisibility,
           limit: query.limit,

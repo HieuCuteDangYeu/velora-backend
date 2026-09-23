@@ -589,6 +589,7 @@ export class ReelFeedRepository {
       query.ranked === true &&
       Boolean(query.viewerId) &&
       !query.userId &&
+      !query.seriesId &&
       query.visibility === 'public' &&
       query.onlyPublished === true;
 
@@ -610,8 +611,43 @@ export class ReelFeedRepository {
       where['userId'] = query.userId;
     }
 
+    if (query.seriesId) {
+      where['seriesId'] = query.seriesId;
+    }
+
     if (query.onlyPublished) {
       where['mediaStatus'] = 'COMPLETED';
+    }
+
+    // When filtering by series, use episodeNumber-based ordering and cursor
+    if (query.seriesId) {
+      if (query.cursor) {
+        where['episodeNumber'] = { gt: Number(query.cursor.id) };
+      }
+
+      const records = await this.prisma.reel.findMany({
+        where,
+        orderBy: [{ episodeNumber: 'asc' }],
+        take: limit + 1,
+        select: REEL_LIST_SELECT,
+      });
+
+      const hasMore = records.length > limit;
+      const items = records
+        .slice(0, limit)
+        .map((r) => toReelDomain(r as unknown as Record<string, unknown>));
+
+      const lastItem = items.at(-1);
+      const nextCursor =
+        hasMore && lastItem
+          ? {
+              createdAt: lastItem.createdAt,
+              // encode episodeNumber in id slot for series pagination
+              id: String(lastItem.series?.episodeNumber ?? 0),
+            }
+          : null;
+
+      return { items, nextCursor };
     }
 
     if (query.cursor) {

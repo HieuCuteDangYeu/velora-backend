@@ -47,6 +47,7 @@ export interface ReelListQuery {
   userId?: string;
   viewerId?: string;
   visibility?: 'public' | 'private';
+  seriesId?: string;
   limit?: number;
   cursor?: { createdAt: Date; id: string };
   onlyPublished?: boolean;

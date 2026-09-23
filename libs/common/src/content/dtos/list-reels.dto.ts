@@ -19,6 +19,7 @@ const booleanQuerySchema = z
 
 export const ListReelsQuerySchema = z.object({
   userId: userIdSchema.optional(),
+  seriesId: userIdSchema.optional(),
   visibility: z.enum(['public', 'private']).optional(),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   ranked: booleanQuerySchema,

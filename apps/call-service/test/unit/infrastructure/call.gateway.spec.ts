@@ -910,6 +910,43 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('allows a later group guest to close their own consumer', async () => {
+    const session = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      participantIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const mediaEngine = {
+      closeConsumer: jest.fn().mockResolvedValue({ closed: true }),
+    };
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository: { findByCallId: jest.fn().mockResolvedValue(session) },
+    });
+    const client = createSocket({
+      id: 'socket-c',
+      userId: 'user-c',
+      callIds: ['call-1'],
+    });
+
+    await gateway.handleCloseConsumer(
+      { callId: 'call-1', consumerId: 'consumer-c' },
+      client,
+    );
+
+    expect(mediaEngine.closeConsumer).toHaveBeenCalledWith(
+      'call-1',
+      'user-c',
+      'consumer-c',
+    );
+    expect(client.emit).toHaveBeenCalledWith('consumer_closed_ack', {
+      callId: 'call-1',
+      consumerId: 'consumer-c',
+      status: 'closed',
+    });
+  });
+
   it('replays the authoritative camera state when a produce retry reuses a producer', async () => {
     const videoSession = new CallSession({
       ...activeSession,

@@ -549,8 +549,8 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
       await createConsumerEngine();
     recvTransport.consume.mockReset();
 
-    let resolveFirst: (consumer: (typeof consumers)[number]) => void =
-      () => undefined;
+    let resolveFirst: (consumer: (typeof consumers)[number]) => void = () =>
+      undefined;
     recvTransport.consume
       .mockImplementationOnce(
         () =>
@@ -597,13 +597,8 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
     const { engine, recvTransport, consumers, room } =
       await createConsumerEngine();
 
-    await engine.consume(
-      'call-consumer',
-      'user-b',
-      'recv-1',
-      'producer-1',
-      {},
-    );
+    await engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {});
+    recvTransport.consume.mockReset();
     recvTransport.consume.mockRejectedValueOnce(new Error('allocation failed'));
 
     await expect(
@@ -617,13 +612,7 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
   it('closes explicit consumer cleanup idempotently and enforces ownership', async () => {
     const { engine, consumers, room } = await createConsumerEngine();
 
-    await engine.consume(
-      'call-consumer',
-      'user-b',
-      'recv-1',
-      'producer-1',
-      {},
-    );
+    await engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {});
 
     await expect(
       engine.closeConsumer('call-consumer', 'user-a', 'consumer-1'),

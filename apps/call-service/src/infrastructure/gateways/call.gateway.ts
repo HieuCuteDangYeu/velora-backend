@@ -860,7 +860,11 @@ export class CallGateway
       return;
     }
 
-    if (session.initiatorId !== userId && session.targetUserId !== userId) {
+    if (
+      !(session.isGroupCall
+        ? session.invitedUserIds.includes(userId)
+        : session.initiatorId === userId || session.targetUserId === userId)
+    ) {
       throw new ForbiddenException('You are not part of this call');
     }
 
@@ -955,7 +959,11 @@ export class CallGateway
     if (!session) {
       throw new NotFoundException('Call not found');
     }
-    if (session.initiatorId !== userId && session.targetUserId !== userId) {
+    if (
+      !(session.isGroupCall
+        ? session.invitedUserIds.includes(userId)
+        : session.initiatorId === userId || session.targetUserId === userId)
+    ) {
       throw new ForbiddenException('You are not part of this call');
     }
 

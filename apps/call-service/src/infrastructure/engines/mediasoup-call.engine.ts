@@ -725,7 +725,7 @@ export class MediasoupCallMediaEngine
       return Promise.resolve({ closed: false });
     }
     if (meta.callId !== callId || meta.userId !== userId) {
-      throw new Error('Consumer not found');
+      return Promise.reject(new Error('Consumer not found'));
     }
 
     this.closeRuntimeConsumer(room, consumerId);

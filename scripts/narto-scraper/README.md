@@ -1,109 +1,111 @@
-# Narto Drama → Velora Scraper
+# Narto Drama Unified Sync & Ingestion Pipeline
 
-Scrapes series and episode metadata from [narto-drama.com](https://narto-drama.com) sitemaps and imports them into Velora's `ReelSeries` + `Reel` system.
+All-in-one automation script that discovers new dramas from [narto-drama.com](https://narto-drama.com), scrapes metadata and direct video streams, uploads sliced HLS video segments to TikTok CDN with master playlists stored in Cloudflare R2, and indexes 1024-d vector embeddings (`BAAI/bge-m3`) into Velora's pgvector database for real-time RAG similarity search.
+
+---
+
+## Architecture & Data Flow
+
+```
+Narto Drama (Sitemap / Watch Page)
+        │
+        ▼
+   [Discovery]  <── Compares slugs against existing Velora Database
+        │
+        ▼
+   [Ingestion]  ──> content-service (ReelSeries + Reel records)
+        │
+        ▼
+ [HLS & TikTok] ──> FFmpeg 5s slice -> PNG mask spoof -> TikTok CDN (.ts)
+        │       ──> Rewritten .m3u8 with byte-ranges -> Cloudflare R2
+        │       ──> Updates hlsMasterKey in content DB
+        │
+        ▼
+[TEI Indexing]  ──> Text Embeddings Inference (BAAI/bge-m3 1024-d via SSH tunnel)
+                ──> Inserts ReelDocument & ReelChunk in pgvector
+                ──> Marks processingStage = 'READY'
+```
+
+---
 
 ## Prerequisites
 
-```bash
-pnpm add fast-xml-parser    # if not already installed
-```
+1. **Environment Variables**:
+   Configured in root `.env`:
+   - `CONTENT_DATABASE_URL`: PostgreSQL connection string for `content-service`
+   - `REEL_INDEXING_DATABASE_URL`: PostgreSQL connection string for `reel-indexing-service`
+   - `TIKTOK_CDN_UPLOAD_ENDPOINT`, `TIKTOK_CDN_CSRF_TOKEN`, `TIKTOK_CDN_UUID`, `TIKTOK_CDN_COOKIE`
+   - `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`
+
+2. **Self-Hosted TEI SSH Tunnel** (for vector embeddings):
+   To generate `BAAI/bge-m3` 1024-d embeddings on homelab hardware without rate limits or API costs:
+   ```bash
+   ssh -N -L 8088:192.168.97.3:80 velora-homelab
+   ```
+   _(If the tunnel is not running, the script still ingests and uploads to TikTok CDN, but leaves reels in `INDEX_QUEUED` stage so you can index them whenever convenient)._
+
+---
 
 ## Usage
 
-### Full pipeline (crawl → build → ingest)
+### 1. Automatic Incremental Sync (Discovers New Dramas)
+
+Scans the latest episode sitemaps (highest numbered XML files), diffs them against existing series in Velora, and automatically syncs any brand new dramas end-to-end:
 
 ```bash
-# Dry run — crawl + build only, no DB writes
-DRY_RUN=1 node scripts/narto-scraper/index.cjs all
+# Check latest sitemaps and sync new dramas
+node scripts/narto-scraper/sync.cjs
 
-# Full run with DB
-CONTENT_DATABASE_URL="postgresql://..." node scripts/narto-scraper/index.cjs all
+# Scan the latest 5 sitemaps with up to 2 new dramas
+node scripts/narto-scraper/sync.cjs --sitemaps=5 --max-dramas=2
+
+# Dry-run preview without modifying database or uploading files
+node scripts/narto-scraper/sync.cjs --dry-run
 ```
 
-### Individual phases
+### 2. Sync a Specific Drama by URL Slug
+
+If you find a specific drama on Narto Drama (e.g. `https://narto-drama.com/detail/watch/the-secret-behind-my-scoundrel-husband/1`):
 
 ```bash
-# Phase 1: Crawl sitemaps → scraped-data.json
-node scripts/narto-scraper/index.cjs crawl
+node scripts/narto-scraper/sync.cjs --slug=the-secret-behind-my-scoundrel-husband
 
-# Phase 2: Group episodes → series-data.json
-node scripts/narto-scraper/index.cjs build
-
-# Phase 3: Insert into Velora DB
-CONTENT_DATABASE_URL="postgresql://..." node scripts/narto-scraper/index.cjs ingest
-
-# Phase 4: Queue metadata-only indexing (0 bytes R2 storage)
-CONTENT_DATABASE_URL="postgresql://..." node scripts/narto-scraper/index.cjs queue-index
-
-# Check DB & indexing stats
-CONTENT_DATABASE_URL="postgresql://..." node scripts/narto-scraper/index.cjs stats
+# Sync only first 5 episodes for testing
+node scripts/narto-scraper/sync.cjs --slug=the-secret-behind-my-scoundrel-husband --limit=5
 ```
 
-### Environment variables
+### 3. Maintenance & Recovery Modes
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CONTENT_DATABASE_URL` | — | PostgreSQL connection string (required for `ingest`/`stats`/`queue-index`) |
-| `CRAWL_CONCURRENCY` | `3` | Max concurrent sitemap fetches |
-| `INGEST_BATCH_SIZE` | `50` | Series processed per batch during ingest |
-| `MAX_SITEMAPS` | `0` (all) | Limit number of sitemaps to crawl (for testing) |
-| `MAX_SERIES` | `0` (all) | Limit number of series to ingest (for testing) |
-| `QUEUE_INDEXING` | `0` | Set to `1` during `ingest` to immediately queue indexing |
-| `DRY_RUN` | `0` | Set to `1` to skip DB writes |
-| `BASE_URL` | `https://narto-drama.com` | Override base URL |
+#### Index Queued Reels
 
-### Quick test (5 sitemaps)
+Computes vector embeddings and indexes any existing reels currently sitting in `INDEX_QUEUED` stage:
 
 ```bash
-MAX_SITEMAPS=5 node scripts/narto-scraper/index.cjs crawl
-node scripts/narto-scraper/index.cjs build
-MAX_SERIES=2 QUEUE_INDEXING=1 node scripts/narto-scraper/index.cjs ingest
+node scripts/narto-scraper/sync.cjs --index-queued [--limit=100]
 ```
 
-### Strategy 1: Metadata-Only Indexing (Zero R2 Usage)
+#### Migrate Remaining Direct URLs to TikTok CDN
 
-By setting `sourceHasAudio: false` on the created `Reel` and `ReelIndexJob`, Velora's `reel-indexing-service` LangGraph workflow selects `route: 'NO_AUDIO'` and `chunkingStrategy: 'metadata-only'`:
-- Indexes drama title, episode title, full synopsis, and tags.
-- Bypasses audio/video extraction completely.
-- Consumes **0 bytes** of Cloudflare R2 storage.
-- Enables semantic search and RAG retrieval immediately.
-- Dispatched asynchronously via Content Service's Outbox pattern to RabbitMQ.
+Slices and migrates any existing reels that have external `mediaKey` URLs but no `hlsMasterKey`:
 
-## Data flow
-
-```
-sitemap.xml
-  └── episodes/1.xml ... episodes/N.xml
-        └── <url> entries with <image:image> + <video:video>
-              │
-              ▼
-        scraped-data.json (flat episode list)
-              │
-              ▼
-        series-data.json (grouped + deduplicated)
-              │
-              ▼
-        Velora DB: ReelSeries + Reel rows
+```bash
+node scripts/narto-scraper/sync.cjs --migrate-cdn [--limit=50]
 ```
 
-## Bot user
+---
 
-All imported content is owned by a dedicated bot user:
-- **ID**: `b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7` (configurable via `BOT_USER_ID`)
-- This user must exist in the `user-service` database if you want profiles to resolve.
+## CLI Options
 
-## Deduplication
-
-- Series are deduplicated by `(ownerId, title)` match
-- Episodes are deduplicated by `(seriesId, episodeNumber)` unique constraint
-- Re-running the scraper safely updates existing records
-
-## Output files
-
-| File | Description |
-|------|-------------|
-| `scraped-data.json` | Raw crawled episodes (~200k entries) |
-| `series-data.json` | Grouped and deduplicated series |
-| `checkpoint.json` | Crawl progress state |
-
-These files are gitignored by default (add to `.gitignore` if needed).
+| Flag              | Default   | Description                                           |
+| ----------------- | --------- | ----------------------------------------------------- |
+| `--slug=SLUG`     | `null`    | Sync a specific drama by its URL slug                 |
+| `--sitemaps=N`    | `2`       | Number of latest episode sitemaps to check            |
+| `--all-sitemaps`  | `false`   | Scan all 1,000+ sitemaps on Narto Drama               |
+| `--max-dramas=N`  | `0` (all) | Limit number of newly discovered dramas to process    |
+| `--limit=N`       | `0` (all) | Limit total episodes to process                       |
+| `--concurrency=N` | `3`       | Parallel workers for FFmpeg slicing and TikTok upload |
+| `--crop`          | `false`   | Apply FFmpeg watermark crop filter (`iw:ih-110:0:40`) |
+| `--index-queued`  | `false`   | Run vector indexing on reels in `INDEX_QUEUED`        |
+| `--migrate-cdn`   | `false`   | Run TikTok CDN upload for reels without HLS           |
+| `--dry-run`       | `false`   | Preview operations without writing to DB or CDN       |
+| `--help`          | —         | Display CLI usage summary                             |

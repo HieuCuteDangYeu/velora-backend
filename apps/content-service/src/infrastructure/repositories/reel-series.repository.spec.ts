@@ -25,6 +25,86 @@ describe('ReelSeriesRepository', () => {
     );
   });
 
+  it('pages completed episodes in series order and returns stable previous and next cursors', async () => {
+    const count = jest.fn().mockResolvedValue(20);
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'reel-4',
+        userId: 'user-1',
+        mediaKey: 'reel-4.mp4',
+        tags: [],
+        status: 'COMPLETED',
+        mediaStatus: 'COMPLETED',
+        indexStatus: 'COMPLETED',
+        visibility: 'friends',
+        viewCount: 3n,
+        series: { id: 'series-1', title: 'Series' },
+        episodeNumber: 4,
+      },
+      {
+        id: 'reel-3',
+        userId: 'user-1',
+        mediaKey: 'reel-3.mp4',
+        tags: [],
+        status: 'COMPLETED',
+        mediaStatus: 'COMPLETED',
+        indexStatus: 'COMPLETED',
+        visibility: 'friends',
+        viewCount: 2n,
+        series: { id: 'series-1', title: 'Series' },
+        episodeNumber: 3,
+      },
+      {
+        id: 'reel-2',
+        userId: 'user-1',
+        mediaKey: 'reel-2.mp4',
+        tags: [],
+        status: 'COMPLETED',
+        mediaStatus: 'COMPLETED',
+        indexStatus: 'COMPLETED',
+        visibility: 'friends',
+        viewCount: 1n,
+        series: { id: 'series-1', title: 'Series' },
+        episodeNumber: 2,
+      },
+    ]);
+    const repository = new ReelSeriesRepository({
+      reel: { count, findMany },
+    } as never);
+
+    const page = await repository.listReelSeriesEpisodes({
+      seriesId: 'series-1',
+      onlyCompleted: true,
+      limit: 2,
+      cursor: { episodeNumber: 5, id: 'reel-5' },
+      direction: 'previous',
+    });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          seriesId: 'series-1',
+          episodeNumber: { not: null },
+          mediaStatus: 'COMPLETED',
+        }),
+        orderBy: [{ episodeNumber: 'desc' }, { id: 'desc' }],
+        take: 3,
+      }),
+    );
+    const episodeNumbers = page.items.map((reel) => reel.series?.episodeNumber);
+    expect(episodeNumbers).toEqual([3, 4]);
+    expect(page.previousCursor).toEqual({ episodeNumber: 3, id: 'reel-3' });
+    expect(page.nextCursor).toEqual({ episodeNumber: 4, id: 'reel-4' });
+    expect(page.episodeCount).toBe(20);
+    expect(count).toHaveBeenCalledWith({
+      where: {
+        seriesId: 'series-1',
+        episodeNumber: { not: null },
+        mediaStatus: 'COMPLETED',
+      },
+    });
+  });
+
   it('appends selected reels atomically in request order', async () => {
     const transaction = {
       reelSeries: {

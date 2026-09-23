@@ -1,4 +1,7 @@
-import { ReelSeriesConflictError } from '@content/domain/errors/content.error';
+import {
+  ReelSeriesConflictError,
+  ReelSeriesNotFoundError,
+} from '@content/domain/errors/content.error';
 import { ReelSeriesUseCase } from './reel-series.use-case';
 
 const series = {
@@ -46,6 +49,93 @@ describe('ReelSeriesUseCase', () => {
       cursor,
     });
     expect(result).toEqual({ items: [series], nextCursor: cursor });
+  });
+
+  it('returns a full episode page to the series owner without checking friend access', async () => {
+    const metadata = {
+      id: 'series-1',
+      ownerId: 'user-1',
+      title: 'Series',
+      visibility: 'private' as const,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const page = {
+      items: [],
+      episodeCount: 20,
+      previousCursor: { episodeNumber: 3, id: 'reel-3' },
+      nextCursor: { episodeNumber: 17, id: 'reel-17' },
+    };
+    const repository = {
+      findReelSeriesMetadataById: jest.fn().mockResolvedValue(metadata),
+      listReelSeriesEpisodes: jest.fn().mockResolvedValue(page),
+    };
+    const friendAccess = { canView: jest.fn() };
+    const useCase = new ReelSeriesUseCase(
+      repository as never,
+      friendAccess as never,
+    );
+
+    const result = await useCase.getEpisodePage('series-1', 'user-1', false, {
+      limit: 15,
+      aroundReelId: 'reel-10',
+    });
+
+    expect(friendAccess.canView).not.toHaveBeenCalled();
+    expect(repository.listReelSeriesEpisodes).toHaveBeenCalledWith({
+      seriesId: 'series-1',
+      onlyCompleted: false,
+      limit: 15,
+      aroundReelId: 'reel-10',
+    });
+    expect(result.series).toEqual({ ...metadata, episodeCount: 20 });
+    expect(result.previousCursor).toEqual(page.previousCursor);
+    expect(result.nextCursor).toEqual(page.nextCursor);
+  });
+
+  it('limits visible episode pages to completed reels and denies viewers without series access', async () => {
+    const metadata = {
+      id: 'series-1',
+      ownerId: 'owner-1',
+      title: 'Series',
+      visibility: 'friends' as const,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const repository = {
+      findReelSeriesMetadataById: jest.fn().mockResolvedValue(metadata),
+      listReelSeriesEpisodes: jest.fn().mockResolvedValue({
+        items: [],
+        episodeCount: 0,
+        previousCursor: null,
+        nextCursor: null,
+      }),
+    };
+    const friendAccess = { canView: jest.fn().mockResolvedValue(true) };
+    const useCase = new ReelSeriesUseCase(
+      repository as never,
+      friendAccess as never,
+    );
+
+    await useCase.getEpisodePage('series-1', 'friend-1', false, { limit: 15 });
+
+    expect(friendAccess.canView).toHaveBeenCalledWith({
+      viewerId: 'friend-1',
+      ownerId: 'owner-1',
+      visibility: 'friends',
+    });
+    expect(repository.listReelSeriesEpisodes).toHaveBeenCalledWith({
+      seriesId: 'series-1',
+      onlyCompleted: true,
+      limit: 15,
+    });
+
+    friendAccess.canView.mockResolvedValue(false);
+    repository.listReelSeriesEpisodes.mockClear();
+    await expect(
+      useCase.getEpisodePage('series-1', 'stranger-1', false, { limit: 15 }),
+    ).rejects.toBeInstanceOf(ReelSeriesNotFoundError);
+    expect(repository.listReelSeriesEpisodes).not.toHaveBeenCalled();
   });
 
   it('lists only candidate reels matching the owned series visibility', async () => {

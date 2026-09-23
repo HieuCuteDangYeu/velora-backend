@@ -672,9 +672,16 @@ async function syncDramaSeries(dramaInfo, options) {
   });
   const existingMap = new Map(existingReels.map((r) => [r.episodeNumber, r]));
 
-  // 3. Upsert episodes
+  // 3. Upsert episodes — sort by episode number first to guarantee correct order
+  //    (Narto may return episodes newest-first on some series)
+  const sortedEpisodes = [...dramaInfo.episodes].sort((a, b) => {
+    const numA = a.number || a.route_episode_number || 0;
+    const numB = b.number || b.route_episode_number || 0;
+    return numA - numB;
+  });
+
   const reelsToProcess = [];
-  for (const ep of dramaInfo.episodes) {
+  for (const ep of sortedEpisodes) {
     if (options.limit > 0 && reelsToProcess.length >= options.limit) break;
 
     const epNum = ep.number || ep.route_episode_number;

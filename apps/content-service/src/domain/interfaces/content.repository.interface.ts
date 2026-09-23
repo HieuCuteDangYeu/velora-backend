@@ -96,6 +96,46 @@ export interface ReelSeriesCandidateQuery {
   cursor?: ReelCursor;
 }
 
+export interface ReelSeriesListRecord {
+  id: string;
+  ownerId: string;
+  title: string;
+  description?: string;
+  visibility: 'public' | 'friends' | 'private';
+  createdAt: Date;
+  updatedAt: Date;
+  episodeCount: number;
+  firstReelId?: string;
+  coverThumbnailKey?: string;
+}
+
+export interface ReelSeriesMetadataRecord extends Omit<ReelSeriesListRecord, 'firstReelId' | 'coverThumbnailKey' | 'episodeCount'> {}
+
+export interface ReelSeriesEpisodeCursor {
+  episodeNumber: number;
+  id: string;
+}
+
+export interface ReelSeriesEpisodesQuery {
+  seriesId: string;
+  limit: number;
+  onlyCompleted: boolean;
+  aroundReelId?: string;
+  cursor?: ReelSeriesEpisodeCursor;
+  direction?: 'previous' | 'next';
+}
+
+export interface ReelSeriesEpisodesRecord {
+  items: Reel[];
+  episodeCount: number;
+  previousCursor: ReelSeriesEpisodeCursor | null;
+  nextCursor: ReelSeriesEpisodeCursor | null;
+}
+
+export interface ReelSeriesEpisodePageRecord extends ReelSeriesEpisodesRecord {
+  series: ReelSeriesMetadataRecord & { episodeCount: number };
+}
+
 export interface ReelCursor {
   createdAt: Date;
   id: string;
@@ -282,10 +322,14 @@ export interface IContentRepository {
 
   findReelSeriesById(id: string): Promise<ReelSeries | null>;
 
+  findReelSeriesMetadataById(id: string): Promise<ReelSeriesMetadataRecord | null>;
+
   listReelSeries(query: ReelSeriesListQuery): Promise<{
-    items: ReelSeries[];
+    items: ReelSeriesListRecord[];
     nextCursor: ReelCursor | null;
   }>;
+
+  listReelSeriesEpisodes(query: ReelSeriesEpisodesQuery): Promise<ReelSeriesEpisodesRecord>;
 
   listReelSeriesCandidates(query: ReelSeriesCandidateQuery): Promise<{
     items: Reel[];

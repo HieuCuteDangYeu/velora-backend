@@ -6,6 +6,7 @@ import {
   AddReelToSeriesSchema,
   CreateReelSeriesSchema,
   ListReelSeriesCandidateReelsRpcQuerySchema,
+  ListReelSeriesEpisodesRpcQuerySchema,
   ReorderReelSeriesSchema,
   UpdateReelSeriesSchema,
 } from '@common/content/dtos/reel-series.dto';
@@ -57,6 +58,9 @@ import {
 import {
   ReelListQuery,
   ReelProcessingMediaMetadata,
+  ReelSeriesEpisodeCursor,
+  ReelSeriesListRecord,
+  ReelSeriesMetadataRecord,
   ReelUpdateData,
 } from '@content/domain/interfaces/content.repository.interface';
 import { Controller, Logger } from '@nestjs/common';
@@ -177,6 +181,36 @@ export class ContentController {
     };
   }
 
+  private toReelSeriesListSerializable(series: ReelSeriesListRecord) {
+    return {
+      id: series.id,
+      ownerId: series.ownerId,
+      title: series.title,
+      description: series.description,
+      visibility: series.visibility,
+      createdAt: series.createdAt.toISOString(),
+      updatedAt: series.updatedAt.toISOString(),
+      episodeCount: series.episodeCount,
+      firstReelId: series.firstReelId,
+      coverThumbnailKey: series.coverThumbnailKey,
+    };
+  }
+
+  private toReelSeriesMetadataSerializable(
+    series: ReelSeriesMetadataRecord & { episodeCount: number },
+  ) {
+    return {
+      id: series.id,
+      ownerId: series.ownerId,
+      title: series.title,
+      description: series.description,
+      visibility: series.visibility,
+      createdAt: series.createdAt.toISOString(),
+      updatedAt: series.updatedAt.toISOString(),
+      episodeCount: series.episodeCount,
+    };
+  }
+
   private throwReelSeriesError(error: unknown, operation: string): never {
     if (
       error instanceof ReelSeriesNotFoundError ||
@@ -213,6 +247,10 @@ export class ContentController {
     } | null,
   ): string | null {
     return cursor ? `${cursor.createdAt.toISOString()}|${cursor.id}` : null;
+  }
+
+  private serializeEpisodeCursor(cursor: ReelSeriesEpisodeCursor | null): string | null {
+    return cursor ? `${cursor.episodeNumber}|${cursor.id}` : null;
   }
 
   private serializeShareLink(link: ReelShareLink) {
@@ -318,11 +356,46 @@ export class ContentController {
     );
 
     return {
-      items: result.items.map((series) =>
-        this.toReelSeriesSerializable(series),
-      ),
+      items: result.items.map((series) => this.toReelSeriesListSerializable(series)),
       nextCursor: this.serializeCursor(result.nextCursor),
     };
+  }
+
+  @MessagePattern('content.get_reel_series_episodes')
+  async getReelSeriesEpisodes(
+    @Payload()
+    data: {
+      seriesId: string;
+      viewerId: string;
+      isAdmin?: boolean;
+      query?: unknown;
+    },
+  ) {
+    const parsed = ListReelSeriesEpisodesRpcQuerySchema.safeParse(data?.query ?? {});
+    if (!data?.seriesId?.trim() || !data?.viewerId?.trim() || !parsed.success) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for reel series episode listing',
+      });
+    }
+
+    try {
+      const result = await this.reelSeriesUseCase.getEpisodePage(
+        data.seriesId.trim(),
+        data.viewerId.trim(),
+        data.isAdmin === true,
+        parsed.data,
+      );
+
+      return {
+        series: this.toReelSeriesMetadataSerializable(result.series),
+        items: result.items.map((reel) => this.toListSerializable(reel)),
+        previousCursor: this.serializeEpisodeCursor(result.previousCursor),
+        nextCursor: this.serializeEpisodeCursor(result.nextCursor),
+      };
+    } catch (error: unknown) {
+      this.throwReelSeriesError(error, 'List Reel Series Episodes');
+    }
   }
 
   @MessagePattern('content.get_reel_series')

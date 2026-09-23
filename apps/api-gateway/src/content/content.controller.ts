@@ -5,6 +5,7 @@ import { CreateReelDto } from '@common/content/dtos/create-reel.dto';
 import {
   AddReelToSeriesDto,
   CreateReelSeriesDto,
+  ListReelSeriesEpisodesQueryDto,
   ListReelSeriesCandidateReelsQueryDto,
   ReorderReelSeriesDto,
   UpdateReelSeriesDto,
@@ -19,7 +20,11 @@ import { TrackReelEventsDto } from '@common/content/dtos/track-reel-events.dto';
 import { UpdateReelDto } from '@common/content/dtos/update-reel.dto';
 import { ReelProfileContextResponse } from '@common/content/interfaces/reel-context-response.interface';
 import {
+  PaginatedReelSeriesList,
   PaginatedReelSeries,
+  ReelSeriesEpisodesPage,
+  ReelSeriesListSummary,
+  ReelSeriesMetadataResponse,
   ReelSeriesResponse,
 } from '@common/content/interfaces/reel-series.interface';
 import { ReelProcessingStatus } from '@common/content/interfaces/reel-processing-status.interface';
@@ -168,10 +173,10 @@ export class ContentController {
   async listOwnedReelSeries(
     @Req() request: AuthenticatedRequest,
     @Query() query: ListReelSeriesQueryDto,
-  ): Promise<PaginatedReelSeries<ReelFeedListItem>> {
+  ): Promise<PaginatedReelSeriesList> {
     const result = await lastValueFrom(
       this.contentClient
-        .send<{ items: ReelSeries[]; nextCursor: string | null }>(
+        .send<{ items: ReelSeriesListSummary[]; nextCursor: string | null }>(
           'content.list_owned_reel_series',
           {
             ownerId: request.user!.id,
@@ -182,9 +187,20 @@ export class ContentController {
     );
 
     return {
-      items: await Promise.all(
-        result.items.map((series) => this.enrichReelSeries(series)),
-      ),
+      items: result.items.map((series) => ({
+        id: series.id,
+        ownerId: series.ownerId,
+        title: series.title,
+        ...(series.description ? { description: series.description } : {}),
+        visibility: series.visibility,
+        createdAt: series.createdAt,
+        updatedAt: series.updatedAt,
+        episodeCount: series.episodeCount,
+        ...(series.firstReelId ? { firstReelId: series.firstReelId } : {}),
+        ...(series.coverThumbnailKey
+          ? { coverThumbnailUrl: this.buildThumbnailUrl(series.coverThumbnailKey) }
+          : {}),
+      })),
       nextCursor: result.nextCursor,
     };
   }
@@ -212,6 +228,35 @@ export class ContentController {
     return {
       items: await this.enrichFeedItems(result.items),
       nextCursor: result.nextCursor,
+    };
+  }
+
+  @Get('series/:id/episodes')
+  @ApiOperation({ summary: 'Get a window of ordered reel series episodes' })
+  async getReelSeriesEpisodes(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') seriesId: string,
+    @Query() query: ListReelSeriesEpisodesQueryDto,
+  ): Promise<ReelSeriesEpisodesPage<ReelFeedListItem>> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<{
+          series: ReelSeriesMetadataResponse;
+          items: Reel[];
+          previousCursor: string | null;
+          nextCursor: string | null;
+        }>('content.get_reel_series_episodes', {
+          seriesId,
+          viewerId: request.user!.id,
+          isAdmin: request.user!.roles?.includes('ADMIN') === true,
+          query,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return {
+      ...result,
+      items: await this.enrichFeedItems(result.items),
     };
   }
 
@@ -859,6 +904,12 @@ export class ContentController {
       extIndex !== -1 ? mediaKey.substring(0, extIndex) : mediaKey;
 
     return `${this.cdnDomain}/${folderPath}/master.m3u8`;
+  }
+
+  private buildThumbnailUrl(thumbnailKey: string): string {
+    return thumbnailKey.startsWith('http://') || thumbnailKey.startsWith('https://')
+      ? thumbnailKey
+      : `${this.cdnDomain}/${thumbnailKey.replace(/^\/+/, '')}`;
   }
 
   private handleMicroserviceError(error: any): never {

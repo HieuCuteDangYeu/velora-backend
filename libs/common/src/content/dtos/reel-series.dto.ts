@@ -66,6 +66,73 @@ export class ListReelSeriesCandidateReelsQueryDto extends createZodDto(
   ListReelSeriesCandidateReelsQuerySchema,
 ) {}
 
+const ReelSeriesEpisodeCursorSchema = z.object({
+  episodeNumber: z.number().int().min(1),
+  id: z.string().trim().min(1),
+});
+
+const ReelSeriesEpisodeCursorQuerySchema = z
+  .string()
+  .regex(/^\d+\|[^|]+$/)
+  .optional()
+  .transform((value) => {
+    if (!value) return undefined;
+    const [episodeNumber, id] = value.split('|');
+    return { episodeNumber: Number(episodeNumber), id };
+  });
+
+export const ListReelSeriesEpisodesQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(30).default(15),
+    aroundReelId: z.string().trim().min(1).optional(),
+    cursor: ReelSeriesEpisodeCursorQuerySchema,
+    direction: z.enum(['previous', 'next']).optional(),
+  })
+  .superRefine((query, context) => {
+    if (Boolean(query.cursor) !== Boolean(query.direction)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'cursor and direction must be provided together',
+        path: ['cursor'],
+      });
+    }
+    if (query.cursor && query.aroundReelId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'aroundReelId can only be used for the first episode page',
+        path: ['aroundReelId'],
+      });
+    }
+  });
+
+export class ListReelSeriesEpisodesQueryDto extends createZodDto(
+  ListReelSeriesEpisodesQuerySchema,
+) {}
+
+export const ListReelSeriesEpisodesRpcQuerySchema = z
+  .object({
+    limit: z.number().int().min(1).max(30),
+    aroundReelId: z.string().trim().min(1).optional(),
+    cursor: ReelSeriesEpisodeCursorSchema.optional(),
+    direction: z.enum(['previous', 'next']).optional(),
+  })
+  .superRefine((query, context) => {
+    if (Boolean(query.cursor) !== Boolean(query.direction)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'cursor and direction must be provided together',
+        path: ['cursor'],
+      });
+    }
+    if (query.cursor && query.aroundReelId) {
+      context.addIssue({
+        code: 'custom',
+        message: 'aroundReelId can only be used for the first episode page',
+        path: ['aroundReelId'],
+      });
+    }
+  });
+
 export const ReorderReelSeriesSchema = z
   .object({
     reelIds: z.array(z.string().trim().min(1)).min(1),

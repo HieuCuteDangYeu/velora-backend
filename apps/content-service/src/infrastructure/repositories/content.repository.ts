@@ -29,7 +29,11 @@ import {
   ReelProfileContextResult,
   ReelSeriesCandidateQuery,
   ReelSeriesCreateData,
+  ReelSeriesEpisodesQuery,
+  ReelSeriesEpisodesRecord,
+  ReelSeriesListRecord,
   ReelSeriesListQuery,
+  ReelSeriesMetadataRecord,
   ReelSeriesUpdateData,
   ReelShareCreateInput,
   ReelShareLinkCreateInput,
@@ -945,11 +949,23 @@ export class ContentRepository
     return this.reelSeriesRepository.findReelSeriesById(id);
   }
 
+  async findReelSeriesMetadataById(
+    id: string,
+  ): Promise<ReelSeriesMetadataRecord | null> {
+    return this.reelSeriesRepository.findReelSeriesMetadataById(id);
+  }
+
   async listReelSeries(query: ReelSeriesListQuery): Promise<{
-    items: ReelSeries[];
+    items: ReelSeriesListRecord[];
     nextCursor: ReelCursor | null;
   }> {
     return this.reelSeriesRepository.listReelSeries(query);
+  }
+
+  async listReelSeriesEpisodes(
+    query: ReelSeriesEpisodesQuery,
+  ): Promise<ReelSeriesEpisodesRecord> {
+    return this.reelSeriesRepository.listReelSeriesEpisodes(query);
   }
 
   async listReelSeriesCandidates(query: ReelSeriesCandidateQuery): Promise<{

@@ -2,6 +2,10 @@ import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import type {
   ReelSeriesCreateData,
   ReelSeriesCandidateQuery,
+  ReelSeriesEpisodesQuery,
+  ReelSeriesEpisodesRecord,
+  ReelSeriesListRecord,
+  ReelSeriesMetadataRecord,
   ReelSeriesListQuery,
   ReelSeriesUpdateData,
 } from '@content/domain/interfaces/content.repository.interface';
@@ -46,8 +50,34 @@ export class ReelSeriesRepository {
     return record ? toReelSeriesDomain(record) : null;
   }
 
+  async findReelSeriesMetadataById(
+    id: string,
+  ): Promise<ReelSeriesMetadataRecord | null> {
+    const record = await this.prisma.reelSeries.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        visibility: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!record) return null;
+    const { description, ...metadata } = record;
+
+    return {
+      ...metadata,
+      visibility: metadata.visibility as ReelSeriesMetadataRecord['visibility'],
+      ...(description ? { description } : {}),
+    };
+  }
+
   async listReelSeries(query: ReelSeriesListQuery): Promise<{
-    items: ReelSeries[];
+    items: ReelSeriesListRecord[];
     nextCursor: { createdAt: Date; id: string } | null;
   }> {
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 50);
@@ -68,10 +98,19 @@ export class ReelSeriesRepository {
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
-      include: {
+      select: {
+        id: true,
+        ownerId: true,
+        title: true,
+        description: true,
+        visibility: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { reels: true } },
         reels: {
+          take: 1,
           orderBy: { episodeNumber: 'asc' },
-          select: REEL_LIST_SELECT,
+          select: { id: true, thumbnailKey: true },
         },
       },
     });
@@ -81,10 +120,185 @@ export class ReelSeriesRepository {
     const lastRecord = pageRecords.at(-1);
 
     return {
-      items: pageRecords.map(toReelSeriesDomain),
+      items: pageRecords.map((record) => ({
+        id: record.id,
+        ownerId: record.ownerId,
+        title: record.title,
+        ...(record.description ? { description: record.description } : {}),
+        visibility: record.visibility as ReelSeriesListRecord['visibility'],
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        episodeCount: record._count.reels,
+        ...(record.reels[0]?.id ? { firstReelId: record.reels[0].id } : {}),
+        ...(record.reels[0]?.thumbnailKey
+          ? { coverThumbnailKey: record.reels[0].thumbnailKey }
+          : {}),
+      })),
       nextCursor:
         hasMore && lastRecord
           ? { createdAt: lastRecord.createdAt, id: lastRecord.id }
+          : null,
+    };
+  }
+
+  async listReelSeriesEpisodes(
+    query: ReelSeriesEpisodesQuery,
+  ): Promise<ReelSeriesEpisodesRecord> {
+    const where: Prisma.ReelWhereInput = {
+      seriesId: query.seriesId,
+      episodeNumber: { not: null },
+      ...(query.onlyCompleted ? { mediaStatus: 'COMPLETED' } : {}),
+    };
+    const episodeCount = await this.prisma.reel.count({ where });
+    const orderByAscending: Prisma.ReelOrderByWithRelationInput[] = [
+      { episodeNumber: 'asc' },
+      { id: 'asc' },
+    ];
+    const orderByDescending: Prisma.ReelOrderByWithRelationInput[] = [
+      { episodeNumber: 'desc' },
+      { id: 'desc' },
+    ];
+    const serializeCursor = (record: { id: string; episodeNumber: number | null }) =>
+      record.episodeNumber === null
+        ? null
+        : { id: record.id, episodeNumber: record.episodeNumber };
+    const toEpisodes = <T extends { id: string; episodeNumber: number | null }>(
+      records: T[],
+    ) =>
+      records.map((record) =>
+        toReelDomain(record as unknown as Record<string, unknown>),
+      );
+
+    if (query.cursor && query.direction) {
+      const positionFilter =
+        query.direction === 'previous'
+          ? {
+              OR: [
+                { episodeNumber: { lt: query.cursor.episodeNumber } },
+                {
+                  episodeNumber: query.cursor.episodeNumber,
+                  id: { lt: query.cursor.id },
+                },
+              ],
+            }
+          : {
+              OR: [
+                { episodeNumber: { gt: query.cursor.episodeNumber } },
+                {
+                  episodeNumber: query.cursor.episodeNumber,
+                  id: { gt: query.cursor.id },
+                },
+              ],
+            };
+      const records = await this.prisma.reel.findMany({
+        where: { ...where, ...positionFilter },
+        orderBy:
+          query.direction === 'previous' ? orderByDescending : orderByAscending,
+        take: query.limit + 1,
+        select: REEL_LIST_SELECT,
+      });
+      const hasMoreInDirection = records.length > query.limit;
+      const boundedRecords = records.slice(0, query.limit);
+      const pageRecords =
+        query.direction === 'previous'
+          ? boundedRecords.reverse()
+          : boundedRecords;
+      const firstCursor = pageRecords[0] ? serializeCursor(pageRecords[0]) : null;
+      const lastRecord = pageRecords[pageRecords.length - 1];
+      const lastCursor = lastRecord ? serializeCursor(lastRecord) : null;
+
+      return {
+        items: toEpisodes(pageRecords),
+        episodeCount,
+        previousCursor:
+          query.direction === 'previous'
+            ? hasMoreInDirection
+              ? firstCursor
+              : null
+            : firstCursor,
+        nextCursor:
+          query.direction === 'next'
+            ? hasMoreInDirection
+              ? lastCursor
+              : null
+            : lastCursor,
+      };
+    }
+
+    const anchor = query.aroundReelId
+      ? await this.prisma.reel.findFirst({
+          where: { ...where, id: query.aroundReelId },
+          select: { episodeNumber: true },
+        })
+      : null;
+
+    if (!anchor?.episodeNumber) {
+      const records = await this.prisma.reel.findMany({
+        where,
+        orderBy: orderByAscending,
+        take: query.limit + 1,
+        select: REEL_LIST_SELECT,
+      });
+      const hasNext = records.length > query.limit;
+      const pageRecords = records.slice(0, query.limit);
+      const lastRecord = pageRecords[pageRecords.length - 1];
+      const lastCursor = lastRecord ? serializeCursor(lastRecord) : null;
+
+      return {
+        items: toEpisodes(pageRecords),
+        episodeCount,
+        previousCursor: null,
+        nextCursor: hasNext ? lastCursor : null,
+      };
+    }
+
+    const [olderRecords, newerRecords] = await Promise.all([
+      this.prisma.reel.findMany({
+        where: {
+          ...where,
+          episodeNumber: { lt: anchor.episodeNumber },
+        },
+        orderBy: orderByDescending,
+        take: query.limit + 1,
+        select: REEL_LIST_SELECT,
+      }),
+      this.prisma.reel.findMany({
+        where: {
+          ...where,
+          episodeNumber: { gte: anchor.episodeNumber },
+        },
+        orderBy: orderByAscending,
+        take: query.limit + 1,
+        select: REEL_LIST_SELECT,
+      }),
+    ]);
+    const hasMoreOlder = olderRecords.length > query.limit;
+    const hasMoreNewer = newerRecords.length > query.limit;
+    const candidates = [
+      ...olderRecords.slice(0, query.limit).reverse(),
+      ...newerRecords.slice(0, query.limit),
+    ];
+    const anchorIndex = Math.min(
+      candidates.length,
+      olderRecords.slice(0, query.limit).length,
+    );
+    const maxStart = Math.max(0, candidates.length - query.limit);
+    const start = Math.max(
+      0,
+      Math.min(maxStart, anchorIndex - Math.floor(query.limit / 2)),
+    );
+    const pageRecords = candidates.slice(start, start + query.limit);
+    const firstCursor = pageRecords[0] ? serializeCursor(pageRecords[0]) : null;
+    const lastRecord = pageRecords[pageRecords.length - 1];
+    const lastCursor = lastRecord ? serializeCursor(lastRecord) : null;
+
+    return {
+      items: toEpisodes(pageRecords),
+      episodeCount,
+      previousCursor: start > 0 || hasMoreOlder ? firstCursor : null,
+      nextCursor:
+        start + pageRecords.length < candidates.length || hasMoreNewer
+          ? lastCursor
           : null,
     };
   }

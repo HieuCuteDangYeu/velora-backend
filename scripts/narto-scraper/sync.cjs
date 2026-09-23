@@ -552,7 +552,13 @@ async function fetchDramaDetails(slug, lang = 'en-US') {
   );
   if (descMatch) {
     description = decodeHtml(
-      descMatch[1].replace(/\s*Narto Drama - .*$/i, '').trim(),
+      descMatch[1]
+        // Strip "Episode N/total — " or "Episode N — " prefix Narto injects
+        .replace(/^Episode\s+\d+\/\d+\s*[—\-–]\s*/i, '')
+        .replace(/^Episode\s+\d+\s*[—\-–]\s*/i, '')
+        // Strip trailing "Narto Drama - ..." attribution
+        .replace(/\s*Narto Drama - .*$/i, '')
+        .trim(),
     );
   }
 
@@ -706,7 +712,9 @@ async function syncDramaSeries(dramaInfo, options) {
           title: ep.title
             ? `${dramaInfo.title} ${decodeHtml(ep.title)}`
             : `${dramaInfo.title} Episode ${epNum}`,
-          description: decodeHtml(dramaInfo.description || '').slice(0, 2000),
+          description: dramaInfo.description
+            ? `Episode ${epNum} of ${dramaInfo.title}: ${decodeHtml(dramaInfo.description)}`.slice(0, 2000)
+            : `${dramaInfo.title} Episode ${epNum}`,
           tags: ['narto-drama', 'short-drama', dramaInfo.slug],
           thumbnailKey: poster,
           mediaKey: playUrl,

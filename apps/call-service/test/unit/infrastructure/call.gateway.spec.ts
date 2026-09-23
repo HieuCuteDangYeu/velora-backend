@@ -816,6 +816,44 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('echoes the consume request id so retries cannot accept a stale consumer response', async () => {
+    const consumeUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        consumerId: 'consumer-2',
+        producerId: 'producer-audio',
+        kind: 'audio',
+        rtpParameters: { codecs: [] },
+      }),
+    };
+    const client = createSocket({
+      id: 'socket-consume-correlation',
+      userId: 'user-b',
+      callIds: ['call-1'],
+      emit: jest.fn(),
+    });
+    const gateway = createGateway({ consumeUseCase });
+
+    await gateway.handleConsume(
+      {
+        callId: 'call-1',
+        transportId: 'recv-1',
+        producerId: 'producer-audio',
+        rtpCapabilities: { codecs: [] },
+        requestId: 'consume-retry-2',
+      },
+      client,
+    );
+
+    expect(client.emit).toHaveBeenCalledWith('consumer_created', {
+      callId: 'call-1',
+      consumerId: 'consumer-2',
+      producerId: 'producer-audio',
+      kind: 'audio',
+      rtpParameters: { codecs: [] },
+      requestId: 'consume-retry-2',
+    });
+  });
+
   it('acknowledges consumer cleanup idempotently without notifying the peer', async () => {
     const mediaEngine = {
       closeConsumer: jest
@@ -1334,6 +1372,7 @@ function createGateway(overrides?: {
   initiateCallUseCase?: { execute: jest.Mock };
   joinCallUseCase?: { execute: jest.Mock };
   produceUseCase?: { execute: jest.Mock };
+  consumeUseCase?: { execute: jest.Mock };
   leaveCallUseCase?: { execute: jest.Mock };
   rejectCallUseCase?: { execute: jest.Mock };
   acceptIncomingCallUseCase?: { execute: jest.Mock };
@@ -1362,7 +1401,7 @@ function createGateway(overrides?: {
     {} as never,
     {} as never,
     (overrides?.produceUseCase ?? { execute: jest.fn() }) as never,
-    {} as never,
+    (overrides?.consumeUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.leaveCallUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.rejectCallUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.acceptIncomingCallUseCase ?? { execute: jest.fn() }) as never,

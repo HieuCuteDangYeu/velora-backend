@@ -70,6 +70,14 @@ export class MediasoupCallMediaEngine
     string,
     Promise<ProducedMediaResult>
   >();
+  // Consumer retries can overlap when a response times out on the mobile
+  // control plane while mediasoup is still allocating the first Consumer.
+  // Serialize per receiver+producer so an older allocation can never finish
+  // after a newer one and close the newer Consumer as "stale".
+  private readonly consumerCreationPromises = new Map<
+    string,
+    Promise<ConsumedMediaResult>
+  >();
   private readonly workers: mediasoup.types.Worker[] = [];
   private readonly webRtcServers = new Map<
     mediasoup.types.Worker,
@@ -554,6 +562,45 @@ export class MediasoupCallMediaEngine
     producerId: string,
     rtpCapabilities: Record<string, unknown>,
   ): Promise<ConsumedMediaResult> {
+    const creationKey = this.consumerCreationKey(callId, userId, producerId);
+    const previousCreation = this.consumerCreationPromises.get(creationKey);
+    const waitForPrevious = previousCreation
+      ? previousCreation.then(
+          () => undefined,
+          () => undefined,
+        )
+      : Promise.resolve();
+
+    const creation = waitForPrevious.then(() =>
+      this.createConsumerAfterPrevious(
+        callId,
+        userId,
+        transportId,
+        producerId,
+        rtpCapabilities,
+      ),
+    );
+    this.consumerCreationPromises.set(creationKey, creation);
+
+    try {
+      return await creation;
+    } finally {
+      if (this.consumerCreationPromises.get(creationKey) === creation) {
+        this.consumerCreationPromises.delete(creationKey);
+      }
+    }
+  }
+
+  private async createConsumerAfterPrevious(
+    callId: string,
+    userId: string,
+    transportId: string,
+    producerId: string,
+    rtpCapabilities: Record<string, unknown>,
+  ): Promise<ConsumedMediaResult> {
+    // Re-resolve every runtime object after waiting for the previous consume.
+    // A terminal transition or transport rebuild may have removed the room or
+    // replaced the receive transport while this request was queued.
     const room = this.getRoomOrThrow(callId);
     const producer = room.producers.get(producerId);
     const transport = room.transports.get(transportId);
@@ -598,11 +645,9 @@ export class MediasoupCallMediaEngine
       throw new Error('Call room not found');
     }
 
-    // A signaling reconnect intentionally keeps the receiver transport alive
-    // while the mobile client discards its local Consumers. If the explicit
-    // cleanup packet is lost, replace the stale server Consumer here. Create
-    // the replacement first so a failed allocation never tears down the last
-    // working media path.
+    // The previous consume for this receiver+producer has fully settled before
+    // this point. Replacing stale runtime state is therefore ordered: an older
+    // request can no longer overtake this one and close its Consumer later.
     for (const [consumerId, meta] of room.consumerMeta) {
       if (meta.userId !== userId || meta.producerId !== producerId) continue;
       this.closeRuntimeConsumer(room, consumerId);
@@ -631,6 +676,14 @@ export class MediasoupCallMediaEngine
       kind: producer.kind,
       rtpParameters: consumer.rtpParameters,
     };
+  }
+
+  private consumerCreationKey(
+    callId: string,
+    userId: string,
+    producerId: string,
+  ): string {
+    return `${callId}:${userId}:${producerId}`;
   }
 
   async resumeConsumer(

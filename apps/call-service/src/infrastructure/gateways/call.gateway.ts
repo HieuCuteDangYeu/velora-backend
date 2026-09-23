@@ -123,6 +123,7 @@ type ConsumePayload = {
   transportId: string;
   producerId: string;
   rtpCapabilities: Record<string, unknown>;
+  requestId?: string;
 };
 
 type ResumeConsumerPayload = {
@@ -890,6 +891,7 @@ export class CallGateway
     client.emit('consumer_created', {
       callId: payload.callId,
       ...result,
+      ...(payload.requestId ? { requestId: payload.requestId } : {}),
     });
   }
 

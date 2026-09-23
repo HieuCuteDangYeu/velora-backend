@@ -1775,6 +1775,7 @@ describe('Call Service P0 flow (e2e)', () => {
       callId: string;
       consumerId: string;
       producerId: string;
+      requestId?: string;
     }>(callee, 'consumer_created');
 
     callee.emit('consume', {
@@ -1782,10 +1783,12 @@ describe('Call Service P0 flow (e2e)', () => {
       transportId: calleeRecvTransport.transportId,
       producerId: producerNotice.producerId,
       rtpCapabilities: validRtpCapabilities,
+      requestId: 'consume-initial-1',
     });
 
     const consumer = await consumerCreated;
     expect(consumer.producerId).toBe(producerNotice.producerId);
+    expect(consumer.requestId).toBe('consume-initial-1');
     expect(
       mediaEngine.getConsumerState(callId, consumer.consumerId)?.paused,
     ).toBe(true);
@@ -1811,14 +1814,17 @@ describe('Call Service P0 flow (e2e)', () => {
       callId: string;
       consumerId: string;
       producerId: string;
+      requestId?: string;
     }>(callee, 'consumer_created');
     callee.emit('consume', {
       callId,
       transportId: calleeRecvTransport.transportId,
       producerId: producerNotice.producerId,
       rtpCapabilities: validRtpCapabilities,
+      requestId: 'consume-replacement-2',
     });
     const replacementConsumer = await replacementConsumerCreated;
+    expect(replacementConsumer.requestId).toBe('consume-replacement-2');
 
     expect(replacementConsumer.consumerId).not.toBe(consumer.consumerId);
     expect(

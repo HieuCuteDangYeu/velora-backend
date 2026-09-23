@@ -527,6 +527,55 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
     expect(room.consumers.has('consumer-2')).toBe(true);
   });
 
+  it('serializes overlapping consumes so an older request cannot close a newer consumer', async () => {
+    const { engine, recvTransport, consumers, room } =
+      await createConsumerEngine();
+    recvTransport.consume.mockReset();
+
+    let resolveFirst: (consumer: (typeof consumers)[number]) => void =
+      () => undefined;
+    recvTransport.consume
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(consumers[1]);
+
+    const first = engine.consume(
+      'call-consumer',
+      'user-b',
+      'recv-1',
+      'producer-1',
+      {},
+    );
+    const second = engine.consume(
+      'call-consumer',
+      'user-b',
+      'recv-1',
+      'producer-1',
+      {},
+    );
+
+    await Promise.resolve();
+    expect(recvTransport.consume).toHaveBeenCalledTimes(1);
+
+    resolveFirst(consumers[0]);
+    await expect(first).resolves.toEqual(
+      expect.objectContaining({ consumerId: 'consumer-1' }),
+    );
+    await expect(second).resolves.toEqual(
+      expect.objectContaining({ consumerId: 'consumer-2' }),
+    );
+
+    expect(recvTransport.consume).toHaveBeenCalledTimes(2);
+    expect(consumers[0].close).toHaveBeenCalledTimes(1);
+    expect(consumers[1].close).not.toHaveBeenCalled();
+    expect(room.consumers.size).toBe(1);
+    expect(room.consumers.has('consumer-2')).toBe(true);
+  });
+
   it('does not tear down the working consumer when replacement allocation fails', async () => {
     const { engine, recvTransport, consumers, room } =
       await createConsumerEngine();

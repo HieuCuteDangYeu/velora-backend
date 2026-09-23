@@ -97,6 +97,7 @@ function parseOptions() {
   const args = process.argv.slice(2);
   const opts = {
     slug: null,
+    lang: 'en-US',
     sitemaps: 2,
     allSitemaps: false,
     maxDramas: 0,
@@ -111,6 +112,7 @@ function parseOptions() {
 
   for (const arg of args) {
     if (arg.startsWith('--slug=')) opts.slug = arg.split('=')[1].trim();
+    else if (arg.startsWith('--lang=')) opts.lang = arg.split('=')[1].trim();
     else if (arg.startsWith('--sitemaps='))
       opts.sitemaps = parseInt(arg.split('=')[1], 10);
     else if (arg === '--all-sitemaps') opts.allSitemaps = true;
@@ -516,9 +518,19 @@ async function indexReelsMetadata(reels, options) {
   );
 }
 
+function decodeHtml(str) {
+  if (!str) return '';
+  return str
+    .replace(/&#039;|&#39;|&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
 // Scrapes a single drama series by slug directly from watch page
-async function fetchDramaDetails(slug) {
-  const watchUrl = `https://narto-drama.com/detail/watch/${slug}/1?lang=id-ID`;
+async function fetchDramaDetails(slug, lang = 'en-US') {
+  const watchUrl = `https://narto-drama.com/detail/watch/${slug}/1?lang=${lang}`;
   const html = await fetchUrl(watchUrl);
 
   const match = html.match(/const\s+episodeItemsRaw\s*=\s*(\[.*?\]);/s);
@@ -529,7 +541,9 @@ async function fetchDramaDetails(slug) {
   let title = slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   const titleMatch = html.match(/<title>([^<]+)<\/title>/);
   if (titleMatch) {
-    title = titleMatch[1].replace(/\s*Episode\s*\d+.*$/i, '').trim();
+    title = decodeHtml(
+      titleMatch[1].replace(/\s*Episode\s*\d+.*$/i, '').trim(),
+    );
   }
 
   let description = '';
@@ -537,7 +551,9 @@ async function fetchDramaDetails(slug) {
     /<meta\s+name="description"\s+content="([^"]+)"/i,
   );
   if (descMatch) {
-    description = descMatch[1].replace(/\s*Narto Drama - .*$/i, '').trim();
+    description = decodeHtml(
+      descMatch[1].replace(/\s*Narto Drama - .*$/i, '').trim(),
+    );
   }
 
   let posterUrl = '';
@@ -681,9 +697,9 @@ async function syncDramaSeries(dramaInfo, options) {
           seriesId: series.id,
           episodeNumber: epNum,
           title: ep.title
-            ? `${dramaInfo.title} ${ep.title}`
+            ? `${dramaInfo.title} ${decodeHtml(ep.title)}`
             : `${dramaInfo.title} Episode ${epNum}`,
-          description: (dramaInfo.description || '').slice(0, 2000),
+          description: decodeHtml(dramaInfo.description || '').slice(0, 2000),
           tags: ['narto-drama', 'short-drama', dramaInfo.slug],
           thumbnailKey: poster,
           mediaKey: playUrl,
@@ -893,7 +909,7 @@ async function main() {
     if (options.slug) {
       // Sync specific drama
       console.log(`Fetching details for drama slug: "${options.slug}"...`);
-      const dramaInfo = await fetchDramaDetails(options.slug);
+      const dramaInfo = await fetchDramaDetails(options.slug, options.lang);
       await syncDramaSeries(dramaInfo, options);
       return;
     }
@@ -919,7 +935,7 @@ async function main() {
         console.log(
           `\n[${i + 1}/${slugs.length}] Processing drama "${slug}"...`,
         );
-        const dramaInfo = await fetchDramaDetails(slug);
+        const dramaInfo = await fetchDramaDetails(slug, options.lang);
         await syncDramaSeries(dramaInfo, options);
       } catch (err) {
         console.warn(`Failed to sync drama "${slug}":`, err.message);

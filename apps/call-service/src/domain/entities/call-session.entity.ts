@@ -21,6 +21,9 @@ export class CallSession {
   targetUserId!: string;
   isGroupCall?: boolean;
   invitedUserIds!: string[];
+  declinedUserIds!: string[];
+  groupAnswerActionIds!: Record<string, string>;
+  groupConfirmedAnswerActionIds!: Record<string, string>;
   groupName?: string;
   groupAvatarUrl?: string;
   initiatorDisplayName?: string;
@@ -72,6 +75,10 @@ export class CallSession {
         ),
       ),
     ];
+    this.declinedUserIds = partial.declinedUserIds ?? [];
+    this.groupAnswerActionIds = partial.groupAnswerActionIds ?? {};
+    this.groupConfirmedAnswerActionIds =
+      partial.groupConfirmedAnswerActionIds ?? {};
     this.lifecycleRevision = partial.lifecycleRevision ?? 0;
   }
 

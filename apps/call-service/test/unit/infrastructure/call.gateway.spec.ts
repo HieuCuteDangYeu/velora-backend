@@ -2,6 +2,7 @@ import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
 import type { Socket } from 'socket.io';
 import { CallParticipant } from '../../../src/domain/entities/call-participant.entity';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
+import { GroupJoinMediaUnavailableError } from '../../../src/application/use-cases/join-call.use-case';
 import { CallGateway } from '../../../src/infrastructure/gateways/call.gateway';
 
 describe('CallGateway reconnect recovery', () => {
@@ -1366,6 +1367,291 @@ describe('CallGateway reconnect recovery', () => {
     expect(Date.parse(incomingPayload?.expiresAt ?? '')).not.toBeNaN();
     gateway.onModuleDestroy();
   });
+
+  it('sends a group rejection only to the declining account room', async () => {
+    const rejectCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        isGroupInvitation: true,
+        didTransition: true,
+        reason: 'rejected',
+      }),
+    };
+    const recipientEmitter = { emit: jest.fn() };
+    const gateway = createGateway({ rejectCallUseCase });
+    gateway.server = {
+      to: jest.fn().mockReturnValue(recipientEmitter),
+    } as never;
+
+    await gateway.handleRejectCall(
+      { callId: 'group-room' },
+      createSocket({ id: 'socket-guest', userId: 'guest', callIds: [] }),
+    );
+
+    expect(gateway.server.to).toHaveBeenCalledWith('guest');
+    expect(gateway.server.to).toHaveBeenCalledTimes(1);
+    expect(recipientEmitter.emit).toHaveBeenCalledWith('call_rejected', {
+      callId: 'group-room',
+      userId: 'guest',
+      reason: 'rejected',
+    });
+  });
+
+  it('confirms a group answer before acknowledging it or notifying other devices', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const joinCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'guest',
+        session: groupSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        shouldEmitNewPeer: true,
+      }),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(groupSession),
+      confirmGroupInvitationJoin: jest.fn().mockResolvedValue(true),
+      abortGroupInvitationJoin: jest.fn(),
+    };
+    const roomEmitter = { emit: jest.fn() };
+    const gateway = createGateway({ joinCallUseCase, sessionRepository });
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+    const socket = createSocket({
+      id: 'socket-b',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: 'call-1', actionId: 'winning-action' },
+      socket,
+    );
+
+    expect(sessionRepository.confirmGroupInvitationJoin).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'winning-action',
+      expect.any(Date),
+    );
+    expect(
+      sessionRepository.confirmGroupInvitationJoin.mock.invocationCallOrder[0],
+    ).toBeLessThan((socket.emit as jest.Mock).mock.invocationCallOrder[0]);
+    expect(socket.emit).toHaveBeenCalledWith(
+      'incoming_call_acceptance',
+      expect.objectContaining({ outcome: 'accepted' }),
+    );
+    expect(sessionRepository.abortGroupInvitationJoin).not.toHaveBeenCalled();
+  });
+
+  it('aborts a provisional group answer when post-join media lookup fails', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+    });
+    const joinCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'guest',
+        session: groupSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        shouldEmitNewPeer: true,
+      }),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(groupSession),
+      confirmGroupInvitationJoin: jest.fn(),
+      abortGroupInvitationJoin: jest.fn().mockResolvedValue(true),
+    };
+    const stateRepository = {
+      getParticipant: jest.fn(),
+      upsertParticipant: jest.fn(),
+      removeParticipant: jest.fn(),
+    };
+    const gateway = createGateway({
+      joinCallUseCase,
+      sessionRepository,
+      stateRepository,
+      mediaEngine: {
+        listActiveProducers: jest
+          .fn()
+          .mockRejectedValue(new Error('room unavailable')),
+      },
+    });
+    const socket = createSocket({
+      id: 'socket-b',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: 'call-1', actionId: 'winning-action' },
+      socket,
+    );
+
+    expect(sessionRepository.confirmGroupInvitationJoin).not.toHaveBeenCalled();
+    expect(sessionRepository.abortGroupInvitationJoin).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'winning-action',
+      expect.any(Date),
+    );
+    expect(stateRepository.removeParticipant).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+    );
+    expect(socket.leave).toHaveBeenCalledWith('call-1');
+    expect(socket.emit).toHaveBeenCalledWith(
+      'incoming_call_acceptance',
+      expect.objectContaining({
+        outcome: 'media_unavailable',
+        reservationReleased: true,
+      }),
+    );
+  });
+
+  it('releases a group answer even when media fails before join returns', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+    });
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(groupSession),
+      confirmGroupInvitationJoin: jest.fn(),
+      abortGroupInvitationJoin: jest.fn().mockResolvedValue(true),
+    };
+    const stateRepository = {
+      getParticipant: jest.fn(),
+      upsertParticipant: jest.fn(),
+      removeParticipant: jest.fn(),
+    };
+    const gateway = createGateway({
+      joinCallUseCase: {
+        execute: jest
+          .fn()
+          .mockRejectedValue(new GroupJoinMediaUnavailableError()),
+      },
+      sessionRepository,
+      stateRepository,
+    });
+    const socket = createSocket({
+      id: 'socket-b',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: 'call-1', actionId: 'failed-action' },
+      socket,
+    );
+
+    expect(sessionRepository.abortGroupInvitationJoin).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'failed-action',
+      expect.any(Date),
+    );
+    expect(stateRepository.removeParticipant).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+    );
+    expect(socket.emit).toHaveBeenCalledWith(
+      'incoming_call_acceptance',
+      expect.objectContaining({
+        outcome: 'media_unavailable',
+        reservationReleased: true,
+      }),
+    );
+  });
+
+  it('requires the confirmed winning action for group rejoin', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      groupConfirmedAnswerActionIds: { 'user-b': 'winning-action' },
+    });
+    const joinCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'guest',
+        session: groupSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+      }),
+    };
+    const participant = new CallParticipant({
+      userId: 'user-b',
+      callId: 'call-1',
+      role: 'guest',
+      socketId: 'socket-old',
+      isConnected: true,
+    });
+    const gateway = createGateway({
+      joinCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+      stateRepository: {
+        getParticipant: jest.fn().mockResolvedValue(participant),
+        upsertParticipant: jest.fn(),
+        removeParticipant: jest.fn(),
+      },
+    });
+    const socket = createSocket({
+      id: 'socket-new',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await expect(
+      gateway.handleRejoinCall({ callId: 'call-1' }, socket),
+    ).rejects.toThrow('did not answer');
+    await expect(
+      gateway.handleRejoinCall(
+        { callId: 'call-1', actionId: 'other-action' },
+        socket,
+      ),
+    ).rejects.toThrow('did not answer');
+    await gateway.handleRejoinCall(
+      { callId: 'call-1', actionId: 'winning-action' },
+      socket,
+    );
+    expect(joinCallUseCase.execute).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'socket-new',
+      'winning-action',
+    );
+  });
+
+  it('leaves the Socket.IO room after a participant leaves the group', async () => {
+    const leaveCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        session: activeSession,
+        endedReason: 'left',
+        shouldEmitPeerLeft: true,
+        didTransition: false,
+        closedProducers: [],
+      }),
+    };
+    const gateway = createGateway({ leaveCallUseCase });
+    const evict = { socketsLeave: jest.fn() };
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue(evict),
+    } as never;
+    const socket = createSocket({
+      id: 'socket-b',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+
+    await gateway.handleLeaveCall({ callId: 'call-1' }, socket);
+
+    expect(socket.data.callIds).toEqual([]);
+    expect(gateway.server.in).toHaveBeenCalledWith('user-b');
+    expect(evict.socketsLeave).toHaveBeenCalledWith('call-1');
+  });
 });
 
 function createGateway(overrides?: {
@@ -1384,7 +1670,11 @@ function createGateway(overrides?: {
     pauseProducer?: jest.Mock;
     resumeProducer?: jest.Mock;
   };
-  sessionRepository?: { findByCallId: jest.Mock };
+  sessionRepository?: {
+    findByCallId: jest.Mock;
+    confirmGroupInvitationJoin?: jest.Mock;
+    abortGroupInvitationJoin?: jest.Mock;
+  };
   stateRepository?: {
     getParticipant: jest.Mock;
     upsertParticipant: jest.Mock;
@@ -1444,6 +1734,7 @@ function createSocket(input: {
   callIds: string[];
   emit?: jest.Mock;
   join?: jest.Mock;
+  leave?: jest.Mock;
   once?: jest.Mock;
   to?: jest.Mock;
   disconnected?: boolean;
@@ -1456,6 +1747,7 @@ function createSocket(input: {
     },
     emit: input.emit ?? jest.fn(),
     join: input.join ?? jest.fn().mockResolvedValue(undefined),
+    leave: input.leave ?? jest.fn().mockResolvedValue(undefined),
     once: input.once ?? jest.fn(),
     to: input.to ?? jest.fn().mockReturnValue({ emit: jest.fn() }),
     disconnected: input.disconnected ?? false,

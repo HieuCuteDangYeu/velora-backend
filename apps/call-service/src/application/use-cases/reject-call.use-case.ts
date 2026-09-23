@@ -16,6 +16,7 @@ export interface RejectCallResult {
   session: CallSession;
   reason: string;
   didTransition: boolean;
+  isGroupInvitation?: boolean;
 }
 
 @Injectable()
@@ -37,6 +38,36 @@ export class RejectCallUseCase {
     userId: string,
     reason = 'rejected',
   ): Promise<RejectCallResult> {
+    const existingSession = await this.sessionRepository.findByCallId(callId);
+    if (existingSession?.isGroupCall) {
+      const transition = await this.sessionRepository.rejectGroupInvitation(
+        callId,
+        userId,
+        new Date(),
+        reason,
+      );
+      const session = transition.session;
+      if (transition.outcome === 'not_found' || !session) {
+        throw new NotFoundException('Call not found');
+      }
+      if (transition.outcome === 'forbidden') {
+        throw new ForbiddenException('You are not invited to this call');
+      }
+      if (transition.outcome === 'active') {
+        throw new ForbiddenException('Active calls cannot be rejected');
+      }
+      if (transition.outcome !== 'rejected') {
+        return {
+          session,
+          reason,
+          didTransition: false,
+          isGroupInvitation: true,
+        };
+      }
+
+      return { session, reason, didTransition: true, isGroupInvitation: true };
+    }
+
     const transition = await this.sessionRepository.transitionToTerminal(
       callId,
       userId,

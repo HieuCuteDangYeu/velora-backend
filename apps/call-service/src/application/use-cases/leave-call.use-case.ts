@@ -55,14 +55,23 @@ export class LeaveCallUseCase {
       throw new ForbiddenException('You are not part of this call');
     }
     if (transition.outcome === 'participant_left') {
-      const media = await this.mediaEngine.closeParticipant(callId, userId);
-      await this.stateRepository.removeParticipant(callId, userId);
+      const [media, state] = await Promise.allSettled([
+        this.mediaEngine.closeParticipant(callId, userId),
+        this.stateRepository.removeParticipant(callId, userId),
+      ]);
+      if (media.status === 'rejected') {
+        this.logger.warn(`Participant media cleanup failed for ${callId}`);
+      }
+      if (state.status === 'rejected') {
+        this.logger.warn(`Participant state cleanup failed for ${callId}`);
+      }
       return {
         session,
         endedReason: transition.reason ?? 'left',
         shouldEmitPeerLeft: true,
         didTransition: false,
-        closedProducers: media.producers,
+        closedProducers:
+          media.status === 'fulfilled' ? media.value.producers : [],
       };
     }
     if (transition.outcome === 'already_terminal') {

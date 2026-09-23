@@ -12,6 +12,9 @@ export type SendIncomingCallNotificationInput = {
   callType: 'VOICE' | 'VIDEO';
   initiatorDisplayName: string;
   initiatorAvatarUrl?: string;
+  isGroupCall?: boolean;
+  groupName?: string;
+  groupAvatarUrl?: string;
   ringTimeoutMs: number;
   expiresAt: string;
 };
@@ -48,6 +51,9 @@ export class SendIncomingCallNotificationUseCase {
         targetUserId: input.targetUserId,
         initiatorDisplayName: input.initiatorDisplayName,
         initiatorAvatarUrl: input.initiatorAvatarUrl,
+        isGroupCall: input.isGroupCall,
+        groupName: input.groupName,
+        groupAvatarUrl: input.groupAvatarUrl,
         ringTimeoutMs: input.ringTimeoutMs,
         expiresAt: expiresAt.toISOString(),
       },

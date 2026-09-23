@@ -251,6 +251,9 @@ describe('notification delivery use cases', () => {
         callType: 'VOICE',
         initiatorDisplayName: 'Ada',
         initiatorAvatarUrl: 'https://cdn.example/avatar.png',
+        isGroupCall: true,
+        groupName: 'Team Velora',
+        groupAvatarUrl: 'https://cdn.example/group.png',
         ringTimeoutMs: 30000,
         expiresAt: expiresAt.toISOString(),
       },
@@ -299,6 +302,9 @@ describe('notification delivery use cases', () => {
         initiatorId: 'user-2',
         targetUserId: 'user-1',
         initiatorDisplayName: 'Ada',
+        isGroupCall: true,
+        groupName: 'Team Velora',
+        groupAvatarUrl: 'https://cdn.example/group.png',
       },
     });
     const incomingCallVoipInput = apnsVoipInputs[0];
@@ -311,6 +317,9 @@ describe('notification delivery use cases', () => {
         callId: 'call-1',
         initiatorId: 'user-2',
         targetUserId: 'user-1',
+        isGroupCall: true,
+        groupName: 'Team Velora',
+        groupAvatarUrl: 'https://cdn.example/group.png',
       },
     });
     expect(notificationJobRepository.markSent).toHaveBeenCalledWith(

@@ -13,6 +13,9 @@ export interface CallLifecyclePayload {
   targetUserId: string;
   recipientUserId: string;
   invitedUserIds?: string[];
+  isGroupCall?: boolean;
+  groupName?: string;
+  groupAvatarUrl?: string;
   userId: string;
   callType: CallType;
   initiatorDisplayName: string;

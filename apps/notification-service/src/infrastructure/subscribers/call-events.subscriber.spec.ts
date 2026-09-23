@@ -58,11 +58,49 @@ describe('CallEventsSubscriber', () => {
       callType: 'VIDEO',
       initiatorDisplayName: payload.initiatorDisplayName,
       initiatorAvatarUrl: undefined,
+      isGroupCall: undefined,
+      groupName: undefined,
+      groupAvatarUrl: undefined,
       ringTimeoutMs: payload.ringTimeoutMs,
       expiresAt: payload.expiresAt,
     });
     expect(ack).toHaveBeenCalledTimes(1);
     expect(nack).not.toHaveBeenCalled();
+  });
+
+  it('keeps group identity in the durable cold-start notification handoff', async () => {
+    await subscriber.handleCallInitiated(
+      {
+        ...payload,
+        callType: 'VOICE',
+        isGroupCall: true,
+        groupName: 'Team Velora',
+        groupAvatarUrl: 'https://cdn.example/group.png',
+      },
+      context(),
+    );
+
+    expect(sendIncomingCallNotification.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isGroupCall: true,
+        groupName: 'Team Velora',
+        groupAvatarUrl: 'https://cdn.example/group.png',
+      }),
+    );
+  });
+
+  it('only sends a declined group invitation to that invitee', async () => {
+    await subscriber.handleCallRejected(
+      { ...payload, invitedUserIds: [payload.targetUserId] },
+      context(),
+    );
+
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientUserIds: [payload.targetUserId],
+        status: 'rejected',
+      }),
+    );
   });
 
   it('routes an accepted answer to the winner-aware state update', async () => {
@@ -80,6 +118,27 @@ describe('CallEventsSubscriber', () => {
       at: payload.at,
     });
     expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it('targets only the accepting group member on Android and iOS', async () => {
+    await subscriber.handleCallAnswered(
+      {
+        ...payload,
+        targetUserId: 'user-c',
+        recipientUserId: 'user-c',
+        invitedUserIds: ['user-c'],
+        isGroupCall: true,
+      },
+      context(),
+    );
+
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipientUserIds: ['user-c'],
+        iosRecipientUserIds: ['user-c'],
+        status: 'active',
+      }),
+    );
   });
 
   it('preserves terminal lifecycle meanings for native cleanup', async () => {

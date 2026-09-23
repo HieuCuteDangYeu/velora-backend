@@ -61,9 +61,16 @@ export class CallStateController {
         callType: session.callType,
         status:
           session.isGroupCall &&
-          !session.participantIds.includes(payload.userId)
-            ? 'ringing'
-            : session.status,
+          session.status === 'active' &&
+          session.declinedUserIds.includes(payload.userId)
+            ? 'rejected'
+            : session.isGroupCall &&
+                session.status === 'active' &&
+                !session.participantIds.includes(payload.userId)
+              ? session.expiresAt && session.expiresAt <= new Date()
+                ? 'ended'
+                : 'ringing'
+              : session.status,
         initiatorDisplayName: session.initiatorDisplayName ?? 'Incoming call',
         initiatorAvatarUrl: session.initiatorAvatarUrl,
         isGroupCall: session.isGroupCall,

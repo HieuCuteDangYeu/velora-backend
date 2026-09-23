@@ -7,6 +7,8 @@ export type CallJoinTransition = {
     | 'expired'
     | 'invitation_expired'
     | 'busy'
+    | 'declined'
+    | 'answered_elsewhere'
     | 'forbidden'
     | 'not_found';
   session: CallSession | null;
@@ -59,6 +61,17 @@ export type CallExpiryTransition = {
   reason: 'no_answer' | 'media_unavailable';
 };
 
+export type GroupInvitationRejection = {
+  outcome:
+    | 'rejected'
+    | 'already_rejected'
+    | 'active'
+    | 'terminal'
+    | 'forbidden'
+    | 'not_found';
+  session: CallSession | null;
+};
+
 export type CallAnswerOutboxEvent = {
   session: CallSession;
   actionId: string;
@@ -71,15 +84,47 @@ export type CallTerminalOutboxEvent = {
   userId: string;
 };
 
+export type GroupInvitationOutboxEvent = {
+  key: string;
+  event: 'call.answered' | 'call.rejected';
+  callId: string;
+  userId: string;
+  lifecycleRevision: number;
+  at: string;
+  actionId?: string;
+  reason?: string;
+};
+
 export abstract class ICallSessionRepository {
   abstract save(session: CallSession): Promise<CallSession>;
+  /** Atomically reserves the initiator's active-call slot for a new group room. */
+  abstract createActiveGroupSession(session: CallSession): Promise<boolean>;
   abstract findByCallId(callId: string): Promise<CallSession | null>;
   abstract delete(callId: string): Promise<void>;
   abstract joinParticipant(
     callId: string,
     userId: string,
     now: Date,
+    actionId?: string,
   ): Promise<CallJoinTransition>;
+  abstract rejectGroupInvitation(
+    callId: string,
+    userId: string,
+    now: Date,
+    reason: string,
+  ): Promise<GroupInvitationRejection>;
+  abstract confirmGroupInvitationJoin(
+    callId: string,
+    userId: string,
+    actionId: string,
+    now: Date,
+  ): Promise<boolean>;
+  abstract abortGroupInvitationJoin(
+    callId: string,
+    userId: string,
+    actionId: string,
+    now: Date,
+  ): Promise<boolean>;
   abstract claimIncomingAnswer(
     callId: string,
     userId: string,
@@ -107,6 +152,11 @@ export abstract class ICallSessionRepository {
     actionId: string,
     now: Date,
   ): Promise<void>;
+  abstract claimPendingGroupInvitationEvents(
+    now: Date,
+    limit: number,
+  ): Promise<GroupInvitationOutboxEvent[]>;
+  abstract markGroupInvitationEventPublished(key: string): Promise<void>;
   /**
    * Claims terminal lifecycle notifications that were committed in the same
    * Redis transition as their tombstone. This protects offline CallKit cleanup

@@ -115,7 +115,7 @@ describe('Call lifecycle use cases', () => {
 
   it('starts one active voice room and invites every other group member', async () => {
     const sessionRepository = {
-      save: jest.fn((session: CallSession) => Promise.resolve(session)),
+      createActiveGroupSession: jest.fn().mockResolvedValue(true),
     };
     const stateRepository = { upsertParticipant: jest.fn() };
     const eventPublisher = { publish: jest.fn() };
@@ -161,6 +161,9 @@ describe('Call lifecycle use cases', () => {
         invitedUserIds: ['user-a', 'user-b', 'user-c'],
       }),
     );
+    expect(sessionRepository.createActiveGroupSession).toHaveBeenCalledWith(
+      result.session,
+    );
     expect(eventPublisher.publish).toHaveBeenCalledTimes(2);
     expect(eventPublisher.publish).toHaveBeenCalledWith(
       'call.initiated',
@@ -168,7 +171,11 @@ describe('Call lifecycle use cases', () => {
     );
     expect(eventPublisher.publish).toHaveBeenCalledWith(
       'call.initiated',
-      expect.objectContaining({ recipientUserId: 'user-c' }),
+      expect.objectContaining({
+        recipientUserId: 'user-c',
+        isGroupCall: true,
+        groupName: 'Core team',
+      }),
     );
   });
 
@@ -537,6 +544,40 @@ describe('Call lifecycle use cases', () => {
       useCase.execute('call-1', 'user-c', 'socket-c'),
     ).rejects.toThrow('Group call invitation expired');
     expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
+  });
+
+  it('aborts a group answer when media preparation fails before confirmation', async () => {
+    const sessionRepository = {
+      joinParticipant: jest.fn().mockResolvedValue({
+        outcome: 'joined',
+        session: new CallSession({
+          ...baseSession,
+          status: 'active',
+          isGroupCall: true,
+          participantIds: ['user-a', 'user-c'],
+          invitedUserIds: ['user-a', 'user-b', 'user-c'],
+        }),
+        joinedNow: true,
+      }),
+      abortGroupInvitationJoin: jest.fn().mockResolvedValue(true),
+    };
+    const stateRepository = { removeParticipant: jest.fn() };
+    const mediaEngine = {
+      getRouterRtpCapabilities: jest
+        .fn()
+        .mockRejectedValue(new Error('room unavailable')),
+    };
+    const useCase = new JoinCallUseCase(
+      sessionRepository as never,
+      stateRepository as never,
+      mediaEngine as never,
+    );
+
+    await expect(
+      useCase.execute('call-1', 'user-c', 'socket-c', 'action-c'),
+    ).rejects.toThrow('Group call media is unavailable');
+    expect(sessionRepository.abortGroupInvitationJoin).not.toHaveBeenCalled();
+    expect(stateRepository.removeParticipant).not.toHaveBeenCalled();
   });
 
   it('merges socket ids and clears reconnect state when an existing participant rejoins', async () => {
@@ -1257,6 +1298,43 @@ describe('Call lifecycle use cases', () => {
     expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
     expect(stateRepository.clearCallState).not.toHaveBeenCalled();
     expect(eventPublisher.publish).not.toHaveBeenCalled();
+  });
+
+  it('finishes a group leave even when media and state cleanup fail', async () => {
+    const session = new CallSession({
+      ...baseSession,
+      status: 'active',
+      isGroupCall: true,
+      participantIds: ['user-a'],
+    });
+    const useCase = new LeaveCallUseCase(
+      {
+        transitionToTerminal: jest.fn().mockResolvedValue({
+          outcome: 'participant_left',
+          session,
+          reason: 'left',
+          wasActive: true,
+        }),
+      } as never,
+      {
+        removeParticipant: jest
+          .fn()
+          .mockRejectedValue(new Error('Redis unavailable')),
+      } as never,
+      { publish: jest.fn() },
+      {
+        closeParticipant: jest
+          .fn()
+          .mockRejectedValue(new Error('room unavailable')),
+      } as never,
+    );
+
+    await expect(useCase.execute('call-1', 'user-b')).resolves.toEqual(
+      expect.objectContaining({
+        shouldEmitPeerLeft: true,
+        closedProducers: [],
+      }),
+    );
   });
 
   it('returns expired sessions even if cleanup or lifecycle fan-out temporarily fails', async () => {

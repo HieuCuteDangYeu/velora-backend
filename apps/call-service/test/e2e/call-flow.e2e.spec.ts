@@ -185,8 +185,20 @@ class FakeRedisClient {
       this.values.delete(keys[0]);
       return Promise.resolve(1);
     }
-    if (script.includes('local joinedNow = true')) {
+    if (script.includes("local actionId = ARGV[4] or ''")) {
       return Promise.resolve(this.evalJoin(keys, args));
+    }
+    if (script.includes("local events = redis.call('ZRANGEBYSCORE'")) {
+      const [nowMs, leaseUntilMs, limit] = args;
+      const events = this.sortedMembersAtOrBefore(
+        keys[0],
+        Number(nowMs),
+        Number(limit),
+      );
+      events.forEach((event) => {
+        void this.zadd(keys[0], leaseUntilMs, event);
+      });
+      return Promise.resolve(events);
     }
     if (script.includes('local acceptingLeaseUntil = ARGV[4]')) {
       return Promise.resolve(this.evalClaimIncomingAnswer(keys, args));
@@ -1296,10 +1308,13 @@ describe('Call Service P0 flow (e2e)', () => {
   const sockets: Socket[] = [];
   const originalReconnectGraceMs = process.env.CALL_RECONNECT_GRACE_MS;
   const originalNoAnswerTimeoutMs = process.env.CALL_NO_ANSWER_TIMEOUT_MS;
+  const originalRabbitMqUrl = process.env.RABBITMQ_URL;
 
   beforeEach(async () => {
     process.env.CALL_RECONNECT_GRACE_MS = '50';
-    process.env.CALL_NO_ANSWER_TIMEOUT_MS = '50';
+    // Give socket round-trips room to finish before the intentional timeout tests.
+    process.env.CALL_NO_ANSWER_TIMEOUT_MS = '500';
+    process.env.RABBITMQ_URL ||= 'amqp://127.0.0.1:5672';
     redis = new FakeRedisClient();
     eventPublisher = new FakeCallEventPublisher();
     mediaEngine = new FakeCallMediaEngine();
@@ -1380,6 +1395,8 @@ describe('Call Service P0 flow (e2e)', () => {
     mediaEngine.reset();
     process.env.CALL_RECONNECT_GRACE_MS = originalReconnectGraceMs;
     process.env.CALL_NO_ANSWER_TIMEOUT_MS = originalNoAnswerTimeoutMs;
+    if (originalRabbitMqUrl === undefined) delete process.env.RABBITMQ_URL;
+    else process.env.RABBITMQ_URL = originalRabbitMqUrl;
   });
 
   it('disconnects clients with missing or invalid tokens and joins valid clients to private rooms', async () => {
@@ -1877,7 +1894,7 @@ describe('Call Service P0 flow (e2e)', () => {
       incomingCall,
     ]);
     expect(incoming.callId).toBe(callId);
-    expect(noAnswerTimeoutMs).toBe(50);
+    expect(noAnswerTimeoutMs).toBe(500);
 
     const callEnded = onceEvent<{ callId: string; reason: string }>(
       callee,
@@ -1959,7 +1976,7 @@ describe('Call Service P0 flow (e2e)', () => {
       incomingCall,
     ]);
     expect(incoming.callId).toBe(callId);
-    expect(noAnswerTimeoutMs).toBe(50);
+    expect(noAnswerTimeoutMs).toBe(500);
 
     const callerEnded = onceEvent<{ callId: string; reason: string }>(
       caller,

@@ -56,6 +56,44 @@ export class PublishCallAnswerOutboxUseCase {
       }
     }
 
-    return events.length;
+    const groupEvents =
+      await this.sessionRepository.claimPendingGroupInvitationEvents(
+        now,
+        limit,
+      );
+    for (const event of groupEvents) {
+      try {
+        const session = await this.sessionRepository.findByCallId(event.callId);
+        if (session) {
+          await this.eventPublisher.publish(event.event, {
+            callId: event.callId,
+            conversationId: session.conversationId,
+            initiatorId: session.initiatorId,
+            targetUserId: event.userId,
+            userId: event.userId,
+            callType: session.callType,
+            ...buildCallLifecycleMetadata(session, new Date(event.at)),
+            recipientUserId: event.userId,
+            invitedUserIds: [event.userId],
+            isGroupCall: true,
+            lifecycleRevision: event.lifecycleRevision,
+            ...(event.actionId ? { answerActionId: event.actionId } : {}),
+            ...(event.reason ? { reason: event.reason } : {}),
+            at: event.at,
+          });
+        }
+        await this.sessionRepository.markGroupInvitationEventPublished(
+          event.key,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `group invitation event publish failed call=${event.callId} user=${event.userId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    return events.length + groupEvents.length;
   }
 }

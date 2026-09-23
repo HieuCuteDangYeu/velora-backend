@@ -153,7 +153,13 @@ export class InitiateCallUseCase {
         updatedAt: now,
       });
 
-      await this.sessionRepository.save(session);
+      if (isGroupCall) {
+        if (!(await this.sessionRepository.createActiveGroupSession(session))) {
+          throw new ForbiddenException('You are already in another call');
+        }
+      } else {
+        await this.sessionRepository.save(session);
+      }
       await this.stateRepository.upsertParticipant(
         new CallParticipant({
           userId: initiatorId,
@@ -176,6 +182,9 @@ export class InitiateCallUseCase {
             targetUserId: recipientUserId,
             recipientUserId,
             invitedUserIds: participantIds,
+            isGroupCall,
+            groupName: session?.groupName,
+            groupAvatarUrl: session?.groupAvatarUrl,
             userId: initiatorId,
             callType,
             initiatorDisplayName,

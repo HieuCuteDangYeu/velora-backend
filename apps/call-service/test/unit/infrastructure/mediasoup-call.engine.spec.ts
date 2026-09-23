@@ -190,6 +190,23 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     ).resolves.toEqual({ closed: false });
   });
 
+  it('closes guest transports even if producer-state cleanup fails', async () => {
+    const { engine, stateRepository, producer, transport } =
+      await createConnectedEngine();
+    await engine.produce('call-producer', 'user-a', 'transport-1', 'video', {});
+    stateRepository.removeProducerState.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await expect(
+      engine.closeParticipant('call-producer', 'user-a'),
+    ).resolves.toEqual({
+      producers: [{ producerId: 'producer-1', kind: 'video' }],
+    });
+    expect(producer.close).toHaveBeenCalledTimes(1);
+    expect(transport.close).toHaveBeenCalledTimes(1);
+  });
+
   it('rolls back an in-memory producer when durable state persistence fails', async () => {
     const { engine, stateRepository, producer } = await createConnectedEngine();
     const persistenceError = new Error('redis unavailable');

@@ -340,6 +340,9 @@ export class ProcessNotificationJobUseCase {
           callType: payload.callType,
           initiatorDisplayName: payload.initiatorDisplayName,
           initiatorAvatarUrl: payload.initiatorAvatarUrl,
+          isGroupCall: payload.isGroupCall,
+          groupName: payload.groupName,
+          groupAvatarUrl: payload.groupAvatarUrl,
           ringTimeoutMs: payload.ringTimeoutMs,
           expiresAt: payload.expiresAt,
         },
@@ -385,6 +388,9 @@ export class ProcessNotificationJobUseCase {
           callType: payload.callType,
           initiatorDisplayName: payload.initiatorDisplayName,
           initiatorAvatarUrl: payload.initiatorAvatarUrl,
+          isGroupCall: payload.isGroupCall,
+          groupName: payload.groupName,
+          groupAvatarUrl: payload.groupAvatarUrl,
           ringTimeoutMs: payload.ringTimeoutMs,
           expiresAt: payload.expiresAt,
         },
@@ -598,6 +604,15 @@ export class ProcessNotificationJobUseCase {
         data.initiatorAvatarUrl.trim()
           ? data.initiatorAvatarUrl
           : undefined,
+      isGroupCall: data.isGroupCall === true,
+      groupName:
+        typeof data.groupName === 'string' && data.groupName.trim()
+          ? data.groupName
+          : undefined,
+      groupAvatarUrl:
+        typeof data.groupAvatarUrl === 'string' && data.groupAvatarUrl.trim()
+          ? data.groupAvatarUrl
+          : undefined,
       ringTimeoutMs:
         typeof data.ringTimeoutMs === 'number' &&
         Number.isFinite(data.ringTimeoutMs)
@@ -674,6 +689,9 @@ type IncomingCallPayload = {
   callType: 'VOICE' | 'VIDEO';
   initiatorDisplayName: string;
   initiatorAvatarUrl?: string;
+  isGroupCall?: boolean;
+  groupName?: string;
+  groupAvatarUrl?: string;
   ringTimeoutMs: number;
   expiresAt: string;
 };

@@ -32,6 +32,12 @@ export class CallExpiredError extends ForbiddenException {
   }
 }
 
+export class GroupJoinMediaUnavailableError extends Error {
+  constructor() {
+    super('Group call media is unavailable');
+  }
+}
+
 @Injectable()
 export class JoinCallUseCase {
   constructor(
@@ -46,13 +52,17 @@ export class JoinCallUseCase {
     callId: string,
     userId: string,
     socketId: string,
+    actionId?: string,
   ): Promise<JoinCallResult> {
     const now = new Date();
-    const transition = await this.sessionRepository.joinParticipant(
-      callId,
-      userId,
-      now,
-    );
+    const transition = actionId
+      ? await this.sessionRepository.joinParticipant(
+          callId,
+          userId,
+          now,
+          actionId,
+        )
+      : await this.sessionRepository.joinParticipant(callId, userId, now);
     const session = transition.session;
 
     if (transition.outcome === 'not_found' || !session) {
@@ -74,6 +84,12 @@ export class JoinCallUseCase {
     if (transition.outcome === 'busy') {
       throw new ForbiddenException('You are already in another call');
     }
+    if (transition.outcome === 'answered_elsewhere') {
+      throw new ForbiddenException('Call was answered elsewhere');
+    }
+    if (transition.outcome === 'declined') {
+      throw new ForbiddenException('Group call invitation was declined');
+    }
     if (transition.outcome === 'invitation_expired') {
       throw new ForbiddenException('Group call invitation expired');
     }
@@ -83,26 +99,33 @@ export class JoinCallUseCase {
 
     const role = session.initiatorId === userId ? 'host' : 'guest';
 
-    const existingParticipant = await this.stateRepository.getParticipant(
-      callId,
-      userId,
-    );
-    const socketIds = [
-      ...new Set([...(existingParticipant?.socketIds ?? []), socketId]),
-    ];
-
-    await this.stateRepository.upsertParticipant(
-      new CallParticipant({
-        userId,
+    let rtpCapabilities: RouterRtpCapabilitiesResult;
+    try {
+      rtpCapabilities = await this.mediaEngine.getRouterRtpCapabilities(callId);
+      const existingParticipant = await this.stateRepository.getParticipant(
         callId,
-        role,
-        socketId,
-        socketIds,
-        isConnected: true,
-        reconnectDeadlineAt: undefined,
-        joinedAt: now,
-      }),
-    );
+        userId,
+      );
+      const socketIds = [
+        ...new Set([...(existingParticipant?.socketIds ?? []), socketId]),
+      ];
+
+      await this.stateRepository.upsertParticipant(
+        new CallParticipant({
+          userId,
+          callId,
+          role,
+          socketId,
+          socketIds,
+          isConnected: true,
+          reconnectDeadlineAt: undefined,
+          joinedAt: now,
+        }),
+      );
+    } catch (error) {
+      if (!session.isGroupCall || role !== 'guest' || !actionId) throw error;
+      throw new GroupJoinMediaUnavailableError();
+    }
 
     const peerUserId =
       role === 'host' ? session.targetUserId : session.initiatorId;
@@ -110,7 +133,7 @@ export class JoinCallUseCase {
     return {
       role,
       session,
-      rtpCapabilities: await this.mediaEngine.getRouterRtpCapabilities(callId),
+      rtpCapabilities,
       peerUserId,
       shouldEmitNewPeer: transition.joinedNow && role === 'guest',
     };

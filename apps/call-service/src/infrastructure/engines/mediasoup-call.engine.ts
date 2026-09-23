@@ -866,14 +866,22 @@ export class MediasoupCallMediaEngine
       .filter(([, meta]) => meta.userId === userId)
       .map(([producerId, meta]) => ({ producerId, kind: meta.kind }));
 
-    for (const producer of producers) {
-      await this.closeProducer(callId, userId, producer.producerId);
-    }
-    for (const [transportId, meta] of [...room.transportMeta.entries()]) {
-      if (meta.userId === userId) room.transports.get(transportId)?.close();
-    }
-    for (const [consumerId, meta] of [...room.consumerMeta.entries()]) {
-      if (meta.userId === userId) room.consumers.get(consumerId)?.close();
+    try {
+      for (const producer of producers) {
+        await this.closeProducer(callId, userId, producer.producerId);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to persist participant producer cleanup call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+      );
+    } finally {
+      // A Redis cleanup failure must never keep this guest's media alive.
+      for (const [transportId, meta] of [...room.transportMeta.entries()]) {
+        if (meta.userId === userId) room.transports.get(transportId)?.close();
+      }
+      for (const [consumerId, meta] of [...room.consumerMeta.entries()]) {
+        if (meta.userId === userId) room.consumers.get(consumerId)?.close();
+      }
     }
 
     return { producers };

@@ -64,6 +64,7 @@ describe('CallStateController', () => {
       status: 'active',
       isGroupCall: true,
       groupName: 'Core team',
+      expiresAt: new Date('2099-01-01T00:00:30.000Z'),
       invitedUserIds: ['user-a', 'user-b', 'user-c'],
       participantIds: ['user-a'],
     });
@@ -81,6 +82,45 @@ describe('CallStateController', () => {
         groupName: 'Core team',
       }),
     });
+  });
+
+  it('reports a declined invite as rejected without ending the room for others', async () => {
+    const groupSession = new CallSession({
+      ...session,
+      status: 'active',
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      participantIds: ['user-a'],
+      declinedUserIds: ['user-b'],
+      expiresAt: new Date('2099-01-01T00:00:30.000Z'),
+    });
+    const { controller } = createController(groupSession);
+
+    expect(
+      (await controller.getCallState({ callId: 'call-1', userId: 'user-b' }))
+        .call?.status,
+    ).toBe('rejected');
+    expect(
+      (await controller.getCallState({ callId: 'call-1', userId: 'user-c' }))
+        .call?.status,
+    ).toBe('ringing');
+  });
+
+  it('does not resurrect an unjoined invite after its deadline', async () => {
+    const groupSession = new CallSession({
+      ...session,
+      status: 'active',
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+      participantIds: ['user-a'],
+      expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+    });
+    const { controller } = createController(groupSession);
+
+    expect(
+      (await controller.getCallState({ callId: 'call-1', userId: 'user-b' }))
+        .call?.status,
+    ).toBe('ended');
   });
 
   it('rejects users outside the call', async () => {

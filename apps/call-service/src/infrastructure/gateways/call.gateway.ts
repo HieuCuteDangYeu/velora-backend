@@ -33,6 +33,7 @@ import { RecoverActiveCallsAfterMediaRestartUseCase } from '../../application/us
 import { InitiateCallUseCase } from '../../application/use-cases/initiate-call.use-case';
 import {
   CallExpiredError,
+  GroupJoinMediaUnavailableError,
   JoinCallUseCase,
 } from '../../application/use-cases/join-call.use-case';
 import { LeaveCallUseCase } from '../../application/use-cases/leave-call.use-case';
@@ -85,6 +86,7 @@ type AcceptIncomingCallPayload = JoinCallPayload & {
 
 type RejoinCallPayload = {
   callId: string;
+  actionId?: string;
 };
 
 type LeaveCallPayload = {
@@ -230,6 +232,7 @@ type IncomingCallAcceptanceSocketPayload = {
   activeProducers?: ActiveProducerResult[];
   telemetryToken?: string;
   noAnswerTimeoutMs?: number;
+  reservationReleased?: boolean;
 };
 
 type RecentTerminalCall = {
@@ -284,6 +287,7 @@ export class CallGateway
   private readonly reconnectStartedAtByParticipant = new Map<string, number>();
   private readonly videoStatesByProducer = new Map<string, VideoStateRecord>();
   private readonly videoStateQueues = new Map<string, Promise<void>>();
+  private readonly groupAcceptQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
   private expirySweepInFlight = false;
 
@@ -618,6 +622,16 @@ export class CallGateway
       throw new ForbiddenException('Call is not recoverable');
     }
 
+    const groupActionId = payload.actionId?.trim();
+    if (
+      session.isGroupCall &&
+      userId !== session.initiatorId &&
+      (!groupActionId ||
+        session.groupConfirmedAnswerActionIds[userId] !== groupActionId)
+    ) {
+      throw new ForbiddenException('This device did not answer the group call');
+    }
+
     const participant = await this.stateRepository.getParticipant(
       payload.callId,
       userId,
@@ -634,11 +648,14 @@ export class CallGateway
       throw new ForbiddenException('Reconnect window expired');
     }
 
-    const result = await this.joinCallUseCase.execute(
-      payload.callId,
-      userId,
-      client.id,
-    );
+    const result = groupActionId
+      ? await this.joinCallUseCase.execute(
+          payload.callId,
+          userId,
+          client.id,
+          groupActionId,
+        )
+      : await this.joinCallUseCase.execute(payload.callId, userId, client.id);
 
     if (!(await this.attachLiveSocketToCall(client, payload.callId, userId))) {
       return;
@@ -1342,55 +1359,25 @@ export class CallGateway
       payload.callId,
     );
     if (existingSession?.isGroupCall) {
-      let joined: Awaited<ReturnType<JoinCallUseCase['execute']>>;
-      try {
-        joined = await this.joinCallUseCase.execute(
-          payload.callId,
-          userId,
-          client.id,
+      const key = this.disconnectKey(payload.callId, userId);
+      const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
+      const operation = previous
+        .catch(() => undefined)
+        .then(() =>
+          this.acceptGroupInvitation(client, payload.callId, userId, actionId),
         );
-      } catch (error) {
-        client.emit('incoming_call_acceptance', {
-          callId: payload.callId,
-          outcome:
-            error instanceof ForbiddenException &&
-            /another call/i.test(error.message)
-              ? 'busy'
-              : error instanceof ForbiddenException &&
-                  /invitation expired/i.test(error.message)
-                ? 'expired'
-                : 'unauthorized',
-        } satisfies IncomingCallAcceptanceSocketPayload);
-        return;
-      }
-      if (!(await this.attachLiveSocketToCall(client, payload.callId, userId)))
-        return;
-      const activeProducers = this.decorateActiveProducers(
-        payload.callId,
-        await this.mediaEngine.listActiveProducers(payload.callId, userId),
+      const tail = operation.then(
+        () => undefined,
+        () => undefined,
       );
-      client.emit('incoming_call_acceptance', {
-        callId: payload.callId,
-        outcome: 'accepted',
-        role: 'guest',
-        session: joined.session,
-        rtpCapabilities: joined.rtpCapabilities,
-        activeProducers,
-        telemetryToken: this.telemetryTokenService.issue(
-          payload.callId,
-          'guest',
-        ),
-      } satisfies IncomingCallAcceptanceSocketPayload);
-      if (joined.shouldEmitNewPeer) {
-        client
-          .to(payload.callId)
-          .emit('new_peer', { callId: payload.callId, userId });
+      this.groupAcceptQueues.set(key, tail);
+      try {
+        await operation;
+      } finally {
+        if (this.groupAcceptQueues.get(key) === tail) {
+          this.groupAcceptQueues.delete(key);
+        }
       }
-      this.server.to(userId).emit('call_answered', {
-        callId: payload.callId,
-        userId,
-        answerActionId: actionId,
-      });
       return;
     }
 
@@ -1462,6 +1449,98 @@ export class CallGateway
       .emit('call_answered', answeredPayload);
   }
 
+  private async acceptGroupInvitation(
+    client: Socket,
+    callId: string,
+    userId: string,
+    actionId: string,
+  ): Promise<void> {
+    let joined: Awaited<ReturnType<JoinCallUseCase['execute']>> | undefined;
+    const wasInRoom = client.rooms?.has(callId) ?? false;
+    try {
+      joined = await this.joinCallUseCase.execute(
+        callId,
+        userId,
+        client.id,
+        actionId,
+      );
+      if (!(await this.attachLiveSocketToCall(client, callId, userId))) {
+        throw new GroupJoinMediaUnavailableError();
+      }
+      const activeProducers = this.decorateActiveProducers(
+        callId,
+        await this.mediaEngine.listActiveProducers(callId, userId),
+      );
+      const telemetryToken = this.telemetryTokenService.issue(callId, 'guest');
+      if (
+        !(await this.sessionRepository.confirmGroupInvitationJoin(
+          callId,
+          userId,
+          actionId,
+          new Date(),
+        ))
+      ) {
+        throw new GroupJoinMediaUnavailableError();
+      }
+
+      this.clearPendingDisconnect(callId, userId);
+      this.recordSocketReconnect(callId, userId);
+      client.emit('incoming_call_acceptance', {
+        callId,
+        outcome: 'accepted',
+        role: 'guest',
+        session: joined.session,
+        rtpCapabilities: joined.rtpCapabilities,
+        activeProducers,
+        telemetryToken,
+      } satisfies IncomingCallAcceptanceSocketPayload);
+      if (joined.shouldEmitNewPeer) {
+        client.to(callId).emit('new_peer', { callId, userId });
+      }
+      this.server.to(userId).emit('call_answered', {
+        callId,
+        userId,
+        answerActionId: actionId,
+      });
+    } catch (error) {
+      const reservationReleased = await this.sessionRepository
+        .abortGroupInvitationJoin(callId, userId, actionId, new Date())
+        .catch(() => false);
+      if (reservationReleased) {
+        try {
+          await this.stateRepository.removeParticipant(callId, userId);
+        } catch {
+          // Session authorization is already revoked by the Redis CAS.
+        }
+      }
+      if (joined && (reservationReleased || !wasInRoom)) {
+        try {
+          await client.leave(callId);
+        } catch {
+          // The socket may already be disconnected; the Redis abort is authoritative.
+        }
+        this.untrackCallId(client, callId);
+      }
+      client.emit('incoming_call_acceptance', {
+        callId,
+        ...(reservationReleased ? { reservationReleased: true } : {}),
+        outcome:
+          error instanceof ForbiddenException &&
+          /another call/i.test(error.message)
+            ? 'busy'
+            : error instanceof ForbiddenException &&
+                /answered elsewhere/i.test(error.message)
+              ? 'answered_elsewhere'
+              : error instanceof ForbiddenException &&
+                  /invitation expired/i.test(error.message)
+                ? 'expired'
+                : error instanceof GroupJoinMediaUnavailableError || joined
+                  ? 'media_unavailable'
+                  : 'unauthorized',
+      } satisfies IncomingCallAcceptanceSocketPayload);
+    }
+  }
+
   @SubscribeMessage('leave_call')
   async handleLeaveCall(
     @MessageBody() payload: LeaveCallPayload,
@@ -1484,6 +1563,9 @@ export class CallGateway
     this.clearVideoState(payload.callId);
     this.untrackCallId(client, payload.callId);
     if (result.shouldEmitPeerLeft) {
+      // A participant is account-scoped; evict every socket for that account,
+      // including an older socket left behind by a reconnect.
+      this.server.in(userId).socketsLeave(payload.callId);
       for (const producer of result.closedProducers ?? []) {
         this.server.to(payload.callId).emit('producer_closed', {
           callId: payload.callId,
@@ -1493,6 +1575,8 @@ export class CallGateway
         });
       }
       this.emitPeerLeft(payload.callId, userId, result.endedReason);
+    } else {
+      await client.leave(payload.callId);
     }
     if (result.didTransition !== false) {
       this.emitCallEnded(result.session, result.endedReason);
@@ -1507,21 +1591,21 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
-    const existingSession = await this.sessionRepository.findByCallId(
-      payload.callId,
-    );
-    if (existingSession?.isGroupCall) {
-      if (!existingSession.invitedUserIds.includes(userId)) {
-        throw new ForbiddenException('You are not invited to this call');
-      }
-      return;
-    }
-
     const result = await this.rejectCallUseCase.execute(
       payload.callId,
       userId,
       payload.reason,
     );
+    if (result.isGroupInvitation) {
+      if (result.didTransition) {
+        this.server.to(userId).emit('call_rejected', {
+          callId: payload.callId,
+          userId,
+          reason: result.reason,
+        });
+      }
+      return;
+    }
     this.clearPendingUnansweredCall(payload.callId);
     this.clearPendingDisconnect(payload.callId, userId);
     this.reconnectStartedAtByParticipant.delete(

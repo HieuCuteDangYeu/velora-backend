@@ -54,6 +54,12 @@ export class ValidateEvidenceIndexCandidateUseCase {
     const sourceEvidence = this.normalize(
       (input.transcriptSegments ?? []).map((segment) => segment.text).join(' '),
     );
+    const sourceEvidenceById = new Map(
+      (input.transcriptSegments ?? []).map((segment, ordinal) => [
+        this.sourceSegmentId(segment, ordinal),
+        segment.text,
+      ]),
+    );
 
     for (const document of documents) {
       const ordinalKey = `${document.parentId ?? 'root'}:${document.kind}:${document.ordinal}`;
@@ -67,7 +73,9 @@ export class ValidateEvidenceIndexCandidateUseCase {
       if (
         document.startTime !== undefined &&
         document.endTime !== undefined &&
-        (document.startTime < 0 ||
+        (!Number.isFinite(document.startTime) ||
+          !Number.isFinite(document.endTime) ||
+          document.startTime < 0 ||
           document.endTime < document.startTime ||
           document.endTime * 1000 >
             (job.outputDurationMs ?? job.sourceDurationMs) + 1_000)
@@ -125,7 +133,12 @@ export class ValidateEvidenceIndexCandidateUseCase {
         if (
           document.kind !== 'VISUAL_SCENE' &&
           sourceEvidence &&
-          !sourceEvidence.includes(normalizedEvidence)
+          !this.documentEvidenceIsSupported(
+            document,
+            normalizedEvidence,
+            sourceEvidence,
+            sourceEvidenceById,
+          )
         ) {
           throw new Error(
             `Document ${document.id} contains evidence outside the transcript`,
@@ -187,6 +200,30 @@ export class ValidateEvidenceIndexCandidateUseCase {
 
   private normalize(value: string): string {
     return value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+  }
+
+  private sourceSegmentId(segment: TranscriptSegment, ordinal: number): string {
+    return typeof segment['sourceSegmentId'] === 'string'
+      ? segment['sourceSegmentId']
+      : `transcription:${segment['sourceSegmentNumber'] ?? 0}:${segment.id ?? ordinal}`;
+  }
+
+  private documentEvidenceIsSupported(
+    document: ReelEvidenceDocument,
+    normalizedEvidence: string,
+    sourceEvidence: string,
+    sourceEvidenceById: Map<string, string>,
+  ): boolean {
+    if (sourceEvidence.includes(normalizedEvidence)) return true;
+    if (document.kind !== 'CHUNK' || document.sourceSegmentIds.length === 0) {
+      return false;
+    }
+    const referencedEvidence = this.normalize(
+      document.sourceSegmentIds
+        .map((id) => sourceEvidenceById.get(id) ?? '')
+        .join(' '),
+    );
+    return referencedEvidence.includes(normalizedEvidence);
   }
 
   private hash(value: string): string {

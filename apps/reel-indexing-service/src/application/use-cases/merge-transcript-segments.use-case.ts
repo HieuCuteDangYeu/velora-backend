@@ -63,10 +63,24 @@ export class MergeTranscriptSegmentsUseCase {
         checkpoint.transcriptSegments ?? []
       ).entries()) {
         const offsetSeconds = checkpoint.startMs / 1000;
+        const artifactStartSeconds = checkpoint.startMs / 1000;
+        const artifactEndSeconds = checkpoint.endMs / 1000;
+        const rawStart = Number(segment.start) + offsetSeconds;
+        const rawEnd = Number(segment.end) + offsetSeconds;
+        if (!Number.isFinite(rawStart) || !Number.isFinite(rawEnd)) {
+          continue;
+        }
+        const start = Math.min(
+          artifactEndSeconds,
+          Math.max(artifactStartSeconds, rawStart),
+        );
+        const end = Math.min(artifactEndSeconds, Math.max(start, rawEnd));
+        if (end <= start) continue;
+
         const candidate = {
           ...segment,
-          start: Math.max(0, Number(segment.start) + offsetSeconds),
-          end: Math.max(0, Number(segment.end) + offsetSeconds),
+          start,
+          end,
           sourceSegmentNumber: checkpoint.segmentNumber,
           sourceSegmentId: `transcription:${checkpoint.segmentNumber}:${
             segment.id ?? segmentOrdinal

@@ -1,0 +1,182 @@
+question: "How does Velora serve Reel HLS and cache/play it on the mobile application?"
+type: flowchart
+audience: "Backend and mobile engineers reviewing Reel streaming and cache behavior"
+scope: "API HLS URL enrichment, CDN HLS delivery, network-aware mobile prefetch, persistent offline HLS cache, source selection, and player cache behavior"
+commit: "backend fd757662; Velora-Mobile 2b044e3 (relevant streaming ranges unchanged by local edits)"
+extracted_with:
+  - "repository source trace"
+  - "Repo Diagrammer evidence IR"
+
+conformance:
+  mode: practical
+  targets: []
+  claim: documented-subset
+  notes: []
+
+nodes:
+  - id: reel_response
+    label: "Load Reel response"
+    kind: source
+    responsibility: "Receive a Reel whose streamUrl is derived from hlsMasterKey or the media key"
+    confidence: direct
+    evidence: ["apps/api-gateway/src/content/content.controller.ts:789-840"]
+  - id: build_stream_url
+    label: "Resolve HLS master URL"
+    kind: transformation
+    responsibility: "Keep absolute URLs, map .m3u8 keys to CDN, or map a raw media key to sibling master.m3u8"
+    confidence: direct
+    evidence: ["apps/api-gateway/src/content/content.controller.ts:893-907"]
+  - id: hls_origin
+    label: "Serve master → variant → segments"
+    kind: transformation
+    responsibility: "Validated HLS assets produced by the media pipeline are read through the CDN/media origin"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:287-345", "apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:32-84"]
+  - id: cache_policy
+    label: "Apply network cache policy"
+    kind: transformation
+    responsibility: "Offline: none; Wi-Fi: current + previous + 2 ahead/500MB; cellular: current + 1 ahead/250MB; expensive: current only/150MB"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/reelCachePolicy.ts:15-45", "Velora-Mobile/src/lib/reelCachePolicy.ts:78-110"]
+  - id: prefetch_plan
+    label: "Plan nearby Reel prefetch"
+    kind: transformation
+    responsibility: "Prioritize current at 0, ahead at offset×10, and previous at 30 according to the network policy"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:138-175"]
+  - id: warm_assets
+    label: "Warm HLS start"
+    kind: transformation
+    responsibility: "Prefetch thumbnail, master playlist, first variant, and first two media resources/segments"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/reel-prefetch.ts:7-8", "Velora-Mobile/src/lib/reel-prefetch.ts:143-184", "Velora-Mobile/src/components/reels/ReelsViewer.tsx:992-995"]
+  - id: save_nearby
+    label: "Save nearby video?"
+    kind: decision
+    responsibility: "Run full temporary-offline caching only when focus, online state, preference, and cache policy allow it"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:976-1011"]
+  - id: choose_low_variant
+    label: "Choose lowest-bandwidth variant"
+    kind: transformation
+    responsibility: "Fetch the HLS master and select the lowest BANDWIDTH variant for the persistent temporary cache"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:402-462", "Velora-Mobile/src/lib/offlineReelVideoCache.ts:652-658"]
+  - id: build_offline_manifest
+    label: "Rewrite local HLS manifest"
+    kind: transformation
+    responsibility: "Rewrite playlist resource references locally and download all required media resources with concurrency four"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:94-97", "Velora-Mobile/src/lib/offlineReelVideoCache.ts:474-490", "Velora-Mobile/src/lib/offlineReelVideoCache.ts:578-603", "Velora-Mobile/src/lib/offlineReelVideoCache.ts:660-669"]
+  - id: persist_offline_cache
+    label: "Commit offline cache"
+    kind: store
+    responsibility: "Move temp directory to final cache, persist offline.m3u8 metadata in WatermelonDB, and enforce cache limits"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:86-97", "Velora-Mobile/src/lib/offlineReelVideoCache.ts:674-705", "Velora-Mobile/src/database/reels/reelOfflineStore.ts:14-23", "Velora-Mobile/src/database/reels/reelOfflineStore.ts:97-109"]
+  - id: online
+    label: "Online?"
+    kind: decision
+    responsibility: "Choose remote HLS while online or the local cached manifest while offline"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-145"]
+  - id: remote_hls
+    label: "Keep remote HLS source"
+    kind: transformation
+    responsibility: "Feed playback sets preferOffline=false so completing a background offline cache does not replace the active online HLS source"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/components/reels/ReelFeedItem.tsx:515-539", "Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-128"]
+  - id: cached_offline
+    label: "Cached offline manifest?"
+    kind: decision
+    responsibility: "When offline, use a cached local manifest only if a cache record is available"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-145"]
+  - id: local_hls
+    label: "Play local offline.m3u8"
+    kind: transformation
+    responsibility: "Use the rewritten local HLS playlist and downloaded resources"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:668-705", "Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:123-128"]
+  - id: unavailable
+    label: "Offline video unavailable"
+    kind: sink
+    responsibility: "Return no playable URI when offline without a cached record"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:123-145"]
+  - id: playback_cache
+    label: "Apply player cache"
+    kind: transformation
+    responsibility: "iOS remote HLS uses expo-video-cache proxy on port 9000 with 500MB; other sources use native expo-video caching"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/lib/reelPlaybackVideoCache.ts:1-24", "Velora-Mobile/src/components/reels/ReelVideo.tsx:177-192"]
+  - id: player
+    label: "Play with expo-video"
+    kind: sink
+    responsibility: "Mark .m3u8 as HLS and use 0.35s minimum playback buffer plus 5s preferred forward buffer"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/components/reels/ReelVideo.tsx:168-192"]
+
+edges:
+  - { id: e01, from: reel_response, to: build_stream_url, relation: routes-to, label: "hlsMasterKey / mediaKey", evidence: ["apps/api-gateway/src/content/content.controller.ts:789-840"] }
+  - { id: e02, from: build_stream_url, to: hls_origin, relation: reads, label: "CDN master URL", evidence: ["apps/api-gateway/src/content/content.controller.ts:893-907"] }
+  - { id: e03, from: hls_origin, to: cache_policy, relation: routes-to, label: "streamUrl", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:740-746"] }
+  - { id: e04, from: cache_policy, to: prefetch_plan, relation: routes-to, label: "policy", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:138-175"] }
+  - { id: e05, from: prefetch_plan, to: warm_assets, relation: routes-to, label: "planned reels", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:992-995"] }
+  - { id: e06, from: warm_assets, to: save_nearby, relation: routes-to, label: "after lightweight warm", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:992-1005"] }
+  - { id: e07, from: save_nearby, to: choose_low_variant, relation: routes-to, label: "yes", condition: "preference + policy permit", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:997-1010"] }
+  - { id: e08, from: choose_low_variant, to: build_offline_manifest, relation: routes-to, label: "media playlist", evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:652-666"] }
+  - { id: e09, from: build_offline_manifest, to: persist_offline_cache, relation: writes, label: "offline.m3u8 + resources", evidence: ["Velora-Mobile/src/lib/offlineReelVideoCache.ts:666-705"] }
+  - { id: e10, from: save_nearby, to: online, relation: routes-to, label: "no / cache can run in background", condition: "full cache disabled or not required for live playback", evidence: ["Velora-Mobile/src/components/reels/ReelsViewer.tsx:997-1011", "Velora-Mobile/src/components/reels/ReelFeedItem.tsx:515-539"] }
+  - { id: e11, from: persist_offline_cache, to: online, relation: routes-to, label: "cache ready", evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-145"] }
+  - { id: e12, from: online, to: remote_hls, relation: routes-to, label: "yes", condition: "online", evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-128", "Velora-Mobile/src/components/reels/ReelFeedItem.tsx:515-539"] }
+  - { id: e13, from: online, to: cached_offline, relation: routes-to, label: "no", condition: "offline", evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-145"] }
+  - { id: e14, from: cached_offline, to: local_hls, relation: routes-to, label: "yes", condition: "cache record exists", evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:119-128"] }
+  - { id: e15, from: cached_offline, to: unavailable, relation: routes-to, label: "no", condition: "no cache record", evidence: ["Velora-Mobile/src/hooks/useOfflineReelVideoSource.ts:135-145"] }
+  - { id: e16, from: remote_hls, to: playback_cache, relation: routes-to, label: "remote source", evidence: ["Velora-Mobile/src/lib/reelPlaybackVideoCache.ts:7-17"] }
+  - { id: e17, from: local_hls, to: playback_cache, relation: routes-to, label: "local source", evidence: ["Velora-Mobile/src/lib/reelPlaybackVideoCache.ts:7-17"] }
+  - { id: e18, from: playback_cache, to: player, relation: routes-to, label: "playback URI", evidence: ["Velora-Mobile/src/components/reels/ReelVideo.tsx:177-192"] }
+
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+
+view:
+  profile: flowchart
+  renderer: graphviz
+  fallback_renderer: mermaid
+  story: "Resolve the HLS master URL, warm nearby playback, optionally build a complete low-bandwidth offline cache, then choose remote or local HLS based on connectivity."
+  primary_path: [reel_response, build_stream_url, hls_origin, cache_policy, prefetch_plan, warm_assets, save_nearby, online, remote_hls, playback_cache, player]
+  focus: [cache_policy, warm_assets, save_nearby, persist_offline_cache, online, playback_cache]
+  suppress: []
+  options: {}
+  visual_review_required: true
+
+presentation:
+  style: "diagram-design editorial flowchart"
+  title: "Reel streaming workflow"
+  subtitle: "CDN HLS → network-aware warmup → optional offline cache → stable mobile playback"
+  groups:
+    - { id: backend_phase, contains: [reel_response, build_stream_url, hls_origin] }
+    - { id: prefetch_phase, contains: [cache_policy, prefetch_plan, warm_assets, save_nearby] }
+    - { id: offline_phase, contains: [choose_low_variant, build_offline_manifest, persist_offline_cache] }
+    - { id: playback_phase, contains: [online, remote_hls, cached_offline, local_hls, unavailable, playback_cache, player] }
+  legend:
+    show: true
+    node_roles: ["action", "decision", "persistent cache", "terminal"]
+    edge_semantics: ["live playback", "prefetch", "offline cache branch"]
+
+layout:
+  direction: TB
+  declaration_order: [reel_response, build_stream_url, hls_origin, cache_policy, prefetch_plan, warm_assets, save_nearby, online, remote_hls, playback_cache, player, choose_low_variant, build_offline_manifest, persist_offline_cache, cached_offline, local_hls, unavailable]
+  rows: []
+  sidecars: { left: [choose_low_variant, build_offline_manifest, persist_offline_cache], right: [cached_offline, local_hls, unavailable], bottom: [] }
+  crossing_target: 0
+  edge_node_crossings_target: 0
+  geometry_gate: required
+  aspect_target: "tall-document"
+
+gaps: []
+findings:
+  - "Lightweight prefetch and the persistent temporary offline cache are separate paths: prefetch warms only the start of HLS; the offline cache downloads a complete lowest-bandwidth rendition."
+  - "Feed playback intentionally keeps the remote HLS URI while online even after an offline cache finishes, avoiding player recreation; cached offline.m3u8 is selected when connectivity is lost."

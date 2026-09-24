@@ -1,0 +1,196 @@
+question: "How does Velora upload a Reel, fence duplicate media work, and produce validated HLS?"
+type: flowchart
+audience: "Backend and mobile engineers reviewing Reel upload reliability"
+scope: "Velora-Mobile publish path plus backend Reel creation, transactional outbox, RabbitMQ media processing, attempt fencing, HLS generation, validation, and media-to-index handoff"
+commit: "backend fd757662; Velora-Mobile 2b044e3 (relevant upload source unchanged by local edits)"
+extracted_with:
+  - "repository source trace"
+  - "Repo Diagrammer evidence IR"
+
+conformance:
+  mode: practical
+  targets: []
+  claim: documented-subset
+  notes: []
+
+nodes:
+  - id: mobile_publish
+    label: "Publish Reel"
+    kind: source
+    responsibility: "Build the publish payload and call the create mutation; retry the whole mutation at most once after the first failure"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useReelCreator.ts:520-545"]
+  - id: request_upload_url
+    label: "Request upload URL"
+    kind: transformation
+    responsibility: "POST /media/upload-url and receive a presigned upload URL plus object key"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useReels.ts:1280-1282", "Velora-Mobile/src/api/media.api.ts:42-44", "apps/api-gateway/src/media/media.controller.ts:31-47"]
+  - id: upload_source
+    label: "Upload source video"
+    kind: transformation
+    responsibility: "PUT the local video bytes directly to the presigned object URL"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useReels.ts:1283-1291"]
+  - id: create_reel
+    label: "Create Reel"
+    kind: transformation
+    responsibility: "POST /content/reels with mediaKey, metadata, observed duration, and edit request"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useReels.ts:1293-1302", "Velora-Mobile/src/api/reels.api.ts:227-229"]
+  - id: persist_reel_outbox
+    label: "Persist Reel + media outbox"
+    kind: store
+    responsibility: "Create Reel and media outbox event in one Content Service transaction with fresh mediaAttemptId/indexAttemptId"
+    confidence: direct
+    evidence: ["apps/content-service/src/application/use-cases/create-reel.use-case.ts:23-75", "apps/content-service/src/infrastructure/repositories/content.repository.ts:230-291"]
+  - id: client_retry
+    label: "Retry whole create mutation"
+    kind: transformation
+    responsibility: "Mobile retries upload URL + PUT + POST once; no explicit create idempotency key is sent"
+    confidence: direct
+    evidence: ["Velora-Mobile/src/hooks/useReelCreator.ts:528-545", "Velora-Mobile/src/hooks/useReels.ts:1268-1302"]
+  - id: dispatch_outbox
+    label: "Claim + dispatch outbox"
+    kind: transformation
+    responsibility: "Claim due events with a claimToken, publish media jobs, mark published, or schedule exponential retry"
+    confidence: direct
+    evidence: ["apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:35-109"]
+  - id: outbox_retry
+    label: "Retry outbox publish"
+    kind: transformation
+    responsibility: "Release failed publish for another due attempt with exponential delay capped at five minutes"
+    confidence: direct
+    evidence: ["apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:80-109"]
+  - id: rabbit_media_job
+    label: "Durable media job"
+    kind: transformation
+    responsibility: "Publish persistent RabbitMQ message with jobId as messageId and retry-count header"
+    confidence: direct
+    evidence: ["apps/content-service/src/infrastructure/adapters/reel-media-job-publisher.adapter.ts:62-81", "apps/content-service/src/infrastructure/adapters/reel-media-job-publisher.adapter.ts:84-125"]
+  - id: claim_attempt
+    label: "Current media attempt?"
+    kind: decision
+    responsibility: "Claim only the Reel row whose mediaAttemptId matches and whose status is claimable"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:73-124", "apps/content-service/src/infrastructure/repositories/content.repository.ts:342-375"]
+  - id: duplicate_stale
+    label: "Ack duplicate / stale"
+    kind: sink
+    responsibility: "Stop duplicate or stale delivery without overwriting current Reel state"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:119-124", "apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:64-75"]
+  - id: prepare_source
+    label: "Probe, validate + select profile"
+    kind: transformation
+    responsibility: "Validate source/trim, classify media, and select an encoding profile"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:180-250"]
+  - id: transcode_hls
+    label: "Transcode adaptive HLS"
+    kind: transformation
+    responsibility: "FFmpeg produces master.m3u8 plus encoded variants and segments"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:252-288"]
+  - id: upload_hls_assets
+    label: "Publish HLS + derived assets"
+    kind: transformation
+    responsibility: "Replace the storage prefix, upload HLS to configured CDN and media storage, then create thumbnail and transcription audio artifacts"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:290-418"]
+  - id: validate_stream
+    label: "Stream valid?"
+    kind: decision
+    responsibility: "Require a readable master playlist, a valid variant, its first segment, and thumbnail"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:32-84", "apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:86-145"]
+  - id: retry_media_job
+    label: "Retry media job"
+    kind: transformation
+    responsibility: "For a transient failure, publish bounded retry first, then ACK the original delivery"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:38-81", "apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:292-300"]
+  - id: dead_letter
+    label: "Reject / DLQ"
+    kind: sink
+    responsibility: "Malformed, permanent, or exhausted retry deliveries are rejected without requeue"
+    confidence: direct
+    evidence: ["apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:32-35", "apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:64-72"]
+  - id: complete_media
+    label: "Commit media completion + index outbox"
+    kind: store
+    responsibility: "Fence completion by mediaAttemptId, persist HLS metadata, set media completed/index pending, and enqueue the index job in one transaction"
+    confidence: direct
+    evidence: ["apps/content-service/src/infrastructure/repositories/content.repository.ts:378-466"]
+  - id: ready
+    label: "HLS ready · indexing queued"
+    kind: sink
+    responsibility: "Expose the validated HLS master while semantic indexing proceeds asynchronously"
+    confidence: direct
+    evidence: ["apps/content-service/src/infrastructure/repositories/content.repository.ts:393-405", "apps/content-service/src/infrastructure/repositories/content.repository.ts:424-463"]
+
+edges:
+  - { id: e01, from: mobile_publish, to: request_upload_url, relation: routes-to, label: "attempt", evidence: ["Velora-Mobile/src/hooks/useReelCreator.ts:531-538"] }
+  - { id: e02, from: request_upload_url, to: upload_source, relation: routes-to, label: "uploadUrl + key", evidence: ["Velora-Mobile/src/hooks/useReels.ts:1281-1287"] }
+  - { id: e03, from: upload_source, to: create_reel, relation: routes-to, label: "2xx upload", condition: "upload status 2xx", evidence: ["Velora-Mobile/src/hooks/useReels.ts:1289-1302"] }
+  - { id: e04, from: create_reel, to: persist_reel_outbox, relation: writes, label: "create", evidence: ["apps/content-service/src/application/use-cases/create-reel.use-case.ts:47-75"] }
+  - { id: e05, from: mobile_publish, to: client_retry, relation: routes-to, label: "mutation error", condition: "first attempt fails and reelCreated is not set", evidence: ["Velora-Mobile/src/hooks/useReelCreator.ts:531-545"] }
+  - { id: e06, from: client_retry, to: request_upload_url, relation: routes-to, label: "second attempt", evidence: ["Velora-Mobile/src/hooks/useReelCreator.ts:531-538"] }
+  - { id: e07, from: persist_reel_outbox, to: dispatch_outbox, relation: routes-to, label: "trigger dispatcher", evidence: ["apps/content-service/src/application/use-cases/create-reel.use-case.ts:67-75"] }
+  - { id: e08, from: dispatch_outbox, to: rabbit_media_job, relation: publishes, label: "publish succeeds", condition: "claimed event is valid", evidence: ["apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:53-79"] }
+  - { id: e09, from: dispatch_outbox, to: outbox_retry, relation: routes-to, label: "publish fails", condition: "publisher/mark fails", evidence: ["apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:80-100"] }
+  - { id: e10, from: outbox_retry, to: dispatch_outbox, relation: routes-to, label: "due again", evidence: ["apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:82-95"] }
+  - { id: e11, from: rabbit_media_job, to: claim_attempt, relation: consumes, label: "deliver", evidence: ["apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:25-62"] }
+  - { id: e12, from: claim_attempt, to: prepare_source, relation: routes-to, label: "yes", condition: "matching claim succeeds", evidence: ["apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:107-124"] }
+  - { id: e13, from: claim_attempt, to: duplicate_stale, relation: routes-to, label: "no", condition: "missing/stale/duplicate attempt", evidence: ["apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:73-77", "apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:119-124"] }
+  - { id: e14, from: prepare_source, to: transcode_hls, relation: routes-to, label: "validated profile", evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:211-269"] }
+  - { id: e15, from: transcode_hls, to: upload_hls_assets, relation: routes-to, label: "master + variants", evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:265-293"] }
+  - { id: e16, from: upload_hls_assets, to: validate_stream, relation: routes-to, label: "stored assets", evidence: ["apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:420-440"] }
+  - { id: e17, from: validate_stream, to: complete_media, relation: routes-to, label: "yes", condition: "master + variant + segment + thumbnail exist", evidence: ["apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:32-84", "apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:236-255"] }
+  - { id: e18, from: validate_stream, to: retry_media_job, relation: routes-to, label: "transient failure", condition: "retry budget remains", evidence: ["apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:282-300", "apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:64-67"] }
+  - { id: e19, from: retry_media_job, to: rabbit_media_job, relation: publishes, label: "retry #1 / #2", evidence: ["apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:38-67"] }
+  - { id: e20, from: validate_stream, to: dead_letter, relation: routes-to, label: "permanent / exhausted", condition: "not retryable or retry budget exhausted", evidence: ["apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts:64-72"] }
+  - { id: e21, from: complete_media, to: ready, relation: routes-to, label: "committed", evidence: ["apps/content-service/src/infrastructure/repositories/content.repository.ts:453-466"] }
+
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+
+view:
+  profile: flowchart
+  renderer: graphviz
+  fallback_renderer: mermaid
+  story: "Upload the source, atomically queue media work, fence duplicate attempts, produce and validate HLS, then atomically hand off to indexing."
+  primary_path: [mobile_publish, request_upload_url, upload_source, create_reel, persist_reel_outbox, dispatch_outbox, rabbit_media_job, claim_attempt, prepare_source, transcode_hls, upload_hls_assets, validate_stream, complete_media, ready]
+  focus: [client_retry, persist_reel_outbox, claim_attempt, validate_stream, complete_media]
+  suppress: []
+  options: {}
+  visual_review_required: true
+
+presentation:
+  style: "diagram-design editorial flowchart"
+  title: "Reel upload workflow"
+  subtitle: "Client upload → transactional outbox → fenced media processing → validated HLS"
+  groups:
+    - { id: mobile_phase, contains: [mobile_publish, request_upload_url, upload_source, create_reel, client_retry] }
+    - { id: dispatch_phase, contains: [persist_reel_outbox, dispatch_outbox, outbox_retry, rabbit_media_job] }
+    - { id: processing_phase, contains: [claim_attempt, duplicate_stale, prepare_source, transcode_hls, upload_hls_assets, validate_stream, retry_media_job, dead_letter, complete_media, ready] }
+  legend:
+    show: true
+    node_roles: ["action", "decision", "transaction/store", "terminal"]
+    edge_semantics: ["happy path", "retry", "duplicate/stale", "failure"]
+
+layout:
+  direction: TB
+  declaration_order: [mobile_publish, request_upload_url, upload_source, create_reel, persist_reel_outbox, dispatch_outbox, rabbit_media_job, claim_attempt, prepare_source, transcode_hls, upload_hls_assets, validate_stream, complete_media, ready, client_retry, outbox_retry, duplicate_stale, retry_media_job, dead_letter]
+  rows: []
+  sidecars: { left: [client_retry, outbox_retry], right: [duplicate_stale, retry_media_job, dead_letter], bottom: [] }
+  crossing_target: 0
+  edge_node_crossings_target: 0
+  geometry_gate: required
+  aspect_target: "tall-document"
+
+gaps: []
+findings:
+  - "Client publish retry is not protected by an explicit create idempotency key; a retry can request a new upload URL, upload again, and POST /content/reels again."
+  - "Backend media work is protected by transactional outbox delivery and mediaAttemptId fencing; stale completion cannot overwrite the current attempt."

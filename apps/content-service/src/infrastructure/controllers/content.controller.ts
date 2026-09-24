@@ -18,6 +18,7 @@ import { ClaimReelProcessingAttemptUseCase } from '@content/application/use-case
 import { ClaimReelIndexingAttemptUseCase } from '@content/application/use-cases/claim-reel-indexing-attempt.use-case';
 import { CompleteReelIndexingUseCase } from '@content/application/use-cases/complete-reel-indexing.use-case';
 import { CompleteReelMediaProcessingUseCase } from '@content/application/use-cases/complete-reel-media-processing.use-case';
+import { CompleteExistingHlsEvidenceUseCase } from '@content/application/use-cases/complete-existing-hls-evidence.use-case';
 import { CreateReelShareLinkUseCase } from '@content/application/use-cases/create-reel-share-link.use-case';
 import { DeleteReelUseCase } from '@content/application/use-cases/delete-reel.use-case';
 import { GetFriendsReelsUseCase } from '@content/application/use-cases/get-friends-reels.use-case';
@@ -30,6 +31,7 @@ import { GetReelUseCase } from '@content/application/use-cases/get-reel.use-case
 import { GetSearchSuggestionsUseCase } from '@content/application/use-cases/get-search-suggestions.use-case';
 import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-case';
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
+import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases/enrich-reel-from-existing-hls.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
 import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
@@ -94,6 +96,7 @@ export class ContentController {
     private readonly revokeReelShareLinkUseCase: RevokeReelShareLinkUseCase,
     private readonly trackReelEventsUseCase: TrackReelEventsUseCase,
     private readonly reprocessReelUseCase: ReprocessReelUseCase,
+    private readonly enrichReelFromExistingHlsUseCase: EnrichReelFromExistingHlsUseCase,
     private readonly reindexReelUseCase: ReindexReelUseCase,
     private readonly claimReelProcessingAttemptUseCase: ClaimReelProcessingAttemptUseCase,
     private readonly claimReelIndexingAttemptUseCase: ClaimReelIndexingAttemptUseCase,
@@ -101,6 +104,7 @@ export class ContentController {
     private readonly failReelIndexingUseCase: FailReelIndexingUseCase,
     private readonly reportReelIndexingProgressUseCase: ReportReelIndexingProgressUseCase,
     private readonly completeReelMediaProcessingUseCase: CompleteReelMediaProcessingUseCase,
+    private readonly completeExistingHlsEvidenceUseCase: CompleteExistingHlsEvidenceUseCase,
     private readonly updateReelMediaStatusUseCase: UpdateReelMediaStatusUseCase,
     private readonly updateReelIndexStatusUseCase: UpdateReelIndexStatusUseCase,
     private readonly searchPublicReelsUseCase: SearchPublicReelsUseCase,
@@ -757,6 +761,15 @@ export class ContentController {
     return { persisted: true, applied };
   }
 
+  @MessagePattern('content.persist_reel_hls_evidence_completed')
+  async persistExistingHlsEvidence(
+    @Payload()
+    data: Parameters<CompleteExistingHlsEvidenceUseCase['execute']>[0],
+  ) {
+    const applied = await this.completeExistingHlsEvidenceUseCase.execute(data);
+    return { persisted: true, applied };
+  }
+
   @MessagePattern('content.update_reel_media_status')
   async updateMediaStatus(
     @Payload()
@@ -1108,6 +1121,37 @@ export class ContentController {
     data: Parameters<FailReelIndexingUseCase['execute']>[0],
   ) {
     return { applied: await this.failReelIndexingUseCase.execute(data) };
+  }
+
+  @MessagePattern('content.enrich_reel_from_hls')
+  async enrichReelFromHls(@Payload() data: { reelId: string }) {
+    if (!data || typeof data.reelId !== 'string' || !data.reelId.trim()) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid payload for HLS evidence enrichment',
+      });
+    }
+
+    try {
+      return await this.enrichReelFromExistingHlsUseCase.execute(
+        data.reelId.trim(),
+      );
+    } catch (error: unknown) {
+      if (error instanceof ReelNotFoundError) {
+        throw new RpcException({ statusCode: 404, message: error.message });
+      }
+      if (error instanceof ReelAlreadyProcessingError) {
+        throw new RpcException({ statusCode: 409, message: error.message });
+      }
+      if (error instanceof InvalidMediaFileError) {
+        throw new RpcException({ statusCode: 400, message: error.message });
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new RpcException({
+        statusCode: 500,
+        message: `HLS evidence enrichment failed: ${detail}`,
+      });
+    }
   }
 
   @MessagePattern('content.reprocess_reel')

@@ -92,6 +92,7 @@
     "backfill:user-memory-embeddings": "node scripts/send-rmq-message.cjs ai_queue ai.backfill_user_memory_embeddings '{\"limit\":100}'",
     "ops:reindex:reel": "node scripts/ops/reindex-reel.cjs",
     "ops:reindex:status": "node scripts/ops/reindex-status.cjs",
+    "ops:enrich:hls": "node scripts/ops/enrich-existing-hls.cjs",
     "ops:rag:benchmark": "node scripts/ops/rag-hierarchy-benchmark.cjs",
     "ops:rag:readiness": "node scripts/ops/rag-production-readiness.cjs",
     "ops:local-ai:capacity": "bash scripts/ops/check-local-ai-capacity.sh",

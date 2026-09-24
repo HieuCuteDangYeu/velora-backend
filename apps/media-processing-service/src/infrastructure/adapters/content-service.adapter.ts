@@ -182,4 +182,28 @@ export class ContentServiceAdapter implements IContentService {
       );
     }
   }
+
+  async persistExistingHlsEvidence(data: {
+    reelId: string;
+    processingAttemptId: string;
+    transcriptionAudioManifestKey: string;
+    visualFrameManifestKey: string;
+    mediaMetadata: ReelProcessingMediaMetadata;
+  }): Promise<boolean> {
+    try {
+      const response = await firstValueFrom(
+        this.messageBroker
+          .send<{ persisted: true; applied: boolean }>(
+            'content.persist_reel_hls_evidence_completed',
+            data,
+          )
+          .pipe(timeout(30_000)),
+      );
+      return response.applied;
+    } catch (error: unknown) {
+      throw new Error(
+        `Failed to persist existing HLS evidence: ${this.describeError(error)}`,
+      );
+    }
+  }
 }

@@ -13,6 +13,7 @@ export interface ReelIndexJob {
   mediaKey: string;
   transcriptionAudioManifestKey?: string;
   visualFrameManifestKey?: string;
+  requireVisualAnalysis?: boolean;
   sourceDurationMs: number;
   outputDurationMs?: number;
   sourceHasAudio?: boolean;
@@ -55,6 +56,8 @@ export function isReelIndexJob(value: unknown): value is ReelIndexJob {
     (record['visualFrameManifestKey'] === undefined ||
       (typeof record['visualFrameManifestKey'] === 'string' &&
         record['visualFrameManifestKey'].trim().length > 0)) &&
+    (record['requireVisualAnalysis'] === undefined ||
+      typeof record['requireVisualAnalysis'] === 'boolean') &&
     typeof record['sourceDurationMs'] === 'number' &&
     Number.isFinite(record['sourceDurationMs']) &&
     record['sourceDurationMs'] > 0 &&

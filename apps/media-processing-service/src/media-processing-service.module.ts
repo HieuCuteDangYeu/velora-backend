@@ -12,6 +12,7 @@ import { ConversationMediaAdapter } from '@processing/infrastructure/adapters/co
 import { ReelMediaRetryPublisherAdapter } from '@processing/infrastructure/adapters/reel-media-retry-publisher.adapter';
 import { BuildTranscriptionAudioManifestUseCase } from './application/use-cases/build-transcription-audio-manifest.use-case';
 import { PrepareReelMediaUseCase } from './application/use-cases/prepare-reel-media.use-case';
+import { PrepareExistingHlsEvidenceUseCase } from './application/use-cases/prepare-existing-hls-evidence.use-case';
 import { ProcessChatVideoUseCase } from './application/use-cases/process-chat-video.use-case';
 import { ProcessReelUseCase } from './application/use-cases/process-reel.use-case';
 import { MediaProcessingController } from './infrastructure/controllers/media-processing.controller';
@@ -115,6 +116,7 @@ import { TikTokCdnService } from './infrastructure/services/tiktok-cdn.service';
     BuildTranscriptionAudioManifestUseCase,
     BuildVisualFrameManifestUseCase,
     PrepareReelMediaUseCase,
+    PrepareExistingHlsEvidenceUseCase,
     ValidateReelStreamUseCase,
     FfmpegService,
     FfmpegVisualFrameExtractionService,

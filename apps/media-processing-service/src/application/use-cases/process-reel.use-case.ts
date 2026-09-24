@@ -1,3 +1,4 @@
+import type { ReelSourceLengthClass, ReelSourceOrientation } from '@common/content/interfaces/reel-state.interface';
 import type { ReelMediaLengthClass } from '@common/processing/interfaces/reel-media-job.interface';
 import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
@@ -13,6 +14,7 @@ import type { IJobConcurrencyLimiterService } from '../../domain/interfaces/job-
 import type { ITempFileService } from '../../domain/interfaces/temp-file.service.interface';
 import { formatProcessingError } from '../utils/format-processing-error';
 import { BuildVisualFrameManifestUseCase } from './build-visual-frame-manifest.use-case';
+import { PrepareExistingHlsEvidenceUseCase } from './prepare-existing-hls-evidence.use-case';
 import {
   PrepareReelMediaError,
   PrepareReelMediaUseCase,
@@ -35,6 +37,7 @@ export class ProcessReelUseCase {
   constructor(
     private readonly configService: ConfigService,
     private readonly prepareReelMediaUseCase: PrepareReelMediaUseCase,
+    private readonly prepareExistingHlsEvidenceUseCase: PrepareExistingHlsEvidenceUseCase,
     private readonly buildVisualFrameManifestUseCase: BuildVisualFrameManifestUseCase,
     @Inject('IContentService')
     private readonly contentService: IContentService,
@@ -53,6 +56,11 @@ export class ProcessReelUseCase {
     processingAttemptId?: string;
     queuedAt?: string;
     expectedLengthClass?: ReelMediaLengthClass;
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
+    hlsMasterKey?: string;
+    existingSourceOrientation?: ReelSourceOrientation;
+    existingSourceLengthClass?: ReelSourceLengthClass;
+    preservedSourceDurationMs?: number;
     queueName?: string;
     retryNumber?: number;
     allowReclaim?: boolean;
@@ -127,18 +135,56 @@ export class ProcessReelUseCase {
       let failureMediaMetadata: ReelProcessingMediaMetadata | undefined;
 
       try {
-        const mediaResult = await this.prepareReelMediaUseCase.execute({
-          reelId,
-          mediaKey,
-          processingAttemptId,
-          workDir: workspace.workDir,
-          inputPath: workspace.inputPath,
-          hlsOutputDir: workspace.hlsOutputDir,
-          audioOutputDir: workspace.audioOutputDir,
-          thumbnailPath: workspace.thumbnailPath,
-          metricsContext,
-          edit: data.edit,
-        });
+        const isExistingHls = data.sourceMode === 'EXISTING_HLS';
+        let mediaMetadata: ReelProcessingMediaMetadata;
+        let transcriptionAudioManifestKey: string;
+        let mediaResult:
+          | Awaited<ReturnType<PrepareReelMediaUseCase['execute']>>
+          | undefined;
+
+        if (isExistingHls) {
+          if (!data.hlsMasterKey?.trim()) {
+            throw new Error('HLS enrichment job has no master playlist key');
+          }
+          currentProgress = 15;
+          failedStage = 'PREPARING_EXISTING_HLS_EVIDENCE';
+          failedMessage = 'Existing HLS media could not be prepared for indexing';
+          const hlsResult = await this.prepareExistingHlsEvidenceUseCase.execute({
+            reelId,
+            mediaAttemptId: processingAttemptId,
+            hlsMasterKey: data.hlsMasterKey,
+            inputPath: workspace.inputPath,
+            audioOutputDir: workspace.audioOutputDir,
+            metricsContext,
+            fallbackOrientation: data.existingSourceOrientation,
+            fallbackLengthClass:
+              data.existingSourceLengthClass ??
+              (data.expectedLengthClass === 'SHORT' ||
+              data.expectedLengthClass === 'LONG'
+                ? data.expectedLengthClass
+                : undefined),
+            preservedSourceDurationMs: data.preservedSourceDurationMs,
+          });
+          mediaMetadata = hlsResult.mediaMetadata;
+          transcriptionAudioManifestKey =
+            hlsResult.transcriptionAudioManifestKey;
+        } else {
+          mediaResult = await this.prepareReelMediaUseCase.execute({
+            reelId,
+            mediaKey,
+            processingAttemptId,
+            workDir: workspace.workDir,
+            inputPath: workspace.inputPath,
+            hlsOutputDir: workspace.hlsOutputDir,
+            audioOutputDir: workspace.audioOutputDir,
+            thumbnailPath: workspace.thumbnailPath,
+            metricsContext,
+            edit: data.edit,
+          });
+          mediaMetadata = mediaResult.mediaMetadata;
+          transcriptionAudioManifestKey =
+            mediaResult.mediaOutput.transcriptionAudioManifestKey;
+        }
 
         currentProgress = 96;
         failedStage = 'BUILDING_VISUAL_MANIFEST';
@@ -161,36 +207,47 @@ export class ProcessReelUseCase {
             mediaAttemptId: processingAttemptId,
             inputPath: workspace.inputPath,
             outputDir: path.join(workspace.workDir, 'visual-frames'),
-            storagePrefix: mediaKey.replace(/\.[^.]+$/, ''),
+            storagePrefix: isExistingHls
+              ? path.posix.dirname(data.hlsMasterKey!)
+              : mediaKey.replace(/\.[^.]+$/, ''),
             metadata: {
-              durationMs:
-                mediaResult.mediaMetadata.outputDurationMs ??
-                mediaResult.mediaMetadata.sourceDurationMs,
+              durationMs: mediaMetadata.outputDurationMs ??
+                mediaMetadata.sourceDurationMs,
             },
-            crop: mediaResult.crop,
-            trim: mediaResult.trim,
+            crop: mediaResult?.crop,
+            trim: mediaResult?.trim,
           },
         );
         visualTimer.succeed({
           visualFrameCount: visualResult.manifest.artifacts.length,
           visualFrameBytes: visualResult.totalFrameBytes,
         });
-        const mediaOutput = {
-          ...mediaResult.mediaOutput,
-          visualFrameManifestKey: visualResult.manifestKey,
-          checksums: {
-            ...mediaResult.mediaOutput.checksums,
-            visualFrameManifestSha256: visualResult.manifestChecksum,
-          },
-        };
+        const mediaOutput = mediaResult
+          ? {
+              ...mediaResult.mediaOutput,
+              visualFrameManifestKey: visualResult.manifestKey,
+              checksums: {
+                ...mediaResult.mediaOutput.checksums,
+                visualFrameManifestSha256: visualResult.manifestChecksum,
+              },
+            }
+          : undefined;
 
         currentProgress = 100;
-        const applied = await this.contentService.persistMediaCompleted({
-          reelId,
-          processingAttemptId,
-          mediaMetadata: mediaResult.mediaMetadata,
-          mediaOutput,
-        });
+        const applied = isExistingHls
+          ? await this.contentService.persistExistingHlsEvidence({
+              reelId,
+              processingAttemptId,
+              transcriptionAudioManifestKey,
+              visualFrameManifestKey: visualResult.manifestKey,
+              mediaMetadata,
+            })
+          : await this.contentService.persistMediaCompleted({
+              reelId,
+              processingAttemptId,
+              mediaMetadata,
+              mediaOutput: mediaOutput!,
+            });
 
         if (!applied) {
           totalPipelineTimer.succeed({ staleMediaAttempt: true });
@@ -200,10 +257,13 @@ export class ProcessReelUseCase {
         totalPipelineTimer.succeed({
           rabbitMqPayloadBytesEstimate:
             this.processingMetrics.estimatePayloadBytes({
-              ...mediaResult,
-              mediaOutput,
+              mediaMetadata,
+              transcriptionAudioManifestKey,
+              visualFrameManifestKey: visualResult.manifestKey,
+              ...(mediaOutput ? { mediaOutput } : {}),
             }),
-          mediaOnlyWorker: true,
+          mediaOnlyWorker: !isExistingHls,
+          reusedHls: isExistingHls,
           visualFrameCount: visualResult.manifest.artifacts.length,
         });
         this.logger.log(

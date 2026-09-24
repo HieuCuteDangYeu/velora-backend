@@ -76,6 +76,29 @@ node scripts/narto-scraper/sync.cjs --slug=the-secret-behind-my-scoundrel-husban
 
 ### 3. Maintenance & Recovery Modes
 
+#### Enrich Existing HLS Reels with Transcript and Visual Evidence
+
+For reels already stored with an `hlsMasterKey`, preview metadata-only reels
+that still need transcript or visual evidence, then queue them through the
+normal Content outbox and media/indexing workers. The worker reads the existing
+R2 playlist and TikTok CDN segments; it does not rebuild or upload HLS.
+
+```bash
+# Preview one eligible reel (default; no work is queued)
+pnpm ops:enrich:hls -- --dry-run
+
+# Queue one reel, then inspect worker/indexing status and provider usage
+pnpm ops:enrich:hls -- --resume --limit=1
+
+# Resume a specific series in small batches
+pnpm ops:enrich:hls -- --resume --series-id=<series-id> --limit=5
+```
+
+The command skips reels once both manifests have been persisted, so rerunning
+it resumes from the remaining incomplete reels. HLS backfill index jobs fail
+closed if any required sampled frame cannot be analyzed; after Cloudflare quota
+resets, requeue that Reel's existing manifests with `pnpm ops:reindex:reel -- <reel-id>`.
+
 #### Index Queued Reels
 
 Computes vector embeddings and indexes any existing reels currently sitting in `INDEX_QUEUED` stage:

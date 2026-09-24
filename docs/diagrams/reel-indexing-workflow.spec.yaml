@@ -242,7 +242,7 @@ view:
   visual_review_required: true
 
 presentation:
-  style: "diagram-design editorial flowchart"
+  style: "diagram-design fixed-layout editorial flowchart"
   title: "Reel indexing workflow"
   subtitle: "From media evidence to a committed semantic index"
   groups:
@@ -266,4 +266,4 @@ layout:
 
 gaps: []
 findings:
-  - "The HTML renderer is Diagram Design; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."
+  - "The final PNG uses fixed geometry in the shared Diagram Design visual language; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."

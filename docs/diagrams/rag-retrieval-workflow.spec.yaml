@@ -97,7 +97,7 @@ view:
   visual_review_required: true
 
 presentation:
-  style: "diagram-design editorial flowchart"
+  style: "diagram-design fixed-layout editorial flowchart"
   title: "RAG retrieval workflow"
   subtitle: "Authorized semantic search, reranking, repair, verification, and citation"
   groups:
@@ -123,4 +123,4 @@ gaps:
   - "The retrieval graph can bypass the optional tool-calling wrapper when disabled, and the wrapper itself falls back to deterministic retrieval when it produces no evidence or errors; the rendering expands this inside retrievalNode rather than adding a second LangGraph node."
 findings:
   - "Production hierarchical serving is gated by RAG_HIERARCHICAL_RETRIEVAL_PROMOTION_APPROVED; when requested but not approved, direct retrieval serves while hierarchy can run in shadow."
-  - "The HTML renderer is Diagram Design; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."
+  - "The final PNG uses fixed geometry in the shared Diagram Design visual language; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."

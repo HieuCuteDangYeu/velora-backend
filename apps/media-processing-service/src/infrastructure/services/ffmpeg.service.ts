@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   buildFfprobeArguments,
+  buildHlsMaterializationArguments,
   buildHlsTranscodeArguments,
   buildThumbnailArguments,
   buildTranscriptionAudioArguments,
@@ -215,6 +216,31 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
           ? Math.abs(averageFps - nominalFps) > 0.01
           : undefined,
     };
+  }
+
+  async materializeHls(
+    inputPlaylistPath: string,
+    outputPath: string,
+    options: VideoProcessExecutionOptions = {},
+  ): Promise<void> {
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+
+    await this.runProcess(
+      'ffmpeg',
+      this.ffmpegPath,
+      buildHlsMaterializationArguments({ inputPlaylistPath, outputPath }),
+      {
+        signal: options.signal,
+        timeoutMs:
+          options.timeoutMs ??
+          this.getPositiveInt(
+            'MEDIA_FFMPEG_TIMEOUT_BASE_MS',
+            300_000,
+            30_000,
+            3_600_000,
+          ),
+      },
+    );
   }
 
   async transcodeToHls(

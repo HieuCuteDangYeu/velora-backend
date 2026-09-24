@@ -4,6 +4,7 @@ export interface IOutboxRepository {
   claimPending(input: {
     limit: number;
     claimToken: string;
+    dueBefore: Date;
     staleBefore: Date;
   }): Promise<OutboxEvent[]>;
 

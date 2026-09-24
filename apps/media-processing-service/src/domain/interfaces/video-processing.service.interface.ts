@@ -75,6 +75,12 @@ export interface IVideoProcessingService {
     options?: VideoProcessExecutionOptions,
   ): Promise<VideoMetadata>;
 
+  materializeHls(
+    inputPlaylistPath: string,
+    outputPath: string,
+    options?: VideoProcessExecutionOptions,
+  ): Promise<void>;
+
   transcodeToHls(
     inputPath: string,
     outputDir: string,

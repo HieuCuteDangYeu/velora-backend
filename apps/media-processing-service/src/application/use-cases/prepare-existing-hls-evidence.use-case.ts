@@ -10,6 +10,7 @@ import type { ReelPipelineMetricContext } from '@common/processing/interfaces/re
 import type { IProcessingMetrics } from '@processing/domain/interfaces/processing-metrics.interface';
 import type { IVideoProcessingService } from '@processing/domain/interfaces/video-processing.service.interface';
 import { Inject, Injectable } from '@nestjs/common';
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type {
   IContentService,
@@ -23,6 +24,55 @@ import { ClassifyReelMediaUseCase } from './classify-reel-media.use-case';
 export interface ExistingHlsEvidenceResult {
   mediaMetadata: ReelProcessingMediaMetadata;
   transcriptionAudioManifestKey: string;
+}
+
+export function rewriteHlsPlaylistReferences(
+  playlistText: string,
+  playlistKey: string,
+  getPublicUrl: (key: string) => string,
+): string {
+  const baseKey = playlistKey.replace(/^\/+/, '');
+  const baseDir = path.posix.dirname(baseKey);
+
+  const rewriteReference = (reference: string): string => {
+    if (
+      !reference ||
+      /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(reference)
+    ) {
+      return reference;
+    }
+
+    const separatorIndex = reference.search(/[?#]/);
+    const pathname =
+      separatorIndex === -1
+        ? reference
+        : reference.slice(0, separatorIndex);
+    const suffix =
+      separatorIndex === -1 ? '' : reference.slice(separatorIndex);
+    const resolvedKey = path.posix.normalize(
+      path.posix.join(baseDir, pathname),
+    );
+
+    if (resolvedKey === '..' || resolvedKey.startsWith('../')) {
+      return reference;
+    }
+
+    return `${getPublicUrl(resolvedKey)}${suffix}`;
+  };
+
+  return playlistText
+    .split(/\r?\n/u)
+    .map((line) => {
+      const rewrittenAttributes = line.replace(
+        /URI="([^"]+)"/gu,
+        (_match, reference: string) =>
+          `URI="${rewriteReference(reference)}"`,
+      );
+      const trimmed = rewrittenAttributes.trim();
+      if (!trimmed || trimmed.startsWith('#')) return rewrittenAttributes;
+      return rewrittenAttributes.replace(trimmed, rewriteReference(trimmed));
+    })
+    .join('\n');
 }
 
 @Injectable()
@@ -63,6 +113,15 @@ export class PrepareExistingHlsEvidenceUseCase {
     });
     const playlistPath = `${input.inputPath}.m3u8`;
     await this.mediaStorage.downloadVideo(input.hlsMasterKey, playlistPath);
+    const playlistText = await fs.readFile(playlistPath, 'utf8');
+    await fs.writeFile(
+      playlistPath,
+      rewriteHlsPlaylistReferences(
+        playlistText,
+        input.hlsMasterKey,
+        (key) => this.mediaStorage.getPublicUrl(key),
+      ),
+    );
     await this.videoProcessing.materializeHls(playlistPath, input.inputPath);
 
     const metadata = await this.videoProcessing.getVideoMetadata(

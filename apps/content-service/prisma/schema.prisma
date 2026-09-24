@@ -87,6 +87,7 @@ model Reel {
   thumbnailKey                  String?
   hlsMasterKey                  String?
   transcriptionAudioManifestKey String?
+  visualFrameManifestKey        String?
   mediaOutput                   Json?
   mediaEdit                     Json?
   outputDurationMs              Int?

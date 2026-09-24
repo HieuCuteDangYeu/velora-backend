@@ -70,6 +70,14 @@ export interface IContentService {
     mediaOutput: ReelMediaOutput;
   }): Promise<boolean>;
 
+  persistExistingHlsEvidence(data: {
+    reelId: string;
+    processingAttemptId: string;
+    transcriptionAudioManifestKey: string;
+    visualFrameManifestKey: string;
+    mediaMetadata: ReelProcessingMediaMetadata;
+  }): Promise<boolean>;
+
   emitProcessingFailed(data: {
     reelId: string;
     status: 'FAILED';

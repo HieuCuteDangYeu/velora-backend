@@ -4,6 +4,7 @@ import { ClaimReelProcessingAttemptUseCase } from '@content/application/use-case
 import { ClaimReelIndexingAttemptUseCase } from '@content/application/use-cases/claim-reel-indexing-attempt.use-case';
 import { CompleteReelIndexingUseCase } from '@content/application/use-cases/complete-reel-indexing.use-case';
 import { CompleteReelMediaProcessingUseCase } from '@content/application/use-cases/complete-reel-media-processing.use-case';
+import { CompleteExistingHlsEvidenceUseCase } from '@content/application/use-cases/complete-existing-hls-evidence.use-case';
 import { CreateReelShareLinkUseCase } from '@content/application/use-cases/create-reel-share-link.use-case';
 import { CreateReelUseCase } from '@content/application/use-cases/create-reel.use-case';
 import { DeleteReelUseCase } from '@content/application/use-cases/delete-reel.use-case';
@@ -19,6 +20,7 @@ import { GetSearchSuggestionsUseCase } from '@content/application/use-cases/get-
 import { IsReelIndexingAttemptCurrentUseCase } from '@content/application/use-cases/is-reel-indexing-attempt-current.use-case';
 import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-case';
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
+import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases/enrich-reel-from-existing-hls.use-case';
 import { RefreshGlobalRecommendationSlateUseCase } from '@content/application/use-cases/refresh-global-recommendation-slate.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
@@ -152,6 +154,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     RevokeReelShareLinkUseCase,
     TrackReelEventsUseCase,
     ReprocessReelUseCase,
+    EnrichReelFromExistingHlsUseCase,
     ReindexReelUseCase,
     ClaimReelProcessingAttemptUseCase,
     ClaimReelIndexingAttemptUseCase,
@@ -160,6 +163,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     FailReelIndexingUseCase,
     ReportReelIndexingProgressUseCase,
     CompleteReelMediaProcessingUseCase,
+    CompleteExistingHlsEvidenceUseCase,
     UpdateReelMediaStatusUseCase,
     UpdateReelIndexStatusUseCase,
     SearchPublicReelsUseCase,

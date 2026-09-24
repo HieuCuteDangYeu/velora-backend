@@ -222,6 +222,14 @@ export interface ReelMediaOutboxEventInput {
   createdAt: Date;
 }
 
+export interface CompleteExistingHlsEvidenceInput {
+  reelId: string;
+  mediaAttemptId: string;
+  transcriptionAudioManifestKey: string;
+  visualFrameManifestKey: string;
+  mediaMetadata: ReelProcessingMediaMetadata;
+}
+
 export interface ReelSearchResult {
   reel: Reel;
   score: number;
@@ -261,6 +269,10 @@ export interface IContentRepository {
     mediaMetadata: ReelProcessingMediaMetadata;
     mediaOutput: ReelMediaOutput;
   }): Promise<boolean>;
+
+  completeExistingHlsEvidence(
+    input: CompleteExistingHlsEvidenceInput,
+  ): Promise<boolean>;
 
   updateMediaStatus(input: {
     reelId: string;

@@ -22,6 +22,7 @@ import {
   IContentRepository,
   RecommendedReelsQuery,
   ReelCursor,
+  CompleteExistingHlsEvidenceInput,
   ReelListQuery,
   ReelMediaOutboxEventInput,
   ReelProcessingMediaMetadata,
@@ -396,6 +397,8 @@ export class ContentRepository
           hlsMasterKey: input.mediaOutput.hlsMasterKey,
           transcriptionAudioManifestKey:
             input.mediaOutput.transcriptionAudioManifestKey,
+          visualFrameManifestKey:
+            input.mediaOutput.visualFrameManifestKey ?? null,
           mediaOutput: input.mediaOutput as unknown as Prisma.InputJsonValue,
           processingStage: 'MEDIA_READY',
           processingMessage: 'Video is ready; indexing in progress',
@@ -431,6 +434,8 @@ export class ContentRepository
         mediaKey: reel.mediaKey,
         transcriptionAudioManifestKey:
           input.mediaOutput.transcriptionAudioManifestKey,
+        visualFrameManifestKey:
+          input.mediaOutput.visualFrameManifestKey ?? undefined,
         sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
         outputDurationMs:
           input.mediaMetadata.outputDurationMs ??
@@ -457,6 +462,94 @@ export class ContentRepository
         },
       });
 
+      return true;
+    });
+
+    if (completed) {
+      await this.recommendationFeedCacheRepository.invalidateReels([
+        input.reelId,
+      ]);
+    }
+    return completed;
+  }
+
+  async completeExistingHlsEvidence(
+    input: CompleteExistingHlsEvidenceInput,
+  ): Promise<boolean> {
+    const completed = await this.$transaction(async (transaction) => {
+      const completedAt = new Date();
+      const result = await transaction.reel.updateMany({
+        where: {
+          id: input.reelId,
+          mediaAttemptId: input.mediaAttemptId,
+          mediaStatus: 'PROCESSING',
+          hlsMasterKey: { not: null },
+        },
+        data: {
+          status: 'COMPLETED',
+          mediaStatus: 'COMPLETED',
+          indexStatus: 'PENDING',
+          transcriptionAudioManifestKey:
+            input.transcriptionAudioManifestKey,
+          visualFrameManifestKey: input.visualFrameManifestKey,
+          processingStage: 'MEDIA_READY',
+          processingMessage: 'Transcript and visual evidence ready; indexing queued',
+          processingProgress: 90,
+          processingCompletedAt: completedAt,
+          processingFailedAt: null,
+          processingErrorCode: null,
+          processingErrorDetail: null,
+          ...this.toMediaMetadataData(input.mediaMetadata),
+        },
+      });
+      if (result.count === 0) return false;
+
+      const reel = await transaction.reel.findUniqueOrThrow({
+        where: { id: input.reelId },
+      });
+      if (!reel.indexAttemptId) {
+        throw new Error(`Reel ${reel.id} has no index attempt ID`);
+      }
+
+      const jobId = randomUUID();
+      const indexJob: ReelIndexJob = {
+        jobId,
+        reelId: reel.id,
+        userId: reel.userId,
+        mediaAttemptId: input.mediaAttemptId,
+        indexAttemptId: reel.indexAttemptId,
+        indexVersion:
+          this.configService.get<string>('INDEX_VERSION')?.trim() ||
+          'reel-index-v2',
+        mediaKey: reel.mediaKey,
+        transcriptionAudioManifestKey:
+          input.transcriptionAudioManifestKey,
+        visualFrameManifestKey: input.visualFrameManifestKey,
+        requireVisualAnalysis: true,
+        sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
+        outputDurationMs:
+          input.mediaMetadata.outputDurationMs ??
+          input.mediaMetadata.sourceDurationMs!,
+        sourceHasAudio: input.mediaMetadata.sourceHasAudio,
+        sourceOrientation: input.mediaMetadata.sourceOrientation!,
+        sourceLengthClass: input.mediaMetadata.sourceLengthClass!,
+        title: reel.title ?? undefined,
+        description: reel.description ?? undefined,
+        tags: reel.tags,
+        createdAt: completedAt.toISOString(),
+        schemaVersion: REEL_INDEX_JOB_SCHEMA_VERSION,
+      };
+      await transaction.outboxEvent.create({
+        data: {
+          id: jobId,
+          aggregateType: 'REEL',
+          aggregateId: reel.id,
+          eventType: REEL_INDEX_JOB_EVENT_TYPE,
+          payload: indexJob as unknown as Prisma.InputJsonValue,
+          createdAt: completedAt,
+          nextAttemptAt: completedAt,
+        },
+      });
       return true;
     });
 
@@ -748,6 +841,7 @@ export class ContentRepository
         mediaKey: reel.mediaKey,
         transcriptionAudioManifestKey:
           reel.transcriptionAudioManifestKey ?? undefined,
+        visualFrameManifestKey: reel.visualFrameManifestKey ?? undefined,
         sourceDurationMs: reel.sourceDurationMs,
         outputDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
         sourceHasAudio: reel.sourceHasAudio ?? undefined,

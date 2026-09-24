@@ -20,6 +20,7 @@ export const REEL_LIST_SELECT = {
   thumbnailKey: true,
   hlsMasterKey: true,
   transcriptionAudioManifestKey: true,
+  visualFrameManifestKey: true,
   mediaOutput: true,
   mediaEdit: true,
   outputDurationMs: true,
@@ -98,6 +99,8 @@ export function toReelDomain(record: Record<string, unknown>): Reel {
   reel.hlsMasterKey = (record['hlsMasterKey'] as string | null) ?? undefined;
   reel.transcriptionAudioManifestKey =
     (record['transcriptionAudioManifestKey'] as string | null) ?? undefined;
+  reel.visualFrameManifestKey =
+    (record['visualFrameManifestKey'] as string | null) ?? undefined;
   reel.mediaOutput =
     (record['mediaOutput'] as ReelMediaOutput | null) ?? undefined;
   reel.mediaEdit = (record['mediaEdit'] as ReelMediaEdit | null) ?? undefined;

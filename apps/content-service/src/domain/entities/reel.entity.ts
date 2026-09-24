@@ -30,6 +30,7 @@ export class Reel {
   thumbnailKey?: string;
   hlsMasterKey?: string;
   transcriptionAudioManifestKey?: string;
+  visualFrameManifestKey?: string;
   mediaOutput?: ReelMediaOutput;
   mediaEdit?: ReelMediaEdit;
   outputDurationMs?: number;

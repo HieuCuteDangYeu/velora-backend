@@ -17,11 +17,21 @@ export class AnalyzeVisualFrameManifestUseCase {
   ) {}
 
   async execute(job: ReelIndexJob): Promise<VisualSceneEvidence[]> {
-    if (!this.enabled()) return [];
+    const required = job.requireVisualAnalysis ?? this.required();
+    if (!this.enabled()) {
+      if (required) throw new Error('Visual analysis is disabled for this index job');
+      return [];
+    }
+    if (required && !job.visualFrameManifestKey) {
+      throw new Error('Required visual frame manifest key is missing');
+    }
 
     const manifestKey =
       job.visualFrameManifestKey ?? this.deriveManifestKey(job);
     if (!(await this.storage.artifactExists(manifestKey))) {
+      if (required) {
+        throw new Error('Required visual frame manifest is unavailable');
+      }
       this.logger.debug(
         `[VisualIndex] no visual frame manifest reelId=${job.reelId}`,
       );
@@ -34,6 +44,10 @@ export class AnalyzeVisualFrameManifestUseCase {
       manifest.mediaAttemptId !== job.mediaAttemptId
     ) {
       throw new Error('Visual frame manifest does not match the index job');
+    }
+
+    if (manifest.artifacts.length === 0 && required) {
+      throw new Error('Visual frame manifest contains no sampled frames');
     }
 
     const results = new Array<VisualSceneEvidence>(manifest.artifacts.length);
@@ -77,7 +91,7 @@ export class AnalyzeVisualFrameManifestUseCase {
       },
     );
 
-    if (failures.length > 0 && this.required()) {
+    if (failures.length > 0 && required) {
       throw new Error(
         `Visual analysis failed for ${failures.length}/${manifest.artifacts.length} sampled frames: ${failures.slice(0, 3).join('; ')}`,
       );

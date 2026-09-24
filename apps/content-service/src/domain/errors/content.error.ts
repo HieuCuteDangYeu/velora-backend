@@ -1,6 +1,6 @@
 export class InvalidMediaFileError extends Error {
-  constructor() {
-    super('The uploaded reel video file does not exist in storage.');
+  constructor(message = 'The uploaded reel video file does not exist in storage.') {
+    super(message);
     this.name = 'InvalidMediaFileError';
   }
 }

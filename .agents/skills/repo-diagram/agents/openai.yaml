@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repo Diagram"
+  short_description: "Evidence-backed diagram intelligence from code"
+  default_prompt: "Use $repo-diagram to build an evidence model of this repository, choose the right diagram type and renderer, and produce a source-verified, senior-quality diagram."

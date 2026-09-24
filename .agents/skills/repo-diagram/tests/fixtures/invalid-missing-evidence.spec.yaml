@@ -1,0 +1,19 @@
+question: "Broken example"
+type: sequence
+nodes:
+  - id: user
+    label: User
+    evidence: []
+edges:
+  - id: broken
+    from: user
+    to: missing
+    relation: calls
+    order: null
+    evidence: []
+boundaries: []
+view:
+  profile: class
+presentation:
+  groups: []
+gaps: []

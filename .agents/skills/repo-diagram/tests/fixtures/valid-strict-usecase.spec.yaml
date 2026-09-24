@@ -1,0 +1,67 @@
+question: "Checkout goals"
+type: usecase
+audience: architecture-review
+scope: checkout
+commit: test
+extracted_with: []
+conformance:
+  mode: textbook-strict
+  targets: [omg-uml-2.5.1]
+  claim: documented-subset
+nodes:
+  - id: customer
+    label: Customer
+    kind: actor
+    confidence: direct
+    evidence: ["docs/requirements.md:10"]
+  - id: checkout
+    label: Place order
+    kind: usecase
+    extension_points: [payment_failure]
+    confidence: direct
+    evidence: ["docs/requirements.md:20"]
+  - id: help
+    label: Recover payment
+    kind: usecase
+    confidence: direct
+    evidence: ["docs/requirements.md:25"]
+edges:
+  - id: actor_checkout
+    from: customer
+    to: checkout
+    relation: associates
+    label: places order
+    sync: true
+    crosses_network: false
+    confidence: direct
+    evidence: ["docs/requirements.md:20"]
+  - id: help_extends_checkout
+    from: help
+    to: checkout
+    relation: extends
+    label: optional recovery
+    sync: true
+    crosses_network: false
+    extension_points: [payment_failure]
+    confidence: direct
+    evidence: ["docs/requirements.md:25"]
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+view:
+  profile: usecase
+  renderer: plantuml
+  fallback_renderer: mermaid
+  story: ""
+  primary_path: []
+  focus: []
+  suppress: []
+  options: {}
+  visual_review_required: true
+presentation:
+  groups: []
+  legend:
+    show: false
+layout: {}
+gaps: []
+findings: []

@@ -1,0 +1,51 @@
+question: "Payment strategy type model"
+type: class
+audience: developer
+scope: payments
+commit: test
+conformance:
+  mode: textbook-strict
+  targets: [omg-uml-2.5.1]
+  claim: documented-subset
+nodes:
+  - id: strategy
+    label: PaymentStrategy
+    kind: interface
+    evidence: ["src/payment.ts:1"]
+  - id: stripe
+    label: StripePayment
+    kind: class
+    evidence: ["src/stripe.ts:1"]
+  - id: order
+    label: Order
+    kind: class
+    evidence: ["src/order.ts:1"]
+edges:
+  - id: stripe_realizes
+    from: stripe
+    to: strategy
+    relation: implements
+    label: implements
+    navigability: unspecified
+    evidence: ["src/stripe.ts:4"]
+  - id: order_depends
+    from: order
+    to: strategy
+    relation: depends-on
+    label: uses
+    cardinality_from: "1"
+    cardinality_to: "0..1"
+    navigability: from-to
+    evidence: ["src/order.ts:15"]
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+view:
+  profile: class
+  renderer: plantuml
+  fallback_renderer: mermaid
+  options: {}
+  visual_review_required: true
+presentation:
+  groups: []
+gaps: []

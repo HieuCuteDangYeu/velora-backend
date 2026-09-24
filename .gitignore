@@ -72,6 +72,8 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Docs folder
 /docs/*
+!/docs/diagrams/
+!/docs/diagrams/*
 !/docs/reel-pipeline-temporary-artifacts.md
 !/docs/reel-pipeline-phase-0-baseline.md
 !/docs/reel-pipeline-phase-1-outbox-and-queues.md

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Diagram Set"
+  short_description: "Create an onboarding diagram set"
+  default_prompt: "Use $diagram-set to create a coherent architecture diagram set for this repository."

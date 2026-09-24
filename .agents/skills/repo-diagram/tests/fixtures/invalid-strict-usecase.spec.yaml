@@ -1,0 +1,32 @@
+question: "Broken UML use case"
+type: usecase
+conformance:
+  mode: textbook-strict
+  targets: [omg-uml-2.5.1]
+  claim: documented-subset
+nodes:
+  - id: actor
+    label: User
+    kind: actor
+    evidence: ["req.md:1"]
+  - id: uc
+    label: Login
+    kind: usecase
+    evidence: ["req.md:2"]
+edges:
+  - id: bad
+    from: actor
+    to: uc
+    relation: extends
+    label: bad relation
+    evidence: ["req.md:3"]
+interaction_fragments: []
+boundaries: []
+view:
+  profile: usecase
+  renderer: plantuml
+  fallback_renderer: mermaid
+  options: {}
+presentation:
+  groups: []
+gaps: []

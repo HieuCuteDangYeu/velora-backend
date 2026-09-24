@@ -1,0 +1,41 @@
+question: "Broken ISO alignment"
+type: c4-context
+conformance:
+  mode: textbook-strict
+  targets: [c4-model, iso-iec-ieee-42010-2022]
+  claim: documented-subset
+nodes:
+  - id: system
+    label: System
+    kind: system
+    responsibility: Core system
+    evidence: ["docs/architecture.md:1"]
+edges: []
+interaction_fragments: []
+boundaries: []
+architecture_description:
+  entity_of_interest: System
+  stakeholders:
+    - id: ops
+      name: Operations
+      evidence: "docs/architecture.md:2"
+  concerns:
+    - id: availability
+      name: Availability
+      evidence: "docs/architecture.md:3"
+  viewpoint:
+    name: Runtime viewpoint
+    stakeholders: []
+    concerns: []
+    model_kinds: [c4-context]
+view:
+  profile: architecture
+  renderer: mermaid
+  fallback_renderer: plantuml
+  options: {}
+presentation:
+  title: "System context — System"
+  groups: []
+  legend:
+    show: true
+gaps: []

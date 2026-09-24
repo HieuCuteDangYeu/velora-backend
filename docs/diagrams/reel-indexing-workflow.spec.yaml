@@ -1,0 +1,269 @@
+question: "How does Velora turn a Reel media-processing result into the committed semantic retrieval index?"
+type: flowchart
+audience: "Backend engineers reviewing Reel indexing and RAG"
+scope: "Reel Indexing LangGraph, its AI-backed evidence stages, chunking, embedding, validation, persistence, and commit gate"
+commit: "56fce3e2"
+extracted_with:
+  - "repository source trace"
+  - "Repo Diagrammer evidence IR"
+
+conformance:
+  mode: practical
+  targets: []
+  claim: documented-subset
+  notes: []
+
+nodes:
+  - id: start
+    label: "Index job"
+    kind: source
+    responsibility: "Start one Reel indexing attempt"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:405"]
+  - id: load_or_resume_attempt
+    label: "Load or resume attempt"
+    kind: transformation
+    responsibility: "Reject duplicate/stale attempts, claim current attempt, resume checkpoint"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:405-411", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:496-513"]
+  - id: validate_and_classify
+    label: "Validate and classify"
+    kind: transformation
+    responsibility: "Classify source as NO_AUDIO, SHORT, or LONG and launch visual analysis in parallel"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:412-430"]
+  - id: analyze_visual_frames
+    label: "Analyze visual frames"
+    kind: transformation
+    tech: "@cf/meta/llama-4-scout-17b-16e-instruct"
+    responsibility: "Caption/OCR/object evidence from verified sampled frames"
+    confidence: direct
+    evidence: [".env.example:39-40", "apps/reel-indexing-service/src/application/use-cases/analyze-visual-frame-manifest.use-case.ts:51-91"]
+  - id: build_metadata_only_index
+    label: "Build metadata-only evidence"
+    kind: transformation
+    responsibility: "Provide transcript-ready evidence when the Reel has no audio"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:271-276", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:417-430"]
+  - id: transcribe_short_video
+    label: "Transcribe short video"
+    kind: transformation
+    tech: "whisper-large-v3-turbo"
+    responsibility: "Transcribe short-form audio in one path"
+    confidence: direct
+    evidence: [".env.example:41", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:277-282"]
+  - id: load_audio_manifest
+    label: "Load audio manifest"
+    kind: transformation
+    responsibility: "Enter segmented transcription for long media"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:283-288", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:433-436"]
+  - id: transcribe_pending_segments
+    label: "Transcribe pending segments"
+    kind: transformation
+    tech: "whisper-large-v3-turbo"
+    responsibility: "Resume/retry only unfinished audio segments"
+    confidence: direct
+    evidence: [".env.example:41", "apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:50-89"]
+  - id: merge_transcript_segments
+    label: "Merge transcript segments"
+    kind: transformation
+    responsibility: "Combine segment transcripts into ordered evidence"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:295-300", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:435-436"]
+  - id: validate_transcript
+    label: "Validate transcript"
+    kind: transformation
+    responsibility: "Gate transcript evidence before fan-in"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:301-304", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:433-437"]
+  - id: evidence_ready_join
+    label: "Evidence ready?"
+    kind: decision
+    responsibility: "Proceed only after both visual and transcript paths are ready"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:305-308", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:438-447"]
+  - id: evaluate_metadata_quality
+    label: "Metadata strong?"
+    kind: decision
+    responsibility: "Choose preserved user metadata or model-backed extraction"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:309-314", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:448-455"]
+  - id: preserve_user_metadata
+    label: "Preserve user metadata"
+    kind: transformation
+    responsibility: "Keep sufficiently rich user title, description, and tags"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:315-320", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:643-664"]
+  - id: extract_hierarchical_metadata
+    label: "Extract hierarchical metadata"
+    kind: transformation
+    tech: "openai/gpt-oss-20b"
+    responsibility: "Generate conservative searchable title/description/tags from supplied evidence"
+    confidence: direct
+    evidence: [".env.example:36", "apps/ai-service/src/application/use-cases/extract-reel-metadata.use-case.ts:54-77", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:666-689"]
+  - id: choose_chunking_strategy
+    label: "Choose chunking strategy"
+    kind: decision
+    responsibility: "metadata-only, short evidence chunks, or long hierarchical sections"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:458-471", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:691-705"]
+  - id: build_metadata_document
+    label: "Build metadata document"
+    kind: transformation
+    responsibility: "Create metadata-only retrieval document"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:333-338", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:474"]
+  - id: build_short_evidence_chunks
+    label: "Build short evidence chunks"
+    kind: transformation
+    responsibility: "Create retrieval chunks for short Reels"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:339-344", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:475"]
+  - id: detect_long_sections
+    label: "Detect long sections"
+    kind: transformation
+    responsibility: "Find semantic section boundaries for long Reels"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:345-350", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:472"]
+  - id: section_quality_gate
+    label: "Section quality gate"
+    kind: transformation
+    responsibility: "Validate/fix section structure before chunk construction"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:351-356", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:472-473"]
+  - id: build_long_evidence_chunks
+    label: "Build long evidence chunks"
+    kind: transformation
+    responsibility: "Build section-aware retrieval documents"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:357-362", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:473-476"]
+  - id: validate_document_tokens
+    label: "Validate document tokens"
+    kind: transformation
+    responsibility: "Enforce document/model token bounds"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:363-368", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:474-477"]
+  - id: generate_missing_embeddings
+    label: "Generate missing embeddings"
+    kind: transformation
+    tech: "self-hosted TEI · BAAI/bge-m3 · 1024d"
+    responsibility: "Embed retrieval documents with normalized BGE-M3 vectors"
+    confidence: direct
+    evidence: [".env.example:43", "apps/ai-service/src/infrastructure/adapters/tei-embedding.adapter.ts:13-38", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:477"]
+  - id: embedding_quality_gate
+    label: "Embedding quality gate"
+    kind: transformation
+    responsibility: "Reject missing, malformed, or mismatched embeddings"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:375-380", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:478"]
+  - id: validate_index_candidate
+    label: "Validate index candidate"
+    kind: transformation
+    responsibility: "Validate document hashes, timestamps, parent relationships, coverage, and model identities"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:381-386", "apps/reel-indexing-service/src/application/use-cases/validate-evidence-index-candidate.use-case.ts:56-104"]
+  - id: persist_semantic_candidate
+    label: "Persist inactive candidate"
+    kind: store
+    responsibility: "Persist the semantic candidate before activation"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:387-392", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:480"]
+  - id: persisted_candidate_integrity_gate
+    label: "Persisted integrity gate"
+    kind: transformation
+    tech: "optional quality review · openai/gpt-oss-20b"
+    responsibility: "Re-read persisted candidate and validate integrity/semantic quality policy"
+    confidence: direct
+    evidence: [".env.example:35", "apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:393-404", "apps/reel-indexing-service/src/application/use-cases/validate-persisted-semantic-candidate.use-case.ts:64-88"]
+  - id: commit_semantic_candidate
+    label: "Commit semantic candidate"
+    kind: transformation
+    responsibility: "Activate only the current attempt's validated candidate"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:481-489"]
+  - id: end
+    label: "Committed / terminal"
+    kind: sink
+    responsibility: "Finish committed, duplicate, stale, or failed attempt"
+    confidence: direct
+    evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:405-489"]
+
+edges:
+  - { id: e01, from: start, to: load_or_resume_attempt, relation: routes-to, label: "start", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:405"] }
+  - { id: e02, from: load_or_resume_attempt, to: validate_and_classify, relation: routes-to, label: "current attempt", condition: "no terminal status", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:406-411"] }
+  - { id: e03, from: load_or_resume_attempt, to: end, relation: routes-to, label: "duplicate/stale", condition: "terminal status", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:406-411"] }
+  - { id: e04, from: validate_and_classify, to: analyze_visual_frames, relation: routes-to, label: "parallel visual path", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:412-430"] }
+  - { id: e05, from: validate_and_classify, to: build_metadata_only_index, relation: routes-to, label: "NO_AUDIO", condition: "route=NO_AUDIO", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:412-430"] }
+  - { id: e06, from: validate_and_classify, to: transcribe_short_video, relation: routes-to, label: "SHORT", condition: "route=SHORT", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:412-430"] }
+  - { id: e07, from: validate_and_classify, to: load_audio_manifest, relation: routes-to, label: "LONG", condition: "route=LONG", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:412-430"] }
+  - { id: e08, from: analyze_visual_frames, to: evidence_ready_join, relation: routes-to, label: "visual evidence", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:431"] }
+  - { id: e09, from: build_metadata_only_index, to: evidence_ready_join, relation: routes-to, label: "metadata evidence", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:432"] }
+  - { id: e10, from: transcribe_short_video, to: validate_transcript, relation: routes-to, label: "transcript", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:433"] }
+  - { id: e11, from: load_audio_manifest, to: transcribe_pending_segments, relation: routes-to, label: "segments", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:434"] }
+  - { id: e12, from: transcribe_pending_segments, to: merge_transcript_segments, relation: routes-to, label: "completed segments", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:435"] }
+  - { id: e13, from: merge_transcript_segments, to: validate_transcript, relation: routes-to, label: "merged transcript", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:436"] }
+  - { id: e14, from: validate_transcript, to: evidence_ready_join, relation: routes-to, label: "validated transcript", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:437"] }
+  - { id: e15, from: evidence_ready_join, to: evaluate_metadata_quality, relation: routes-to, label: "ready", condition: "visualReady && transcriptReady", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:438-447"] }
+  - { id: e16, from: evidence_ready_join, to: end, relation: routes-to, label: "not ready", condition: "fan-in incomplete", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:438-447"] }
+  - { id: e17, from: evaluate_metadata_quality, to: preserve_user_metadata, relation: routes-to, label: "strong", condition: "metadataQuality=strong", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:448-455"] }
+  - { id: e18, from: evaluate_metadata_quality, to: extract_hierarchical_metadata, relation: routes-to, label: "weak", condition: "metadataQuality!=strong", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:448-455"] }
+  - { id: e19, from: preserve_user_metadata, to: choose_chunking_strategy, relation: routes-to, label: "metadata", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:456"] }
+  - { id: e20, from: extract_hierarchical_metadata, to: choose_chunking_strategy, relation: routes-to, label: "metadata", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:457"] }
+  - { id: e21, from: choose_chunking_strategy, to: build_metadata_document, relation: routes-to, label: "metadata-only", condition: "strategy=metadata-only", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:458-471"] }
+  - { id: e22, from: choose_chunking_strategy, to: build_short_evidence_chunks, relation: routes-to, label: "short", condition: "strategy=short", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:458-471"] }
+  - { id: e23, from: choose_chunking_strategy, to: detect_long_sections, relation: routes-to, label: "long", condition: "strategy=long", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:458-471"] }
+  - { id: e24, from: detect_long_sections, to: section_quality_gate, relation: routes-to, label: "sections", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:472"] }
+  - { id: e25, from: section_quality_gate, to: build_long_evidence_chunks, relation: routes-to, label: "validated sections", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:473"] }
+  - { id: e26, from: build_metadata_document, to: validate_document_tokens, relation: routes-to, label: "document", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:474"] }
+  - { id: e27, from: build_short_evidence_chunks, to: validate_document_tokens, relation: routes-to, label: "chunks", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:475"] }
+  - { id: e28, from: build_long_evidence_chunks, to: validate_document_tokens, relation: routes-to, label: "chunks", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:476"] }
+  - { id: e29, from: validate_document_tokens, to: generate_missing_embeddings, relation: routes-to, label: "bounded docs", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:477"] }
+  - { id: e30, from: generate_missing_embeddings, to: embedding_quality_gate, relation: routes-to, label: "1024d vectors", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:478"] }
+  - { id: e31, from: embedding_quality_gate, to: validate_index_candidate, relation: routes-to, label: "valid vectors", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:479"] }
+  - { id: e32, from: validate_index_candidate, to: persist_semantic_candidate, relation: routes-to, label: "valid candidate", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:480"] }
+  - { id: e33, from: persist_semantic_candidate, to: persisted_candidate_integrity_gate, relation: routes-to, label: "inactive persisted candidate", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:481-484"] }
+  - { id: e34, from: persisted_candidate_integrity_gate, to: commit_semantic_candidate, relation: routes-to, label: "integrity passed", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:485-488"] }
+  - { id: e35, from: commit_semantic_candidate, to: end, relation: routes-to, label: "active index", evidence: ["apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:489"] }
+
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+
+view:
+  profile: flowchart
+  renderer: mermaid
+  fallback_renderer: graphviz
+  story: "Claim an attempt, collect parallel multimodal evidence, normalize metadata, choose chunking, embed, validate, persist inactive, then commit."
+  primary_path: [start, load_or_resume_attempt, validate_and_classify, evidence_ready_join, evaluate_metadata_quality, choose_chunking_strategy, validate_document_tokens, generate_missing_embeddings, embedding_quality_gate, validate_index_candidate, persist_semantic_candidate, persisted_candidate_integrity_gate, commit_semantic_candidate, end]
+  focus: [validate_and_classify, evidence_ready_join, choose_chunking_strategy, commit_semantic_candidate]
+  suppress: []
+  options: {}
+  visual_review_required: true
+
+presentation:
+  style: "diagram-design editorial flowchart"
+  title: "Reel indexing workflow"
+  subtitle: "From media evidence to a committed semantic index"
+  groups:
+    - { id: evidence_phase, contains: [analyze_visual_frames, build_metadata_only_index, transcribe_short_video, load_audio_manifest, transcribe_pending_segments, merge_transcript_segments, validate_transcript, evidence_ready_join] }
+    - { id: structuring_phase, contains: [evaluate_metadata_quality, preserve_user_metadata, extract_hierarchical_metadata, choose_chunking_strategy, build_metadata_document, build_short_evidence_chunks, detect_long_sections, section_quality_gate, build_long_evidence_chunks] }
+    - { id: commit_phase, contains: [validate_document_tokens, generate_missing_embeddings, embedding_quality_gate, validate_index_candidate, persist_semantic_candidate, persisted_candidate_integrity_gate, commit_semantic_candidate] }
+  legend:
+    show: true
+    node_roles: ["step", "decision", "model-backed step", "store/commit"]
+    edge_semantics: ["branch condition", "parallel fan-out/fan-in"]
+
+layout:
+  direction: TB
+  declaration_order: [start, load_or_resume_attempt, validate_and_classify, analyze_visual_frames, build_metadata_only_index, transcribe_short_video, load_audio_manifest, transcribe_pending_segments, merge_transcript_segments, validate_transcript, evidence_ready_join, evaluate_metadata_quality, preserve_user_metadata, extract_hierarchical_metadata, choose_chunking_strategy, build_metadata_document, build_short_evidence_chunks, detect_long_sections, section_quality_gate, build_long_evidence_chunks, validate_document_tokens, generate_missing_embeddings, embedding_quality_gate, validate_index_candidate, persist_semantic_candidate, persisted_candidate_integrity_gate, commit_semantic_candidate, end]
+  rows: []
+  sidecars: { left: [], right: [], bottom: [] }
+  crossing_target: 0
+  edge_node_crossings_target: 0
+  geometry_gate: required
+  aspect_target: "wide-document"
+
+gaps: []
+findings:
+  - "The HTML renderer is Diagram Design; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."

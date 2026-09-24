@@ -1,0 +1,35 @@
+question: "Broken ER"
+type: er
+conformance:
+  mode: textbook-strict
+  targets: [ie-crows-foot]
+  claim: documented-subset
+nodes:
+  - id: customer
+    label: Customer
+    kind: entity
+    evidence: ["schema.sql:1"]
+  - id: order
+    label: Order
+    kind: entity
+    evidence: ["schema.sql:8"]
+edges:
+  - id: customer_order
+    from: customer
+    to: order
+    relation: references
+    cardinality_from: banana
+    cardinality_to: "1..*"
+    identifying: false
+    evidence: ["schema.sql:12"]
+interaction_fragments: []
+boundaries: []
+view:
+  profile: er
+  renderer: mermaid
+  fallback_renderer: plantuml
+  options:
+    er_mode: physical-crows-foot
+presentation:
+  groups: []
+gaps: []

@@ -1,0 +1,126 @@
+# Renderer-neutral evidence IR + one view.
+# Facts without evidence belong in gaps, not on the canvas.
+
+question: ""
+type: ""
+audience: ""
+scope: ""
+commit: ""
+extracted_with: []
+
+conformance:
+  mode: practical
+  targets: []
+  claim: documented-subset
+  notes: []
+
+nodes:
+  - id: ""
+    label: ""
+    display_label: ""
+    kind: ""
+    tech: ""
+    responsibility: ""
+    stereotype: ""
+    semantic_role: ""
+    members: []
+    attributes: []
+    extension_points: []
+    confidence: direct
+    evidence: []
+
+edges:
+  - id: ""
+    from: ""
+    to: ""
+    relation: ""
+    label: ""
+    protocol: ""
+    sync: true
+    crosses_network: false
+    order: null
+    message_sort: ""
+    condition: ""
+    guard: ""
+    action: ""
+    extension_points: []
+    cardinality_from: ""
+    cardinality_to: ""
+    role_from: ""
+    role_to: ""
+    navigability: ""
+    identifying: null
+    participation: ""      # conceptual Chen: total | partial, when evidenced
+    data: ""
+    frequency: ""
+    confidence: direct
+    evidence: []
+
+interaction_fragments:
+  - id: ""
+    kind: ""
+    guard: ""
+    edges: []
+
+boundaries:
+  - id: ""
+    name: ""
+    contains: []
+    kind: ""
+    evidence: []
+
+architecture_description:
+  entity_of_interest: ""
+  stakeholders:
+    - id: ""
+      name: ""
+      evidence: ""
+  concerns:
+    - id: ""
+      name: ""
+      evidence: ""
+  viewpoint:
+    name: ""
+    stakeholders: []
+    concerns: []
+    model_kinds: []
+
+view:
+  profile: ""
+  renderer: auto
+  fallback_renderer: auto
+  story: ""
+  primary_path: []
+  focus: []
+  suppress: []
+  options:
+    er_mode: ""
+  visual_review_required: true
+
+presentation:
+  style: ""
+  title: ""
+  subtitle: ""
+  groups: []
+  legend:
+    show: false
+    node_roles: []
+    edge_semantics: []
+
+layout:
+  direction: ""
+  declaration_order: []
+  # Optional geometry-owned rows for polished static architecture.
+  # Example: { id: runtime, label: "Runtime services", nodes: [api, call] }
+  rows: []
+  sidecars:
+    left: []
+    right: []
+    bottom: []
+  crossing_target: 0
+  edge_node_crossings_target: 0
+  geometry_gate: required
+  aspect_target: ""
+
+gaps: []
+findings: []

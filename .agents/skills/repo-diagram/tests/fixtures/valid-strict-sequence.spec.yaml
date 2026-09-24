@@ -1,0 +1,61 @@
+question: "Async checkout notification"
+type: sequence
+audience: architecture-review
+scope: checkout
+commit: test
+conformance:
+  mode: textbook-strict
+  targets: [omg-uml-2.5.1]
+  claim: documented-subset
+nodes:
+  - id: api
+    label: CheckoutController
+    kind: component
+    evidence: ["src/checkout.ts:10"]
+  - id: bus
+    label: EventBus
+    kind: queue
+    evidence: ["src/events.ts:4"]
+  - id: worker
+    label: NotificationWorker
+    kind: component
+    evidence: ["src/worker.ts:8"]
+edges:
+  - id: publish
+    from: api
+    to: bus
+    relation: publishes
+    label: publish OrderCreated
+    protocol: AMQP
+    sync: false
+    crosses_network: true
+    order: 1
+    message_sort: asynchSignal
+    evidence: ["src/checkout.ts:42"]
+  - id: consume
+    from: bus
+    to: worker
+    relation: calls
+    label: deliver OrderCreated
+    protocol: AMQP
+    sync: false
+    crosses_network: true
+    order: 2
+    message_sort: asynchSignal
+    evidence: ["src/worker.ts:20"]
+interaction_fragments:
+  - id: notify
+    kind: opt
+    guard: customer opted in
+    edges: [consume]
+boundaries: []
+architecture_description: {}
+view:
+  profile: sequence
+  renderer: plantuml
+  fallback_renderer: mermaid
+  options: {}
+  visual_review_required: true
+presentation:
+  groups: []
+gaps: []

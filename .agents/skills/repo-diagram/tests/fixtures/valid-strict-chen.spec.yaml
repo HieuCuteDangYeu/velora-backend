@@ -1,0 +1,48 @@
+question: "Conceptual enrollment model"
+type: er
+audience: architecture-review
+scope: enrollment
+commit: test
+conformance:
+  mode: textbook-strict
+  targets: [chen-1976]
+  claim: documented-subset
+nodes:
+  - id: student
+    label: Student
+    kind: entity
+    evidence: ["docs/domain.md:1"]
+  - id: enrollment
+    label: Enrollment
+    kind: relationship
+    evidence: ["docs/domain.md:5"]
+  - id: course
+    label: Course
+    kind: entity
+    evidence: ["docs/domain.md:8"]
+edges:
+  - id: student_enrollment
+    from: student
+    to: enrollment
+    relation: participates
+    label: enrolls
+    evidence: ["docs/domain.md:5"]
+  - id: course_enrollment
+    from: course
+    to: enrollment
+    relation: participates
+    label: accepts enrollment
+    evidence: ["docs/domain.md:5"]
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+view:
+  profile: er
+  renderer: plantuml
+  fallback_renderer: graphviz
+  options:
+    er_mode: conceptual-chen
+  visual_review_required: true
+presentation:
+  groups: []
+gaps: []

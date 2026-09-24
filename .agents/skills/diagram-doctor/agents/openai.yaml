@@ -1,0 +1,4 @@
+interface:
+  display_name: "Diagram Doctor"
+  short_description: "Check diagram tooling and render setup"
+  default_prompt: "Use $diagram-doctor to check whether Repo Diagrammer is fully configured for this repository."

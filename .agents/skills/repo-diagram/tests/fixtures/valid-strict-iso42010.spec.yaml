@@ -1,0 +1,61 @@
+question: "Container architecture for operations concerns"
+type: c4-container
+audience: architecture-review
+scope: orders
+commit: test
+conformance:
+  mode: textbook-strict
+  targets: [c4-model, iso-iec-ieee-42010-2022]
+  claim: documented-subset
+nodes:
+  - id: api
+    label: Orders API
+    kind: container
+    tech: Go
+    responsibility: Handles order lifecycle
+    evidence: ["docker-compose.yml:20"]
+  - id: db
+    label: Orders DB
+    kind: datastore
+    tech: PostgreSQL
+    responsibility: Persists orders
+    evidence: ["docker-compose.yml:35"]
+edges:
+  - id: api_db
+    from: api
+    to: db
+    relation: writes
+    label: persists orders
+    protocol: PostgreSQL wire protocol
+    sync: true
+    crosses_network: true
+    evidence: ["src/repository.ts:20"]
+interaction_fragments: []
+boundaries: []
+architecture_description:
+  entity_of_interest: Order Platform
+  stakeholders:
+    - id: operator
+      name: Operations engineer
+      evidence: "docs/architecture.md:10"
+  concerns:
+    - id: availability
+      name: Service availability
+      evidence: "docs/architecture.md:14"
+  viewpoint:
+    name: Runtime service viewpoint
+    stakeholders: [operator]
+    concerns: [availability]
+    model_kinds: [c4-container]
+view:
+  profile: architecture
+  renderer: mermaid
+  fallback_renderer: plantuml
+  options: {}
+  visual_review_required: true
+presentation:
+  title: "Container diagram — Order Platform"
+  groups: []
+  legend:
+    show: true
+gaps: []

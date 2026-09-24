@@ -1,0 +1,126 @@
+question: "How does Velora retrieve authorized Reel evidence and turn it into a verified, cited RAG answer?"
+type: flowchart
+audience: "Backend engineers reviewing RAG retrieval, access boundaries, ranking, and answer grounding"
+scope: "AI Service RAG LangGraph plus the bounded retrieval tool loop, deterministic semantic retrieval engine, reranking, repair, verification, and citations"
+commit: "56fce3e2"
+extracted_with:
+  - "repository source trace"
+  - "Repo Diagrammer evidence IR"
+
+conformance:
+  mode: practical
+  targets: []
+  claim: documented-subset
+  notes: []
+
+nodes:
+  - { id: start, label: "User message", kind: source, responsibility: "Start RAG chat execution", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:325-407"] }
+  - { id: resolve_reel_context, label: "Resolve Reel access", kind: transformation, responsibility: "Resolve Reel IDs accessible in the conversation for this user", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:452-468"] }
+  - { id: query_router, label: "Route query", kind: decision, tech: "qwen/qwen3.8-27b", responsibility: "Classify intent, reference target, required evidence, retrieval need, and recommendation action", confidence: direct, evidence: [".env.example:25", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:325-364", "apps/ai-service/src/application/use-cases/query-router-agent.use-case.ts:400-449"] }
+  - { id: retrieval_planner, label: "Plan retrieval", kind: transformation, tech: "qwen/qwen3.8-27b", responsibility: "Choose vector/hybrid mode, one-to-three queries, search/rerank limits, and rerank policy", confidence: direct, evidence: [".env.example:27", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:470-505", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:763-839"] }
+  - { id: retrieval_tool_loop, label: "Bounded retrieval tool loop", kind: transformation, tech: "openai/gpt-oss-20b", responsibility: "Optionally call search_reel_content/get_reel_context within already-authorized Reel/evidence scope", confidence: direct, evidence: [".env.example:28", "apps/ai-service/src/application/use-cases/retrieve-reel-evidence.use-case.ts:41-155", "apps/ai-service/src/application/use-cases/retrieve-reel-evidence.use-case.ts:184-284"] }
+  - { id: query_embedding, label: "Embed query", kind: transformation, tech: "self-hosted TEI · BAAI/bge-m3 · 1024d", responsibility: "Generate normalized RETRIEVAL_QUERY vector", confidence: direct, evidence: [".env.example:43", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:142-171", "apps/ai-service/src/infrastructure/adapters/tei-embedding.adapter.ts:13-38"] }
+  - { id: retrieval_mode, label: "Hierarchy serving?", kind: decision, responsibility: "Use promoted hierarchy, direct retrieval, and optional hierarchy shadow according to rollout flags", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:214-250", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:392-426"] }
+  - { id: hierarchy_search, label: "Hierarchical semantic search", kind: transformation, responsibility: "Search Reel → section for LONG → child chunks, plus requested visual scenes", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:252-322"] }
+  - { id: direct_search, label: "Direct semantic search", kind: transformation, responsibility: "Search authorized chunks and requested visual scenes directly", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:324-360"] }
+  - { id: semantic_index, label: "Committed semantic index", kind: store, responsibility: "Search Reel/section/chunk/visual documents only inside eligible Reel IDs", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:274-354", "apps/ai-service/src/domain/interfaces/reel-semantic-index.service.interface.ts:1-120"] }
+  - { id: expand_hydrate, label: "Expand neighbours + hydrate", kind: transformation, responsibility: "Add adjacent chunks, load Reel documents, and map candidates into retrieval evidence", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:362-391", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:428-447"] }
+  - { id: retrieval_node, label: "Deduplicate retrieved evidence", kind: transformation, responsibility: "Merge multi-query/tool candidates by chunk ID and keep strongest candidate", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:507-548", "apps/ai-service/src/application/use-cases/retrieve-reel-evidence.use-case.ts:86-155"] }
+  - { id: neural_reranker, label: "Rerank evidence", kind: transformation, tech: "TEI · cross-encoder/mmarco-mMiniLMv2-L12-H384-v1", responsibility: "Neural relevance scoring + diversity selection, with deterministic fallback", confidence: direct, evidence: [".env.example:54", "apps/ai-service/src/infrastructure/adapters/tei-reranker.adapter.ts:26-77", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:550-585"] }
+  - { id: context_sufficiency, label: "Context sufficient?", kind: decision, tech: "openai/gpt-oss-20b", responsibility: "Decide whether evidence is sufficient, needs retrieval repair, or cannot answer", confidence: direct, evidence: [".env.example:29", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:587-610"] }
+  - { id: retrieval_repair, label: "Repair retrieval query", kind: transformation, responsibility: "Rewrite the retrieval query and loop back through planner within retry bounds", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:365-378", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:612-640"] }
+  - { id: mark_retrieval_ready, label: "Mark retrieval ready", kind: transformation, responsibility: "Signal authorized sufficient Reel context for answer fan-in", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:342", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:379"] }
+  - { id: memory_selector, label: "Select memory context", kind: transformation, responsibility: "Select allowed memory context for routes that need it", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:343", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:354-359"] }
+  - { id: answer_context_join, label: "Answer context ready?", kind: decision, responsibility: "Join retrieval and memory paths before drafting", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:344", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:379-386"] }
+  - { id: draft_answer, label: "Draft grounded answer", kind: transformation, tech: "openai/gpt-oss-120b", responsibility: "Generate answer and claim mapping from bounded reranked evidence/context", confidence: direct, evidence: [".env.example:30", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:345", "apps/ai-service/src/application/use-cases/generate-draft-answer.use-case.ts:63-132"] }
+  - { id: verifier, label: "Verify answer", kind: decision, tech: "openai/gpt-oss-120b", responsibility: "Check grounded claims and route to citation, bounded revision, or failure", confidence: direct, evidence: [".env.example:32", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:387-393", "apps/ai-service/src/application/use-cases/verifier-agent.use-case.ts:180-279"] }
+  - { id: answer_revision, label: "Prepare answer revision", kind: transformation, tech: "qwen/qwen3.8-27b", responsibility: "Prepare a bounded evidence-only retry of the draft", confidence: direct, evidence: [".env.example:31", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:347-350", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:391-394"] }
+  - { id: citation, label: "Build citations", kind: transformation, tech: "openai/gpt-oss-20b attribution when needed", responsibility: "Map answer claims to exact authorized evidence provenance", confidence: direct, evidence: [".env.example:34", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:351", "apps/ai-service/src/application/use-cases/build-rag-citations.use-case.ts:102-190"] }
+  - { id: citation_gate, label: "Citation coverage?", kind: decision, responsibility: "Require citation coverage or route to one bounded citation revision/failure", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:352-355", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:395-405"] }
+  - { id: citation_revision, label: "Prepare citation revision", kind: transformation, responsibility: "Retry draft with citation-specific correction", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:356-359", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:400-405"] }
+  - { id: no_context_answer, label: "No-context answer", kind: transformation, responsibility: "Return bounded response when required Reel evidence is unavailable", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:364", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:371-378"] }
+  - { id: verification_failure, label: "Verification failure", kind: transformation, responsibility: "Convert exhausted verification/citation failure into safe final state", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:360-363", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:393-404"] }
+  - { id: final_answer, label: "Final answer", kind: sink, responsibility: "Return verified/cited answer or bounded failure/no-context response", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:365", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:405-406"] }
+  - { id: reel_recommendation, label: "Reel recommendation", kind: sink, responsibility: "Handle recommendation route separately from RAG answer generation", confidence: direct, evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:366-378", "apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:407"] }
+
+edges:
+  - { id: r01, from: start, to: resolve_reel_context, relation: routes-to, label: "message", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:368"] }
+  - { id: r02, from: resolve_reel_context, to: query_router, relation: routes-to, label: "accessibleReelIds", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:369"] }
+  - { id: r03, from: query_router, to: retrieval_planner, relation: routes-to, label: "needs retrieval", condition: "route.needsRetrieval", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:370-375"] }
+  - { id: r04, from: query_router, to: memory_selector, relation: routes-to, label: "memory path", condition: "memory-only/parallel context", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:370-375"] }
+  - { id: r05, from: query_router, to: reel_recommendation, relation: routes-to, label: "recommendation", condition: "recommendation route", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:370-375"] }
+  - { id: r06, from: retrieval_planner, to: retrieval_tool_loop, relation: routes-to, label: "retrieval plan", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:376"] }
+  - { id: r07, from: retrieval_tool_loop, to: query_embedding, relation: routes-to, label: "bounded query", evidence: ["apps/ai-service/src/application/use-cases/retrieve-reel-evidence.use-case.ts:107-155", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:136-171"] }
+  - { id: r08, from: query_embedding, to: retrieval_mode, relation: routes-to, label: "query vector", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:172-183", "apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:214-250"] }
+  - { id: r09, from: retrieval_mode, to: hierarchy_search, relation: routes-to, label: "promoted hierarchy", condition: "hierarchicalEnabled", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:214-223"] }
+  - { id: r10, from: retrieval_mode, to: direct_search, relation: routes-to, label: "direct serving", condition: "!hierarchicalEnabled", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:224-250"] }
+  - { id: r11, from: hierarchy_search, to: semantic_index, relation: calls, label: "Reel/section/chunk + visual search", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:252-322"] }
+  - { id: r12, from: direct_search, to: semantic_index, relation: calls, label: "chunk + visual search", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:324-360"] }
+  - { id: r13, from: semantic_index, to: expand_hydrate, relation: routes-to, label: "authorized candidates", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:342-391"] }
+  - { id: r14, from: expand_hydrate, to: retrieval_node, relation: routes-to, label: "hydrated evidence", evidence: ["apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:362-391"] }
+  - { id: r15, from: retrieval_node, to: neural_reranker, relation: routes-to, label: "deduped evidence", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:377"] }
+  - { id: r16, from: neural_reranker, to: context_sufficiency, relation: routes-to, label: "reranked evidence", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:378"] }
+  - { id: r17, from: context_sufficiency, to: mark_retrieval_ready, relation: routes-to, label: "sufficient", condition: "recommendedAction=ANSWER", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:379-387"] }
+  - { id: r18, from: context_sufficiency, to: retrieval_repair, relation: routes-to, label: "repair", condition: "retry allowed", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:379-387"] }
+  - { id: r19, from: context_sufficiency, to: no_context_answer, relation: routes-to, label: "insufficient", condition: "no useful repair", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:379-387"] }
+  - { id: r20, from: retrieval_repair, to: retrieval_planner, relation: routes-to, label: "rewritten query", condition: "bounded retry", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:388"] }
+  - { id: r21, from: mark_retrieval_ready, to: answer_context_join, relation: routes-to, label: "retrieval ready", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:389"] }
+  - { id: r22, from: memory_selector, to: answer_context_join, relation: routes-to, label: "memory context", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:390"] }
+  - { id: r23, from: answer_context_join, to: draft_answer, relation: routes-to, label: "answerable", condition: "context ready", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:391-395"] }
+  - { id: r24, from: answer_context_join, to: final_answer, relation: routes-to, label: "terminal", condition: "no answer work", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:391-395"] }
+  - { id: r25, from: draft_answer, to: verifier, relation: routes-to, label: "draft + claims", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:396"] }
+  - { id: r26, from: verifier, to: citation, relation: routes-to, label: "verified", condition: "verification passed", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:397-402"] }
+  - { id: r27, from: verifier, to: answer_revision, relation: routes-to, label: "revise", condition: "bounded answer revision", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:397-402"] }
+  - { id: r28, from: verifier, to: verification_failure, relation: routes-to, label: "fail", condition: "verification exhausted", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:397-402"] }
+  - { id: r29, from: answer_revision, to: draft_answer, relation: routes-to, label: "revision request", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:403"] }
+  - { id: r30, from: citation, to: citation_gate, relation: routes-to, label: "citations", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:404"] }
+  - { id: r31, from: citation_gate, to: final_answer, relation: routes-to, label: "covered", condition: "coverage passed", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:405-413"] }
+  - { id: r32, from: citation_gate, to: citation_revision, relation: routes-to, label: "revise citations", condition: "bounded citation revision", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:405-413"] }
+  - { id: r33, from: citation_gate, to: verification_failure, relation: routes-to, label: "fail", condition: "coverage exhausted", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:405-413"] }
+  - { id: r34, from: citation_revision, to: draft_answer, relation: routes-to, label: "citation correction", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:414"] }
+  - { id: r35, from: verification_failure, to: final_answer, relation: routes-to, label: "bounded failure", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:415"] }
+  - { id: r36, from: no_context_answer, to: final_answer, relation: routes-to, label: "no-context response", evidence: ["apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:416"] }
+
+interaction_fragments: []
+boundaries: []
+architecture_description: {}
+
+view:
+  profile: flowchart
+  renderer: mermaid
+  fallback_renderer: graphviz
+  story: "Resolve access first, route intent, retrieve only authorized Reel evidence, rerank and repair if needed, then draft, verify, cite, and finalize."
+  primary_path: [start, resolve_reel_context, query_router, retrieval_planner, retrieval_tool_loop, query_embedding, retrieval_mode, direct_search, semantic_index, expand_hydrate, retrieval_node, neural_reranker, context_sufficiency, mark_retrieval_ready, answer_context_join, draft_answer, verifier, citation, citation_gate, final_answer]
+  focus: [resolve_reel_context, semantic_index, context_sufficiency, verifier, citation_gate]
+  suppress: []
+  options: {}
+  visual_review_required: true
+
+presentation:
+  style: "diagram-design editorial flowchart"
+  title: "RAG retrieval workflow"
+  subtitle: "Authorized semantic search, reranking, repair, verification, and citation"
+  groups:
+    - { id: routing_phase, contains: [resolve_reel_context, query_router, retrieval_planner, retrieval_tool_loop] }
+    - { id: search_phase, contains: [query_embedding, retrieval_mode, hierarchy_search, direct_search, semantic_index, expand_hydrate, retrieval_node, neural_reranker] }
+    - { id: answer_phase, contains: [context_sufficiency, retrieval_repair, mark_retrieval_ready, memory_selector, answer_context_join, draft_answer, verifier, answer_revision, citation, citation_gate, citation_revision, no_context_answer, verification_failure, final_answer] }
+  legend:
+    show: true
+    node_roles: ["step", "decision", "model-backed step", "store"]
+    edge_semantics: ["access-scoped search", "bounded repair/revision loop"]
+
+layout:
+  direction: TB
+  declaration_order: [start, resolve_reel_context, query_router, retrieval_planner, retrieval_tool_loop, query_embedding, retrieval_mode, hierarchy_search, direct_search, semantic_index, expand_hydrate, retrieval_node, neural_reranker, context_sufficiency, retrieval_repair, mark_retrieval_ready, memory_selector, answer_context_join, draft_answer, verifier, answer_revision, citation, citation_gate, citation_revision, no_context_answer, verification_failure, final_answer, reel_recommendation]
+  rows: []
+  sidecars: { left: [], right: [], bottom: [] }
+  crossing_target: 0
+  edge_node_crossings_target: 0
+  geometry_gate: required
+  aspect_target: "wide-document"
+
+gaps:
+  - "The retrieval graph can bypass the optional tool-calling wrapper when disabled, and the wrapper itself falls back to deterministic retrieval when it produces no evidence or errors; the rendering expands this inside retrievalNode rather than adding a second LangGraph node."
+findings:
+  - "Production hierarchical serving is gated by RAG_HIERARCHICAL_RETRIEVAL_PROMOTION_APPROVED; when requested but not approved, direct retrieval serves while hierarchy can run in shadow."
+  - "The HTML renderer is Diagram Design; renderer/fallback above describe Repo Diagrammer's portable source-rendering preference for this flowchart type."

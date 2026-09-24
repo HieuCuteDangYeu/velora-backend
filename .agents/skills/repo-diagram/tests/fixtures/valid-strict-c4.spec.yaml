@@ -1,0 +1,47 @@
+question: "Container view"
+type: c4-container
+audience: architecture-review
+scope: checkout
+commit: test
+conformance:
+  mode: textbook-strict
+  targets: [c4-model]
+  claim: documented-subset
+nodes:
+  - id: web
+    label: Web App
+    kind: container
+    tech: React
+    responsibility: Customer UI
+    evidence: ["docker-compose.yml:10"]
+  - id: api
+    label: Orders API
+    kind: container
+    tech: Go
+    responsibility: Order lifecycle
+    evidence: ["docker-compose.yml:20"]
+edges:
+  - id: web_api
+    from: web
+    to: api
+    relation: calls
+    label: submits orders
+    protocol: HTTPS/JSON
+    sync: true
+    crosses_network: true
+    evidence: ["src/api.ts:42"]
+interaction_fragments: []
+boundaries: []
+view:
+  profile: architecture
+  renderer: mermaid
+  fallback_renderer: plantuml
+  options: {}
+presentation:
+  title: "Container diagram — Checkout"
+  groups: []
+  legend:
+    show: true
+architecture_description: {}
+layout: {}
+gaps: []

@@ -1,0 +1,40 @@
+question: "Checkout happy path"
+type: sequence
+audience: developer
+scope: checkout
+commit: test
+extracted_with: []
+nodes:
+  - id: user
+    label: User
+    kind: actor
+    confidence: direct
+    evidence: ["src/ui.ts:1"]
+  - id: api
+    label: CheckoutController
+    kind: component
+    confidence: direct
+    evidence: ["src/api.ts:2"]
+edges:
+  - id: submit
+    from: user
+    to: api
+    relation: calls
+    label: submit checkout
+    protocol: HTTPS
+    sync: true
+    crosses_network: true
+    order: 1
+    confidence: direct
+    evidence: ["src/ui.ts:10"]
+boundaries: []
+view:
+  profile: sequence
+  renderer: mermaid
+  fallback_renderer: plantuml
+  visual_review_required: true
+presentation:
+  groups: []
+layout: {}
+gaps: []
+findings: []

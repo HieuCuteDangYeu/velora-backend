@@ -1,11 +1,20 @@
-import type { ReelSourceLengthClass, ReelSourceOrientation } from '@common/content/interfaces/reel-state.interface';
-import type { ReelPipelineMediaClass, ReelPipelineOrientation } from '@common/processing/interfaces/reel-pipeline-metric.interface';
+import type {
+  ReelSourceLengthClass,
+  ReelSourceOrientation,
+} from '@common/content/interfaces/reel-state.interface';
+import type {
+  ReelPipelineMediaClass,
+  ReelPipelineOrientation,
+} from '@common/processing/interfaces/reel-pipeline-metric.interface';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
 import type { IProcessingMetrics } from '@processing/domain/interfaces/processing-metrics.interface';
 import type { IVideoProcessingService } from '@processing/domain/interfaces/video-processing.service.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import * as path from 'node:path';
-import type { IContentService, ReelProcessingMediaMetadata } from '../../domain/interfaces/content-service.interface';
+import type {
+  IContentService,
+  ReelProcessingMediaMetadata,
+} from '../../domain/interfaces/content-service.interface';
 import type { IMediaStorageService } from '../../domain/interfaces/media-storage.service.interface';
 import type { ITempFileService } from '../../domain/interfaces/temp-file.service.interface';
 import { BuildTranscriptionAudioManifestUseCase } from './build-transcription-audio-manifest.use-case';
@@ -52,15 +61,21 @@ export class PrepareExistingHlsEvidenceUseCase {
       message: 'Preparing transcript and visual evidence from existing HLS',
       progress: 15,
     });
-    await this.mediaStorage.downloadVideo(input.hlsMasterKey, input.inputPath);
+    const playlistPath = `${input.inputPath}.m3u8`;
+    await this.mediaStorage.downloadVideo(input.hlsMasterKey, playlistPath);
+    await this.videoProcessing.materializeHls(playlistPath, input.inputPath);
 
-    const metadata = await this.videoProcessing.getVideoMetadata(input.inputPath);
+    const metadata = await this.videoProcessing.getVideoMetadata(
+      input.inputPath,
+    );
     if (
       !metadata.durationMs ||
       metadata.durationMs <= 0 ||
       typeof metadata.hasAudio !== 'boolean'
     ) {
-      throw new Error('Existing HLS playlist did not provide valid media metadata');
+      throw new Error(
+        'Existing HLS playlist did not provide valid media metadata',
+      );
     }
 
     const classification = this.classifyMedia.execute(metadata);
@@ -73,7 +88,9 @@ export class PrepareExistingHlsEvidenceUseCase {
       input.fallbackLengthClass,
     );
     if (!sourceOrientation || !sourceLengthClass) {
-      throw new Error('Existing HLS media could not be classified for indexing');
+      throw new Error(
+        'Existing HLS media could not be classified for indexing',
+      );
     }
 
     input.metricsContext.orientation = sourceOrientation;
@@ -142,7 +159,11 @@ export class PrepareExistingHlsEvidenceUseCase {
     actual: ReelPipelineOrientation,
     fallback?: ReelSourceOrientation,
   ): ReelSourceOrientation | undefined {
-    if (actual === 'PORTRAIT' || actual === 'LANDSCAPE' || actual === 'SQUARE') {
+    if (
+      actual === 'PORTRAIT' ||
+      actual === 'LANDSCAPE' ||
+      actual === 'SQUARE'
+    ) {
       return actual;
     }
     return fallback;

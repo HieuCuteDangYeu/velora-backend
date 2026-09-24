@@ -33,6 +33,26 @@ export function buildFfprobeArguments(inputPath: string): string[] {
   ];
 }
 
+export function buildHlsMaterializationArguments(input: {
+  inputPlaylistPath: string;
+  outputPath: string;
+}): string[] {
+  return [
+    '-hide_banner',
+    '-nostdin',
+    '-y',
+    '-protocol_whitelist',
+    'file,http,https,tcp,tls,crypto,data',
+    '-extension_picky',
+    '0',
+    '-i',
+    input.inputPlaylistPath,
+    '-c',
+    'copy',
+    input.outputPath,
+  ];
+}
+
 export function buildHlsTranscodeArguments(input: {
   inputPath: string;
   outputDir: string;

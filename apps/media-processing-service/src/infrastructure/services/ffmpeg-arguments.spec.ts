@@ -1,5 +1,6 @@
 import type { ReelEncodingProfile } from '@processing/domain/interfaces/video-processing.service.interface';
 import {
+  buildHlsMaterializationArguments,
   buildHlsTranscodeArguments,
   buildThumbnailArguments,
 } from './ffmpeg-arguments';
@@ -28,6 +29,28 @@ const baseProfile = {
 const crop = { x: 320, y: 0, width: 608, height: 1080 };
 
 describe('FFmpeg reel arguments', () => {
+  it('materializes local HLS playlists with remote nonstandard segment URLs', () => {
+    expect(
+      buildHlsMaterializationArguments({
+        inputPlaylistPath: '/tmp/source.m3u8',
+        outputPath: '/tmp/source.mp4',
+      }),
+    ).toEqual([
+      '-hide_banner',
+      '-nostdin',
+      '-y',
+      '-protocol_whitelist',
+      'file,http,https,tcp,tls,crypto,data',
+      '-extension_picky',
+      '0',
+      '-i',
+      '/tmp/source.m3u8',
+      '-c',
+      'copy',
+      '/tmp/source.mp4',
+    ]);
+  });
+
   it('keeps the legacy fit filter graph and audio mapping', () => {
     const args = buildHlsTranscodeArguments({
       inputPath: '/tmp/source.mp4',

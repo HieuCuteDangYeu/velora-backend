@@ -41,6 +41,7 @@ export class DispatchOutboxEventsUseCase {
     const events = await this.outboxRepository.claimPending({
       limit: input.batchSize,
       claimToken,
+      dueBefore: now,
       staleBefore: new Date(now.getTime() - input.staleClaimMs),
     });
     const result: DispatchOutboxEventsResult = {

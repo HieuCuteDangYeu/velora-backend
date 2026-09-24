@@ -11,6 +11,7 @@ export class OutboxRepository implements IOutboxRepository {
   async claimPending(input: {
     limit: number;
     claimToken: string;
+    dueBefore: Date;
     staleBefore: Date;
   }): Promise<OutboxEvent[]> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>(
@@ -19,7 +20,7 @@ export class OutboxRepository implements IOutboxRepository {
           SELECT "id"
           FROM "OutboxEvent"
           WHERE "publishedAt" IS NULL
-            AND "nextAttemptAt" <= NOW()
+            AND "nextAttemptAt" <= ${input.dueBefore}
             AND (
               "claimToken" IS NULL
               OR "claimedAt" IS NULL

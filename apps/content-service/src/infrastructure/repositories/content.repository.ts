@@ -525,7 +525,6 @@ export class ContentRepository
         transcriptionAudioManifestKey:
           input.transcriptionAudioManifestKey,
         visualFrameManifestKey: input.visualFrameManifestKey,
-        requireVisualAnalysis: true,
         sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
         outputDurationMs:
           input.mediaMetadata.outputDurationMs ??

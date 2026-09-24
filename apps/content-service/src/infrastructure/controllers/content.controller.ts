@@ -764,9 +764,21 @@ export class ContentController {
   @MessagePattern('content.persist_reel_hls_evidence_completed')
   async persistExistingHlsEvidence(
     @Payload()
-    data: Parameters<CompleteExistingHlsEvidenceUseCase['execute']>[0],
+    data: {
+      reelId: string;
+      processingAttemptId: string;
+      transcriptionAudioManifestKey: string;
+      visualFrameManifestKey: string;
+      mediaMetadata: ReelProcessingMediaMetadata;
+    },
   ) {
-    const applied = await this.completeExistingHlsEvidenceUseCase.execute(data);
+    const applied = await this.completeExistingHlsEvidenceUseCase.execute({
+      reelId: data.reelId,
+      mediaAttemptId: data.processingAttemptId,
+      transcriptionAudioManifestKey: data.transcriptionAudioManifestKey,
+      visualFrameManifestKey: data.visualFrameManifestKey,
+      mediaMetadata: data.mediaMetadata,
+    });
     return { persisted: true, applied };
   }
 

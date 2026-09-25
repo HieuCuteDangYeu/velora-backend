@@ -41,6 +41,6 @@ jobs:
         env:
           DEFAULT_ADMIN_ID: 00000000-0000-4000-8000-000000000001
           BOT_USER_ID: 00000000-0000-4000-8000-000000000002
-        run: pnpm exec jest --runInBand apps/call-service/test/unit apps/notification-service/src apps/conversation-service/src/application/use-cases/manage-group-conversation.use-case.spec.ts apps/conversation-service/src/application/use-cases/get-group-members.use-case.spec.ts apps/conversation-service/src/infrastructure/controllers/conversation.realtime.controller.spec.ts
+        run: pnpm exec jest --runInBand apps/call-service/test/unit apps/notification-service/src apps/conversation-service/src/application/use-cases/manage-group-conversation.use-case.spec.ts apps/conversation-service/src/application/use-cases/get-group-members.use-case.spec.ts apps/conversation-service/src/infrastructure/controllers/conversation.realtime.controller.spec.ts apps/api-gateway/src/calls/call.controller.spec.ts
       - name: Run full call E2E
         run: pnpm exec jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts

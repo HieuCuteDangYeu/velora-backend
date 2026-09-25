@@ -10,7 +10,9 @@ export type SendCallStateUpdateInput = {
   callId: string;
   status: 'active' | 'rejected' | 'ended' | 'cancelled';
   reason?: string;
+  isGroupCall?: boolean;
   answerActionId?: string;
+  answerActionHash?: string;
   lifecycleRevision?: number;
   at: string;
 };
@@ -32,6 +34,10 @@ export class SendCallStateUpdateUseCase {
    */
   async execute(input: SendCallStateUpdateInput) {
     const recipients = this.collectRecipients(input);
+    const answerActionId =
+      input.isGroupCall || input.answerActionHash
+        ? undefined
+        : input.answerActionId;
 
     if (recipients.size === 0) {
       return {
@@ -49,14 +55,20 @@ export class SendCallStateUpdateUseCase {
           callId: input.callId,
           title: 'Call update',
           body: '',
-          idempotencyKey: this.getIdempotencyKey(input, recipientUserId),
+          idempotencyKey: this.getIdempotencyKey(
+            input,
+            recipientUserId,
+            answerActionId,
+          ),
           dataJson: {
             type: 'CALL_STATE_UPDATE',
             platforms: [...platforms].sort(),
             status: input.status,
+            ...(input.isGroupCall ? { isGroupCall: true } : {}),
             ...(input.reason ? { reason: input.reason } : {}),
-            ...(input.answerActionId
-              ? { answerActionId: input.answerActionId }
+            ...(answerActionId ? { answerActionId } : {}),
+            ...(input.answerActionHash
+              ? { answerActionHash: input.answerActionHash }
               : {}),
             ...(input.lifecycleRevision !== undefined
               ? { lifecycleRevision: input.lifecycleRevision }
@@ -134,13 +146,14 @@ export class SendCallStateUpdateUseCase {
   private getIdempotencyKey(
     input: SendCallStateUpdateInput,
     recipientUserId: string,
+    answerActionId?: string,
   ): string {
     // Lifecycle revision is the authoritative dedupe key. Keep a deterministic
     // fallback for legacy publishers during the compatibility window.
     const eventKey =
       input.lifecycleRevision !== undefined
         ? `revision:${input.lifecycleRevision}`
-        : `legacy:${input.status}:${input.reason ?? ''}:${input.answerActionId ?? ''}:${input.at}`;
+        : `legacy:${input.status}:${input.reason ?? ''}:${answerActionId ?? ''}:${input.at}`;
 
     return `call-state:${input.callId}:${recipientUserId}:${eventKey}`;
   }

@@ -1,5 +1,6 @@
-import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, Payload } from '@nestjs/microservices';
+import { Controller, ForbiddenException, Inject } from '@nestjs/common';
+import { ClientProxy, MessagePattern, Payload } from '@nestjs/microservices';
+import { assertCurrentGroupMember } from '../../application/use-cases/assert-current-group-member';
 import {
   getSessionExpiryDate,
   getSessionRingTimeoutMs,
@@ -16,6 +17,8 @@ export class CallStateController {
   constructor(
     @Inject('ICallSessionRepository')
     private readonly sessionRepository: ICallSessionRepository,
+    @Inject('CONVERSATION_SERVICE_RMQ')
+    private readonly conversationClient: ClientProxy,
   ) {}
 
   @MessagePattern('call.get_state')
@@ -47,6 +50,21 @@ export class CallStateController {
         found: true,
         authorized: false,
       };
+    }
+
+    if (session.isGroupCall) {
+      try {
+        await assertCurrentGroupMember(
+          this.conversationClient,
+          session.conversationId,
+          payload.userId,
+        );
+      } catch (error) {
+        if (error instanceof ForbiddenException) {
+          return { found: true, authorized: false };
+        }
+        throw error;
+      }
     }
 
     return {

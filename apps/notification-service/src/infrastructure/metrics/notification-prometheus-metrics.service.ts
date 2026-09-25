@@ -36,6 +36,8 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
     number
   >();
   private readonly startedAtSeconds = Date.now() / 1_000;
+  private retryJobsAttempted = 0;
+  private retryJobsFailed = 0;
   private databaseUp = 1;
   private lastSchedulerCompletionTimestampSeconds = Date.now() / 1_000;
 
@@ -59,6 +61,19 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
       outcome,
       (this.schedulerRunCounts.get(outcome) ?? 0) + 1,
     );
+  }
+
+  recordRetryJobs(attempted: number, failed: number) {
+    if (
+      !Number.isSafeInteger(attempted) ||
+      attempted < 0 ||
+      !Number.isSafeInteger(failed) ||
+      failed < 0 ||
+      failed > attempted
+    )
+      return;
+    this.retryJobsAttempted += attempted;
+    this.retryJobsFailed += failed;
   }
 
   recordRetrySchedulerCompletion() {
@@ -164,6 +179,19 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
         `velora_notification_retry_scheduler_runs_total${this.labels({ service: this.serviceName, outcome })} ${this.schedulerRunCounts.get(outcome) ?? 0}`,
       );
     }
+
+    this.metricHeader(
+      lines,
+      'velora_notification_retry_jobs_total',
+      'Notification jobs retried by bounded outcome.',
+      'counter',
+    );
+    lines.push(
+      `velora_notification_retry_jobs_total${this.labels({ service: this.serviceName, outcome: 'attempted' })} ${this.retryJobsAttempted}`,
+    );
+    lines.push(
+      `velora_notification_retry_jobs_total${this.labels({ service: this.serviceName, outcome: 'failed' })} ${this.retryJobsFailed}`,
+    );
 
     this.metricHeader(
       lines,

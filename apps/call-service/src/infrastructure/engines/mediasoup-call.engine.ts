@@ -18,7 +18,10 @@ import type {
   RouterRtpCapabilitiesResult,
 } from '../../domain/interfaces/call-media.engine.interface';
 import { safeCallErrorCode, shortCallIdentifier } from '../gateways/call-debug';
-import { RedisCallStateRepository } from '../repositories/redis-call-state.repository';
+import {
+  RedisCallStateRepository,
+  type StoredTransportState,
+} from '../repositories/redis-call-state.repository';
 import {
   getAnnouncedIpAddressFamily,
   validateMediasoupNetworkConfiguration,
@@ -173,6 +176,21 @@ export class MediasoupCallMediaEngine
       ],
     });
 
+    try {
+      await this.stateRepository.saveRoom({
+        callId,
+        workerId: String(worker.pid),
+        routerId: router.id,
+      });
+    } catch (error) {
+      try {
+        router.close();
+      } catch {
+        // Preserve the persistence failure that prevented room creation.
+      }
+      throw error;
+    }
+
     this.rooms.set(callId, {
       callId,
       worker,
@@ -185,12 +203,6 @@ export class MediasoupCallMediaEngine
       producerMeta: new Map(),
       consumers: new Map(),
       consumerMeta: new Map(),
-    });
-
-    await this.stateRepository.saveRoom({
-      callId,
-      workerId: String(worker.pid),
-      routerId: router.id,
     });
   }
 
@@ -241,14 +253,14 @@ export class MediasoupCallMediaEngine
       dtlsParameters: dtlsParameters as mediasoup.types.DtlsParameters,
     });
 
-    room.transportMeta.set(transportId, { ...meta, connected: true });
-    await this.stateRepository.saveTransportState({
+    await this.persistTransportStateOrClose(room, transport, {
       transportId,
       callId,
       userId,
       direction: meta.direction,
       connected: true,
     });
+    room.transportMeta.set(transportId, { ...meta, connected: true });
   }
 
   async restartIce(
@@ -514,6 +526,9 @@ export class MediasoupCallMediaEngine
         userId,
         kind,
       });
+      if (this.rooms.get(callId) !== room || producer.closed) {
+        throw new Error('Call room not found');
+      }
     } catch (error) {
       // Do not leave a live mediasoup producer behind when the durable
       // producer index cannot be written. The caller will receive the
@@ -868,19 +883,52 @@ export class MediasoupCallMediaEngine
 
     try {
       for (const producer of producers) {
-        await this.closeProducer(callId, userId, producer.producerId);
+        try {
+          await this.closeProducer(callId, userId, producer.producerId);
+        } catch (error) {
+          this.logger.warn(
+            `Failed to persist participant producer cleanup call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
       }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to persist participant producer cleanup call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
-      );
     } finally {
       // A Redis cleanup failure must never keep this guest's media alive.
-      for (const [transportId, meta] of [...room.transportMeta.entries()]) {
-        if (meta.userId === userId) room.transports.get(transportId)?.close();
+      const transports = [...room.transportMeta.entries()].filter(
+        ([, meta]) => meta.userId === userId,
+      );
+      for (const [transportId] of transports) {
+        try {
+          room.transports.get(transportId)?.close();
+        } catch (error) {
+          this.logger.warn(
+            `Failed to close participant transport call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
       }
       for (const [consumerId, meta] of [...room.consumerMeta.entries()]) {
-        if (meta.userId === userId) room.consumers.get(consumerId)?.close();
+        if (meta.userId !== userId) continue;
+        try {
+          room.consumers.get(consumerId)?.close();
+        } catch (error) {
+          this.logger.warn(
+            `Failed to close participant consumer call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
+      }
+      const cleanupResults = await Promise.allSettled(
+        transports.map(([transportId, meta]) =>
+          this.stateRepository.removeTransportState(
+            callId,
+            userId,
+            meta.direction,
+            transportId,
+          ),
+        ),
+      );
+      if (cleanupResults.some((result) => result.status === 'rejected')) {
+        this.logger.warn(
+          `Failed to persist participant transport cleanup call=${shortCallIdentifier(callId)}`,
+        );
       }
     }
 
@@ -905,13 +953,26 @@ export class MediasoupCallMediaEngine
     }
 
     const room = this.rooms.get(callId);
-    if (!room) return;
-
-    room.consumers.forEach((consumer) => consumer.close());
-    room.producers.forEach((producer) => producer.close());
-    room.transports.forEach((transport) => transport.close());
-    room.router.close();
-    this.rooms.delete(callId);
+    if (room) {
+      for (const resource of [
+        ...room.consumers.values(),
+        ...room.producers.values(),
+        ...room.transports.values(),
+        room.router,
+      ]) {
+        try {
+          resource.close();
+        } catch (error) {
+          this.logger.warn(
+            `Failed to close terminal media call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
+      }
+      this.rooms.delete(callId);
+    }
+    // Terminal use cases may start their Redis cleanup while room creation is
+    // still pending. Clear once more after that creation and media teardown.
+    await this.stateRepository.clearCallState(callId);
   }
 
   private async bootstrapWorkers(count: number): Promise<void> {
@@ -999,6 +1060,11 @@ export class MediasoupCallMediaEngine
       },
     });
 
+    if (this.rooms.get(callId) !== room) {
+      transport.close();
+      throw new Error('Call room not found');
+    }
+
     room.transports.set(transport.id, transport);
     room.transportMeta.set(transport.id, {
       callId,
@@ -1018,7 +1084,7 @@ export class MediasoupCallMediaEngine
       room.transportMeta.delete(transport.id);
     });
 
-    await this.stateRepository.saveTransportState({
+    await this.persistTransportStateOrClose(room, transport, {
       transportId: transport.id,
       callId,
       userId,
@@ -1033,6 +1099,40 @@ export class MediasoupCallMediaEngine
       iceCandidates: transport.iceCandidates,
       dtlsParameters: transport.dtlsParameters,
     };
+  }
+
+  private async persistTransportStateOrClose(
+    room: RoomRuntimeState,
+    transport: mediasoup.types.WebRtcTransport,
+    state: StoredTransportState,
+  ): Promise<void> {
+    try {
+      await this.stateRepository.saveTransportState(state);
+      if (this.rooms.get(state.callId) !== room || transport.closed) {
+        throw new Error('Call room not found');
+      }
+    } catch (error) {
+      try {
+        transport.close();
+      } catch {
+        // Keep the persistence failure as the caller-visible cause.
+      }
+      room.transports.delete(transport.id);
+      room.transportMeta.delete(transport.id);
+      try {
+        await this.stateRepository.removeTransportState(
+          state.callId,
+          state.userId,
+          state.direction,
+          state.transportId,
+        );
+      } catch (cleanupError) {
+        this.logger.warn(
+          `Transport state cleanup failed call=${shortCallIdentifier(state.callId)} errorCode=${safeCallErrorCode(cleanupError)}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private readOptionalPort(value: string | undefined): number | undefined {

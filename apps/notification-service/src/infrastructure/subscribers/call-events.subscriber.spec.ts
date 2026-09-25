@@ -113,7 +113,9 @@ describe('CallEventsSubscriber', () => {
       callId: payload.callId,
       status: 'active',
       reason: undefined,
+      isGroupCall: undefined,
       answerActionId: payload.answerActionId,
+      answerActionHash: undefined,
       lifecycleRevision: payload.lifecycleRevision,
       at: payload.at,
     });
@@ -121,6 +123,7 @@ describe('CallEventsSubscriber', () => {
   });
 
   it('targets only the accepting group member on Android and iOS', async () => {
+    const answerActionHash = 'a'.repeat(64);
     await subscriber.handleCallAnswered(
       {
         ...payload,
@@ -128,6 +131,8 @@ describe('CallEventsSubscriber', () => {
         recipientUserId: 'user-c',
         invitedUserIds: ['user-c'],
         isGroupCall: true,
+        answerActionId: 'raw-group-action-must-not-leave-service',
+        answerActionHash,
       },
       context(),
     );
@@ -137,6 +142,9 @@ describe('CallEventsSubscriber', () => {
         recipientUserIds: ['user-c'],
         iosRecipientUserIds: ['user-c'],
         status: 'active',
+        isGroupCall: true,
+        answerActionId: undefined,
+        answerActionHash,
       }),
     );
   });

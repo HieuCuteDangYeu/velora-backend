@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
 import type { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 /**
  * Publishes only events that were durably committed with `accepting -> active`.
@@ -49,9 +54,7 @@ export class PublishCallAnswerOutboxUseCase {
         // The Redis lease will make this event eligible again. Continue the
         // batch so a single telemetry/publisher failure is quarantined.
         this.logger.warn(
-          `call.answered outbox publish failed call=${session.callId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `call.answered outbox publish failed call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }
@@ -77,7 +80,13 @@ export class PublishCallAnswerOutboxUseCase {
             invitedUserIds: [event.userId],
             isGroupCall: true,
             lifecycleRevision: event.lifecycleRevision,
-            ...(event.actionId ? { answerActionId: event.actionId } : {}),
+            ...(event.event === 'call.answered' && event.actionId
+              ? {
+                  answerActionHash: createHash('sha256')
+                    .update(event.actionId)
+                    .digest('hex'),
+                }
+              : {}),
             ...(event.reason ? { reason: event.reason } : {}),
             at: event.at,
           });
@@ -87,9 +96,7 @@ export class PublishCallAnswerOutboxUseCase {
         );
       } catch (error) {
         this.logger.warn(
-          `group invitation event publish failed call=${event.callId} user=${event.userId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `group invitation event publish failed call=${shortCallIdentifier(event.callId)} errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }

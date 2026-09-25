@@ -1,5 +1,7 @@
 import { PublishCallAnswerOutboxUseCase } from '../../../src/application/use-cases/publish-call-answer-outbox.use-case';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
+import { createHash } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 
 describe('PublishCallAnswerOutboxUseCase', () => {
   const answeredAt = new Date('2026-01-01T00:00:02.000Z');
@@ -106,6 +108,7 @@ describe('PublishCallAnswerOutboxUseCase', () => {
   });
 
   it('publishes group outcomes only to the affected account and retries a failed event', async () => {
+    const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     const session = new CallSession({
       ...createActiveSession('group-1', 'unused'),
       isGroupCall: true,
@@ -146,7 +149,9 @@ describe('PublishCallAnswerOutboxUseCase', () => {
     const eventPublisher = {
       publish: jest
         .fn()
-        .mockRejectedValueOnce(new Error('broker unavailable'))
+        .mockRejectedValueOnce(
+          new Error('user-b answer-action-secret broker unavailable'),
+        )
         .mockResolvedValue(undefined),
     };
     const useCase = new PublishCallAnswerOutboxUseCase(
@@ -163,9 +168,12 @@ describe('PublishCallAnswerOutboxUseCase', () => {
         targetUserId: 'user-b',
         recipientUserId: 'user-b',
         invitedUserIds: ['user-b'],
-        answerActionId: 'device-b',
+        answerActionHash: createHash('sha256').update('device-b').digest('hex'),
         lifecycleRevision: 2,
       }),
+    );
+    expect(eventPublisher.publish.mock.calls[0][1]).not.toHaveProperty(
+      'answerActionId',
     );
     expect(eventPublisher.publish).toHaveBeenNthCalledWith(
       2,
@@ -183,5 +191,9 @@ describe('PublishCallAnswerOutboxUseCase', () => {
     expect(
       sessionRepository.markGroupInvitationEventPublished,
     ).toHaveBeenCalledWith('rejected-event');
+    expect(warning).toHaveBeenCalledWith(
+      `group invitation event publish failed call=${createHash('sha256').update('group-1').digest('hex').slice(0, 12)} errorCode=unknown_error`,
+    );
+    warning.mockRestore();
   });
 });

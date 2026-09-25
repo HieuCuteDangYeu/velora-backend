@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Keep call-service diagnostics useful without copying identifiers or native
  * error payloads into logs. Full user ids, SDP/RTP parameters and access
@@ -5,11 +7,16 @@
  */
 export const shortCallIdentifier = (value: string | null | undefined) => {
   if (!value) return 'unknown';
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 8)}…${value.slice(-3)}`;
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
 };
 
-const SAFE_ERROR_CODE = /^[a-z0-9_:-]{1,64}$/i;
+const SAFE_ERROR_CODES = new Set([
+  'econnrefused',
+  'econnreset',
+  'etimedout',
+  'enotfound',
+  'http_404',
+]);
 
 export const safeCallErrorCode = (error: unknown): string => {
   const explicitCode =
@@ -18,7 +25,7 @@ export const safeCallErrorCode = (error: unknown): string => {
       : undefined;
   if (typeof explicitCode === 'string') {
     const normalized = explicitCode.trim().toLowerCase();
-    if (SAFE_ERROR_CODE.test(normalized)) return normalized;
+    if (SAFE_ERROR_CODES.has(normalized)) return normalized;
   }
 
   const message = error instanceof Error ? error.message : '';

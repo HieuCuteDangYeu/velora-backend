@@ -5,12 +5,19 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
+import {
+  buildCallLifecycleMetadata,
+  normalizeClientTerminalReason,
+} from './call-lifecycle-payload';
 import { CallSession } from '../../domain/entities/call-session.entity';
 import { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import { ICallMediaEngine } from '../../domain/interfaces/call-media.engine.interface';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 export interface LeaveCallResult {
   session: CallSession;
@@ -39,6 +46,7 @@ export class LeaveCallUseCase {
     userId: string,
     requestedReason?: string,
   ): Promise<LeaveCallResult> {
+    requestedReason = normalizeClientTerminalReason(requestedReason);
     const transition = await this.sessionRepository.transitionToTerminal(
       callId,
       userId,
@@ -55,23 +63,22 @@ export class LeaveCallUseCase {
       throw new ForbiddenException('You are not part of this call');
     }
     if (transition.outcome === 'participant_left') {
-      const [media, state] = await Promise.allSettled([
-        this.mediaEngine.closeParticipant(callId, userId),
-        this.stateRepository.removeParticipant(callId, userId),
-      ]);
-      if (media.status === 'rejected') {
-        this.logger.warn(`Participant media cleanup failed for ${callId}`);
-      }
-      if (state.status === 'rejected') {
-        this.logger.warn(`Participant state cleanup failed for ${callId}`);
+      let closedProducers: LeaveCallResult['closedProducers'] = [];
+      try {
+        closedProducers = (
+          await this.mediaEngine.closeParticipant(callId, userId)
+        ).producers;
+      } catch {
+        this.logger.warn(
+          `Participant media cleanup failed for ${shortCallIdentifier(callId)}`,
+        );
       }
       return {
         session,
         endedReason: transition.reason ?? 'left',
         shouldEmitPeerLeft: true,
         didTransition: false,
-        closedProducers:
-          media.status === 'fulfilled' ? media.value.producers : [],
+        closedProducers,
       };
     }
     if (transition.outcome === 'already_terminal') {
@@ -100,9 +107,7 @@ export class LeaveCallUseCase {
       });
     } catch (error) {
       this.logger.warn(
-        `Failed to publish terminal state for ${callId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Failed to publish terminal state for ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
       );
     }
 
@@ -113,11 +118,7 @@ export class LeaveCallUseCase {
     for (const result of cleanupResults) {
       if (result.status === 'rejected') {
         this.logger.warn(
-          `Call cleanup failed for ${callId}: ${
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason)
-          }`,
+          `Call cleanup failed for ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(result.reason)}`,
         );
       }
     }

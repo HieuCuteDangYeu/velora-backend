@@ -240,7 +240,7 @@ jobs:
           fi
 
           call_regression_required=false
-          if [ "$build_all" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(apps/(call-service|notification-service|api-gateway|monitoring-service)/|libs/common/src/calls/|infra/nginx/|docker-compose\.ya?ml$)'; then
+          if [ "$build_all" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(apps/(call-service|notification-service|conversation-service|api-gateway|monitoring-service)/|libs/common/src/calls/|infra/nginx/|docker-compose\.ya?ml$)'; then
             call_regression_required=true
           fi
 
@@ -356,6 +356,10 @@ jobs:
         if: needs.detect-changes.outputs.call_regression_required == 'true'
         run: pnpm rebuild mediasoup
 
+      - name: Ensure Redis server for group-call regression
+        if: needs.detect-changes.outputs.call_regression_required == 'true'
+        run: command -v redis-server >/dev/null || (sudo apt-get update && sudo apt-get install -y redis-server)
+
       - name: Generate Prisma clients
         run: pnpm run prisma:generate:all
 
@@ -445,7 +449,10 @@ jobs:
 
       - name: Run call unit regression tests
         if: needs.detect-changes.outputs.call_regression_required == 'true'
-        run: pnpm exec jest --runInBand apps/call-service/test/unit/application
+        env:
+          DEFAULT_ADMIN_ID: 00000000-0000-4000-8000-000000000001
+          BOT_USER_ID: 00000000-0000-4000-8000-000000000002
+        run: pnpm exec jest --runInBand apps/call-service/test/unit apps/notification-service/src apps/conversation-service/src/application/use-cases/manage-group-conversation.use-case.spec.ts apps/conversation-service/src/application/use-cases/get-group-members.use-case.spec.ts apps/conversation-service/src/infrastructure/controllers/conversation.realtime.controller.spec.ts
 
       - name: Run call E2E regression test
         if: needs.detect-changes.outputs.call_regression_required == 'true'

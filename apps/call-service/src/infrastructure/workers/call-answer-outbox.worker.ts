@@ -7,6 +7,7 @@ import {
 
 import { PublishCallAnswerOutboxUseCase } from '../../application/use-cases/publish-call-answer-outbox.use-case';
 import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
+import { safeCallErrorCode } from '../gateways/call-debug';
 
 @Injectable()
 export class CallAnswerOutboxWorker implements OnModuleInit, OnModuleDestroy {
@@ -56,9 +57,7 @@ export class CallAnswerOutboxWorker implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.warn(
-        `call.answered outbox drain failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `call.answered outbox drain failed errorCode=${safeCallErrorCode(error)}`,
       );
     } finally {
       this.draining = false;

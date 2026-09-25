@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ClientProxy } from '@nestjs/microservices';
 import { CallParticipant } from '../../domain/entities/call-participant.entity';
 import { CallSession } from '../../domain/entities/call-session.entity';
 import {
@@ -12,6 +13,7 @@ import {
 } from '../../domain/interfaces/call-media.engine.interface';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import { assertCurrentGroupMember } from './assert-current-group-member';
 
 export interface JoinCallResult {
   role: 'host' | 'guest';
@@ -46,6 +48,8 @@ export class JoinCallUseCase {
     @Inject('ICallStateRepository')
     private readonly stateRepository: ICallStateRepository,
     @Inject('ICallMediaEngine') private readonly mediaEngine: ICallMediaEngine,
+    @Inject('CONVERSATION_SERVICE_RMQ')
+    private readonly conversationClient: ClientProxy,
   ) {}
 
   async execute(
@@ -54,6 +58,14 @@ export class JoinCallUseCase {
     socketId: string,
     actionId?: string,
   ): Promise<JoinCallResult> {
+    const currentSession = await this.sessionRepository.findByCallId(callId);
+    if (currentSession?.isGroupCall) {
+      await assertCurrentGroupMember(
+        this.conversationClient,
+        currentSession.conversationId,
+        userId,
+      );
+    }
     const now = new Date();
     const transition = actionId
       ? await this.sessionRepository.joinParticipant(

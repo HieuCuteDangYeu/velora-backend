@@ -6,6 +6,7 @@ describe('NotificationRetryScheduler', () => {
   const createMetrics = () => ({
     recordRetrySchedulerRun: jest.fn(),
     recordRetrySchedulerCompletion: jest.fn(),
+    recordRetryJobs: jest.fn(),
     setDatabaseAvailability: jest.fn(),
   });
 

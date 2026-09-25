@@ -9,6 +9,7 @@ export type RegisterPushTokenInput =
       token: string;
       deviceId?: string;
       appVersion?: string;
+      groupLifecycleVersion?: number;
       lifecycleVersion?: number;
     }
   | {
@@ -17,6 +18,7 @@ export type RegisterPushTokenInput =
       token: string;
       deviceId?: string;
       appVersion?: string;
+      groupLifecycleVersion?: number;
       lifecycleVersion?: number;
       bundleId: string;
       deliveryEnvironment: PushDeliveryEnvironment;
@@ -37,6 +39,7 @@ export type PushTokenProps = {
   token: string;
   deviceId: string | null;
   appVersion: string | null;
+  groupLifecycleVersion?: number;
   bundleId: string | null;
   deliveryEnvironment: PushDeliveryEnvironment | null;
   isActive: boolean;
@@ -53,6 +56,7 @@ export class PushToken {
   readonly token: string;
   readonly deviceId: string | null;
   readonly appVersion: string | null;
+  readonly groupLifecycleVersion: number;
   readonly bundleId: string | null;
   readonly deliveryEnvironment: PushDeliveryEnvironment | null;
   readonly isActive: boolean;
@@ -62,5 +66,6 @@ export class PushToken {
 
   constructor(props: PushTokenProps) {
     Object.assign(this, props);
+    this.groupLifecycleVersion = props.groupLifecycleVersion ?? 1;
   }
 }

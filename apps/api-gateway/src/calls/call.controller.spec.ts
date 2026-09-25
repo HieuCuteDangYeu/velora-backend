@@ -1,4 +1,5 @@
 import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { ForbiddenException } from '@nestjs/common';
 import { of } from 'rxjs';
 import { Role, ROLES_KEY } from '@gateway/auth/decorators/roles.decorator';
 import { RolesGuard } from '@gateway/auth/guards/roles.guard';
@@ -40,5 +41,24 @@ describe('CallController recent telemetry', () => {
         CallController.prototype.recentTelemetryCalls,
       ),
     ).toContain(RolesGuard);
+  });
+});
+
+describe('CallController group state privacy', () => {
+  it('does not forward call metadata to a removed group member', async () => {
+    const callClient = {
+      send: jest.fn().mockReturnValue(of({ found: true, authorized: false })),
+    };
+    const controller = new CallController(callClient as never, {} as never);
+
+    await expect(
+      controller.getCallState('call-1', {
+        user: { id: 'former-member' },
+      } as never),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(callClient.send).toHaveBeenCalledWith('call.get_state', {
+      callId: 'call-1',
+      userId: 'former-member',
+    });
   });
 });

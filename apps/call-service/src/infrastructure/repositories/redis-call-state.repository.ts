@@ -108,24 +108,31 @@ export class RedisCallStateRepository implements ICallStateRepository {
   }
 
   async clearCallState(callId: string): Promise<void> {
-    const transportKeys = await this.redis.smembers(
-      this.transportIndexKey(callId),
-    );
-    const producerKeys = await this.redis.smembers(
-      this.producerIndexKey(callId),
-    );
-    const keys = [
+    await this.redis.eval(
+      `local keys = {KEYS[1], KEYS[2], KEYS[3], KEYS[4]}
+       for _, mediaIndex in ipairs({
+         {KEYS[3], 'call:' .. ARGV[1] .. ':transport:'},
+         {KEYS[4], 'call:' .. ARGV[1] .. ':producer:'}
+       }) do
+         local indexKey = mediaIndex[1]
+         local indexType = redis.call('TYPE', indexKey).ok
+         if indexType ~= 'none' and indexType ~= 'set' then
+           return redis.error_reply('Invalid call state index type')
+         end
+         for _, mediaKey in ipairs(redis.call('SMEMBERS', indexKey)) do
+           if string.sub(mediaKey, 1, #mediaIndex[2]) == mediaIndex[2] then
+             table.insert(keys, mediaKey)
+           end
+         end
+       end
+       return redis.call('DEL', unpack(keys))`,
+      4,
       this.roomKey(callId),
       this.participantKey(callId),
       this.transportIndexKey(callId),
       this.producerIndexKey(callId),
-      ...transportKeys,
-      ...producerKeys,
-    ];
-
-    if (keys.length > 0) {
-      await this.redis.del(...keys);
-    }
+      callId,
+    );
   }
 
   async getTransport(
@@ -157,16 +164,44 @@ export class RedisCallStateRepository implements ICallStateRepository {
 
   async saveTransportState(state: StoredTransportState): Promise<void> {
     const key = this.transportKey(state.callId, state.userId, state.direction);
-    await this.redis.set(key, JSON.stringify(state), 'EX', 60 * 60 * 6);
-    await this.redis.sadd(this.transportIndexKey(state.callId), key);
-    await this.redis.expire(this.transportIndexKey(state.callId), 60 * 60 * 6);
+    await this.saveIndexedState(
+      key,
+      this.transportIndexKey(state.callId),
+      state,
+    );
+  }
+
+  async removeTransportState(
+    callId: string,
+    userId: string,
+    direction: 'send' | 'recv',
+    transportId: string,
+  ): Promise<void> {
+    const key = this.transportKey(callId, userId, direction);
+    await this.redis.eval(
+      `local indexType = redis.call('TYPE', KEYS[2]).ok
+       if indexType ~= 'none' and indexType ~= 'set' then
+         return redis.error_reply('Invalid call state index type')
+       end
+       local raw = redis.call('GET', KEYS[1])
+       if raw and cjson.decode(raw).transportId ~= ARGV[1] then return 0 end
+       redis.call('DEL', KEYS[1])
+       redis.call('SREM', KEYS[2], KEYS[1])
+       return 1`,
+      2,
+      key,
+      this.transportIndexKey(callId),
+      transportId,
+    );
   }
 
   async saveProducerState(state: StoredProducerState): Promise<void> {
     const key = this.producerKey(state.callId, state.userId, state.producerId);
-    await this.redis.set(key, JSON.stringify(state), 'EX', 60 * 60 * 6);
-    await this.redis.sadd(this.producerIndexKey(state.callId), key);
-    await this.redis.expire(this.producerIndexKey(state.callId), 60 * 60 * 6);
+    await this.saveIndexedState(
+      key,
+      this.producerIndexKey(state.callId),
+      state,
+    );
   }
 
   async removeProducerState(
@@ -175,12 +210,61 @@ export class RedisCallStateRepository implements ICallStateRepository {
     producerId: string,
   ): Promise<void> {
     const key = this.producerKey(callId, userId, producerId);
-    await this.redis.del(key);
-    await this.redis.srem(this.producerIndexKey(callId), key);
+    await this.redis.eval(
+      `local indexType = redis.call('TYPE', KEYS[2]).ok
+       if indexType ~= 'none' and indexType ~= 'set' then
+         return redis.error_reply('Invalid call state index type')
+       end
+       redis.call('DEL', KEYS[1])
+       redis.call('SREM', KEYS[2], KEYS[1])
+       return 1`,
+      2,
+      key,
+      this.producerIndexKey(callId),
+    );
+  }
+
+  private async saveIndexedState(
+    key: string,
+    indexKey: string,
+    state: StoredTransportState | StoredProducerState,
+  ): Promise<void> {
+    await this.redis.eval(
+      `local indexType = redis.call('TYPE', KEYS[2]).ok
+       if indexType ~= 'none' and indexType ~= 'set' then
+         return redis.error_reply('Invalid call state index type')
+       end
+       local rawSession = redis.call('GET', KEYS[3])
+       if not rawSession then return redis.error_reply('Call media admission denied') end
+       local session = cjson.decode(rawSession)
+       if session.status ~= 'active' then
+         return redis.error_reply('Call media admission denied')
+       end
+       local joined = false
+       for _, participantId in ipairs(session.participantIds or {}) do
+         if participantId == ARGV[3] then joined = true break end
+       end
+       if not joined then return redis.error_reply('Call media admission denied') end
+       redis.call('SADD', KEYS[2], KEYS[1])
+       redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+       redis.call('EXPIRE', KEYS[2], ARGV[2])
+       return 1`,
+      3,
+      key,
+      indexKey,
+      this.sessionKey(state.callId),
+      JSON.stringify(state),
+      60 * 60 * 6,
+      state.userId,
+    );
   }
 
   private roomKey(callId: string): string {
     return `call:${callId}:room`;
+  }
+
+  private sessionKey(callId: string): string {
+    return `call:${callId}:session`;
   }
 
   private participantKey(callId: string): string {

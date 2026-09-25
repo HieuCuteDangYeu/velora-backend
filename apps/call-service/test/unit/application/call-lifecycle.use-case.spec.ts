@@ -11,6 +11,15 @@ import { CallParticipant } from '../../../src/domain/entities/call-participant.e
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
 
 describe('Call lifecycle use cases', () => {
+  const groupConversationClient = {
+    send: jest.fn().mockReturnValue(
+      of({
+        id: 'conv-1',
+        isGroup: true,
+        participantIds: ['user-a', 'user-b', 'user-c'],
+      }),
+    ),
+  };
   const baseSession = new CallSession({
     callId: 'call-1',
     conversationId: 'conv-1',
@@ -144,12 +153,18 @@ describe('Call lifecycle use cases', () => {
       conversationClient as never,
     );
 
+    await expect(
+      useCase.execute('group-1', 'user-a', undefined, 'VOICE', 'socket-a'),
+    ).rejects.toThrow('Group call requires a newer client');
+    expect(mediaEngine.createRoom).not.toHaveBeenCalled();
+
     const result = await useCase.execute(
       'group-1',
       'user-a',
       undefined,
       'VOICE',
       'socket-a',
+      2,
     );
 
     expect(result.session).toEqual(
@@ -197,7 +212,7 @@ describe('Call lifecycle use cases', () => {
     );
 
     await expect(
-      useCase.execute('group-1', 'user-a', undefined, 'VIDEO', 'socket-a'),
+      useCase.execute('group-1', 'user-a', undefined, 'VIDEO', 'socket-a', 2),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -481,6 +496,7 @@ describe('Call lifecycle use cases', () => {
       participantIds: ['user-a', 'user-b'],
     });
     const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(baseSession),
       joinParticipant: jest.fn().mockResolvedValue({
         outcome: 'joined',
         session: joinedSession,
@@ -502,6 +518,7 @@ describe('Call lifecycle use cases', () => {
       sessionRepository as never,
       stateRepository as never,
       mediaEngine as never,
+      groupConversationClient as never,
     );
 
     const result = await useCase.execute('call-1', 'user-b', 'socket-2');
@@ -519,6 +536,11 @@ describe('Call lifecycle use cases', () => {
 
   it('rejects a stale group invitation without closing the active room', async () => {
     const sessionRepository = {
+      findByCallId: jest
+        .fn()
+        .mockResolvedValue(
+          new CallSession({ ...baseSession, isGroupCall: true }),
+        ),
       joinParticipant: jest.fn().mockResolvedValue({
         outcome: 'invitation_expired',
         session: new CallSession({
@@ -538,6 +560,7 @@ describe('Call lifecycle use cases', () => {
       sessionRepository as never,
       { clearCallState: jest.fn() } as never,
       mediaEngine as never,
+      groupConversationClient as never,
     );
 
     await expect(
@@ -546,8 +569,60 @@ describe('Call lifecycle use cases', () => {
     expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'removed member',
+      of({ id: 'conv-1', isGroup: true, participantIds: ['user-a'] }),
+    ],
+    [
+      'wrong conversation',
+      of({
+        id: 'conv-other',
+        isGroup: true,
+        participantIds: ['user-a', 'user-c'],
+      }),
+    ],
+    [
+      'membership service unavailable',
+      throwError(() => new Error('broker unavailable')),
+    ],
+  ])(
+    'denies group join for %s before reserving a place',
+    async (_reason, response) => {
+      const sessionRepository = {
+        findByCallId: jest
+          .fn()
+          .mockResolvedValue(
+            new CallSession({ ...baseSession, isGroupCall: true }),
+          ),
+        joinParticipant: jest.fn(),
+      };
+      const conversationClient = { send: jest.fn().mockReturnValue(response) };
+      const useCase = new JoinCallUseCase(
+        sessionRepository as never,
+        {} as never,
+        {} as never,
+        conversationClient as never,
+      );
+
+      await expect(
+        useCase.execute('call-1', 'user-c', 'socket-c', 'action-c'),
+      ).rejects.toThrow(
+        _reason === 'membership service unavailable'
+          ? 'Group membership unavailable'
+          : 'Not a current group member',
+      );
+      expect(sessionRepository.joinParticipant).not.toHaveBeenCalled();
+    },
+  );
+
   it('aborts a group answer when media preparation fails before confirmation', async () => {
     const sessionRepository = {
+      findByCallId: jest
+        .fn()
+        .mockResolvedValue(
+          new CallSession({ ...baseSession, isGroupCall: true }),
+        ),
       joinParticipant: jest.fn().mockResolvedValue({
         outcome: 'joined',
         session: new CallSession({
@@ -571,6 +646,7 @@ describe('Call lifecycle use cases', () => {
       sessionRepository as never,
       stateRepository as never,
       mediaEngine as never,
+      groupConversationClient as never,
     );
 
     await expect(
@@ -587,6 +663,7 @@ describe('Call lifecycle use cases', () => {
       participantIds: ['user-a', 'user-b'],
     });
     const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(activeSession),
       joinParticipant: jest.fn().mockResolvedValue({
         outcome: 'joined',
         session: activeSession,
@@ -619,6 +696,7 @@ describe('Call lifecycle use cases', () => {
       sessionRepository as never,
       stateRepository as never,
       mediaEngine as never,
+      groupConversationClient as never,
     );
 
     const result = await useCase.execute('call-1', 'user-a', 'socket-2');
@@ -654,6 +732,45 @@ describe('Call lifecycle use cases', () => {
     await expect(
       useCase.execute('call-1', 'user-c', 'send'),
     ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('blocks provisional group guests from opening media transports', async () => {
+    const session = new CallSession({
+      ...baseSession,
+      isGroupCall: true,
+      status: 'active',
+      participantIds: ['user-a', 'user-b'],
+      groupAnswerActionIds: { 'user-b': 'answer-1' },
+    });
+    const mediaEngine = {
+      createSendTransport: jest.fn(),
+      createRecvTransport: jest.fn(),
+    };
+    const useCase = new CreateTransportUseCase(
+      mediaEngine as never,
+      { findByCallId: jest.fn().mockResolvedValue(session) } as never,
+    );
+
+    await expect(
+      useCase.execute('call-1', 'user-b', 'send'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      useCase.execute('call-1', 'user-b', 'recv'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(mediaEngine.createSendTransport).not.toHaveBeenCalled();
+    expect(mediaEngine.createRecvTransport).not.toHaveBeenCalled();
+
+    session.groupConfirmedAnswerActionIds['user-b'] = 'answer-1';
+    await useCase.execute('call-1', 'user-b', 'send');
+    await useCase.execute('call-1', 'user-b', 'recv');
+    expect(mediaEngine.createSendTransport).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+    );
+    expect(mediaEngine.createRecvTransport).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+    );
   });
 
   it('claims an answer without publishing lifecycle state before activation', async () => {
@@ -1248,6 +1365,32 @@ describe('Call lifecycle use cases', () => {
     );
   });
 
+  it('does not persist an untrusted client terminal reason', async () => {
+    const sessionRepository = {
+      transitionToTerminal: jest.fn().mockResolvedValue({
+        outcome: 'already_terminal',
+        session: baseSession,
+        reason: 'ended',
+      }),
+    };
+    const useCase = new LeaveCallUseCase(
+      sessionRepository as never,
+      {} as never,
+      { publish: jest.fn() },
+      {} as never,
+    );
+
+    await useCase.execute('call-1', 'user-a', 'answer-action-secret');
+
+    expect(sessionRepository.transitionToTerminal).toHaveBeenCalledWith(
+      'call-1',
+      'user-a',
+      undefined,
+      expect.any(Date),
+      'leave',
+    );
+  });
+
   it('lets a group guest leave without closing the shared room', async () => {
     const groupSession = new CallSession({
       ...baseSession,
@@ -1296,11 +1439,12 @@ describe('Call lifecycle use cases', () => {
       }),
     );
     expect(mediaEngine.closeRoom).not.toHaveBeenCalled();
+    expect(stateRepository.removeParticipant).not.toHaveBeenCalled();
     expect(stateRepository.clearCallState).not.toHaveBeenCalled();
     expect(eventPublisher.publish).not.toHaveBeenCalled();
   });
 
-  it('finishes a group leave even when media and state cleanup fail', async () => {
+  it('finishes a group leave when local media cleanup fails after the atomic state transition', async () => {
     const session = new CallSession({
       ...baseSession,
       status: 'active',
@@ -1316,11 +1460,7 @@ describe('Call lifecycle use cases', () => {
           wasActive: true,
         }),
       } as never,
-      {
-        removeParticipant: jest
-          .fn()
-          .mockRejectedValue(new Error('Redis unavailable')),
-      } as never,
+      {} as never,
       { publish: jest.fn() },
       {
         closeParticipant: jest

@@ -10,8 +10,10 @@ function createEngine(createRouter: jest.Mock) {
   const stateRepository = {
     saveRoom: jest.fn().mockResolvedValue(undefined),
     saveTransportState: jest.fn().mockResolvedValue(undefined),
+    removeTransportState: jest.fn().mockResolvedValue(undefined),
     saveProducerState: jest.fn().mockResolvedValue(undefined),
     removeProducerState: jest.fn().mockResolvedValue(undefined),
+    clearCallState: jest.fn().mockResolvedValue(undefined),
   };
   const engine = new MediasoupCallMediaEngine(stateRepository as never);
   const worker = { pid: 1, createRouter };
@@ -81,6 +83,28 @@ describe('MediasoupCallMediaEngine room creation', () => {
     expect(stateRepository.saveRoom).toHaveBeenCalledTimes(1);
   });
 
+  it('closes an allocated router when durable room creation fails', async () => {
+    const router: RouterDouble = {
+      id: 'router-persist-failed',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+    };
+    const { engine, stateRepository } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    stateRepository.saveRoom.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await expect(engine.createRoom('call-persist-failed')).rejects.toThrow(
+      'Redis unavailable',
+    );
+    expect(router.close).toHaveBeenCalledTimes(1);
+    expect(() =>
+      engine.getRouterRtpCapabilities('call-persist-failed'),
+    ).toThrow('Call room not found');
+  });
+
   it('waits for a pending creation before terminal cleanup closes the router', async () => {
     const router: RouterDouble = {
       id: 'router-3',
@@ -108,6 +132,43 @@ describe('MediasoupCallMediaEngine room creation', () => {
     expect(router.close).toHaveBeenCalledTimes(1);
     expect(() => engine.getRouterRtpCapabilities('call-3')).toThrow(
       'Call room not found',
+    );
+  });
+
+  it('clears Redis state after a pending room save completes', async () => {
+    const router: RouterDouble = {
+      id: 'router-late-save',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+    };
+    const { engine, stateRepository } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    let finishSave: () => void = () => undefined;
+    stateRepository.saveRoom.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishSave = resolve)),
+    );
+    stateRepository.clearCallState.mockImplementationOnce(() => {
+      expect(router.close).toHaveBeenCalledTimes(1);
+      return Promise.resolve();
+    });
+
+    const creation = engine.createRoom('call-late-save');
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (stateRepository.saveRoom.mock.calls.length > 0) break;
+      await Promise.resolve();
+    }
+    expect(stateRepository.saveRoom).toHaveBeenCalledTimes(1);
+    const cleanup = engine.closeRoom('call-late-save');
+    expect(stateRepository.clearCallState).not.toHaveBeenCalled();
+    finishSave();
+
+    await expect(Promise.all([creation, cleanup])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(stateRepository.clearCallState).toHaveBeenCalledWith(
+      'call-late-save',
     );
   });
 });
@@ -145,6 +206,92 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     );
     return { ...result, producer, transport };
   };
+
+  it('closes a new transport and removes partial Redis state when persistence fails', async () => {
+    const transport = {
+      id: 'transport-failed',
+      close: jest.fn(),
+      on: jest.fn(),
+      observer: { on: jest.fn() },
+    };
+    const router = {
+      id: 'router-failed',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    };
+    const { engine, stateRepository } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    await engine.createRoom('call-failed');
+    stateRepository.saveTransportState.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await expect(
+      engine.createSendTransport('call-failed', 'guest'),
+    ).rejects.toThrow('Redis unavailable');
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.removeTransportState).toHaveBeenCalledWith(
+      'call-failed',
+      'guest',
+      'send',
+      'transport-failed',
+    );
+    await expect(
+      engine.connectTransport('call-failed', 'guest', 'transport-failed', {}),
+    ).rejects.toThrow('Transport not found');
+  });
+
+  it('closes a transport allocated after the room already ended', async () => {
+    const transport = { id: 'transport-late', close: jest.fn() };
+    let finishAllocation: (transport: typeof transport) => void = () =>
+      undefined;
+    const router = {
+      id: 'router-late',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn(
+        () =>
+          new Promise<typeof transport>((resolve) => {
+            finishAllocation = resolve;
+          }),
+      ),
+    };
+    const { engine, stateRepository } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    await engine.createRoom('call-late');
+    const creation = engine.createSendTransport('call-late', 'guest');
+    await engine.closeRoom('call-late');
+    finishAllocation(transport);
+
+    await expect(creation).rejects.toThrow('Call room not found');
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.saveTransportState).not.toHaveBeenCalled();
+  });
+
+  it('closes a connected transport when its updated state cannot be persisted', async () => {
+    const { engine, stateRepository, transport } =
+      await createConnectedEngine();
+    stateRepository.saveTransportState.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await expect(
+      engine.connectTransport('call-producer', 'user-a', 'transport-1', {}),
+    ).rejects.toThrow('Redis unavailable');
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.removeTransportState).toHaveBeenCalledWith(
+      'call-producer',
+      'user-a',
+      'send',
+      'transport-1',
+    );
+    await expect(
+      engine.connectTransport('call-producer', 'user-a', 'transport-1', {}),
+    ).rejects.toThrow('Transport not found');
+  });
 
   it('returns the same producer for an idempotent request and rejects a second active kind', async () => {
     const { engine, transport } = await createConnectedEngine();
@@ -205,6 +352,99 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     });
     expect(producer.close).toHaveBeenCalledTimes(1);
     expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.removeTransportState).toHaveBeenCalledWith(
+      'call-producer',
+      'user-a',
+      'send',
+      'transport-1',
+    );
+  });
+
+  it('closes every guest producer when one producer-state removal fails', async () => {
+    const { engine, stateRepository, producer, transport } =
+      await createConnectedEngine();
+    const secondProducer = {
+      id: 'producer-2',
+      on: jest.fn(),
+      close: jest.fn(),
+    };
+    await engine.produce('call-producer', 'user-a', 'transport-1', 'audio', {});
+    transport.produce.mockResolvedValueOnce(secondProducer);
+    await engine.produce('call-producer', 'user-a', 'transport-1', 'video', {});
+    stateRepository.removeProducerState.mockRejectedValueOnce(
+      new Error('Redis unavailable'),
+    );
+
+    await engine.closeParticipant('call-producer', 'user-a');
+
+    expect(producer.close).toHaveBeenCalledTimes(1);
+    expect(secondProducer.close).toHaveBeenCalledTimes(1);
+    expect(transport.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues closing guest media when one transport close throws', async () => {
+    const { engine, stateRepository, transport } =
+      await createConnectedEngine();
+    const room = (
+      engine as unknown as { rooms: Map<string, unknown> }
+    ).rooms.get('call-producer') as {
+      transports: Map<string, unknown>;
+      transportMeta: Map<string, unknown>;
+      consumers: Map<string, unknown>;
+      consumerMeta: Map<string, unknown>;
+    };
+    const otherTransport = { close: jest.fn() };
+    const consumer = {
+      close: jest.fn(() => {
+        throw new Error('consumer close fault');
+      }),
+    };
+    room.transports.set('transport-2', otherTransport);
+    room.transportMeta.set('transport-2', {
+      callId: 'call-producer',
+      userId: 'user-a',
+      direction: 'recv',
+    });
+    room.consumers.set('consumer-1', consumer);
+    room.consumerMeta.set('consumer-1', {
+      callId: 'call-producer',
+      userId: 'user-a',
+    });
+    transport.close.mockImplementationOnce(() => {
+      throw new Error('transport close fault');
+    });
+
+    await expect(
+      engine.closeParticipant('call-producer', 'user-a'),
+    ).resolves.toEqual({ producers: [] });
+    expect(otherTransport.close).toHaveBeenCalledTimes(1);
+    expect(consumer.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.removeTransportState).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the terminal room even when a media close throws', async () => {
+    const { engine, stateRepository, producer, transport } =
+      await createConnectedEngine();
+    await engine.produce('call-producer', 'user-a', 'transport-1', 'video', {});
+    const room = (
+      engine as unknown as { rooms: Map<string, unknown> }
+    ).rooms.get('call-producer') as { router: { close: jest.Mock } };
+    producer.close.mockImplementationOnce(() => {
+      throw new Error('producer close fault');
+    });
+    room.router.close.mockImplementationOnce(() => {
+      throw new Error('router close fault');
+    });
+
+    await expect(engine.closeRoom('call-producer')).resolves.toBeUndefined();
+    expect(transport.close).toHaveBeenCalledTimes(1);
+    expect(room.router.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.clearCallState).toHaveBeenCalledWith(
+      'call-producer',
+    );
+    expect(() => engine.listActiveProducers('call-producer')).toThrow(
+      'Call room not found',
+    );
   });
 
   it('rolls back an in-memory producer when durable state persistence fails', async () => {
@@ -227,6 +467,37 @@ describe('MediasoupCallMediaEngine producer lifecycle', () => {
     await expect(engine.listActiveProducers('call-producer')).resolves.toEqual(
       [],
     );
+    expect(stateRepository.removeProducerState).toHaveBeenCalledWith(
+      'call-producer',
+      'user-a',
+      'producer-1',
+    );
+  });
+
+  it('removes a producer persisted after the room ends', async () => {
+    const { engine, stateRepository, producer } = await createConnectedEngine();
+    let finishSave: () => void = () => undefined;
+    stateRepository.saveProducerState.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishSave = resolve)),
+    );
+
+    const producing = engine.produce(
+      'call-producer',
+      'user-a',
+      'transport-1',
+      'video',
+      {},
+    );
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (stateRepository.saveProducerState.mock.calls.length > 0) break;
+      await Promise.resolve();
+    }
+    expect(stateRepository.saveProducerState).toHaveBeenCalledTimes(1);
+    await engine.closeRoom('call-producer');
+    finishSave();
+
+    await expect(producing).rejects.toThrow('Call room not found');
+    expect(producer.close).toHaveBeenCalled();
     expect(stateRepository.removeProducerState).toHaveBeenCalledWith(
       'call-producer',
       'user-a',

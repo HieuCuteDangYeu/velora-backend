@@ -1,5 +1,10 @@
 import { of, throwError } from 'rxjs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
+import Redis from 'ioredis';
 import { io, type Socket } from 'socket.io-client';
 import { INestApplication } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -179,6 +184,16 @@ class FakeRedisClient {
 
     if (script.includes("redis.call('PEXPIRE', KEYS[1], ARGV[2])")) {
       return Promise.resolve(this.values.get(keys[0]) === args[0] ? 1 : 0);
+    }
+    if (script.includes("return redis.call('DEL', unpack(keys))")) {
+      const callId = args[0];
+      const transportKeys = [...(this.sets.get(keys[2]) ?? [])].filter((key) =>
+        key.startsWith(`call:${callId}:transport:`),
+      );
+      const producerKeys = [...(this.sets.get(keys[3]) ?? [])].filter((key) =>
+        key.startsWith(`call:${callId}:producer:`),
+      );
+      return this.del(...keys, ...transportKeys, ...producerKeys);
     }
     if (script.includes("redis.call('DEL', KEYS[1])")) {
       if (this.values.get(keys[0]) !== args[0]) return Promise.resolve(0);
@@ -962,6 +977,7 @@ class FakeCallMediaEngine {
   private transportCounter = 0;
   private producerCounter = 0;
   private consumerCounter = 0;
+  private nextListActiveProducersError: Error | undefined;
   private readonly rooms = new Map<string, RoomState>();
 
   createRoom(callId: string): Promise<void> {
@@ -1132,6 +1148,11 @@ class FakeCallMediaEngine {
     callId: string,
     excludingUserId?: string,
   ): Promise<ActiveProducerResult[]> {
+    if (this.nextListActiveProducersError) {
+      const error = this.nextListActiveProducersError;
+      this.nextListActiveProducersError = undefined;
+      return Promise.reject(error);
+    }
     const room = this.getRoom(callId);
 
     return Promise.resolve(
@@ -1197,6 +1218,27 @@ class FakeCallMediaEngine {
     return Promise.resolve();
   }
 
+  closeParticipant(callId: string, userId: string) {
+    const room = this.getRoom(callId);
+    const producers = [...room.producers.entries()]
+      .filter(([, producer]) => producer.userId === userId && !producer.closed)
+      .map(([producerId, producer]) => ({ producerId, kind: producer.kind }));
+    for (const { producerId } of producers) {
+      const producer = room.producers.get(producerId)!;
+      producer.closed = true;
+      for (const consumer of room.consumers.values()) {
+        if (consumer.producerId === producerId) consumer.closed = true;
+      }
+    }
+    for (const transport of room.transports.values()) {
+      if (transport.userId === userId) transport.closed = true;
+    }
+    for (const consumer of room.consumers.values()) {
+      if (consumer.userId === userId) consumer.closed = true;
+    }
+    return Promise.resolve({ producers });
+  }
+
   closeRoom(callId: string): Promise<void> {
     const room = this.rooms.get(callId);
     if (!room) return Promise.resolve();
@@ -1222,12 +1264,17 @@ class FakeCallMediaEngine {
     return this.rooms.get(callId)?.consumers.get(consumerId);
   }
 
+  failNextListActiveProducers(): void {
+    this.nextListActiveProducersError = new Error('Test media lookup failure');
+  }
+
   reset(): void {
     this.rooms.clear();
     this.roomCounter = 0;
     this.transportCounter = 0;
     this.producerCounter = 0;
     this.consumerCounter = 0;
+    this.nextListActiveProducersError = undefined;
   }
 
   private createTransport(
@@ -1515,6 +1562,466 @@ describe('Call Service P0 flow (e2e)', () => {
       ]),
     );
   });
+
+  it('runs a real-Redis group call through two accepts, guest leave, and host end', async () => {
+    const secondGuestUser: AuthUser = {
+      id: 'second-guest-user',
+      email: 'second-guest@example.com',
+      roles: ['USER'],
+    };
+    const directory = mkdtempSync('/tmp/velora-group-e2e-');
+    const redisSocket = join(directory, 'redis.sock');
+    const redisServer: ChildProcess = spawn(
+      'redis-server',
+      [
+        '--port',
+        '0',
+        '--unixsocket',
+        redisSocket,
+        '--save',
+        '',
+        '--appendonly',
+        'no',
+      ],
+      { stdio: 'ignore' },
+    );
+    let groupRedis: Redis | undefined;
+    let groupModule: TestingModule | undefined;
+    let groupApp: INestApplication | undefined;
+    const groupSockets: Socket[] = [];
+    const groupMedia = new FakeCallMediaEngine();
+    const groupConversations = {
+      'conv-group': {
+        id: 'conv-group',
+        participantIds: [callerUser.id, calleeUser.id, secondGuestUser.id],
+        isGroup: true,
+      },
+    };
+    const previousNoAnswerTimeoutMs = process.env.CALL_NO_ANSWER_TIMEOUT_MS;
+    const previousReconnectGraceMs = process.env.CALL_RECONNECT_GRACE_MS;
+
+    try {
+      for (
+        let attempt = 0;
+        attempt < 100 && !existsSync(redisSocket);
+        attempt++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!existsSync(redisSocket))
+        throw new Error('Temporary Redis did not start');
+      groupRedis = new Redis({ path: redisSocket, lazyConnect: true });
+      await groupRedis.connect();
+      await groupRedis.ping();
+      process.env.CALL_NO_ANSWER_TIMEOUT_MS = '5000';
+      process.env.CALL_RECONNECT_GRACE_MS = '5000';
+
+      groupModule = await Test.createTestingModule({
+        imports: [CallServiceModule],
+      })
+        .overrideProvider('REDIS_CLIENT')
+        .useValue(groupRedis)
+        .overrideProvider('AUTH_SERVICE_RMQ')
+        .useValue(
+          new FakeAuthClient({
+            'caller-token': callerUser,
+            'callee-token': calleeUser,
+            'second-guest-token': secondGuestUser,
+            'outsider-token': outsiderUser,
+          }),
+        )
+        .overrideProvider('CONVERSATION_SERVICE_RMQ')
+        .useValue(new FakeConversationClient(groupConversations))
+        .overrideProvider('ICallEventPublisher')
+        .useValue(new FakeCallEventPublisher())
+        .overrideProvider('ICallMediaEngine')
+        .useValue(groupMedia)
+        .compile();
+      groupApp = groupModule.createNestApplication();
+      await groupApp.listen(0);
+      const address = (
+        groupApp.getHttpServer() as { address(): AddressInfo }
+      ).address();
+      const groupUrl = `http://127.0.0.1:${address.port}`;
+      const groupGateway = groupApp.get(CallGateway);
+      const connectGroupClient = async (
+        token: string,
+        groupLifecycleVersion: number | null = 2,
+      ) => {
+        const socket = io(`${groupUrl}/call`, {
+          autoConnect: false,
+          transports: ['websocket'],
+          reconnection: false,
+          auth: {
+            token,
+            ...(groupLifecycleVersion !== null
+              ? { groupLifecycleVersion }
+              : {}),
+          },
+        });
+        groupSockets.push(socket);
+        const connected = waitForConnect(socket);
+        socket.connect();
+        await connected;
+        return socket;
+      };
+
+      const [host, guest, secondGuest, outsider, legacyGuest] =
+        await Promise.all([
+          connectGroupClient('caller-token'),
+          connectGroupClient('callee-token'),
+          connectGroupClient('second-guest-token'),
+          connectGroupClient('outsider-token'),
+          connectGroupClient('callee-token', null),
+        ]);
+      const hostJoined = onceEvent<{
+        callId: string;
+        session: Record<string, unknown>;
+      }>(host, 'call_joined');
+      const firstInvite = onceEvent<{ callId: string }>(guest, 'incoming_call');
+      const secondInvite = onceEvent<{ callId: string }>(
+        secondGuest,
+        'incoming_call',
+      );
+      const outsiderInvite = waitForOptionalEvent(
+        outsider,
+        'incoming_call',
+        250,
+      );
+      const legacyInvite = waitForOptionalEvent(
+        legacyGuest,
+        'incoming_call',
+        250,
+      );
+      host.emit('initiate_call', {
+        conversationId: 'conv-group',
+        callType: 'VOICE',
+      });
+      const [{ callId, session: hostSession }, firstIncoming, secondIncoming] =
+        await Promise.all([hostJoined, firstInvite, secondInvite]);
+      expect(hostSession).not.toHaveProperty('groupAnswerActionIds');
+      expect(hostSession).not.toHaveProperty('groupConfirmedAnswerActionIds');
+      expect(firstIncoming.callId).toBe(callId);
+      expect(secondIncoming.callId).toBe(callId);
+      const compatibleGuestSockets = await groupGateway.server
+        .in(`group-lifecycle-v2:${calleeUser.id}`)
+        .fetchSockets();
+      expect(compatibleGuestSockets.map((socket) => socket.id)).toContain(
+        guest.id,
+      );
+      expect(compatibleGuestSockets.map((socket) => socket.id)).not.toContain(
+        legacyGuest.id,
+      );
+      await expect(legacyInvite).resolves.toBeNull();
+      const legacyJoinDenied = onceEvent<{ status: string }>(
+        legacyGuest,
+        'exception',
+      );
+      legacyGuest.emit('join_call', { callId });
+      await expect(legacyJoinDenied).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      const legacyAcceptDenied = onceEvent<{ status: string }>(
+        legacyGuest,
+        'exception',
+      );
+      legacyGuest.emit('accept_incoming_call', {
+        callId,
+        actionId: 'legacy-action',
+      });
+      await expect(legacyAcceptDenied).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!),
+      ).toEqual(
+        expect.objectContaining({
+          status: 'active',
+          isGroupCall: true,
+          participantIds: [callerUser.id],
+        }),
+      );
+
+      const outsiderDenied = onceEvent<{ status: string }>(
+        outsider,
+        'exception',
+      );
+      outsider.emit('join_call', { callId });
+      await expect(outsiderDenied).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        1,
+      );
+
+      groupConversations['conv-group'].participantIds = [
+        callerUser.id,
+        secondGuestUser.id,
+      ];
+      const removedMemberAcceptance = onceEvent<{ outcome: string }>(
+        guest,
+        'incoming_call_acceptance',
+      );
+      guest.emit('accept_incoming_call', {
+        callId,
+        actionId: 'removed-member-action',
+      });
+      await expect(removedMemberAcceptance).resolves.toEqual(
+        expect.objectContaining({ outcome: 'unauthorized' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id]);
+      groupConversations['conv-group'].participantIds = [
+        callerUser.id,
+        calleeUser.id,
+        secondGuestUser.id,
+      ];
+
+      groupMedia.failNextListActiveProducers();
+      const failedAcceptance = onceEvent<{
+        outcome: string;
+        reservationReleased?: boolean;
+      }>(guest, 'incoming_call_acceptance');
+      guest.emit('accept_incoming_call', {
+        callId,
+        actionId: 'failed-media-action',
+      });
+      await expect(failedAcceptance).resolves.toEqual(
+        expect.objectContaining({
+          outcome: 'media_unavailable',
+          reservationReleased: true,
+        }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id]);
+      expect(
+        await groupRedis.hget(`call:${callId}:participants`, calleeUser.id),
+      ).toBeNull();
+      expect(
+        await groupRedis.zcard('call:sessions:group-invitation-events'),
+      ).toBe(0);
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        1,
+      );
+
+      for (const [client, actionId] of [
+        [guest, 'guest-action'],
+        [secondGuest, 'second-guest-action'],
+      ] as const) {
+        const acceptance = onceEvent<{
+          outcome: string;
+          callId: string;
+          session?: Record<string, unknown>;
+        }>(client, 'incoming_call_acceptance');
+        client.emit('accept_incoming_call', { callId, actionId });
+        const accepted = await acceptance;
+        expect(accepted).toEqual(
+          expect.objectContaining({ outcome: 'accepted', callId }),
+        );
+        expect(accepted.session).not.toHaveProperty('groupAnswerActionIds');
+        expect(accepted.session).not.toHaveProperty(
+          'groupConfirmedAnswerActionIds',
+        );
+        expect(accepted.session).not.toHaveProperty('answerActionId');
+      }
+      const active = JSON.parse(
+        (await groupRedis.get(`call:${callId}:session`))!,
+      );
+      expect(active.participantIds).toEqual([
+        callerUser.id,
+        calleeUser.id,
+        secondGuestUser.id,
+      ]);
+      expect(active.groupConfirmedAnswerActionIds).toEqual({
+        [calleeUser.id]: 'guest-action',
+        [secondGuestUser.id]: 'second-guest-action',
+      });
+      await expect(outsiderInvite).resolves.toBeNull();
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        3,
+      );
+
+      const losingDevice = await connectGroupClient('callee-token');
+      const losingAcceptance = onceEvent<{ outcome: string }>(
+        losingDevice,
+        'incoming_call_acceptance',
+      );
+      losingDevice.emit('accept_incoming_call', {
+        callId,
+        actionId: 'losing-action',
+      });
+      await expect(losingAcceptance).resolves.toEqual(
+        expect.objectContaining({ outcome: 'answered_elsewhere' }),
+      );
+      for (const [event, payload] of [
+        ['rejoin_call', { callId, actionId: 'losing-action' }],
+        ['leave_call', { callId, actionId: 'guest-action' }],
+        ['create_transport', { callId, direction: 'send' }],
+        [
+          'connect_transport',
+          {
+            callId,
+            transportId: 'copied',
+            dtlsParameters: { role: 'auto', fingerprints: [] },
+          },
+        ],
+        [
+          'produce',
+          {
+            callId,
+            transportId: 'copied',
+            kind: 'audio',
+            rtpParameters: { codecs: [] },
+          },
+        ],
+        [
+          'consume',
+          {
+            callId,
+            transportId: 'copied',
+            producerId: 'copied',
+            rtpCapabilities: { codecs: [] },
+          },
+        ],
+        ['resume_consumer', { callId, consumerId: 'copied' }],
+        ['close_consumer', { callId, consumerId: 'copied' }],
+        ['close_producer', { callId, producerId: 'copied', kind: 'audio' }],
+        ['restart_ice', { callId, transportId: 'copied' }],
+        [
+          'set_audio_bitrate',
+          { callId, transportId: 'copied', profile: 'normal' },
+        ],
+      ] as const) {
+        const denied = onceEvent<{ status: string }>(losingDevice, 'exception');
+        losingDevice.emit(event, payload);
+        await expect(denied).resolves.toEqual(
+          expect.objectContaining({ status: 'error' }),
+        );
+      }
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        3,
+      );
+
+      const reconnecting = onceEvent<{ userId: string }>(
+        host,
+        'peer_reconnecting',
+      );
+      guest.disconnect();
+      await expect(reconnecting).resolves.toEqual(
+        expect.objectContaining({ userId: calleeUser.id }),
+      );
+      const recoveredGuest = await connectGroupClient('callee-token');
+      const rejoined = onceEvent<{
+        callId: string;
+        session: Record<string, unknown>;
+      }>(recoveredGuest, 'call_rejoined');
+      recoveredGuest.emit('rejoin_call', {
+        callId,
+        actionId: 'guest-action',
+      });
+      const rejoinedPayload = await rejoined;
+      expect(rejoinedPayload).toEqual(expect.objectContaining({ callId }));
+      expect(rejoinedPayload.session).not.toHaveProperty(
+        'groupAnswerActionIds',
+      );
+      expect(rejoinedPayload.session).not.toHaveProperty(
+        'groupConfirmedAnswerActionIds',
+      );
+      expect(rejoinedPayload.session).not.toHaveProperty('answerActionId');
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        3,
+      );
+
+      const sendTransport = await createAndConnectTransport(
+        recoveredGuest,
+        callId,
+        'send',
+      );
+      const producerCreated = onceEvent<{ producerId: string }>(
+        recoveredGuest,
+        'producer_created',
+      );
+      recoveredGuest.emit('produce', {
+        callId,
+        transportId: sendTransport.transportId,
+        kind: 'audio',
+        rtpParameters: { codecs: validRtpCapabilities.codecs },
+      });
+      const { producerId } = await producerCreated;
+      expect(
+        groupMedia.getRoomState(callId)?.producers.get(producerId),
+      ).toEqual(
+        expect.objectContaining({ userId: calleeUser.id, closed: false }),
+      );
+
+      const peerLeft = onceEvent<{ userId: string }>(host, 'peer_left');
+      const leftAck = onceEvent<{ callId: string }>(
+        recoveredGuest,
+        'call_left',
+      );
+      const leaveError = waitForOptionalEvent(recoveredGuest, 'exception', 500);
+      recoveredGuest.emit('leave_call', { callId, reason: 'left' });
+      await expect(leaveError).resolves.toBeNull();
+      await expect(leftAck).resolves.toEqual({ callId });
+      await expect(peerLeft).resolves.toEqual(
+        expect.objectContaining({ userId: calleeUser.id }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id, secondGuestUser.id]);
+      expect(
+        groupMedia.getRoomState(callId)?.producers.get(producerId)?.closed,
+      ).toBe(true);
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        2,
+      );
+
+      const replayedLeave = onceEvent<{ callId: string }>(
+        losingDevice,
+        'call_left',
+      );
+      losingDevice.emit('leave_call', { callId, reason: 'left' });
+      await expect(replayedLeave).resolves.toEqual({ callId });
+      expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
+        2,
+      );
+
+      const callEnded = onceEvent<{ callId: string }>(
+        secondGuest,
+        'call_ended',
+      );
+      host.emit('leave_call', { callId, reason: 'answer-action-secret' });
+      await expect(callEnded).resolves.toEqual(
+        expect.objectContaining({ callId, reason: 'ended' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!),
+      ).toEqual(
+        expect.objectContaining({ status: 'ended', terminalReason: 'ended' }),
+      );
+      expect(await groupRedis.hgetall(`call:${callId}:participants`)).toEqual(
+        {},
+      );
+      expect(groupMedia.getRoomState(callId)).toBeUndefined();
+    } finally {
+      groupSockets.forEach((socket) => socket.disconnect());
+      if (groupApp) await groupApp.close();
+      else if (groupModule) await groupModule.close();
+      if (groupRedis?.status === 'ready') await groupRedis.quit();
+      if (redisServer.exitCode === null && redisServer.signalCode === null) {
+        redisServer.kill();
+        await once(redisServer, 'exit');
+      }
+      process.env.CALL_NO_ANSWER_TIMEOUT_MS = previousNoAnswerTimeoutMs;
+      process.env.CALL_RECONNECT_GRACE_MS = previousReconnectGraceMs;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('atomically tombstones an expired call when an accept reaches the deadline', async () => {
     const caller = await connectClient('caller-token');

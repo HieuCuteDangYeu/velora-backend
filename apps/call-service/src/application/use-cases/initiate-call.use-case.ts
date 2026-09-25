@@ -23,6 +23,10 @@ import { ICallSessionRepository } from '../../domain/interfaces/call-session.rep
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
 import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
 import { getCallNoAnswerTimeoutMs } from '../../domain/call-lifecycle-config';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 interface ConversationDetailResponse {
   id?: string;
@@ -68,6 +72,7 @@ export class InitiateCallUseCase {
     targetUserId: string | undefined,
     callType: CallType,
     socketId: string,
+    groupLifecycleVersion?: number,
   ): Promise<InitiateCallResult> {
     const now = new Date();
     const callId = randomUUID();
@@ -84,6 +89,13 @@ export class InitiateCallUseCase {
     }
 
     const isGroupCall = conversation.isGroup === true;
+    if (
+      isGroupCall &&
+      (!Number.isInteger(groupLifecycleVersion) ||
+        (groupLifecycleVersion ?? 1) < 2)
+    ) {
+      throw new ForbiddenException('Group call requires a newer client');
+    }
     if (isGroupCall && callType !== 'VOICE') {
       throw new BadRequestException('Group calls currently support voice only');
     }
@@ -240,11 +252,7 @@ export class InitiateCallUseCase {
         didTransition = transition.outcome === 'transitioned';
       } catch (rollbackError) {
         this.logger.warn(
-          `Failed to terminalize failed initiation call=${callId}: ${
-            rollbackError instanceof Error
-              ? rollbackError.message
-              : String(rollbackError)
-          }`,
+          `Failed to terminalize failed initiation call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(rollbackError)}`,
         );
       }
     }
@@ -268,11 +276,7 @@ export class InitiateCallUseCase {
         });
       } catch (publishError) {
         this.logger.warn(
-          `Failed to publish failed-initiation terminal state call=${callId}: ${
-            publishError instanceof Error
-              ? publishError.message
-              : String(publishError)
-          }`,
+          `Failed to publish failed-initiation terminal state call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(publishError)}`,
         );
       }
     }
@@ -287,11 +291,7 @@ export class InitiateCallUseCase {
     for (const result of cleanupResults) {
       if (result.status === 'rejected') {
         this.logger.warn(
-          `Failed to clean up failed initiation call=${callId}: ${
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason)
-          }`,
+          `Failed to clean up failed initiation call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(result.reason)}`,
         );
       }
     }
@@ -311,7 +311,7 @@ export class InitiateCallUseCase {
           .pipe(timeout(5000)),
       );
 
-      if (!conversation?.id) {
+      if (conversation?.id !== conversationId) {
         throw new NotFoundException('Conversation not found');
       }
 

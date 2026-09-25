@@ -38,6 +38,7 @@ export class PrismaPushTokenRepository implements IPushTokenRepository {
         token: input.token,
         deviceId: input.deviceId,
         appVersion: input.appVersion,
+        groupLifecycleVersion: input.groupLifecycleVersion ?? 1,
         bundleId: input.provider === 'apns_voip' ? input.bundleId : null,
         deliveryEnvironment:
           input.provider === 'apns_voip' ? input.deliveryEnvironment : null,
@@ -49,6 +50,7 @@ export class PrismaPushTokenRepository implements IPushTokenRepository {
         platform: input.platform,
         deviceId: input.deviceId,
         appVersion: input.appVersion,
+        groupLifecycleVersion: input.groupLifecycleVersion ?? 1,
         bundleId: input.provider === 'apns_voip' ? input.bundleId : null,
         deliveryEnvironment:
           input.provider === 'apns_voip' ? input.deliveryEnvironment : null,
@@ -178,6 +180,7 @@ export class PrismaPushTokenRepository implements IPushTokenRepository {
       token: record.token,
       deviceId: record.deviceId,
       appVersion: record.appVersion,
+      groupLifecycleVersion: record.groupLifecycleVersion,
       bundleId: record.bundleId,
       deliveryEnvironment:
         record.deliveryEnvironment as PushDeliveryEnvironment | null,

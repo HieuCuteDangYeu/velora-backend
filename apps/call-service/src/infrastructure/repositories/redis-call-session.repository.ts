@@ -587,6 +587,30 @@ else
     return {'already_terminal', raw, session.terminalReason or '', '0'}
   end
   if session.isGroupCall and userId ~= session.initiatorId then
+    local participantStateType = redis.call('TYPE', KEYS[7]).ok
+    if participantStateType ~= 'none' and participantStateType ~= 'hash' then
+      return redis.error_reply('Invalid call participant state type')
+    end
+    local mediaKeys = {}
+    for _, mediaIndex in ipairs({
+      {KEYS[8], 'call:' .. session.callId .. ':transport:'},
+      {KEYS[9], 'call:' .. session.callId .. ':producer:'}
+    }) do
+      local indexKey = mediaIndex[1]
+      local keyPrefix = mediaIndex[2]
+      local indexType = redis.call('TYPE', indexKey).ok
+      if indexType ~= 'none' and indexType ~= 'set' then
+        return redis.error_reply('Invalid call media index type')
+      end
+      for _, mediaKey in ipairs(redis.call('SMEMBERS', indexKey)) do
+        if string.sub(mediaKey, 1, #keyPrefix) == keyPrefix then
+          local mediaRaw = redis.call('GET', mediaKey)
+          if mediaRaw and cjson.decode(mediaRaw).userId == userId then
+            table.insert(mediaKeys, {indexKey, mediaKey})
+          end
+        end
+      end
+    end
     local remaining = {}
     for _, participantId in ipairs(session.participantIds or {}) do
       if participantId ~= userId then table.insert(remaining, participantId) end
@@ -602,6 +626,11 @@ else
     redis.call('SET', KEYS[1], encoded, 'EX', ttl)
     if redis.call('HGET', KEYS[5], userId) == session.callId then
       redis.call('HDEL', KEYS[5], userId)
+    end
+    redis.call('HDEL', KEYS[7], userId)
+    for _, entry in ipairs(mediaKeys) do
+      redis.call('DEL', entry[2])
+      redis.call('SREM', entry[1], entry[2])
     end
     return {'participant_left', encoded, requestedReason ~= '' and requestedReason or 'left', '1'}
   end
@@ -633,6 +662,7 @@ redis.call('ZREM', KEYS[2], session.callId)
 redis.call('ZREM', KEYS[3], session.callId)
 redis.call('ZREM', KEYS[4], session.callId)
 redis.call('ZADD', KEYS[6], nowMs, session.callId)
+redis.call('DEL', KEYS[7])
 for _, participantId in ipairs(session.participantIds or {}) do
   if redis.call('HGET', KEYS[5], participantId) == session.callId then
     redis.call('HDEL', KEYS[5], participantId)
@@ -1237,13 +1267,16 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   ): Promise<string[]> {
     const result = await this.redis.eval(
       script,
-      6,
+      9,
       this.key(callId),
       EXPIRING_CALLS_KEY,
       ANSWER_EVENT_OUTBOX_KEY,
       ACTIVE_CALLS_KEY,
       ACTIVE_CALLS_BY_USER_KEY,
       TERMINAL_EVENT_OUTBOX_KEY,
+      `call:${callId}:participants`,
+      `call:${callId}:transport-index`,
+      `call:${callId}:producer-index`,
       ...args,
     );
     if (!Array.isArray(result)) {

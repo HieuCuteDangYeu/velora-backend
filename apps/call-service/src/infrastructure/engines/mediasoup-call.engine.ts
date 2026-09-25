@@ -188,6 +188,13 @@ export class MediasoupCallMediaEngine
       } catch {
         // Preserve the persistence failure that prevented room creation.
       }
+      try {
+        await this.stateRepository.removeRoomIfRouterId(callId, router.id);
+      } catch (cleanupError) {
+        this.logger.warn(
+          `Room state cleanup failed call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(cleanupError)}`,
+        );
+      }
       throw error;
     }
 

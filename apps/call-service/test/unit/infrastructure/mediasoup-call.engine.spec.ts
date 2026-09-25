@@ -9,6 +9,7 @@ type RouterDouble = {
 function createEngine(createRouter: jest.Mock) {
   const stateRepository = {
     saveRoom: jest.fn().mockResolvedValue(undefined),
+    removeRoomIfRouterId: jest.fn().mockResolvedValue(undefined),
     saveTransportState: jest.fn().mockResolvedValue(undefined),
     removeTransportState: jest.fn().mockResolvedValue(undefined),
     saveProducerState: jest.fn().mockResolvedValue(undefined),
@@ -103,6 +104,39 @@ describe('MediasoupCallMediaEngine room creation', () => {
     expect(() =>
       engine.getRouterRtpCapabilities('call-persist-failed'),
     ).toThrow('Call room not found');
+  });
+
+  it('removes its own room after an ambiguous post-write save failure', async () => {
+    const router: RouterDouble = {
+      id: 'router-post-write',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+    };
+    const { engine, stateRepository } = createEngine(
+      jest.fn().mockResolvedValue(router),
+    );
+    let storedRouterId: string | null = null;
+    stateRepository.saveRoom.mockImplementationOnce(
+      ({ routerId }: { routerId: string }) => {
+        storedRouterId = routerId;
+        throw new Error('Redis response lost after write');
+      },
+    );
+    stateRepository.removeRoomIfRouterId.mockImplementationOnce(
+      (_callId: string, routerId: string) => {
+        if (storedRouterId === routerId) storedRouterId = null;
+      },
+    );
+
+    await expect(engine.createRoom('call-post-write')).rejects.toThrow(
+      'Redis response lost after write',
+    );
+    expect(router.close).toHaveBeenCalledTimes(1);
+    expect(stateRepository.removeRoomIfRouterId).toHaveBeenCalledWith(
+      'call-post-write',
+      'router-post-write',
+    );
+    expect(storedRouterId).toBeNull();
   });
 
   it('waits for a pending creation before terminal cleanup closes the router', async () => {

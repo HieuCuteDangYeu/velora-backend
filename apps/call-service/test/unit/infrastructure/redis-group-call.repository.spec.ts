@@ -834,6 +834,23 @@ describeWithRedis('Redis group-call transitions', () => {
     evalSpy.mockRestore();
   });
 
+  it('removes only the matching router after an ambiguous room save', async () => {
+    const stateRepository = new RedisCallStateRepository(redis);
+    await stateRepository.saveRoom({
+      callId: 'ambiguous-room',
+      routerId: 'router-new',
+      workerId: 'worker-new',
+    });
+
+    await stateRepository.removeRoomIfRouterId('ambiguous-room', 'router-old');
+    expect((await stateRepository.getRoom('ambiguous-room'))?.routerId).toBe(
+      'router-new',
+    );
+
+    await stateRepository.removeRoomIfRouterId('ambiguous-room', 'router-new');
+    expect(await stateRepository.getRoom('ambiguous-room')).toBeNull();
+  });
+
   it('retries terminal state cleanup from the durable outbox after Redis recovers', async () => {
     const callId = 'room-cleanup-retry';
     const stateRepository = new RedisCallStateRepository(redis);

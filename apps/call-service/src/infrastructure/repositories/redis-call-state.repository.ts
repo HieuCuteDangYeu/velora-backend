@@ -156,6 +156,17 @@ export class RedisCallStateRepository implements ICallStateRepository {
     );
   }
 
+  async removeRoomIfRouterId(callId: string, routerId: string): Promise<void> {
+    await this.redis.eval(
+      `local raw = redis.call('GET', KEYS[1])
+       if not raw or cjson.decode(raw).routerId ~= ARGV[1] then return 0 end
+       return redis.call('DEL', KEYS[1])`,
+      1,
+      this.roomKey(callId),
+      routerId,
+    );
+  }
+
   async getRoom(callId: string): Promise<StoredRoomState | null> {
     const raw = await this.redis.get(this.roomKey(callId));
     if (!raw) return null;

@@ -67,15 +67,21 @@ export class CallSession {
     );
     this.endedAt = this.toDate(partial.endedAt);
     this.expiresAt = this.toDate(partial.expiresAt);
-    this.participantIds = partial.participantIds ?? [];
-    this.invitedUserIds = partial.invitedUserIds ?? [
-      ...new Set(
-        [partial.initiatorId, partial.targetUserId].filter(
-          (userId): userId is string => Boolean(userId),
-        ),
-      ),
-    ];
-    this.declinedUserIds = partial.declinedUserIds ?? [];
+    this.participantIds = Array.isArray(partial.participantIds)
+      ? partial.participantIds
+      : [];
+    this.invitedUserIds = Array.isArray(partial.invitedUserIds)
+      ? partial.invitedUserIds
+      : [
+          ...new Set(
+            [partial.initiatorId, partial.targetUserId].filter(
+              (userId): userId is string => Boolean(userId),
+            ),
+          ),
+        ];
+    this.declinedUserIds = Array.isArray(partial.declinedUserIds)
+      ? partial.declinedUserIds
+      : [];
     this.groupAnswerActionIds = partial.groupAnswerActionIds ?? {};
     this.groupConfirmedAnswerActionIds =
       partial.groupConfirmedAnswerActionIds ?? {};

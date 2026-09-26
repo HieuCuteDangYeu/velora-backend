@@ -14,7 +14,6 @@ type PushTokenSendResult = {
   ok: boolean;
   messageId?: string;
   errorCode?: string;
-  errorMessage?: string;
 };
 
 type SendNotificationResult = {
@@ -32,6 +31,17 @@ const MAX_CALL_STATE_UPDATE_NOTIFICATION_ATTEMPTS = 3;
 const MESSAGE_RETRY_DELAY_MS = 60_000;
 const CALL_RETRY_DELAY_MS = 3_000;
 const CALL_STATE_UPDATE_RETRY_DELAY_MS = 60_000;
+const SAFE_PROVIDER_ERROR_CODES = new Set([
+  'messaging/internal-error',
+  'messaging/registration-token-not-registered',
+  'messaging/invalid-registration-token',
+  'apns/BadDeviceToken',
+  'apns/DeviceTokenNotForTopic',
+  'apns/Unregistered',
+  'apns/http_error',
+  'apns/timeout',
+  'apns/transport_error',
+]);
 
 @Injectable()
 export class ProcessNotificationJobUseCase {
@@ -167,7 +177,10 @@ export class ProcessNotificationJobUseCase {
       ),
     ]);
 
-    const tokens = [...androidTokens, ...voipTokens];
+    const payload = this.readIncomingCallPayload(processingJob);
+    const tokens = [...androidTokens, ...voipTokens].filter(
+      (token) => !payload.isGroupCall || token.groupLifecycleVersion >= 2,
+    );
 
     if (tokens.length === 0) {
       await this.notificationJobRepository.markSkipped(
@@ -187,7 +200,6 @@ export class ProcessNotificationJobUseCase {
       };
     }
 
-    const payload = this.readIncomingCallPayload(processingJob);
     const results = await Promise.all(
       tokens.map((token) =>
         token.provider === 'apns_voip'
@@ -241,7 +253,12 @@ export class ProcessNotificationJobUseCase {
         processingJob.recipientUserId,
         { provider: 'fcm' },
       )
-    ).filter((token) => payload.platforms.includes(token.platform));
+    ).filter(
+      (token) =>
+        payload.platforms.includes(token.platform) &&
+        (!(payload.isGroupCall || payload.answerActionHash) ||
+          token.groupLifecycleVersion >= 2),
+    );
 
     if (tokens.length === 0) {
       await this.notificationJobRepository.markSkipped(
@@ -423,9 +440,15 @@ export class ProcessNotificationJobUseCase {
           recipientUserId: job.recipientUserId,
           conversationId: job.conversationId,
           status: payload.status,
+          ...(payload.isGroupCall ? { isGroupCall: true } : {}),
           reason: payload.reason,
-          ...(payload.answerActionId
+          ...(!payload.isGroupCall &&
+          !payload.answerActionHash &&
+          payload.answerActionId
             ? { answerActionId: payload.answerActionId }
+            : {}),
+          ...(payload.answerActionHash
+            ? { answerActionHash: payload.answerActionHash }
             : {}),
           ...(payload.lifecycleRevision !== undefined
             ? { lifecycleRevision: payload.lifecycleRevision }
@@ -477,7 +500,6 @@ export class ProcessNotificationJobUseCase {
     error: unknown,
   ): Promise<PushTokenSendResult> {
     const errorCode = this.readErrorCode(error);
-    const errorMessage = this.readErrorMessage(error);
 
     if (this.shouldDeactivateToken(errorCode)) {
       await this.pushTokenRepository.deactivateById(token.id);
@@ -489,7 +511,6 @@ export class ProcessNotificationJobUseCase {
       platform: token.platform,
       ok: false,
       errorCode,
-      errorMessage,
     };
   }
 
@@ -507,7 +528,7 @@ export class ProcessNotificationJobUseCase {
     if (error && typeof error === 'object' && 'code' in error) {
       const code = error.code;
 
-      if (typeof code === 'string') {
+      if (typeof code === 'string' && SAFE_PROVIDER_ERROR_CODES.has(code)) {
         return code;
       }
     }
@@ -515,20 +536,12 @@ export class ProcessNotificationJobUseCase {
     return undefined;
   }
 
-  private readErrorMessage(error: unknown) {
-    if (error instanceof Error) {
-      return error.message;
-    }
-
-    return String(error);
-  }
-
   private buildFailureSummary(results: PushTokenSendResult[]) {
     return results
       .filter((result) => !result.ok)
       .map(
         (result) =>
-          `${result.tokenId}: ${result.errorCode ?? result.errorMessage ?? 'Unknown error'}`,
+          `${result.tokenId}: ${result.errorCode ?? 'provider_error'}`,
       )
       .join('; ');
   }
@@ -659,11 +672,16 @@ export class ProcessNotificationJobUseCase {
     return {
       platforms,
       status,
+      isGroupCall: data.isGroupCall === true,
       ...(typeof data.reason === 'string' && data.reason.trim()
         ? { reason: data.reason }
         : {}),
       ...(typeof data.answerActionId === 'string' && data.answerActionId.trim()
         ? { answerActionId: data.answerActionId }
+        : {}),
+      ...(typeof data.answerActionHash === 'string' &&
+      /^[a-f0-9]{64}$/.test(data.answerActionHash)
+        ? { answerActionHash: data.answerActionHash }
         : {}),
       ...(typeof data.lifecycleRevision === 'number' &&
       Number.isInteger(data.lifecycleRevision) &&
@@ -699,8 +717,10 @@ type IncomingCallPayload = {
 type CallStateUpdatePayload = {
   platforms: Array<'android' | 'ios'>;
   status: 'active' | 'rejected' | 'ended' | 'cancelled';
+  isGroupCall: boolean;
   reason?: string;
   answerActionId?: string;
+  answerActionHash?: string;
   lifecycleRevision?: number;
   at: string;
 };

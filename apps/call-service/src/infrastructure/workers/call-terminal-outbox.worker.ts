@@ -7,6 +7,7 @@ import {
 
 import { PublishCallTerminalOutboxUseCase } from '../../application/use-cases/publish-call-terminal-outbox.use-case';
 import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
+import { safeCallErrorCode } from '../gateways/call-debug';
 
 @Injectable()
 export class CallTerminalOutboxWorker implements OnModuleInit, OnModuleDestroy {
@@ -52,9 +53,7 @@ export class CallTerminalOutboxWorker implements OnModuleInit, OnModuleDestroy {
       }
     } catch (error) {
       this.logger.warn(
-        `terminal call outbox drain failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `terminal call outbox drain failed errorCode=${safeCallErrorCode(error)}`,
       );
     } finally {
       this.draining = false;

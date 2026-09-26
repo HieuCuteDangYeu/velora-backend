@@ -33,7 +33,7 @@ export class CallWsExceptionFilter extends BaseWsExceptionFilter {
     this.emitException(
       client,
       host,
-      exception instanceof Error ? exception.message : 'Internal server error',
+      'Internal server error',
       request,
       'internal_error',
     );

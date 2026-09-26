@@ -13,6 +13,10 @@ import type { ICallMediaEngine } from '../../domain/interfaces/call-media.engine
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
 import { AnswerCallUseCase } from './answer-call.use-case';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 export type AcceptIncomingCallOutcome =
   | 'accepted'
@@ -232,9 +236,7 @@ export class AcceptIncomingCallUseCase {
         return recoveredAttempt;
       }
       this.logger.warn(
-        `Incoming call media preparation failed call=${callId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Incoming call media preparation failed call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
       );
       return {
         callId,
@@ -299,11 +301,7 @@ export class AcceptIncomingCallUseCase {
       didTransition = transition.outcome === 'transitioned';
     } catch (cleanupError) {
       this.logger.warn(
-        `Failed to terminalize ${reason} call=${callId}: ${
-          cleanupError instanceof Error
-            ? cleanupError.message
-            : String(cleanupError)
-        }`,
+        `Failed to terminalize ${reason} call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(cleanupError)}`,
       );
     }
 
@@ -331,11 +329,7 @@ export class AcceptIncomingCallUseCase {
         });
       } catch (publishError) {
         this.logger.warn(
-          `Failed to publish ${reason} terminal call=${callId}: ${
-            publishError instanceof Error
-              ? publishError.message
-              : String(publishError)
-          }`,
+          `Failed to publish ${reason} terminal call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(publishError)}`,
         );
       }
     }
@@ -389,11 +383,7 @@ export class AcceptIncomingCallUseCase {
       };
     } catch (recoveryError) {
       this.logger.warn(
-        `Failed to recover active incoming answer call=${callId}: ${
-          recoveryError instanceof Error
-            ? recoveryError.message
-            : String(recoveryError)
-        }`,
+        `Failed to recover active incoming answer call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(recoveryError)}`,
       );
       return undefined;
     }

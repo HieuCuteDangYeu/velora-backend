@@ -65,6 +65,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     const useCase = new PublishCallTerminalOutboxUseCase(
       sessionRepository as never,
       eventPublisher,
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(2);
@@ -123,6 +124,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     const useCase = new PublishCallTerminalOutboxUseCase(
       sessionRepository as never,
       eventPublisher,
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(1);
@@ -131,6 +133,43 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     expect(eventPublisher.publish).toHaveBeenCalledTimes(2);
     expect(sessionRepository.markTerminalEventPublished).toHaveBeenCalledTimes(
       2,
+    );
+  });
+
+  it('retries terminal Redis cleanup before acknowledging the outbox event', async () => {
+    const session = createTerminalSession(
+      'call-cleanup',
+      'ended',
+      'ended',
+      'user-a',
+    );
+    const sessionRepository = {
+      claimPendingTerminalEvents: jest
+        .fn()
+        .mockResolvedValue([
+          { session, event: 'call.ended', reason: 'ended', userId: 'user-a' },
+        ]),
+      markTerminalEventPublished: jest.fn().mockResolvedValue(undefined),
+    };
+    const stateRepository = {
+      clearCallState: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Redis temporarily unavailable'))
+        .mockResolvedValueOnce(undefined),
+    };
+    const eventPublisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      sessionRepository as never,
+      eventPublisher,
+      stateRepository as never,
+    );
+
+    await useCase.execute(endedAt);
+    expect(sessionRepository.markTerminalEventPublished).not.toHaveBeenCalled();
+    await useCase.execute(endedAt);
+    expect(stateRepository.clearCallState).toHaveBeenCalledTimes(2);
+    expect(sessionRepository.markTerminalEventPublished).toHaveBeenCalledTimes(
+      1,
     );
   });
 });

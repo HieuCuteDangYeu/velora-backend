@@ -50,6 +50,8 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const body = JSON.stringify(input.payload);
       let settled = false;
+      // Assigned after listeners are attached; a synchronous request failure needs the unset state.
+      // eslint-disable-next-line prefer-const
       let timeout: NodeJS.Timeout | undefined;
       let statusCode = 0;
       let responseBody = '';
@@ -76,14 +78,14 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
       // A ClientHttp2Session emits `error` independently of its request
       // streams. This listener must exist before request() so a connection
       // failure can never become an unhandled EventEmitter error.
-      session.on('error', (error) => {
-        fail(this.buildTransportError(error));
+      session.on('error', () => {
+        fail(this.buildTransportError());
       });
       session.on('goaway', () => {
-        fail(this.buildTransportError('APNs session received GOAWAY'));
+        fail(this.buildTransportError());
       });
       session.on('close', () => {
-        fail(this.buildTransportError('APNs session closed before response'));
+        fail(this.buildTransportError());
       });
 
       let request: http2.ClientHttp2Stream;
@@ -100,8 +102,8 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
           // to deliver later. The recipient validates the call expiry.
           'apns-expiration': '0',
         });
-      } catch (error) {
-        fail(this.buildTransportError(error));
+      } catch {
+        fail(this.buildTransportError());
         return;
       }
 
@@ -129,10 +131,10 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         fail(this.buildApnsError(statusCode, responseBody));
       });
       request.on('close', () => {
-        fail(this.buildTransportError('APNs request closed before response'));
+        fail(this.buildTransportError());
       });
-      request.on('error', (error) => {
-        fail(this.buildTransportError(error));
+      request.on('error', () => {
+        fail(this.buildTransportError());
       });
 
       timeout = setTimeout(() => {
@@ -181,14 +183,8 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     return 'http_error';
   }
 
-  private buildTransportError(error: unknown): ApnsError {
-    const message =
-      error instanceof Error && error.message
-        ? error.message
-        : 'APNs transport failed';
-    const transportError = new Error(
-      `APNs VoIP transport failed: ${message}`,
-    ) as ApnsError;
+  private buildTransportError(): ApnsError {
+    const transportError = new Error('APNs VoIP transport failed') as ApnsError;
     transportError.code = 'apns/transport_error';
     return transportError;
   }

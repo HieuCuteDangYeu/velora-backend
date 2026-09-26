@@ -1,6 +1,18 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
+const CALL_EVENTS = [
+  'invite_accepted',
+  'invite_rejected',
+  'invite_denied',
+  'late_join_accepted',
+  'late_join_denied',
+  'media_ready',
+  'media_failed',
+  'terminal_emitted',
+] as const;
+type CallEvent = (typeof CALL_EVENTS)[number];
+
 @Injectable()
 export class CallPrometheusMetricsService implements OnModuleDestroy {
   static readonly CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
@@ -11,6 +23,7 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
   private socketReconnectCount = 0;
   private socketReconnectDurationSecondsSum = 0;
   private socketReconnectDurationSecondsMax = 0;
+  private readonly callEvents = new Map<CallEvent, number>();
 
   constructor() {
     this.eventLoopDelay.enable();
@@ -44,6 +57,11 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
       this.socketReconnectDurationSecondsMax,
       durationSeconds,
     );
+  }
+
+  recordCallEvent(event: CallEvent): void {
+    if (!CALL_EVENTS.includes(event)) return;
+    this.callEvents.set(event, (this.callEvents.get(event) ?? 0) + 1);
   }
 
   metrics(activeSocketConnections: number): string {
@@ -161,6 +179,18 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
     lines.push(
       `velora_call_socket_reconnect_duration_seconds_max${labels} ${this.socketReconnectDurationSecondsMax}`,
     );
+
+    this.metricHeader(
+      lines,
+      'velora_call_lifecycle_events_total',
+      'Bounded group invitation, media setup, and terminal emission outcomes.',
+      'counter',
+    );
+    for (const [event, count] of this.callEvents) {
+      lines.push(
+        `velora_call_lifecycle_events_total${this.labels({ service: this.serviceName, event })} ${count}`,
+      );
+    }
 
     this.eventLoopDelay.reset();
 

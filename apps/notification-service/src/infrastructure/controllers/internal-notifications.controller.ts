@@ -65,7 +65,12 @@ const callStateUpdateSchema = z.object({
   callId: z.string().min(1),
   status: z.enum(['active', 'rejected', 'ended', 'cancelled']),
   reason: z.string().min(1).optional(),
+  isGroupCall: z.boolean().optional(),
   answerActionId: z.string().min(1).optional(),
+  answerActionHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   lifecycleRevision: z.number().int().nonnegative().optional(),
   at: z.string().datetime(),
 });

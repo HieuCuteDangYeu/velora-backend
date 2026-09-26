@@ -58,6 +58,10 @@ export class NotificationRetryScheduler
       this.metrics.setDatabaseAvailability(true);
       this.metrics.recordRetrySchedulerRun('success');
       this.metrics.recordRetrySchedulerCompletion();
+      this.metrics.recordRetryJobs(
+        result.attemptedCount,
+        result.failures.length,
+      );
 
       if (result.attemptedCount === 0) {
         return;
@@ -124,7 +128,9 @@ export class NotificationRetryScheduler
       'code' in error &&
       typeof error.code === 'string'
     ) {
-      return error.code;
+      return DATABASE_OUTAGE_CODES.has(error.code)
+        ? error.code
+        : 'provider_error';
     }
 
     return 'unknown';

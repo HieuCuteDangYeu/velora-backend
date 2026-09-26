@@ -6,6 +6,10 @@ import type { ICallEventPublisher } from '../../domain/interfaces/call-event.pub
 import type { ICallMediaEngine } from '../../domain/interfaces/call-media.engine.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 /**
  * Mediasoup routers and transports are process-local. In the single-instance
@@ -63,9 +67,7 @@ export class RecoverActiveCallsAfterMediaRestartUseCase {
           });
         } catch (error) {
           this.logger.warn(
-            `Failed to publish restarted-media terminal event call=${session.callId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            `Failed to publish restarted-media terminal event call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
           );
         }
       }

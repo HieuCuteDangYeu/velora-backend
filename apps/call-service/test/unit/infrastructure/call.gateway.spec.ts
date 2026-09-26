@@ -1,4 +1,5 @@
 import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
+import { ServiceUnavailableException } from '@nestjs/common';
 import type { Socket } from 'socket.io';
 import { CallParticipant } from '../../../src/domain/entities/call-participant.entity';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
@@ -74,6 +75,165 @@ describe('CallGateway reconnect recovery', () => {
     expect(disconnectListener).toBeDefined();
     disconnectListener?.('ping timeout');
     expect(metrics.recordSocketDisconnect).toHaveBeenCalledWith('ping timeout');
+  });
+
+  it('keeps legacy sockets on the direct-call room but out of group invites', async () => {
+    const oldSocket = createSocket({
+      id: 'old-socket',
+      userId: 'user-b',
+      groupLifecycleVersion: 1,
+    });
+    const modernSocket = createSocket({
+      id: 'modern-socket',
+      userId: 'user-b',
+      groupLifecycleVersion: 2,
+    });
+    const gateway = createGateway();
+
+    await gateway.handleConnection(oldSocket);
+    await gateway.handleConnection(modernSocket);
+
+    expect(oldSocket.join).toHaveBeenCalledWith('user-b');
+    expect(oldSocket.join).not.toHaveBeenCalledWith(
+      'group-lifecycle-v2:user-b',
+    );
+    expect(modernSocket.join).toHaveBeenCalledWith('group-lifecycle-v2:user-b');
+  });
+
+  it('does not deliver group incoming to a legacy user room', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+    });
+    const initiateCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'host',
+        session: groupSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+      }),
+    };
+    const gateway = createGateway({ initiateCallUseCase });
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+    } as never;
+    const caller = createSocket({ id: 'socket-a', userId: 'user-a' });
+
+    await gateway.handleInitiateCall(
+      { conversationId: 'conv-1', callType: 'VOICE' },
+      caller,
+    );
+
+    expect(gateway.server.to).toHaveBeenCalledWith('group-lifecycle-v2:user-b');
+    expect(gateway.server.to).not.toHaveBeenCalledWith('user-b');
+    expect(initiateCallUseCase.execute).toHaveBeenCalledWith(
+      'conv-1',
+      'user-a',
+      undefined,
+      'VOICE',
+      'socket-a',
+      2,
+      undefined,
+    );
+  });
+
+  it('denies an old client group join before calling the join use case', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+    });
+    const joinCallUseCase = { execute: jest.fn() };
+    const gateway = createGateway({
+      joinCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    const oldSocket = createSocket({
+      id: 'old-socket',
+      userId: 'user-b',
+      groupLifecycleVersion: 1,
+    });
+
+    await expect(
+      gateway.handleJoinCall({ callId: 'call-1' }, oldSocket),
+    ).rejects.toThrow('Group call requires a newer client');
+    expect(joinCallUseCase.execute).not.toHaveBeenCalled();
+  });
+
+  it('does not let an old same-account socket end a modern group call', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+    });
+    const leaveCallUseCase = { execute: jest.fn() };
+    const gateway = createGateway({
+      leaveCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    const oldHostSocket = createSocket({
+      id: 'old-host-socket',
+      userId: 'user-a',
+      groupLifecycleVersion: 1,
+    });
+
+    await expect(
+      gateway.handleLeaveCall({ callId: 'call-1' }, oldHostSocket),
+    ).rejects.toThrow('Group call requires a newer client');
+    expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+  });
+
+  it('replays group terminal state only to capable sockets', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+    });
+    const gateway = createGateway({
+      leaveCallUseCase: {
+        execute: jest.fn().mockResolvedValue({
+          session: groupSession,
+          endedReason: 'ended',
+          shouldEmitPeerLeft: false,
+          didTransition: true,
+          closedProducers: [],
+        }),
+      },
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    const terminalEmitter = { emit: jest.fn() };
+    gateway.server = {
+      to: jest.fn().mockReturnValue(terminalEmitter),
+    } as never;
+    await gateway.handleLeaveCall(
+      { callId: 'call-1' },
+      createSocket({ id: 'modern-host', userId: 'user-a' }),
+    );
+
+    const oldGuest = createSocket({
+      id: 'old-guest',
+      userId: 'user-b',
+      groupLifecycleVersion: 1,
+    });
+    const modernGuest = createSocket({ id: 'modern-guest', userId: 'user-b' });
+    await gateway.handleConnection(oldGuest);
+    await gateway.handleConnection(modernGuest);
+
+    expect(gateway.server.to).toHaveBeenCalledWith([
+      'call-1',
+      'group-lifecycle-v2:user-a',
+      'group-lifecycle-v2:user-b',
+    ]);
+    expect(oldGuest.emit).toHaveBeenCalledWith('call_socket_ready', {
+      recentTerminalCalls: [],
+    });
+    expect(modernGuest.emit).toHaveBeenCalledWith('call_socket_ready', {
+      recentTerminalCalls: [{ callId: 'call-1', reason: 'ended' }],
+    });
   });
 
   it('does not start the durable expiry worker without the runtime lease', async () => {
@@ -356,13 +516,16 @@ describe('CallGateway reconnect recovery', () => {
     );
   });
 
-  it('defers active-call teardown until the reconnect grace window expires', async () => {
+  it('retries a transient disconnect cleanup failure without separately removing the participant', async () => {
     const leaveCallUseCase = {
-      execute: jest.fn().mockResolvedValue({
-        session: activeSession,
-        endedReason: 'disconnected',
-        shouldEmitPeerLeft: true,
-      }),
+      execute: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Redis temporarily unavailable'))
+        .mockResolvedValue({
+          session: activeSession,
+          endedReason: 'disconnected',
+          shouldEmitPeerLeft: true,
+        }),
     };
     const stateRepository = {
       getParticipant: jest
@@ -388,9 +551,22 @@ describe('CallGateway reconnect recovery', () => {
             reconnectDeadlineAt: new Date('2026-01-01T00:00:15.000Z'),
             joinedAt: new Date('2026-01-01T00:00:00.000Z'),
           }),
+        )
+        .mockResolvedValue(
+          new CallParticipant({
+            userId: 'user-a',
+            callId: 'call-1',
+            role: 'host',
+            socketIds: [],
+            isConnected: false,
+            reconnectDeadlineAt: new Date('2026-01-01T00:00:15.000Z'),
+            joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+          }),
         ),
       upsertParticipant: jest.fn(),
-      removeParticipant: jest.fn(),
+      removeParticipant: jest
+        .fn()
+        .mockRejectedValue(new Error('Redis participant removal failed')),
     };
     const gateway = createGateway({
       leaveCallUseCase,
@@ -431,10 +607,13 @@ describe('CallGateway reconnect recovery', () => {
 
     await jest.advanceTimersByTimeAsync(15000);
 
-    expect(stateRepository.removeParticipant).toHaveBeenCalledWith(
-      'call-1',
-      'user-a',
-    );
+    expect(stateRepository.removeParticipant).not.toHaveBeenCalled();
+    expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(1);
+    expect(roomEmitter.emit).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(1000);
+
+    expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(2);
     expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
       'call-1',
       'user-a',
@@ -449,6 +628,86 @@ describe('CallGateway reconnect recovery', () => {
       callId: 'call-1',
       reason: 'disconnected',
     });
+  });
+
+  it('closes a disconnected group guest audio before removing them from the room', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      participantIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const participant = new CallParticipant({
+      userId: 'user-b',
+      callId: 'call-1',
+      role: 'guest',
+      socketId: 'socket-b',
+      socketIds: ['socket-b'],
+      isConnected: true,
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const stateRepository = {
+      getParticipant: jest
+        .fn()
+        .mockResolvedValueOnce(participant)
+        .mockResolvedValueOnce(
+          new CallParticipant({
+            ...participant,
+            socketIds: [],
+            socketId: undefined,
+            isConnected: false,
+            reconnectDeadlineAt: new Date('2026-01-01T00:00:15.000Z'),
+          }),
+        ),
+      upsertParticipant: jest.fn(),
+      removeParticipant: jest.fn(),
+    };
+    const gateway = createGateway({
+      leaveCallUseCase: {
+        execute: jest.fn().mockResolvedValue({
+          session: groupSession,
+          endedReason: 'disconnected',
+          shouldEmitPeerLeft: true,
+          didTransition: false,
+          closedProducers: [{ producerId: 'audio-b', kind: 'audio' }],
+        }),
+      },
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+      stateRepository,
+    });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+
+    await gateway.handleDisconnect(
+      createSocket({ id: 'socket-b', userId: 'user-b', callIds: ['call-1'] }),
+    );
+    await jest.advanceTimersByTimeAsync(15000);
+
+    expect(roomEmitter.emit.mock.calls).toEqual([
+      [
+        'peer_reconnecting',
+        {
+          callId: 'call-1',
+          userId: 'user-b',
+          reconnectDeadlineAt: '2026-01-01T00:00:15.000Z',
+        },
+      ],
+      [
+        'producer_closed',
+        {
+          callId: 'call-1',
+          userId: 'user-b',
+          producerId: 'audio-b',
+          kind: 'audio',
+        },
+      ],
+      [
+        'peer_left',
+        { callId: 'call-1', userId: 'user-b', reason: 'disconnected' },
+      ],
+    ]);
   });
 
   it('clears the pending disconnect timeout, notifies the peer, and replays active producers after a successful rejoin', async () => {
@@ -682,6 +941,184 @@ describe('CallGateway reconnect recovery', () => {
         requestId: 'camera-action-2',
       }),
     );
+  });
+
+  it('serializes group mic revisions and denies a stale guest action', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+      groupAnswerActionIds: { 'user-b': 'winner-action' },
+      groupConfirmedAnswerActionIds: { 'user-b': 'winner-action' },
+    });
+    const mediaEngine = {
+      listActiveProducers: jest.fn().mockResolvedValue([
+        {
+          producerId: 'audio-b',
+          userId: 'user-b',
+          kind: 'audio',
+          paused: false,
+        },
+      ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+    const guest = createSocket({
+      id: 'winner-socket',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+
+    await Promise.all([
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: false,
+          revision: 2,
+          actionId: 'winner-action',
+          requestId: 'mute-2',
+        },
+        guest,
+      ),
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 1,
+          actionId: 'winner-action',
+          requestId: 'mute-1',
+        },
+        guest,
+      ),
+    ]);
+
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(mediaEngine.resumeProducer).not.toHaveBeenCalled();
+    expect(roomEmitter.emit).toHaveBeenCalledWith('group_mic_state_changed', {
+      callId: 'call-1',
+      userId: 'user-b',
+      producerId: 'audio-b',
+      enabled: false,
+      revision: 2,
+    });
+    expect(guest.emit).toHaveBeenCalledWith(
+      'group_mic_state_updated',
+      expect.objectContaining({
+        enabled: false,
+        revision: 2,
+        status: 'stale',
+        requestId: 'mute-1',
+      }),
+    );
+    await gateway.handleSetGroupMicState(
+      {
+        callId: 'call-1',
+        producerId: 'audio-b',
+        enabled: false,
+        revision: 2,
+        actionId: 'winner-action',
+        requestId: 'mute-2-retry',
+      },
+      guest,
+    );
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(guest.emit).toHaveBeenCalledWith(
+      'group_mic_state_updated',
+      expect.objectContaining({
+        status: 'already_applied',
+        requestId: 'mute-2-retry',
+      }),
+    );
+    await expect(
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          actionId: 'old-action',
+          requestId: 'stale',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('This action did not join the group call');
+    const missingWinnerGateway = createGateway({
+      mediaEngine,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(
+          new CallSession({
+            ...groupSession,
+            groupConfirmedAnswerActionIds: {},
+          }),
+        ),
+      },
+    });
+    await expect(
+      missingWinnerGateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          requestId: 'missing-winner',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('This action did not join the group call');
+    await expect(
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          actionId: { forged: true } as never,
+          requestId: 'malformed-action',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('Invalid group mic state');
+
+    let releaseResume!: () => void;
+    let signalResumeStarted!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      signalResumeStarted = resolve;
+    });
+    const resumePending = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    mediaEngine.resumeProducer.mockImplementationOnce(() => {
+      signalResumeStarted();
+      return resumePending;
+    });
+    const staleSocketCommand = gateway.handleSetGroupMicState(
+      {
+        callId: 'call-1',
+        producerId: 'audio-b',
+        enabled: true,
+        revision: 3,
+        actionId: 'winner-action',
+        requestId: 'removed-during-resume',
+      },
+      guest,
+    );
+    await resumeStarted;
+    guest.rooms.delete('call-1');
+    releaseResume();
+    await expect(staleSocketCommand).rejects.toThrow(
+      'Group mic state can no longer be changed',
+    );
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(2);
   });
 
   it('keeps legacy camera payloads functional while assigning a revision', async () => {
@@ -1424,7 +1861,7 @@ describe('CallGateway reconnect recovery', () => {
       createSocket({ id: 'socket-guest', userId: 'guest', callIds: [] }),
     );
 
-    expect(gateway.server.to).toHaveBeenCalledWith('guest');
+    expect(gateway.server.to).toHaveBeenCalledWith('group-lifecycle-v2:guest');
     expect(gateway.server.to).toHaveBeenCalledTimes(1);
     expect(recipientEmitter.emit).toHaveBeenCalledWith('call_rejected', {
       callId: 'group-room',
@@ -1453,12 +1890,14 @@ describe('CallGateway reconnect recovery', () => {
       abortGroupInvitationJoin: jest.fn(),
     };
     const roomEmitter = { emit: jest.fn() };
+    const otherDevicesEmitter = { emit: jest.fn() };
     const gateway = createGateway({ joinCallUseCase, sessionRepository });
     gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
     const socket = createSocket({
       id: 'socket-b',
       userId: 'user-b',
       callIds: [],
+      to: jest.fn().mockReturnValue(otherDevicesEmitter),
     });
 
     await gateway.handleAcceptIncomingCall(
@@ -1479,6 +1918,13 @@ describe('CallGateway reconnect recovery', () => {
       'incoming_call_acceptance',
       expect.objectContaining({ outcome: 'accepted' }),
     );
+    expect(socket.to).toHaveBeenCalledWith('group-lifecycle-v2:user-b');
+    expect(otherDevicesEmitter.emit).toHaveBeenCalledWith('call_answered', {
+      callId: 'call-1',
+      userId: 'user-b',
+      answeredElsewhere: true,
+    });
+    expect(gateway.server.to).not.toHaveBeenCalledWith('user-b');
     expect(sessionRepository.abortGroupInvitationJoin).not.toHaveBeenCalled();
   });
 
@@ -1516,6 +1962,8 @@ describe('CallGateway reconnect recovery', () => {
           .mockRejectedValue(new Error('room unavailable')),
       },
     });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
     const socket = createSocket({
       id: 'socket-b',
       userId: 'user-b',
@@ -1539,6 +1987,11 @@ describe('CallGateway reconnect recovery', () => {
       'user-b',
     );
     expect(socket.leave).toHaveBeenCalledWith('call-1');
+    expect(roomEmitter.emit).toHaveBeenCalledWith('peer_left', {
+      callId: 'call-1',
+      userId: 'user-b',
+      reason: 'media_unavailable',
+    });
     expect(socket.emit).toHaveBeenCalledWith(
       'incoming_call_acceptance',
       expect.objectContaining({
@@ -1573,6 +2026,8 @@ describe('CallGateway reconnect recovery', () => {
       sessionRepository,
       stateRepository,
     });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
     const socket = createSocket({
       id: 'socket-b',
       userId: 'user-b',
@@ -1594,6 +2049,12 @@ describe('CallGateway reconnect recovery', () => {
       'call-1',
       'user-b',
     );
+    expect(socket.leave).toHaveBeenCalledWith('call-1');
+    expect(roomEmitter.emit).toHaveBeenCalledWith('peer_left', {
+      callId: 'call-1',
+      userId: 'user-b',
+      reason: 'media_unavailable',
+    });
     expect(socket.emit).toHaveBeenCalledWith(
       'incoming_call_acceptance',
       expect.objectContaining({
@@ -1601,6 +2062,41 @@ describe('CallGateway reconnect recovery', () => {
         reservationReleased: true,
       }),
     );
+  });
+
+  it('keeps a group invitation retryable when the membership RPC is unavailable', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+    });
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(groupSession),
+      abortGroupInvitationJoin: jest.fn().mockResolvedValue(false),
+    };
+    const gateway = createGateway({
+      joinCallUseCase: {
+        execute: jest
+          .fn()
+          .mockRejectedValue(
+            new ServiceUnavailableException('Group membership unavailable'),
+          ),
+      },
+      sessionRepository,
+    });
+    const socket = createSocket({ id: 'socket-b', userId: 'user-b' });
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: 'call-1', actionId: 'retry-action' },
+      socket,
+    );
+
+    expect(socket.emit).toHaveBeenCalledWith('incoming_call_acceptance', {
+      callId: 'call-1',
+      outcome: 'media_unavailable',
+      retryable: true,
+    });
+    expect(sessionRepository.abortGroupInvitationJoin).toHaveBeenCalled();
   });
 
   it('requires the confirmed winning action for group rejoin', async () => {
@@ -1689,13 +2185,248 @@ describe('CallGateway reconnect recovery', () => {
     expect(gateway.server.in).toHaveBeenCalledWith('user-b');
     expect(evict.socketsLeave).toHaveBeenCalledWith('call-1');
   });
+
+  it('prevents a losing group device from ending the winning device call', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      groupConfirmedAnswerActionIds: { 'user-b': 'winning-action' },
+    });
+    const leaveCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        session: groupSession,
+        endedReason: 'left',
+        shouldEmitPeerLeft: true,
+        didTransition: false,
+        closedProducers: [],
+      }),
+    };
+    const gateway = createGateway({
+      leaveCallUseCase,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue({ socketsLeave: jest.fn() }),
+    } as never;
+    const losingDevice = createSocket({
+      id: 'socket-loser',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await expect(
+      gateway.handleLeaveCall(
+        {
+          callId: 'call-1',
+          reason: 'media_unavailable',
+          actionId: 'losing-action',
+        },
+        losingDevice,
+      ),
+    ).rejects.toThrow('This device did not answer the group call');
+    expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+
+    const winningDevice = createSocket({
+      id: 'socket-winner',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+    await gateway.handleLeaveCall({ callId: 'call-1' }, winningDevice);
+    expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(1);
+
+    const spoofingDevice = createSocket({
+      id: 'socket-loser-spoofing-winner',
+      userId: 'user-b',
+      callIds: [],
+    });
+    await expect(
+      gateway.handleLeaveCall(
+        { callId: 'call-1', actionId: 'winning-action' },
+        spoofingDevice,
+      ),
+    ).rejects.toThrow('This device did not answer the group call');
+    expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create group media for a second device that never joined the call', async () => {
+    const createTransportUseCase = {
+      execute: jest.fn().mockResolvedValue({ transportId: 'transport-b' }),
+    };
+    const gateway = createGateway({ createTransportUseCase });
+    const payload = { callId: 'call-1', direction: 'send' as const };
+    const otherDevice = createSocket({
+      id: 'socket-loser',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await expect(
+      gateway.handleCreateTransport(payload, otherDevice),
+    ).rejects.toThrow('Join the call before using media');
+    expect(createTransportUseCase.execute).not.toHaveBeenCalled();
+
+    const winningDevice = createSocket({
+      id: 'socket-winner',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+    await gateway.handleCreateTransport(payload, winningDevice);
+    expect(createTransportUseCase.execute).toHaveBeenCalledWith(
+      'call-1',
+      'user-b',
+      'send',
+    );
+    expect(winningDevice.emit).toHaveBeenCalledWith('transport_created', {
+      callId: 'call-1',
+      transportId: 'transport-b',
+    });
+
+    // A server-side room eviction may leave an old tracked id on another socket.
+    winningDevice.rooms.delete('call-1');
+    await expect(
+      gateway.handleCreateTransport(payload, winningDevice),
+    ).rejects.toThrow('Join the call before using media');
+  });
+
+  it('rejects live media commands from a second device that never joined', async () => {
+    const connectTransportUseCase = { execute: jest.fn() };
+    const produceUseCase = { execute: jest.fn() };
+    const consumeUseCase = { execute: jest.fn() };
+    const resumeConsumerUseCase = { execute: jest.fn() };
+    const restartIceUseCase = { execute: jest.fn() };
+    const mediaEngine = {
+      listActiveProducers: jest.fn(),
+      setConsumerMaxBitrate: jest.fn(),
+      closeProducer: jest.fn(),
+      closeConsumer: jest.fn(),
+    };
+    const gateway = createGateway({
+      connectTransportUseCase,
+      produceUseCase,
+      consumeUseCase,
+      resumeConsumerUseCase,
+      restartIceUseCase,
+      mediaEngine,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(activeSession),
+      },
+    });
+    const otherDevice = createSocket({
+      id: 'socket-loser',
+      userId: 'user-b',
+      callIds: [],
+    });
+    const callId = 'call-1';
+    const transportId = 'winning-device-transport';
+
+    for (const operation of [
+      () =>
+        gateway.handleConnectTransport(
+          { callId, transportId, dtlsParameters: {} },
+          otherDevice,
+        ),
+      () =>
+        gateway.handleProduce(
+          { callId, transportId, kind: 'audio', rtpParameters: {} },
+          otherDevice,
+        ),
+      () =>
+        gateway.handleConsume(
+          {
+            callId,
+            transportId,
+            producerId: 'producer-1',
+            rtpCapabilities: {},
+          },
+          otherDevice,
+        ),
+      () =>
+        gateway.handleResumeConsumer(
+          { callId, consumerId: 'consumer-1' },
+          otherDevice,
+        ),
+      () => gateway.handleRestartIce({ callId, transportId }, otherDevice),
+      () =>
+        gateway.handleSetAudioBitrate(
+          { callId, transportId, profile: 'normal' },
+          otherDevice,
+        ),
+      () =>
+        gateway.handleCloseProducer(
+          { callId, producerId: 'producer-1', kind: 'audio' },
+          otherDevice,
+        ),
+      () =>
+        gateway.handleCloseConsumer(
+          { callId, consumerId: 'consumer-1' },
+          otherDevice,
+        ),
+    ]) {
+      await expect(operation()).rejects.toThrow(
+        'Join the call before using media',
+      );
+    }
+    expect(connectTransportUseCase.execute).not.toHaveBeenCalled();
+    expect(produceUseCase.execute).not.toHaveBeenCalled();
+    expect(consumeUseCase.execute).not.toHaveBeenCalled();
+    expect(resumeConsumerUseCase.execute).not.toHaveBeenCalled();
+    expect(restartIceUseCase.execute).not.toHaveBeenCalled();
+    expect(mediaEngine.setConsumerMaxBitrate).not.toHaveBeenCalled();
+    expect(mediaEngine.closeProducer).not.toHaveBeenCalled();
+    expect(mediaEngine.closeConsumer).not.toHaveBeenCalled();
+  });
+
+  it('still acknowledges late cleanup after a call has ended', async () => {
+    const session = new CallSession({ ...activeSession, status: 'ended' });
+    const mediaEngine = {
+      listActiveProducers: jest.fn(),
+      closeProducer: jest.fn(),
+      closeConsumer: jest.fn(),
+    };
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository: { findByCallId: jest.fn().mockResolvedValue(session) },
+    });
+    const socket = createSocket({
+      id: 'socket-after-end',
+      userId: 'user-b',
+      callIds: [],
+    });
+
+    await gateway.handleCloseProducer(
+      { callId: 'call-1', producerId: 'old-producer', kind: 'audio' },
+      socket,
+    );
+    await gateway.handleCloseConsumer(
+      { callId: 'call-1', consumerId: 'old-consumer' },
+      socket,
+    );
+
+    expect(socket.emit).toHaveBeenCalledWith(
+      'producer_closed_ack',
+      expect.objectContaining({ status: 'already_closed' }),
+    );
+    expect(socket.emit).toHaveBeenCalledWith(
+      'consumer_closed_ack',
+      expect.objectContaining({ status: 'already_closed' }),
+    );
+    expect(mediaEngine.closeProducer).not.toHaveBeenCalled();
+    expect(mediaEngine.closeConsumer).not.toHaveBeenCalled();
+  });
 });
 
 function createGateway(overrides?: {
   initiateCallUseCase?: { execute: jest.Mock };
   joinCallUseCase?: { execute: jest.Mock };
+  createTransportUseCase?: { execute: jest.Mock };
+  connectTransportUseCase?: { execute: jest.Mock };
   produceUseCase?: { execute: jest.Mock };
   consumeUseCase?: { execute: jest.Mock };
+  resumeConsumerUseCase?: { execute: jest.Mock };
+  restartIceUseCase?: { execute: jest.Mock };
   leaveCallUseCase?: { execute: jest.Mock };
   rejectCallUseCase?: { execute: jest.Mock };
   acceptIncomingCallUseCase?: { execute: jest.Mock };
@@ -1706,6 +2437,9 @@ function createGateway(overrides?: {
     listActiveProducers: jest.Mock;
     pauseProducer?: jest.Mock;
     resumeProducer?: jest.Mock;
+    setConsumerMaxBitrate?: jest.Mock;
+    closeProducer?: jest.Mock;
+    closeConsumer?: jest.Mock;
   };
   sessionRepository?: {
     findByCallId: jest.Mock;
@@ -1720,13 +2454,14 @@ function createGateway(overrides?: {
   metrics?: {
     recordSocketDisconnect: jest.Mock;
     recordSocketReconnect: jest.Mock;
+    recordCallEvent: jest.Mock;
   };
 }) {
   return new CallGateway(
     (overrides?.initiateCallUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.joinCallUseCase ?? { execute: jest.fn() }) as never,
-    {} as never,
-    {} as never,
+    (overrides?.createTransportUseCase ?? { execute: jest.fn() }) as never,
+    (overrides?.connectTransportUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.produceUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.consumeUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.leaveCallUseCase ?? { execute: jest.fn() }) as never,
@@ -1738,8 +2473,8 @@ function createGateway(overrides?: {
     (overrides?.recoverActiveCallsAfterMediaRestartUseCase ?? {
       execute: jest.fn().mockResolvedValue([]),
     }) as never,
-    {} as never,
-    {} as never,
+    (overrides?.resumeConsumerUseCase ?? { execute: jest.fn() }) as never,
+    (overrides?.restartIceUseCase ?? { execute: jest.fn() }) as never,
     {} as never,
     (overrides?.mediaEngine ?? {
       listActiveProducers: jest.fn().mockResolvedValue([]),
@@ -1761,6 +2496,7 @@ function createGateway(overrides?: {
     (overrides?.metrics ?? {
       recordSocketDisconnect: jest.fn(),
       recordSocketReconnect: jest.fn(),
+      recordCallEvent: jest.fn(),
     }) as never,
   );
 }
@@ -1768,23 +2504,40 @@ function createGateway(overrides?: {
 function createSocket(input: {
   id: string;
   userId: string;
-  callIds: string[];
+  callIds?: string[];
   emit?: jest.Mock;
   join?: jest.Mock;
   leave?: jest.Mock;
   once?: jest.Mock;
   to?: jest.Mock;
   disconnected?: boolean;
+  groupLifecycleVersion?: number;
 }) {
+  const callIds = input.callIds ?? [];
+  const rooms = new Set([input.userId, ...callIds]);
   return {
     id: input.id,
+    rooms,
     data: {
       userId: input.userId,
-      callIds: input.callIds,
+      callIds,
+    },
+    handshake: {
+      auth: { groupLifecycleVersion: input.groupLifecycleVersion ?? 2 },
     },
     emit: input.emit ?? jest.fn(),
-    join: input.join ?? jest.fn().mockResolvedValue(undefined),
-    leave: input.leave ?? jest.fn().mockResolvedValue(undefined),
+    join:
+      input.join ??
+      jest.fn((room: string) => {
+        rooms.add(room);
+        return Promise.resolve();
+      }),
+    leave:
+      input.leave ??
+      jest.fn((room: string) => {
+        rooms.delete(room);
+        return Promise.resolve();
+      }),
     once: input.once ?? jest.fn(),
     to: input.to ?? jest.fn().mockReturnValue({ emit: jest.fn() }),
     disconnected: input.disconnected ?? false,

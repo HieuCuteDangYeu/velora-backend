@@ -9,19 +9,20 @@ datasource db {
 }
 
 model PushToken {
-  id                  String   @id @default(uuid())
-  userId              String   @map("user_id")
-  provider            String
-  platform            String
-  token               String
-  deviceId            String?  @map("device_id")
-  appVersion          String?  @map("app_version")
-  bundleId            String?  @map("bundle_id")
-  deliveryEnvironment String?  @map("delivery_environment")
-  isActive            Boolean  @default(true) @map("is_active")
-  lastSeenAt          DateTime @default(now()) @map("last_seen_at")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
+  id                    String   @id @default(uuid())
+  userId                String   @map("user_id")
+  provider              String
+  platform              String
+  token                 String
+  deviceId              String?  @map("device_id")
+  appVersion            String?  @map("app_version")
+  groupLifecycleVersion Int      @default(1) @map("group_lifecycle_version")
+  bundleId              String?  @map("bundle_id")
+  deliveryEnvironment   String?  @map("delivery_environment")
+  isActive              Boolean  @default(true) @map("is_active")
+  lastSeenAt            DateTime @default(now()) @map("last_seen_at")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
   @@unique([provider, token])
   @@index([userId, isActive])

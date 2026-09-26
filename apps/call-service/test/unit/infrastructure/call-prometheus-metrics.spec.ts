@@ -47,4 +47,22 @@ describe('CallPrometheusMetricsService call recovery metrics', () => {
 
     metrics.onModuleDestroy();
   });
+
+  it('exports only fixed lifecycle event labels', () => {
+    const metrics = new CallPrometheusMetricsService();
+    metrics.recordCallEvent('invite_accepted');
+    metrics.recordCallEvent('invite_accepted');
+    metrics.recordCallEvent('media_failed');
+    metrics.recordCallEvent('user-1' as never);
+
+    const output = metrics.metrics(0);
+    expect(output).toContain(
+      'velora_call_lifecycle_events_total{service="call-service",event="invite_accepted"} 2',
+    );
+    expect(output).toContain(
+      'velora_call_lifecycle_events_total{service="call-service",event="media_failed"} 1',
+    );
+    expect(output).not.toContain('user-1');
+    metrics.onModuleDestroy();
+  });
 });

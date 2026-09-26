@@ -6,6 +6,7 @@ export type CallJoinTransition = {
     | 'terminal'
     | 'expired'
     | 'invitation_expired'
+    | 'full'
     | 'busy'
     | 'declined'
     | 'answered_elsewhere'
@@ -100,12 +101,16 @@ export abstract class ICallSessionRepository {
   /** Atomically reserves the initiator's active-call slot for a new group room. */
   abstract createActiveGroupSession(session: CallSession): Promise<boolean>;
   abstract findByCallId(callId: string): Promise<CallSession | null>;
+  abstract findActiveGroupCallByConversationId(
+    conversationId: string,
+  ): Promise<CallSession | null>;
   abstract delete(callId: string): Promise<void>;
   abstract joinParticipant(
     callId: string,
     userId: string,
     now: Date,
     actionId?: string,
+    allowLateJoin?: boolean,
   ): Promise<CallJoinTransition>;
   abstract rejectGroupInvitation(
     callId: string,

@@ -6,6 +6,7 @@ import {
   Inject,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   OnApplicationBootstrap,
   OnModuleDestroy,
   OnModuleInit,
@@ -64,6 +65,7 @@ import {
 type InitiateCallPayload = {
   conversationId: string;
   targetUserId?: string;
+  selectedInviteeIds?: string[];
   callType: 'VOICE' | 'VIDEO';
 };
 
@@ -92,6 +94,8 @@ type RejoinCallPayload = {
 type LeaveCallPayload = {
   callId: string;
   reason?: string;
+  /** A supplied winner action must match; it never grants socket permission. */
+  actionId?: string;
 };
 
 type CreateTransportPayload = {
@@ -111,6 +115,7 @@ type ProducePayload = {
   kind: 'audio' | 'video';
   rtpParameters: Record<string, unknown>;
   requestId?: string;
+  audioEnabled?: boolean;
 };
 
 type CloseProducerPayload = {
@@ -165,6 +170,15 @@ type SetVideoEnabledPayload = {
   requestId?: string;
 };
 
+type SetGroupMicStatePayload = {
+  callId: string;
+  producerId: string;
+  enabled: boolean;
+  revision: number;
+  actionId?: string;
+  requestId?: string;
+};
+
 type VideoStateRecord = {
   enabled: boolean;
   revision: number;
@@ -205,10 +219,81 @@ const AUDIO_BITRATE_BY_PROFILE: Record<AudioBitrateProfile, number> = {
   constrained: 32_000,
 };
 
+type ClientCallSession = Pick<
+  CallSession,
+  | 'callId'
+  | 'conversationId'
+  | 'initiatorId'
+  | 'targetUserId'
+  | 'isGroupCall'
+  | 'invitedUserIds'
+  | 'groupName'
+  | 'groupAvatarUrl'
+  | 'initiatorDisplayName'
+  | 'initiatorAvatarUrl'
+  | 'ringTimeoutMs'
+  | 'expiresAt'
+  | 'callType'
+  | 'status'
+  | 'participantIds'
+  | 'answeredAt'
+  | 'endedAt'
+  | 'terminalReason'
+  | 'createdAt'
+  | 'updatedAt'
+>;
+
+function clientCallSession(session: CallSession): ClientCallSession {
+  const {
+    callId,
+    conversationId,
+    initiatorId,
+    targetUserId,
+    isGroupCall,
+    invitedUserIds,
+    groupName,
+    groupAvatarUrl,
+    initiatorDisplayName,
+    initiatorAvatarUrl,
+    ringTimeoutMs,
+    expiresAt,
+    callType,
+    status,
+    participantIds,
+    answeredAt,
+    endedAt,
+    terminalReason,
+    createdAt,
+    updatedAt,
+  } = session;
+  return {
+    callId,
+    conversationId,
+    initiatorId,
+    targetUserId,
+    isGroupCall,
+    invitedUserIds,
+    groupName,
+    groupAvatarUrl,
+    initiatorDisplayName,
+    initiatorAvatarUrl,
+    ringTimeoutMs,
+    expiresAt,
+    callType,
+    status,
+    participantIds,
+    answeredAt,
+    endedAt,
+    terminalReason,
+    createdAt,
+    updatedAt,
+  };
+}
+
 type CallJoinedSocketPayload = {
   callId: string;
   role: 'host' | 'guest';
-  session: CallSession;
+  session: ClientCallSession;
   rtpCapabilities: RouterRtpCapabilitiesResult;
   activeProducers: ActiveProducerResult[];
   noAnswerTimeoutMs?: number;
@@ -227,12 +312,13 @@ type IncomingCallAcceptanceSocketPayload = {
     | 'busy'
     | 'media_unavailable';
   role?: 'guest';
-  session?: CallSession;
+  session?: ClientCallSession;
   rtpCapabilities?: RouterRtpCapabilitiesResult;
   activeProducers?: ActiveProducerResult[];
   telemetryToken?: string;
   noAnswerTimeoutMs?: number;
   reservationReleased?: boolean;
+  retryable?: boolean;
 };
 
 type RecentTerminalCall = {
@@ -241,6 +327,7 @@ type RecentTerminalCall = {
 };
 
 type StoredRecentTerminalCall = RecentTerminalCall & {
+  isGroupCall: boolean;
   expiresAtMs: number;
 };
 
@@ -287,6 +374,11 @@ export class CallGateway
   private readonly reconnectStartedAtByParticipant = new Map<string, number>();
   private readonly videoStatesByProducer = new Map<string, VideoStateRecord>();
   private readonly videoStateQueues = new Map<string, Promise<void>>();
+  private readonly groupMicStates = new Map<
+    string,
+    VideoStateRecord & { producerId: string }
+  >();
+  private readonly groupMicQueues = new Map<string, Promise<void>>();
   private readonly groupAcceptQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
   private expirySweepInFlight = false;
@@ -348,6 +440,8 @@ export class CallGateway
     this.reconnectStartedAtByParticipant.clear();
     this.videoStatesByProducer.clear();
     this.videoStateQueues.clear();
+    this.groupMicStates.clear();
+    this.groupMicQueues.clear();
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -370,6 +464,43 @@ export class CallGateway
 
   private videoStateKey(callId: string, producerId: string): string {
     return `${callId}:${producerId}`;
+  }
+
+  private groupMicStateKey(callId: string, userId: string): string {
+    return `${callId}:${userId}`;
+  }
+
+  private clearGroupMicState(callId: string, userId?: string): void {
+    const prefix = userId
+      ? this.groupMicStateKey(callId, userId)
+      : `${callId}:`;
+    for (const key of this.groupMicStates.keys()) {
+      if (userId ? key === prefix : key.startsWith(prefix)) {
+        this.groupMicStates.delete(key);
+        this.groupMicQueues.delete(key);
+      }
+    }
+  }
+
+  private async withGroupMicQueue<T>(
+    callId: string,
+    userId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = this.groupMicStateKey(callId, userId);
+    const previous = this.groupMicQueues.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupMicQueues.set(key, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.groupMicQueues.get(key) === tail)
+        this.groupMicQueues.delete(key);
+    }
   }
 
   private getVideoState(callId: string, producerId: string): VideoStateRecord {
@@ -406,6 +537,14 @@ export class CallGateway
     producers: ActiveProducerResult[],
   ): ActiveProducerResult[] {
     return producers.map((producer) => {
+      if (producer.kind === 'audio') {
+        const mic = this.groupMicStates.get(
+          this.groupMicStateKey(callId, producer.userId),
+        );
+        return mic?.producerId === producer.producerId
+          ? { ...producer, paused: !mic.enabled, revision: mic.revision }
+          : producer;
+      }
       if (producer.kind !== 'video') return producer;
       const state = this.getVideoStateForProducer(callId, producer);
       return {
@@ -451,8 +590,14 @@ export class CallGateway
     }
 
     await client.join(userId);
+    if (this.isGroupLifecycleCapable(client)) {
+      await client.join(this.groupUserRoom(userId));
+    }
     client.emit('call_socket_ready', {
-      recentTerminalCalls: this.getRecentTerminalCalls(userId),
+      recentTerminalCalls: this.getRecentTerminalCalls(
+        userId,
+        this.isGroupLifecycleCapable(client),
+      ),
     });
     this.logger.log(`Socket connected ${shortCallIdentifier(client.id)}`);
   }
@@ -489,6 +634,8 @@ export class CallGateway
       payload.targetUserId,
       payload.callType,
       client.id,
+      this.groupLifecycleVersion(client),
+      payload.selectedInviteeIds,
     );
 
     if (
@@ -504,7 +651,7 @@ export class CallGateway
     client.emit('call_joined', {
       callId: result.session.callId,
       role: result.role,
-      session: result.session,
+      session: clientCallSession(result.session),
       rtpCapabilities: result.rtpCapabilities,
       activeProducers: [],
       telemetryToken: this.telemetryTokenService.issue(
@@ -525,22 +672,28 @@ export class CallGateway
         )
       : [result.session.targetUserId];
     for (const recipientUserId of recipients) {
-      this.server.to(recipientUserId).emit('incoming_call', {
-        callId: result.session.callId,
-        conversationId: result.session.conversationId,
-        initiatorId: result.session.initiatorId,
-        targetUserId: recipientUserId,
-        recipientUserId,
-        initiatorDisplayName:
-          result.session.initiatorDisplayName ?? 'Incoming call',
-        initiatorAvatarUrl: result.session.initiatorAvatarUrl,
-        ringTimeoutMs,
-        expiresAt: expiresAt.toISOString(),
-        callType: result.session.callType,
-        isGroupCall: result.session.isGroupCall,
-        groupName: result.session.groupName,
-        groupAvatarUrl: result.session.groupAvatarUrl,
-      });
+      this.server
+        .to(
+          result.session.isGroupCall
+            ? this.groupUserRoom(recipientUserId)
+            : recipientUserId,
+        )
+        .emit('incoming_call', {
+          callId: result.session.callId,
+          conversationId: result.session.conversationId,
+          initiatorId: result.session.initiatorId,
+          targetUserId: recipientUserId,
+          recipientUserId,
+          initiatorDisplayName:
+            result.session.initiatorDisplayName ?? 'Incoming call',
+          initiatorAvatarUrl: result.session.initiatorAvatarUrl,
+          ringTimeoutMs,
+          expiresAt: expiresAt.toISOString(),
+          callType: result.session.callType,
+          isGroupCall: result.session.isGroupCall,
+          groupName: result.session.groupName,
+          groupAvatarUrl: result.session.groupAvatarUrl,
+        });
     }
 
     if (!result.session.isGroupCall)
@@ -554,6 +707,11 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+
+    if (!this.isGroupLifecycleCapable(client)) {
+      const session = await this.sessionRepository.findByCallId(payload.callId);
+      this.assertGroupLifecycleCapable(client, session);
+    }
 
     let result: Awaited<ReturnType<JoinCallUseCase['execute']>>;
     try {
@@ -587,7 +745,7 @@ export class CallGateway
     client.emit('call_joined', {
       callId: payload.callId,
       role: result.role,
-      session: result.session,
+      session: clientCallSession(result.session),
       rtpCapabilities: result.rtpCapabilities,
       activeProducers,
       telemetryToken: this.telemetryTokenService.issue(
@@ -605,6 +763,52 @@ export class CallGateway
     }
   }
 
+  @SubscribeMessage('join_group_call')
+  async handleJoinGroupCall(
+    @MessageBody() payload: AcceptIncomingCallPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    const actionId = payload.actionId?.trim();
+    if (!actionId || actionId.length > 128) {
+      throw new BadRequestException('A call action id is required');
+    }
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    this.assertGroupLifecycleCapable(client, session);
+    if (!session?.isGroupCall || session.status !== 'active') {
+      throw new ForbiddenException('Group call is no longer active');
+    }
+    if (session.initiatorId === userId) {
+      throw new ForbiddenException('Host must rejoin the existing call');
+    }
+    const key = this.disconnectKey(payload.callId, userId);
+    const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(() =>
+        this.acceptGroupInvitation(
+          client,
+          payload.callId,
+          userId,
+          actionId,
+          true,
+        ),
+      );
+    const tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupAcceptQueues.set(key, tail);
+    try {
+      await operation;
+    } finally {
+      if (this.groupAcceptQueues.get(key) === tail) {
+        this.groupAcceptQueues.delete(key);
+      }
+    }
+  }
+
   @SubscribeMessage('rejoin_call')
   async handleRejoinCall(
     @MessageBody() payload: RejoinCallPayload,
@@ -617,6 +821,7 @@ export class CallGateway
     if (!session) {
       throw new NotFoundException('Call not found');
     }
+    this.assertGroupLifecycleCapable(client, session);
 
     if (session.status !== 'active') {
       throw new ForbiddenException('Call is not recoverable');
@@ -671,7 +876,7 @@ export class CallGateway
     client.emit('call_rejoined', {
       callId: payload.callId,
       role: result.role,
-      session: result.session,
+      session: clientCallSession(result.session),
       rtpCapabilities: result.rtpCapabilities,
       activeProducers: activePeerProducers,
       telemetryToken: this.telemetryTokenService.issue(
@@ -726,12 +931,20 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
-    const transport = await this.createTransportUseCase.execute(
-      payload.callId,
-      userId,
-      payload.direction,
-    );
+    let transport: Awaited<ReturnType<CreateTransportUseCase['execute']>>;
+    try {
+      transport = await this.createTransportUseCase.execute(
+        payload.callId,
+        userId,
+        payload.direction,
+      );
+    } catch (error) {
+      this.metrics.recordCallEvent('media_failed');
+      throw error;
+    }
+    this.metrics.recordCallEvent('media_ready');
 
     client.emit('transport_created', {
       callId: payload.callId,
@@ -746,6 +959,7 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     await this.connectTransportUseCase.execute(
       payload.callId,
@@ -767,7 +981,33 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
+    if (
+      payload.audioEnabled !== undefined &&
+      typeof payload.audioEnabled !== 'boolean'
+    ) {
+      throw new BadRequestException('Invalid initial audio state');
+    }
 
+    const session =
+      payload.kind === 'audio'
+        ? await this.sessionRepository.findByCallId(payload.callId)
+        : null;
+    if (session?.isGroupCall && payload.kind === 'audio') {
+      return this.withGroupMicQueue(payload.callId, userId, () =>
+        this.produceForSocket(payload, client, userId, true),
+      );
+    }
+    return this.produceForSocket(payload, client, userId, false);
+  }
+
+  private async produceForSocket(
+    payload: ProducePayload,
+    client: Socket,
+    userId: string,
+    isGroupAudio: boolean,
+  ): Promise<void> {
+    this.assertSocketJoinedToCall(client, payload.callId);
     const result = await this.produceUseCase.execute(
       payload.callId,
       userId,
@@ -778,6 +1018,48 @@ export class CallGateway
     );
 
     const { producerId, replacedProducerId } = result;
+    if (isGroupAudio) {
+      const key = this.groupMicStateKey(payload.callId, userId);
+      const previous = this.groupMicStates.get(key);
+      const enabled = previous?.enabled ?? payload.audioEnabled ?? true;
+      if (!enabled) {
+        try {
+          await this.mediaEngine.pauseProducer(
+            payload.callId,
+            userId,
+            producerId,
+          );
+        } catch (error) {
+          await this.mediaEngine
+            .closeProducer(payload.callId, userId, producerId)
+            .catch(() => undefined);
+          throw error;
+        }
+      }
+      const latestSession = await this.sessionRepository.findByCallId(
+        payload.callId,
+      );
+      if (
+        !latestSession?.isGroupCall ||
+        latestSession.status !== 'active' ||
+        !latestSession.participantIds.includes(userId) ||
+        !this.isSocketJoinedToCall(client, payload.callId)
+      ) {
+        await this.mediaEngine
+          .closeProducer(payload.callId, userId, producerId)
+          .catch(() => undefined);
+        throw new ForbiddenException(
+          'Group audio producer is no longer authorized',
+        );
+      }
+      if (previous || payload.audioEnabled !== undefined) {
+        this.groupMicStates.set(key, {
+          producerId,
+          enabled,
+          revision: previous?.revision ?? 0,
+        });
+      }
+    }
     if (replacedProducerId) {
       client.to(payload.callId).emit('producer_closed', {
         callId: payload.callId,
@@ -821,6 +1103,9 @@ export class CallGateway
       payload.kind === 'video'
         ? this.getVideoState(payload.callId, producerId)
         : undefined;
+    const micState = isGroupAudio
+      ? this.groupMicStates.get(this.groupMicStateKey(payload.callId, userId))
+      : undefined;
 
     client.to(payload.callId).emit('new_producer', {
       callId: payload.callId,
@@ -829,6 +1114,9 @@ export class CallGateway
       kind: payload.kind,
       ...(videoState
         ? { paused: !videoState.enabled, revision: videoState.revision }
+        : {}),
+      ...(micState?.producerId === producerId
+        ? { paused: !micState.enabled, revision: micState.revision }
         : {}),
     });
   }
@@ -859,6 +1147,7 @@ export class CallGateway
       } satisfies ProducerClosedAckPayload);
       return;
     }
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     if (
       !(session.isGroupCall
@@ -911,6 +1200,7 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     const result = await this.consumeUseCase.execute(
       payload.callId,
@@ -934,6 +1224,7 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     await this.resumeConsumerUseCase.execute(
       payload.callId,
@@ -970,6 +1261,9 @@ export class CallGateway
     // Cleanup may race terminal call teardown. The idempotent ACK lets a
     // client release local resources without turning a normal race into an
     // exception after the room has already gone away.
+    if (session.status === 'active') {
+      this.assertSocketJoinedToCall(client, payload.callId);
+    }
     const result =
       session.status === 'active'
         ? await this.mediaEngine.closeConsumer(
@@ -994,6 +1288,7 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     const result = await this.restartIceUseCase.execute(
       payload.callId,
@@ -1015,6 +1310,7 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+    this.assertSocketJoinedToCall(client, payload.callId);
 
     if (!(payload.profile in AUDIO_BITRATE_BY_PROFILE)) {
       throw new BadRequestException('Invalid audio bitrate profile');
@@ -1074,6 +1370,164 @@ export class CallGateway
         this.videoStateQueues.delete(key);
       }
     }
+  }
+
+  @SubscribeMessage('set_group_mic_state')
+  async handleSetGroupMicState(
+    @MessageBody() payload: SetGroupMicStatePayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    if (
+      !payload ||
+      typeof payload.callId !== 'string' ||
+      payload.callId.length === 0 ||
+      payload.callId.length > 128 ||
+      typeof payload.enabled !== 'boolean' ||
+      !Number.isSafeInteger(payload.revision) ||
+      payload.revision < 1 ||
+      payload.revision > 1_000_000_000 ||
+      typeof payload.producerId !== 'string' ||
+      payload.producerId.length === 0 ||
+      payload.producerId.length > 128 ||
+      (payload.actionId !== undefined &&
+        (typeof payload.actionId !== 'string' ||
+          payload.actionId.length > 128)) ||
+      typeof payload.requestId !== 'string' ||
+      payload.requestId.length === 0 ||
+      payload.requestId.length > 128
+    ) {
+      throw new BadRequestException('Invalid group mic state');
+    }
+
+    return this.withGroupMicQueue(payload.callId, userId, async () => {
+      const session = await this.sessionRepository.findByCallId(payload.callId);
+      this.assertGroupLifecycleCapable(client, session);
+      if (
+        !session?.isGroupCall ||
+        session.status !== 'active' ||
+        !session.participantIds.includes(userId)
+      ) {
+        throw new ForbiddenException('Group call is no longer active');
+      }
+      this.assertSocketJoinedToCall(client, payload.callId);
+      if (
+        userId !== session.initiatorId &&
+        (!session.groupConfirmedAnswerActionIds[userId] ||
+          session.groupConfirmedAnswerActionIds[userId] !==
+            payload.actionId?.trim())
+      ) {
+        throw new ForbiddenException('This action did not join the group call');
+      }
+
+      const producer = (
+        await this.mediaEngine.listActiveProducers(payload.callId)
+      ).find(
+        (entry) =>
+          entry.producerId === payload.producerId &&
+          entry.userId === userId &&
+          entry.kind === 'audio',
+      );
+      if (!producer) throw new NotFoundException('Audio producer not found');
+
+      const key = this.groupMicStateKey(payload.callId, userId);
+      const stored = this.groupMicStates.get(key);
+      const current =
+        stored?.producerId === producer.producerId
+          ? stored
+          : {
+              producerId: producer.producerId,
+              enabled: producer.paused !== true,
+              revision: 0,
+            };
+      const status: VideoStateUpdateStatus =
+        payload.revision < current.revision ||
+        (payload.revision === current.revision &&
+          payload.enabled !== current.enabled)
+          ? 'stale'
+          : payload.revision === current.revision
+            ? 'already_applied'
+            : 'applied';
+
+      if (status === 'applied') {
+        if (payload.enabled) {
+          await this.mediaEngine.resumeProducer(
+            payload.callId,
+            userId,
+            producer.producerId,
+          );
+        } else {
+          await this.mediaEngine.pauseProducer(
+            payload.callId,
+            userId,
+            producer.producerId,
+          );
+        }
+        const latestSession = await this.sessionRepository.findByCallId(
+          payload.callId,
+        );
+        const stillActive =
+          latestSession?.isGroupCall &&
+          latestSession.status === 'active' &&
+          latestSession.participantIds.includes(userId) &&
+          this.isSocketJoinedToCall(client, payload.callId) &&
+          (userId === latestSession.initiatorId ||
+            (Boolean(latestSession.groupConfirmedAnswerActionIds[userId]) &&
+              latestSession.groupConfirmedAnswerActionIds[userId] ===
+                payload.actionId?.trim()));
+        const latestProducer = (
+          await this.mediaEngine.listActiveProducers(payload.callId)
+        ).some(
+          (entry) =>
+            entry.producerId === producer.producerId &&
+            entry.userId === userId &&
+            entry.kind === 'audio',
+        );
+        if (!stillActive || !latestProducer) {
+          if (latestProducer) {
+            if (current.enabled) {
+              await this.mediaEngine.resumeProducer(
+                payload.callId,
+                userId,
+                producer.producerId,
+              );
+            } else {
+              await this.mediaEngine.pauseProducer(
+                payload.callId,
+                userId,
+                producer.producerId,
+              );
+            }
+          }
+          throw new ForbiddenException(
+            'Group mic state can no longer be changed',
+          );
+        }
+        this.groupMicStates.set(key, {
+          producerId: producer.producerId,
+          enabled: payload.enabled,
+          revision: payload.revision,
+        });
+        this.server.to(payload.callId).emit('group_mic_state_changed', {
+          callId: payload.callId,
+          userId,
+          producerId: producer.producerId,
+          enabled: payload.enabled,
+          revision: payload.revision,
+        });
+      }
+
+      client.emit('group_mic_state_updated', {
+        callId: payload.callId,
+        userId,
+        producerId: producer.producerId,
+        enabled: status === 'applied' ? payload.enabled : current.enabled,
+        revision: status === 'applied' ? payload.revision : current.revision,
+        status,
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+      });
+    });
   }
 
   private async applyVideoStateUpdate(
@@ -1285,6 +1739,7 @@ export class CallGateway
     // the same CAS lifecycle while `accepting`/`active`, otherwise a lost ACK
     // turns a successful answer into a false client-side failure.
     const session = await this.sessionRepository.findByCallId(payload.callId);
+    this.assertGroupLifecycleCapable(client, session);
     const isJoinedRingingParticipant =
       session?.status === 'ringing' && session.participantIds.includes(userId);
     const isRetryOfWinningAction =
@@ -1366,6 +1821,7 @@ export class CallGateway
     const existingSession = await this.sessionRepository.findByCallId(
       payload.callId,
     );
+    this.assertGroupLifecycleCapable(client, existingSession);
     if (existingSession?.isGroupCall) {
       const key = this.disconnectKey(payload.callId, userId);
       const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
@@ -1407,7 +1863,9 @@ export class CallGateway
       client.emit('incoming_call_acceptance', {
         callId: payload.callId,
         outcome: result.outcome,
-        ...(result.session ? { session: result.session } : {}),
+        ...(result.session
+          ? { session: clientCallSession(result.session) }
+          : {}),
       } satisfies IncomingCallAcceptanceSocketPayload);
       if (result.shouldEmitTerminal && result.session) {
         this.clearPendingUnansweredCall(payload.callId);
@@ -1438,7 +1896,7 @@ export class CallGateway
       callId: payload.callId,
       outcome: result.outcome,
       role: result.role,
-      session: result.session,
+      session: clientCallSession(result.session),
       rtpCapabilities: result.rtpCapabilities,
       activeProducers,
       telemetryToken: this.telemetryTokenService.issue(payload.callId, 'guest'),
@@ -1462,6 +1920,7 @@ export class CallGateway
     callId: string,
     userId: string,
     actionId: string,
+    lateJoin = false,
   ): Promise<void> {
     let joined: Awaited<ReturnType<JoinCallUseCase['execute']>> | undefined;
     const wasInRoom = client.rooms?.has(callId) ?? false;
@@ -1471,6 +1930,7 @@ export class CallGateway
         userId,
         client.id,
         actionId,
+        lateJoin,
       );
       if (!(await this.attachLiveSocketToCall(client, callId, userId))) {
         throw new GroupJoinMediaUnavailableError();
@@ -1491,26 +1951,45 @@ export class CallGateway
         throw new GroupJoinMediaUnavailableError();
       }
 
+      this.metrics.recordCallEvent(
+        lateJoin ? 'late_join_accepted' : 'invite_accepted',
+      );
+
       this.clearPendingDisconnect(callId, userId);
       this.recordSocketReconnect(callId, userId);
-      client.emit('incoming_call_acceptance', {
-        callId,
-        outcome: 'accepted',
-        role: 'guest',
-        session: joined.session,
-        rtpCapabilities: joined.rtpCapabilities,
-        activeProducers,
-        telemetryToken,
-      } satisfies IncomingCallAcceptanceSocketPayload);
+      if (lateJoin) {
+        client.emit('call_joined', {
+          callId,
+          role: 'guest',
+          session: clientCallSession(joined.session),
+          rtpCapabilities: joined.rtpCapabilities,
+          activeProducers,
+          telemetryToken,
+          noAnswerTimeoutMs: this.noAnswerTimeoutMs,
+        } satisfies CallJoinedSocketPayload);
+      } else {
+        client.emit('incoming_call_acceptance', {
+          callId,
+          outcome: 'accepted',
+          role: 'guest',
+          session: clientCallSession(joined.session),
+          rtpCapabilities: joined.rtpCapabilities,
+          activeProducers,
+          telemetryToken,
+        } satisfies IncomingCallAcceptanceSocketPayload);
+      }
       if (joined.shouldEmitNewPeer) {
         client.to(callId).emit('new_peer', { callId, userId });
       }
-      this.server.to(userId).emit('call_answered', {
+      client.to(this.groupUserRoom(userId)).emit('call_answered', {
         callId,
         userId,
-        answerActionId: actionId,
+        answeredElsewhere: true,
       });
     } catch (error) {
+      this.metrics.recordCallEvent(
+        lateJoin ? 'late_join_denied' : 'invite_denied',
+      );
       const reservationReleased = await this.sessionRepository
         .abortGroupInvitationJoin(callId, userId, actionId, new Date())
         .catch(() => false);
@@ -1521,7 +2000,7 @@ export class CallGateway
           // Session authorization is already revoked by the Redis CAS.
         }
       }
-      if (joined && (reservationReleased || !wasInRoom)) {
+      if (reservationReleased || (joined && !wasInRoom)) {
         try {
           await client.leave(callId);
         } catch {
@@ -1529,9 +2008,19 @@ export class CallGateway
         }
         this.untrackCallId(client, callId);
       }
+      if (reservationReleased) {
+        this.emitPeerLeft(callId, userId, 'media_unavailable');
+      }
+      if (lateJoin) {
+        if (error instanceof ForbiddenException) throw error;
+        throw new ServiceUnavailableException('Unable to join group call');
+      }
       client.emit('incoming_call_acceptance', {
         callId,
         ...(reservationReleased ? { reservationReleased: true } : {}),
+        ...(error instanceof ServiceUnavailableException
+          ? { retryable: true }
+          : {}),
         outcome:
           error instanceof ForbiddenException &&
           /another call/i.test(error.message)
@@ -1542,7 +2031,9 @@ export class CallGateway
               : error instanceof ForbiddenException &&
                   /invitation expired/i.test(error.message)
                 ? 'expired'
-                : error instanceof GroupJoinMediaUnavailableError || joined
+                : error instanceof GroupJoinMediaUnavailableError ||
+                    error instanceof ServiceUnavailableException ||
+                    joined
                   ? 'media_unavailable'
                   : 'unauthorized',
       } satisfies IncomingCallAcceptanceSocketPayload);
@@ -1556,6 +2047,39 @@ export class CallGateway
   ) {
     const userId = await this.resolveUserId(client);
     if (!userId) return;
+
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    this.assertGroupLifecycleCapable(client, session);
+    if (
+      session?.isGroupCall &&
+      session.status === 'active' &&
+      session.declinedUserIds.includes(userId) &&
+      !session.participantIds.includes(userId)
+    ) {
+      client.emit('call_left', {
+        callId: payload.callId,
+        ...(payload.actionId ? { actionId: payload.actionId } : {}),
+      });
+      return;
+    }
+    if (
+      session?.isGroupCall &&
+      session.status === 'active' &&
+      userId !== session.initiatorId &&
+      !this.isSocketJoinedToCall(client, payload.callId)
+    ) {
+      throw new ForbiddenException('This device did not answer the group call');
+    }
+    if (
+      session?.isGroupCall &&
+      session.status === 'active' &&
+      userId !== session.initiatorId &&
+      session.participantIds.includes(userId) &&
+      payload.actionId !== undefined &&
+      session.groupAnswerActionIds[userId] !== payload.actionId.trim()
+    ) {
+      throw new ForbiddenException('This action did not join the group call');
+    }
 
     const result = await this.leaveCallUseCase.execute(
       payload.callId,
@@ -1574,14 +2098,7 @@ export class CallGateway
       // A participant is account-scoped; evict every socket for that account,
       // including an older socket left behind by a reconnect.
       this.server.in(userId).socketsLeave(payload.callId);
-      for (const producer of result.closedProducers ?? []) {
-        this.server.to(payload.callId).emit('producer_closed', {
-          callId: payload.callId,
-          producerId: producer.producerId,
-          kind: producer.kind,
-          userId,
-        });
-      }
+      this.emitClosedProducers(payload.callId, userId, result.closedProducers);
       this.emitPeerLeft(payload.callId, userId, result.endedReason);
     } else {
       await client.leave(payload.callId);
@@ -1589,6 +2106,10 @@ export class CallGateway
     if (result.didTransition !== false) {
       this.emitCallEnded(result.session, result.endedReason);
     }
+    client.emit('call_left', {
+      callId: payload.callId,
+      ...(payload.actionId ? { actionId: payload.actionId } : {}),
+    });
   }
 
   @SubscribeMessage('reject_call')
@@ -1599,6 +2120,11 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
+    if (!this.isGroupLifecycleCapable(client)) {
+      const session = await this.sessionRepository.findByCallId(payload.callId);
+      this.assertGroupLifecycleCapable(client, session);
+    }
+
     const result = await this.rejectCallUseCase.execute(
       payload.callId,
       userId,
@@ -1606,7 +2132,8 @@ export class CallGateway
     );
     if (result.isGroupInvitation) {
       if (result.didTransition) {
-        this.server.to(userId).emit('call_rejected', {
+        this.metrics.recordCallEvent('invite_rejected');
+        this.server.to(this.groupUserRoom(userId)).emit('call_rejected', {
           callId: payload.callId,
           userId,
           reason: result.reason,
@@ -1638,7 +2165,9 @@ export class CallGateway
   }
 
   private emitCallEnded(session: CallSession, reason: string): void {
+    this.metrics.recordCallEvent('terminal_emitted');
     this.clearVideoState(session.callId);
+    this.clearGroupMicState(session.callId);
     this.clearPendingUnansweredCall(session.callId);
     for (const userId of session.invitedUserIds) {
       this.clearPendingDisconnect(session.callId, userId);
@@ -1654,7 +2183,12 @@ export class CallGateway
     this.rememberRecentTerminalCall(session, payload);
 
     this.server
-      .to([session.callId, ...session.invitedUserIds])
+      .to([
+        session.callId,
+        ...session.invitedUserIds.map((userId) =>
+          session.isGroupCall ? this.groupUserRoom(userId) : userId,
+        ),
+      ])
       .emit('call_ended', payload);
   }
 
@@ -1668,7 +2202,11 @@ export class CallGateway
       const calls =
         this.recentTerminalCallsByUser.get(userId) ??
         new Map<string, StoredRecentTerminalCall>();
-      calls.set(payload.callId, { ...payload, expiresAtMs });
+      calls.set(payload.callId, {
+        ...payload,
+        isGroupCall: session.isGroupCall === true,
+        expiresAtMs,
+      });
       this.recentTerminalCallsByUser.set(userId, calls);
 
       const cleanupTimeout = setTimeout(() => {
@@ -1687,7 +2225,10 @@ export class CallGateway
     }
   }
 
-  private getRecentTerminalCalls(userId: string): RecentTerminalCall[] {
+  private getRecentTerminalCalls(
+    userId: string,
+    groupLifecycleCapable: boolean,
+  ): RecentTerminalCall[] {
     const calls = this.recentTerminalCallsByUser.get(userId);
     if (!calls) {
       return [];
@@ -1701,6 +2242,8 @@ export class CallGateway
         continue;
       }
 
+      if (call.isGroupCall && !groupLifecycleCapable) continue;
+
       recent.push({ callId: call.callId, reason: call.reason });
     }
 
@@ -1712,11 +2255,27 @@ export class CallGateway
   }
 
   private emitPeerLeft(callId: string, userId: string, reason: string): void {
+    this.clearGroupMicState(callId, userId);
     this.server.to(callId).emit('peer_left', {
       callId,
       userId,
       reason,
     });
+  }
+
+  private emitClosedProducers(
+    callId: string,
+    userId: string,
+    producers?: Array<{ producerId: string; kind: 'audio' | 'video' }>,
+  ): void {
+    for (const producer of producers ?? []) {
+      this.server.to(callId).emit('producer_closed', {
+        callId,
+        producerId: producer.producerId,
+        kind: producer.kind,
+        userId,
+      });
+    }
   }
 
   /**
@@ -1809,13 +2368,13 @@ export class CallGateway
     this.reconnectStartedAtByParticipant.delete(
       this.disconnectKey(callId, userId),
     );
-    await this.stateRepository.removeParticipant(callId, userId);
     const result = await this.leaveCallUseCase.execute(
       callId,
       userId,
       'disconnected',
     );
     if (result.shouldEmitPeerLeft) {
+      this.emitClosedProducers(callId, userId, result.closedProducers);
       this.emitPeerLeft(callId, userId, 'disconnected');
     }
     if (result.didTransition !== false) {
@@ -1827,6 +2386,7 @@ export class CallGateway
     callId: string,
     userId: string,
     delayMs = this.reconnectGraceMs,
+    retryCount = 0,
   ): void {
     this.clearPendingDisconnect(callId, userId);
 
@@ -1856,7 +2416,6 @@ export class CallGateway
               return;
             }
 
-            await this.stateRepository.removeParticipant(callId, userId);
             this.reconnectStartedAtByParticipant.delete(
               this.disconnectKey(callId, userId),
             );
@@ -1866,6 +2425,7 @@ export class CallGateway
               'disconnected',
             );
             if (result.shouldEmitPeerLeft) {
+              this.emitClosedProducers(callId, userId, result.closedProducers);
               this.emitPeerLeft(callId, userId, 'disconnected');
             }
             if (result.didTransition !== false) {
@@ -1875,6 +2435,16 @@ export class CallGateway
             this.logger.warn(
               `Deferred disconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
             );
+            // ponytail: bound transient Redis retries; a durable sweep is needed for longer outages or process death.
+            if (retryCount < 3) {
+              rescheduled = true;
+              this.scheduleDisconnectFinalization(
+                callId,
+                userId,
+                1000,
+                retryCount + 1,
+              );
+            }
           } finally {
             if (!rescheduled) {
               this.clearPendingDisconnect(callId, userId);
@@ -1989,12 +2559,50 @@ export class CallGateway
     return value.filter((item): item is string => typeof item === 'string');
   }
 
+  private assertSocketJoinedToCall(client: Socket, callId: string): void {
+    if (!this.isSocketJoinedToCall(client, callId)) {
+      throw new ForbiddenException('Join the call before using media');
+    }
+  }
+
+  private isSocketJoinedToCall(client: Socket, callId: string): boolean {
+    return (
+      this.getTrackedCallIds(client).includes(callId) &&
+      client.rooms.has(callId)
+    );
+  }
+
   private getResolvedUserId(client: Socket): string | null {
     const socketData = client.data as Record<string, unknown>;
     const cachedUserId = socketData['userId'];
     return typeof cachedUserId === 'string' && cachedUserId
       ? cachedUserId
       : null;
+  }
+
+  private groupUserRoom(userId: string): string {
+    return `group-lifecycle-v2:${userId}`;
+  }
+
+  private groupLifecycleVersion(client: Socket): number {
+    const auth = client.handshake?.auth as Record<string, unknown> | undefined;
+    const version = auth?.['groupLifecycleVersion'];
+    return typeof version === 'number' && Number.isInteger(version)
+      ? version
+      : 1;
+  }
+
+  private isGroupLifecycleCapable(client: Socket): boolean {
+    return this.groupLifecycleVersion(client) >= 2;
+  }
+
+  private assertGroupLifecycleCapable(
+    client: Socket,
+    session: CallSession | null | undefined,
+  ): void {
+    if (session?.isGroupCall && !this.isGroupLifecycleCapable(client)) {
+      throw new ForbiddenException('Group call requires a newer client');
+    }
   }
 
   private extractAccessToken(client: Socket): string | null {

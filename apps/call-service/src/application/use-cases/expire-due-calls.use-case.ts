@@ -5,6 +5,10 @@ import type { ICallEventPublisher } from '../../domain/interfaces/call-event.pub
 import type { ICallMediaEngine } from '../../domain/interfaces/call-media.engine.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 @Injectable()
 export class ExpireDueCallsUseCase {
@@ -35,11 +39,7 @@ export class ExpireDueCallsUseCase {
       for (const result of cleanupResults) {
         if (result.status === 'rejected') {
           this.logger.warn(
-            `Expired call cleanup failed for ${session.callId}: ${
-              result.reason instanceof Error
-                ? result.reason.message
-                : String(result.reason)
-            }`,
+            `Expired call cleanup failed for ${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(result.reason)}`,
           );
         }
       }
@@ -58,9 +58,7 @@ export class ExpireDueCallsUseCase {
         });
       } catch (error) {
         this.logger.warn(
-          `Failed to publish no-answer state for ${session.callId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Failed to publish no-answer state for ${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }

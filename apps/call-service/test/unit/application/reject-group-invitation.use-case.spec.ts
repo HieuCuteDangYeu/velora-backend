@@ -32,11 +32,16 @@ it('declines one group invite without terminating the shared call', async () => 
     mediaEngine as never,
   );
 
-  const result = await useCase.execute('room-1', 'guest');
+  const result = await useCase.execute(
+    'room-1',
+    'guest',
+    'answer-action-secret',
+  );
 
   expect(result).toMatchObject({
     didTransition: true,
     isGroupInvitation: true,
+    reason: 'rejected',
   });
   expect(sessionRepository.rejectGroupInvitation).toHaveBeenCalledWith(
     'room-1',

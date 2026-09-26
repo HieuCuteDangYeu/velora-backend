@@ -148,10 +148,8 @@ export class FirebaseAdminGateway implements IFcmPushGateway {
             provider: 'fcm',
             token: input.token,
           });
-        } catch (markerError) {
-          this.logger.warn(
-            `Failed to persist invalidated FCM token marker: ${this.readErrorMessage(markerError)}`,
-          );
+        } catch {
+          this.logger.warn(`Failed to persist invalidated FCM token marker`);
         }
       }
 
@@ -173,9 +171,5 @@ export class FirebaseAdminGateway implements IFcmPushGateway {
     }
 
     return undefined;
-  }
-
-  private readErrorMessage(error: unknown) {
-    return error instanceof Error ? error.message : String(error);
   }
 }

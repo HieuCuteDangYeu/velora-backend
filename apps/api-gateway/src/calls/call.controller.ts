@@ -158,6 +158,31 @@ export class CallController {
     this.telemetryRequestTimesByUser.set(userId, recent);
   }
 
+  @Get('conversations/:conversationId/active-group')
+  @ApiOperation({ summary: 'Get the active group call in a conversation' })
+  async getActiveGroupByConversation(
+    @Param('conversationId') conversationId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return lastValueFrom(
+      this.callClient
+        .send<{
+          call: {
+            callId: string;
+            conversationId: string;
+            participantCount: number;
+            startedAt: string;
+            elapsedSeconds: number;
+            joined: boolean;
+          } | null;
+        }>('call.get_active_group_by_conversation', {
+          conversationId,
+          userId: request.user!.id,
+        })
+        .pipe(timeout(5000)),
+    );
+  }
+
   @Get(':callId/state')
   @ApiOperation({ summary: 'Get the current state for a call before joining' })
   async getCallState(

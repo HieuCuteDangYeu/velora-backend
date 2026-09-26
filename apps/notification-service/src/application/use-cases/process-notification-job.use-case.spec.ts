@@ -46,7 +46,7 @@ describe('notification delivery use cases', () => {
       return Promise.resolve();
     };
     const notificationJobRepository = {
-      create: jest.fn((input) => {
+      create: jest.fn((input: Record<string, unknown>) => {
         const id = `created-job-${++createdJobCount}`;
         const job = {
           id,
@@ -581,6 +581,54 @@ describe('notification delivery use cases', () => {
       fcmInputs.find((input) => input.token === 'ios-fcm-token-user-2'),
     ).toBeUndefined();
     expect(apnsVoipGateway.send).not.toHaveBeenCalled();
+  });
+
+  it('never forwards a raw answer action from a queued legacy group job', async () => {
+    const {
+      processNotificationJob,
+      notificationJobRepository,
+      pushTokenRepository,
+      fcmInputs,
+    } = createUseCases();
+    const job = {
+      ...baseJob,
+      id: 'legacy-group-state',
+      type: 'CALL_STATE_UPDATE',
+      callId: 'call-1',
+      dataJson: {
+        platforms: ['android'],
+        status: 'active',
+        isGroupCall: true,
+        answerActionId: 'private-winning-action',
+        answerActionHash: 'b'.repeat(64),
+        at: '2026-07-08T00:00:00.000Z',
+      },
+    };
+    notificationJobRepository.claimForProcessing.mockResolvedValue({
+      ...job,
+      status: 'processing',
+      attemptCount: 1,
+    });
+    pushTokenRepository.findActiveByUserId.mockResolvedValue([
+      {
+        id: 'group-token',
+        userId: 'user-1',
+        provider: 'fcm',
+        platform: 'android',
+        token: 'group-fcm-token',
+        groupLifecycleVersion: 2,
+        bundleId: null,
+        deliveryEnvironment: null,
+      },
+    ]);
+
+    await processNotificationJob.execute(job as never);
+
+    expect(fcmInputs).toHaveLength(1);
+    expect(fcmInputs[0].data).toMatchObject({
+      answerActionHash: 'b'.repeat(64),
+    });
+    expect(fcmInputs[0].data).not.toHaveProperty('answerActionId');
   });
 
   it('keeps a partially delivered call-state update retryable for another signed-in device', async () => {

@@ -442,7 +442,9 @@ export class ProcessNotificationJobUseCase {
           status: payload.status,
           ...(payload.isGroupCall ? { isGroupCall: true } : {}),
           reason: payload.reason,
-          ...(payload.answerActionId
+          ...(!payload.isGroupCall &&
+          !payload.answerActionHash &&
+          payload.answerActionId
             ? { answerActionId: payload.answerActionId }
             : {}),
           ...(payload.answerActionHash

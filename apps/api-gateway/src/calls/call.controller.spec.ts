@@ -45,6 +45,22 @@ describe('CallController recent telemetry', () => {
 });
 
 describe('CallController group state privacy', () => {
+  it('scopes active group lookup to the authenticated user', async () => {
+    const callClient = {
+      send: jest.fn().mockReturnValue(of({ call: null })),
+    };
+    const controller = new CallController(callClient as never, {} as never);
+    await expect(
+      controller.getActiveGroupByConversation('conv-1', {
+        user: { id: 'member' },
+      } as never),
+    ).resolves.toEqual({ call: null });
+    expect(callClient.send).toHaveBeenCalledWith(
+      'call.get_active_group_by_conversation',
+      { conversationId: 'conv-1', userId: 'member' },
+    );
+  });
+
   it('does not forward call metadata to a removed group member', async () => {
     const callClient = {
       send: jest.fn().mockReturnValue(of({ found: true, authorized: false })),

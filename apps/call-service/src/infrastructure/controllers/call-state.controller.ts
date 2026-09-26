@@ -9,6 +9,7 @@ import type { ICallSessionRepository } from '../../domain/interfaces/call-sessio
 
 type GetCallStatePayload = {
   callId?: string;
+  conversationId?: string;
   userId?: string;
 };
 
@@ -20,6 +21,42 @@ export class CallStateController {
     @Inject('CONVERSATION_SERVICE_RMQ')
     private readonly conversationClient: ClientProxy,
   ) {}
+
+  @MessagePattern('call.get_active_group_by_conversation')
+  async getActiveGroupByConversation(@Payload() payload: GetCallStatePayload) {
+    if (!payload.conversationId || !payload.userId) return { call: null };
+    try {
+      await assertCurrentGroupMember(
+        this.conversationClient,
+        payload.conversationId,
+        payload.userId,
+      );
+    } catch (error) {
+      if (error instanceof ForbiddenException) return { call: null };
+      throw error;
+    }
+    const session =
+      await this.sessionRepository.findActiveGroupCallByConversationId(
+        payload.conversationId,
+      );
+    if (!session) return { call: null };
+    return {
+      call: {
+        callId: session.callId,
+        conversationId: session.conversationId,
+        participantCount: session.participantIds.length,
+        startedAt: (session.answeredAt ?? session.createdAt).toISOString(),
+        elapsedSeconds: Math.max(
+          0,
+          Math.floor(
+            (Date.now() - (session.answeredAt ?? session.createdAt).getTime()) /
+              1000,
+          ),
+        ),
+        joined: session.participantIds.includes(payload.userId),
+      },
+    };
+  }
 
   @MessagePattern('call.get_state')
   async getCallState(@Payload() payload: GetCallStatePayload) {

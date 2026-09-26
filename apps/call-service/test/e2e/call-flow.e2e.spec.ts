@@ -1569,6 +1569,11 @@ describe('Call Service P0 flow (e2e)', () => {
       email: 'second-guest@example.com',
       roles: ['USER'],
     };
+    const lateGuestUser: AuthUser = {
+      id: 'late-guest-user',
+      email: 'late-guest@example.com',
+      roles: ['USER'],
+    };
     const directory = mkdtempSync('/tmp/velora-group-e2e-');
     const redisSocket = join(directory, 'redis.sock');
     const redisServer: ChildProcess = spawn(
@@ -1627,6 +1632,7 @@ describe('Call Service P0 flow (e2e)', () => {
             'caller-token': callerUser,
             'callee-token': calleeUser,
             'second-guest-token': secondGuestUser,
+            'late-guest-token': lateGuestUser,
             'outsider-token': outsiderUser,
           }),
         )
@@ -1754,6 +1760,67 @@ describe('Call Service P0 flow (e2e)', () => {
         1,
       );
 
+      const lateGuest = await connectGroupClient('late-guest-token');
+      const lateGuestOtherDevice = await connectGroupClient('late-guest-token');
+      const lateDenied = onceEvent<{ status: string }>(lateGuest, 'exception');
+      lateGuest.emit('join_group_call', { callId, actionId: 'late-action' });
+      await expect(lateDenied).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      groupConversations['conv-group'].participantIds.push(lateGuestUser.id);
+      const lateJoined = onceEvent<{
+        callId: string;
+        session: { participantIds: string[]; groupAnswerActionIds?: unknown };
+      }>(lateGuest, 'call_joined');
+      const latePeer = onceEvent<{ userId: string }>(host, 'new_peer');
+      lateGuest.emit('join_group_call', { callId, actionId: 'late-action' });
+      const lateResult = await lateJoined;
+      expect(lateResult.session.participantIds).toEqual([
+        callerUser.id,
+        lateGuestUser.id,
+      ]);
+      expect(lateResult.session).not.toHaveProperty('groupAnswerActionIds');
+      await expect(latePeer).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
+      const losingLateJoin = onceEvent<{ status: string }>(
+        lateGuestOtherDevice,
+        'exception',
+      );
+      lateGuestOtherDevice.emit('join_group_call', {
+        callId,
+        actionId: 'other-device-action',
+      });
+      await expect(losingLateJoin).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id, lateGuestUser.id]);
+      const duplicatePeer = waitForOptionalEvent(host, 'new_peer', 250);
+      const lateReplay = onceEvent<{ callId: string }>(
+        lateGuest,
+        'call_joined',
+      );
+      lateGuest.emit('join_group_call', { callId, actionId: 'late-action' });
+      await expect(lateReplay).resolves.toEqual(
+        expect.objectContaining({ callId }),
+      );
+      await expect(duplicatePeer).resolves.toBeNull();
+      const lateLeft = onceEvent<{ callId: string }>(lateGuest, 'call_left');
+      const latePeerLeft = onceEvent<{ userId: string }>(host, 'peer_left');
+      lateGuest.emit('leave_call', { callId, reason: 'left' });
+      await expect(lateLeft).resolves.toEqual({ callId });
+      await expect(latePeerLeft).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
+      groupConversations['conv-group'].participantIds.pop();
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id]);
+
       groupConversations['conv-group'].participantIds = [
         callerUser.id,
         secondGuestUser.id,
@@ -1838,6 +1905,7 @@ describe('Call Service P0 flow (e2e)', () => {
       ]);
       expect(active.groupConfirmedAnswerActionIds).toEqual({
         [calleeUser.id]: 'guest-action',
+        [lateGuestUser.id]: 'late-action',
         [secondGuestUser.id]: 'second-guest-action',
       });
       await expect(outsiderInvite).resolves.toBeNull();

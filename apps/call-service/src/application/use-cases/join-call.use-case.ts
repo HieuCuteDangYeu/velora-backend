@@ -57,6 +57,7 @@ export class JoinCallUseCase {
     userId: string,
     socketId: string,
     actionId?: string,
+    allowLateJoin = false,
   ): Promise<JoinCallResult> {
     const currentSession = await this.sessionRepository.findByCallId(callId);
     if (currentSession?.isGroupCall) {
@@ -67,14 +68,22 @@ export class JoinCallUseCase {
       );
     }
     const now = new Date();
-    const transition = actionId
+    const transition = allowLateJoin
       ? await this.sessionRepository.joinParticipant(
           callId,
           userId,
           now,
           actionId,
+          true,
         )
-      : await this.sessionRepository.joinParticipant(callId, userId, now);
+      : actionId
+        ? await this.sessionRepository.joinParticipant(
+            callId,
+            userId,
+            now,
+            actionId,
+          )
+        : await this.sessionRepository.joinParticipant(callId, userId, now);
     const session = transition.session;
 
     if (transition.outcome === 'not_found' || !session) {
@@ -95,6 +104,9 @@ export class JoinCallUseCase {
     }
     if (transition.outcome === 'busy') {
       throw new ForbiddenException('You are already in another call');
+    }
+    if (transition.outcome === 'full') {
+      throw new ForbiddenException('Group call is full');
     }
     if (transition.outcome === 'answered_elsewhere') {
       throw new ForbiddenException('Call was answered elsewhere');

@@ -5,6 +5,8 @@ const CALL_EVENTS = [
   'invite_accepted',
   'invite_rejected',
   'invite_denied',
+  'late_join_accepted',
+  'late_join_denied',
   'media_ready',
   'media_failed',
   'terminal_emitted',

@@ -82,6 +82,137 @@ describeWithRedis('Redis group-call transitions', () => {
     });
   };
 
+  it('finds one live group room per conversation and ignores terminal pointers', async () => {
+    expect(await repository.createActiveGroupSession(group('room-first'))).toBe(
+      true,
+    );
+    expect(
+      await repository.createActiveGroupSession(group('room-second', 'other')),
+    ).toBe(false);
+    expect(
+      (await repository.findActiveGroupCallByConversationId('conversation'))
+        ?.callId,
+    ).toBe('room-first');
+
+    expect(
+      (
+        await repository.joinParticipant(
+          'room-first',
+          'guest',
+          new Date(),
+          'guest-action',
+        )
+      ).outcome,
+    ).toBe('joined');
+    expect(
+      (await repository.findActiveGroupCallByConversationId('conversation'))
+        ?.participantIds,
+    ).toEqual(['host', 'guest']);
+    expect(
+      (
+        await repository.transitionToTerminal(
+          'room-first',
+          'guest',
+          'left',
+          new Date(),
+          'leave',
+        )
+      ).outcome,
+    ).toBe('participant_left');
+    expect(
+      (await repository.findActiveGroupCallByConversationId('conversation'))
+        ?.participantIds,
+    ).toEqual(['host']);
+
+    await repository.transitionToTerminal(
+      'room-first',
+      'host',
+      'ended',
+      new Date(),
+      'leave',
+    );
+    expect(
+      await repository.findActiveGroupCallByConversationId('conversation'),
+    ).toBeNull();
+    expect(
+      await repository.createActiveGroupSession(group('room-second', 'other')),
+    ).toBe(true);
+    expect(
+      (await repository.findActiveGroupCallByConversationId('conversation'))
+        ?.callId,
+    ).toBe('room-second');
+  });
+
+  it('admits an explicit late join once, isolates its winning device, and enforces capacity', async () => {
+    await repository.createActiveGroupSession(group('room-late'));
+    expect(
+      (
+        await repository.joinParticipant(
+          'room-late',
+          'new-member',
+          new Date(),
+          'late-1',
+        )
+      ).outcome,
+    ).toBe('forbidden');
+    const first = await repository.joinParticipant(
+      'room-late',
+      'new-member',
+      new Date(),
+      'late-1',
+      true,
+    );
+    expect(first.outcome).toBe('joined');
+    expect(first.joinedNow).toBe(true);
+    const replay = await repository.joinParticipant(
+      'room-late',
+      'new-member',
+      new Date(),
+      'late-1',
+      true,
+    );
+    expect(replay.outcome).toBe('joined');
+    expect(replay.joinedNow).toBe(false);
+    expect(
+      (
+        await repository.joinParticipant(
+          'room-late',
+          'new-member',
+          new Date(),
+          'losing-device',
+          true,
+        )
+      ).outcome,
+    ).toBe('answered_elsewhere');
+    for (let index = 2; index < 8; index++) {
+      expect(
+        (
+          await repository.joinParticipant(
+            'room-late',
+            `late-${index}`,
+            new Date(),
+            `action-${index}`,
+            true,
+          )
+        ).outcome,
+      ).toBe('joined');
+    }
+    expect(
+      (
+        await repository.joinParticipant(
+          'room-late',
+          'over-capacity',
+          new Date(),
+          'action-over',
+          true,
+        )
+      ).outcome,
+    ).toBe('full');
+    expect(
+      (await repository.findByCallId('room-late'))?.participantIds,
+    ).toHaveLength(8);
+  });
+
   it('reserves the host once and releases every joined user after media restart', async () => {
     expect(await repository.createActiveGroupSession(group('room-1'))).toBe(
       true,

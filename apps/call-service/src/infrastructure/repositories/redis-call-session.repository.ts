@@ -25,6 +25,10 @@ const GROUP_INVITATION_EVENT_OUTBOX_KEY =
 const TERMINAL_EVENT_OUTBOX_KEY = 'call:sessions:terminal-events';
 const ACTIVE_CALLS_KEY = 'call:sessions:active';
 const ACTIVE_CALLS_BY_USER_KEY = 'call:sessions:active-by-user';
+// ponytail: Conservative source-only cap; replace with E07 measured SFU limit.
+const GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS = 8;
+const activeGroupConversationKey = (conversationId: string) =>
+  `call:conversation:${conversationId}:active-group`;
 
 const LIVE_ACTIVE_CALL_ID_LUA = `
 local function liveActiveCallId(indexKey, userId)
@@ -42,9 +46,15 @@ end
 const CREATE_ACTIVE_GROUP_SESSION_SCRIPT = `
 ${LIVE_ACTIVE_CALL_ID_LUA}
 if liveActiveCallId(KEYS[3], ARGV[2]) then return 0 end
+local existingCallId = redis.call('GET', KEYS[4])
+if existingCallId then
+  local existing = redis.call('GET', 'call:' .. existingCallId .. ':session')
+  if existing and cjson.decode(existing).status == 'active' then return 0 end
+end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ${SESSION_TTL_SECONDS})
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('HSET', KEYS[3], ARGV[2], ARGV[4])
+redis.call('SET', KEYS[4], ARGV[4], 'EX', ${SESSION_TTL_SECONDS})
 return 1
 `;
 
@@ -57,6 +67,7 @@ local session = cjson.decode(raw)
 local now = ARGV[1]
 local userId = ARGV[2]
 local actionId = ARGV[4] or ''
+local allowLateJoin = session.isGroupCall and ARGV[5] == '1'
 if session.expiresAt and session.expiresAt <= now and (session.status == 'initiated' or session.status == 'ringing') then
   session.status = 'ended'
   session.terminalReason = 'no_answer'
@@ -89,14 +100,14 @@ for _, invitedUserId in ipairs(session.invitedUserIds or {}) do
     break
   end
 end
-if not isInvited then
+if not isInvited and not allowLateJoin then
   return {'forbidden', raw, '0'}
 end
 if session.status == 'ended' or session.status == 'cancelled' or session.status == 'rejected' then
   return {'terminal', raw, '0'}
 end
 for _, declinedUserId in ipairs(session.declinedUserIds or {}) do
-  if declinedUserId == userId then return {'declined', raw, '0'} end
+  if declinedUserId == userId and not allowLateJoin then return {'declined', raw, '0'} end
 end
 local isAlreadyParticipant = false
 for _, participantId in ipairs(session.participantIds or {}) do
@@ -105,8 +116,11 @@ for _, participantId in ipairs(session.participantIds or {}) do
     break
   end
 end
-if session.isGroupCall and not isAlreadyParticipant and session.expiresAt and session.expiresAt <= now then
+if session.isGroupCall and not isAlreadyParticipant and not allowLateJoin and session.expiresAt and session.expiresAt <= now then
   return {'invitation_expired', raw, '0'}
+end
+if session.isGroupCall and not isAlreadyParticipant and #session.participantIds >= tonumber(ARGV[6]) then
+  return {'full', raw, '0'}
 end
 if session.isGroupCall then
   if userId ~= session.initiatorId then
@@ -813,10 +827,11 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   async createActiveGroupSession(session: CallSession): Promise<boolean> {
     const result = await this.redis.eval(
       CREATE_ACTIVE_GROUP_SESSION_SCRIPT,
-      3,
+      4,
       this.key(session.callId),
       ACTIVE_CALLS_KEY,
       ACTIVE_CALLS_BY_USER_KEY,
+      activeGroupConversationKey(session.conversationId),
       JSON.stringify(session),
       session.initiatorId,
       String((session.answeredAt ?? session.updatedAt).getTime()),
@@ -894,6 +909,21 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     return this.toSession(raw);
   }
 
+  async findActiveGroupCallByConversationId(
+    conversationId: string,
+  ): Promise<CallSession | null> {
+    const callId = await this.redis.get(
+      activeGroupConversationKey(conversationId),
+    );
+    if (!callId) return null;
+    const session = await this.findByCallId(callId);
+    return session?.isGroupCall &&
+      session.conversationId === conversationId &&
+      session.status === 'active'
+      ? session
+      : null;
+  }
+
   async delete(callId: string): Promise<void> {
     const session = await this.findByCallId(callId);
     await this.redis
@@ -914,6 +944,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     now: Date,
     actionId?: string,
+    allowLateJoin = false,
   ): Promise<CallJoinTransition> {
     const result = await this.redis.eval(
       JOIN_PARTICIPANT_SCRIPT,
@@ -929,6 +960,8 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       userId,
       String(now.getTime()),
       actionId ?? '',
+      allowLateJoin ? '1' : '0',
+      String(GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS),
     );
     if (!Array.isArray(result)) {
       throw new Error('Invalid call join transition result');

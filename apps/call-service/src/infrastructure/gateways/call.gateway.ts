@@ -699,6 +699,52 @@ export class CallGateway
     }
   }
 
+  @SubscribeMessage('join_group_call')
+  async handleJoinGroupCall(
+    @MessageBody() payload: AcceptIncomingCallPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    const actionId = payload.actionId?.trim();
+    if (!actionId || actionId.length > 128) {
+      throw new BadRequestException('A call action id is required');
+    }
+    const session = await this.sessionRepository.findByCallId(payload.callId);
+    this.assertGroupLifecycleCapable(client, session);
+    if (!session?.isGroupCall || session.status !== 'active') {
+      throw new ForbiddenException('Group call is no longer active');
+    }
+    if (session.initiatorId === userId) {
+      throw new ForbiddenException('Host must rejoin the existing call');
+    }
+    const key = this.disconnectKey(payload.callId, userId);
+    const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
+    const operation = previous
+      .catch(() => undefined)
+      .then(() =>
+        this.acceptGroupInvitation(
+          client,
+          payload.callId,
+          userId,
+          actionId,
+          true,
+        ),
+      );
+    const tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupAcceptQueues.set(key, tail);
+    try {
+      await operation;
+    } finally {
+      if (this.groupAcceptQueues.get(key) === tail) {
+        this.groupAcceptQueues.delete(key);
+      }
+    }
+  }
+
   @SubscribeMessage('rejoin_call')
   async handleRejoinCall(
     @MessageBody() payload: RejoinCallPayload,
@@ -1579,6 +1625,7 @@ export class CallGateway
     callId: string,
     userId: string,
     actionId: string,
+    lateJoin = false,
   ): Promise<void> {
     let joined: Awaited<ReturnType<JoinCallUseCase['execute']>> | undefined;
     const wasInRoom = client.rooms?.has(callId) ?? false;
@@ -1588,6 +1635,7 @@ export class CallGateway
         userId,
         client.id,
         actionId,
+        lateJoin,
       );
       if (!(await this.attachLiveSocketToCall(client, callId, userId))) {
         throw new GroupJoinMediaUnavailableError();
@@ -1608,19 +1656,33 @@ export class CallGateway
         throw new GroupJoinMediaUnavailableError();
       }
 
-      this.metrics.recordCallEvent('invite_accepted');
+      this.metrics.recordCallEvent(
+        lateJoin ? 'late_join_accepted' : 'invite_accepted',
+      );
 
       this.clearPendingDisconnect(callId, userId);
       this.recordSocketReconnect(callId, userId);
-      client.emit('incoming_call_acceptance', {
-        callId,
-        outcome: 'accepted',
-        role: 'guest',
-        session: clientCallSession(joined.session),
-        rtpCapabilities: joined.rtpCapabilities,
-        activeProducers,
-        telemetryToken,
-      } satisfies IncomingCallAcceptanceSocketPayload);
+      if (lateJoin) {
+        client.emit('call_joined', {
+          callId,
+          role: 'guest',
+          session: clientCallSession(joined.session),
+          rtpCapabilities: joined.rtpCapabilities,
+          activeProducers,
+          telemetryToken,
+          noAnswerTimeoutMs: this.noAnswerTimeoutMs,
+        } satisfies CallJoinedSocketPayload);
+      } else {
+        client.emit('incoming_call_acceptance', {
+          callId,
+          outcome: 'accepted',
+          role: 'guest',
+          session: clientCallSession(joined.session),
+          rtpCapabilities: joined.rtpCapabilities,
+          activeProducers,
+          telemetryToken,
+        } satisfies IncomingCallAcceptanceSocketPayload);
+      }
       if (joined.shouldEmitNewPeer) {
         client.to(callId).emit('new_peer', { callId, userId });
       }
@@ -1630,7 +1692,9 @@ export class CallGateway
         answeredElsewhere: true,
       });
     } catch (error) {
-      this.metrics.recordCallEvent('invite_denied');
+      this.metrics.recordCallEvent(
+        lateJoin ? 'late_join_denied' : 'invite_denied',
+      );
       const reservationReleased = await this.sessionRepository
         .abortGroupInvitationJoin(callId, userId, actionId, new Date())
         .catch(() => false);
@@ -1651,6 +1715,10 @@ export class CallGateway
       }
       if (reservationReleased) {
         this.emitPeerLeft(callId, userId, 'media_unavailable');
+      }
+      if (lateJoin) {
+        if (error instanceof ForbiddenException) throw error;
+        throw new ServiceUnavailableException('Unable to join group call');
       }
       client.emit('incoming_call_acceptance', {
         callId,

@@ -21,6 +21,9 @@ describe('CallStateController', () => {
   const createController = (foundSession: CallSession | null) => {
     const sessionRepository = {
       findByCallId: jest.fn().mockResolvedValue(foundSession),
+      findActiveGroupCallByConversationId: jest
+        .fn()
+        .mockResolvedValue(foundSession),
     };
     const conversationClient = {
       send: jest.fn().mockReturnValue(
@@ -41,6 +44,45 @@ describe('CallStateController', () => {
       conversationClient,
     };
   };
+
+  it('returns a live group summary only to a current member', async () => {
+    const groupSession = new CallSession({
+      ...session,
+      isGroupCall: true,
+      status: 'active',
+      participantIds: ['user-a', 'user-b'],
+      answeredAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+    const { controller, conversationClient, sessionRepository } =
+      createController(groupSession);
+    await expect(
+      controller.getActiveGroupByConversation({
+        conversationId: 'conv-1',
+        userId: 'user-b',
+      }),
+    ).resolves.toEqual({
+      call: {
+        callId: 'call-1',
+        conversationId: 'conv-1',
+        participantCount: 2,
+        startedAt: '2026-01-01T00:00:00.000Z',
+        elapsedSeconds: expect.any(Number),
+        joined: true,
+      },
+    });
+    conversationClient.send.mockReturnValue(
+      of({ id: 'conv-1', isGroup: true, participantIds: ['user-a'] }),
+    );
+    await expect(
+      controller.getActiveGroupByConversation({
+        conversationId: 'conv-1',
+        userId: 'user-b',
+      }),
+    ).resolves.toEqual({ call: null });
+    expect(
+      sessionRepository.findActiveGroupCallByConversationId,
+    ).toHaveBeenCalledTimes(1);
+  });
 
   it('does not expose group metadata to a member removed after invitation', async () => {
     const groupSession = new CallSession({

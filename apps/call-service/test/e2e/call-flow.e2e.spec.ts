@@ -1044,6 +1044,17 @@ class FakeCallMediaEngine {
       throw new Error('Send transport is not connected');
     }
 
+    const existing = [...room.producers.entries()].find(
+      ([, producer]) =>
+        producer.userId === userId &&
+        producer.kind === kind &&
+        !producer.closed,
+    );
+    if (existing?.[1].transportId === transportId) {
+      throw new Error('Media producer already exists');
+    }
+    if (existing) existing[1].closed = true;
+
     this.producerCounter += 1;
     const producerId = `producer-${this.producerCounter}`;
     room.producers.set(producerId, {
@@ -1053,7 +1064,11 @@ class FakeCallMediaEngine {
       paused: false,
       closed: false,
     });
-    return Promise.resolve({ producerId });
+    return Promise.resolve(
+      existing
+        ? { producerId, replacedProducerId: existing[0] }
+        : { producerId },
+    );
   }
 
   consume(
@@ -2066,6 +2081,17 @@ describe('Call Service P0 flow (e2e)', () => {
           'set_audio_bitrate',
           { callId, transportId: 'copied', profile: 'normal' },
         ],
+        [
+          'set_group_mic_state',
+          {
+            callId,
+            producerId: 'copied',
+            enabled: true,
+            revision: 1,
+            actionId: 'guest-action',
+            requestId: 'losing-mic',
+          },
+        ],
       ] as const) {
         const denied = onceEvent<{ status: string }>(losingDevice, 'exception');
         losingDevice.emit(event, payload);
@@ -2116,17 +2142,131 @@ describe('Call Service P0 flow (e2e)', () => {
         recoveredGuest,
         'producer_created',
       );
+      const initialMic = onceEvent<{
+        producerId: string;
+        paused: boolean;
+        revision: number;
+      }>(host, 'new_producer');
       recoveredGuest.emit('produce', {
         callId,
         transportId: sendTransport.transportId,
         kind: 'audio',
+        audioEnabled: false,
         rtpParameters: { codecs: validRtpCapabilities.codecs },
       });
       const { producerId } = await producerCreated;
+      await expect(initialMic).resolves.toEqual(
+        expect.objectContaining({ producerId, paused: true, revision: 0 }),
+      );
       expect(
         groupMedia.getRoomState(callId)?.producers.get(producerId),
       ).toEqual(
-        expect.objectContaining({ userId: calleeUser.id, closed: false }),
+        expect.objectContaining({
+          userId: calleeUser.id,
+          paused: true,
+          closed: false,
+        }),
+      );
+
+      const micChanged = onceEvent<{
+        producerId: string;
+        enabled: boolean;
+        revision: number;
+      }>(host, 'group_mic_state_changed');
+      const micAck = onceEvent<{ status: string }>(
+        recoveredGuest,
+        'group_mic_state_updated',
+      );
+      recoveredGuest.emit('set_group_mic_state', {
+        callId,
+        producerId,
+        enabled: true,
+        revision: 2,
+        actionId: 'guest-action',
+        requestId: 'mic-on-2',
+      });
+      await expect(micChanged).resolves.toEqual(
+        expect.objectContaining({ producerId, enabled: true, revision: 2 }),
+      );
+      await expect(micAck).resolves.toEqual(
+        expect.objectContaining({ status: 'applied', requestId: 'mic-on-2' }),
+      );
+      const staleMicAck = onceEvent<{
+        enabled: boolean;
+        revision: number;
+        status: string;
+      }>(recoveredGuest, 'group_mic_state_updated');
+      recoveredGuest.emit('set_group_mic_state', {
+        callId,
+        producerId,
+        enabled: false,
+        revision: 1,
+        actionId: 'guest-action',
+        requestId: 'old-mic-off',
+      });
+      await expect(staleMicAck).resolves.toEqual(
+        expect.objectContaining({
+          enabled: true,
+          revision: 2,
+          status: 'stale',
+        }),
+      );
+      const micSnapshot = onceEvent<{
+        activeProducers: Array<{
+          producerId: string;
+          paused: boolean;
+          revision: number;
+        }>;
+      }>(host, 'call_rejoined');
+      const replayedMicAnnouncement = onceEvent<{ producerId: string }>(
+        host,
+        'new_producer',
+      );
+      host.emit('rejoin_call', { callId });
+      expect((await micSnapshot).activeProducers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ producerId, paused: false, revision: 2 }),
+        ]),
+      );
+      await expect(replayedMicAnnouncement).resolves.toEqual(
+        expect.objectContaining({ producerId }),
+      );
+      const replacedClosed = onceEvent<{ producerId: string }>(
+        host,
+        'producer_closed',
+      );
+      const replacedNew = onceEvent<{
+        producerId: string;
+        paused: boolean;
+        revision: number;
+      }>(host, 'new_producer');
+      const replacementTransport = await createAndConnectTransport(
+        recoveredGuest,
+        callId,
+        'send',
+      );
+      const replacementCreated = onceEvent<{ producerId: string }>(
+        recoveredGuest,
+        'producer_created',
+      );
+      recoveredGuest.emit('produce', {
+        callId,
+        transportId: replacementTransport.transportId,
+        kind: 'audio',
+        audioEnabled: false,
+        rtpParameters: { codecs: validRtpCapabilities.codecs },
+      });
+      const replacementId = (await replacementCreated).producerId;
+      expect(replacementId).not.toBe(producerId);
+      await expect(replacedClosed).resolves.toEqual(
+        expect.objectContaining({ producerId }),
+      );
+      await expect(replacedNew).resolves.toEqual(
+        expect.objectContaining({
+          producerId: replacementId,
+          paused: false,
+          revision: 2,
+        }),
       );
 
       const peerLeft = onceEvent<{ userId: string }>(host, 'peer_left');
@@ -2146,7 +2286,7 @@ describe('Call Service P0 flow (e2e)', () => {
           .participantIds,
       ).toEqual([callerUser.id, secondGuestUser.id]);
       expect(
-        groupMedia.getRoomState(callId)?.producers.get(producerId)?.closed,
+        groupMedia.getRoomState(callId)?.producers.get(replacementId)?.closed,
       ).toBe(true);
       expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
         2,

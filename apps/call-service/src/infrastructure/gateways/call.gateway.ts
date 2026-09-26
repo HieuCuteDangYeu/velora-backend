@@ -115,6 +115,7 @@ type ProducePayload = {
   kind: 'audio' | 'video';
   rtpParameters: Record<string, unknown>;
   requestId?: string;
+  audioEnabled?: boolean;
 };
 
 type CloseProducerPayload = {
@@ -165,6 +166,15 @@ type SetVideoEnabledPayload = {
   producerId: string;
   enabled: boolean;
   revision?: number;
+  actionId?: string;
+  requestId?: string;
+};
+
+type SetGroupMicStatePayload = {
+  callId: string;
+  producerId: string;
+  enabled: boolean;
+  revision: number;
   actionId?: string;
   requestId?: string;
 };
@@ -364,6 +374,11 @@ export class CallGateway
   private readonly reconnectStartedAtByParticipant = new Map<string, number>();
   private readonly videoStatesByProducer = new Map<string, VideoStateRecord>();
   private readonly videoStateQueues = new Map<string, Promise<void>>();
+  private readonly groupMicStates = new Map<
+    string,
+    VideoStateRecord & { producerId: string }
+  >();
+  private readonly groupMicQueues = new Map<string, Promise<void>>();
   private readonly groupAcceptQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
   private expirySweepInFlight = false;
@@ -425,6 +440,8 @@ export class CallGateway
     this.reconnectStartedAtByParticipant.clear();
     this.videoStatesByProducer.clear();
     this.videoStateQueues.clear();
+    this.groupMicStates.clear();
+    this.groupMicQueues.clear();
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -447,6 +464,43 @@ export class CallGateway
 
   private videoStateKey(callId: string, producerId: string): string {
     return `${callId}:${producerId}`;
+  }
+
+  private groupMicStateKey(callId: string, userId: string): string {
+    return `${callId}:${userId}`;
+  }
+
+  private clearGroupMicState(callId: string, userId?: string): void {
+    const prefix = userId
+      ? this.groupMicStateKey(callId, userId)
+      : `${callId}:`;
+    for (const key of this.groupMicStates.keys()) {
+      if (userId ? key === prefix : key.startsWith(prefix)) {
+        this.groupMicStates.delete(key);
+        this.groupMicQueues.delete(key);
+      }
+    }
+  }
+
+  private async withGroupMicQueue<T>(
+    callId: string,
+    userId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const key = this.groupMicStateKey(callId, userId);
+    const previous = this.groupMicQueues.get(key) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupMicQueues.set(key, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.groupMicQueues.get(key) === tail)
+        this.groupMicQueues.delete(key);
+    }
   }
 
   private getVideoState(callId: string, producerId: string): VideoStateRecord {
@@ -483,6 +537,14 @@ export class CallGateway
     producers: ActiveProducerResult[],
   ): ActiveProducerResult[] {
     return producers.map((producer) => {
+      if (producer.kind === 'audio') {
+        const mic = this.groupMicStates.get(
+          this.groupMicStateKey(callId, producer.userId),
+        );
+        return mic?.producerId === producer.producerId
+          ? { ...producer, paused: !mic.enabled, revision: mic.revision }
+          : producer;
+      }
       if (producer.kind !== 'video') return producer;
       const state = this.getVideoStateForProducer(callId, producer);
       return {
@@ -920,7 +982,32 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
     this.assertSocketJoinedToCall(client, payload.callId);
+    if (
+      payload.audioEnabled !== undefined &&
+      typeof payload.audioEnabled !== 'boolean'
+    ) {
+      throw new BadRequestException('Invalid initial audio state');
+    }
 
+    const session =
+      payload.kind === 'audio'
+        ? await this.sessionRepository.findByCallId(payload.callId)
+        : null;
+    if (session?.isGroupCall && payload.kind === 'audio') {
+      return this.withGroupMicQueue(payload.callId, userId, () =>
+        this.produceForSocket(payload, client, userId, true),
+      );
+    }
+    return this.produceForSocket(payload, client, userId, false);
+  }
+
+  private async produceForSocket(
+    payload: ProducePayload,
+    client: Socket,
+    userId: string,
+    isGroupAudio: boolean,
+  ): Promise<void> {
+    this.assertSocketJoinedToCall(client, payload.callId);
     const result = await this.produceUseCase.execute(
       payload.callId,
       userId,
@@ -931,6 +1018,48 @@ export class CallGateway
     );
 
     const { producerId, replacedProducerId } = result;
+    if (isGroupAudio) {
+      const key = this.groupMicStateKey(payload.callId, userId);
+      const previous = this.groupMicStates.get(key);
+      const enabled = previous?.enabled ?? payload.audioEnabled ?? true;
+      if (!enabled) {
+        try {
+          await this.mediaEngine.pauseProducer(
+            payload.callId,
+            userId,
+            producerId,
+          );
+        } catch (error) {
+          await this.mediaEngine
+            .closeProducer(payload.callId, userId, producerId)
+            .catch(() => undefined);
+          throw error;
+        }
+      }
+      const latestSession = await this.sessionRepository.findByCallId(
+        payload.callId,
+      );
+      if (
+        !latestSession?.isGroupCall ||
+        latestSession.status !== 'active' ||
+        !latestSession.participantIds.includes(userId) ||
+        !this.isSocketJoinedToCall(client, payload.callId)
+      ) {
+        await this.mediaEngine
+          .closeProducer(payload.callId, userId, producerId)
+          .catch(() => undefined);
+        throw new ForbiddenException(
+          'Group audio producer is no longer authorized',
+        );
+      }
+      if (previous || payload.audioEnabled !== undefined) {
+        this.groupMicStates.set(key, {
+          producerId,
+          enabled,
+          revision: previous?.revision ?? 0,
+        });
+      }
+    }
     if (replacedProducerId) {
       client.to(payload.callId).emit('producer_closed', {
         callId: payload.callId,
@@ -974,6 +1103,9 @@ export class CallGateway
       payload.kind === 'video'
         ? this.getVideoState(payload.callId, producerId)
         : undefined;
+    const micState = isGroupAudio
+      ? this.groupMicStates.get(this.groupMicStateKey(payload.callId, userId))
+      : undefined;
 
     client.to(payload.callId).emit('new_producer', {
       callId: payload.callId,
@@ -982,6 +1114,9 @@ export class CallGateway
       kind: payload.kind,
       ...(videoState
         ? { paused: !videoState.enabled, revision: videoState.revision }
+        : {}),
+      ...(micState?.producerId === producerId
+        ? { paused: !micState.enabled, revision: micState.revision }
         : {}),
     });
   }
@@ -1235,6 +1370,164 @@ export class CallGateway
         this.videoStateQueues.delete(key);
       }
     }
+  }
+
+  @SubscribeMessage('set_group_mic_state')
+  async handleSetGroupMicState(
+    @MessageBody() payload: SetGroupMicStatePayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    if (
+      !payload ||
+      typeof payload.callId !== 'string' ||
+      payload.callId.length === 0 ||
+      payload.callId.length > 128 ||
+      typeof payload.enabled !== 'boolean' ||
+      !Number.isSafeInteger(payload.revision) ||
+      payload.revision < 1 ||
+      payload.revision > 1_000_000_000 ||
+      typeof payload.producerId !== 'string' ||
+      payload.producerId.length === 0 ||
+      payload.producerId.length > 128 ||
+      (payload.actionId !== undefined &&
+        (typeof payload.actionId !== 'string' ||
+          payload.actionId.length > 128)) ||
+      typeof payload.requestId !== 'string' ||
+      payload.requestId.length === 0 ||
+      payload.requestId.length > 128
+    ) {
+      throw new BadRequestException('Invalid group mic state');
+    }
+
+    return this.withGroupMicQueue(payload.callId, userId, async () => {
+      const session = await this.sessionRepository.findByCallId(payload.callId);
+      this.assertGroupLifecycleCapable(client, session);
+      if (
+        !session?.isGroupCall ||
+        session.status !== 'active' ||
+        !session.participantIds.includes(userId)
+      ) {
+        throw new ForbiddenException('Group call is no longer active');
+      }
+      this.assertSocketJoinedToCall(client, payload.callId);
+      if (
+        userId !== session.initiatorId &&
+        (!session.groupConfirmedAnswerActionIds[userId] ||
+          session.groupConfirmedAnswerActionIds[userId] !==
+            payload.actionId?.trim())
+      ) {
+        throw new ForbiddenException('This action did not join the group call');
+      }
+
+      const producer = (
+        await this.mediaEngine.listActiveProducers(payload.callId)
+      ).find(
+        (entry) =>
+          entry.producerId === payload.producerId &&
+          entry.userId === userId &&
+          entry.kind === 'audio',
+      );
+      if (!producer) throw new NotFoundException('Audio producer not found');
+
+      const key = this.groupMicStateKey(payload.callId, userId);
+      const stored = this.groupMicStates.get(key);
+      const current =
+        stored?.producerId === producer.producerId
+          ? stored
+          : {
+              producerId: producer.producerId,
+              enabled: producer.paused !== true,
+              revision: 0,
+            };
+      const status: VideoStateUpdateStatus =
+        payload.revision < current.revision ||
+        (payload.revision === current.revision &&
+          payload.enabled !== current.enabled)
+          ? 'stale'
+          : payload.revision === current.revision
+            ? 'already_applied'
+            : 'applied';
+
+      if (status === 'applied') {
+        if (payload.enabled) {
+          await this.mediaEngine.resumeProducer(
+            payload.callId,
+            userId,
+            producer.producerId,
+          );
+        } else {
+          await this.mediaEngine.pauseProducer(
+            payload.callId,
+            userId,
+            producer.producerId,
+          );
+        }
+        const latestSession = await this.sessionRepository.findByCallId(
+          payload.callId,
+        );
+        const stillActive =
+          latestSession?.isGroupCall &&
+          latestSession.status === 'active' &&
+          latestSession.participantIds.includes(userId) &&
+          this.isSocketJoinedToCall(client, payload.callId) &&
+          (userId === latestSession.initiatorId ||
+            (Boolean(latestSession.groupConfirmedAnswerActionIds[userId]) &&
+              latestSession.groupConfirmedAnswerActionIds[userId] ===
+                payload.actionId?.trim()));
+        const latestProducer = (
+          await this.mediaEngine.listActiveProducers(payload.callId)
+        ).some(
+          (entry) =>
+            entry.producerId === producer.producerId &&
+            entry.userId === userId &&
+            entry.kind === 'audio',
+        );
+        if (!stillActive || !latestProducer) {
+          if (latestProducer) {
+            if (current.enabled) {
+              await this.mediaEngine.resumeProducer(
+                payload.callId,
+                userId,
+                producer.producerId,
+              );
+            } else {
+              await this.mediaEngine.pauseProducer(
+                payload.callId,
+                userId,
+                producer.producerId,
+              );
+            }
+          }
+          throw new ForbiddenException(
+            'Group mic state can no longer be changed',
+          );
+        }
+        this.groupMicStates.set(key, {
+          producerId: producer.producerId,
+          enabled: payload.enabled,
+          revision: payload.revision,
+        });
+        this.server.to(payload.callId).emit('group_mic_state_changed', {
+          callId: payload.callId,
+          userId,
+          producerId: producer.producerId,
+          enabled: payload.enabled,
+          revision: payload.revision,
+        });
+      }
+
+      client.emit('group_mic_state_updated', {
+        callId: payload.callId,
+        userId,
+        producerId: producer.producerId,
+        enabled: status === 'applied' ? payload.enabled : current.enabled,
+        revision: status === 'applied' ? payload.revision : current.revision,
+        status,
+        ...(payload.requestId ? { requestId: payload.requestId } : {}),
+      });
+    });
   }
 
   private async applyVideoStateUpdate(
@@ -1874,6 +2167,7 @@ export class CallGateway
   private emitCallEnded(session: CallSession, reason: string): void {
     this.metrics.recordCallEvent('terminal_emitted');
     this.clearVideoState(session.callId);
+    this.clearGroupMicState(session.callId);
     this.clearPendingUnansweredCall(session.callId);
     for (const userId of session.invitedUserIds) {
       this.clearPendingDisconnect(session.callId, userId);
@@ -1961,6 +2255,7 @@ export class CallGateway
   }
 
   private emitPeerLeft(callId: string, userId: string, reason: string): void {
+    this.clearGroupMicState(callId, userId);
     this.server.to(callId).emit('peer_left', {
       callId,
       userId,

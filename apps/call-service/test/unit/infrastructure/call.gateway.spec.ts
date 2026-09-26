@@ -943,6 +943,184 @@ describe('CallGateway reconnect recovery', () => {
     );
   });
 
+  it('serializes group mic revisions and denies a stale guest action', async () => {
+    const groupSession = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b'],
+      groupAnswerActionIds: { 'user-b': 'winner-action' },
+      groupConfirmedAnswerActionIds: { 'user-b': 'winner-action' },
+    });
+    const mediaEngine = {
+      listActiveProducers: jest.fn().mockResolvedValue([
+        {
+          producerId: 'audio-b',
+          userId: 'user-b',
+          kind: 'audio',
+          paused: false,
+        },
+      ]),
+      pauseProducer: jest.fn().mockResolvedValue(undefined),
+      resumeProducer: jest.fn().mockResolvedValue(undefined),
+    };
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(groupSession),
+      },
+    });
+    const roomEmitter = { emit: jest.fn() };
+    gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+    const guest = createSocket({
+      id: 'winner-socket',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+
+    await Promise.all([
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: false,
+          revision: 2,
+          actionId: 'winner-action',
+          requestId: 'mute-2',
+        },
+        guest,
+      ),
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 1,
+          actionId: 'winner-action',
+          requestId: 'mute-1',
+        },
+        guest,
+      ),
+    ]);
+
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(mediaEngine.resumeProducer).not.toHaveBeenCalled();
+    expect(roomEmitter.emit).toHaveBeenCalledWith('group_mic_state_changed', {
+      callId: 'call-1',
+      userId: 'user-b',
+      producerId: 'audio-b',
+      enabled: false,
+      revision: 2,
+    });
+    expect(guest.emit).toHaveBeenCalledWith(
+      'group_mic_state_updated',
+      expect.objectContaining({
+        enabled: false,
+        revision: 2,
+        status: 'stale',
+        requestId: 'mute-1',
+      }),
+    );
+    await gateway.handleSetGroupMicState(
+      {
+        callId: 'call-1',
+        producerId: 'audio-b',
+        enabled: false,
+        revision: 2,
+        actionId: 'winner-action',
+        requestId: 'mute-2-retry',
+      },
+      guest,
+    );
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(1);
+    expect(guest.emit).toHaveBeenCalledWith(
+      'group_mic_state_updated',
+      expect.objectContaining({
+        status: 'already_applied',
+        requestId: 'mute-2-retry',
+      }),
+    );
+    await expect(
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          actionId: 'old-action',
+          requestId: 'stale',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('This action did not join the group call');
+    const missingWinnerGateway = createGateway({
+      mediaEngine,
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(
+          new CallSession({
+            ...groupSession,
+            groupConfirmedAnswerActionIds: {},
+          }),
+        ),
+      },
+    });
+    await expect(
+      missingWinnerGateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          requestId: 'missing-winner',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('This action did not join the group call');
+    await expect(
+      gateway.handleSetGroupMicState(
+        {
+          callId: 'call-1',
+          producerId: 'audio-b',
+          enabled: true,
+          revision: 3,
+          actionId: { forged: true } as never,
+          requestId: 'malformed-action',
+        },
+        guest,
+      ),
+    ).rejects.toThrow('Invalid group mic state');
+
+    let releaseResume!: () => void;
+    let signalResumeStarted!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      signalResumeStarted = resolve;
+    });
+    const resumePending = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    mediaEngine.resumeProducer.mockImplementationOnce(() => {
+      signalResumeStarted();
+      return resumePending;
+    });
+    const staleSocketCommand = gateway.handleSetGroupMicState(
+      {
+        callId: 'call-1',
+        producerId: 'audio-b',
+        enabled: true,
+        revision: 3,
+        actionId: 'winner-action',
+        requestId: 'removed-during-resume',
+      },
+      guest,
+    );
+    await resumeStarted;
+    guest.rooms.delete('call-1');
+    releaseResume();
+    await expect(staleSocketCommand).rejects.toThrow(
+      'Group mic state can no longer be changed',
+    );
+    expect(mediaEngine.pauseProducer).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps legacy camera payloads functional while assigning a revision', async () => {
     const videoSession = new CallSession({
       ...activeSession,

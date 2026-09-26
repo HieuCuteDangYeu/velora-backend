@@ -1,3 +1,4 @@
+import type { Reel } from '@content/domain/entities/reel.entity';
 import type {
   IRecommendationFeedCacheRepository,
   RecommendationGlobalSlate,
@@ -47,16 +48,20 @@ export class RefreshGlobalRecommendationSlateUseCase {
 
     const merged = this.mergeCandidates(
       fulfilled.flatMap((result) => result.value),
-    ).slice(0, GLOBAL_SLATE_SIZE);
+    );
     const reels = await this.recommendationRepository.findEligibleReelsByIds(
       merged.map((item) => item.reelId),
       [],
     );
+    const reelById = new Map(reels.map((reel) => [reel.id, reel]));
     const eligibleIds = new Set(reels.map((reel) => reel.id));
     const slate: RecommendationGlobalSlate = {
       generatedAt: new Date().toISOString(),
-      items: merged
-        .filter((item) => eligibleIds.has(item.reelId))
+      items: this.diversifyBySeries(
+        merged.filter((item) => eligibleIds.has(item.reelId)),
+        reelById,
+      )
+        .slice(0, GLOBAL_SLATE_SIZE)
         .map(({ reelId, primarySource, sources }) => ({
           reelId,
           primarySource,
@@ -111,6 +116,35 @@ export class RefreshGlobalRecommendationSlateUseCase {
         (left, right) =>
           right.score - left.score || left.reelId.localeCompare(right.reelId),
       );
+  }
+
+  private diversifyBySeries<T extends { reelId: string }>(
+    items: T[],
+    reelById: Map<string, Reel>,
+  ): T[] {
+    const queues = new Map<string, T[]>();
+
+    for (const item of items) {
+      const seriesId = reelById.get(item.reelId)?.series?.id;
+      const key = seriesId ?? item.reelId;
+      const queue = queues.get(key) ?? [];
+      queue.push(item);
+      queues.set(key, queue);
+    }
+
+    const diversified: T[] = [];
+    for (let round = 0; diversified.length < items.length; round += 1) {
+      let added = false;
+      for (const queue of queues.values()) {
+        if (round < queue.length) {
+          diversified.push(queue[round]);
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
+
+    return diversified;
   }
 
   private clamp(value: number): number {

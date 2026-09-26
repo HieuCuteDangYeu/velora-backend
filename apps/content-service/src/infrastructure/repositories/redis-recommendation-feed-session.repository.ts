@@ -128,6 +128,8 @@ export class RedisRecommendationFeedSessionRepository implements IRecommendation
       typeof parsed.viewerId !== 'string' ||
       typeof parsed.algorithmVersion !== 'string' ||
       typeof parsed.generatedAt !== 'string' ||
+      (parsed.personalizedRefillComplete !== undefined &&
+        typeof parsed.personalizedRefillComplete !== 'boolean') ||
       (parsed.excludedUserIds !== undefined &&
         (!Array.isArray(parsed.excludedUserIds) ||
           parsed.excludedUserIds.some((id) => typeof id !== 'string'))) ||

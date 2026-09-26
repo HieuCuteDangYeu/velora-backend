@@ -12,6 +12,7 @@ export interface RecommendationFeedSession {
   algorithmVersion: string;
   generatedAt: string;
   excludedUserIds?: string[];
+  personalizedRefillComplete?: boolean;
   items: RecommendationFeedSessionItem[];
 }
 

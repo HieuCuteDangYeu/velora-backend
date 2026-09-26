@@ -44,6 +44,8 @@ interface RecommendationSessionPage {
 
 const PERSONALIZED_REFILL_THRESHOLD = 10;
 const PERSONALIZED_REFILL_LOCK_TTL_SECONDS = 60;
+const PERSONALIZED_REFILL_WAIT_MS = 10_000;
+const PERSONALIZED_REFILL_POLL_MS = 100;
 const REEL_ENTITY_CACHE_TTL_SECONDS = 3 * 60 * 60;
 const MAX_SESSION_ITEMS = 300;
 
@@ -127,11 +129,22 @@ export class GetRecommendedReelsUseCase {
             )
           : this.emptyPage();
 
-        if (
-          authenticated &&
-          (!audienceReady ||
-            page.remainingCount <= PERSONALIZED_REFILL_THRESHOLD)
-        ) {
+        const shouldRefill =
+          !audienceReady ||
+          (page.nextCursor !== null &&
+            page.remainingCount <= PERSONALIZED_REFILL_THRESHOLD);
+        if (authenticated && shouldRefill) {
+          if (
+            audienceReady &&
+            session.personalizedRefillComplete !== false
+          ) {
+            session = { ...session, personalizedRefillComplete: false };
+            await this.feedSessionRepository.save(
+              session,
+              this.recommendationConfig.getFeedSessionTtlSeconds(),
+            );
+          }
+
           this.triggerPersonalizedRefill({
             viewerId,
             feedSessionId,
@@ -175,6 +188,7 @@ export class GetRecommendedReelsUseCase {
           viewerId,
           algorithmVersion,
           generatedAt,
+          personalizedRefillComplete: !authenticated,
           items: sessionItems,
         };
         sourceCounts = this.countSessionSources(session.items);
@@ -220,6 +234,29 @@ export class GetRecommendedReelsUseCase {
             excludeRecentlySeen: input.excludeRecentlySeen,
           });
         }
+      }
+
+      if (
+        authenticated &&
+        page.nextCursor === null &&
+        session.personalizedRefillComplete === false
+      ) {
+        session = await this.awaitPersonalizedRefill({
+          viewerId,
+          feedSessionId,
+          algorithmVersion,
+          excludedUserIds: requestedExcludedUserIds,
+          excludeRecentlySeen: input.excludeRecentlySeen,
+        });
+        page = await this.pageFromSession(
+          session,
+          input.cursor,
+          limit,
+          this.uniqueStrings([
+            ...requestedExcludedUserIds,
+            ...(session.excludedUserIds ?? []),
+          ]),
+        );
       }
 
       const generatedAt = session.generatedAt;
@@ -505,96 +542,156 @@ export class GetRecommendedReelsUseCase {
     algorithmVersion: string;
     excludedUserIds: string[];
     excludeRecentlySeen?: boolean;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const lockToken = await this.feedSessionRepository.tryAcquireRefillLock(
       input.feedSessionId,
       PERSONALIZED_REFILL_LOCK_TTL_SECONDS,
     );
-    if (!lockToken) return;
+    if (!lockToken) return false;
 
-    const startedAt = Date.now();
     try {
-      const audience = await this.friendContentAccessService.getFeedAudience(
-        input.viewerId,
-      );
-      const excludedUserIds = this.uniqueStrings([
-        ...audience.excludedUserIds,
-        ...input.excludedUserIds,
-      ]);
-      const latest = await this.feedSessionRepository.get(input.feedSessionId);
-
-      if (
-        !latest ||
-        latest.viewerId !== input.viewerId ||
-        latest.algorithmVersion !== input.algorithmVersion
-      ) {
-        return;
-      }
-
-      const audienceSession = { ...latest, excludedUserIds };
-      await this.feedSessionRepository.save(
-        audienceSession,
-        this.recommendationConfig.getFeedSessionTtlSeconds(),
-      );
-
-      const pipeline = await this.buildPipeline({
-        viewerId: input.viewerId,
-        limit: this.recommendationConfig.getFeedSlateSize(),
-        excludedUserIds,
-        friendUserIds: audience.friendUserIds,
-        excludeRecentlySeen: input.excludeRecentlySeen,
-        feedSessionId: input.feedSessionId,
-      });
-
-      const existingIds = new Set(
-        audienceSession.items.map((item) => item.reelId),
-      );
-      const capacity = Math.max(
-        0,
-        MAX_SESSION_ITEMS - audienceSession.items.length,
-      );
-      const appended = pipeline.items
-        .filter((item) => !existingIds.has(item.reel.id))
-        .slice(0, capacity)
-        .map((item) => ({
-          reelId: item.reel.id,
-          primarySource: item.candidate.primarySource,
-          sources: item.candidate.sources,
-        }));
-
-      if (appended.length > 0) {
-        await this.feedSessionRepository.save(
-          {
-            ...audienceSession,
-            items: [...audienceSession.items, ...appended],
-          },
-          this.recommendationConfig.getFeedSessionTtlSeconds(),
-        );
-      }
-
-      await this.feedCacheRepository.saveReels(
-        pipeline.items.map((item) => item.reel),
-        REEL_ENTITY_CACHE_TTL_SECONDS,
-      );
-
-      this.publishSourceTelemetry({
-        sourceCounts: pipeline.sourceCounts,
-        algorithmVersion: input.algorithmVersion,
-        feedSessionId: input.feedSessionId,
-        requestedLimit: this.recommendationConfig.getFeedSlateSize(),
-        latencyMs: Math.max(0, Date.now() - startedAt),
-        featureFlags: {
-          ...this.recommendationConfig.getFeatureFlags(),
-          backgroundPersonalizedRefill: true,
-        },
-        occurredAt: new Date().toISOString(),
-      });
+      await this.buildAndAppendPersonalizedItems(input);
+      return true;
     } finally {
       await this.feedSessionRepository.releaseRefillLock(
         input.feedSessionId,
         lockToken,
       );
     }
+  }
+
+  private async awaitPersonalizedRefill(input: {
+    viewerId: string;
+    feedSessionId: string;
+    algorithmVersion: string;
+    excludedUserIds: string[];
+    excludeRecentlySeen?: boolean;
+  }): Promise<RecommendationFeedSession> {
+    const deadline = Date.now() + PERSONALIZED_REFILL_WAIT_MS;
+
+    while (Date.now() < deadline) {
+      const session = await this.feedSessionRepository.get(input.feedSessionId);
+      if (
+        !session ||
+        session.viewerId !== input.viewerId ||
+        session.algorithmVersion !== input.algorithmVersion
+      ) {
+        throw new Error(
+          `Recommendation feed session ${input.feedSessionId} expired during refill`,
+        );
+      }
+      if (session.personalizedRefillComplete === true) return session;
+
+      const started = await this.refillPersonalizedSession(input);
+      if (started) {
+        const completed = await this.feedSessionRepository.get(
+          input.feedSessionId,
+        );
+        if (completed?.personalizedRefillComplete === true) return completed;
+        throw new Error(
+          `Recommendation refill ${input.feedSessionId} completed without saving its session`,
+        );
+      }
+
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, PERSONALIZED_REFILL_POLL_MS),
+      );
+    }
+
+    throw new Error(
+      `Timed out waiting for recommendation refill ${input.feedSessionId}`,
+    );
+  }
+
+  private async buildAndAppendPersonalizedItems(
+    input: {
+      viewerId: string;
+      feedSessionId: string;
+      algorithmVersion: string;
+      excludedUserIds: string[];
+      excludeRecentlySeen?: boolean;
+    },
+  ): Promise<void> {
+    const startedAt = Date.now();
+    const audience = await this.friendContentAccessService.getFeedAudience(
+      input.viewerId,
+    );
+    const latest = await this.feedSessionRepository.get(input.feedSessionId);
+
+    if (
+      !latest ||
+      latest.viewerId !== input.viewerId ||
+      latest.algorithmVersion !== input.algorithmVersion
+    ) {
+      return;
+    }
+
+    const excludedUserIds = this.uniqueStrings([
+      ...audience.excludedUserIds,
+      ...input.excludedUserIds,
+    ]);
+    const audienceSession = {
+      ...latest,
+      excludedUserIds,
+      personalizedRefillComplete: false,
+    };
+    await this.feedSessionRepository.save(
+      audienceSession,
+      this.recommendationConfig.getFeedSessionTtlSeconds(),
+    );
+
+    const pipeline = await this.buildPipeline({
+      viewerId: input.viewerId,
+      limit: this.recommendationConfig.getFeedSlateSize(),
+      excludedUserIds,
+      friendUserIds: audience.friendUserIds,
+      excludeRecentlySeen: input.excludeRecentlySeen,
+      feedSessionId: input.feedSessionId,
+    });
+
+    const existingIds = new Set(
+      audienceSession.items.map((item) => item.reelId),
+    );
+    const capacity = Math.max(
+      0,
+      MAX_SESSION_ITEMS - audienceSession.items.length,
+    );
+    const appended = pipeline.items
+      .filter((item) => !existingIds.has(item.reel.id))
+      .slice(0, capacity)
+      .map((item) => ({
+        reelId: item.reel.id,
+        primarySource: item.candidate.primarySource,
+        sources: item.candidate.sources,
+      }));
+
+    const refilledSession: RecommendationFeedSession = {
+      ...audienceSession,
+      items: [...audienceSession.items, ...appended],
+      personalizedRefillComplete: true,
+    };
+
+    await this.feedCacheRepository.saveReels(
+      pipeline.items.map((item) => item.reel),
+      REEL_ENTITY_CACHE_TTL_SECONDS,
+    );
+    await this.feedSessionRepository.save(
+      refilledSession,
+      this.recommendationConfig.getFeedSessionTtlSeconds(),
+    );
+
+    this.publishSourceTelemetry({
+      sourceCounts: pipeline.sourceCounts,
+      algorithmVersion: input.algorithmVersion,
+      feedSessionId: input.feedSessionId,
+      requestedLimit: this.recommendationConfig.getFeedSlateSize(),
+      latencyMs: Math.max(0, Date.now() - startedAt),
+      featureFlags: {
+        ...this.recommendationConfig.getFeatureFlags(),
+        backgroundPersonalizedRefill: true,
+      },
+      occurredAt: new Date().toISOString(),
+    });
   }
 
   private countSessionSources(

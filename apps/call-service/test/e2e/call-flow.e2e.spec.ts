@@ -1618,7 +1618,7 @@ describe('Call Service P0 flow (e2e)', () => {
       groupRedis = new Redis({ path: redisSocket, lazyConnect: true });
       await groupRedis.connect();
       await groupRedis.ping();
-      process.env.CALL_NO_ANSWER_TIMEOUT_MS = '5000';
+      process.env.CALL_NO_ANSWER_TIMEOUT_MS = '15000';
       process.env.CALL_RECONNECT_GRACE_MS = '5000';
 
       groupModule = await Test.createTestingModule({
@@ -1760,7 +1760,7 @@ describe('Call Service P0 flow (e2e)', () => {
         1,
       );
 
-      const lateGuest = await connectGroupClient('late-guest-token');
+      let lateGuest = await connectGroupClient('late-guest-token');
       const lateGuestOtherDevice = await connectGroupClient('late-guest-token');
       const lateDenied = onceEvent<{ status: string }>(lateGuest, 'exception');
       lateGuest.emit('join_group_call', { callId, actionId: 'late-action' });
@@ -1808,6 +1808,37 @@ describe('Call Service P0 flow (e2e)', () => {
         expect.objectContaining({ callId }),
       );
       await expect(duplicatePeer).resolves.toBeNull();
+      const lateReconnecting = onceEvent<{ userId: string }>(
+        host,
+        'peer_reconnecting',
+      );
+      const lateDisconnected = onceEvent<{ userId: string }>(
+        host,
+        'peer_left',
+        7000,
+      );
+      // A client can lose call_joined after Redis committed the late join.
+      lateGuest.disconnect();
+      await expect(lateReconnecting).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
+      await expect(lateDisconnected).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toEqual([callerUser.id]);
+      lateGuest = await connectGroupClient('late-guest-token');
+      const lateRetry = onceEvent<{ callId: string }>(lateGuest, 'call_joined');
+      const lateRetryPeer = onceEvent<{ userId: string }>(host, 'new_peer');
+      lateGuest.emit('join_group_call', { callId, actionId: 'late-action' });
+      await expect(lateRetry).resolves.toEqual(
+        expect.objectContaining({ callId }),
+      );
+      await expect(lateRetryPeer).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
       const lateLeft = onceEvent<{ callId: string }>(lateGuest, 'call_left');
       const latePeerLeft = onceEvent<{ userId: string }>(host, 'peer_left');
       lateGuest.emit('leave_call', { callId, reason: 'left' });
@@ -2076,6 +2107,53 @@ describe('Call Service P0 flow (e2e)', () => {
         {},
       );
       expect(groupMedia.getRoomState(callId)).toBeUndefined();
+
+      const invalidSubset = onceEvent<{ status: string }>(host, 'exception');
+      host.emit('initiate_call', {
+        conversationId: 'conv-group',
+        callType: 'VOICE',
+        selectedInviteeIds: [outsiderUser.id],
+      });
+      await expect(invalidSubset).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      groupConversations['conv-group'].participantIds.push(lateGuestUser.id);
+      const selectedHostJoin = onceEvent<{
+        callId: string;
+        session: { invitedUserIds?: string[] };
+      }>(host, 'call_joined');
+      const selectedInvite = onceEvent<{ callId: string }>(
+        lateGuest,
+        'incoming_call',
+      );
+      const unselectedInvite = waitForOptionalEvent(
+        secondGuest,
+        'incoming_call',
+        250,
+      );
+      host.emit('initiate_call', {
+        conversationId: 'conv-group',
+        callType: 'VOICE',
+        selectedInviteeIds: [lateGuestUser.id],
+      });
+      const [{ callId: selectedCallId }, selectedIncoming] = await Promise.all([
+        selectedHostJoin,
+        selectedInvite,
+      ]);
+      expect(selectedIncoming.callId).toBe(selectedCallId);
+      expect(
+        JSON.parse((await groupRedis.get(`call:${selectedCallId}:session`))!)
+          .invitedUserIds,
+      ).toEqual([callerUser.id, lateGuestUser.id]);
+      await expect(unselectedInvite).resolves.toBeNull();
+      const selectedEnded = onceEvent<{ callId: string }>(
+        lateGuest,
+        'call_ended',
+      );
+      host.emit('leave_call', { callId: selectedCallId, reason: 'ended' });
+      await expect(selectedEnded).resolves.toEqual(
+        expect.objectContaining({ callId: selectedCallId }),
+      );
     } finally {
       groupSockets.forEach((socket) => socket.disconnect());
       if (groupApp) await groupApp.close();
@@ -3424,12 +3502,16 @@ describe('Call Service P0 flow (e2e)', () => {
     });
   }
 
-  function onceEvent<T>(socket: Socket, event: string): Promise<T> {
+  function onceEvent<T>(
+    socket: Socket,
+    event: string,
+    timeoutMs = SOCKET_EVENT_TIMEOUT_MS,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
         reject(new Error(`Timed out waiting for ${event}`));
-      }, SOCKET_EVENT_TIMEOUT_MS);
+      }, timeoutMs);
 
       const cleanup = () => {
         clearTimeout(timer);

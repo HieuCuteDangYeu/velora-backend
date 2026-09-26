@@ -216,6 +216,82 @@ describe('Call lifecycle use cases', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('invites only a selected current member and rejects invalid subsets before room creation', async () => {
+    const sessionRepository = {
+      createActiveGroupSession: jest.fn().mockResolvedValue(true),
+    };
+    const stateRepository = { upsertParticipant: jest.fn() };
+    const eventPublisher = { publish: jest.fn() };
+    const mediaEngine = {
+      createRoom: jest.fn(),
+      getRouterRtpCapabilities: jest.fn().mockResolvedValue({
+        codecs: [],
+        headerExtensions: [],
+      }),
+    };
+    const conversationClient = {
+      send: jest.fn().mockReturnValue(
+        of({
+          id: 'group-1',
+          participantIds: ['user-a', 'user-b', 'user-c'],
+          isGroup: true,
+        }),
+      ),
+    };
+    const useCase = new InitiateCallUseCase(
+      sessionRepository as never,
+      stateRepository as never,
+      eventPublisher,
+      mediaEngine as never,
+      conversationClient as never,
+    );
+
+    for (const invalid of [
+      [],
+      ['user-a'],
+      ['outsider'],
+      ['user-b', 'user-b'],
+      ['user-b', 'outsider'],
+      [42],
+      null,
+      'user-b',
+    ]) {
+      await expect(
+        useCase.execute(
+          'group-1',
+          'user-a',
+          undefined,
+          'VOICE',
+          'socket-a',
+          2,
+          invalid as never,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(mediaEngine.createRoom).not.toHaveBeenCalled();
+    expect(eventPublisher.publish).not.toHaveBeenCalled();
+
+    const result = await useCase.execute(
+      'group-1',
+      'user-a',
+      undefined,
+      'VOICE',
+      'socket-a',
+      2,
+      ['user-c'],
+    );
+    expect(result.session.invitedUserIds).toEqual(['user-a', 'user-c']);
+    expect(result.session.targetUserId).toBe('user-c');
+    expect(eventPublisher.publish).toHaveBeenCalledTimes(1);
+    expect(eventPublisher.publish).toHaveBeenCalledWith(
+      'call.initiated',
+      expect.objectContaining({
+        recipientUserId: 'user-c',
+        invitedUserIds: ['user-a', 'user-c'],
+      }),
+    );
+  });
+
   it('terminalizes an unpublished call without deleting its late-action tombstone', async () => {
     const sessionRepository = {
       save: jest.fn((session: CallSession) => Promise.resolve(session)),

@@ -133,6 +133,7 @@ describe('CallGateway reconnect recovery', () => {
       'VOICE',
       'socket-a',
       2,
+      undefined,
     );
   });
 

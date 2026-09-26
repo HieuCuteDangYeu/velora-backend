@@ -73,6 +73,7 @@ export class InitiateCallUseCase {
     callType: CallType,
     socketId: string,
     groupLifecycleVersion?: number,
+    selectedInviteeIds?: string[],
   ): Promise<InitiateCallResult> {
     const now = new Date();
     const callId = randomUUID();
@@ -106,9 +107,26 @@ export class InitiateCallUseCase {
       );
     }
 
-    const invitedUserIds = participantIds.filter(
-      (participantId) => participantId !== initiatorId,
-    );
+    if (selectedInviteeIds !== undefined) {
+      if (
+        !isGroupCall ||
+        !Array.isArray(selectedInviteeIds) ||
+        selectedInviteeIds.length === 0 ||
+        new Set(selectedInviteeIds).size !== selectedInviteeIds.length ||
+        selectedInviteeIds.some(
+          (userId) =>
+            typeof userId !== 'string' ||
+            userId === initiatorId ||
+            !participantIds.includes(userId),
+        )
+      ) {
+        throw new BadRequestException('Invalid selected group invitees');
+      }
+    }
+
+    const invitedUserIds =
+      selectedInviteeIds ??
+      participantIds.filter((participantId) => participantId !== initiatorId);
     const resolvedTargetUserId = invitedUserIds[0];
 
     if (!resolvedTargetUserId) {
@@ -146,7 +164,9 @@ export class InitiateCallUseCase {
         initiatorId,
         targetUserId: resolvedTargetUserId,
         isGroupCall,
-        invitedUserIds: participantIds,
+        invitedUserIds: isGroupCall
+          ? [initiatorId, ...invitedUserIds]
+          : participantIds,
         groupName: isGroupCall
           ? conversation.name?.trim() || 'Group call'
           : undefined,
@@ -193,7 +213,9 @@ export class InitiateCallUseCase {
             initiatorId,
             targetUserId: recipientUserId,
             recipientUserId,
-            invitedUserIds: participantIds,
+            invitedUserIds: isGroupCall
+              ? [initiatorId, ...invitedUserIds]
+              : participantIds,
             isGroupCall,
             groupName: session?.groupName,
             groupAvatarUrl: session?.groupAvatarUrl,

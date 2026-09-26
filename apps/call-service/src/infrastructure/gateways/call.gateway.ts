@@ -65,6 +65,7 @@ import {
 type InitiateCallPayload = {
   conversationId: string;
   targetUserId?: string;
+  selectedInviteeIds?: string[];
   callType: 'VOICE' | 'VIDEO';
 };
 
@@ -572,6 +573,7 @@ export class CallGateway
       payload.callType,
       client.id,
       this.groupLifecycleVersion(client),
+      payload.selectedInviteeIds,
     );
 
     if (

@@ -141,6 +141,13 @@ end
 local joinedNow = not isAlreadyParticipant
 if joinedNow then
   table.insert(session.participantIds, userId)
+  if session.isGroupCall then
+    local remainingDeclined = {}
+    for _, declinedUserId in ipairs(session.declinedUserIds or {}) do
+      if declinedUserId ~= userId then table.insert(remainingDeclined, declinedUserId) end
+    end
+    session.declinedUserIds = remainingDeclined
+  end
 end
 if session.isGroupCall and userId ~= session.initiatorId and actionId ~= '' then
   session.groupAnswerActionIds = session.groupAnswerActionIds or {}
@@ -632,6 +639,10 @@ else
     session.participantIds = remaining
     session.declinedUserIds = session.declinedUserIds or {}
     table.insert(session.declinedUserIds, userId)
+    session.groupAnswerActionIds = session.groupAnswerActionIds or {}
+    session.groupAnswerActionIds[userId] = nil
+    session.groupConfirmedAnswerActionIds = session.groupConfirmedAnswerActionIds or {}
+    session.groupConfirmedAnswerActionIds[userId] = nil
     session.updatedAt = now
     session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
     local ttl = redis.call('TTL', KEYS[1])

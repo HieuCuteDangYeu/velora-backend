@@ -94,7 +94,7 @@ type RejoinCallPayload = {
 type LeaveCallPayload = {
   callId: string;
   reason?: string;
-  /** Legacy field; never grants permission to end a group participant's call. */
+  /** A supplied winner action must match; it never grants socket permission. */
   actionId?: string;
 };
 
@@ -1760,11 +1760,13 @@ export class CallGateway
     if (
       session?.isGroupCall &&
       session.status === 'active' &&
-      session.invitedUserIds.includes(userId) &&
       session.declinedUserIds.includes(userId) &&
       !session.participantIds.includes(userId)
     ) {
-      client.emit('call_left', { callId: payload.callId });
+      client.emit('call_left', {
+        callId: payload.callId,
+        ...(payload.actionId ? { actionId: payload.actionId } : {}),
+      });
       return;
     }
     if (
@@ -1774,6 +1776,16 @@ export class CallGateway
       !this.isSocketJoinedToCall(client, payload.callId)
     ) {
       throw new ForbiddenException('This device did not answer the group call');
+    }
+    if (
+      session?.isGroupCall &&
+      session.status === 'active' &&
+      userId !== session.initiatorId &&
+      session.participantIds.includes(userId) &&
+      payload.actionId !== undefined &&
+      session.groupAnswerActionIds[userId] !== payload.actionId.trim()
+    ) {
+      throw new ForbiddenException('This action did not join the group call');
     }
 
     const result = await this.leaveCallUseCase.execute(
@@ -1801,7 +1813,10 @@ export class CallGateway
     if (result.didTransition !== false) {
       this.emitCallEnded(result.session, result.endedReason);
     }
-    client.emit('call_left', { callId: payload.callId });
+    client.emit('call_left', {
+      callId: payload.callId,
+      ...(payload.actionId ? { actionId: payload.actionId } : {}),
+    });
   }
 
   @SubscribeMessage('reject_call')

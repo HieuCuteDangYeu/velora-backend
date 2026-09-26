@@ -1846,6 +1846,78 @@ describe('Call Service P0 flow (e2e)', () => {
       await expect(latePeerLeft).resolves.toEqual(
         expect.objectContaining({ userId: lateGuestUser.id }),
       );
+      const leftSession = JSON.parse(
+        (await groupRedis.get(`call:${callId}:session`))!,
+      );
+      expect(
+        leftSession.groupAnswerActionIds?.[lateGuestUser.id],
+      ).toBeUndefined();
+      expect(
+        leftSession.groupConfirmedAnswerActionIds?.[lateGuestUser.id],
+      ).toBeUndefined();
+      const lostLeaveAck = onceEvent<{ callId: string }>(
+        lateGuestOtherDevice,
+        'call_left',
+      );
+      lateGuestOtherDevice.emit('leave_call', { callId, reason: 'left' });
+      await expect(lostLeaveAck).resolves.toEqual({ callId });
+      const freshLateJoin = onceEvent<{ callId: string }>(
+        lateGuest,
+        'call_joined',
+      );
+      const freshLatePeer = onceEvent<{ userId: string }>(host, 'new_peer');
+      lateGuest.emit('join_group_call', {
+        callId,
+        actionId: 'late-action-after-leave',
+      });
+      await expect(freshLateJoin).resolves.toEqual(
+        expect.objectContaining({ callId }),
+      );
+      await expect(freshLatePeer).resolves.toEqual(
+        expect.objectContaining({ userId: lateGuestUser.id }),
+      );
+      const rejoinedSession = JSON.parse(
+        (await groupRedis.get(`call:${callId}:session`))!,
+      ) as {
+        declinedUserIds?: string[] | Record<string, string>;
+        groupAnswerActionIds: Record<string, string>;
+      };
+      expect(
+        Object.values(rejoinedSession.declinedUserIds ?? {}),
+      ).not.toContain(lateGuestUser.id);
+      expect(rejoinedSession.groupAnswerActionIds[lateGuestUser.id]).toBe(
+        'late-action-after-leave',
+      );
+      const staleLeaveDenied = onceEvent<{ status: string }>(
+        lateGuest,
+        'exception',
+      );
+      lateGuest.emit('leave_call', {
+        callId,
+        actionId: 'late-action',
+        reason: 'left',
+      });
+      await expect(staleLeaveDenied).resolves.toEqual(
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
+          .participantIds,
+      ).toContain(lateGuestUser.id);
+      const freshLateLeft = onceEvent<{ callId: string; actionId: string }>(
+        lateGuest,
+        'call_left',
+      );
+      lateGuest.emit('leave_call', {
+        callId,
+        actionId: 'late-action-after-leave',
+        reason: 'left',
+      });
+      await expect(freshLateLeft).resolves.toEqual({
+        callId,
+        actionId: 'late-action-after-leave',
+      });
+      await groupApp.get(PublishCallAnswerOutboxUseCase).execute();
       groupConversations['conv-group'].participantIds.pop();
       expect(
         JSON.parse((await groupRedis.get(`call:${callId}:session`))!)
@@ -1936,9 +2008,9 @@ describe('Call Service P0 flow (e2e)', () => {
       ]);
       expect(active.groupConfirmedAnswerActionIds).toEqual({
         [calleeUser.id]: 'guest-action',
-        [lateGuestUser.id]: 'late-action',
         [secondGuestUser.id]: 'second-guest-action',
       });
+      expect(active.groupAnswerActionIds?.[lateGuestUser.id]).toBeUndefined();
       await expect(outsiderInvite).resolves.toBeNull();
       expect(await groupGateway.server.in(callId).fetchSockets()).toHaveLength(
         3,

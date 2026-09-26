@@ -15,5 +15,11 @@ export interface IndexQualityReviewPersistenceInput {
 }
 
 export interface IIndexQualityReviewRepository {
-  persist(input: IndexQualityReviewPersistenceInput): Promise<void>;
+  findByAttempt(input: {
+    reelId: string;
+    indexAttemptId: string;
+  }): Promise<IndexQualityReviewPersistenceInput['review'] | null>;
+  persist(
+    input: IndexQualityReviewPersistenceInput,
+  ): Promise<IndexQualityReviewPersistenceInput['review']>;
 }

@@ -37,18 +37,50 @@ export class ValidatePersistedSemanticCandidateUseCase {
     await this.validator.execute(input);
     if (!this.policy.enabled) return;
 
-    let review: IndexQualityReviewResult;
-    try {
-      review = await this.ai.reviewIndexQuality(
-        this.toReviewRequest(input.job, input.documents),
-      );
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (this.policy.required) throw error;
-      this.logger.warn(
-        `[IndexQualityAgent] review unavailable; structural gate remains authoritative: ${message}`,
-      );
-      return;
+    const reelDocument = input.documents.find(
+      (document) => document.kind === 'REEL',
+    );
+    if (!reelDocument) {
+      throw new Error('Semantic quality review requires a Reel document');
+    }
+
+    let review: IndexQualityReviewResult | null =
+      await this.qualityReviews.findByAttempt({
+        reelId: input.job.reelId,
+        indexAttemptId: input.job.indexAttemptId,
+      });
+    if (!review) {
+      try {
+        const generated = await this.ai.reviewIndexQuality(
+          this.toReviewRequest(input.job, input.documents),
+        );
+        review = await this.qualityReviews.persist({
+          reelId: input.job.reelId,
+          indexAttemptId: input.job.indexAttemptId,
+          indexVersion: input.job.indexVersion,
+          embeddingProvider: reelDocument.embeddingProvider,
+          embeddingModel: reelDocument.embeddingModel,
+          embeddingDimensions: reelDocument.embeddingDimensions,
+          embeddingVersion: reelDocument.embeddingVersion,
+          reviewProvider:
+            this.config.get<string>('INDEX_QUALITY_REVIEW_PROVIDER')?.trim() ||
+            'groq',
+          reviewModel:
+            this.config.get<string>('AI_INDEX_QUALITY_MODEL')?.trim() ||
+            'unknown',
+          reviewVersion:
+            this.config.get<string>('INDEX_QUALITY_REVIEW_VERSION')?.trim() ||
+            'index-quality-review-v1',
+          review: generated,
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (this.policy.required) throw error;
+        this.logger.warn(
+          `[IndexQualityAgent] review unavailable; structural gate remains authoritative: ${message}`,
+        );
+        return;
+      }
     }
 
     const issueSummary = review.issues
@@ -57,32 +89,6 @@ export class ValidatePersistedSemanticCandidateUseCase {
     this.logger.log(
       `[IndexQualityAgent] reelId=${input.job.reelId} acceptable=${review.acceptable} confidence=${review.confidence.toFixed(2)} issues=${issueSummary || 'none'}`,
     );
-
-    const reelDocument = input.documents.find(
-      (document) => document.kind === 'REEL',
-    );
-    if (!reelDocument) {
-      throw new Error('Semantic quality review requires a Reel document');
-    }
-
-    await this.qualityReviews.persist({
-      reelId: input.job.reelId,
-      indexAttemptId: input.job.indexAttemptId,
-      indexVersion: input.job.indexVersion,
-      embeddingProvider: reelDocument.embeddingProvider,
-      embeddingModel: reelDocument.embeddingModel,
-      embeddingDimensions: reelDocument.embeddingDimensions,
-      embeddingVersion: reelDocument.embeddingVersion,
-      reviewProvider:
-        this.config.get<string>('INDEX_QUALITY_REVIEW_PROVIDER')?.trim() ||
-        'groq',
-      reviewModel:
-        this.config.get<string>('AI_INDEX_QUALITY_MODEL')?.trim() || 'unknown',
-      reviewVersion:
-        this.config.get<string>('INDEX_QUALITY_REVIEW_VERSION')?.trim() ||
-        'index-quality-review-v1',
-      review,
-    });
 
     if (!review.acceptable && this.policy.enforced) {
       const details = review.issues

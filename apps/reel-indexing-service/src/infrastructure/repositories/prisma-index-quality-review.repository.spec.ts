@@ -83,7 +83,7 @@ describe('PrismaIndexQualityReviewRepository', () => {
     expect(prisma.reelIndexQualityReview.create).not.toHaveBeenCalled();
   });
 
-  it('rejects a conflicting review for the same reel and indexing attempt', async () => {
+  it('keeps the first review for a repeated indexing attempt', async () => {
     const prisma = {
       reelIndexQualityReview: {
         findUnique: jest.fn().mockResolvedValue({
@@ -95,9 +95,38 @@ describe('PrismaIndexQualityReviewRepository', () => {
     };
     const repository = new PrismaIndexQualityReviewRepository(prisma as never);
 
-    await expect(repository.persist(input)).rejects.toThrow(
-      'Conflicting index quality review already exists',
-    );
+    await expect(repository.persist(input)).resolves.toEqual({
+      acceptable: false,
+      confidence: existing.confidence,
+      summary: existing.summary,
+      issues: existing.issues,
+    });
     expect(prisma.reelIndexQualityReview.create).not.toHaveBeenCalled();
+  });
+
+  it('returns the persisted review without another provider decision', async () => {
+    const prisma = {
+      reelIndexQualityReview: {
+        findUnique: jest.fn().mockResolvedValue({
+          ...existing,
+          acceptable: false,
+          summary: 'First decision remains authoritative.',
+        }),
+        create: jest.fn(),
+      },
+    };
+    const repository = new PrismaIndexQualityReviewRepository(prisma as never);
+
+    await expect(
+      repository.findByAttempt({
+        reelId: input.reelId,
+        indexAttemptId: input.indexAttemptId,
+      }),
+    ).resolves.toEqual({
+      acceptable: false,
+      confidence: existing.confidence,
+      summary: 'First decision remains authoritative.',
+      issues: existing.issues,
+    });
   });
 });

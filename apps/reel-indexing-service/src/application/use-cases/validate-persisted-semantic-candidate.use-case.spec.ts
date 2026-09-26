@@ -51,7 +51,10 @@ const advisoryPolicy = {
   maxDocuments: 36,
 };
 
-const qualityReviews = { persist: jest.fn().mockResolvedValue(undefined) };
+const qualityReviews = {
+  findByAttempt: jest.fn().mockResolvedValue(null),
+  persist: jest.fn().mockImplementation(async (input) => input.review),
+};
 const config = {
   get: jest.fn((key: string) =>
     key === 'AI_INDEX_QUALITY_MODEL' ? 'openai/gpt-oss-20b' : undefined,
@@ -138,6 +141,37 @@ describe('ValidatePersistedSemanticCandidateUseCase', () => {
         review: expect.objectContaining({ acceptable: true, issues: [] }),
       }),
     );
+  });
+
+  it('reuses the persisted review and does not call the provider again', async () => {
+    const validator = { execute: jest.fn().mockResolvedValue(undefined) };
+    const persisted = {
+      acceptable: false,
+      confidence: 0.92,
+      summary: 'First decision remains authoritative.',
+      issues: [
+        {
+          category: 'GROUNDING' as const,
+          severity: 'HIGH' as const,
+          message: 'Evidence is not grounded.',
+        },
+      ],
+    };
+    qualityReviews.findByAttempt.mockResolvedValueOnce(persisted);
+    const ai = { reviewIndexQuality: jest.fn() };
+    const useCase = new ValidatePersistedSemanticCandidateUseCase(
+      validator,
+      ai as never,
+      { ...advisoryPolicy, enforced: true },
+      qualityReviews,
+      config as never,
+    );
+
+    await expect(useCase.execute(input)).rejects.toThrow(
+      'Semantic quality agent rejected inactive index candidate',
+    );
+    expect(ai.reviewIndexQuality).not.toHaveBeenCalled();
+    expect(qualityReviews.persist).not.toHaveBeenCalled();
   });
 
   it('never runs semantic review when deterministic validation fails', async () => {

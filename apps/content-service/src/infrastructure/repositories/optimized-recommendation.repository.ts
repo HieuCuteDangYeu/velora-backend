@@ -38,6 +38,10 @@ export class OptimizedRecommendationRepository extends RecommendationRepository 
     const excludedUsersFilter = excludedUsers.length
       ? Prisma.sql`AND r."userId" NOT IN (${Prisma.join(excludedUsers)})`
       : Prisma.empty;
+    const excludedReels = query.excludedReelIds ?? [];
+    const excludedReelsFilter = excludedReels.length
+      ? Prisma.sql`AND r."id" NOT IN (${Prisma.join(excludedReels)})`
+      : Prisma.empty;
     const cursorFilter = query.cursor
       ? Prisma.sql`AND (
           r."createdAt" < ${query.cursor.createdAt}
@@ -87,6 +91,7 @@ export class OptimizedRecommendationRepository extends RecommendationRepository 
         AND r."mediaStatus"::text = 'COMPLETED'
         AND r."visibility"::text = 'public'
         ${excludedUsersFilter}
+        ${excludedReelsFilter}
         ${cursorFilter}
       ORDER BY scored.score DESC, scored."reelId" ASC
       LIMIT ${Math.max(1, query.limit)}

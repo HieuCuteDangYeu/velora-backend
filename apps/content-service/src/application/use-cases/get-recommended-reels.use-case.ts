@@ -47,7 +47,6 @@ const PERSONALIZED_REFILL_LOCK_TTL_SECONDS = 60;
 const PERSONALIZED_REFILL_WAIT_MS = 10_000;
 const PERSONALIZED_REFILL_POLL_MS = 100;
 const REEL_ENTITY_CACHE_TTL_SECONDS = 3 * 60 * 60;
-const MAX_SESSION_ITEMS = 300;
 
 @Injectable()
 export class GetRecommendedReelsUseCase {
@@ -644,6 +643,7 @@ export class GetRecommendedReelsUseCase {
       viewerId: input.viewerId,
       limit: this.recommendationConfig.getFeedSlateSize(),
       excludedUserIds,
+      excludedReelIds: audienceSession.items.map((item) => item.reelId),
       friendUserIds: audience.friendUserIds,
       excludeRecentlySeen: input.excludeRecentlySeen,
       feedSessionId: input.feedSessionId,
@@ -652,13 +652,8 @@ export class GetRecommendedReelsUseCase {
     const existingIds = new Set(
       audienceSession.items.map((item) => item.reelId),
     );
-    const capacity = Math.max(
-      0,
-      MAX_SESSION_ITEMS - audienceSession.items.length,
-    );
     const appended = pipeline.items
       .filter((item) => !existingIds.has(item.reel.id))
-      .slice(0, capacity)
       .map((item) => ({
         reelId: item.reel.id,
         primarySource: item.candidate.primarySource,
@@ -721,6 +716,7 @@ export class GetRecommendedReelsUseCase {
     viewerId: string;
     limit: number;
     excludedUserIds: string[];
+    excludedReelIds: string[];
     friendUserIds: string[];
     excludeRecentlySeen?: boolean;
     feedSessionId: string;
@@ -730,6 +726,7 @@ export class GetRecommendedReelsUseCase {
       viewerId: input.viewerId,
       limit: candidateLimit,
       excludedUserIds: input.excludedUserIds,
+      excludedReelIds: input.excludedReelIds,
       friendUserIds: input.friendUserIds,
     };
     const featureFlags = this.recommendationConfig.getFeatureFlags();
@@ -811,6 +808,7 @@ export class GetRecommendedReelsUseCase {
     const enabledOperations = sourceOperations.filter(
       (operation) => operation.enabled,
     );
+    const excludedReelIds = new Set(input.excludedReelIds);
     const settled = await Promise.allSettled(
       enabledOperations.map(async (operation) => ({
         source: operation.source,
@@ -835,8 +833,11 @@ export class GetRecommendedReelsUseCase {
         continue;
       }
 
-      sourceCounts[result.value.source] = result.value.candidates.length;
-      allCandidates.push(...result.value.candidates);
+      const candidates = result.value.candidates.filter(
+        (candidate) => !excludedReelIds.has(candidate.reelId),
+      );
+      sourceCounts[result.value.source] = candidates.length;
+      allCandidates.push(...candidates);
     }
 
     const mergedCandidates = this.mergeCandidates(allCandidates);

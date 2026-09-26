@@ -20,6 +20,7 @@ export interface RecommendationCandidateQuery {
   limit: number;
   cursor?: ReelCursor;
   excludedUserIds: string[];
+  excludedReelIds?: string[];
   friendUserIds: string[];
 }
 

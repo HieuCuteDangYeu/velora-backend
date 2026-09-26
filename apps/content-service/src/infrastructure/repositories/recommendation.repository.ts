@@ -180,8 +180,9 @@ export class RecommendationRepository implements IRecommendationRepository {
       );
     }
 
+    const excludedReelIds = new Set(query.excludedReelIds ?? []);
     const rankedIds = [...scoreByReelId.entries()]
-      .filter(([, score]) => score > 0)
+      .filter(([reelId, score]) => score > 0 && !excludedReelIds.has(reelId))
       .sort((left, right) => right[1] - left[1])
       .slice(0, query.limit * 3)
       .map(([reelId]) => reelId);
@@ -999,6 +1000,13 @@ export class RecommendationRepository implements IRecommendationRepository {
         ? {
             userId: {
               notIn: query.excludedUserIds,
+            },
+          }
+        : {}),
+      ...(query.excludedReelIds?.length
+        ? {
+            id: {
+              notIn: query.excludedReelIds,
             },
           }
         : {}),

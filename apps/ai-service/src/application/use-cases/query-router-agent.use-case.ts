@@ -41,6 +41,33 @@ export function shouldRetryPrimaryRouter(error: unknown): boolean {
   );
 }
 
+export function routerRetryDelayMs(error: unknown): number {
+  if (!error || typeof error !== 'object') return 0;
+  const record = error as RawRecord;
+  if (record.code !== 'STRUCTURED_COMPLETION_PROVIDER_ERROR') return 0;
+  const retryAfterMs = record.retryAfterMs;
+  if (typeof retryAfterMs === 'number' && retryAfterMs >= 0) {
+    return Math.min(Math.round(retryAfterMs), 60_000);
+  }
+  const rateLimit = record.rateLimit;
+  const resetTokens =
+    rateLimit && typeof rateLimit === 'object'
+      ? (rateLimit as RawRecord).resetTokens
+      : undefined;
+  if (typeof resetTokens !== 'string') return 0;
+  const matches = [...resetTokens.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g)];
+  if (matches.length === 0) return 0;
+  if (matches.map((match) => match[0]).join('') !== resetTokens) return 0;
+  const multipliers = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 } as const;
+  const delay = matches.reduce(
+    (total, match) =>
+      total +
+      Number(match[1]) * multipliers[match[2] as keyof typeof multipliers],
+    0,
+  );
+  return Number.isFinite(delay) ? Math.min(Math.round(delay), 60_000) : 0;
+}
+
 export class RouterUnavailableError extends Error {
   readonly code = 'ROUTER_UNAVAILABLE';
 
@@ -323,6 +350,9 @@ export class QueryRouterAgentUseCase {
         if (attempt >= maxAttempts || !shouldRetryPrimaryRouter(error)) {
           throw error;
         }
+        const delayMs = routerRetryDelayMs(error);
+        if (delayMs > 0)
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
 

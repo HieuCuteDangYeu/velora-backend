@@ -454,4 +454,17 @@ describe('GroqStructuredLlmAdapter', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('parses Groq token-window reset durations for bounded retry pacing', () => {
+    const adapter = new GroqStructuredLlmAdapter(config());
+    const parseDurationMs = (
+      adapter as unknown as {
+        parseDurationMs(value: string): number | undefined;
+      }
+    ).parseDurationMs.bind(adapter);
+
+    expect(parseDurationMs('13.02s')).toBe(13_020);
+    expect(parseDurationMs('1m26.4s')).toBe(86_400);
+    expect(parseDurationMs('not-a-duration')).toBeUndefined();
+  });
 });

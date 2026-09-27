@@ -112,6 +112,7 @@ export class GroqStructuredCompletionProviderError extends Error {
     readonly retryAfterMs?: number,
     readonly transient = false,
     readonly providerCategory: StructuredProviderFailureCategory = 'UNKNOWN_PROVIDER_FAILURE',
+    readonly rateLimit?: StructuredRateLimitDiagnostics,
   ) {
     super(
       status
@@ -187,7 +188,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         )
           throw error;
 
-        const delayMs = this.retryDelayMs(error);
+        const delayMs = this.retryDelayMs(error, state);
         if (Date.now() + delayMs >= deadline) throw error;
         if (delayMs > 0)
           await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -293,10 +294,10 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     );
   }
 
-  private retryDelayMs(error: unknown): number {
-    return error instanceof GroqStructuredCompletionProviderError
-      ? (error.retryAfterMs ?? 0)
-      : 0;
+  private retryDelayMs(error: unknown, state: CallState): number {
+    if (!(error instanceof GroqStructuredCompletionProviderError)) return 0;
+    if (error.retryAfterMs !== undefined) return error.retryAfterMs;
+    return this.parseDurationMs(state.rateLimit?.resetTokens) ?? 0;
   }
 
   private async request<T>(
@@ -374,6 +375,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         state.retryAfterMs,
         this.isTransientStatus(response.status, category, state.rateLimit),
         category,
+        state.rateLimit,
       );
     }
 
@@ -391,6 +393,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         state.retryAfterMs,
         this.isTransientStatus(response.status, category, state.rateLimit),
         category,
+        state.rateLimit,
       );
     }
 
@@ -534,6 +537,30 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     const timestamp = Date.parse(value);
     return Number.isFinite(timestamp)
       ? Math.min(Math.max(timestamp - Date.now(), 0), 86_400_000)
+      : undefined;
+  }
+
+  private parseDurationMs(value: string | undefined): number | undefined {
+    if (!value) return undefined;
+    const normalized = value.trim().toLowerCase();
+    const matches = [...normalized.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g)];
+    if (matches.length === 0) return undefined;
+    const consumed = matches.map((match) => match[0]).join('');
+    if (consumed !== normalized) return undefined;
+    const multipliers = {
+      ms: 1,
+      s: 1_000,
+      m: 60_000,
+      h: 3_600_000,
+    } as const;
+    const milliseconds = matches.reduce(
+      (total, match) =>
+        total +
+        Number(match[1]) * multipliers[match[2] as keyof typeof multipliers],
+      0,
+    );
+    return Number.isFinite(milliseconds)
+      ? Math.min(Math.round(milliseconds), 86_400_000)
       : undefined;
   }
 

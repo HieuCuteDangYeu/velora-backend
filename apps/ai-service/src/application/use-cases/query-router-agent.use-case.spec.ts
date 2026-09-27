@@ -4,6 +4,7 @@ import {
   QueryRouterAgentUseCase,
   RouterUnavailableError,
   RouterSemanticInconsistencyError,
+  routerRetryDelayMs,
   shouldRetryPrimaryRouter,
 } from './query-router-agent.use-case';
 
@@ -676,6 +677,23 @@ describe('QueryRouterAgentUseCase', () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it('uses Retry-After before the rolling token reset for router backoff', () => {
+    expect(
+      routerRetryDelayMs({
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        retryAfterMs: 2_000,
+        rateLimit: { resetTokens: '30s' },
+      }),
+    ).toBe(2_000);
+    expect(
+      routerRetryDelayMs({
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        rateLimit: { resetTokens: '13.02s' },
+      }),
+    ).toBe(13_020);
+    expect(routerRetryDelayMs(new Error('other'))).toBe(0);
   });
 
   it('does not retry when the first Router attempt succeeds', async () => {

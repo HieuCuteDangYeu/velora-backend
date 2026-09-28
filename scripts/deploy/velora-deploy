@@ -61,7 +61,7 @@ compare_compose_models() {
   fi
 
   # Keep the existing safety invariant for volumes, with deliberate migration
-  # exceptions for Loki/Alloy and the TEI-to-Jeff reranker cutover.
+  # exceptions for Loki/Alloy and the reranker cutover.
   if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
     (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))
       == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))

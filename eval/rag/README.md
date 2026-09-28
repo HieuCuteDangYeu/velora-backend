@@ -18,7 +18,7 @@ No evaluation dependency is a production dependency. `pnpm eval:rag:test` and of
 
 - `rag-frozen-ami-v1`, `rag-frozen-ami-v2`, and `rag-frozen-ami-v3`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records the prior production reel/index provenance and v3 records the canonical self-hosted BGE-M3 production index provenance.
 - `rag-generalization-v1`: 65 router, 20 sufficiency, 15 verifier, and four generic retrieval/citation/access/provider rows. Tags are analysis metadata only.
-- `rag-scraped-v1` is an operator-supplied annotation source for the scraped Reel corpus. It requires one trusted question/reference/evidence contract per distinct Reel. The repeatable builder selects a deterministic, series-stratified `rag-scraped-v1-pilot` of 20 rows by default; `--full` produces the validated full set (up to 178 rows). No scraped production text is committed by this repository.
+- `rag-scraped-v1` is an operator-supplied annotation source for the scraped Reel corpus. It requires one trusted question/reference/evidence contract per distinct Reel. The repeatable builder now produces the validated full set (up to 178 rows) by default; a 20-row pilot is opt-in with `--dataset-version rag-scraped-v1-pilot --pilot-size 20`. No scraped production text is committed by this repository.
 
 The JSONL files under `datasets/` are the source of truth. Existing contract tests read their fixture payloads from the same generic dataset. To add a case, add safe, non-production fixture data, increment the dataset version when semantics change, update the declared count, and add contract tests. Never place credentials, private production text, or benchmark answers in runtime code.
 
@@ -28,7 +28,8 @@ Build a scraped benchmark from a separately reviewed annotation JSONL. The comma
 export RAG_EVAL_DATASET_ROOT=/secure/velora-rag-eval
 pnpm eval:rag:dataset --input /secure/rag-scraped-v1.jsonl \
   --output /secure/velora-rag-eval/datasets/rag-scraped-v1-pilot.jsonl \
-  --definitions-output /secure/rag-scraped-v1-pilot-definitions.json
+  --definitions-output /secure/rag-scraped-v1-pilot-definitions.json \
+  --dataset-version rag-scraped-v1-pilot --pilot-size 20
 pnpm eval:rag:dataset --input /secure/rag-scraped-v1.jsonl \
   --output /secure/velora-rag-eval/datasets/rag-scraped-v1.jsonl \
   --definitions-output /secure/rag-scraped-v1-definitions.json \

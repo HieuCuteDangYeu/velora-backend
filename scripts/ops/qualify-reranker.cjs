@@ -5,16 +5,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { ConfigService } = require('@nestjs/config');
-const { JevRerankerAdapter } = require(
+const { TeiRerankerAdapter } = require(
   path.join(
     process.env.RAG_QUALIFICATION_DIST_ROOT || path.resolve(__dirname, '../..'),
-    'dist/apps/ai-service/apps/ai-service/src/infrastructure/adapters/jev-reranker.adapter.js',
-  ),
-);
-const { SimpleRerankerAdapter } = require(
-  path.join(
-    process.env.RAG_QUALIFICATION_DIST_ROOT || path.resolve(__dirname, '../..'),
-    'dist/apps/ai-service/apps/ai-service/src/infrastructure/adapters/simple-reranker.adapter.js',
+    'dist/apps/ai-service/apps/ai-service/src/infrastructure/adapters/tei-reranker.adapter.js',
   ),
 );
 
@@ -117,7 +111,7 @@ function aggregate(rows) {
   );
 }
 
-function noMaterialRegression(neural, simple) {
+function noMaterialRegression(tei, baseline) {
   const metricKeys = [
     'recallAt1',
     'recallAt3',
@@ -128,66 +122,50 @@ function noMaterialRegression(neural, simple) {
     'ndcgAt10',
     'evidenceHit',
   ];
-  return metricKeys.every((key) => neural[key] >= simple[key]);
+  return metricKeys.every((key) => tei[key] >= baseline[key]);
 }
 
 async function main() {
   const dataset = loadDataset();
   const baseUrl =
-    process.env.RERANKER_QUALIFICATION_BASE_URL || 'http://jev-reranker:8000';
-  const health = await fetch(`${baseUrl.replace(/\/+$/, '')}/healthz`);
+    process.env.RERANKER_QUALIFICATION_BASE_URL || 'http://rag-reranker:80';
+  const health = await fetch(`${baseUrl.replace(/\/+$/, '')}/health`);
   if (!health.ok)
-    throw new Error(`Jev reranker health failed: ${health.status}`);
+    throw new Error(`TEI reranker health failed: ${health.status}`);
 
   const config = new ConfigService({
-    JEV_RERANKER_BASE_URL: baseUrl,
-    JEV_RERANKER_MODEL: 'jev-latest',
-    JEV_RERANKER_MAX_INPUT_TOKENS: '256',
-    AI_RAG_NEURAL_RERANK_ENABLED: 'true',
+    TEI_RERANKER_BASE_URL: baseUrl,
+    TEI_RERANKER_MODEL: 'cross-encoder/mmarco-mMiniLMv2-L12-H384-v1',
     AI_RAG_RERANK_MAX_LIMIT: '8',
     AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '20',
   });
-  const simple = new SimpleRerankerAdapter(config);
-  const neural = new JevRerankerAdapter(config, {
-    rerank: async () => {
-      throw new Error(
-        'neural reranker failed; fallback is disabled for qualification',
-      );
-    },
-  });
-  const neuralRows = [];
-  const simpleRows = [];
+  const tei = new TeiRerankerAdapter(config);
+  const teiRows = [];
+  const baselineRows = [];
   for (const item of dataset.cases) {
-    const [neuralRanked, simpleRanked] = await Promise.all([
-      neural.rerank({
-        queryText: item.queryText,
-        candidates: item.candidates,
-        limit: item.candidates.length,
-      }),
-      simple.rerank({
-        queryText: item.queryText,
-        candidates: item.candidates,
-        limit: item.candidates.length,
-      }),
-    ]);
-    neuralRows.push({ id: item.id, ...caseMetrics(neuralRanked, item) });
-    simpleRows.push({ id: item.id, ...caseMetrics(simpleRanked, item) });
+    const teiRanked = await tei.rerank({
+      queryText: item.queryText,
+      candidates: item.candidates,
+      limit: item.candidates.length,
+    });
+    teiRows.push({ id: item.id, ...caseMetrics(teiRanked, item) });
+    baselineRows.push({ id: item.id, ...caseMetrics(item.candidates, item) });
   }
-  const neuralMetrics = aggregate(neuralRows);
-  const simpleMetrics = aggregate(simpleRows);
-  const pass = noMaterialRegression(neuralMetrics, simpleMetrics);
+  const teiMetrics = aggregate(teiRows);
+  const baselineMetrics = aggregate(baselineRows);
+  const pass = noMaterialRegression(teiMetrics, baselineMetrics);
   console.log(
     JSON.stringify({
       dataset: dataset.datasetVersion,
       caseCount: dataset.cases.length,
-      neural: neuralMetrics,
-      simple: simpleMetrics,
-      neuralRows,
-      simpleRows,
+      tei: teiMetrics,
+      baseline: baselineMetrics,
+      teiRows,
+      baselineRows,
       qualification: pass ? 'PASS' : 'FAIL',
       interpretation: pass
-        ? 'MiniLM has no material regression on the versioned safe fixture set; sample is small and not a statistical reliability claim.'
-        : 'MiniLM regressed on at least one deterministic metric; stop before provider cutover.',
+        ? 'TEI has no material regression against the unchanged retrieval order on the versioned safe fixture set; sample is small and not a statistical reliability claim.'
+        : 'TEI regressed on at least one retrieval metric; stop before accepting the reranker.',
     }),
   );
 }

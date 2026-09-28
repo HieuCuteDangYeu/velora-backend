@@ -102,7 +102,6 @@ jobs:
             monitoring-service
             notification-service
             ai-service
-            jev-reranker
           )
 
           temporary_env_file='.env'

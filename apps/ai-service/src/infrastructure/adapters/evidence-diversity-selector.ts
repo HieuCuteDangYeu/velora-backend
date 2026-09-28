@@ -1,7 +1,11 @@
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { ScoredRerankCandidate } from './hybrid-retrieval-scorer';
+
+export interface ScoredRerankCandidate {
+  candidate: ReelContextSearchResult;
+  relevanceScore: number;
+}
 
 interface CandidateWithTokens extends ScoredRerankCandidate {
   tokens: Set<string>;

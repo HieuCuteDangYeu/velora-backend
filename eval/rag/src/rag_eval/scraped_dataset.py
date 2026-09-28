@@ -1,4 +1,4 @@
-"""Validation and deterministic pilot selection for scraped-reel benchmarks."""
+"""Validation and deterministic selection for scraped-reel benchmarks."""
 
 from __future__ import annotations
 
@@ -197,11 +197,13 @@ def build_dataset(
     output_path: Path,
     definitions_path: Path,
     *,
-    dataset_version: str = "rag-scraped-v1-pilot",
-    pilot_size: int | None = 20,
+    dataset_version: str = "rag-scraped-v1",
+    pilot_size: int | None = None,
 ) -> dict[str, Any]:
     source_rows = _load_rows(input_path)
     validate_scraped_rows(source_rows, dataset_version="rag-scraped-v1")
+    if pilot_size is not None and dataset_version == "rag-scraped-v1":
+        dataset_version = "rag-scraped-v1-pilot"
     if pilot_size is None and len(source_rows) != MAX_SCRAPED_REELS:
         raise ValueError(
             f"full scraped benchmark requires exactly {MAX_SCRAPED_REELS} rows"
@@ -239,9 +241,14 @@ def main() -> None:
     parser.add_argument("--input", type=Path, required=True, help="trusted annotation JSONL/JSON")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--definitions-output", type=Path, required=True)
-    parser.add_argument("--dataset-version", default="rag-scraped-v1-pilot")
-    parser.add_argument("--pilot-size", type=int, default=20)
-    parser.add_argument("--full", action="store_true", help="use all validated rows")
+    parser.add_argument("--dataset-version", default="rag-scraped-v1")
+    parser.add_argument(
+        "--pilot-size",
+        type=int,
+        default=None,
+        help="explicitly select a deterministic stratified pilot instead of the full set",
+    )
+    parser.add_argument("--full", action="store_true", help="use all validated rows (default)")
     args = parser.parse_args()
     result = build_dataset(
         args.input,

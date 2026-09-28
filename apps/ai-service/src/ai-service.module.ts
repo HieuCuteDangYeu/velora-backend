@@ -44,14 +44,12 @@ import { GroqTextClient } from '@ai/infrastructure/adapters/groq-text.client';
 import { GroqToolCallingLlmAdapter } from '@ai/infrastructure/adapters/groq-tool-calling-llm.adapter';
 import { GroqTranscriptionAdapter } from '@ai/infrastructure/adapters/groq-transcription.adapter';
 import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
-import { HybridRetrievalScorer } from '@ai/infrastructure/adapters/hybrid-retrieval-scorer';
-import { JevRerankerAdapter } from '@ai/infrastructure/adapters/jev-reranker.adapter';
 import { OllamaVisionAdapter } from '@ai/infrastructure/adapters/ollama-vision.adapter';
 import { ReelSemanticIndexAdapter } from '@ai/infrastructure/adapters/reel-semantic-index.adapter';
 import { RetrievalAgentPolicyAdapter } from '@ai/infrastructure/adapters/retrieval-agent-policy.adapter';
-import { SimpleRerankerAdapter } from '@ai/infrastructure/adapters/simple-reranker.adapter';
 import { StructuredLlmCitationAttributionAdapter } from '@ai/infrastructure/adapters/structured-llm-citation-attribution.adapter';
 import { TeiEmbeddingAdapter } from '@ai/infrastructure/adapters/tei-embedding.adapter';
+import { TeiRerankerAdapter } from '@ai/infrastructure/adapters/tei-reranker.adapter';
 import { AiController } from '@ai/infrastructure/controller/ai.controller';
 import { IndexQualityAgentController } from '@ai/infrastructure/controllers/index-quality-agent.controller';
 import { PrismaService } from '@ai/infrastructure/prisma/prisma.service';
@@ -155,9 +153,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
   providers: [
     PrismaService,
     EvidenceDiversitySelector,
-    HybridRetrievalScorer,
-    SimpleRerankerAdapter,
-    JevRerankerAdapter,
+    TeiRerankerAdapter,
     GroqTextClient,
 
     StreamChatUseCase,
@@ -235,16 +231,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IRerankerService',
-      inject: [ConfigService, JevRerankerAdapter, SimpleRerankerAdapter],
-      useFactory: (
-        config: ConfigService,
-        jev: JevRerankerAdapter,
-        fallback: SimpleRerankerAdapter,
-      ) =>
-        config.get<string>('AI_RERANKER_PROVIDER')?.trim().toLowerCase() ===
-        'jev'
-          ? jev
-          : fallback,
+      useExisting: TeiRerankerAdapter,
     },
     {
       provide: 'IReelSemanticIndexService',

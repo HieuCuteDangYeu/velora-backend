@@ -972,6 +972,14 @@ compare_compose_models() {
       fail "Compose service '$service' was removed; automatic service removal is intentionally blocked"
     fi
 
+    if [[ "$service" == "rag-reranker" ]] \
+      && ! jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
+      && jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
+      log "Compose service '$service' addition is an approved TEI reranker migration."
+      add_unique "$service" RECONCILE_SERVICES
+      continue
+    fi
+
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
       if [[ "$service" == "rabbitmq" ]] \
         && is_approved_rabbitmq_prometheus_migration "$base_normal" "$target_normal" \

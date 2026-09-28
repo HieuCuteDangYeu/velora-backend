@@ -1,5 +1,7 @@
 import { ConfigService } from '@nestjs/config';
+import { Test } from '@nestjs/testing';
 import { EvidenceDiversitySelector } from './evidence-diversity-selector';
+import { HybridRetrievalScorer } from './hybrid-retrieval-scorer';
 import { JevRerankerAdapter } from './jev-reranker.adapter';
 import { SimpleRerankerAdapter } from './simple-reranker.adapter';
 
@@ -102,5 +104,20 @@ describe('JevRerankerAdapter', () => {
     });
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('can be constructed through Nest dependency injection', async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ConfigService,
+        EvidenceDiversitySelector,
+        HybridRetrievalScorer,
+        SimpleRerankerAdapter,
+        JevRerankerAdapter,
+      ],
+    }).compile();
+
+    expect(module.get(JevRerankerAdapter)).toBeInstanceOf(JevRerankerAdapter);
+    await module.close();
   });
 });

@@ -409,12 +409,18 @@ export class QueryRouterAgentUseCase {
 
   private isFallbackEligible(error: unknown): boolean {
     if (!error || typeof error !== 'object' || !('code' in error)) return false;
-    if (
-      error.code === 'STRUCTURED_COMPLETION_PROVIDER_ERROR' &&
-      'transient' in error &&
-      error.transient === false
-    ) {
-      return false;
+    if (error.code === 'STRUCTURED_COMPLETION_PROVIDER_ERROR') {
+      const providerError = error as RawRecord;
+      if (
+        providerError.providerCategory === 'ACCOUNT_LIMITED' ||
+        providerError.providerCategory === 'AUTH_OR_CONFIGURATION_FAILURE'
+      ) {
+        return false;
+      }
+      if (providerError.transient === false) {
+        return providerError.providerCode === 'json_validate_failed';
+      }
+      return true;
     }
     return (
       error.code === 'STRUCTURED_COMPLETION_TIMEOUT' ||

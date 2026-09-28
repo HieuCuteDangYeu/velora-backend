@@ -591,6 +591,59 @@ describe('QueryRouterAgentUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the configured fallback for a repairable provider schema rejection', async () => {
+    const schemaRejected = Object.assign(
+      new Error('provider schema validation failed'),
+      {
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        providerCode: 'json_validate_failed',
+        providerCategory: 'UNKNOWN_PROVIDER_FAILURE',
+        status: 400,
+        transient: false,
+      },
+    );
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(schemaRejected)
+        .mockResolvedValueOnce(
+          response({
+            intent: 'REEL_VIDEO_QUESTION',
+            referenceTarget: 'SHARED_REEL',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            requiredEvidence: ['TRANSCRIPT'],
+          }),
+        ),
+    };
+    const fallbackConfig = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL'
+          ? 'test/openai/gpt-oss-20b'
+          : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
+
+    await expect(
+      new QueryRouterAgentUseCase(service as never, fallbackConfig).execute({
+        message: 'What does the shared clip say?',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      diagnostics: {
+        model: 'test/openai/gpt-oss-20b',
+        decisionSource: 'LLM_FALLBACK',
+        fallbackReason: 'PRIMARY_PROVIDER_FAILURE',
+      },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject.mock.calls[1]?.[0]).toMatchObject({
+      model: 'test/openai/gpt-oss-20b',
+      attempt: 2,
+    });
+  });
+
   it('uses the secondary semantic router for an unresolved recent-share referent', async () => {
     const service = {
       generateObject: jest

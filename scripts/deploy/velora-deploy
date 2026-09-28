@@ -60,22 +60,13 @@ compare_compose_models() {
     fail "top-level Compose networks changed; automatic deployment is intentionally blocked"
   fi
 
-  # Keep the existing safety invariant for volumes, with one deliberate
-  # migration exception: this release may add the persistent Loki/Alloy data
-  # volumes. Existing volume definitions may not be removed or changed.
+  # Keep the existing safety invariant for volumes, with deliberate migration
+  # exceptions for Loki/Alloy and the TEI-to-Jeff reranker cutover.
   if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
-    (($a[0].volumes // {}) | to_entries) as $base
-    | (($b[0].volumes // {}) | to_entries) as $target
-    | all($base[]; . as $entry | (($b[0].volumes // {})[$entry.key] == $entry.value))
-      and
-      all($target[];
-        . as $entry
-        | (($a[0].volumes // {}) | has($entry.key))
-          or ($entry.key == "loki_data")
-          or ($entry.key == "alloy_data")
-      )
+    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))
+      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))
   ' >/dev/null; then
-    fail "top-level Compose volumes changed outside the approved Loki/Alloy additive migration"
+    fail "top-level Compose volumes changed outside the approved reranker migration"
   fi
 
   while IFS= read -r service; do

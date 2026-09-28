@@ -1539,10 +1539,15 @@ rabbitmq_queue_consumers() {
 }
 
 check_rabbitmq_consumers() {
-  local queues service queue consumers attempt
+  local queues service queue consumers attempt max_attempts
   local -a not_ready=()
 
-  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
+  max_attempts="$HTTP_ATTEMPTS"
+  if docker compose config --services 2>/dev/null | grep -qx 'jev-reranker'; then
+    max_attempts="${VELORA_JEV_STARTUP_ATTEMPTS:-72}"
+  fi
+
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
     not_ready=()
     if ! queues="$(rabbitmq_queue_consumers)"; then
       DEPLOYMENT_FAILURE_DETAIL="RabbitMQ queue readiness command failed."
@@ -1568,7 +1573,7 @@ check_rabbitmq_consumers() {
       return 0
     fi
 
-    log "Waiting for RabbitMQ consumers: ${not_ready[*]} ($attempt/$HTTP_ATTEMPTS)..."
+    log "Waiting for RabbitMQ consumers: ${not_ready[*]} ($attempt/$max_attempts)..."
     sleep "$HTTP_RETRY_SECONDS"
   done
 

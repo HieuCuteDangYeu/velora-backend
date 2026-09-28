@@ -27,7 +27,6 @@ const ALLOWED_LOG_SERVICES = new Set([
   'notification-service',
   'ai-service',
   'rag-embedding',
-  'rag-reranker',
   'rag-vision',
   'rag-eval',
   'rabbitmq',

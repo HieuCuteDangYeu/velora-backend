@@ -4,20 +4,23 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EvidenceDiversitySelector } from './evidence-diversity-selector';
 import type { ScoredRerankCandidate } from './hybrid-retrieval-scorer';
-import { SimpleRerankerAdapter } from './simple-reranker.adapter';
 
-interface TeiScore {
-  index?: unknown;
-  score?: unknown;
+interface JevNoulAnswer {
+  type?: unknown;
+  noul?: unknown;
+}
+
+interface JevResponse {
+  answers?: Record<string, JevNoulAnswer>;
 }
 
 @Injectable()
-export class TeiRerankerAdapter implements IRerankerService {
-  private readonly logger = new Logger(TeiRerankerAdapter.name);
+export class JevRerankerAdapter implements IRerankerService {
+  private readonly logger = new Logger(JevRerankerAdapter.name);
 
   constructor(
     private readonly config: ConfigService,
-    private readonly fallback: SimpleRerankerAdapter,
+    private readonly fallback: IRerankerService,
     private readonly diversitySelector: EvidenceDiversitySelector = new EvidenceDiversitySelector(
       config,
     ),
@@ -43,35 +46,25 @@ export class TeiRerankerAdapter implements IRerankerService {
       );
       const candidates = input.candidates.slice(
         0,
-        this.number('AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT', 20, 2, 50),
+        this.number('JEV_RERANKER_CANDIDATE_LIMIT', 20, 2, 50),
       );
       const response = await this.request(input.queryText, candidates);
-      const seen = new Set<number>();
-      const scored = response
-        .map((item) => {
-          const index = Number(item.index);
-          const score = Number(item.score);
-          if (
-            !Number.isInteger(index) ||
-            index < 0 ||
-            index >= candidates.length ||
-            seen.has(index) ||
-            !Number.isFinite(score)
-          )
-            return null;
-          seen.add(index);
-          return {
-            candidate: candidates[index],
-            relevanceScore: score,
-          } satisfies ScoredRerankCandidate;
-        })
-        .filter((item): item is ScoredRerankCandidate => Boolean(item));
-      if (!scored.length)
-        throw new Error('TEI reranker returned no usable candidates');
+      const scored = candidates.map((candidate, index) => {
+        const answer = response.answers?.[`candidate_${index}`];
+        const score = Number(answer?.noul);
+        if (answer?.type !== 'noul' || !Number.isFinite(score)) {
+          throw new Error(`Jev returned no score for candidate ${index}`);
+        }
+        return {
+          candidate,
+          relevanceScore: Math.min(Math.max(score, 0), 1),
+        } satisfies ScoredRerankCandidate;
+      });
+
       return this.diversitySelector.select(scored, limit);
     } catch (error: unknown) {
       this.logger.warn(
-        `TEI reranker unavailable; using deterministic fallback: ${error instanceof Error ? error.message : String(error)}`,
+        `Jev reranker unavailable; using deterministic fallback: ${error instanceof Error ? error.message : String(error)}`,
       );
       return await this.fallback.rerank(input);
     }
@@ -80,10 +73,10 @@ export class TeiRerankerAdapter implements IRerankerService {
   private async request(
     queryText: string,
     candidates: ReelContextSearchResult[],
-  ): Promise<TeiScore[]> {
+  ): Promise<JevResponse> {
     const controller = new AbortController();
     const timeoutMs = this.number(
-      'AI_RAG_NEURAL_RERANK_TIMEOUT_MS',
+      'JEV_RERANKER_TIMEOUT_MS',
       5_000,
       500,
       30_000,
@@ -91,30 +84,51 @@ export class TeiRerankerAdapter implements IRerankerService {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
     try {
-      const response = await fetch(`${this.baseUrl()}/rerank`, {
+      const response = await fetch(`${this.baseUrl()}/v1/systemone`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: this.truncate(queryText, 128),
-          texts: candidates.map((candidate) =>
-            this.truncate(
-              this.context(candidate),
-              this.number('AI_RERANKER_MAX_INPUT_TOKENS', 512, 64, 512),
-            ),
+          model:
+            this.config.get<string>('JEV_RERANKER_MODEL')?.trim() ||
+            'jev-latest',
+          state: {
+            query: this.truncate(queryText, 128),
+            candidates: candidates.map((candidate, index) => ({
+              index,
+              text: this.truncate(
+                this.context(candidate),
+                this.number('JEV_RERANKER_MAX_INPUT_TOKENS', 256, 64, 512),
+              ),
+            })),
+          },
+          questions: Object.fromEntries(
+            candidates.map((_candidate, index) => [
+              `candidate_${index}`,
+              {
+                type: 'noul',
+                instructions: `Does candidate ${index} directly help answer the query?`,
+                criteria: {
+                  true: 'The candidate directly supports the answer with relevant evidence.',
+                  false:
+                    'The candidate is unrelated, too general, or does not support the answer.',
+                },
+              },
+            ]),
           ),
-          return_text: false,
         }),
         signal: controller.signal,
       });
       const raw = await response.text();
-      if (!response.ok)
+      if (!response.ok) {
         throw new Error(
-          `TEI reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          `Jev reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
         );
+      }
       const payload = JSON.parse(raw) as unknown;
-      if (!Array.isArray(payload))
-        throw new Error('TEI reranker returned an invalid response');
-      return payload as TeiScore[];
+      if (!payload || typeof payload !== 'object') {
+        throw new Error('Jev reranker returned an invalid response');
+      }
+      return payload;
     } finally {
       clearTimeout(timer);
     }
@@ -139,11 +153,12 @@ export class TeiRerankerAdapter implements IRerankerService {
   }
 
   private baseUrl(): string {
-    const value = this.config.get<string>('TEI_RERANKER_BASE_URL')?.trim();
-    if (!value)
+    const value = this.config.get<string>('JEV_RERANKER_BASE_URL')?.trim();
+    if (!value) {
       throw new Error(
-        'Missing required AI configuration: TEI_RERANKER_BASE_URL',
+        'Missing required AI configuration: JEV_RERANKER_BASE_URL',
       );
+    }
     return value.replace(/\/+$/, '');
   }
 

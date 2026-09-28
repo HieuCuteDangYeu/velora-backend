@@ -74,6 +74,7 @@ readonly -a APP_SERVICES=(
   monitoring-service
   notification-service
   ai-service
+  jev-reranker
 )
 
 # Compose services backed by Velora application images. The two long worker
@@ -102,12 +103,12 @@ readonly -a FORCE_SAFE_APP_SERVICES=(
   monitoring-service
   notification-service
   ai-service
+  jev-reranker
 )
 
 # Heavy/profile workloads must never be pulled/recreated by normal CD planning.
 readonly -a PROTECTED_SERVICES=(
   rag-embedding
-  rag-reranker
   rag-vision
   rag-eval
 )
@@ -125,13 +126,13 @@ readonly -a MANAGED_INFRA_SERVICES=(
 # containers behind while preserving the general removal guardrail.
 readonly -a REMOVED_COMPOSE_SERVICES=(
   cadvisor
+  rag-reranker
 )
 
 # Compose changes to these services require deliberate operator handling.
 readonly -a BLOCKED_COMPOSE_SERVICES=(
   rabbitmq
   rag-embedding
-  rag-reranker
   rag-vision
   rag-eval
   media-processing-service
@@ -1391,10 +1392,15 @@ reconcile_infrastructure() {
 }
 
 wait_for_running_services() {
-  local attempt service expected running container_id state exit_code
+  local attempt max_attempts service expected running container_id state exit_code
   local -a bad=() bad_services=() bad_details=()
 
-  for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
+  max_attempts="$HTTP_ATTEMPTS"
+  if docker compose config --services 2>/dev/null | grep -qx 'jev-reranker'; then
+    max_attempts="${VELORA_JEV_STARTUP_ATTEMPTS:-72}"
+  fi
+
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
     bad=()
     bad_services=()
     while IFS= read -r service; do
@@ -1413,7 +1419,7 @@ wait_for_running_services() {
       return 0
     fi
 
-    log "Waiting for running services: ${bad[*]} ($attempt/$HTTP_ATTEMPTS)..."
+    log "Waiting for running services: ${bad[*]} ($attempt/$max_attempts)..."
     sleep "$HTTP_RETRY_SECONDS"
   done
 
@@ -1435,22 +1441,29 @@ wait_for_running_services() {
 }
 
 wait_for_docker_health() {
-  local service container_id health attempt
+  local service container_id health attempt max_attempts retry_seconds
 
-  for service in rabbitmq rag-embedding rag-reranker monitoring-service; do
+  for service in rabbitmq rag-embedding jev-reranker monitoring-service; do
     container_id="$(docker compose ps -q "$service" | head -n 1)"
     [[ -n "$container_id" ]] || continue
 
     health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
     [[ "$health" != "none" ]] || continue
 
-    for ((attempt=1; attempt<=HTTP_ATTEMPTS; attempt++)); do
+    max_attempts="$HTTP_ATTEMPTS"
+    retry_seconds="$HTTP_RETRY_SECONDS"
+    if [[ "$service" == "jev-reranker" ]]; then
+      max_attempts="${VELORA_JEV_HEALTH_ATTEMPTS:-72}"
+      retry_seconds="${VELORA_JEV_HEALTH_RETRY_SECONDS:-5}"
+    fi
+
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
       health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")"
       if [[ "$health" == "healthy" ]]; then
         log "$service Docker health is healthy."
         break
       fi
-      sleep "$HTTP_RETRY_SECONDS"
+      sleep "$retry_seconds"
     done
     if [[ "$health" != "healthy" ]]; then
       DEPLOYMENT_FAILURE_DETAIL="$service Docker health remained ${health:-unknown}."

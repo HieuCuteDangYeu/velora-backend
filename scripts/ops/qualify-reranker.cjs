@@ -5,10 +5,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { ConfigService } = require('@nestjs/config');
-const { TeiRerankerAdapter } = require(
+const { JevRerankerAdapter } = require(
   path.join(
     process.env.RAG_QUALIFICATION_DIST_ROOT || path.resolve(__dirname, '../..'),
-    'dist/apps/ai-service/apps/ai-service/src/infrastructure/adapters/tei-reranker.adapter.js',
+    'dist/apps/ai-service/apps/ai-service/src/infrastructure/adapters/jev-reranker.adapter.js',
   ),
 );
 const { SimpleRerankerAdapter } = require(
@@ -134,19 +134,21 @@ function noMaterialRegression(neural, simple) {
 async function main() {
   const dataset = loadDataset();
   const baseUrl =
-    process.env.RERANKER_QUALIFICATION_BASE_URL || 'http://rag-reranker:80';
-  const health = await fetch(`${baseUrl.replace(/\/+$/, '')}/health`);
+    process.env.RERANKER_QUALIFICATION_BASE_URL || 'http://jev-reranker:8000';
+  const health = await fetch(`${baseUrl.replace(/\/+$/, '')}/healthz`);
   if (!health.ok)
-    throw new Error(`TEI reranker health failed: ${health.status}`);
+    throw new Error(`Jev reranker health failed: ${health.status}`);
 
   const config = new ConfigService({
-    TEI_RERANKER_BASE_URL: baseUrl,
+    JEV_RERANKER_BASE_URL: baseUrl,
+    JEV_RERANKER_MODEL: 'jev-latest',
+    JEV_RERANKER_MAX_INPUT_TOKENS: '256',
     AI_RAG_NEURAL_RERANK_ENABLED: 'true',
     AI_RAG_RERANK_MAX_LIMIT: '8',
     AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '20',
   });
   const simple = new SimpleRerankerAdapter(config);
-  const neural = new TeiRerankerAdapter(config, {
+  const neural = new JevRerankerAdapter(config, {
     rerank: async () => {
       throw new Error(
         'neural reranker failed; fallback is disabled for qualification',

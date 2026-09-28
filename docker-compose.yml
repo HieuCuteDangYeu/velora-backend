@@ -412,7 +412,7 @@ services:
         condition: service_healthy
       rag-embedding:
         condition: service_healthy
-      rag-reranker:
+      jev-reranker:
         condition: service_healthy
     networks:
       - microservices-net
@@ -442,28 +442,32 @@ services:
     networks:
       - microservices-net
 
-  rag-reranker:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-arm64-latest@sha256:7e0ad922d10ef6f728b521d1a47e83004480687bd4073c97f079c806e3e92a41
-    env_file:
-      - .env
-    command:
-      - --model-id
-      - ${TEI_RERANKER_MODEL:-cross-encoder/mmarco-mMiniLMv2-L12-H384-v1}
-      - --port
-      - '80'
-      - --max-concurrent-requests
-      - ${TEI_RERANKER_MAX_CONCURRENT_REQUESTS:-8}
-      - --max-batch-tokens
-      - ${TEI_RERANKER_MAX_BATCH_TOKENS:-1024}
+  jev-reranker:
+    image: ${DOCKERHUB_USERNAME}/jev-reranker:${VELORA_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ./infra/jev-reranker/Dockerfile
     restart: unless-stopped
+    environment:
+      JEFF_MODEL_REPO: ${JEFF_MODEL_REPO:-knowledgator/gliformer-large-v1}
+      JEFF_MAX_STATE_CHARS: ${JEV_RERANKER_MAX_STATE_CHARS:-30000}
+      JEFF_API_KEYS: ''
+    expose:
+      - '8000'
     healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://127.0.0.1:80/health']
-      interval: 10s
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)",
+        ]
+      interval: 15s
       timeout: 5s
-      retries: 30
-      start_period: 30s
+      retries: 20
+      start_period: 90s
     volumes:
-      - rag_reranker_cache:/data
+      - jev_reranker_models:/models
     networks:
       - microservices-net
 
@@ -533,5 +537,5 @@ volumes:
   loki_data:
   alloy_data:
   rag_embedding_cache:
-  rag_reranker_cache:
+  jev_reranker_models:
   rag_vision_cache:

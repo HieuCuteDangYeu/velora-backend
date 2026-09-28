@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EvidenceDiversitySelector } from './evidence-diversity-selector';
 import type { ScoredRerankCandidate } from './hybrid-retrieval-scorer';
+import { SimpleRerankerAdapter } from './simple-reranker.adapter';
 
 interface JevNoulAnswer {
   type?: unknown;
@@ -20,7 +21,7 @@ export class JevRerankerAdapter implements IRerankerService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly fallback: IRerankerService,
+    private readonly fallback: SimpleRerankerAdapter,
     private readonly diversitySelector: EvidenceDiversitySelector = new EvidenceDiversitySelector(
       config,
     ),

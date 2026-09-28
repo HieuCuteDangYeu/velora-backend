@@ -107,6 +107,7 @@
     "eval:rag:trace-export": "node scripts/ops/export-rag-traces.cjs",
     "eval:rag:report": "node scripts/ops/run-rag-eval.cjs report",
     "eval:rag:compare": "node scripts/ops/run-rag-eval.cjs compare",
+    "eval:rag:dataset": "node scripts/ops/run-rag-eval.cjs dataset",
     "eval:rag:persist": "node scripts/ops/persist-rag-eval.cjs",
     "eval:rag:reranker": "node scripts/ops/qualify-reranker.cjs",
     "eval:rag:test": "node scripts/ops/run-rag-eval.cjs test",

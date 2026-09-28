@@ -35,9 +35,16 @@ function caseReelIds(definition) {
   return [];
 }
 
-function extractDistinctReelIds(definitions) {
+function extractDistinctReelIds(definitions, { allowVariableCardinality = false } = {}) {
   const cases = definitions?.ragBenchmark?.cases;
-  if (!Array.isArray(cases) || cases.length !== 8) {
+  if (!Array.isArray(cases) || cases.length === 0) {
+    fail(
+      allowVariableCardinality
+        ? 'definitions report must contain benchmark cases'
+        : 'definitions report must contain exactly eight benchmark cases',
+    );
+  }
+  if (!allowVariableCardinality && cases.length !== 8) {
     fail('definitions report must contain exactly eight benchmark cases');
   }
 
@@ -54,7 +61,7 @@ function extractDistinctReelIds(definitions) {
     return ids;
   });
   const distinct = [...new Set(perCase.flat())];
-  if (distinct.length !== 4) {
+  if (!allowVariableCardinality && distinct.length !== 4) {
     fail(
       `definitions report must contain exactly four distinct reel UUIDs; found ${distinct.length}`,
     );
@@ -149,9 +156,9 @@ function normalizeMongoConnectionUrl(value) {
   return parsed.toString();
 }
 
-function createPublicApiClient(baseUrl) {
+function createPublicApiClient(baseUrl, credentials) {
   let cookies = '';
-  return async function request(method, pathname, body) {
+  return async function request(method, pathname, body, retryAfterLogin = true) {
     const response = await fetch(new URL(pathname, baseUrl), {
       method,
       headers: {
@@ -166,6 +173,15 @@ function createPublicApiClient(baseUrl) {
         .split(/,(?=\s*[^;=]+=)/)
         .map((value) => value.split(';')[0])
         .join('; ');
+    if (
+      response.status === 401 &&
+      retryAfterLogin &&
+      credentials &&
+      pathname !== '/auth/login'
+    ) {
+      await request('POST', '/auth/login', credentials, false);
+      return request(method, pathname, body, false);
+    }
     const text = await response.text();
     let payload;
     try {
@@ -426,11 +442,12 @@ async function reconcileInFlight(runId) {
             'BACKEND_URL, VELORA_TEST_EMAIL, and VELORA_TEST_PASSWORD are required for response-present reconciliation',
           );
         }
-        const request = createPublicApiClient(baseUrl);
-        await request('POST', '/auth/login', {
+        const credentials = {
           email: process.env.VELORA_TEST_EMAIL,
           password: process.env.VELORA_TEST_PASSWORD,
-        });
+        };
+        const request = createPublicApiClient(baseUrl, credentials);
+        await request('POST', '/auth/login', credentials);
         const publicMessages = await request(
           'GET',
           `/conversations/${conversationId}/messages?limit=50`,
@@ -576,9 +593,23 @@ async function main() {
     }
     const definitions = JSON.parse(fs.readFileSync(definitionsPath, 'utf8'));
     const allCases = definitions?.ragBenchmark?.cases;
-    if (!Array.isArray(allCases) || allCases.length !== 8)
-      fail('definitions report must contain exactly eight cases');
-    const reelIds = extractDistinctReelIds(definitions);
+    const datasetVersion = definitions?.ragBenchmark?.datasetVersion;
+    const allowVariableCardinality =
+      typeof datasetVersion === 'string' && datasetVersion.startsWith('rag-scraped-');
+    if (
+      !Array.isArray(allCases) ||
+      allCases.length === 0 ||
+      (!allowVariableCardinality && allCases.length !== 8) ||
+      (allowVariableCardinality && allCases.length > 178)
+    )
+      fail(
+        allowVariableCardinality
+          ? 'scraped definitions report must contain 1..178 cases'
+          : 'definitions report must contain exactly eight cases',
+      );
+    const reelIds = extractDistinctReelIds(definitions, {
+      allowVariableCardinality,
+    });
     const onlyCaseId = arg('--case-id');
     const cases = onlyCaseId
       ? allCases.filter((item) => item.caseId === onlyCaseId)
@@ -601,12 +632,13 @@ async function main() {
       JSON.stringify({ benchmarkRunId, statePath: statePath(benchmarkRunId) }),
     );
 
-    const request = createPublicApiClient(baseUrl);
-
-    await request('POST', '/auth/login', {
+    const credentials = {
       email: process.env.VELORA_TEST_EMAIL,
       password: process.env.VELORA_TEST_PASSWORD,
-    });
+    };
+    const request = createPublicApiClient(baseUrl, credentials);
+
+    await request('POST', '/auth/login', credentials);
     const statuses = [];
     for (const reelId of reelIds)
       statuses.push({

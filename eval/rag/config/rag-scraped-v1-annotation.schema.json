@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://velora.invalid/schemas/rag-scraped-v1-annotation.schema.json",
+  "title": "Velora scraped Reel RAGAS annotation",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "id",
+    "datasetVersion",
+    "question",
+    "referenceAnswer",
+    "category",
+    "fixtureGroup",
+    "expectedEvidenceTypes",
+    "expectedReelIds",
+    "relevantEvidenceIds",
+    "accessScope",
+    "metadata"
+  ],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "datasetVersion": { "const": "rag-scraped-v1" },
+    "question": { "type": "string", "minLength": 1 },
+    "referenceAnswer": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "fixtureGroup": { "const": "scraped-reel" },
+    "expectedEvidenceTypes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "expectedReelIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "relevantEvidenceIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "accessScope": {
+      "type": "object",
+      "required": ["policy", "authorizedReelIds"],
+      "properties": {
+        "policy": { "const": "AUTHORIZED_CONTEXT_ONLY" },
+        "authorizedReelIds": { "type": "array", "minItems": 1, "maxItems": 1 }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "seriesId",
+        "annotationStatus",
+        "annotationSource",
+        "sourceContentSha256",
+        "indexSnapshotSha256"
+      ],
+      "properties": {
+        "seriesId": { "type": "string", "minLength": 1 },
+        "annotationStatus": { "enum": ["HUMAN_VERIFIED", "OWNER_VERIFIED"] },
+        "annotationSource": { "type": "string", "minLength": 1 },
+        "sourceContentSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "indexSnapshotSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    }
+  }
+}

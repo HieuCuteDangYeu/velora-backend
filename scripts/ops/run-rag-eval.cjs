@@ -50,6 +50,7 @@ const commands = {
   live: ['run', 'rag-eval', 'live'],
   report: ['run', 'rag-eval', 'report'],
   compare: ['run', 'rag-eval', 'compare'],
+  dataset: ['run', 'rag-eval', 'dataset'],
   test: ['run', 'pytest', '-q'],
   'capacity-check': ['run', 'rag-eval', 'capacity-check', '--confirm-one-call'],
   preflight: ['run', 'rag-eval', 'preflight'],

@@ -86,6 +86,26 @@ test('accepts unrelated valid dataset UUIDs and rejects invalid definitions befo
   );
 });
 
+test('accepts variable scraped benchmark cardinality only when explicitly declared', () => {
+  const definitions = {
+    ragBenchmark: {
+      datasetVersion: 'rag-scraped-v1-pilot',
+      cases: [
+        { caseId: 'scraped-1', reelId: syntheticReelIds[0] },
+        { caseId: 'scraped-2', reelId: syntheticReelIds[1] },
+      ],
+    },
+  };
+  assert.deepEqual(
+    runner.extractDistinctReelIds(definitions, { allowVariableCardinality: true }),
+    syntheticReelIds.slice(0, 2),
+  );
+  assert.throws(
+    () => runner.extractDistinctReelIds(definitions),
+    /exactly eight/,
+  );
+});
+
 test('generic runner has no dependency on obsolete v1 UUID constants', () => {
   const source = fs.readFileSync(
     path.join(__dirname, 'run-existing-ami-rag-retest.cjs'),

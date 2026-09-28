@@ -54,6 +54,7 @@ from rag_eval.recovery import (
 )
 from rag_eval.reports import build_summary, load_cases, write_report
 from rag_eval.schemas import EvaluationRow
+from rag_eval.scraped_dataset import build_dataset
 
 RESULTS = Path(os.getenv("RAG_EVAL_RESULTS_DIR", str(ROOT / "results")))
 
@@ -393,7 +394,7 @@ async def run_live(args: argparse.Namespace) -> Path:
     if not args.confirm_live:
         raise SystemExit("LIVE requires --confirm-live; exactly-once runner state is authoritative")
     if not is_supported_live_dataset(args.dataset):
-        raise SystemExit("live mode requires a supported rag-frozen-ami dataset")
+        raise SystemExit("live mode requires a supported versioned RAG dataset")
     if not args.definitions_report:
         raise SystemExit("LIVE requires --definitions-report")
     if args.resume and not args.trace_file:
@@ -836,6 +837,17 @@ def run_compare(args: argparse.Namespace) -> None:
     print(json.dumps(comparison, indent=2, sort_keys=True))
 
 
+def run_scraped_dataset(args: argparse.Namespace) -> None:
+    result = build_dataset(
+        args.input,
+        args.output,
+        args.definitions_output,
+        dataset_version=args.dataset_version,
+        pilot_size=None if args.full else args.pilot_size,
+    )
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+
 async def run_capacity_check(args: argparse.Namespace) -> None:
     if not args.confirm_one_call and os.getenv("RAG_EVAL_CAPACITY_CHECK_CONFIRM") != "YES":
         raise SystemExit(
@@ -931,6 +943,13 @@ def parser() -> argparse.ArgumentParser:
     compare = commands.add_parser("compare")
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--candidate", required=True)
+    scraped_dataset = commands.add_parser("dataset")
+    scraped_dataset.add_argument("--input", type=Path, required=True)
+    scraped_dataset.add_argument("--output", type=Path, required=True)
+    scraped_dataset.add_argument("--definitions-output", type=Path, required=True)
+    scraped_dataset.add_argument("--dataset-version", default="rag-scraped-v1-pilot")
+    scraped_dataset.add_argument("--pilot-size", type=int, default=20)
+    scraped_dataset.add_argument("--full", action="store_true")
     capacity = commands.add_parser("capacity-check")
     capacity.add_argument("--confirm-one-call", action="store_true")
     preflight = commands.add_parser("preflight")
@@ -965,6 +984,8 @@ def main() -> None:
         run_report(args)
     elif args.command == "compare":
         run_compare(args)
+    elif args.command == "dataset":
+        run_scraped_dataset(args)
     elif args.command == "capacity-check":
         asyncio.run(run_capacity_check(args))
     elif args.command == "preflight":

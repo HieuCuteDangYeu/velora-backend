@@ -125,6 +125,7 @@ readonly -a MANAGED_INFRA_SERVICES=(
 # containers behind while preserving the general removal guardrail.
 readonly -a REMOVED_COMPOSE_SERVICES=(
   cadvisor
+  jev-reranker
 )
 
 # Compose changes to these services require deliberate operator handling.

@@ -951,8 +951,13 @@ compare_compose_models() {
   normalize_compose_json "$BASE_COMPOSE_JSON" "$base_normal"
   normalize_compose_json "$TARGET_COMPOSE_JSON" "$target_normal"
 
-  if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '($a[0].networks == $b[0].networks) and ($a[0].volumes == $b[0].volumes)' >/dev/null; then
-    fail "top-level Compose networks/volumes changed; automatic deployment is intentionally blocked"
+  if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
+    ($a[0].networks == $b[0].networks)
+    and
+    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))
+      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models))
+  ' >/dev/null; then
+    fail "top-level Compose networks/volumes changed outside the approved reranker migration"
   fi
 
   while IFS= read -r service; do

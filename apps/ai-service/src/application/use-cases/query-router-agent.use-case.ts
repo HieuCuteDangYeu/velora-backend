@@ -452,9 +452,9 @@ Reference target meanings:
 Reel question type meanings:
 - NONE: not a question about a shared reel/video.
 - TRANSCRIPT_CONTENT: asks for specific spoken or textual reel content, including a fact, quantity, cause, relation, comparison, sequence, explanation, claim, quote, or what someone says, explains, discusses, mentions, captions, or teaches. Facts about entities, events, places, roles, dates, relationships, causes, quantities, or processes stated within the media are content facts, not reel metadata. It is not an overall summary request.
-- VISUAL_CONTENT: asks about visual appearance, objects, people, colors, text on screen, layout, or what is seen.
+- VISUAL_CONTENT: asks about visual appearance, objects, people, colors, text on screen, layout, or what is seen. This includes a title, name, label, or other text visibly displayed inside the Reel content, including on a phone, app, or computer screen.
 - GENERAL_REEL_SUMMARY: asks for the shared reel's overall meaning, summary, topic, main point, takeaway, or what it is about. Do not use it for one specific fact, relation, comparison, cause, quantity, sequence, or other detail.
-- REEL_METADATA: asks about properties of the reel as a media object or publication, such as its title, description, caption, hashtags, tags, uploader, creator attribution of the reel itself, or upload/share metadata.
+- REEL_METADATA: asks about properties of the reel as a media object or publication, such as its title, description, caption, hashtags, tags, uploader, creator attribution of the reel itself, or upload/share metadata. Do not use it for text or names displayed within the video frames.
 - AMBIGUOUS_REEL_REFERENCE: refers to a shared reel/video but the requested information is unclear.
 
 Evidence meanings:
@@ -475,6 +475,7 @@ Invariants:
 - A question about an available shared reel is REEL_VIDEO_QUESTION, not discovery.
 - A follow-up asking for new information from shared media remains REEL_VIDEO_QUESTION even when recent history already contains a user question and assistant answer about that media or subject. Use CONVERSATION_MEMORY_QUESTION only when the current message asks what the user or assistant previously said, asked, decided, or discussed.
 - Metadata describes the media item itself. A person, organization, location, role, date, relationship, cause, quantity, comparison, sequence, or process stated by the media is a content-level fact and requires the matching content evidence. Uploader or creator attribution means attribution of the reel itself, not a person mentioned inside it.
+- A title, name, or label displayed inside the video frame is visual content, even when the user calls it a title or asks about text on a device screen. Reel metadata is limited to the Reel's own publication attributes.
 - Summary needs TRANSCRIPT and METADATA; transcript, visual, and metadata questions require their matching evidence. Never substitute transcript for visual proof.
 - Reel retrieval is required when grounded reel evidence is needed. Reel and memory answers require verification.
 - Conversation memory is for prior conversation context; user memory is only for stable preferences/profile.

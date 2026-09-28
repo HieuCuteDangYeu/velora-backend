@@ -173,6 +173,43 @@ describe('QueryRouterAgentUseCase', () => {
     expect(request.systemPrompt).toContain('comparative');
   });
 
+  it('distinguishes on-screen titles from Reel publication metadata', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'VISUAL_CONTENT',
+          requiredEvidence: ['VISUAL'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message: 'What is the title shown on the phone screen?',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      reelQuestionType: 'VISUAL_CONTENT',
+      requiredEvidence: ['VISUAL'],
+    });
+
+    const request = structuredLlmService.generateObject.mock.calls[0][0];
+    expect(request.systemPrompt).toContain(
+      'visibly displayed inside the Reel content',
+    );
+    expect(request.systemPrompt).toContain(
+      'Do not use it for text or names displayed within the video frames',
+    );
+    expect(request.systemPrompt).toContain(
+      'A title, name, or label displayed inside the video frame is visual content',
+    );
+  });
+
   it('retains independent modality choices for an ambiguous reel request', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(

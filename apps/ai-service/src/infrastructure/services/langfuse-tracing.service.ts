@@ -2,15 +2,18 @@ import {
   propagateAttributes,
   startActiveObservation,
   startObservation,
+  type LangfuseObservationType,
   type LangfuseSpan,
 } from '@langfuse/tracing';
 import { Injectable } from '@nestjs/common';
+import type { StructuredLlmCallDiagnostics } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { langfuseEnabled, redactLangfuseValue } from './langfuse-telemetry';
 
 export interface RagTraceRootMetadata {
   productionExecutionId: string;
   userId: string;
   conversationId: string;
+  userMessage?: string;
   release?: string;
   environment?: string;
 }
@@ -50,6 +53,8 @@ const SAFE_KEYS = new Set([
 @Injectable()
 export class LangfuseTracingService {
   private readonly enabled = langfuseEnabled();
+  private readonly captureContent =
+    process.env.LANGFUSE_CAPTURE_CONTENT?.trim().toLowerCase() === 'true';
 
   async withRoot<T>(
     metadata: RagTraceRootMetadata,
@@ -61,7 +66,10 @@ export class LangfuseTracingService {
       propagateAttributes(
         {
           traceName: 'velora-rag',
-          sessionId: metadata.productionExecutionId,
+          ...(metadata.userId ? { userId: metadata.userId } : {}),
+          ...(metadata.conversationId
+            ? { sessionId: metadata.conversationId }
+            : {}),
           version: metadata.release,
           tags: ['velora', 'rag'],
           metadata: {
@@ -77,6 +85,9 @@ export class LangfuseTracingService {
               conversationId: metadata.conversationId,
               userId: metadata.userId,
               productionExecutionId: metadata.productionExecutionId,
+              ...(this.captureContent && metadata.userMessage
+                ? { query: metadata.userMessage.slice(0, 2_000) }
+                : {}),
             },
           });
           return operation(root);
@@ -85,43 +96,66 @@ export class LangfuseTracingService {
     );
   }
 
-  setRootOutput(root: LangfuseSpan | undefined, output: SafeSummary): void {
-    root?.update({ output: redactLangfuseValue(output) });
+  setRootOutput(
+    root: LangfuseSpan | undefined,
+    output: SafeSummary,
+    answer?: string,
+  ): void {
+    root?.update({
+      output: redactLangfuseValue({
+        ...output,
+        ...(this.captureContent && answer
+          ? { response: answer.slice(0, 4_000) }
+          : {}),
+      }),
+    });
   }
 
   async observe<T>(
     name: string,
     operation: () => Promise<T>,
     input: SafeSummary = {},
+    asType: LangfuseObservationType = 'span',
   ): Promise<T> {
     if (!this.enabled) return operation();
 
     const startedAt = Date.now();
-    return startActiveObservation(`rag.${name}`, async (observation) => {
-      observation.update({ input: redactLangfuseValue(input) });
-      try {
-        const result = await operation();
-        observation.update({
-          output: this.summary(result, Date.now() - startedAt),
-        });
-        return result;
-      } catch (error: unknown) {
-        observation.update({
-          level: 'ERROR',
-          statusMessage: this.errorCode(error),
-          output: { status: 'FAILED', latencyMs: Date.now() - startedAt },
-        });
-        throw error;
-      }
-    });
+    return startActiveObservation(
+      `rag.${name}`,
+      async (observation) => {
+        observation.update({ input: redactLangfuseValue(input) });
+        try {
+          const result = await operation();
+          observation.update({
+            output: this.summary(result, Date.now() - startedAt),
+          });
+          return result;
+        } catch (error: unknown) {
+          observation.update({
+            level: 'ERROR',
+            statusMessage: this.errorCode(error),
+            output: { status: 'FAILED', latencyMs: Date.now() - startedAt },
+          });
+          throw error;
+        }
+      },
+      { asType } as never,
+    );
   }
 
-  observeSync<T>(name: string, operation: () => T, input: SafeSummary = {}): T {
+  observeSync<T>(
+    name: string,
+    operation: () => T,
+    input: SafeSummary = {},
+    asType: LangfuseObservationType = 'span',
+  ): T {
     if (!this.enabled) return operation();
 
-    const observation = startObservation(`rag.${name}`, {
-      input: redactLangfuseValue(input),
-    });
+    const observation = startObservation(
+      `rag.${name}`,
+      { input: redactLangfuseValue(input) },
+      { asType } as never,
+    );
     const startedAt = Date.now();
     try {
       const result = operation();
@@ -138,6 +172,64 @@ export class LangfuseTracingService {
       });
       observation.end();
       throw error;
+    }
+  }
+
+  recordSemanticCalls(
+    calls?: readonly StructuredLlmCallDiagnostics[],
+  ): void {
+    if (!this.enabled) return;
+
+    for (const call of calls ?? []) {
+      const role = call.modelRole?.trim().toLowerCase() || 'unknown';
+      const usageDetails: Record<string, number> = {};
+      const usage = call.usage;
+      if (usage?.inputTokens !== undefined)
+        usageDetails.inputTokens = usage.inputTokens;
+      if (usage?.outputTokens !== undefined)
+        usageDetails.outputTokens = usage.outputTokens;
+      if (usage?.totalTokens !== undefined)
+        usageDetails.totalTokens = usage.totalTokens;
+      if (usage?.reasoningTokens !== undefined)
+        usageDetails.reasoningTokens = usage.reasoningTokens;
+
+      const generation = startObservation(
+        `llm.${role}`,
+        {
+          model: call.model,
+          input: { modelRole: call.modelRole || 'UNKNOWN' },
+          output: {
+            providerStatus: call.providerStatus,
+            ...(call.finishReason ? { finishReason: call.finishReason } : {}),
+            ...(call.errorCode ? { errorCode: call.errorCode } : {}),
+          },
+          ...(Object.keys(usageDetails).length > 0
+            ? { usageDetails }
+            : {}),
+          metadata: {
+            modelRole: call.modelRole || 'UNKNOWN',
+            attempt: String(call.attempt),
+            latencyMs: String(call.latencyMs),
+            providerStatus: String(call.providerStatus),
+            ...(call.providerCategory
+              ? { providerCategory: call.providerCategory }
+              : {}),
+            ...(call.endpointContract
+              ? { endpointContract: call.endpointContract }
+              : {}),
+            ...(call.schemaVersion
+              ? { schemaVersion: call.schemaVersion }
+              : {}),
+          },
+        },
+        {
+          asType: 'generation',
+          startTime: new Date(
+            Date.now() - Math.max(0, Math.floor(call.latencyMs)),
+          ),
+        },
+      );
+      generation.end();
     }
   }
 

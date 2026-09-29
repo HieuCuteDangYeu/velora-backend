@@ -153,6 +153,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             productionExecutionId,
             userId: input.userId,
             conversationId: input.conversationId,
+            userMessage: input.message,
             release: process.env.LANGFUSE_RELEASE || process.env.RELEASE_SHA,
             environment:
               process.env.LANGFUSE_TRACING_ENVIRONMENT || process.env.NODE_ENV,
@@ -255,7 +256,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         retrievedCount: result.retrievedChunks.length,
         rerankedCount: result.rerankedChunks.length,
         fallbackUsed: Boolean(result.answerFallbackReason),
-      });
+      }, result.answer);
       this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
     }
   }
@@ -310,6 +311,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     nodeTimings: Record<string, number>,
     calls?: readonly StructuredLlmCallDiagnostics[],
   ): void {
+    this.langfuseTracing?.recordSemanticCalls(calls);
     const executionContext = this.executionContexts.get(nodeTimings);
     if (!executionContext) return;
     executionContext.tokenUsage.push(...this.tokenUsageFromCalls(calls));
@@ -710,6 +712,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               'answerRevision',
               () => groundedRevisionUseCase.executeWithProvenance(state),
               { source: 'GROUNDED_VERIFIER_REVISION' },
+              'chain',
             )
           : await groundedRevisionUseCase.executeWithProvenance(state)
         : undefined;
@@ -799,7 +802,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       return (
         this.langfuseTracing?.observeSync('answerRevision', revision, {
           source: 'VERIFIER_REVISION',
-        }) ?? revision()
+        }, 'chain') ?? revision()
       );
     };
   }
@@ -886,7 +889,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       return (
         this.langfuseTracing?.observeSync('citationRevision', revision, {
           source: 'CITATION_REVISION',
-        }) ?? revision()
+        }, 'chain') ?? revision()
       );
     };
   }
@@ -933,6 +936,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
                 'UNUSABLE_SYNTHESIS',
               ),
             { reason: 'UNUSABLE_SYNTHESIS' },
+            'chain',
           ) ??
           this.generateDraftAnswerUseCase.buildExtractiveFallback(
             state,
@@ -993,6 +997,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
                 'fallbackCitation',
                 () => this.buildRagCitationsUseCase.execute(recoveredState),
                 { source: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' },
+                'chain',
               )
             : await this.buildRagCitationsUseCase.execute(recoveredState);
           this.recordTokenUsage(
@@ -1359,8 +1364,22 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     };
 
     return this.langfuseTracing
-      ? this.langfuseTracing.observe(label, run, { node: label })
+      ? this.langfuseTracing.observe(
+          label,
+          run,
+          { node: label },
+          this.langfuseObservationType(label),
+        )
       : run();
+  }
+
+  private langfuseObservationType(
+    label: string,
+  ): import('@langfuse/tracing').LangfuseObservationType {
+    if (label.includes('retrieval')) return 'retriever';
+    if (label === 'verifierNode') return 'evaluator';
+    if (label === 'citationCoverageGateNode') return 'guardrail';
+    return 'chain';
   }
 
   private failureSource(

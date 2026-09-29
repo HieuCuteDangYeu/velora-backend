@@ -1072,11 +1072,6 @@ plan_from_changed_files() {
         # Velora application image or requires application reconciliation.
         ;;
 
-      infra/langfuse/*)
-        # Langfuse has its own operator-managed Compose project and credentials.
-        # The production application project is intentionally not reconciled here.
-        ;;
-
       docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml)
         # Service-level Compose differences are handled by compare_compose_models.
         ;;

@@ -31,7 +31,8 @@ export function createLangfuseSdk(
       new LangfuseSpanProcessor({
         publicKey: env.LANGFUSE_PUBLIC_KEY,
         secretKey: env.LANGFUSE_SECRET_KEY,
-        baseUrl: env.LANGFUSE_BASE_URL?.trim() || 'http://langfuse-web:3000',
+        baseUrl:
+          env.LANGFUSE_BASE_URL?.trim() || 'https://cloud.langfuse.com',
         environment:
           env.LANGFUSE_TRACING_ENVIRONMENT?.trim() ||
           env.NODE_ENV?.trim() ||

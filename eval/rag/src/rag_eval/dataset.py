@@ -18,6 +18,7 @@ KNOWN_DATASETS = {
     "rag-frozen-ami-v4": 8,
     "rag-generalization-v1": 104,
 }
+ACTIVE_FROZEN_DATASETS = {"rag-frozen-ami-v3", "rag-frozen-ami-v4"}
 FROZEN_AMI_DATASET_PREFIX = "rag-frozen-ami-"
 
 
@@ -36,7 +37,7 @@ def dataset_sha256(name: str) -> str:
 
 def is_supported_live_dataset(name: str) -> bool:
     return (
-        name in KNOWN_DATASETS and name.startswith(FROZEN_AMI_DATASET_PREFIX)
+        name in ACTIVE_FROZEN_DATASETS
     ) or is_scraped_dataset(name)
 
 

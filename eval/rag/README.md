@@ -16,7 +16,7 @@ No evaluation dependency is a production dependency. `pnpm eval:rag:test` and of
 
 ## Datasets
 
-- `rag-frozen-ami-v1`, `rag-frozen-ami-v2`, and `rag-frozen-ami-v3`: immutable eight-case AMI datasets with the same questions, answers, reel scope, evidence modality, time intervals, and curated concepts; v2 records the prior production reel/index provenance and v3 records the canonical self-hosted BGE-M3 production index provenance.
+- `rag-frozen-ami-v3` is the active eight-case small baseline, and `rag-frozen-ami-v4` is its self-contained-reference replay for semantic scoring. v1 and v2 remain historical immutable artifacts for provenance and migration tests, but are no longer accepted as live datasets.
 - `rag-generalization-v1`: 65 router, 20 sufficiency, 15 verifier, and four generic retrieval/citation/access/provider rows. Tags are analysis metadata only.
 - `rag-scraped-v1` is an operator-supplied annotation source for the scraped Reel corpus. It requires trusted question/reference/evidence contracts and allows multiple questions per Reel. The full builder requires 100–300 trusted questions across no more than 178 Reels; a 20-row pilot is opt-in with `--dataset-version rag-scraped-v1-pilot --pilot-size 20`. No scraped production text is committed by this repository.
 

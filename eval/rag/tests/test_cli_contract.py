@@ -53,8 +53,8 @@ def test_v3_definitions_use_the_normal_selected_dataset_contract(tmp_path):
 
 
 def test_live_dataset_contract_accepts_supported_frozen_versions_only():
-    assert is_supported_live_dataset("rag-frozen-ami-v1")
-    assert is_supported_live_dataset("rag-frozen-ami-v2")
+    assert not is_supported_live_dataset("rag-frozen-ami-v1")
+    assert not is_supported_live_dataset("rag-frozen-ami-v2")
     assert is_supported_live_dataset("rag-frozen-ami-v3")
     assert is_supported_live_dataset("rag-frozen-ami-v4")
     assert not is_supported_live_dataset("rag-generalization-v1")

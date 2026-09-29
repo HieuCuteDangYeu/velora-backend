@@ -1567,7 +1567,7 @@ check_rabbitmq_consumers() {
       return 0
     fi
 
-    log "Waiting for RabbitMQ consumers: ${not_ready[*]} ($attempt/$max_attempts)..."
+    log "Waiting for RabbitMQ consumers: ${not_ready[*]} ($attempt/$HTTP_ATTEMPTS)..."
     sleep "$HTTP_RETRY_SECONDS"
   done
 

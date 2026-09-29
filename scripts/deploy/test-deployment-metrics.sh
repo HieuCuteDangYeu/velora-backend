@@ -104,6 +104,22 @@ VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
 VELORA_HTTP_ATTEMPTS=1 VELORA_HTTP_RETRY_SECONDS=0 \
   VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
   source "$1/scripts/deploy/velora-deploy-core"
+  rabbitmq_queue_consumers() {
+    printf "%s\\n" auth_queue user_queue friend_queue media_queue content_queue \
+      payment_queue mail_queue conversation_queue call_queue monitoring_queue ai_queue \
+      | awk "{ print \$1, 0 }"
+  }
+  if check_rabbitmq_consumers; then
+    printf "RabbitMQ consumer readiness was expected to fail\\n" >&2
+    exit 1
+  fi
+  [[ "$DEPLOYMENT_FAILURE_DETAIL" == "RabbitMQ consumers did not become ready:"* ]]
+  [[ "$DEPLOYMENT_FAILURE_SERVICE" == "rabbitmq" ]]
+' _ "$repo_root"
+
+VELORA_HTTP_ATTEMPTS=1 VELORA_HTTP_RETRY_SECONDS=0 \
+  VELORA_APP_DIR="$tmp_dir/app" VELORA_STATE_DIR="$tmp_dir/state" "$BASH" -c '
+  source "$1/scripts/deploy/velora-deploy-core"
   docker() {
     case "$*" in
       "compose config --services") printf "reel-indexing-long-service\n" ;;

@@ -1,6 +1,10 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { AiServiceModule } from './ai-service.module';
+import { createLangfuseSdk } from './infrastructure/services/langfuse-telemetry';
+
+const langfuseSdk = createLangfuseSdk();
+langfuseSdk?.start();
 
 async function bootstrap() {
   const heartbeat = Number(process.env.RABBITMQ_HEARTBEAT_SECONDS ?? '300');
@@ -23,3 +27,10 @@ async function bootstrap() {
   await app.listen();
 }
 void bootstrap();
+
+process.once('SIGTERM', () => {
+  void langfuseSdk?.shutdown();
+});
+process.once('SIGINT', () => {
+  void langfuseSdk?.shutdown();
+});

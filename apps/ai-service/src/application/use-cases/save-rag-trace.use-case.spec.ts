@@ -408,4 +408,35 @@ describe('SaveRagTraceUseCase', () => {
       }
     },
   );
+
+  it('persists production execution correlation without changing the RagTrace shape', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 'rag-trace-1' });
+    const useCase = new SaveRagTraceUseCase({ create });
+
+    await expect(
+      useCase.execute({
+        state: {
+          userId: 'u',
+          conversationId: 'c',
+          userMessage: 'question',
+          retrievedChunks: [],
+          rerankedChunks: [],
+          retryCount: 0,
+          retrievalRetryCount: 0,
+          citationRetryCount: 0,
+          draftHistory: [],
+          citationAttempts: [],
+          nextDraftSource: 'INITIAL',
+          finalFailureSource: 'NONE',
+        },
+        latencyMs: 1,
+        nodeTimings: {},
+        productionExecutionId: 'production-execution-1',
+      }),
+    ).resolves.toBe('rag-trace-1');
+
+    expect(create.mock.calls[0][0].workflowMetrics.diagnostics).toMatchObject({
+      productionExecutionId: 'production-execution-1',
+    });
+  });
 });

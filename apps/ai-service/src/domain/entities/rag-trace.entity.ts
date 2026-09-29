@@ -67,6 +67,7 @@ export interface RagWorkflowTraceMetrics {
     };
     finalFailureSource?: string;
     failure?: RagWorkflowFailureDiagnostics;
+    productionExecutionId?: string;
   };
 }
 

@@ -109,7 +109,6 @@ readonly -a PROTECTED_SERVICES=(
   rag-embedding
   rag-reranker
   rag-vision
-  rag-eval
 )
 
 # Infrastructure allowed to have explicit, bounded handlers.
@@ -134,7 +133,6 @@ readonly -a BLOCKED_COMPOSE_SERVICES=(
   rag-embedding
   rag-reranker
   rag-vision
-  rag-eval
   media-processing-service
   media-processing-long-service
   reel-indexing-service
@@ -1072,6 +1070,11 @@ plan_from_changed_files() {
         # Loki/Alloy are deployed through the optional monitoring overlay, and
         # the smoke-check script changes verification only. Neither changes a
         # Velora application image or requires application reconciliation.
+        ;;
+
+      infra/langfuse/*)
+        # Langfuse has its own operator-managed Compose project and credentials.
+        # The production application project is intentionally not reconciled here.
         ;;
 
       docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml)

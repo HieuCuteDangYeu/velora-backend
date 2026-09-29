@@ -41,6 +41,7 @@ import { ConfigService } from '@nestjs/config';
 import { ClientProxy } from '@nestjs/microservices';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod/v4';
+import { LangfuseTracingService } from '@ai/infrastructure/services/langfuse-tracing.service';
 import {
   boundRecentMessages,
   boundPromptText,
@@ -137,9 +138,35 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     @Optional()
     @Inject('MONITORING_SERVICE_RMQ')
     private readonly monitoringClient?: ClientProxy,
+    @Optional()
+    private readonly langfuseTracing?: LangfuseTracingService,
   ) {}
 
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
+    const productionExecutionId = randomUUID();
+    const run = (root?: import('@langfuse/tracing').LangfuseSpan) =>
+      this.executeWorkflow(input, productionExecutionId, root);
+
+    return this.langfuseTracing
+      ? this.langfuseTracing.withRoot(
+          {
+            productionExecutionId,
+            userId: input.userId,
+            conversationId: input.conversationId,
+            release: process.env.LANGFUSE_RELEASE || process.env.RELEASE_SHA,
+            environment:
+              process.env.LANGFUSE_TRACING_ENVIRONMENT || process.env.NODE_ENV,
+          },
+          run,
+        )
+      : run();
+  }
+
+  private async executeWorkflow(
+    input: RagChatWorkflowInput,
+    productionExecutionId: string,
+    root?: import('@langfuse/tracing').LangfuseSpan,
+  ): Promise<RagChatWorkflowResult> {
     const nodeTimings: Record<string, number> = {};
     const executionContext: {
       failedNode?: string;
@@ -214,10 +241,20 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       const latencyMs = Date.now() - startedAt;
       const tokenUsage = executionContext.tokenUsage;
       this.executionContexts.delete(nodeTimings);
-      await this.saveRagTraceUseCase.execute({
+      const ragTraceId = await this.saveRagTraceUseCase.execute({
         state: result,
         latencyMs,
         nodeTimings,
+        productionExecutionId,
+      });
+      this.langfuseTracing?.setRootOutput(root, {
+        outcome,
+        latencyMs,
+        productionExecutionId,
+        ...(ragTraceId ? { ragTraceId } : {}),
+        retrievedCount: result.retrievedChunks.length,
+        rerankedCount: result.rerankedChunks.length,
+        fallbackUsed: Boolean(result.answerFallbackReason),
       });
       this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
     }
@@ -668,7 +705,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     ): Promise<Partial<RagChatWorkflowState>> => {
       const groundedRevisionUseCase = this.buildGroundedAnswerRevisionUseCase;
       const groundedRevision = groundedRevisionUseCase
-        ? await groundedRevisionUseCase.executeWithProvenance(state)
+        ? this.langfuseTracing
+          ? await this.langfuseTracing.observe(
+              'answerRevision',
+              () => groundedRevisionUseCase.executeWithProvenance(state),
+              { source: 'GROUNDED_VERIFIER_REVISION' },
+            )
+          : await groundedRevisionUseCase.executeWithProvenance(state)
         : undefined;
       const groundedAnswer = groundedRevision?.answer;
       const draft = groundedAnswer
@@ -745,13 +788,20 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   }
 
   private createPrepareAnswerRevisionNode() {
-    return (state: RagChatWorkflowState): Partial<RagChatWorkflowState> => ({
-      retryCount: state.retryCount + 1,
-      nextDraftSource: 'VERIFIER_REVISION',
-      citations: [],
-      citationCoverage: undefined,
-      citationDiagnostics: undefined,
-    });
+    return (state: RagChatWorkflowState): Partial<RagChatWorkflowState> => {
+      const revision = () => ({
+        retryCount: state.retryCount + 1,
+        nextDraftSource: 'VERIFIER_REVISION' as const,
+        citations: [],
+        citationCoverage: undefined,
+        citationDiagnostics: undefined,
+      });
+      return (
+        this.langfuseTracing?.observeSync('answerRevision', revision, {
+          source: 'VERIFIER_REVISION',
+        }) ?? revision()
+      );
+    };
   }
 
   private createCitationNode(nodeTimings: Record<string, number>) {
@@ -813,24 +863,31 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
 
   private createPrepareCitationRevisionNode() {
     return (state: RagChatWorkflowState): Partial<RagChatWorkflowState> => {
-      const unsupported = state.citationCoverage?.unsupportedClaims ?? [];
-      const detail = unsupported.length
-        ? ` Unsupported claims: ${unsupported.join(' | ')}`
-        : '';
+      const revision = () => {
+        const unsupported = state.citationCoverage?.unsupportedClaims ?? [];
+        const detail = unsupported.length
+          ? ` Unsupported claims: ${unsupported.join(' | ')}`
+          : '';
 
-      return {
-        citationRetryCount: state.citationRetryCount + 1,
-        nextDraftSource: 'CITATION_REVISION',
-        citations: [],
-        citationCoverage: undefined,
-        verification: {
-          passed: false,
-          confidence: state.citationCoverage?.coverage ?? 0,
-          issues: ['Citation coverage is below the production threshold.'],
-          requiresRevision: true,
-          revisedInstruction: `Remove, qualify, or rewrite factual reel claims that are not directly supported by the supplied grounded evidence. Do not add new facts.${detail}`,
-        },
+        return {
+          citationRetryCount: state.citationRetryCount + 1,
+          nextDraftSource: 'CITATION_REVISION' as const,
+          citations: [],
+          citationCoverage: undefined,
+          verification: {
+            passed: false,
+            confidence: state.citationCoverage?.coverage ?? 0,
+            issues: ['Citation coverage is below the production threshold.'],
+            requiresRevision: true,
+            revisedInstruction: `Remove, qualify, or rewrite factual reel claims that are not directly supported by the supplied grounded evidence. Do not add new facts.${detail}`,
+          },
+        };
       };
+      return (
+        this.langfuseTracing?.observeSync('citationRevision', revision, {
+          source: 'CITATION_REVISION',
+        }) ?? revision()
+      );
     };
   }
 
@@ -868,6 +925,15 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           extractiveAnswerHasLocalProvenance)
       ) {
         const fallback =
+          this.langfuseTracing?.observeSync(
+            'fallback',
+            () =>
+              this.generateDraftAnswerUseCase.buildExtractiveFallback(
+                state,
+                'UNUSABLE_SYNTHESIS',
+              ),
+            { reason: 'UNUSABLE_SYNTHESIS' },
+          ) ??
           this.generateDraftAnswerUseCase.buildExtractiveFallback(
             state,
             'UNUSABLE_SYNTHESIS',
@@ -922,8 +988,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             answerFallbackReason: fallback.fallbackReason,
             verification,
           };
-          const assessment =
-            await this.buildRagCitationsUseCase.execute(recoveredState);
+          const assessment = this.langfuseTracing
+            ? await this.langfuseTracing.observe(
+                'fallbackCitation',
+                () => this.buildRagCitationsUseCase.execute(recoveredState),
+                { source: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' },
+              )
+            : await this.buildRagCitationsUseCase.execute(recoveredState);
           this.recordTokenUsage(
             nodeTimings,
             assessment.coverage.diagnostics?.semanticCalls,
@@ -1271,19 +1342,25 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     const executionContext = this.executionContexts.get(nodeTimings);
     let completed = false;
 
-    try {
-      const result = await fn();
-      completed = true;
-      return result;
-    } finally {
-      const duration = Date.now() - startedAt;
-      nodeTimings[label] = (nodeTimings[label] ?? 0) + duration;
-      if (!completed && executionContext) {
-        executionContext.failedNode = label;
-      }
+    const run = async (): Promise<T> => {
+      try {
+        const result = await fn();
+        completed = true;
+        return result;
+      } finally {
+        const duration = Date.now() - startedAt;
+        nodeTimings[label] = (nodeTimings[label] ?? 0) + duration;
+        if (!completed && executionContext) {
+          executionContext.failedNode = label;
+        }
 
-      this.logger.debug(`[RagGraphTiming] ${label}=${duration}ms`);
-    }
+        this.logger.debug(`[RagGraphTiming] ${label}=${duration}ms`);
+      }
+    };
+
+    return this.langfuseTracing
+      ? this.langfuseTracing.observe(label, run, { node: label })
+      : run();
   }
 
   private failureSource(

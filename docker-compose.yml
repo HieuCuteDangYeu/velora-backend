@@ -477,24 +477,6 @@ services:
     networks:
       - microservices-net
 
-  rag-eval:
-    image: ${DOCKERHUB_USERNAME:-local}/rag-eval:latest
-    build:
-      context: .
-      dockerfile: ./eval/rag/Dockerfile
-      args:
-        EVALUATOR_SHA: ${EVALUATOR_SHA:-unknown}
-        PRODUCTION_SHA: ${PRODUCTION_SHA:-unknown}
-    profiles:
-      - eval
-    restart: 'no'
-    volumes:
-      - ${RAG_EVAL_RESULTS_DIR:-./eval/rag/results}:/workspace/eval/rag/results
-      - ${RAG_EVAL_EXPERIMENTS_DIR:-./eval/rag/experiments}:/workspace/eval/rag/experiments
-      - ${RAG_EVAL_AMI_REPORT_DIR:-./test-data/reel-integration/ami/reports}:/workspace/test-data/reel-integration/ami/reports
-    networks:
-      - microservices-net
-
   rabbitmq:
     image: rabbitmq:3.13-management
     restart: unless-stopped

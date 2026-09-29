@@ -19,9 +19,10 @@ export class SaveRagTraceUseCase {
     state: RagChatWorkflowState;
     latencyMs: number;
     nodeTimings: Record<string, number>;
-  }): Promise<void> {
+    productionExecutionId?: string;
+  }): Promise<string | undefined> {
     try {
-      await this.ragTraceRepository.create({
+      const trace = await this.ragTraceRepository.create({
         userId: input.state.userId,
         conversationId: input.state.conversationId,
         message: input.state.userMessage,
@@ -134,12 +135,17 @@ export class SaveRagTraceUseCase {
             finalization: this.finalizationDiagnostics(input.state),
             finalFailureSource: input.state.finalFailureSource,
             failure: input.state.failureDiagnostics,
+            ...(input.productionExecutionId
+              ? { productionExecutionId: input.productionExecutionId }
+              : {}),
           },
         },
       });
+      return trace?.id;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[RagTrace] save failed: ${message}`);
+      return undefined;
     }
   }
 

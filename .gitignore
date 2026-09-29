@@ -28,7 +28,6 @@ lerna-debug.log*
 /eval/rag/.uv-cache/
 /eval/rag/**/__pycache__/
 /eval/rag/**/*.py[cod]
-/eval/rag/.ragas/
 /eval/rag/results/
 /eval/rag/experiments/
 

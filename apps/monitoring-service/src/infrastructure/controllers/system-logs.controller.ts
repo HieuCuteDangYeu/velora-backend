@@ -28,7 +28,6 @@ const ALLOWED_LOG_SERVICES = new Set([
   'ai-service',
   'rag-embedding',
   'rag-vision',
-  'rag-eval',
   'rabbitmq',
   'prometheus',
   'node-exporter',

@@ -33,7 +33,6 @@ jobs:
       build_services_list: ${{ steps.detect.outputs.build_services_list }}
       call_regression_required: ${{ steps.detect.outputs.call_regression_required }}
       friend_recommendation_required: ${{ steps.detect.outputs.friend_recommendation_required }}
-      rag_evaluator_required: ${{ steps.detect.outputs.rag_evaluator_required }}
       comparison_base: ${{ steps.detect.outputs.comparison_base }}
       checkout_sha: ${{ steps.detect.outputs.checkout_sha }}
       is_release_candidate: ${{ steps.detect.outputs.is_release_candidate }}
@@ -135,7 +134,7 @@ jobs:
               [ -z "$changed_file" ] && continue
 
               case "$changed_file" in
-                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
+                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|infra/langfuse/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
                   continue
                   ;;
               esac
@@ -189,7 +188,7 @@ jobs:
                     [
                       .services
                       | to_entries[]
-                      | select(.value.build != null and .key != "rag-eval")
+                      | select(.value.build != null)
                       | {
                           service: .key,
                           context: .value.build.context,
@@ -249,21 +248,14 @@ jobs:
             friend_recommendation_required=true
           fi
 
-          rag_evaluator_required=false
-          if [ "$is_release_candidate" = true ] || printf '%s\n' "$changed_files" | grep -Eq '^(eval/rag/|apps/ai-service/|apps/conversation-service/prisma/|apps/reel-indexing-service/prisma/|libs/|scripts/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|nest-cli\.json$|tsconfig(\.build)?\.json$|\.npmrc$|\.dockerignore$|\.github/workflows/(deploy|cd)\.yml$)'; then
-            rag_evaluator_required=true
-          fi
-
           echo "Build services: ${build_services_list:-none}"
           echo "Call regression required: $call_regression_required"
           echo "Friend recommendation regression required: $friend_recommendation_required"
-          echo "RAG evaluator required: $rag_evaluator_required"
           {
             printf 'build_matrix_json=%s\n' "$build_matrix_json"
             printf 'build_services_list=%s\n' "$build_services_list"
             printf 'call_regression_required=%s\n' "$call_regression_required"
             printf 'friend_recommendation_required=%s\n' "$friend_recommendation_required"
-            printf 'rag_evaluator_required=%s\n' "$rag_evaluator_required"
             printf 'comparison_base=%s\n' "$comparison_base"
             printf 'checkout_sha=%s\n' "$head_sha"
             printf 'is_release_candidate=%s\n' "$is_release_candidate"
@@ -455,53 +447,12 @@ jobs:
         if: always() && needs.detect-changes.outputs.friend_recommendation_required == 'true'
         run: docker rm --force friend-recommendation-postgres || true
 
-  rag-evaluator-ci:
-    needs: [detect-changes, validate]
-    if: needs.detect-changes.outputs.rag_evaluator_required == 'true'
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.detect-changes.outputs.checkout_sha }}
-
-      - name: Build isolated RAG evaluator image
-        env:
-          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
-        run: |
-          set -euo pipefail
-          docker build \
-            --file eval/rag/Dockerfile \
-            --build-arg "EVALUATOR_SHA=$CHECKOUT_SHA" \
-            --build-arg PRODUCTION_SHA=ci-not-deployed \
-            --tag "velora-rag-eval-ci:$CHECKOUT_SHA" \
-            .
-
-      - name: Run evaluator tests with zero provider calls
-        env:
-          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            "velora-rag-eval-ci:$CHECKOUT_SHA" \
-            pnpm eval:rag:test
-
-      - name: Run offline RAG generalization gate
-        env:
-          CHECKOUT_SHA: ${{ needs.detect-changes.outputs.checkout_sha }}
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            "velora-rag-eval-ci:$CHECKOUT_SHA" \
-            pnpm eval:rag:offline --dataset rag-generalization-v1
-
   build-images:
-    needs: [detect-changes, validate, rag-evaluator-ci]
+    needs: [detect-changes, validate]
     if: >-
       always() &&
       needs.detect-changes.result == 'success' &&
       needs.validate.result == 'success' &&
-      (needs.rag-evaluator-ci.result == 'success' || needs.rag-evaluator-ci.result == 'skipped') &&
       needs.detect-changes.outputs.build_matrix_json != '[]'
     runs-on: ubuntu-24.04-arm
     strategy:

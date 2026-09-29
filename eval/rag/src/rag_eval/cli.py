@@ -902,7 +902,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="rag-eval")
     commands = root.add_subparsers(dest="command", required=True)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--dataset", default="rag-frozen-ami-v1")
+    common.add_argument("--dataset", default="rag-frozen-ami-v3")
     common.add_argument("--variant", default="offline-fixture")
     common.add_argument("--run-id")
     common.add_argument("--production-sha")

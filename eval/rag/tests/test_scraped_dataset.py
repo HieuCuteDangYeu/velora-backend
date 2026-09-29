@@ -94,7 +94,7 @@ def test_full_builder_refuses_a_partial_source_set(tmp_path):
     source = tmp_path / "source.jsonl"
     source.write_text(json.dumps(_row(1, "series-a")))
 
-    with pytest.raises(ValueError, match="exactly 178 rows"):
+    with pytest.raises(ValueError, match="100-300 questions"):
         build_dataset(
             source,
             tmp_path / "rag-scraped-v1.jsonl",

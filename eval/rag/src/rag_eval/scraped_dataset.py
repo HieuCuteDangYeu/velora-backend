@@ -16,6 +16,8 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+MIN_SCRAPED_CASES = 100
+MAX_SCRAPED_CASES = 300
 MAX_SCRAPED_REELS = 178
 TRUSTED_ANNOTATION_STATUSES = {"HUMAN_VERIFIED", "OWNER_VERIFIED"}
 PROVISIONAL_ANNOTATION_STATUSES = TRUSTED_ANNOTATION_STATUSES | {
@@ -69,8 +71,8 @@ def validate_scraped_rows(
         raise ValueError(f"unsupported scraped dataset version: {dataset_version}")
     if not rows:
         raise ValueError("scraped benchmark must contain at least one row")
-    if len(rows) > max_reels:
-        raise ValueError(f"scraped benchmark cannot exceed {max_reels} rows")
+    if len(rows) > MAX_SCRAPED_CASES:
+        raise ValueError(f"scraped benchmark cannot exceed {MAX_SCRAPED_CASES} questions")
 
     seen_case_ids: set[str] = set()
     seen_reel_ids: set[str] = set()
@@ -93,8 +95,6 @@ def validate_scraped_rows(
         reel_id = reel_ids[0]
         if not isinstance(reel_id, str) or not UUID_PATTERN.fullmatch(reel_id):
             raise ValueError(f"{case_id}: expectedReelIds must contain a reel UUID")
-        if reel_id in seen_reel_ids:
-            raise ValueError(f"{case_id}: each pilot row must represent a distinct reel")
         seen_reel_ids.add(reel_id)
 
         evidence_types = row.get("expectedEvidenceTypes")
@@ -135,6 +135,8 @@ def validate_scraped_rows(
         if access_scope.get("authorizedReelIds") != reel_ids:
             raise ValueError(f"{case_id}: accessScope must authorize only its reel")
 
+    if len(seen_reel_ids) > max_reels:
+        raise ValueError(f"scraped benchmark cannot exceed {max_reels} distinct reels")
     return rows
 
 
@@ -204,9 +206,11 @@ def build_dataset(
     validate_scraped_rows(source_rows, dataset_version="rag-scraped-v1")
     if pilot_size is not None and dataset_version == "rag-scraped-v1":
         dataset_version = "rag-scraped-v1-pilot"
-    if pilot_size is None and len(source_rows) != MAX_SCRAPED_REELS:
+    if pilot_size is None and not (
+        MIN_SCRAPED_CASES <= len(source_rows) <= MAX_SCRAPED_CASES
+    ):
         raise ValueError(
-            f"full scraped benchmark requires exactly {MAX_SCRAPED_REELS} rows"
+            f"full scraped benchmark requires {MIN_SCRAPED_CASES}-{MAX_SCRAPED_CASES} questions"
         )
     selected = (
         select_stratified_pilot(source_rows, pilot_size)

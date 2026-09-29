@@ -7,7 +7,7 @@ import {
   type LokiLogLevel,
 } from '../services/loki-query.service';
 
-const ALLOWED_LOG_SERVICES = new Set([
+const STANDARD_LOG_SERVICES = [
   'api-gateway',
   'nginx',
   'user-service',
@@ -27,6 +27,7 @@ const ALLOWED_LOG_SERVICES = new Set([
   'notification-service',
   'ai-service',
   'rag-embedding',
+  'rag-reranker',
   'rag-vision',
   'rabbitmq',
   'prometheus',
@@ -34,6 +35,27 @@ const ALLOWED_LOG_SERVICES = new Set([
   'grafana',
   'loki',
   'alloy',
+] as const;
+
+// Langfuse's backing services use generic Compose service names. Expose only
+// project-scoped aliases so selecting Langfuse logs can never query an
+// unrelated postgres, redis, clickhouse, or minio container.
+const LANGFUSE_LOG_SERVICE_SELECTORS: Record<string, string> = {
+  'langfuse-web': '{compose_project="velora-langfuse",service="langfuse-web"}',
+  'langfuse-worker':
+    '{compose_project="velora-langfuse",service="langfuse-worker"}',
+  'langfuse-postgres':
+    '{compose_project="velora-langfuse",service="postgres"}',
+  'langfuse-clickhouse':
+    '{compose_project="velora-langfuse",service="clickhouse"}',
+  'langfuse-redis':
+    '{compose_project="velora-langfuse",service="redis"}',
+  'langfuse-minio': '{compose_project="velora-langfuse",service="minio"}',
+};
+
+const ALLOWED_LOG_SERVICES = new Set([
+  ...STANDARD_LOG_SERVICES,
+  ...Object.keys(LANGFUSE_LOG_SERVICE_SELECTORS),
 ]);
 
 const ALLOWED_LOG_LEVELS = new Set(['all', 'error', 'warn', 'info', 'debug']);
@@ -173,22 +195,22 @@ export class SystemLogsController {
   }
 
   private buildLogQl(query: ParsedLogsQuery): string[] {
-    const selector =
+    const selectors =
       query.service === 'all'
-        ? `{service=~"${Array.from(ALLOWED_LOG_SERVICES)
-            .map((service) => service.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-            .join('|')}"}`
-        : `{service=${JSON.stringify(query.service)}}`;
+        ? [
+            `{service=~"${STANDARD_LOG_SERVICES.map((service) => service.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}"}`,
+            '{compose_project="velora-langfuse",service=~"langfuse-web|langfuse-worker|postgres|clickhouse|redis|minio"}',
+          ]
+        : [
+            LANGFUSE_LOG_SERVICE_SELECTORS[query.service] ??
+              `{service=${JSON.stringify(query.service)}}`,
+          ];
 
-    const levelQueries = this.buildLevelLogQl(selector, query.level);
-    const queries = levelQueries.map((levelQuery) => {
-      const withSearch = query.search
-        ? this.appendSearch(levelQuery, query.search)
-        : levelQuery;
-      return withSearch;
-    });
-
-    return queries;
+    return selectors.flatMap((selector) =>
+      this.buildLevelLogQl(selector, query.level).map((levelQuery) =>
+        query.search ? this.appendSearch(levelQuery, query.search) : levelQuery,
+      ),
+    );
   }
 
   private buildLevelLogQl(

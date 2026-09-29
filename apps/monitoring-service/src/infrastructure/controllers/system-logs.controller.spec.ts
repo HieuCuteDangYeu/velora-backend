@@ -210,6 +210,25 @@ describe('SystemLogsController', () => {
     expect(response.mayHaveMore).toBe(true);
   });
 
+  it('scopes Langfuse backing-service logs to the Langfuse Compose project', async () => {
+    loki.range.mockResolvedValue([entry({ service: 'postgres' })]);
+
+    await controller.query({
+      service: 'langfuse-postgres',
+      level: 'all',
+      from: FROM,
+      to: TO,
+      limit: 20,
+    });
+
+    expect(loki.range).toHaveBeenCalledWith(
+      '{compose_project="velora-langfuse",service="postgres"}',
+      FROM,
+      TO,
+      21,
+    );
+  });
+
   it('does not claim more results when the matching result set fits the limit', async () => {
     loki.range.mockResolvedValue(
       Array.from({ length: 20 }, () => entry({ level: 'info' })),

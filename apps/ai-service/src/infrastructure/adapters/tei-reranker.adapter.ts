@@ -34,10 +34,7 @@ export class TeiRerankerAdapter implements IRerankerService {
       Math.max(Math.round(input.limit), 1),
       this.number('AI_RAG_RERANK_MAX_LIMIT', 8, 1, 20),
     );
-    const candidates = input.candidates.slice(
-      0,
-      this.number('AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT', 20, 2, 50),
-    );
+    const candidates = this.boundCandidates(input.candidates);
     const response = await this.request(input.queryText, candidates);
     const seen = new Set<number>();
     const scored = response
@@ -81,19 +78,11 @@ export class TeiRerankerAdapter implements IRerankerService {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
     try {
+      const requestBody = this.payload(queryText, candidates);
       const response = await fetch(`${this.baseUrl()}/rerank`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: this.truncate(queryText, 128),
-          texts: candidates.map((candidate) =>
-            this.truncate(
-              this.context(candidate),
-              this.number('AI_RERANKER_MAX_INPUT_TOKENS', 512, 64, 512),
-            ),
-          ),
-          return_text: false,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
       const raw = await response.text();
@@ -102,14 +91,74 @@ export class TeiRerankerAdapter implements IRerankerService {
           `TEI reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
         );
       }
-      const payload = JSON.parse(raw) as unknown;
-      if (!Array.isArray(payload)) {
+      const responsePayload = JSON.parse(raw) as unknown;
+      if (!Array.isArray(responsePayload)) {
         throw new Error('TEI reranker returned an invalid response');
       }
-      return payload as TeiScore[];
+      return responsePayload as TeiScore[];
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private boundCandidates(
+    candidates: ReelContextSearchResult[],
+  ): ReelContextSearchResult[] {
+    const configuredLimit = this.number(
+      'AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT',
+      8,
+      2,
+      50,
+    );
+    const safeBatchTokens = this.safeBatchTokens();
+    const queryTokens = this.queryTokenBudget(safeBatchTokens);
+    const maxCandidatesByBudget = Math.max(
+      2,
+      Math.floor((safeBatchTokens - queryTokens) / 128),
+    );
+    return candidates.slice(
+      0,
+      Math.min(configuredLimit, maxCandidatesByBudget),
+    );
+  }
+
+  private payload(
+    queryText: string,
+    candidates: ReelContextSearchResult[],
+  ): { query: string; texts: string[]; return_text: false } {
+    const safeBatchTokens = this.safeBatchTokens();
+    const queryTokens = this.queryTokenBudget(safeBatchTokens);
+    const candidateTokens = Math.max(
+      64,
+      Math.floor(
+        (safeBatchTokens - queryTokens) / Math.max(candidates.length, 1),
+      ),
+    );
+    const maxInputTokens = Math.min(
+      this.number('AI_RERANKER_MAX_INPUT_TOKENS', 512, 64, 512),
+      candidateTokens,
+    );
+    return {
+      query: this.truncate(queryText, queryTokens),
+      texts: candidates.map((candidate) =>
+        this.truncate(this.context(candidate), maxInputTokens),
+      ),
+      return_text: false,
+    };
+  }
+
+  private safeBatchTokens(): number {
+    // Keep tokenizer/special-token headroom; TEI reports over-budget requests as 429 overloaded.
+    return Math.max(
+      256,
+      Math.floor(
+        this.number('TEI_RERANKER_MAX_BATCH_TOKENS', 1024, 512, 131_072) * 0.8,
+      ),
+    );
+  }
+
+  private queryTokenBudget(safeBatchTokens: number): number {
+    return Math.max(64, Math.min(128, Math.floor(safeBatchTokens / 4)));
   }
 
   private context(candidate: ReelContextSearchResult): string {

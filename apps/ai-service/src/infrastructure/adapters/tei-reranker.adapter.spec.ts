@@ -63,4 +63,53 @@ describe('TeiRerankerAdapter', () => {
       }),
     ).rejects.toThrow('offline');
   });
+
+  it('bounds the request to the configured TEI batch-token budget', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation((_url, init) => {
+        const rawBody = (init as RequestInit).body;
+        if (typeof rawBody !== 'string')
+          throw new Error('missing request body');
+        const body = JSON.parse(rawBody) as {
+          query: string;
+          texts: string[];
+        };
+        expect(body.texts).toHaveLength(5);
+        expect(body.query.split(/\s+/u)).toHaveLength(2);
+        expect(
+          body.texts.every((text) => text.split(/\s+/u).length <= 138),
+        ).toBe(true);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(
+              body.texts.map((_text, index) => ({
+                index,
+                score: 1 - index / 10,
+              })),
+            ),
+            { status: 200 },
+          ),
+        );
+      });
+    const adapter = new TeiRerankerAdapter(
+      new ConfigService({
+        TEI_RERANKER_BASE_URL: 'http://rag-reranker:80',
+        TEI_RERANKER_MAX_BATCH_TOKENS: '1024',
+        AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '20',
+        AI_RERANKER_MAX_INPUT_TOKENS: '512',
+      }),
+    );
+
+    await expect(
+      adapter.rerank({
+        queryText: 'query text',
+        candidates: Array.from({ length: 20 }, (_, index) =>
+          candidate(String(index)),
+        ),
+        limit: 5,
+      }),
+    ).resolves.toHaveLength(5);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

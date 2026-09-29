@@ -452,7 +452,7 @@ services:
       - --port
       - '80'
       - --max-concurrent-requests
-      - ${TEI_RERANKER_MAX_CONCURRENT_REQUESTS:-8}
+      - ${TEI_RERANKER_MAX_CONCURRENT_REQUESTS:-1}
       - --max-batch-tokens
       - ${TEI_RERANKER_MAX_BATCH_TOKENS:-1024}
     restart: unless-stopped

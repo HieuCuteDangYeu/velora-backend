@@ -99,11 +99,12 @@ function validateRows(rows) {
   return rows;
 }
 
-function toDatasetItem(row) {
+function toDatasetItem(row, { datasetName = DATASET_NAME } = {}) {
   const reelId = row.expectedReelIds[0];
   const modality = row.expectedEvidenceTypes[0];
   const evidenceIds = [...row.relevantEvidenceIds];
   return {
+    datasetName,
     id: row.id,
     input: {
       question: row.question,
@@ -131,13 +132,17 @@ function toDatasetItem(row) {
   };
 }
 
+function isDatasetNotFoundError(error) {
+  return error?.status === 404 || error?.statusCode === 404;
+}
+
 async function ensureDataset(client, name) {
   try {
     await client.dataset.get(name, { fetchItemsPageSize: 1 });
   } catch (error) {
-    if (error?.status !== 404) throw error;
+    if (!isDatasetNotFoundError(error)) throw error;
     await client.api.datasets.create({
-      name,
+      datasetName: name,
       description:
         'Deterministic provisional Reel candidates; no production RAG calls.',
       metadata: {
@@ -157,7 +162,8 @@ async function importRows(rows, { datasetName = DATASET_NAME } = {}) {
   });
   try {
     await ensureDataset(client, datasetName);
-    for (const row of rows) await client.dataset.createItem(toDatasetItem(row));
+    for (const row of rows)
+      await client.dataset.createItem(toDatasetItem(row, { datasetName }));
     await client.flush();
   } finally {
     await client.shutdown();
@@ -202,6 +208,7 @@ module.exports = {
   DATASET_VERSION,
   TARGET_ROWS,
   importRows,
+  isDatasetNotFoundError,
   loadRows,
   toDatasetItem,
   validateRows,

@@ -2,9 +2,16 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  isDatasetNotFoundError,
   toDatasetItem,
   validateRows,
 } = require('./import-langfuse-dataset.cjs');
+
+test('accepts the current Langfuse SDK not-found error shape', () => {
+  assert.equal(isDatasetNotFoundError({ statusCode: 404 }), true);
+  assert.equal(isDatasetNotFoundError({ status: 404 }), true);
+  assert.equal(isDatasetNotFoundError({ statusCode: 500 }), false);
+});
 
 function row(index = 1) {
   return {
@@ -31,6 +38,7 @@ test('validates exactly 220 provisional rows and preserves correlation fields', 
   const rows = Array.from({ length: 220 }, (_, index) => row(index + 1));
   assert.equal(validateRows(rows).length, 220);
   assert.deepEqual(toDatasetItem(rows[0]), {
+    datasetName: 'velora/rag-scraped-v1-provisional',
     id: 'SCRAPED-CANDIDATE-0001',
     input: {
       question: 'What happens?',

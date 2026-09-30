@@ -35,6 +35,35 @@ export type RagRequiredEvidence =
   | 'CONVERSATION_MEMORY'
   | 'USER_MEMORY';
 
+export type RagAgentToolName =
+  | 'search_reel_content'
+  | 'get_reel_context'
+  | 'search_user_memory'
+  | 'get_conversation_summary';
+
+export type RagContextToolStatus = 'SUCCESS' | 'EMPTY' | 'DENIED' | 'ERROR';
+
+export interface RagToolPlan {
+  allowedTools: RagAgentToolName[];
+  requiredTools: RagAgentToolName[];
+}
+
+export interface RagContextToolCallDiagnostics {
+  toolName: RagAgentToolName;
+  status: RagContextToolStatus;
+  itemCount: number;
+  latencyMs: number;
+  errorCode?: string;
+}
+
+export interface RagContextToolExecutionDiagnostics {
+  allowedTools: RagAgentToolName[];
+  requiredTools: RagAgentToolName[];
+  stepCount: number;
+  calls: RagContextToolCallDiagnostics[];
+  providerStatus: 'SUCCESS' | 'ERROR';
+}
+
 export type RagReferenceTarget =
   | 'NONE'
   | 'SHARED_REEL'
@@ -102,6 +131,9 @@ export interface RagChatRouteDecision {
   requiredEvidence: RagRequiredEvidence[];
 
   recommendationAction: RagRecommendationAction;
+
+  /** Model-selected tools after application policy validation. */
+  toolPlan?: RagToolPlan;
 
   reason: string;
   diagnostics?: {
@@ -253,6 +285,7 @@ export interface RagContextSufficiencyDiagnostics {
   decisionSource:
     | 'DETERMINISTIC_NO_CONTEXT'
     | 'DETERMINISTIC_REQUIRED_MODALITY'
+    | 'DETERMINISTIC_REQUIRED_TOOL'
     | 'LLM'
     | 'FAIL_CLOSED'
     | 'UNKNOWN';
@@ -312,6 +345,7 @@ export interface RagPersistedRouteDecision {
   needsRetrieval: boolean;
   needsVerification: boolean;
   recommendationActionType?: RagRecommendationAction['type'];
+  toolPlan?: RagToolPlan;
 }
 
 export interface RagDraftHistoryEntry {
@@ -433,6 +467,7 @@ export interface RagChatWorkflowState {
   retrievalRetryCount: number;
   citationRetryCount: number;
   retrievalExecution?: RagRetrievalExecutionDiagnostics;
+  contextToolExecution?: RagContextToolExecutionDiagnostics;
 }
 
 export interface IRagChatWorkflow {

@@ -49,6 +49,99 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('refuses a required user-memory request when the memory tool is empty', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const memoryState = {
+      userMessage: 'What database do I prefer?',
+      route: {
+        intent: 'USER_MEMORY_QUESTION',
+        needsRetrieval: false,
+        requiredEvidence: ['USER_MEMORY'],
+        toolPlan: {
+          allowedTools: ['search_user_memory'],
+          requiredTools: ['search_user_memory'],
+        },
+      },
+      userMemories: { memories: [] },
+      contextToolExecution: {
+        allowedTools: ['search_user_memory'],
+        requiredTools: ['search_user_memory'],
+        stepCount: 1,
+        calls: [
+          {
+            toolName: 'search_user_memory',
+            status: 'EMPTY',
+            itemCount: 0,
+            latencyMs: 2,
+          },
+        ],
+        providerStatus: 'SUCCESS',
+      },
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(memoryState)).resolves.toMatchObject({
+      sufficient: false,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+      diagnostics: { decisionSource: 'DETERMINISTIC_REQUIRED_TOOL' },
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('accepts usable user memory without a second semantic sufficiency call', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const memoryState = {
+      userMessage: 'What database do I prefer?',
+      route: {
+        intent: 'USER_MEMORY_QUESTION',
+        needsRetrieval: false,
+        requiredEvidence: ['USER_MEMORY'],
+        toolPlan: {
+          allowedTools: ['search_user_memory'],
+          requiredTools: ['search_user_memory'],
+        },
+      },
+      userMemories: {
+        memories: [
+          {
+            userId: 'user-1',
+            type: 'PREFERENCE',
+            content: 'PostgreSQL',
+            confidence: 0.9,
+          },
+        ],
+      },
+      contextToolExecution: {
+        allowedTools: ['search_user_memory'],
+        requiredTools: ['search_user_memory'],
+        stepCount: 1,
+        calls: [
+          {
+            toolName: 'search_user_memory',
+            status: 'SUCCESS',
+            itemCount: 1,
+            latencyMs: 2,
+          },
+        ],
+        providerStatus: 'SUCCESS',
+      },
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(memoryState)).resolves.toMatchObject({
+      sufficient: true,
+      availableEvidence: ['USER_MEMORY'],
+      diagnostics: { decisionSource: 'DETERMINISTIC_REQUIRED_TOOL' },
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it('refuses deterministically when the required modality is absent', async () => {
     const service = { generateObject: jest.fn() };
     const useCase = new CheckContextSufficiencyUseCase(

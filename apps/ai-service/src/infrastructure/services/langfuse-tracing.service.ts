@@ -48,6 +48,12 @@ const SAFE_KEYS = new Set([
   'answerGenerationMode',
   'answerFallbackReason',
   'finalFailureSource',
+  'toolName',
+  'toolStatus',
+  'itemCount',
+  'stepCount',
+  'toolCallCount',
+  'requiredToolsSucceeded',
 ]);
 
 @Injectable()
@@ -175,9 +181,7 @@ export class LangfuseTracingService {
     }
   }
 
-  recordSemanticCalls(
-    calls?: readonly StructuredLlmCallDiagnostics[],
-  ): void {
+  recordSemanticCalls(calls?: readonly StructuredLlmCallDiagnostics[]): void {
     if (!this.enabled) return;
 
     for (const call of calls ?? []) {
@@ -203,9 +207,7 @@ export class LangfuseTracingService {
             ...(call.finishReason ? { finishReason: call.finishReason } : {}),
             ...(call.errorCode ? { errorCode: call.errorCode } : {}),
           },
-          ...(Object.keys(usageDetails).length > 0
-            ? { usageDetails }
-            : {}),
+          ...(Object.keys(usageDetails).length > 0 ? { usageDetails } : {}),
           metadata: {
             modelRole: call.modelRole || 'UNKNOWN',
             attempt: String(call.attempt),

@@ -39,6 +39,9 @@ export class CheckContextSufficiencyUseCase {
   async execute(
     state: RagChatWorkflowState,
   ): Promise<RagContextSufficiencyResult> {
+    const requiredToolContext = this.checkRequiredToolContext(state);
+    if (requiredToolContext) return requiredToolContext;
+
     if (!state.route?.needsRetrieval) {
       return {
         sufficient: true,
@@ -153,6 +156,88 @@ export class CheckContextSufficiencyUseCase {
         },
       };
     }
+  }
+
+  private checkRequiredToolContext(
+    state: RagChatWorkflowState,
+  ): RagContextSufficiencyResult | undefined {
+    if (state.route?.needsRetrieval) return undefined;
+
+    const requiredTools = state.route?.toolPlan?.requiredTools ?? [];
+    const execution = state.contextToolExecution;
+    if (requiredTools.length === 0 || !execution) return undefined;
+
+    const hasSummary = Boolean(state.conversationMemory?.summary?.trim());
+    const hasRecentConversation =
+      (state.memory?.recentMessages?.length ?? 0) > 0;
+    const hasContext = (tool: (typeof requiredTools)[number]): boolean => {
+      if (tool === 'search_user_memory') {
+        return (state.userMemories?.memories.length ?? 0) > 0;
+      }
+      if (tool === 'get_conversation_summary') {
+        return hasSummary || hasRecentConversation;
+      }
+      return execution.calls.some(
+        (call) => call.toolName === tool && call.status === 'SUCCESS',
+      );
+    };
+
+    const missingTools = requiredTools.filter((tool) => !hasContext(tool));
+    const availableEvidence: RagRequiredEvidence[] = [];
+    if (
+      (state.userMemories?.memories.length ?? 0) > 0 &&
+      state.route?.requiredEvidence.includes('USER_MEMORY')
+    ) {
+      availableEvidence.push('USER_MEMORY');
+    }
+    if (
+      (hasSummary || hasRecentConversation) &&
+      state.route?.requiredEvidence.includes('CONVERSATION_MEMORY')
+    ) {
+      availableEvidence.push('CONVERSATION_MEMORY');
+    }
+
+    if (missingTools.length === 0) {
+      return {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: [],
+        reason: 'Required context tools returned usable context.',
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: execution.providerStatus,
+          decisionSource: 'DETERMINISTIC_REQUIRED_TOOL',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
+    const missingEvidence = (state.route?.requiredEvidence ?? []).filter(
+      (evidence) =>
+        evidence !== 'NONE' && !availableEvidence.includes(evidence),
+    );
+    const userFacingReason =
+      state.route?.intent === 'USER_MEMORY_QUESTION'
+        ? 'I do not have a matching saved memory to answer that reliably.'
+        : 'I do not have enough conversation context to answer that reliably.';
+
+    return {
+      sufficient: false,
+      confidence: execution.providerStatus === 'ERROR' ? 0 : 1,
+      availableEvidence,
+      missingEvidence,
+      supportedEvidenceIds: [],
+      reason: `Required context tool did not return usable context: ${missingTools.join(', ')}.`,
+      userFacingReason,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+      diagnostics: {
+        providerStatus: execution.providerStatus,
+        decisionSource: 'DETERMINISTIC_REQUIRED_TOOL',
+        modelRole: 'CONTEXT_SUFFICIENCY',
+      },
+    };
   }
 
   private async generateSemanticDecision(

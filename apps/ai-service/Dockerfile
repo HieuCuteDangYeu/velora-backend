@@ -1,4 +1,4 @@
-FROM node:20-bullseye AS builder
+FROM node:20-bookworm AS builder
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl \
@@ -20,7 +20,7 @@ RUN pnpm exec prisma generate --schema=./apps/ai-service/prisma/schema.prisma
 RUN pnpm run build ai-service
 
 
-FROM node:20-bullseye AS production
+FROM node:20-bookworm AS production
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl \

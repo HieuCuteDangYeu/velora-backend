@@ -684,7 +684,7 @@ describe('Call lifecycle use cases', () => {
       await expect(
         useCase.execute('call-1', 'user-c', 'socket-c', 'action-c'),
       ).rejects.toThrow(
-        _reason === 'membership service unavailable'
+        _reason !== 'removed member'
           ? 'Group membership unavailable'
           : 'Not a current group member',
       );
@@ -1551,6 +1551,50 @@ describe('Call lifecycle use cases', () => {
         closedProducers: [],
       }),
     );
+  });
+
+  it('retries revoked guest media cleanup after its atomic membership transition already committed', async () => {
+    const session = new CallSession({
+      ...baseSession,
+      status: 'active',
+      isGroupCall: true,
+      participantIds: ['user-a'],
+      declinedUserIds: ['user-b'],
+    });
+    const transitionToTerminal = jest
+      .fn()
+      .mockResolvedValueOnce({
+        outcome: 'participant_left',
+        session,
+        reason: 'membership_removed',
+      })
+      .mockResolvedValueOnce({ outcome: 'already_terminal', session });
+    const closeParticipant = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('transient cleanup failure'))
+      .mockResolvedValueOnce({
+        producers: [],
+      });
+    const closeRoom = jest.fn();
+    const useCase = new LeaveCallUseCase(
+      { transitionToTerminal } as never,
+      {} as never,
+      { publish: jest.fn() },
+      { closeParticipant, closeRoom } as never,
+    );
+    await expect(
+      useCase.revokeGroupMembership('call-1', 'user-b'),
+    ).rejects.toThrow('Group membership media cleanup unavailable');
+    await expect(
+      useCase.revokeGroupMembership('call-1', 'user-b'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        shouldEmitPeerLeft: true,
+        didTransition: false,
+      }),
+    );
+    expect(closeParticipant).toHaveBeenCalledTimes(2);
+    expect(closeRoom).not.toHaveBeenCalled();
   });
 
   it('returns expired sessions even if cleanup or lifecycle fan-out temporarily fails', async () => {

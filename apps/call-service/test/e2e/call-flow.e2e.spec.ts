@@ -69,6 +69,20 @@ class FakeRedisClient {
     return Promise.resolve(this.values.get(key) ?? null);
   }
 
+  mget(...keys: string[]): Promise<Array<string | null>> {
+    return Promise.resolve(keys.map((key) => this.values.get(key) ?? null));
+  }
+
+  zscan(key: string): Promise<[string, string[]]> {
+    return Promise.resolve([
+      '0',
+      [...(this.sortedSets.get(key) ?? [])].flatMap(([member, score]) => [
+        member,
+        String(score),
+      ]),
+    ]);
+  }
+
   set(key: string, value: string, ...args: unknown[]): Promise<'OK' | null> {
     if (args.includes('NX') && this.values.has(key)) {
       return Promise.resolve(null);
@@ -948,6 +962,7 @@ type ConversationDetail = {
 };
 
 class FakeConversationClient {
+  unavailable = false;
   constructor(
     private readonly conversationsById: Record<string, ConversationDetail>,
   ) {}
@@ -956,6 +971,8 @@ class FakeConversationClient {
     if (pattern !== 'get_conversation_detail') {
       return of(null);
     }
+    if (this.unavailable)
+      return throwError(() => new Error('broker unavailable'));
 
     const conversation = this.conversationsById[payload.id];
     if (!conversation) {
@@ -1617,6 +1634,10 @@ describe('Call Service P0 flow (e2e)', () => {
         isGroup: true,
       },
     };
+    const groupConversationClient = new FakeConversationClient(
+      groupConversations,
+    );
+    const groupPublisher = new FakeCallEventPublisher();
     const previousNoAnswerTimeoutMs = process.env.CALL_NO_ANSWER_TIMEOUT_MS;
     const previousReconnectGraceMs = process.env.CALL_RECONNECT_GRACE_MS;
 
@@ -1652,9 +1673,9 @@ describe('Call Service P0 flow (e2e)', () => {
           }),
         )
         .overrideProvider('CONVERSATION_SERVICE_RMQ')
-        .useValue(new FakeConversationClient(groupConversations))
+        .useValue(groupConversationClient)
         .overrideProvider('ICallEventPublisher')
-        .useValue(new FakeCallEventPublisher())
+        .useValue(groupPublisher)
         .overrideProvider('ICallMediaEngine')
         .useValue(groupMedia)
         .compile();
@@ -2366,6 +2387,223 @@ describe('Call Service P0 flow (e2e)', () => {
       await expect(selectedEnded).resolves.toEqual(
         expect.objectContaining({ callId: selectedCallId }),
       );
+
+      const membershipHostJoined = onceEvent<{ callId: string }>(
+        host,
+        'call_joined',
+      );
+      const membershipGuestInvite = onceEvent<{ callId: string }>(
+        recoveredGuest,
+        'incoming_call',
+      );
+      const membershipSecondInvite = onceEvent<{ callId: string }>(
+        secondGuest,
+        'incoming_call',
+      );
+      const membershipPendingInvite = onceEvent<{ callId: string }>(
+        lateGuest,
+        'incoming_call',
+      );
+      host.emit('initiate_call', {
+        conversationId: 'conv-group',
+        callType: 'VOICE',
+      });
+      const [{ callId: membershipCallId }] = await Promise.all([
+        membershipHostJoined,
+        membershipGuestInvite,
+        membershipSecondInvite,
+        membershipPendingInvite,
+      ]);
+      for (const [socket, actionId] of [
+        [recoveredGuest, 'membership-guest'],
+        [secondGuest, 'membership-second'],
+      ] as const) {
+        const accepted = onceEvent<{ outcome: string }>(
+          socket,
+          'incoming_call_acceptance',
+        );
+        socket.emit('accept_incoming_call', {
+          callId: membershipCallId,
+          actionId,
+        });
+        await expect(accepted).resolves.toEqual(
+          expect.objectContaining({ outcome: 'accepted' }),
+        );
+      }
+      const membershipProducerIds: string[] = [];
+      for (const socket of [recoveredGuest, secondGuest]) {
+        const transport = await createAndConnectTransport(
+          socket,
+          membershipCallId,
+          'send',
+        );
+        const produced = onceEvent<{ producerId: string }>(
+          socket,
+          'producer_created',
+        );
+        socket.emit('produce', {
+          callId: membershipCallId,
+          transportId: transport.transportId,
+          kind: 'audio',
+          rtpParameters: { codecs: validRtpCapabilities.codecs },
+        });
+        membershipProducerIds.push((await produced).producerId);
+      }
+      const sweepMembership = () =>
+        (
+          groupGateway as unknown as {
+            reconcileGroupMembership(): Promise<void>;
+          }
+        ).reconcileGroupMembership();
+      groupConversations['conv-group'].participantIds = [
+        callerUser.id,
+        secondGuestUser.id,
+      ];
+      groupConversationClient.unavailable = true;
+      await sweepMembership();
+      expect(
+        JSON.parse((await groupRedis.get(`call:${membershipCallId}:session`))!)
+          .participantIds,
+      ).toContain(calleeUser.id);
+      expect(
+        groupMedia
+          .getRoomState(membershipCallId)
+          ?.producers.get(membershipProducerIds[0])?.closed,
+      ).toBe(false);
+      groupConversationClient.unavailable = false;
+      const removedEnded = onceEvent<{ reason: string }>(
+        recoveredGuest,
+        'call_ended',
+      );
+      const pendingEnded = onceEvent<{ reason: string }>(
+        lateGuest,
+        'call_ended',
+      );
+      const losingDeviceEnded = onceEvent<{ reason: string }>(
+        losingDevice,
+        'call_ended',
+      );
+      const retainedPeerLeft = onceEvent<{ userId: string }>(
+        secondGuest,
+        'peer_left',
+      );
+      const healthyEnded = waitForOptionalEvent(secondGuest, 'call_ended', 100);
+      await sweepMembership();
+      for (const notification of [
+        removedEnded,
+        pendingEnded,
+        losingDeviceEnded,
+      ]) {
+        await expect(notification).resolves.toEqual(
+          expect.objectContaining({
+            callId: membershipCallId,
+            reason: 'membership_removed',
+          }),
+        );
+      }
+      await expect(retainedPeerLeft).resolves.toEqual(
+        expect.objectContaining({
+          userId: expect.any(String),
+          reason: 'membership_removed',
+        }),
+      );
+      await expect(healthyEnded).resolves.toBeNull();
+      const membershipSession = JSON.parse(
+        (await groupRedis.get(`call:${membershipCallId}:session`))!,
+      );
+      expect(membershipSession.status).toBe('active');
+      expect(membershipSession.participantIds).toEqual([
+        callerUser.id,
+        secondGuestUser.id,
+      ]);
+      expect(
+        membershipSession.groupAnswerActionIds[calleeUser.id],
+      ).toBeUndefined();
+      expect(
+        await groupRedis.hget(
+          `call:${membershipCallId}:participants`,
+          calleeUser.id,
+        ),
+      ).toBeNull();
+      expect(
+        groupMedia
+          .getRoomState(membershipCallId)
+          ?.producers.get(membershipProducerIds[0])?.closed,
+      ).toBe(true);
+      expect(
+        groupMedia
+          .getRoomState(membershipCallId)
+          ?.producers.get(membershipProducerIds[1])?.closed,
+      ).toBe(false);
+      expect(
+        await groupGateway.server.in(membershipCallId).fetchSockets(),
+      ).toHaveLength(2);
+      for (const [event, payload] of [
+        [
+          'rejoin_call',
+          { callId: membershipCallId, actionId: 'membership-guest' },
+        ],
+        ['create_transport', { callId: membershipCallId, direction: 'send' }],
+        [
+          'join_group_call',
+          { callId: membershipCallId, actionId: 'removed-late-join' },
+        ],
+      ] as const) {
+        const denied = onceEvent<{ status: string }>(
+          recoveredGuest,
+          'exception',
+        );
+        recoveredGuest.emit(event, payload);
+        await expect(denied).resolves.toEqual(
+          expect.objectContaining({ status: 'error' }),
+        );
+      }
+      await groupApp.get(PublishCallAnswerOutboxUseCase).execute();
+      const revokedEvents = groupPublisher.events.filter(
+        ({ event, payload }) =>
+          event === 'call.rejected' && payload.callId === membershipCallId,
+      );
+      expect(revokedEvents).toHaveLength(2);
+      expect(
+        revokedEvents.map(({ payload }) => payload.invitedUserIds),
+      ).toEqual(expect.arrayContaining([[calleeUser.id], [lateGuestUser.id]]));
+      await sweepMembership();
+      expect(
+        await groupRedis.zcard('call:sessions:group-invitation-events'),
+      ).toBe(0);
+
+      // A host losing membership keeps the existing host-end semantics, not a silent transfer.
+      groupConversations['conv-group'].participantIds = [secondGuestUser.id];
+      const removedHostEnded = onceEvent<{ reason: string }>(
+        secondGuest,
+        'call_ended',
+      );
+      await sweepMembership();
+      await expect(removedHostEnded).resolves.toEqual(
+        expect.objectContaining({
+          callId: membershipCallId,
+          reason: 'membership_removed',
+        }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${membershipCallId}:session`))!)
+          .status,
+      ).toBe('ended');
+      expect(groupMedia.getRoomState(membershipCallId)).toBeUndefined();
+      await groupApp.get(PublishCallTerminalOutboxUseCase).execute();
+      const hostMembershipTerminalEvents = groupPublisher.events.filter(
+        ({ event, payload }) =>
+          event === 'call.ended' && payload.callId === membershipCallId,
+      );
+      expect(hostMembershipTerminalEvents.length).toBeGreaterThanOrEqual(2);
+      for (const { payload } of hostMembershipTerminalEvents) {
+        expect(payload).toEqual(
+          expect.objectContaining({
+            isGroupCall: true,
+            reason: 'membership_removed',
+          }),
+        );
+      }
     } finally {
       groupSockets.forEach((socket) => socket.disconnect());
       if (groupApp) await groupApp.close();

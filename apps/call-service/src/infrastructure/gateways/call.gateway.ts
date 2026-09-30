@@ -25,6 +25,7 @@ import {
 import { catchError, lastValueFrom, of, timeout } from 'rxjs';
 import { Server, Socket } from 'socket.io';
 import { AcceptIncomingCallUseCase } from '../../application/use-cases/accept-incoming-call.use-case';
+import { assertCurrentGroupMember } from '../../application/use-cases/assert-current-group-member';
 import { ChangeCallTypeUseCase } from '../../application/use-cases/change-call-type.use-case';
 import { ConnectTransportUseCase } from '../../application/use-cases/connect-transport.use-case';
 import { ConsumeUseCase } from '../../application/use-cases/consume.use-case';
@@ -382,6 +383,30 @@ export class CallGateway
   private readonly groupAcceptQueues = new Map<string, Promise<void>>();
   private expirySweepTimer?: ReturnType<typeof setInterval>;
   private expirySweepInFlight = false;
+  private membershipScanCursor = '0';
+  private membershipSweepInFlight = false;
+
+  private async withGroupParticipantQueue<T>(
+    callId: string,
+    userId: string,
+    task: () => Promise<T>,
+  ): Promise<T> {
+    const key = this.disconnectKey(callId, userId);
+    const operation = (this.groupAcceptQueues.get(key) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(task);
+    const tail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupAcceptQueues.set(key, tail);
+    try {
+      return await operation;
+    } finally {
+      if (this.groupAcceptQueues.get(key) === tail)
+        this.groupAcceptQueues.delete(key);
+    }
+  }
 
   constructor(
     private readonly initiateCallUseCase: InitiateCallUseCase,
@@ -408,6 +433,8 @@ export class CallGateway
     private readonly telemetryTokenService: CallTelemetryTokenService,
     private readonly runtimeLease: CallServiceRuntimeLease,
     private readonly metrics: CallPrometheusMetricsService,
+    @Inject('CONVERSATION_SERVICE_RMQ')
+    private readonly conversationClient: ClientProxy,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -417,9 +444,11 @@ export class CallGateway
     // sweep makes expiration survive deploys and gateway restarts.
     this.expirySweepTimer = setInterval(() => {
       void this.sweepExpiredCalls();
+      void this.reconcileGroupMembership();
     }, this.expirySweepIntervalMs);
     this.expirySweepTimer.unref?.();
     void this.sweepExpiredCalls();
+    void this.reconcileGroupMembership();
   }
 
   onModuleDestroy(): void {
@@ -782,31 +811,15 @@ export class CallGateway
     if (session.initiatorId === userId) {
       throw new ForbiddenException('Host must rejoin the existing call');
     }
-    const key = this.disconnectKey(payload.callId, userId);
-    const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
-    const operation = previous
-      .catch(() => undefined)
-      .then(() =>
-        this.acceptGroupInvitation(
-          client,
-          payload.callId,
-          userId,
-          actionId,
-          true,
-        ),
-      );
-    const tail = operation.then(
-      () => undefined,
-      () => undefined,
+    return this.withGroupParticipantQueue(payload.callId, userId, () =>
+      this.acceptGroupInvitation(
+        client,
+        payload.callId,
+        userId,
+        actionId,
+        true,
+      ),
     );
-    this.groupAcceptQueues.set(key, tail);
-    try {
-      await operation;
-    } finally {
-      if (this.groupAcceptQueues.get(key) === tail) {
-        this.groupAcceptQueues.delete(key);
-      }
-    }
   }
 
   @SubscribeMessage('rejoin_call')
@@ -817,6 +830,16 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
+    return this.withGroupParticipantQueue(payload.callId, userId, () =>
+      this.rejoinCallForSocket(payload, client, userId),
+    );
+  }
+
+  private async rejoinCallForSocket(
+    payload: RejoinCallPayload,
+    client: Socket,
+    userId: string,
+  ) {
     const session = await this.sessionRepository.findByCallId(payload.callId);
     if (!session) {
       throw new NotFoundException('Call not found');
@@ -1823,26 +1846,9 @@ export class CallGateway
     );
     this.assertGroupLifecycleCapable(client, existingSession);
     if (existingSession?.isGroupCall) {
-      const key = this.disconnectKey(payload.callId, userId);
-      const previous = this.groupAcceptQueues.get(key) ?? Promise.resolve();
-      const operation = previous
-        .catch(() => undefined)
-        .then(() =>
-          this.acceptGroupInvitation(client, payload.callId, userId, actionId),
-        );
-      const tail = operation.then(
-        () => undefined,
-        () => undefined,
+      return this.withGroupParticipantQueue(payload.callId, userId, () =>
+        this.acceptGroupInvitation(client, payload.callId, userId, actionId),
       );
-      this.groupAcceptQueues.set(key, tail);
-      try {
-        await operation;
-      } finally {
-        if (this.groupAcceptQueues.get(key) === tail) {
-          this.groupAcceptQueues.delete(key);
-        }
-      }
-      return;
     }
 
     const result = await this.acceptIncomingCallUseCase.execute(
@@ -2498,6 +2504,113 @@ export class CallGateway
       );
     } finally {
       this.expirySweepInFlight = false;
+    }
+  }
+
+  private async reconcileGroupMembership(): Promise<void> {
+    if (!this.server || this.membershipSweepInFlight) return;
+    this.membershipSweepInFlight = true;
+    try {
+      this.runtimeLease.assertHeld();
+      const batch = await this.sessionRepository.scanActiveGroupCalls(
+        this.membershipScanCursor,
+      );
+      // Failed checks remain eligible on the next scan; no event delivery is required.
+      this.membershipScanCursor = batch.cursor;
+      for (const session of batch.sessions) {
+        let removedUserIds: string[];
+        try {
+          // The existing authorized detail RPC already returns the full current roster.
+          const members = new Set(
+            await assertCurrentGroupMember(
+              this.conversationClient,
+              session.conversationId,
+              session.initiatorId,
+            ),
+          );
+          removedUserIds = [
+            ...new Set([
+              ...session.participantIds,
+              ...session.invitedUserIds,
+              ...session.declinedUserIds,
+            ]),
+          ].filter((userId) => !members.has(userId));
+        } catch (error) {
+          if (!(error instanceof ForbiddenException)) {
+            this.logger.warn(
+              `Group membership check deferred call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
+            );
+            continue;
+          }
+          // A missing host ends the room under the existing host-end contract.
+          removedUserIds = [session.initiatorId];
+        }
+        await Promise.all(
+          removedUserIds.map((userId) =>
+            this.withGroupParticipantQueue(session.callId, userId, async () => {
+              try {
+                // Revalidate after queued accept/rejoin work or a concurrent re-add.
+                await assertCurrentGroupMember(
+                  this.conversationClient,
+                  session.conversationId,
+                  userId,
+                );
+              } catch (error) {
+                if (!(error instanceof ForbiddenException)) {
+                  this.logger.warn(
+                    `Group membership check deferred call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
+                  );
+                  return;
+                }
+                try {
+                  this.runtimeLease.assertHeld();
+                  const result =
+                    await this.leaveCallUseCase.revokeGroupMembership(
+                      session.callId,
+                      userId,
+                    );
+                  if (result.shouldEmitPeerLeft) {
+                    this.clearPendingDisconnect(session.callId, userId);
+                    this.reconnectStartedAtByParticipant.delete(
+                      this.disconnectKey(session.callId, userId),
+                    );
+                    // Only this account ends its local/native call; the other guests stay active.
+                    this.server
+                      .to(this.groupUserRoom(userId))
+                      .emit('call_ended', {
+                        callId: session.callId,
+                        reason: 'membership_removed',
+                      });
+                    this.server.in(userId).socketsLeave(session.callId);
+                    this.emitClosedProducers(
+                      session.callId,
+                      userId,
+                      result.closedProducers,
+                    );
+                    this.emitPeerLeft(
+                      session.callId,
+                      userId,
+                      'membership_removed',
+                    );
+                  }
+                  if (result.didTransition)
+                    this.emitCallEnded(result.session, result.endedReason);
+                } catch (cleanupError) {
+                  this.logger.warn(
+                    `Group membership cleanup deferred call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(cleanupError)}`,
+                  );
+                }
+              }
+            }),
+          ),
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Group membership sweep deferred errorCode=${safeCallErrorCode(error)}`,
+      );
+    } finally {
+      this.membershipSweepInFlight = false;
     }
   }
 

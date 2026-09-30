@@ -1,6 +1,7 @@
 import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
 import { ServiceUnavailableException } from '@nestjs/common';
 import type { Socket } from 'socket.io';
+import { of, Subject, throwError } from 'rxjs';
 import { CallParticipant } from '../../../src/domain/entities/call-participant.entity';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
 import { GroupJoinMediaUnavailableError } from '../../../src/application/use-cases/join-call.use-case';
@@ -53,6 +54,191 @@ describe('CallGateway reconnect recovery', () => {
       pingInterval: 25000,
       pingTimeout: 20000,
     });
+  });
+
+  it('retries unproven membership failures on the periodic sweep without delaying call expiry', async () => {
+    const session = new CallSession({ ...activeSession, isGroupCall: true });
+    const scanActiveGroupCalls = jest
+      .fn()
+      .mockResolvedValue({ cursor: '0', sessions: [session] });
+    const expire = jest.fn().mockResolvedValue([]);
+    const revoke = jest.fn().mockResolvedValue({
+      session,
+      shouldEmitPeerLeft: true,
+      didTransition: false,
+      closedProducers: [],
+    });
+    const send = jest
+      .fn()
+      .mockImplementation((_pattern: string, { userId }: { userId: string }) =>
+        userId === 'user-a'
+          ? of({
+              id: session.conversationId,
+              isGroup: true,
+              participantIds: ['user-a'],
+            })
+          : throwError(() => new Error('broker unavailable')),
+      );
+    const gateway = createGateway({
+      sessionRepository: { findByCallId: jest.fn(), scanActiveGroupCalls },
+      leaveCallUseCase: { execute: jest.fn(), revokeGroupMembership: revoke },
+      expireDueCallsUseCase: { execute: expire },
+      conversationClient: { send },
+    });
+    const emit = jest.fn();
+    const socketsLeave = jest.fn();
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit }),
+      in: jest.fn().mockReturnValue({ socketsLeave }),
+    } as never;
+    await gateway.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(revoke).not.toHaveBeenCalled();
+    send.mockReturnValue(
+      of({ id: 'wrong-conversation', isGroup: true, participantIds: [] }),
+    );
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(revoke).not.toHaveBeenCalled();
+    send.mockImplementation(
+      (_pattern: string, { userId }: { userId: string }) =>
+        userId === 'user-a'
+          ? of({
+              id: session.conversationId,
+              isGroup: true,
+              participantIds: ['user-a'],
+            })
+          : throwError(
+              () => new Error('You are not a participant of this conversation'),
+            ),
+    );
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(revoke).toHaveBeenCalledWith(session.callId, 'user-b');
+    expect(emit).toHaveBeenCalledWith('call_ended', {
+      callId: session.callId,
+      reason: 'membership_removed',
+    });
+    expect(socketsLeave).toHaveBeenCalledWith(session.callId);
+    expect(expire).toHaveBeenCalledTimes(3);
+    gateway.onModuleDestroy();
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(expire).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries eviction for a removed late joiner after it has left the active roster', async () => {
+    const session = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      participantIds: ['user-a'],
+      invitedUserIds: ['user-a'],
+      declinedUserIds: ['late'],
+    });
+    const revoke = jest.fn().mockResolvedValue({
+      session,
+      shouldEmitPeerLeft: true,
+      didTransition: false,
+      closedProducers: [],
+    });
+    const send = jest
+      .fn()
+      .mockImplementation((_pattern: string, { userId }: { userId: string }) =>
+        userId === 'user-a'
+          ? of({
+              id: session.conversationId,
+              isGroup: true,
+              participantIds: ['user-a'],
+            })
+          : throwError(
+              () => new Error('You are not a participant of this conversation'),
+            ),
+      );
+    const gateway = createGateway({
+      sessionRepository: {
+        findByCallId: jest.fn(),
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [session] }),
+      },
+      leaveCallUseCase: { execute: jest.fn(), revokeGroupMembership: revoke },
+      conversationClient: { send },
+    });
+    const socketsLeave = jest.fn();
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue({ socketsLeave }),
+    } as never;
+    try {
+      await gateway.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(revoke).toHaveBeenCalledWith(session.callId, 'late');
+      expect(socketsLeave).toHaveBeenCalledWith(session.callId);
+    } finally {
+      gateway.onModuleDestroy();
+    }
+  });
+
+  it('keeps expiry ticking while a membership read is still pending', async () => {
+    const expire = jest.fn().mockResolvedValue([]);
+    const revoke = jest.fn();
+    const session = new CallSession({ ...activeSession, isGroupCall: true });
+    const gateway = createGateway({
+      sessionRepository: {
+        findByCallId: jest.fn(),
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [session] }),
+      },
+      expireDueCallsUseCase: { execute: expire },
+      leaveCallUseCase: { execute: jest.fn(), revokeGroupMembership: revoke },
+      conversationClient: { send: jest.fn().mockReturnValue(new Subject()) },
+    });
+    gateway.server = {} as never;
+    await gateway.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(expire).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(expire).toHaveBeenCalledTimes(2);
+    expect(revoke).not.toHaveBeenCalled();
+    gateway.onModuleDestroy();
+    await jest.advanceTimersByTimeAsync(5000);
+  });
+
+  it('uses one healthy roster read and revalidates a removed candidate before eviction', async () => {
+    const session = new CallSession({ ...activeSession, isGroupCall: true });
+    const revoke = jest.fn();
+    const send = jest.fn().mockReturnValue(
+      of({
+        id: session.conversationId,
+        isGroup: true,
+        participantIds: session.participantIds,
+      }),
+    );
+    const gateway = createGateway({
+      sessionRepository: {
+        findByCallId: jest.fn(),
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [session] }),
+      },
+      leaveCallUseCase: { execute: jest.fn(), revokeGroupMembership: revoke },
+      conversationClient: { send },
+    });
+    gateway.server = {} as never;
+    await gateway.onModuleInit();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    send.mockImplementation(
+      (_pattern: string, { userId }: { userId: string }) =>
+        of({
+          id: session.conversationId,
+          isGroup: true,
+          participantIds:
+            userId === 'user-a' ? ['user-a'] : ['user-a', 'user-b'],
+        }),
+    );
+    await jest.advanceTimersByTimeAsync(5000);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(revoke).not.toHaveBeenCalled();
+    gateway.onModuleDestroy();
   });
 
   it('records the Socket.IO disconnect reason at the connection boundary', async () => {
@@ -2427,7 +2613,7 @@ function createGateway(overrides?: {
   consumeUseCase?: { execute: jest.Mock };
   resumeConsumerUseCase?: { execute: jest.Mock };
   restartIceUseCase?: { execute: jest.Mock };
-  leaveCallUseCase?: { execute: jest.Mock };
+  leaveCallUseCase?: { execute: jest.Mock; revokeGroupMembership?: jest.Mock };
   rejectCallUseCase?: { execute: jest.Mock };
   acceptIncomingCallUseCase?: { execute: jest.Mock };
   expireDueCallsUseCase?: { execute: jest.Mock };
@@ -2445,6 +2631,7 @@ function createGateway(overrides?: {
     findByCallId: jest.Mock;
     confirmGroupInvitationJoin?: jest.Mock;
     abortGroupInvitationJoin?: jest.Mock;
+    scanActiveGroupCalls?: jest.Mock;
   };
   stateRepository?: {
     getParticipant: jest.Mock;
@@ -2456,6 +2643,7 @@ function createGateway(overrides?: {
     recordSocketReconnect: jest.Mock;
     recordCallEvent: jest.Mock;
   };
+  conversationClient?: { send: jest.Mock };
 }) {
   return new CallGateway(
     (overrides?.initiateCallUseCase ?? { execute: jest.fn() }) as never,
@@ -2481,6 +2669,9 @@ function createGateway(overrides?: {
     }) as never,
     (overrides?.sessionRepository ?? {
       findByCallId: jest.fn(),
+      scanActiveGroupCalls: jest
+        .fn()
+        .mockResolvedValue({ cursor: '0', sessions: [] }),
     }) as never,
     (overrides?.stateRepository ?? {
       getParticipant: jest.fn(),
@@ -2498,6 +2689,7 @@ function createGateway(overrides?: {
       recordSocketReconnect: jest.fn(),
       recordCallEvent: jest.fn(),
     }) as never,
+    (overrides?.conversationClient ?? { send: jest.fn() }) as never,
   );
 }
 

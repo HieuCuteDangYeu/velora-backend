@@ -563,6 +563,12 @@ local expectedAnswerActionId = ARGV[6]
 local isTerminal = session.status == 'ended' or session.status == 'cancelled' or session.status == 'rejected'
 local wasActive = session.status == 'active'
 
+if mode == 'membership_removed' then
+  if not session.isGroupCall then return {'forbidden', raw, '', '0'} end
+  if isTerminal then return {'already_terminal', raw, session.terminalReason or '', '0'} end
+  if not wasActive then return {'stale', raw, '', '0'} end
+end
+
 if mode == 'accept_failure' then
   if userId ~= session.targetUserId then
     return {'forbidden', raw, '', '0'}
@@ -601,13 +607,28 @@ else
       break
     end
   end
-  if not isParticipant then
+  if mode == 'membership_removed' and not isParticipant then
+    for _, id in ipairs(session.declinedUserIds or {}) do
+      if id == userId then return {'already_terminal', raw, '', '0'} end
+    end
+    local invited = false
+    for _, id in ipairs(session.invitedUserIds or {}) do
+      if id == userId then invited = true break end
+    end
+    if not invited then return {'forbidden', raw, '', '0'} end
+  elseif not isParticipant then
     return {'forbidden', raw, '', '0'}
   end
   if isTerminal then
     return {'already_terminal', raw, session.terminalReason or '', '0'}
   end
   if session.isGroupCall and userId ~= session.initiatorId then
+    if mode == 'membership_removed' then
+      local outboxType = redis.call('TYPE', KEYS[10]).ok
+      if outboxType ~= 'none' and outboxType ~= 'zset' then
+        return redis.error_reply('Invalid group invitation outbox type')
+      end
+    end
     local participantStateType = redis.call('TYPE', KEYS[7]).ok
     if participantStateType ~= 'none' and participantStateType ~= 'hash' then
       return redis.error_reply('Invalid call participant state type')
@@ -656,6 +677,12 @@ else
     for _, entry in ipairs(mediaKeys) do
       redis.call('DEL', entry[2])
       redis.call('SREM', entry[1], entry[2])
+    end
+    if mode == 'membership_removed' then
+      redis.call('ZADD', KEYS[10], nowMs, cjson.encode({
+        event = 'call.rejected', callId = session.callId, userId = userId,
+        reason = 'membership_removed', lifecycleRevision = session.lifecycleRevision, at = now
+      }))
     end
     return {'participant_left', encoded, requestedReason ~= '' and requestedReason or 'left', '1'}
   end
@@ -933,6 +960,31 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       session.status === 'active'
       ? session
       : null;
+  }
+
+  async scanActiveGroupCalls(cursor: string): Promise<{
+    cursor: string;
+    sessions: CallSession[];
+  }> {
+    const [nextCursor, entries] = await this.redis.zscan(
+      ACTIVE_CALLS_KEY,
+      cursor,
+      'COUNT',
+      50,
+    );
+    const callIds = entries.filter((_, index) => index % 2 === 0);
+    const raw = callIds.length
+      ? await this.redis.mget(...callIds.map((callId) => this.key(callId)))
+      : [];
+    return {
+      cursor: nextCursor,
+      sessions: raw
+        .map((value) => this.toSession(value ?? undefined))
+        .filter(
+          (session): session is CallSession =>
+            session?.isGroupCall === true && session.status === 'active',
+        ),
+    };
   }
 
   async delete(callId: string): Promise<void> {
@@ -1225,7 +1277,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     requestedReason: string | undefined,
     now: Date,
-    mode: 'leave' | 'reject' | 'accept_failure',
+    mode: 'leave' | 'reject' | 'accept_failure' | 'membership_removed',
     expectedAnswerActionId?: string,
   ): Promise<CallTerminalTransition> {
     const [outcome, raw, reason, wasActive] = await this.runTransition(
@@ -1311,7 +1363,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   ): Promise<string[]> {
     const result = await this.redis.eval(
       script,
-      9,
+      10,
       this.key(callId),
       EXPIRING_CALLS_KEY,
       ANSWER_EVENT_OUTBOX_KEY,
@@ -1321,6 +1373,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       `call:${callId}:participants`,
       `call:${callId}:transport-index`,
       `call:${callId}:producer-index`,
+      GROUP_INVITATION_EVENT_OUTBOX_KEY,
       ...args,
     );
     if (!Array.isArray(result)) {

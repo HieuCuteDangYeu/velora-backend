@@ -124,7 +124,7 @@ describe('CallStateController', () => {
     ).rejects.toBeInstanceOf(ServiceUnavailableException);
   });
 
-  it('rejects a mismatched conversation response without leaking call metadata', async () => {
+  it('keeps a mismatched conversation response retryable without returning call metadata', async () => {
     const groupSession = new CallSession({
       ...session,
       status: 'active',
@@ -142,7 +142,7 @@ describe('CallStateController', () => {
 
     await expect(
       controller.getCallState({ callId: 'call-1', userId: 'user-b' }),
-    ).resolves.toEqual({ found: true, authorized: false });
+    ).rejects.toThrow('Group membership unavailable');
   });
 
   it('does not expose group metadata when conversation service rejects former membership', async () => {

@@ -34,6 +34,15 @@ export function buildCallLifecycleMetadata(session: CallSession, now: Date) {
   return {
     recipientUserId: session.targetUserId,
     invitedUserIds: session.invitedUserIds,
+    ...(session.isGroupCall
+      ? {
+          isGroupCall: true,
+          groupName: session.groupName || 'Group call',
+          ...(session.groupAvatarUrl
+            ? { groupAvatarUrl: session.groupAvatarUrl }
+            : {}),
+        }
+      : {}),
     initiatorDisplayName: session.initiatorDisplayName ?? 'Incoming call',
     initiatorAvatarUrl: session.initiatorAvatarUrl,
     ringTimeoutMs,

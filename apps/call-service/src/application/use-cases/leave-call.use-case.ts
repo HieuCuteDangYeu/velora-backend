@@ -47,12 +47,34 @@ export class LeaveCallUseCase {
     requestedReason?: string,
   ): Promise<LeaveCallResult> {
     requestedReason = normalizeClientTerminalReason(requestedReason);
+    return this.transition(callId, userId, requestedReason, 'leave');
+  }
+
+  /** Server-only revocation; never accept this mode from a socket payload. */
+  async revokeGroupMembership(
+    callId: string,
+    userId: string,
+  ): Promise<LeaveCallResult> {
+    return this.transition(
+      callId,
+      userId,
+      'membership_removed',
+      'membership_removed',
+    );
+  }
+
+  private async transition(
+    callId: string,
+    userId: string,
+    requestedReason: string | undefined,
+    mode: 'leave' | 'membership_removed',
+  ): Promise<LeaveCallResult> {
     const transition = await this.sessionRepository.transitionToTerminal(
       callId,
       userId,
       requestedReason,
       new Date(),
-      'leave',
+      mode,
     );
     const session = transition.session;
 
@@ -62,13 +84,21 @@ export class LeaveCallUseCase {
     if (transition.outcome === 'forbidden') {
       throw new ForbiddenException('You are not part of this call');
     }
-    if (transition.outcome === 'participant_left') {
+    if (
+      transition.outcome === 'participant_left' ||
+      (mode === 'membership_removed' &&
+        transition.outcome === 'already_terminal' &&
+        session.status === 'active' &&
+        userId !== session.initiatorId)
+    ) {
       let closedProducers: LeaveCallResult['closedProducers'] = [];
       try {
         closedProducers = (
           await this.mediaEngine.closeParticipant(callId, userId)
         ).producers;
       } catch {
+        if (mode === 'membership_removed')
+          throw new Error('Group membership media cleanup unavailable');
         this.logger.warn(
           `Participant media cleanup failed for ${shortCallIdentifier(callId)}`,
         );
@@ -76,12 +106,16 @@ export class LeaveCallUseCase {
       return {
         session,
         endedReason: transition.reason ?? 'left',
+        // A retry still evicts sockets/roster even when this guest never produced audio.
         shouldEmitPeerLeft: true,
         didTransition: false,
         closedProducers,
       };
     }
-    if (transition.outcome === 'already_terminal') {
+    if (
+      transition.outcome === 'already_terminal' ||
+      transition.outcome === 'stale'
+    ) {
       return {
         session,
         endedReason: transition.reason ?? 'ended',

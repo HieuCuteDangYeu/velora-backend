@@ -9,7 +9,7 @@ export async function assertCurrentGroupMember(
   conversationClient: ClientProxy,
   conversationId: string,
   userId: string,
-): Promise<void> {
+): Promise<string[]> {
   let conversation: {
     id: string;
     isGroup: boolean;
@@ -43,10 +43,17 @@ export async function assertCurrentGroupMember(
   }
   if (
     conversation?.id !== conversationId ||
-    !conversation.isGroup ||
+    typeof conversation.isGroup !== 'boolean' ||
     !Array.isArray(conversation.participantIds) ||
-    !conversation.participantIds.includes(userId)
+    !conversation.participantIds.every(
+      (id) => typeof id === 'string' && id.length > 0,
+    )
   ) {
+    // A malformed/mismatched response denies admission, but is not proof of removal.
+    throw new ServiceUnavailableException('Group membership unavailable');
+  }
+  if (!conversation.isGroup || !conversation.participantIds.includes(userId)) {
     throw new ForbiddenException('Not a current group member');
   }
+  return conversation.participantIds;
 }

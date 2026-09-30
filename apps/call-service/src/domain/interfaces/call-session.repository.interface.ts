@@ -104,6 +104,10 @@ export abstract class ICallSessionRepository {
   abstract findActiveGroupCallByConversationId(
     conversationId: string,
   ): Promise<CallSession | null>;
+  abstract scanActiveGroupCalls(cursor: string): Promise<{
+    cursor: string;
+    sessions: CallSession[];
+  }>;
   abstract delete(callId: string): Promise<void>;
   abstract joinParticipant(
     callId: string,
@@ -181,7 +185,7 @@ export abstract class ICallSessionRepository {
     userId: string,
     requestedReason: string | undefined,
     now: Date,
-    mode: 'leave' | 'reject' | 'accept_failure',
+    mode: 'leave' | 'reject' | 'accept_failure' | 'membership_removed',
     expectedAnswerActionId?: string,
   ): Promise<CallTerminalTransition>;
   /**

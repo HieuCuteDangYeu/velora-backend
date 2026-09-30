@@ -100,6 +100,45 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     );
   });
 
+  it('preserves group capability routing on terminal outbox retries', async () => {
+    const session = new CallSession({
+      ...createTerminalSession(
+        'group-ended',
+        'ended',
+        'membership_removed',
+        'user-a',
+      ),
+      isGroupCall: true,
+      groupName: 'Team',
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const publish = jest.fn();
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      {
+        claimPendingTerminalEvents: jest.fn().mockResolvedValue([
+          {
+            session,
+            event: 'call.ended',
+            reason: 'membership_removed',
+            userId: 'user-a',
+          },
+        ]),
+        markTerminalEventPublished: jest.fn(),
+      } as never,
+      { publish },
+      { clearCallState: jest.fn() } as never,
+    );
+    await useCase.execute();
+    expect(publish).toHaveBeenCalledWith(
+      'call.ended',
+      expect.objectContaining({
+        isGroupCall: true,
+        groupName: 'Team',
+        invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      }),
+    );
+  });
+
   it('leaves a failed publication eligible for a later retry', async () => {
     const session = createTerminalSession(
       'call-1',

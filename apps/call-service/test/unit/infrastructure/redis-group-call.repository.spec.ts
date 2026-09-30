@@ -82,6 +82,126 @@ describeWithRedis('Redis group-call transitions', () => {
     });
   };
 
+  it('atomically revokes live and pending guests with a durable recipient-only notification', async () => {
+    await repository.createActiveGroupSession(group('membership-room'));
+    await repository.joinParticipant(
+      'membership-room',
+      'guest',
+      new Date(),
+      'winner',
+    );
+    await repository.confirmGroupInvitationJoin(
+      'membership-room',
+      'guest',
+      'winner',
+      new Date(),
+    );
+    const state = new RedisCallStateRepository(redis);
+    await state.upsertParticipant(
+      new CallParticipant({
+        callId: 'membership-room',
+        userId: 'guest',
+        socketId: 'guest-socket',
+        isConnected: true,
+      }),
+    );
+    await state.saveProducerState({
+      callId: 'membership-room',
+      userId: 'guest',
+      producerId: 'guest-audio',
+      transportId: 'guest-send',
+      kind: 'audio',
+    });
+
+    for (const userId of ['guest', 'other']) {
+      const result = await repository.transitionToTerminal(
+        'membership-room',
+        userId,
+        'membership_removed',
+        new Date(),
+        'membership_removed',
+      );
+      expect(result.outcome).toBe('participant_left');
+      expect(result.session?.status).toBe('active');
+      expect(result.session?.participantIds).toEqual(['host']);
+    }
+    expect(
+      await redis.hget('call:membership-room:participants', 'guest'),
+    ).toBeNull();
+    expect(
+      await redis.get('call:membership-room:producer:guest-audio'),
+    ).toBeNull();
+    expect(
+      await redis.hget('call:sessions:active-by-user', 'guest'),
+    ).toBeNull();
+    expect(
+      (await repository.findByCallId('membership-room'))?.groupAnswerActionIds
+        .guest,
+    ).toBeUndefined();
+    const notifications = await repository.claimPendingGroupInvitationEvents(
+      new Date(),
+      100,
+    );
+    expect(
+      notifications.filter((event) => event.event === 'call.rejected'),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          userId: 'guest',
+          reason: 'membership_removed',
+        }),
+        expect.objectContaining({
+          userId: 'other',
+          reason: 'membership_removed',
+        }),
+      ]),
+    );
+    expect(
+      (
+        await repository.transitionToTerminal(
+          'membership-room',
+          'guest',
+          'membership_removed',
+          new Date(),
+          'membership_removed',
+        )
+      ).outcome,
+    ).toBe('already_terminal');
+    expect(
+      await repository.claimPendingGroupInvitationEvents(new Date(), 100),
+    ).toEqual([]);
+  });
+
+  it('keeps an uninvited late joiner eligible for idempotent revocation cleanup', async () => {
+    const callId = 'late-member-retry';
+    await repository.createActiveGroupSession(group(callId));
+    expect(
+      (
+        await repository.joinParticipant(
+          callId,
+          'late',
+          new Date(),
+          'late-action',
+          true,
+        )
+      ).outcome,
+    ).toBe('joined');
+    const revoke = () =>
+      repository.transitionToTerminal(
+        callId,
+        'late',
+        'membership_removed',
+        new Date(),
+        'membership_removed',
+      );
+    expect((await revoke()).outcome).toBe('participant_left');
+    expect(
+      (await repository.findByCallId(callId))?.invitedUserIds,
+    ).not.toContain('late');
+    expect((await revoke()).outcome).toBe('already_terminal');
+    expect(await redis.zcard('call:sessions:group-invitation-events')).toBe(1);
+  });
+
   it('finds one live group room per conversation and ignores terminal pointers', async () => {
     expect(await repository.createActiveGroupSession(group('room-first'))).toBe(
       true,
@@ -141,6 +261,42 @@ describeWithRedis('Redis group-call transitions', () => {
       (await repository.findActiveGroupCallByConversationId('conversation'))
         ?.callId,
     ).toBe('room-second');
+  });
+
+  it('scans only active group sessions and skips stale/direct entries', async () => {
+    await repository.createActiveGroupSession(group('live-group'));
+    await repository.save(
+      new CallSession({ ...group('direct'), isGroupCall: false }),
+    );
+    await redis.zadd('call:sessions:active', Date.now(), 'missing');
+    const result = await repository.scanActiveGroupCalls('0');
+    expect(result.cursor).toBe('0');
+    expect(result.sessions.map((session) => session.callId)).toEqual([
+      'live-group',
+    ]);
+  });
+
+  it('does not partially revoke a guest when the durable notification index is corrupt', async () => {
+    await repository.createActiveGroupSession(group('corrupt-outbox'));
+    await repository.joinParticipant(
+      'corrupt-outbox',
+      'guest',
+      new Date(),
+      'winner',
+    );
+    await redis.set('call:sessions:group-invitation-events', 'wrong-type');
+    await expect(
+      repository.transitionToTerminal(
+        'corrupt-outbox',
+        'guest',
+        'membership_removed',
+        new Date(),
+        'membership_removed',
+      ),
+    ).rejects.toThrow('Invalid group invitation outbox type');
+    expect(
+      (await repository.findByCallId('corrupt-outbox'))?.participantIds,
+    ).toContain('guest');
   });
 
   it('admits an explicit late join once, isolates its winning device, and enforces capacity', async () => {

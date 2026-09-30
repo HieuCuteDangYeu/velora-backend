@@ -62,7 +62,7 @@ describe('RedisCallSessionRepository', () => {
 
     expect(redis.eval).toHaveBeenCalledWith(
       expect.stringContaining('session.terminalEventPublishedAt = cjson.null'),
-      9,
+      10,
       'call:call-1:session',
       'call:sessions:expiring',
       'call:sessions:answer-events',
@@ -72,6 +72,7 @@ describe('RedisCallSessionRepository', () => {
       'call:call-1:participants',
       'call:call-1:transport-index',
       'call:call-1:producer-index',
+      'call:sessions:group-invitation-events',
       'user-a',
       'cancelled',
       now.toISOString(),
@@ -124,7 +125,7 @@ describe('RedisCallSessionRepository', () => {
       expect.stringContaining(
         "session.status ~= 'accepting' or session.answerActionId ~= expectedAnswerActionId",
       ),
-      9,
+      10,
       'call:call-1:session',
       'call:sessions:expiring',
       'call:sessions:answer-events',
@@ -134,6 +135,7 @@ describe('RedisCallSessionRepository', () => {
       'call:call-1:participants',
       'call:call-1:transport-index',
       'call:call-1:producer-index',
+      'call:sessions:group-invitation-events',
       'user-b',
       'media_unavailable',
       now.toISOString(),

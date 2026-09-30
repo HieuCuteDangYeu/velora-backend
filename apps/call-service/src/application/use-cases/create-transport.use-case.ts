@@ -25,6 +25,14 @@ export class CreateTransportUseCase {
       throw new ForbiddenException('You are not part of this call');
     }
 
+    if (
+      session.isGroupCall &&
+      userId !== session.initiatorId &&
+      !session.groupConfirmedAnswerActionIds[userId]
+    ) {
+      throw new ForbiddenException('Group call invitation is not confirmed');
+    }
+
     if (direction === 'send') {
       return this.mediaEngine.createSendTransport(callId, userId);
     }

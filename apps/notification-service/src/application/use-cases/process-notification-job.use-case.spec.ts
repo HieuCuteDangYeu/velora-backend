@@ -46,7 +46,7 @@ describe('notification delivery use cases', () => {
       return Promise.resolve();
     };
     const notificationJobRepository = {
-      create: jest.fn((input) => {
+      create: jest.fn((input: Record<string, unknown>) => {
         const id = `created-job-${++createdJobCount}`;
         const job = {
           id,
@@ -164,6 +164,44 @@ describe('notification delivery use cases', () => {
     expect(scheduledAt?.getTime()).toBeLessThanOrEqual(startedAt + 61_000);
   });
 
+  it('never persists a provider error containing a token or user id', async () => {
+    const {
+      processNotificationJob,
+      notificationJobRepository,
+      pushTokenRepository,
+      fcmPushGateway,
+      markFailedInputs,
+    } = createUseCases();
+    notificationJobRepository.claimForProcessing.mockResolvedValue({
+      ...baseJob,
+      status: 'processing',
+      attemptCount: 1,
+    });
+    pushTokenRepository.findActiveByUserId.mockResolvedValue([
+      {
+        id: 'token-1',
+        userId: 'user-1',
+        provider: 'fcm',
+        platform: 'android',
+        token: 'private-device-token',
+        bundleId: null,
+        deliveryEnvironment: null,
+      },
+    ]);
+    fcmPushGateway.send.mockRejectedValue({
+      code: 'messaging/private-device-token',
+      message: 'user-1 private-device-token answer-action-secret',
+    });
+
+    const result = await processNotificationJob.execute(baseJob as never);
+
+    expect(result.status).toBe('failed');
+    expect(markFailedInputs[0][1]).toBe('token-1: provider_error');
+    expect(JSON.stringify(result.sendResult)).not.toMatch(
+      /private-device-token|answer-action-secret|user-1/,
+    );
+  });
+
   it('does not send a job that another worker already claimed', async () => {
     const {
       processNotificationJob,
@@ -272,6 +310,17 @@ describe('notification delivery use cases', () => {
           provider: 'fcm',
           platform: 'android',
           token: 'fcm-token-1',
+          groupLifecycleVersion: 2,
+          bundleId: null,
+          deliveryEnvironment: null,
+        },
+        {
+          id: 'legacy-android-token',
+          userId: 'user-1',
+          provider: 'fcm',
+          platform: 'android',
+          token: 'legacy-fcm-token',
+          groupLifecycleVersion: 1,
           bundleId: null,
           deliveryEnvironment: null,
         },
@@ -283,6 +332,17 @@ describe('notification delivery use cases', () => {
           provider: 'apns_voip',
           platform: 'ios',
           token: 'voip-token-1',
+          groupLifecycleVersion: 2,
+          bundleId: 'com.quan.velora',
+          deliveryEnvironment: 'production',
+        },
+        {
+          id: 'legacy-voip-token',
+          userId: 'user-1',
+          provider: 'apns_voip',
+          platform: 'ios',
+          token: 'legacy-voip-token',
+          groupLifecycleVersion: 1,
           bundleId: 'com.quan.velora',
           deliveryEnvironment: 'production',
         },
@@ -325,6 +385,8 @@ describe('notification delivery use cases', () => {
     expect(notificationJobRepository.markSent).toHaveBeenCalledWith(
       'call-job-1',
     );
+    expect(fcmInputs).toHaveLength(1);
+    expect(apnsVoipInputs).toHaveLength(1);
   });
 
   it('delivers terminal call state updates through Android and iOS FCM without using APNs VoIP', async () => {
@@ -436,6 +498,7 @@ describe('notification delivery use cases', () => {
             provider: 'fcm',
             platform: 'android',
             token: `android-fcm-token-${userId}`,
+            groupLifecycleVersion: 2,
             bundleId: null,
             deliveryEnvironment: null,
           },
@@ -445,6 +508,17 @@ describe('notification delivery use cases', () => {
             provider: 'fcm',
             platform: 'ios',
             token: `ios-fcm-token-${userId}`,
+            groupLifecycleVersion: 2,
+            bundleId: null,
+            deliveryEnvironment: null,
+          },
+          {
+            id: `legacy-token-${userId}`,
+            userId,
+            provider: 'fcm',
+            platform: 'android',
+            token: `legacy-fcm-token-${userId}`,
+            groupLifecycleVersion: 1,
             bundleId: null,
             deliveryEnvironment: null,
           },
@@ -456,6 +530,8 @@ describe('notification delivery use cases', () => {
       conversationId: 'conversation-1',
       callId: 'call-1',
       status: 'active',
+      isGroupCall: true,
+      answerActionHash: 'a'.repeat(64),
       lifecycleRevision: 3,
       at: '2026-07-08T00:00:00.000Z',
     });
@@ -493,13 +569,66 @@ describe('notification delivery use cases', () => {
         callId: 'call-1',
         recipientUserId: 'user-1',
         status: 'active',
+        answerActionHash: 'a'.repeat(64),
         lifecycleRevision: 3,
       },
     });
+    expect(iosActiveCallInput?.data).not.toHaveProperty('answerActionId');
+    expect(fcmInputs.some((input) => input.token?.startsWith('legacy-'))).toBe(
+      false,
+    );
     expect(
       fcmInputs.find((input) => input.token === 'ios-fcm-token-user-2'),
     ).toBeUndefined();
     expect(apnsVoipGateway.send).not.toHaveBeenCalled();
+  });
+
+  it('never forwards a raw answer action from a queued legacy group job', async () => {
+    const {
+      processNotificationJob,
+      notificationJobRepository,
+      pushTokenRepository,
+      fcmInputs,
+    } = createUseCases();
+    const job = {
+      ...baseJob,
+      id: 'legacy-group-state',
+      type: 'CALL_STATE_UPDATE',
+      callId: 'call-1',
+      dataJson: {
+        platforms: ['android'],
+        status: 'active',
+        isGroupCall: true,
+        answerActionId: 'private-winning-action',
+        answerActionHash: 'b'.repeat(64),
+        at: '2026-07-08T00:00:00.000Z',
+      },
+    };
+    notificationJobRepository.claimForProcessing.mockResolvedValue({
+      ...job,
+      status: 'processing',
+      attemptCount: 1,
+    });
+    pushTokenRepository.findActiveByUserId.mockResolvedValue([
+      {
+        id: 'group-token',
+        userId: 'user-1',
+        provider: 'fcm',
+        platform: 'android',
+        token: 'group-fcm-token',
+        groupLifecycleVersion: 2,
+        bundleId: null,
+        deliveryEnvironment: null,
+      },
+    ]);
+
+    await processNotificationJob.execute(job as never);
+
+    expect(fcmInputs).toHaveLength(1);
+    expect(fcmInputs[0].data).toMatchObject({
+      answerActionHash: 'b'.repeat(64),
+    });
+    expect(fcmInputs[0].data).not.toHaveProperty('answerActionId');
   });
 
   it('keeps a partially delivered call-state update retryable for another signed-in device', async () => {

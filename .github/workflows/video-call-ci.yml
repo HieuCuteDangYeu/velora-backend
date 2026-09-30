@@ -29,6 +29,8 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build mediasoup worker
         run: pnpm rebuild mediasoup
+      - name: Ensure Redis server for group-call regression
+        run: command -v redis-server >/dev/null || (sudo apt-get update && sudo apt-get install -y redis-server)
       - name: Generate notification Prisma client
         run: pnpm prisma:generate:notification
       - name: Build call service
@@ -36,6 +38,9 @@ jobs:
       - name: Build notification service
         run: pnpm build:notification
       - name: Run call unit tests
-        run: pnpm exec jest --runInBand apps/call-service/test/unit/application
+        env:
+          DEFAULT_ADMIN_ID: 00000000-0000-4000-8000-000000000001
+          BOT_USER_ID: 00000000-0000-4000-8000-000000000002
+        run: pnpm exec jest --runInBand apps/call-service/test/unit apps/notification-service/src apps/conversation-service/src/application/use-cases/manage-group-conversation.use-case.spec.ts apps/conversation-service/src/application/use-cases/get-group-members.use-case.spec.ts apps/conversation-service/src/infrastructure/controllers/conversation.realtime.controller.spec.ts apps/api-gateway/src/calls/call.controller.spec.ts
       - name: Run full call E2E
         run: pnpm exec jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts

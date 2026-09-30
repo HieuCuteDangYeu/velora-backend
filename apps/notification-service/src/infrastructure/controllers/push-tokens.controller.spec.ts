@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -100,6 +101,30 @@ describe('PushTokensController', () => {
     });
 
     expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', pushToken);
+  });
+
+  it('forwards a declared group lifecycle version and rejects unsupported versions', async () => {
+    const { controller, registerPushToken } = createController();
+    registerPushToken.execute.mockResolvedValue({ id: 'token-1' });
+
+    await withGatewaySecret('gateway-secret', async () => {
+      await controller.register('user-1', 'gateway-secret', {
+        ...pushToken,
+        groupLifecycleVersion: 2,
+      });
+      await expect(
+        controller.register('user-1', 'gateway-secret', {
+          ...pushToken,
+          groupLifecycleVersion: 3,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    expect(registerPushToken.execute).toHaveBeenCalledTimes(1);
+    expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', {
+      ...pushToken,
+      groupLifecycleVersion: 2,
+    });
   });
 
   it('rejects lifecycle ordering metadata without a device id', async () => {

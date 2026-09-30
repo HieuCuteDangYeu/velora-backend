@@ -11,13 +11,13 @@ describe('CallWsExceptionFilter', () => {
     const host = { switchToWs: () => wsHost };
 
     new CallWsExceptionFilter().catch(
-      new Error('Call room not found'),
+      new Error('Call room not found; token=private-secret'),
       host as never,
     );
 
     expect(client.emit).toHaveBeenCalledWith('exception', {
       status: 'error',
-      message: 'Call room not found',
+      message: 'Internal server error',
       code: 'internal_error',
       event: 'produce',
       callId: 'call-1',

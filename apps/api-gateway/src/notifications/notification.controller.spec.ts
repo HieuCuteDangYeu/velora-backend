@@ -7,6 +7,7 @@ describe('NotificationController', () => {
     provider: 'fcm',
     platform: 'android',
     token: 'fcm-token-that-is-long-enough',
+    groupLifecycleVersion: 2,
   };
 
   const createController = (notificationGatewaySecret?: string) => {
@@ -46,6 +47,7 @@ describe('NotificationController', () => {
       expect(fetchSpy).toHaveBeenCalledWith(
         'http://notification-service:3015/notifications/push-tokens',
         expect.objectContaining({
+          body: JSON.stringify(registerBody),
           headers: expect.objectContaining({
             'x-user-id': 'user-1',
             'x-notification-gateway-secret': 'gateway-secret',

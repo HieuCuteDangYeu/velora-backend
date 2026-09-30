@@ -4,9 +4,13 @@ import {
 } from '../../../src/infrastructure/gateways/call-debug';
 
 describe('call runtime diagnostics', () => {
-  it('shortens identifiers before they reach logs', () => {
-    expect(shortCallIdentifier('1234567890abcdef')).toBe('12345678…def');
-    expect(shortCallIdentifier('short-id')).toBe('short-id');
+  it('hashes even short client-controlled identifiers before they reach logs', () => {
+    const label = shortCallIdentifier('short-id');
+    expect(label).toMatch(/^[a-f0-9]{12}$/);
+    expect(label).toBe(shortCallIdentifier('short-id'));
+    expect(label).not.toBe(shortCallIdentifier('other-id'));
+    expect(label).not.toContain('short-id');
+    expect(shortCallIdentifier(null)).toBe('unknown');
   });
 
   it('returns stable error categories without exposing native messages', () => {
@@ -16,5 +20,8 @@ describe('call runtime diagnostics', () => {
       'producer_error',
     );
     expect(safeCallErrorCode({ code: 'HTTP_404' })).toBe('http_404');
+    expect(safeCallErrorCode({ code: 'answer-action-secret' })).toBe(
+      'unknown_error',
+    );
   });
 });

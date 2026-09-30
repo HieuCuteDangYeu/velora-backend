@@ -25,6 +25,10 @@ const GROUP_INVITATION_EVENT_OUTBOX_KEY =
 const TERMINAL_EVENT_OUTBOX_KEY = 'call:sessions:terminal-events';
 const ACTIVE_CALLS_KEY = 'call:sessions:active';
 const ACTIVE_CALLS_BY_USER_KEY = 'call:sessions:active-by-user';
+// ponytail: Conservative source-only cap; replace with E07 measured SFU limit.
+const GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS = 8;
+const activeGroupConversationKey = (conversationId: string) =>
+  `call:conversation:${conversationId}:active-group`;
 
 const LIVE_ACTIVE_CALL_ID_LUA = `
 local function liveActiveCallId(indexKey, userId)
@@ -42,9 +46,15 @@ end
 const CREATE_ACTIVE_GROUP_SESSION_SCRIPT = `
 ${LIVE_ACTIVE_CALL_ID_LUA}
 if liveActiveCallId(KEYS[3], ARGV[2]) then return 0 end
+local existingCallId = redis.call('GET', KEYS[4])
+if existingCallId then
+  local existing = redis.call('GET', 'call:' .. existingCallId .. ':session')
+  if existing and cjson.decode(existing).status == 'active' then return 0 end
+end
 redis.call('SET', KEYS[1], ARGV[1], 'EX', ${SESSION_TTL_SECONDS})
 redis.call('ZADD', KEYS[2], ARGV[3], ARGV[4])
 redis.call('HSET', KEYS[3], ARGV[2], ARGV[4])
+redis.call('SET', KEYS[4], ARGV[4], 'EX', ${SESSION_TTL_SECONDS})
 return 1
 `;
 
@@ -57,6 +67,7 @@ local session = cjson.decode(raw)
 local now = ARGV[1]
 local userId = ARGV[2]
 local actionId = ARGV[4] or ''
+local allowLateJoin = session.isGroupCall and ARGV[5] == '1'
 if session.expiresAt and session.expiresAt <= now and (session.status == 'initiated' or session.status == 'ringing') then
   session.status = 'ended'
   session.terminalReason = 'no_answer'
@@ -89,14 +100,14 @@ for _, invitedUserId in ipairs(session.invitedUserIds or {}) do
     break
   end
 end
-if not isInvited then
+if not isInvited and not allowLateJoin then
   return {'forbidden', raw, '0'}
 end
 if session.status == 'ended' or session.status == 'cancelled' or session.status == 'rejected' then
   return {'terminal', raw, '0'}
 end
 for _, declinedUserId in ipairs(session.declinedUserIds or {}) do
-  if declinedUserId == userId then return {'declined', raw, '0'} end
+  if declinedUserId == userId and not allowLateJoin then return {'declined', raw, '0'} end
 end
 local isAlreadyParticipant = false
 for _, participantId in ipairs(session.participantIds or {}) do
@@ -105,8 +116,11 @@ for _, participantId in ipairs(session.participantIds or {}) do
     break
   end
 end
-if session.isGroupCall and not isAlreadyParticipant and session.expiresAt and session.expiresAt <= now then
+if session.isGroupCall and not isAlreadyParticipant and not allowLateJoin and session.expiresAt and session.expiresAt <= now then
   return {'invitation_expired', raw, '0'}
+end
+if session.isGroupCall and not isAlreadyParticipant and #session.participantIds >= tonumber(ARGV[6]) then
+  return {'full', raw, '0'}
 end
 if session.isGroupCall then
   if userId ~= session.initiatorId then
@@ -127,6 +141,13 @@ end
 local joinedNow = not isAlreadyParticipant
 if joinedNow then
   table.insert(session.participantIds, userId)
+  if session.isGroupCall then
+    local remainingDeclined = {}
+    for _, declinedUserId in ipairs(session.declinedUserIds or {}) do
+      if declinedUserId ~= userId then table.insert(remainingDeclined, declinedUserId) end
+    end
+    session.declinedUserIds = remainingDeclined
+  end
 end
 if session.isGroupCall and userId ~= session.initiatorId and actionId ~= '' then
   session.groupAnswerActionIds = session.groupAnswerActionIds or {}
@@ -542,6 +563,12 @@ local expectedAnswerActionId = ARGV[6]
 local isTerminal = session.status == 'ended' or session.status == 'cancelled' or session.status == 'rejected'
 local wasActive = session.status == 'active'
 
+if mode == 'membership_removed' then
+  if not session.isGroupCall then return {'forbidden', raw, '', '0'} end
+  if isTerminal then return {'already_terminal', raw, session.terminalReason or '', '0'} end
+  if not wasActive then return {'stale', raw, '', '0'} end
+end
+
 if mode == 'accept_failure' then
   if userId ~= session.targetUserId then
     return {'forbidden', raw, '', '0'}
@@ -580,13 +607,52 @@ else
       break
     end
   end
-  if not isParticipant then
+  if mode == 'membership_removed' and not isParticipant then
+    for _, id in ipairs(session.declinedUserIds or {}) do
+      if id == userId then return {'already_terminal', raw, '', '0'} end
+    end
+    local invited = false
+    for _, id in ipairs(session.invitedUserIds or {}) do
+      if id == userId then invited = true break end
+    end
+    if not invited then return {'forbidden', raw, '', '0'} end
+  elseif not isParticipant then
     return {'forbidden', raw, '', '0'}
   end
   if isTerminal then
     return {'already_terminal', raw, session.terminalReason or '', '0'}
   end
   if session.isGroupCall and userId ~= session.initiatorId then
+    if mode == 'membership_removed' then
+      local outboxType = redis.call('TYPE', KEYS[10]).ok
+      if outboxType ~= 'none' and outboxType ~= 'zset' then
+        return redis.error_reply('Invalid group invitation outbox type')
+      end
+    end
+    local participantStateType = redis.call('TYPE', KEYS[7]).ok
+    if participantStateType ~= 'none' and participantStateType ~= 'hash' then
+      return redis.error_reply('Invalid call participant state type')
+    end
+    local mediaKeys = {}
+    for _, mediaIndex in ipairs({
+      {KEYS[8], 'call:' .. session.callId .. ':transport:'},
+      {KEYS[9], 'call:' .. session.callId .. ':producer:'}
+    }) do
+      local indexKey = mediaIndex[1]
+      local keyPrefix = mediaIndex[2]
+      local indexType = redis.call('TYPE', indexKey).ok
+      if indexType ~= 'none' and indexType ~= 'set' then
+        return redis.error_reply('Invalid call media index type')
+      end
+      for _, mediaKey in ipairs(redis.call('SMEMBERS', indexKey)) do
+        if string.sub(mediaKey, 1, #keyPrefix) == keyPrefix then
+          local mediaRaw = redis.call('GET', mediaKey)
+          if mediaRaw and cjson.decode(mediaRaw).userId == userId then
+            table.insert(mediaKeys, {indexKey, mediaKey})
+          end
+        end
+      end
+    end
     local remaining = {}
     for _, participantId in ipairs(session.participantIds or {}) do
       if participantId ~= userId then table.insert(remaining, participantId) end
@@ -594,6 +660,10 @@ else
     session.participantIds = remaining
     session.declinedUserIds = session.declinedUserIds or {}
     table.insert(session.declinedUserIds, userId)
+    session.groupAnswerActionIds = session.groupAnswerActionIds or {}
+    session.groupAnswerActionIds[userId] = nil
+    session.groupConfirmedAnswerActionIds = session.groupConfirmedAnswerActionIds or {}
+    session.groupConfirmedAnswerActionIds[userId] = nil
     session.updatedAt = now
     session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
     local ttl = redis.call('TTL', KEYS[1])
@@ -602,6 +672,17 @@ else
     redis.call('SET', KEYS[1], encoded, 'EX', ttl)
     if redis.call('HGET', KEYS[5], userId) == session.callId then
       redis.call('HDEL', KEYS[5], userId)
+    end
+    redis.call('HDEL', KEYS[7], userId)
+    for _, entry in ipairs(mediaKeys) do
+      redis.call('DEL', entry[2])
+      redis.call('SREM', entry[1], entry[2])
+    end
+    if mode == 'membership_removed' then
+      redis.call('ZADD', KEYS[10], nowMs, cjson.encode({
+        event = 'call.rejected', callId = session.callId, userId = userId,
+        reason = 'membership_removed', lifecycleRevision = session.lifecycleRevision, at = now
+      }))
     end
     return {'participant_left', encoded, requestedReason ~= '' and requestedReason or 'left', '1'}
   end
@@ -633,6 +714,7 @@ redis.call('ZREM', KEYS[2], session.callId)
 redis.call('ZREM', KEYS[3], session.callId)
 redis.call('ZREM', KEYS[4], session.callId)
 redis.call('ZADD', KEYS[6], nowMs, session.callId)
+redis.call('DEL', KEYS[7])
 for _, participantId in ipairs(session.participantIds or {}) do
   if redis.call('HGET', KEYS[5], participantId) == session.callId then
     redis.call('HDEL', KEYS[5], participantId)
@@ -783,10 +865,11 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   async createActiveGroupSession(session: CallSession): Promise<boolean> {
     const result = await this.redis.eval(
       CREATE_ACTIVE_GROUP_SESSION_SCRIPT,
-      3,
+      4,
       this.key(session.callId),
       ACTIVE_CALLS_KEY,
       ACTIVE_CALLS_BY_USER_KEY,
+      activeGroupConversationKey(session.conversationId),
       JSON.stringify(session),
       session.initiatorId,
       String((session.answeredAt ?? session.updatedAt).getTime()),
@@ -864,6 +947,46 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     return this.toSession(raw);
   }
 
+  async findActiveGroupCallByConversationId(
+    conversationId: string,
+  ): Promise<CallSession | null> {
+    const callId = await this.redis.get(
+      activeGroupConversationKey(conversationId),
+    );
+    if (!callId) return null;
+    const session = await this.findByCallId(callId);
+    return session?.isGroupCall &&
+      session.conversationId === conversationId &&
+      session.status === 'active'
+      ? session
+      : null;
+  }
+
+  async scanActiveGroupCalls(cursor: string): Promise<{
+    cursor: string;
+    sessions: CallSession[];
+  }> {
+    const [nextCursor, entries] = await this.redis.zscan(
+      ACTIVE_CALLS_KEY,
+      cursor,
+      'COUNT',
+      50,
+    );
+    const callIds = entries.filter((_, index) => index % 2 === 0);
+    const raw = callIds.length
+      ? await this.redis.mget(...callIds.map((callId) => this.key(callId)))
+      : [];
+    return {
+      cursor: nextCursor,
+      sessions: raw
+        .map((value) => this.toSession(value ?? undefined))
+        .filter(
+          (session): session is CallSession =>
+            session?.isGroupCall === true && session.status === 'active',
+        ),
+    };
+  }
+
   async delete(callId: string): Promise<void> {
     const session = await this.findByCallId(callId);
     await this.redis
@@ -884,6 +1007,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     now: Date,
     actionId?: string,
+    allowLateJoin = false,
   ): Promise<CallJoinTransition> {
     const result = await this.redis.eval(
       JOIN_PARTICIPANT_SCRIPT,
@@ -899,6 +1023,8 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       userId,
       String(now.getTime()),
       actionId ?? '',
+      allowLateJoin ? '1' : '0',
+      String(GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS),
     );
     if (!Array.isArray(result)) {
       throw new Error('Invalid call join transition result');
@@ -1151,7 +1277,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     requestedReason: string | undefined,
     now: Date,
-    mode: 'leave' | 'reject' | 'accept_failure',
+    mode: 'leave' | 'reject' | 'accept_failure' | 'membership_removed',
     expectedAnswerActionId?: string,
   ): Promise<CallTerminalTransition> {
     const [outcome, raw, reason, wasActive] = await this.runTransition(
@@ -1237,13 +1363,17 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   ): Promise<string[]> {
     const result = await this.redis.eval(
       script,
-      6,
+      10,
       this.key(callId),
       EXPIRING_CALLS_KEY,
       ANSWER_EVENT_OUTBOX_KEY,
       ACTIVE_CALLS_KEY,
       ACTIVE_CALLS_BY_USER_KEY,
       TERMINAL_EVENT_OUTBOX_KEY,
+      `call:${callId}:participants`,
+      `call:${callId}:transport-index`,
+      `call:${callId}:producer-index`,
+      GROUP_INVITATION_EVENT_OUTBOX_KEY,
       ...args,
     );
     if (!Array.isArray(result)) {

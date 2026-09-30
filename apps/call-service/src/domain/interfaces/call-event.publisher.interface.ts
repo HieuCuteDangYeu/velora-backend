@@ -25,6 +25,8 @@ export interface CallLifecyclePayload {
   reason?: string;
   /** Identifies the device action that atomically accepted this call. */
   answerActionId?: string;
+  /** Non-rejoinable fingerprint for group-call native lifecycle reconciliation. */
+  answerActionHash?: string;
   /**
    * Monotonic Redis lifecycle revision. Consumers use this as the primary
    * ordering signal when an active and terminal notification arrive out of

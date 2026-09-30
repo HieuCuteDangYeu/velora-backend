@@ -65,6 +65,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     const useCase = new PublishCallTerminalOutboxUseCase(
       sessionRepository as never,
       eventPublisher,
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(2);
@@ -99,6 +100,45 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     );
   });
 
+  it('preserves group capability routing on terminal outbox retries', async () => {
+    const session = new CallSession({
+      ...createTerminalSession(
+        'group-ended',
+        'ended',
+        'membership_removed',
+        'user-a',
+      ),
+      isGroupCall: true,
+      groupName: 'Team',
+      invitedUserIds: ['user-a', 'user-b', 'user-c'],
+    });
+    const publish = jest.fn();
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      {
+        claimPendingTerminalEvents: jest.fn().mockResolvedValue([
+          {
+            session,
+            event: 'call.ended',
+            reason: 'membership_removed',
+            userId: 'user-a',
+          },
+        ]),
+        markTerminalEventPublished: jest.fn(),
+      } as never,
+      { publish },
+      { clearCallState: jest.fn() } as never,
+    );
+    await useCase.execute();
+    expect(publish).toHaveBeenCalledWith(
+      'call.ended',
+      expect.objectContaining({
+        isGroupCall: true,
+        groupName: 'Team',
+        invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      }),
+    );
+  });
+
   it('leaves a failed publication eligible for a later retry', async () => {
     const session = createTerminalSession(
       'call-1',
@@ -123,6 +163,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     const useCase = new PublishCallTerminalOutboxUseCase(
       sessionRepository as never,
       eventPublisher,
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(1);
@@ -131,6 +172,43 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     expect(eventPublisher.publish).toHaveBeenCalledTimes(2);
     expect(sessionRepository.markTerminalEventPublished).toHaveBeenCalledTimes(
       2,
+    );
+  });
+
+  it('retries terminal Redis cleanup before acknowledging the outbox event', async () => {
+    const session = createTerminalSession(
+      'call-cleanup',
+      'ended',
+      'ended',
+      'user-a',
+    );
+    const sessionRepository = {
+      claimPendingTerminalEvents: jest
+        .fn()
+        .mockResolvedValue([
+          { session, event: 'call.ended', reason: 'ended', userId: 'user-a' },
+        ]),
+      markTerminalEventPublished: jest.fn().mockResolvedValue(undefined),
+    };
+    const stateRepository = {
+      clearCallState: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Redis temporarily unavailable'))
+        .mockResolvedValueOnce(undefined),
+    };
+    const eventPublisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      sessionRepository as never,
+      eventPublisher,
+      stateRepository as never,
+    );
+
+    await useCase.execute(endedAt);
+    expect(sessionRepository.markTerminalEventPublished).not.toHaveBeenCalled();
+    await useCase.execute(endedAt);
+    expect(stateRepository.clearCallState).toHaveBeenCalledTimes(2);
+    expect(sessionRepository.markTerminalEventPublished).toHaveBeenCalledTimes(
+      1,
     );
   });
 });

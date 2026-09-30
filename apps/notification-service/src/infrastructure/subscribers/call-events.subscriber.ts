@@ -24,6 +24,10 @@ const callLifecyclePayloadSchema = z.object({
   expiresAt: z.string().datetime(),
   reason: z.string().min(1).optional(),
   answerActionId: z.string().min(1).optional(),
+  answerActionHash: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
   lifecycleRevision: z.number().int().nonnegative().optional(),
   at: z.string().datetime(),
 });
@@ -119,17 +123,21 @@ export class CallEventsSubscriber {
           callId: parsed.data.callId,
           status: this.callStateStatus(event, parsed.data.reason),
           reason: parsed.data.reason,
-          answerActionId: parsed.data.answerActionId,
+          isGroupCall: parsed.data.isGroupCall,
+          answerActionId:
+            parsed.data.isGroupCall || parsed.data.answerActionHash
+              ? undefined
+              : parsed.data.answerActionId,
+          answerActionHash: parsed.data.answerActionHash,
           lifecycleRevision: parsed.data.lifecycleRevision,
           at: parsed.data.at,
         });
       }
 
       channel.ack(message);
-    } catch (error) {
+    } catch {
       this.logger.error(
         `Failed to persist ${event} lifecycle notification; requeueing`,
-        error instanceof Error ? error.stack : String(error),
       );
       channel.nack(message, false, true);
     }

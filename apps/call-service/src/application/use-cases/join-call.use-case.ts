@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ClientProxy } from '@nestjs/microservices';
 import { CallParticipant } from '../../domain/entities/call-participant.entity';
 import { CallSession } from '../../domain/entities/call-session.entity';
 import {
@@ -12,6 +13,7 @@ import {
 } from '../../domain/interfaces/call-media.engine.interface';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import { assertCurrentGroupMember } from './assert-current-group-member';
 
 export interface JoinCallResult {
   role: 'host' | 'guest';
@@ -46,6 +48,8 @@ export class JoinCallUseCase {
     @Inject('ICallStateRepository')
     private readonly stateRepository: ICallStateRepository,
     @Inject('ICallMediaEngine') private readonly mediaEngine: ICallMediaEngine,
+    @Inject('CONVERSATION_SERVICE_RMQ')
+    private readonly conversationClient: ClientProxy,
   ) {}
 
   async execute(
@@ -53,16 +57,33 @@ export class JoinCallUseCase {
     userId: string,
     socketId: string,
     actionId?: string,
+    allowLateJoin = false,
   ): Promise<JoinCallResult> {
+    const currentSession = await this.sessionRepository.findByCallId(callId);
+    if (currentSession?.isGroupCall) {
+      await assertCurrentGroupMember(
+        this.conversationClient,
+        currentSession.conversationId,
+        userId,
+      );
+    }
     const now = new Date();
-    const transition = actionId
+    const transition = allowLateJoin
       ? await this.sessionRepository.joinParticipant(
           callId,
           userId,
           now,
           actionId,
+          true,
         )
-      : await this.sessionRepository.joinParticipant(callId, userId, now);
+      : actionId
+        ? await this.sessionRepository.joinParticipant(
+            callId,
+            userId,
+            now,
+            actionId,
+          )
+        : await this.sessionRepository.joinParticipant(callId, userId, now);
     const session = transition.session;
 
     if (transition.outcome === 'not_found' || !session) {
@@ -83,6 +104,9 @@ export class JoinCallUseCase {
     }
     if (transition.outcome === 'busy') {
       throw new ForbiddenException('You are already in another call');
+    }
+    if (transition.outcome === 'full') {
+      throw new ForbiddenException('Group call is full');
     }
     if (transition.outcome === 'answered_elsewhere') {
       throw new ForbiddenException('Call was answered elsewhere');

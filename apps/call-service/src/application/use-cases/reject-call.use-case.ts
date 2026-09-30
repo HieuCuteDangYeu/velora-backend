@@ -5,12 +5,19 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
+import {
+  buildCallLifecycleMetadata,
+  normalizeClientTerminalReason,
+} from './call-lifecycle-payload';
 import type { CallSession } from '../../domain/entities/call-session.entity';
 import { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import { ICallMediaEngine } from '../../domain/interfaces/call-media.engine.interface';
 import { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import {
+  safeCallErrorCode,
+  shortCallIdentifier,
+} from '../../infrastructure/gateways/call-debug';
 
 export interface RejectCallResult {
   session: CallSession;
@@ -38,6 +45,7 @@ export class RejectCallUseCase {
     userId: string,
     reason = 'rejected',
   ): Promise<RejectCallResult> {
+    reason = normalizeClientTerminalReason(reason) ?? 'rejected';
     const existingSession = await this.sessionRepository.findByCallId(callId);
     if (existingSession?.isGroupCall) {
       const transition = await this.sessionRepository.rejectGroupInvitation(
@@ -111,9 +119,7 @@ export class RejectCallUseCase {
       });
     } catch (error) {
       this.logger.warn(
-        `Failed to publish rejection for ${callId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Failed to publish rejection for ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
       );
     }
 
@@ -124,11 +130,7 @@ export class RejectCallUseCase {
     for (const result of cleanupResults) {
       if (result.status === 'rejected') {
         this.logger.warn(
-          `Rejected call cleanup failed for ${callId}: ${
-            result.reason instanceof Error
-              ? result.reason.message
-              : String(result.reason)
-          }`,
+          `Rejected call cleanup failed for ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(result.reason)}`,
         );
       }
     }

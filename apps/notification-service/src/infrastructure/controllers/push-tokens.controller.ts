@@ -25,6 +25,7 @@ const registerPushTokenSchema = z.discriminatedUnion('provider', [
     token: z.string().min(10),
     deviceId: z.string().optional(),
     appVersion: z.string().optional(),
+    groupLifecycleVersion: z.number().int().min(1).max(2).optional(),
     lifecycleVersion: z.number().int().min(1).max(2_147_483_647).optional(),
   }),
   z.object({
@@ -33,6 +34,7 @@ const registerPushTokenSchema = z.discriminatedUnion('provider', [
     token: z.string().min(10),
     deviceId: z.string().optional(),
     appVersion: z.string().optional(),
+    groupLifecycleVersion: z.number().int().min(1).max(2).optional(),
     lifecycleVersion: z.number().int().min(1).max(2_147_483_647).optional(),
     bundleId: z.string().min(1),
     deliveryEnvironment: z.enum(['development', 'production']),

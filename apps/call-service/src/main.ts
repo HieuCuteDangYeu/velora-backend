@@ -4,6 +4,7 @@ import { Transport } from '@nestjs/microservices';
 import { RecoverActiveCallsAfterMediaRestartUseCase } from './application/use-cases/recover-active-calls-after-media-restart.use-case';
 import { CallServiceModule } from './call-service.module';
 import { CallServiceRuntimeLease } from './infrastructure/runtime/call-service-runtime-lease.service';
+import { safeCallErrorCode } from './infrastructure/gateways/call-debug';
 
 export async function bootstrap() {
   const app = await NestFactory.create(CallServiceModule);
@@ -13,7 +14,7 @@ export async function bootstrap() {
 
     runtimeLease.onLeaseLost(async (error) => {
       console.error(
-        `Call runtime lease lost; stopping service: ${error.message}`,
+        `Call runtime lease lost; stopping service errorCode=${safeCallErrorCode(error)}`,
       );
       await app.close();
       // A closed Nest listener is not enough to guarantee that Mediasoup or
@@ -64,9 +65,7 @@ export async function bootstrap() {
 if (require.main === module) {
   void bootstrap().catch((error) => {
     console.error(
-      `Call service failed to start: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Call service failed to start errorCode=${safeCallErrorCode(error)}`,
     );
     process.exitCode = 1;
   });

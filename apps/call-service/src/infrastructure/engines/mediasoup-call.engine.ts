@@ -883,62 +883,61 @@ export class MediasoupCallMediaEngine
     callId: string,
     userId: string,
   ): Promise<ClosedParticipantMediaResult> {
-    const room = this.getRoomOrThrow(callId);
+    const room = this.rooms.get(callId);
+    if (!room) return { producers: [] };
     const producers = [...room.producerMeta.entries()]
       .filter(([, meta]) => meta.userId === userId)
       .map(([producerId, meta]) => ({ producerId, kind: meta.kind }));
+    const transports = [...room.transportMeta.entries()].filter(
+      ([, meta]) => meta.userId === userId,
+    );
+    const consumers = [...room.consumerMeta.entries()].filter(
+      ([, meta]) => meta.userId === userId,
+    );
 
-    try {
-      for (const producer of producers) {
-        try {
-          await this.closeProducer(callId, userId, producer.producerId);
-        } catch (error) {
-          this.logger.warn(
-            `Failed to persist participant producer cleanup call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
-          );
-        }
-      }
-    } finally {
-      // A Redis cleanup failure must never keep this guest's media alive.
-      const transports = [...room.transportMeta.entries()].filter(
-        ([, meta]) => meta.userId === userId,
-      );
-      for (const [transportId] of transports) {
-        try {
-          room.transports.get(transportId)?.close();
-        } catch (error) {
-          this.logger.warn(
-            `Failed to close participant transport call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
-          );
-        }
-      }
-      for (const [consumerId, meta] of [...room.consumerMeta.entries()]) {
-        if (meta.userId !== userId) continue;
-        try {
-          room.consumers.get(consumerId)?.close();
-        } catch (error) {
-          this.logger.warn(
-            `Failed to close participant consumer call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
-          );
-        }
-      }
-      const cleanupResults = await Promise.allSettled(
-        transports.map(([transportId, meta]) =>
-          this.stateRepository.removeTransportState(
-            callId,
-            userId,
-            meta.direction,
-            transportId,
-          ),
-        ),
-      );
-      if (cleanupResults.some((result) => result.status === 'rejected')) {
+    // Each close starts synchronously; no Redis await may delay another
+    // producer or this guest's receive transport.
+    const producerCleanups = producers.map((producer) =>
+      this.closeProducer(callId, userId, producer.producerId).catch((error) => {
         this.logger.warn(
-          `Failed to persist participant transport cleanup call=${shortCallIdentifier(callId)}`,
+          `Failed to persist participant producer cleanup call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+        );
+      }),
+    );
+    for (const [transportId] of transports) {
+      try {
+        room.transports.get(transportId)?.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close participant transport call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
         );
       }
     }
-
+    for (const [consumerId] of consumers) {
+      try {
+        room.consumers.get(consumerId)?.close();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to close participant consumer call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+        );
+      }
+    }
+    const cleanupResults = await Promise.allSettled([
+      ...producerCleanups,
+      ...transports.map(([transportId, meta]) =>
+        this.stateRepository.removeTransportState(
+          callId,
+          userId,
+          meta.direction,
+          transportId,
+        ),
+      ),
+    ]);
+    if (cleanupResults.some((result) => result.status === 'rejected')) {
+      this.logger.warn(
+        `Failed to persist participant transport cleanup call=${shortCallIdentifier(callId)}`,
+      );
+    }
     return { producers };
   }
 

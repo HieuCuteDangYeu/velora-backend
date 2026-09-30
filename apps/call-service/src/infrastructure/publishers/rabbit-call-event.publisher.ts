@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, timeout } from 'rxjs';
 import {
   CallLifecycleEvent,
   CallLifecyclePayload,
@@ -17,6 +17,8 @@ export class RabbitCallEventPublisher implements ICallEventPublisher {
     event: CallLifecycleEvent,
     payload: CallLifecyclePayload,
   ): Promise<void> {
-    await firstValueFrom(this.client.emit(event, payload));
+    // Bound every lifecycle publisher caller so a stalled broker cannot
+    // monopolize a cleanup/outbox batch. Durable events remain retryable.
+    await firstValueFrom(this.client.emit(event, payload).pipe(timeout(5000)));
   }
 }

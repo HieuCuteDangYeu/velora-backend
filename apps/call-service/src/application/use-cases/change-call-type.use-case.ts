@@ -75,9 +75,17 @@ export class ChangeCallTypeUseCase {
       }
     }
 
-    session.callType = callType;
-    session.updatedAt = new Date();
-    await this.sessionRepository.save(session);
+    if (
+      !(await this.sessionRepository.changeCallType(
+        callId,
+        userId,
+        session.lifecycleRevision,
+        callType,
+        new Date(),
+      ))
+    ) {
+      throw new ForbiddenException('Call changed before the type update');
+    }
 
     return {
       callId,

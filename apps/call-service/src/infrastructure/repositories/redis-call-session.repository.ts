@@ -617,6 +617,11 @@ else
     end
     if not invited then return {'forbidden', raw, '', '0'} end
   elseif not isParticipant then
+    if session.isGroupCall and wasActive and userId ~= session.initiatorId then
+      for _, id in ipairs(session.declinedUserIds or {}) do
+        if id == userId then return {'already_terminal', raw, 'left', '0'} end
+      end
+    end
     return {'forbidden', raw, '', '0'}
   end
   if isTerminal then
@@ -939,6 +944,39 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       await this.clearActiveUserIndex(session);
     }
     return session;
+  }
+
+  async changeCallType(
+    callId: string,
+    userId: string,
+    expectedRevision: number,
+    callType: 'VOICE' | 'VIDEO',
+    now: Date,
+  ): Promise<boolean> {
+    const result = await this.redis.eval(
+      `local raw = redis.call('GET', KEYS[1])
+       if not raw then return 0 end
+       local session = cjson.decode(raw)
+       if (ARGV[3] ~= 'VOICE' and ARGV[3] ~= 'VIDEO') or session.status ~= 'active' or
+          (session.initiatorId ~= ARGV[1] and session.targetUserId ~= ARGV[1]) or
+          (session.isGroupCall and ARGV[3] ~= 'VOICE') then return 0 end
+       if session.callType == ARGV[3] then return 1 end
+       if tostring(session.lifecycleRevision or 0) ~= ARGV[2] then return 0 end
+       session.callType = ARGV[3]
+       session.updatedAt = ARGV[4]
+       session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
+       local ttl = redis.call('TTL', KEYS[1])
+       if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
+       redis.call('SET', KEYS[1], cjson.encode(session), 'EX', ttl)
+       return 1`,
+      1,
+      this.key(callId),
+      userId,
+      String(expectedRevision),
+      callType,
+      now.toISOString(),
+    );
+    return result === 1;
   }
 
   async findByCallId(callId: string): Promise<CallSession | null> {

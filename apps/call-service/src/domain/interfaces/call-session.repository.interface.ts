@@ -98,6 +98,13 @@ export type GroupInvitationOutboxEvent = {
 
 export abstract class ICallSessionRepository {
   abstract save(session: CallSession): Promise<CallSession>;
+  abstract changeCallType(
+    callId: string,
+    userId: string,
+    expectedRevision: number,
+    callType: 'VOICE' | 'VIDEO',
+    now: Date,
+  ): Promise<boolean>;
   /** Atomically reserves the initiator's active-call slot for a new group room. */
   abstract createActiveGroupSession(session: CallSession): Promise<boolean>;
   abstract findByCallId(callId: string): Promise<CallSession | null>;

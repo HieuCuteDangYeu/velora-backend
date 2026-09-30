@@ -24,24 +24,36 @@ describe('1:1 video call use cases', () => {
     });
 
   const makeRepository = (session: CallSession) => {
-    const save = jest.fn(async (next: CallSession) => next);
+    const save = jest.fn((next: CallSession) => Promise.resolve(next));
+    const changeCallType = jest.fn(
+      (
+        _callId: string,
+        _userId: string,
+        _revision: number,
+        callType: 'VOICE' | 'VIDEO',
+      ) => {
+        session.callType = callType;
+        return Promise.resolve(true);
+      },
+    );
     const repository = {
       save,
-      findByCallId: jest.fn(async () => session),
-      delete: jest.fn(async () => undefined),
+      changeCallType,
+      findByCallId: jest.fn().mockResolvedValue(session),
+      delete: jest.fn().mockResolvedValue(undefined),
     } as unknown as ICallSessionRepository;
-    return { repository, save };
+    return { repository, save, changeCallType };
   };
 
   const makeMediaEngine = () => {
-    const produce = jest.fn(async () => ({ producerId: 'producer-new' }));
-    const listActiveProducers = jest.fn(async () => [
+    const produce = jest.fn().mockResolvedValue({ producerId: 'producer-new' });
+    const listActiveProducers = jest.fn().mockResolvedValue([
       { producerId: 'audio-caller', userId: callerId, kind: 'audio' as const },
       { producerId: 'video-caller', userId: callerId, kind: 'video' as const },
       { producerId: 'audio-callee', userId: calleeId, kind: 'audio' as const },
       { producerId: 'video-callee', userId: calleeId, kind: 'video' as const },
     ]);
-    const closeProducer = jest.fn(async () => undefined);
+    const closeProducer = jest.fn().mockResolvedValue(undefined);
     const engine = {
       produce,
       listActiveProducers,
@@ -52,7 +64,7 @@ describe('1:1 video call use cases', () => {
 
   it('upgrades an active voice call to video without replacing audio media', async () => {
     const session = makeSession('VOICE');
-    const { repository, save } = makeRepository(session);
+    const { repository, save, changeCallType } = makeRepository(session);
     const { engine, closeProducer } = makeMediaEngine();
     const useCase = new ChangeCallTypeUseCase(repository, engine);
 
@@ -66,7 +78,14 @@ describe('1:1 video call use cases', () => {
     });
     expect(session.callType).toBe('VIDEO');
     expect(closeProducer).not.toHaveBeenCalled();
-    expect(save).toHaveBeenCalledWith(session);
+    expect(save).not.toHaveBeenCalled();
+    expect(changeCallType).toHaveBeenCalledWith(
+      callId,
+      callerId,
+      session.lifecycleRevision,
+      'VIDEO',
+      expect.any(Date),
+    );
   });
 
   it('downgrades video to voice by closing only video producers', async () => {

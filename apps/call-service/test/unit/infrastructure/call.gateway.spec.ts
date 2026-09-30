@@ -124,6 +124,57 @@ describe('CallGateway reconnect recovery', () => {
     expect(expire).toHaveBeenCalledTimes(3);
   });
 
+  it('recovers departed guest media without conversation RPC, but skips a later valid join', async () => {
+    const departed = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      participantIds: ['user-a'],
+      declinedUserIds: ['user-b'],
+    });
+    const findByCallId = jest.fn().mockResolvedValue(departed);
+    const execute = jest.fn().mockResolvedValue({
+      session: departed,
+      endedReason: 'left',
+      shouldEmitPeerLeft: true,
+      didTransition: false,
+      closedProducers: [],
+    });
+    const gateway = createGateway({
+      sessionRepository: {
+        findByCallId,
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [departed] }),
+      },
+      leaveCallUseCase: { execute },
+      conversationClient: {
+        send: jest
+          .fn()
+          .mockReturnValue(throwError(() => new Error('broker unavailable'))),
+      },
+    });
+    const socketsLeave = jest.fn();
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue({ socketsLeave }),
+    } as never;
+    try {
+      await gateway.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(execute).toHaveBeenCalledWith('call-1', 'user-b');
+      expect(socketsLeave).toHaveBeenCalledTimes(1);
+      // A stale scan snapshot cannot authorize cleanup of the newer admission.
+      findByCallId.mockResolvedValue(
+        new CallSession({ ...activeSession, isGroupCall: true }),
+      );
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(socketsLeave).toHaveBeenCalledTimes(1);
+    } finally {
+      gateway.onModuleDestroy();
+    }
+  });
+
   it('retries eviction for a removed late joiner after it has left the active roster', async () => {
     const session = new CallSession({
       ...activeSession,
@@ -2392,6 +2443,18 @@ describe('CallGateway reconnect recovery', () => {
       sessionRepository: {
         findByCallId: jest.fn().mockResolvedValue(groupSession),
       },
+      stateRepository: {
+        getParticipant: jest.fn().mockResolvedValue(
+          new CallParticipant({
+            callId: 'call-1',
+            userId: 'user-b',
+            socketId: 'socket-winner',
+            isConnected: true,
+          }),
+        ),
+        upsertParticipant: jest.fn(),
+        removeParticipant: jest.fn(),
+      },
     });
     gateway.server = {
       to: jest.fn().mockReturnValue({ emit: jest.fn() }),
@@ -2421,6 +2484,18 @@ describe('CallGateway reconnect recovery', () => {
       callIds: ['call-1'],
     });
     await gateway.handleLeaveCall({ callId: 'call-1' }, winningDevice);
+    expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(1);
+
+    // The stale socket may still remember room membership after a lost leave
+    // reply, but the new participant record belongs only to the latest winner.
+    const staleDevice = createSocket({
+      id: 'socket-previous-winner',
+      userId: 'user-b',
+      callIds: ['call-1'],
+    });
+    await expect(
+      gateway.handleLeaveCall({ callId: 'call-1' }, staleDevice),
+    ).rejects.toThrow('This device did not answer the group call');
     expect(leaveCallUseCase.execute).toHaveBeenCalledTimes(1);
 
     const spoofingDevice = createSocket({

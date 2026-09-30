@@ -4,6 +4,7 @@ import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
 import type { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
+import type { ICallMediaEngine } from '../../domain/interfaces/call-media.engine.interface';
 import {
   safeCallErrorCode,
   shortCallIdentifier,
@@ -25,6 +26,8 @@ export class PublishCallTerminalOutboxUseCase {
     private readonly eventPublisher: ICallEventPublisher,
     @Inject('ICallStateRepository')
     private readonly stateRepository: ICallStateRepository,
+    @Inject('ICallMediaEngine')
+    private readonly mediaEngine: ICallMediaEngine,
   ) {}
 
   async execute(now = new Date(), limit = 100): Promise<number> {
@@ -34,6 +37,10 @@ export class PublishCallTerminalOutboxUseCase {
     );
 
     for (const { session, event, reason, userId } of events) {
+      const cleanup = Promise.allSettled([
+        this.mediaEngine.closeRoom(session.callId),
+        this.stateRepository.clearCallState(session.callId),
+      ]);
       let published = false;
       try {
         const at = session.endedAt ?? now;
@@ -55,15 +62,14 @@ export class PublishCallTerminalOutboxUseCase {
         );
       }
 
-      let cleaned = false;
-      try {
-        await this.stateRepository.clearCallState(session.callId);
-        cleaned = true;
-      } catch (error) {
+      const cleanupResults = await cleanup;
+      const cleaned = cleanupResults.every(
+        (result) => result.status === 'fulfilled',
+      );
+      if (!cleaned)
         this.logger.warn(
-          `terminal call state cleanup failed call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
+          `terminal call media/state cleanup failed call=${shortCallIdentifier(session.callId)}`,
         );
-      }
 
       if (!published || !cleaned) continue;
       try {

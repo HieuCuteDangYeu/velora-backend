@@ -1,5 +1,7 @@
 import { PublishCallTerminalOutboxUseCase } from '../../../src/application/use-cases/publish-call-terminal-outbox.use-case';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
+import { RabbitCallEventPublisher } from '../../../src/infrastructure/publishers/rabbit-call-event.publisher';
+import { of, Subject } from 'rxjs';
 
 describe('PublishCallTerminalOutboxUseCase', () => {
   const endedAt = new Date('2026-09-07T04:00:00.000Z');
@@ -66,6 +68,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
       sessionRepository as never,
       eventPublisher,
       { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(2);
@@ -127,6 +130,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
       } as never,
       { publish },
       { clearCallState: jest.fn() } as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
     );
     await useCase.execute();
     expect(publish).toHaveBeenCalledWith(
@@ -164,6 +168,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
       sessionRepository as never,
       eventPublisher,
       { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await expect(useCase.execute(endedAt)).resolves.toBe(1);
@@ -201,6 +206,7 @@ describe('PublishCallTerminalOutboxUseCase', () => {
       sessionRepository as never,
       eventPublisher,
       stateRepository as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     await useCase.execute(endedAt);
@@ -210,5 +216,104 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     expect(sessionRepository.markTerminalEventPublished).toHaveBeenCalledTimes(
       1,
     );
+  });
+
+  it('retains the outbox until local media cleanup succeeds, even after successful publication', async () => {
+    const session = createTerminalSession(
+      'media-retry',
+      'ended',
+      'ended',
+      'user-a',
+    );
+    const markTerminalEventPublished = jest.fn();
+    const closeRoom = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('media unavailable'))
+      .mockResolvedValue(undefined);
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      {
+        claimPendingTerminalEvents: jest
+          .fn()
+          .mockResolvedValue([
+            { session, event: 'call.ended', reason: 'ended', userId: 'user-a' },
+          ]),
+        markTerminalEventPublished,
+      } as never,
+      { publish: jest.fn().mockResolvedValue(undefined) },
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
+      { closeRoom } as never,
+    );
+    await useCase.execute(endedAt);
+    expect(markTerminalEventPublished).not.toHaveBeenCalled();
+    await useCase.execute(endedAt);
+    expect(closeRoom).toHaveBeenCalledTimes(2);
+    expect(markTerminalEventPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds a stalled real publisher so the next terminal room is cleaned and timed-out work remains retryable', async () => {
+    jest.useFakeTimers();
+    const stalled = new Subject<void>();
+    const first = createTerminalSession('stalled', 'ended', 'ended', 'user-a');
+    const second = createTerminalSession('next', 'ended', 'ended', 'user-a');
+    const markTerminalEventPublished = jest.fn();
+    const closeRoom = jest.fn().mockResolvedValue(undefined);
+    const emit = jest
+      .fn()
+      .mockReturnValueOnce(stalled)
+      .mockReturnValue(of(undefined));
+    const claim = jest
+      .fn()
+      .mockResolvedValueOnce(
+        [first, second].map((session) => ({
+          session,
+          event: 'call.ended',
+          reason: 'ended',
+          userId: 'user-a',
+        })),
+      )
+      .mockResolvedValue([
+        {
+          session: first,
+          event: 'call.ended',
+          reason: 'ended',
+          userId: 'user-a',
+        },
+      ]);
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      {
+        claimPendingTerminalEvents: claim,
+        markTerminalEventPublished,
+      } as never,
+      new RabbitCallEventPublisher({ emit } as never),
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
+      { closeRoom } as never,
+    );
+    try {
+      const draining = useCase.execute(endedAt);
+      await jest.advanceTimersByTimeAsync(4999);
+      expect(closeRoom).toHaveBeenCalledWith('stalled');
+      expect(markTerminalEventPublished).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(draining).resolves.toBe(2);
+      expect(closeRoom).toHaveBeenCalledWith('next');
+      expect(markTerminalEventPublished).toHaveBeenCalledTimes(1);
+      expect(markTerminalEventPublished).toHaveBeenCalledWith(
+        'next',
+        7,
+        expect.any(Date),
+      );
+      expect(stalled.observed).toBe(false);
+      stalled.next(); // A late reply cannot ACK the timed-out attempt.
+      expect(markTerminalEventPublished).toHaveBeenCalledTimes(1);
+      await useCase.execute(endedAt);
+      expect(markTerminalEventPublished).toHaveBeenCalledWith(
+        'stalled',
+        7,
+        expect.any(Date),
+      );
+    } finally {
+      stalled.complete();
+      jest.useRealTimers();
+    }
   });
 });

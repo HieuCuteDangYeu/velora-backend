@@ -196,6 +196,26 @@ class FakeRedisClient {
     const keys = values.slice(0, keyCount);
     const args = values.slice(keyCount);
 
+    if (script.includes('session.callType = ARGV[3]')) {
+      const raw = this.values.get(keys[0]);
+      if (!raw) return Promise.resolve(0);
+      const session = JSON.parse(raw) as CallSession;
+      if (
+        session.status !== 'active' ||
+        (session.initiatorId !== args[0] && session.targetUserId !== args[0]) ||
+        (session.isGroupCall && args[2] !== 'VOICE')
+      )
+        return Promise.resolve(0);
+      if (session.callType === args[2]) return Promise.resolve(1);
+      if (String(session.lifecycleRevision ?? 0) !== args[1])
+        return Promise.resolve(0);
+      session.callType = args[2] as 'VOICE' | 'VIDEO';
+      session.lifecycleRevision = (session.lifecycleRevision ?? 0) + 1;
+      session.updatedAt = new Date(args[3]);
+      this.values.set(keys[0], JSON.stringify(session));
+      return Promise.resolve(1);
+    }
+
     if (script.includes("redis.call('PEXPIRE', KEYS[1], ARGV[2])")) {
       return Promise.resolve(this.values.get(keys[0]) === args[0] ? 1 : 0);
     }

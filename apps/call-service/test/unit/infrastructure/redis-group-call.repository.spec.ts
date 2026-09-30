@@ -3,6 +3,8 @@ import { once } from 'node:events';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import Redis from 'ioredis';
+import { ChangeCallTypeUseCase } from '../../../src/application/use-cases/change-call-type.use-case';
+import { LeaveCallUseCase } from '../../../src/application/use-cases/leave-call.use-case';
 import { PublishCallTerminalOutboxUseCase } from '../../../src/application/use-cases/publish-call-terminal-outbox.use-case';
 import { CallParticipant } from '../../../src/domain/entities/call-participant.entity';
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
@@ -81,6 +83,162 @@ describeWithRedis('Redis group-call transitions', () => {
       updatedAt: now,
     });
   };
+
+  it('keeps the real terminal tombstone, released reservations and outbox when video cleanup races a hangup', async () => {
+    const callId = 'video-hangup';
+    await repository.save(
+      new CallSession({
+        ...group(callId),
+        isGroupCall: false,
+        callType: 'VIDEO',
+        participantIds: ['host', 'guest'],
+        lifecycleRevision: 5,
+      }),
+    );
+    let releaseClose!: () => void;
+    let enteredClose!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enteredClose = resolve;
+    });
+    const changing = new ChangeCallTypeUseCase(repository, {
+      listActiveProducers: jest
+        .fn()
+        .mockResolvedValue([
+          { producerId: 'video', userId: 'host', kind: 'video' },
+        ]),
+      closeProducer: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseClose = resolve;
+            enteredClose();
+          }),
+      ),
+    } as never).execute(callId, 'host', 'VOICE');
+    await entered;
+    const terminal = await repository.transitionToTerminal(
+      callId,
+      'host',
+      'ended',
+      new Date(),
+      'leave',
+    );
+    expect(terminal.outcome).toBe('transitioned');
+    releaseClose();
+    await expect(changing).rejects.toThrow('Call changed');
+    expect((await repository.findByCallId(callId))?.status).toBe('ended');
+    expect((await repository.findByCallId(callId))?.lifecycleRevision).toBe(6);
+    expect(await redis.hget('call:sessions:active-by-user', 'host')).toBeNull();
+    expect(
+      await redis.hget('call:sessions:active-by-user', 'guest'),
+    ).toBeNull();
+    expect(
+      await redis.zscore('call:sessions:terminal-events', callId),
+    ).not.toBeNull();
+  });
+
+  it('changes only the current call type with authorization and revision fencing', async () => {
+    const callId = 'type-cas';
+    await repository.save(
+      new CallSession({
+        ...group(callId),
+        isGroupCall: false,
+        lifecycleRevision: 4,
+      }),
+    );
+    const now = new Date();
+    expect(
+      await repository.changeCallType(callId, 'outsider', 4, 'VIDEO', now),
+    ).toBe(false);
+    expect(
+      await repository.changeCallType(callId, 'host', 3, 'VIDEO', now),
+    ).toBe(false);
+    expect(
+      await repository.changeCallType(
+        callId,
+        'host',
+        4,
+        'INVALID' as never,
+        now,
+      ),
+    ).toBe(false);
+    expect(
+      await repository.changeCallType(callId, 'host', 4, 'VIDEO', now),
+    ).toBe(true);
+    expect(
+      await repository.changeCallType(callId, 'host', 4, 'VIDEO', now),
+    ).toBe(true);
+    const updated = await repository.findByCallId(callId);
+    expect(updated).toMatchObject({
+      status: 'active',
+      callType: 'VIDEO',
+      lifecycleRevision: 5,
+      participantIds: ['host'],
+    });
+    expect(await redis.hget('call:sessions:active-by-user', 'host')).toBe(
+      callId,
+    );
+    expect(
+      await redis.zscore('call:sessions:terminal-events', callId),
+    ).toBeNull();
+    expect(
+      await repository.changeCallType('missing', 'host', 0, 'VIDEO', now),
+    ).toBe(false);
+    await repository.createActiveGroupSession(
+      group('voice-only', 'another-host'),
+    );
+    expect(
+      await repository.changeCallType(
+        'voice-only',
+        'another-host',
+        0,
+        'VIDEO',
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('recovers an ordinary guest leave whose real Redis CAS reply was lost, without evicting other guests', async () => {
+    const callId = 'lost-guest-reply';
+    await repository.createActiveGroupSession(group(callId));
+    for (const userId of ['guest', 'other'])
+      await repository.joinParticipant(
+        callId,
+        userId,
+        new Date(),
+        `${userId}-answer`,
+      );
+    const closeParticipant = jest.fn().mockResolvedValue({ producers: [] });
+    const useCase = new LeaveCallUseCase(
+      repository,
+      new RedisCallStateRepository(redis),
+      { publish: jest.fn() },
+      { closeParticipant } as never,
+    );
+    const originalTransition = repository.transitionToTerminal;
+    const spy = jest
+      .spyOn(repository, 'transitionToTerminal')
+      .mockImplementationOnce(async (...args) => {
+        await originalTransition.call(repository, ...args);
+        throw new Error('committed response lost');
+      });
+    await expect(useCase.execute(callId, 'guest')).rejects.toThrow(
+      'committed response lost',
+    );
+    expect(closeParticipant).not.toHaveBeenCalled();
+    await expect(useCase.execute(callId, 'guest')).resolves.toMatchObject({
+      shouldEmitPeerLeft: true,
+    });
+    expect(closeParticipant).toHaveBeenCalledWith(callId, 'guest');
+    expect((await repository.findByCallId(callId))?.participantIds).toEqual([
+      'host',
+      'other',
+    ]);
+    await expect(useCase.execute(callId, 'outsider')).rejects.toThrow(
+      'not part',
+    );
+    expect(closeParticipant).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
 
   it('atomically revokes live and pending guests with a durable recipient-only notification', async () => {
     await repository.createActiveGroupSession(group('membership-room'));
@@ -1160,9 +1318,14 @@ describeWithRedis('Redis group-call transitions', () => {
       .fn()
       .mockRejectedValueOnce(new Error('Redis temporarily unavailable'))
       .mockImplementation((id: string) => stateRepository.clearCallState(id));
-    const outbox = new PublishCallTerminalOutboxUseCase(repository, publisher, {
-      clearCallState: cleanup,
-    } as never);
+    const outbox = new PublishCallTerminalOutboxUseCase(
+      repository,
+      publisher,
+      {
+        clearCallState: cleanup,
+      } as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
+    );
 
     await outbox.execute(now);
     expect(await stateRepository.getRoom(callId)).not.toBeNull();

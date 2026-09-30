@@ -391,6 +391,8 @@ export class CallGateway
     userId: string,
     task: () => Promise<T>,
   ): Promise<T> {
+    // ponytail: process-local serialization; the runtime lease permits one owner.
+    // Multiple SFU owners would require distributed participant fencing.
     const key = this.disconnectKey(callId, userId);
     const operation = (this.groupAcceptQueues.get(key) ?? Promise.resolve())
       .catch(() => undefined)
@@ -640,7 +642,9 @@ export class CallGateway
     const callIds = this.getTrackedCallIds(client);
     for (const callId of callIds) {
       try {
-        await this.reconcileDisconnectedCall(callId, userId, client.id);
+        await this.withGroupParticipantQueue(callId, userId, () =>
+          this.reconcileDisconnectedCall(callId, userId, client.id),
+        );
       } catch (error) {
         this.logger.warn(
           `Disconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
@@ -737,6 +741,16 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
+    return this.withGroupParticipantQueue(payload.callId, userId, () =>
+      this.joinCallForSocket(payload, client, userId),
+    );
+  }
+
+  private async joinCallForSocket(
+    payload: JoinCallPayload,
+    client: Socket,
+    userId: string,
+  ) {
     if (!this.isGroupLifecycleCapable(client)) {
       const session = await this.sessionRepository.findByCallId(payload.callId);
       this.assertGroupLifecycleCapable(client, session);
@@ -1841,13 +1855,27 @@ export class CallGateway
       throw new BadRequestException('A call action id is required');
     }
 
+    return this.withGroupParticipantQueue(payload.callId, userId, () =>
+      this.acceptIncomingForSocket(payload, client, userId, actionId),
+    );
+  }
+
+  private async acceptIncomingForSocket(
+    payload: AcceptIncomingCallPayload,
+    client: Socket,
+    userId: string,
+    actionId: string,
+  ) {
     const existingSession = await this.sessionRepository.findByCallId(
       payload.callId,
     );
     this.assertGroupLifecycleCapable(client, existingSession);
     if (existingSession?.isGroupCall) {
-      return this.withGroupParticipantQueue(payload.callId, userId, () =>
-        this.acceptGroupInvitation(client, payload.callId, userId, actionId),
+      return this.acceptGroupInvitation(
+        client,
+        payload.callId,
+        userId,
+        actionId,
       );
     }
 
@@ -2054,25 +2082,38 @@ export class CallGateway
     const userId = await this.resolveUserId(client);
     if (!userId) return;
 
+    return this.withGroupParticipantQueue(payload.callId, userId, () =>
+      this.leaveCallForSocket(payload, client, userId),
+    );
+  }
+
+  private async leaveCallForSocket(
+    payload: LeaveCallPayload,
+    client: Socket,
+    userId: string,
+  ) {
     const session = await this.sessionRepository.findByCallId(payload.callId);
     this.assertGroupLifecycleCapable(client, session);
     if (
       session?.isGroupCall &&
       session.status === 'active' &&
-      session.declinedUserIds.includes(userId) &&
-      !session.participantIds.includes(userId)
+      userId !== session.initiatorId &&
+      !(
+        session.declinedUserIds.includes(userId) &&
+        !session.participantIds.includes(userId)
+      ) &&
+      !this.isSocketJoinedToCall(client, payload.callId)
     ) {
-      client.emit('call_left', {
-        callId: payload.callId,
-        ...(payload.actionId ? { actionId: payload.actionId } : {}),
-      });
-      return;
+      throw new ForbiddenException('This device did not answer the group call');
     }
     if (
       session?.isGroupCall &&
       session.status === 'active' &&
       userId !== session.initiatorId &&
-      !this.isSocketJoinedToCall(client, payload.callId)
+      session.participantIds.includes(userId) &&
+      !(
+        await this.stateRepository.getParticipant(payload.callId, userId)
+      )?.socketIds.includes(client.id)
     ) {
       throw new ForbiddenException('This device did not answer the group call');
     }
@@ -2399,7 +2440,7 @@ export class CallGateway
     let rescheduled = false;
     const timeoutId = setTimeout(
       () => {
-        void (async () => {
+        void this.withGroupParticipantQueue(callId, userId, async () => {
           try {
             const participant = await this.stateRepository.getParticipant(
               callId,
@@ -2452,11 +2493,16 @@ export class CallGateway
               );
             }
           } finally {
-            if (!rescheduled) {
+            if (
+              !rescheduled &&
+              this.pendingDisconnects.get(
+                this.disconnectKey(callId, userId),
+              ) === timeoutId
+            ) {
               this.clearPendingDisconnect(callId, userId);
             }
           }
-        })();
+        });
       },
       Math.max(1, delayMs),
     );
@@ -2518,6 +2564,48 @@ export class CallGateway
       // Failed checks remain eligible on the next scan; no event delivery is required.
       this.membershipScanCursor = batch.cursor;
       for (const session of batch.sessions) {
+        // A leave CAS can commit without its response reaching the process.
+        // Recover departed guests independently of conversation RPC availability.
+        await Promise.all(
+          session.declinedUserIds.map((userId) =>
+            this.withGroupParticipantQueue(session.callId, userId, async () => {
+              try {
+                const current = await this.sessionRepository.findByCallId(
+                  session.callId,
+                );
+                if (
+                  !current?.isGroupCall ||
+                  current.status !== 'active' ||
+                  current.participantIds.includes(userId) ||
+                  !current.declinedUserIds.includes(userId) ||
+                  userId === current.initiatorId
+                )
+                  return;
+                const result = await this.leaveCallUseCase.execute(
+                  session.callId,
+                  userId,
+                );
+                if (!result.shouldEmitPeerLeft) return;
+                this.clearPendingDisconnect(session.callId, userId);
+                this.server.in(userId).socketsLeave(session.callId);
+                this.server.to(this.groupUserRoom(userId)).emit('call_ended', {
+                  callId: session.callId,
+                  reason: 'ended',
+                });
+                this.emitClosedProducers(
+                  session.callId,
+                  userId,
+                  result.closedProducers,
+                );
+                this.emitPeerLeft(session.callId, userId, result.endedReason);
+              } catch (error) {
+                this.logger.warn(
+                  `Departed group cleanup deferred call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
+                );
+              }
+            }),
+          ),
+        );
         let removedUserIds: string[];
         try {
           // The existing authorized detail RPC already returns the full current roster.

@@ -86,9 +86,11 @@ export class LeaveCallUseCase {
     }
     if (
       transition.outcome === 'participant_left' ||
-      (mode === 'membership_removed' &&
-        transition.outcome === 'already_terminal' &&
+      (transition.outcome === 'already_terminal' &&
+        session.isGroupCall &&
         session.status === 'active' &&
+        !session.participantIds.includes(userId) &&
+        session.declinedUserIds.includes(userId) &&
         userId !== session.initiatorId)
     ) {
       let closedProducers: LeaveCallResult['closedProducers'] = [];
@@ -116,6 +118,15 @@ export class LeaveCallUseCase {
       transition.outcome === 'already_terminal' ||
       transition.outcome === 'stale'
     ) {
+      if (
+        transition.outcome === 'already_terminal' &&
+        ['ended', 'cancelled', 'rejected'].includes(session.status)
+      ) {
+        await Promise.allSettled([
+          this.mediaEngine.closeRoom(callId),
+          this.stateRepository.clearCallState(callId),
+        ]);
+      }
       return {
         session,
         endedReason: transition.reason ?? 'ended',
@@ -126,6 +137,12 @@ export class LeaveCallUseCase {
 
     const now = session.endedAt ?? new Date();
     const endedReason = transition.reason ?? 'ended';
+
+    // Cut local media before waiting on either Redis cleanup or the broker.
+    const cleanup = Promise.allSettled([
+      this.mediaEngine.closeRoom(callId),
+      this.stateRepository.clearCallState(callId),
+    ]);
 
     try {
       await this.eventPublisher.publish('call.ended', {
@@ -145,10 +162,7 @@ export class LeaveCallUseCase {
       );
     }
 
-    const cleanupResults = await Promise.allSettled([
-      this.mediaEngine.closeRoom(callId),
-      this.stateRepository.clearCallState(callId),
-    ]);
+    const cleanupResults = await cleanup;
     for (const result of cleanupResults) {
       if (result.status === 'rejected') {
         this.logger.warn(

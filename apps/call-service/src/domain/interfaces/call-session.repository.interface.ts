@@ -98,6 +98,13 @@ export type GroupInvitationOutboxEvent = {
 
 export abstract class ICallSessionRepository {
   abstract save(session: CallSession): Promise<CallSession>;
+  abstract refreshGroupIdentity(
+    callId: string,
+    expectedIdentityRevision: number,
+    name: string,
+    avatarUrl: string | null,
+    now: Date,
+  ): Promise<CallSession | null>;
   abstract changeCallType(
     callId: string,
     userId: string,

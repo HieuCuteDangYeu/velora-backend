@@ -26,6 +26,7 @@ export class CallSession {
   groupConfirmedAnswerActionIds!: Record<string, string>;
   groupName?: string;
   groupAvatarUrl?: string;
+  groupIdentityRevision!: number;
   initiatorDisplayName?: string;
   initiatorAvatarUrl?: string;
   ringTimeoutMs?: number;
@@ -86,6 +87,7 @@ export class CallSession {
     this.groupConfirmedAnswerActionIds =
       partial.groupConfirmedAnswerActionIds ?? {};
     this.lifecycleRevision = partial.lifecycleRevision ?? 0;
+    this.groupIdentityRevision = partial.groupIdentityRevision ?? 0;
   }
 
   private toDate(value?: Date | string): Date | undefined {

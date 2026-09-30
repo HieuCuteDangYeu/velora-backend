@@ -5,15 +5,23 @@ import {
 import type { ClientProxy } from '@nestjs/microservices';
 import { lastValueFrom, timeout } from 'rxjs';
 
-export async function assertCurrentGroupMember(
+export async function getCurrentGroupConversation(
   conversationClient: ClientProxy,
   conversationId: string,
   userId: string,
-): Promise<string[]> {
+): Promise<{
+  id: string;
+  isGroup: boolean;
+  participantIds: string[];
+  name?: string | null;
+  picture?: string | null;
+}> {
   let conversation: {
     id: string;
     isGroup: boolean;
     participantIds: string[];
+    name?: string | null;
+    picture?: string | null;
   };
   try {
     conversation = await lastValueFrom(
@@ -55,5 +63,19 @@ export async function assertCurrentGroupMember(
   if (!conversation.isGroup || !conversation.participantIds.includes(userId)) {
     throw new ForbiddenException('Not a current group member');
   }
-  return conversation.participantIds;
+  return conversation;
+}
+
+export async function assertCurrentGroupMember(
+  conversationClient: ClientProxy,
+  conversationId: string,
+  userId: string,
+): Promise<string[]> {
+  return (
+    await getCurrentGroupConversation(
+      conversationClient,
+      conversationId,
+      userId,
+    )
+  ).participantIds;
 }

@@ -25,7 +25,10 @@ import {
 import { catchError, lastValueFrom, of, timeout } from 'rxjs';
 import { Server, Socket } from 'socket.io';
 import { AcceptIncomingCallUseCase } from '../../application/use-cases/accept-incoming-call.use-case';
-import { assertCurrentGroupMember } from '../../application/use-cases/assert-current-group-member';
+import {
+  assertCurrentGroupMember,
+  getCurrentGroupConversation,
+} from '../../application/use-cases/assert-current-group-member';
 import { ChangeCallTypeUseCase } from '../../application/use-cases/change-call-type.use-case';
 import { ConnectTransportUseCase } from '../../application/use-cases/connect-transport.use-case';
 import { ConsumeUseCase } from '../../application/use-cases/consume.use-case';
@@ -230,6 +233,7 @@ type ClientCallSession = Pick<
   | 'invitedUserIds'
   | 'groupName'
   | 'groupAvatarUrl'
+  | 'groupIdentityRevision'
   | 'initiatorDisplayName'
   | 'initiatorAvatarUrl'
   | 'ringTimeoutMs'
@@ -254,6 +258,7 @@ function clientCallSession(session: CallSession): ClientCallSession {
     invitedUserIds,
     groupName,
     groupAvatarUrl,
+    groupIdentityRevision,
     initiatorDisplayName,
     initiatorAvatarUrl,
     ringTimeoutMs,
@@ -276,6 +281,7 @@ function clientCallSession(session: CallSession): ClientCallSession {
     invitedUserIds,
     groupName,
     groupAvatarUrl,
+    groupIdentityRevision,
     initiatorDisplayName,
     initiatorAvatarUrl,
     ringTimeoutMs,
@@ -2607,15 +2613,17 @@ export class CallGateway
           ),
         );
         let removedUserIds: string[];
+        let conversation:
+          | Awaited<ReturnType<typeof getCurrentGroupConversation>>
+          | undefined;
         try {
           // The existing authorized detail RPC already returns the full current roster.
-          const members = new Set(
-            await assertCurrentGroupMember(
-              this.conversationClient,
-              session.conversationId,
-              session.initiatorId,
-            ),
+          conversation = await getCurrentGroupConversation(
+            this.conversationClient,
+            session.conversationId,
+            session.initiatorId,
           );
+          const members = new Set(conversation.participantIds);
           removedUserIds = [
             ...new Set([
               ...session.participantIds,
@@ -2692,6 +2700,43 @@ export class CallGateway
             }),
           ),
         );
+        // Reuse the same authorized detail response; never add another poll/RPC.
+        // An unchanged snapshot is repeated so a lost socket/CAS response heals.
+        if (
+          conversation &&
+          (typeof conversation.name === 'string' ||
+            conversation.name == null) &&
+          (typeof conversation.picture === 'string' ||
+            conversation.picture === null)
+        ) {
+          try {
+            this.runtimeLease.assertHeld();
+            const current = await this.sessionRepository.refreshGroupIdentity(
+              session.callId,
+              session.groupIdentityRevision,
+              conversation.name?.trim() || 'Group call',
+              conversation.picture,
+              new Date(),
+            );
+            if (current) {
+              const recipients = current.participantIds
+                .filter((id) => conversation.participantIds.includes(id))
+                .map((id) => this.groupUserRoom(id));
+              if (recipients.length)
+                this.server.to(recipients).emit('group_call_identity_changed', {
+                  callId: current.callId,
+                  conversationId: current.conversationId,
+                  groupName: current.groupName || 'Group call',
+                  groupAvatarUrl: current.groupAvatarUrl ?? null,
+                  groupIdentityRevision: current.groupIdentityRevision,
+                });
+            }
+          } catch (error) {
+            this.logger.warn(
+              `Group identity refresh deferred call=${shortCallIdentifier(session.callId)} errorCode=${safeCallErrorCode(error)}`,
+            );
+          }
+        }
       }
     } catch (error) {
       this.logger.warn(

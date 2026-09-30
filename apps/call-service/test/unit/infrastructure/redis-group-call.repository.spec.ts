@@ -84,6 +84,70 @@ describeWithRedis('Redis group-call transitions', () => {
     });
   };
 
+  it('updates only live group identity and fences stale or terminal snapshots', async () => {
+    const callId = 'identity-cas';
+    await repository.save(
+      new CallSession({
+        ...group(callId),
+        groupAvatarUrl: 'old-avatar',
+        lifecycleRevision: 7,
+      }),
+    );
+    const now = new Date();
+    const updated = await repository.refreshGroupIdentity(
+      callId,
+      0,
+      'Renamed',
+      null,
+      now,
+    );
+    expect(updated).toMatchObject({
+      groupName: 'Renamed',
+      groupIdentityRevision: 1,
+      lifecycleRevision: 7,
+      status: 'active',
+      participantIds: ['host'],
+    });
+    expect(updated?.groupAvatarUrl).toBeUndefined();
+    expect(await redis.hget('call:sessions:active-by-user', 'host')).toBe(
+      callId,
+    );
+    expect(
+      await repository.refreshGroupIdentity(
+        callId,
+        0,
+        'Stale',
+        'stale-avatar',
+        now,
+      ),
+    ).toBeNull();
+    // Lost reply or socket event: repeating the authoritative value returns its current revision.
+    expect(
+      await repository.refreshGroupIdentity(callId, 0, 'Renamed', null, now),
+    ).toMatchObject({ groupIdentityRevision: 1 });
+    await repository.transitionToTerminal(
+      callId,
+      'host',
+      'ended',
+      now,
+      'leave',
+    );
+    const before = await redis.get(`call:${callId}:session`);
+    expect(
+      await repository.refreshGroupIdentity(callId, 1, 'After end', null, now),
+    ).toBeNull();
+    expect(await redis.get(`call:${callId}:session`)).toBe(before);
+    expect(
+      await redis.zscore('call:sessions:terminal-events', callId),
+    ).not.toBeNull();
+    await repository.save(
+      new CallSession({ ...group('direct'), isGroupCall: false }),
+    );
+    expect(
+      await repository.refreshGroupIdentity('direct', 0, 'Wrong', null, now),
+    ).toBeNull();
+  });
+
   it('keeps the real terminal tombstone, released reservations and outbox when video cleanup races a hangup', async () => {
     const callId = 'video-hangup';
     await repository.save(

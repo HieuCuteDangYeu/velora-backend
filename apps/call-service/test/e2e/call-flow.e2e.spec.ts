@@ -1650,6 +1650,8 @@ describe('Call Service P0 flow (e2e)', () => {
     const groupConversations = {
       'conv-group': {
         id: 'conv-group',
+        name: 'Team',
+        picture: 'old-avatar' as string | null,
         participantIds: [callerUser.id, calleeUser.id, secondGuestUser.id],
         isGroup: true,
       },
@@ -2475,6 +2477,57 @@ describe('Call Service P0 flow (e2e)', () => {
             reconcileGroupMembership(): Promise<void>;
           }
         ).reconcileGroupMembership();
+      const identityEvents = [host, recoveredGuest, secondGuest].map((socket) =>
+        onceEvent<{
+          callId: string;
+          groupName: string;
+          groupAvatarUrl: string | null;
+          groupIdentityRevision: number;
+        }>(socket, 'group_call_identity_changed'),
+      );
+      const legacyIdentity = waitForOptionalEvent(
+        legacyGuest,
+        'group_call_identity_changed',
+        100,
+      );
+      const outsiderIdentity = waitForOptionalEvent(
+        outsider,
+        'group_call_identity_changed',
+        100,
+      );
+      groupConversations['conv-group'].name = 'Renamed while calling';
+      groupConversations['conv-group'].picture = null;
+      await sweepMembership();
+      const snapshots = await Promise.all(identityEvents);
+      for (const snapshot of snapshots)
+        expect(snapshot).toMatchObject({
+          callId: membershipCallId,
+          groupName: 'Renamed while calling',
+          groupAvatarUrl: null,
+        });
+      expect(snapshots[0].groupIdentityRevision).toBeGreaterThan(0);
+      expect(await legacyIdentity).toBeNull();
+      expect(await outsiderIdentity).toBeNull();
+      const identitySession = JSON.parse(
+        (await groupRedis.get(`call:${membershipCallId}:session`))!,
+      );
+      expect(identitySession.groupName).toBe('Renamed while calling');
+      expect(identitySession.groupAvatarUrl).toBeUndefined();
+      expect(identitySession.participantIds).toEqual(
+        expect.arrayContaining([
+          callerUser.id,
+          calleeUser.id,
+          secondGuestUser.id,
+        ]),
+      );
+      expect(identitySession.groupConfirmedAnswerActionIds[calleeUser.id]).toBe(
+        'membership-guest',
+      );
+      for (const producerId of membershipProducerIds)
+        expect(
+          groupMedia.getRoomState(membershipCallId)?.producers.get(producerId)
+            ?.closed,
+        ).toBe(false);
       groupConversations['conv-group'].participantIds = [
         callerUser.id,
         secondGuestUser.id,

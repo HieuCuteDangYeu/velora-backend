@@ -946,6 +946,42 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     return session;
   }
 
+  async refreshGroupIdentity(
+    callId: string,
+    expectedIdentityRevision: number,
+    name: string,
+    avatarUrl: string | null,
+    now: Date,
+  ): Promise<CallSession | null> {
+    const result = await this.redis.eval(
+      `local raw = redis.call('GET', KEYS[1])
+       if not raw then return '' end
+       local session = cjson.decode(raw)
+       if not session.isGroupCall or session.status ~= 'active' then return '' end
+       local avatar = session.groupAvatarUrl
+       if not avatar or avatar == cjson.null then avatar = '' end
+       if session.groupName == ARGV[2] and avatar == ARGV[3] then return raw end
+       if tostring(session.groupIdentityRevision or 0) ~= ARGV[1] then return '' end
+       session.groupName = ARGV[2]
+       session.groupAvatarUrl = nil
+       if ARGV[3] ~= '' then session.groupAvatarUrl = ARGV[3] end
+       session.groupIdentityRevision = (session.groupIdentityRevision or 0) + 1
+       session.updatedAt = ARGV[4]
+       local ttl = redis.call('TTL', KEYS[1])
+       if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
+       local updated = cjson.encode(session)
+       redis.call('SET', KEYS[1], updated, 'EX', ttl)
+       return updated`,
+      1,
+      this.key(callId),
+      String(expectedIdentityRevision),
+      name,
+      avatarUrl ?? '',
+      now.toISOString(),
+    );
+    return this.toSession(typeof result === 'string' ? result : undefined);
+  }
+
   async changeCallType(
     callId: string,
     userId: string,

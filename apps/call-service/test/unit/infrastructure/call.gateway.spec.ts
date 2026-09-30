@@ -56,6 +56,98 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('repeats current group identity using the existing detail RPC and only joined member rooms', async () => {
+    const session = new CallSession({
+      ...activeSession,
+      isGroupCall: true,
+      invitedUserIds: ['user-a', 'user-b', 'invited'],
+    });
+    const updated = new CallSession({
+      ...session,
+      groupName: 'Renamed',
+      groupIdentityRevision: 1,
+    });
+    const refreshGroupIdentity = jest.fn().mockResolvedValue(updated);
+    const conversation = {
+      id: session.conversationId,
+      isGroup: true,
+      participantIds: ['user-a', 'user-b', 'invited'],
+      name: 'Renamed',
+      picture: null,
+    };
+    const send = jest.fn().mockReturnValue(of(conversation));
+    const gateway = createGateway({
+      sessionRepository: {
+        findByCallId: jest.fn(),
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [session] }),
+        refreshGroupIdentity,
+      },
+      conversationClient: { send },
+    });
+    const emit = jest.fn();
+    const to = jest.fn().mockReturnValue({ emit });
+    gateway.server = { to } as never;
+    try {
+      await gateway.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(refreshGroupIdentity).toHaveBeenCalledWith(
+        session.callId,
+        0,
+        'Renamed',
+        null,
+        expect.any(Date),
+      );
+      expect(to).toHaveBeenCalledWith([
+        'group-lifecycle-v2:user-a',
+        'group-lifecycle-v2:user-b',
+      ]);
+      expect(
+        emit.mock.calls.filter(
+          ([event]) => event === 'group_call_identity_changed',
+        ),
+      ).toHaveLength(2);
+      expect(emit).toHaveBeenCalledWith('group_call_identity_changed', {
+        callId: session.callId,
+        conversationId: session.conversationId,
+        groupName: 'Renamed',
+        groupAvatarUrl: null,
+        groupIdentityRevision: 1,
+      });
+      send.mockReturnValue(
+        of({
+          id: session.conversationId,
+          isGroup: true,
+          participantIds: ['user-a', 'user-b', 'invited'],
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(refreshGroupIdentity).toHaveBeenCalledTimes(2);
+      // Production mapper omits a null name; its authoritative avatar still updates.
+      send.mockReturnValue(
+        of({
+          id: session.conversationId,
+          isGroup: true,
+          participantIds: conversation.participantIds,
+          picture: 'new-avatar',
+        }),
+      );
+      await jest.advanceTimersByTimeAsync(5000);
+      expect(refreshGroupIdentity).toHaveBeenLastCalledWith(
+        session.callId,
+        0,
+        'Group call',
+        'new-avatar',
+        expect.any(Date),
+      );
+    } finally {
+      gateway.onModuleDestroy();
+    }
+  });
+
   it('retries unproven membership failures on the periodic sweep without delaying call expiry', async () => {
     const session = new CallSession({ ...activeSession, isGroupCall: true });
     const scanActiveGroupCalls = jest
@@ -2707,6 +2799,7 @@ function createGateway(overrides?: {
     confirmGroupInvitationJoin?: jest.Mock;
     abortGroupInvitationJoin?: jest.Mock;
     scanActiveGroupCalls?: jest.Mock;
+    refreshGroupIdentity?: jest.Mock;
   };
   stateRepository?: {
     getParticipant: jest.Mock;

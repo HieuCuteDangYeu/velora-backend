@@ -58,6 +58,7 @@ export class JoinCallUseCase {
     socketId: string,
     actionId?: string,
     allowLateJoin = false,
+    invitationId?: string,
   ): Promise<JoinCallResult> {
     const currentSession = await this.sessionRepository.findByCallId(callId);
     if (currentSession?.isGroupCall) {
@@ -75,15 +76,25 @@ export class JoinCallUseCase {
           now,
           actionId,
           true,
+          ...(invitationId ? [invitationId] : []),
         )
-      : actionId
+      : invitationId
         ? await this.sessionRepository.joinParticipant(
             callId,
             userId,
             now,
             actionId,
+            false,
+            invitationId,
           )
-        : await this.sessionRepository.joinParticipant(callId, userId, now);
+        : actionId
+          ? await this.sessionRepository.joinParticipant(
+              callId,
+              userId,
+              now,
+              actionId,
+            )
+          : await this.sessionRepository.joinParticipant(callId, userId, now);
     const session = transition.session;
 
     if (transition.outcome === 'not_found' || !session) {

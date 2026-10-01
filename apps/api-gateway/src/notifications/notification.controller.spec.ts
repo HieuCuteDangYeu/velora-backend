@@ -7,7 +7,7 @@ describe('NotificationController', () => {
     provider: 'fcm',
     platform: 'android',
     token: 'fcm-token-that-is-long-enough',
-    groupLifecycleVersion: 2,
+    groupLifecycleVersion: 3,
   };
 
   const createController = (notificationGatewaySecret?: string) => {

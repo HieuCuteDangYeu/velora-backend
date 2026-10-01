@@ -262,132 +262,142 @@ describe('notification delivery use cases', () => {
     );
   });
 
-  it('delivers incoming calls through Android FCM data and iOS APNs VoIP', async () => {
-    const {
-      processNotificationJob,
-      notificationJobRepository,
-      pushTokenRepository,
-      fcmInputs,
-      apnsVoipInputs,
-    } = createUseCases();
-    const expiresAt = new Date(Date.now() + 30_000);
-    const incomingCallJob = {
-      ...baseJob,
-      id: 'call-job-1',
-      type: 'INCOMING_CALL',
-      actorUserId: 'user-2',
-      messageId: null,
-      callId: 'call-1',
-      title: 'Ada',
-      body: 'Incoming voice call',
-      expiresAt,
-      dataJson: {
+  it.each([2, 3])(
+    'delivers incoming calls through Android FCM and iOS VoIP with protocol %i',
+    async (version) => {
+      const {
+        processNotificationJob,
+        notificationJobRepository,
+        pushTokenRepository,
+        fcmInputs,
+        apnsVoipInputs,
+      } = createUseCases();
+      const expiresAt = new Date(Date.now() + 30_000);
+      const incomingCallJob = {
+        ...baseJob,
+        id: 'call-job-1',
         type: 'INCOMING_CALL',
+        actorUserId: 'user-2',
+        messageId: null,
         callId: 'call-1',
-        initiatorId: 'user-2',
-        targetUserId: 'user-1',
-        callType: 'VOICE',
-        initiatorDisplayName: 'Ada',
-        initiatorAvatarUrl: 'https://cdn.example/avatar.png',
-        isGroupCall: true,
-        groupName: 'Team Velora',
-        groupAvatarUrl: 'https://cdn.example/group.png',
-        ringTimeoutMs: 30000,
-        expiresAt: expiresAt.toISOString(),
-      },
-    };
+        title: 'Ada',
+        body: 'Incoming voice call',
+        expiresAt,
+        dataJson: {
+          type: 'INCOMING_CALL',
+          callId: 'call-1',
+          ...(version === 3 ? { roomCallId: 'room-1' } : {}),
+          initiatorId: 'user-2',
+          targetUserId: 'user-1',
+          callType: 'VOICE',
+          initiatorDisplayName: 'Ada',
+          initiatorAvatarUrl: 'https://cdn.example/avatar.png',
+          isGroupCall: true,
+          groupName: 'Team Velora',
+          groupAvatarUrl: 'https://cdn.example/group.png',
+          ringTimeoutMs: 30000,
+          expiresAt: expiresAt.toISOString(),
+        },
+      };
 
-    notificationJobRepository.claimForProcessing.mockResolvedValue({
-      ...incomingCallJob,
-      status: 'processing',
-      attemptCount: 1,
-    });
-    pushTokenRepository.findActiveByUserId
-      .mockResolvedValueOnce([
-        {
-          id: 'android-token-1',
-          userId: 'user-1',
-          provider: 'fcm',
-          platform: 'android',
-          token: 'fcm-token-1',
-          groupLifecycleVersion: 2,
-          bundleId: null,
-          deliveryEnvironment: null,
-        },
-        {
-          id: 'legacy-android-token',
-          userId: 'user-1',
-          provider: 'fcm',
-          platform: 'android',
-          token: 'legacy-fcm-token',
-          groupLifecycleVersion: 1,
-          bundleId: null,
-          deliveryEnvironment: null,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 'voip-token-1',
-          userId: 'user-1',
-          provider: 'apns_voip',
-          platform: 'ios',
-          token: 'voip-token-1',
-          groupLifecycleVersion: 2,
-          bundleId: 'com.quan.velora',
-          deliveryEnvironment: 'production',
-        },
-        {
-          id: 'legacy-voip-token',
-          userId: 'user-1',
-          provider: 'apns_voip',
-          platform: 'ios',
-          token: 'legacy-voip-token',
-          groupLifecycleVersion: 1,
-          bundleId: 'com.quan.velora',
-          deliveryEnvironment: 'production',
-        },
-      ]);
-    const result = await processNotificationJob.execute(
-      incomingCallJob as never,
-    );
+      notificationJobRepository.claimForProcessing.mockResolvedValue({
+        ...incomingCallJob,
+        status: 'processing',
+        attemptCount: 1,
+      });
+      pushTokenRepository.findActiveByUserId
+        .mockResolvedValueOnce([
+          {
+            id: 'android-token-1',
+            userId: 'user-1',
+            provider: 'fcm',
+            platform: 'android',
+            token: 'fcm-token-1',
+            groupLifecycleVersion: version,
+            bundleId: null,
+            deliveryEnvironment: null,
+          },
+          {
+            id: 'legacy-android-token',
+            userId: 'user-1',
+            provider: 'fcm',
+            platform: 'android',
+            token: 'legacy-fcm-token',
+            groupLifecycleVersion: version - 1,
+            bundleId: null,
+            deliveryEnvironment: null,
+          },
+        ])
+        .mockResolvedValueOnce([
+          {
+            id: 'voip-token-1',
+            userId: 'user-1',
+            provider: 'apns_voip',
+            platform: 'ios',
+            token: 'voip-token-1',
+            groupLifecycleVersion: version,
+            bundleId: 'com.quan.velora',
+            deliveryEnvironment: 'production',
+          },
+          {
+            id: 'legacy-voip-token',
+            userId: 'user-1',
+            provider: 'apns_voip',
+            platform: 'ios',
+            token: 'legacy-voip-token',
+            groupLifecycleVersion: version - 1,
+            bundleId: 'com.quan.velora',
+            deliveryEnvironment: 'production',
+          },
+        ]);
+      const result = await processNotificationJob.execute(
+        incomingCallJob as never,
+      );
 
-    expect(result.status).toBe('sent');
-    const incomingCallFcmInput = fcmInputs[0];
-    expect(incomingCallFcmInput).toMatchObject({
-      token: 'fcm-token-1',
-      includeNotification: false,
-      data: {
-        type: 'INCOMING_CALL',
-        callId: 'call-1',
-        initiatorId: 'user-2',
-        targetUserId: 'user-1',
-        initiatorDisplayName: 'Ada',
-        isGroupCall: true,
-        groupName: 'Team Velora',
-        groupAvatarUrl: 'https://cdn.example/group.png',
-      },
-    });
-    const incomingCallVoipInput = apnsVoipInputs[0];
-    expect(incomingCallVoipInput).toMatchObject({
-      token: 'voip-token-1',
-      bundleId: 'com.quan.velora',
-      deliveryEnvironment: 'production',
-      payload: {
-        type: 'INCOMING_CALL',
-        callId: 'call-1',
-        initiatorId: 'user-2',
-        targetUserId: 'user-1',
-        isGroupCall: true,
-        groupName: 'Team Velora',
-        groupAvatarUrl: 'https://cdn.example/group.png',
-      },
-    });
-    expect(notificationJobRepository.markSent).toHaveBeenCalledWith(
-      'call-job-1',
-    );
-    expect(fcmInputs).toHaveLength(1);
-    expect(apnsVoipInputs).toHaveLength(1);
-  });
+      expect(result.status).toBe('sent');
+      const incomingCallFcmInput = fcmInputs[0];
+      expect(incomingCallFcmInput).toMatchObject({
+        token: 'fcm-token-1',
+        includeNotification: false,
+        data: {
+          type: 'INCOMING_CALL',
+          callId: 'call-1',
+          initiatorId: 'user-2',
+          targetUserId: 'user-1',
+          initiatorDisplayName: 'Ada',
+          isGroupCall: true,
+          groupName: 'Team Velora',
+          groupAvatarUrl: 'https://cdn.example/group.png',
+        },
+      });
+      const incomingCallVoipInput = apnsVoipInputs[0];
+      expect(incomingCallVoipInput).toMatchObject({
+        token: 'voip-token-1',
+        bundleId: 'com.quan.velora',
+        deliveryEnvironment: 'production',
+        payload: {
+          type: 'INCOMING_CALL',
+          callId: 'call-1',
+          initiatorId: 'user-2',
+          targetUserId: 'user-1',
+          isGroupCall: true,
+          groupName: 'Team Velora',
+          groupAvatarUrl: 'https://cdn.example/group.png',
+        },
+      });
+      expect(notificationJobRepository.markSent).toHaveBeenCalledWith(
+        'call-job-1',
+      );
+      expect(fcmInputs).toHaveLength(1);
+      expect(apnsVoipInputs).toHaveLength(1);
+      expect(incomingCallFcmInput.data.roomCallId).toBe(
+        version === 3 ? 'room-1' : undefined,
+      );
+      expect(incomingCallVoipInput.payload.roomCallId).toBe(
+        version === 3 ? 'room-1' : undefined,
+      );
+    },
+  );
 
   it('delivers terminal call state updates through Android and iOS FCM without using APNs VoIP', async () => {
     const {

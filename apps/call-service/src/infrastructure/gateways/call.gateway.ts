@@ -1,4 +1,5 @@
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
+import { randomUUID } from 'node:crypto';
 import { CallTelemetryTokenService } from '@common/calls/call-telemetry-token.service';
 import {
   BadRequestException,
@@ -88,6 +89,7 @@ type LegacyAnswerCallPayload = JoinCallPayload & {
 
 type AcceptIncomingCallPayload = JoinCallPayload & {
   actionId: string;
+  invitationId?: string;
 };
 
 type RejoinCallPayload = {
@@ -97,6 +99,7 @@ type RejoinCallPayload = {
 
 type LeaveCallPayload = {
   callId: string;
+  invitationId?: string;
   reason?: string;
   /** A supplied winner action must match; it never grants socket permission. */
   actionId?: string;
@@ -234,6 +237,8 @@ type ClientCallSession = Pick<
   | 'groupName'
   | 'groupAvatarUrl'
   | 'groupIdentityRevision'
+  | 'groupInvitations'
+  | 'lifecycleRevision'
   | 'initiatorDisplayName'
   | 'initiatorAvatarUrl'
   | 'ringTimeoutMs'
@@ -259,6 +264,8 @@ function clientCallSession(session: CallSession): ClientCallSession {
     groupName,
     groupAvatarUrl,
     groupIdentityRevision,
+    groupInvitations,
+    lifecycleRevision,
     initiatorDisplayName,
     initiatorAvatarUrl,
     ringTimeoutMs,
@@ -282,6 +289,12 @@ function clientCallSession(session: CallSession): ClientCallSession {
     groupName,
     groupAvatarUrl,
     groupIdentityRevision,
+    groupInvitations: Object.fromEntries(
+      Object.entries(groupInvitations ?? {}).map(
+        ([id, { requestId: _requestId, ...invite }]) => [id, invite],
+      ),
+    ),
+    lifecycleRevision,
     initiatorDisplayName,
     initiatorAvatarUrl,
     ringTimeoutMs,
@@ -329,6 +342,7 @@ type IncomingCallAcceptanceSocketPayload = {
 };
 
 type RecentTerminalCall = {
+  groupInvitationIds?: Record<string, string>;
   callId: string;
   reason: string;
 };
@@ -629,6 +643,8 @@ export class CallGateway
     await client.join(userId);
     if (this.isGroupLifecycleCapable(client)) {
       await client.join(this.groupUserRoom(userId));
+      if (this.groupLifecycleVersion(client) >= 3)
+        await client.join(`${this.groupUserRoom(userId)}:invitations`);
     }
     client.emit('call_socket_ready', {
       recentTerminalCalls: this.getRecentTerminalCalls(
@@ -739,6 +755,91 @@ export class CallGateway
       this.scheduleUnansweredCallTimeout(result.session);
   }
 
+  @SubscribeMessage('invite_group_member')
+  async handleInviteGroupMember(
+    @MessageBody()
+    payload: { callId: string; userId: string; requestId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const actorId = await this.resolveUserId(client);
+    if (!actorId) return;
+    if (
+      !payload ||
+      [payload.callId, payload.userId, payload.requestId].some(
+        (value) =>
+          typeof value !== 'string' || !value.trim() || value.length > 128,
+      )
+    )
+      throw new BadRequestException('Invalid group invitation');
+    this.assertGroupLifecycleCapable(client, {
+      isGroupCall: true,
+    } as CallSession);
+    if (this.groupLifecycleVersion(client) < 3)
+      throw new ForbiddenException('Re-invites require a newer client');
+    return this.withGroupParticipantQueue(
+      payload.callId,
+      payload.userId,
+      async () => {
+        const existing = await this.sessionRepository.findByCallId(
+          payload.callId,
+        );
+        if (
+          existing?.declinedUserIds.includes(payload.userId) &&
+          !existing.participantIds.includes(payload.userId)
+        ) {
+          if (
+            !existing.isGroupCall ||
+            !existing.participantIds.includes(actorId)
+          )
+            throw new ForbiddenException(
+              'Only joined group members can invite',
+            );
+          await assertCurrentGroupMember(
+            this.conversationClient,
+            existing.conversationId,
+            actorId,
+          );
+          await this.leaveCallUseCase.execute(payload.callId, payload.userId);
+        }
+        const result = await this.initiateCallUseCase.inviteGroupMember(
+          payload.callId,
+          actorId,
+          payload.userId,
+          payload.requestId,
+        );
+        client.emit('group_member_invited', {
+          callId: payload.callId,
+          userId: payload.userId,
+          requestId: payload.requestId,
+          outcome: result.outcome,
+        });
+        if (result.session) this.emitGroupInvitationState(result.session);
+        if (result.outcome !== 'sent' || !result.session) return;
+        const session = result.session;
+        const invite = session.groupInvitations[payload.userId];
+        this.server
+          .to(`${this.groupUserRoom(payload.userId)}:invitations`)
+          .emit('incoming_call', {
+            callId: session.callId,
+            invitationId: invite.invitationId,
+            conversationId: session.conversationId,
+            initiatorId: session.initiatorId,
+            targetUserId: payload.userId,
+            recipientUserId: payload.userId,
+            initiatorDisplayName:
+              session.initiatorDisplayName ?? 'Incoming call',
+            initiatorAvatarUrl: session.initiatorAvatarUrl,
+            ringTimeoutMs: getSessionRingTimeoutMs(session.ringTimeoutMs),
+            expiresAt: invite.expiresAt,
+            callType: session.callType,
+            isGroupCall: true,
+            groupName: session.groupName,
+            groupAvatarUrl: session.groupAvatarUrl,
+          });
+      },
+    );
+  }
+
   @SubscribeMessage('join_call')
   async handleJoinCall(
     @MessageBody() payload: JoinCallPayload,
@@ -838,6 +939,7 @@ export class CallGateway
         userId,
         actionId,
         true,
+        this.groupLifecycleVersion(client) >= 3 ? randomUUID() : undefined,
       ),
     );
   }
@@ -1882,6 +1984,8 @@ export class CallGateway
         payload.callId,
         userId,
         actionId,
+        false,
+        payload.invitationId,
       );
     }
 
@@ -1961,6 +2065,7 @@ export class CallGateway
     userId: string,
     actionId: string,
     lateJoin = false,
+    invitationId?: string,
   ): Promise<void> {
     let joined: Awaited<ReturnType<JoinCallUseCase['execute']>> | undefined;
     const wasInRoom = client.rooms?.has(callId) ?? false;
@@ -1971,6 +2076,7 @@ export class CallGateway
         client.id,
         actionId,
         lateJoin,
+        invitationId,
       );
       if (!(await this.attachLiveSocketToCall(client, callId, userId))) {
         throw new GroupJoinMediaUnavailableError();
@@ -1996,6 +2102,8 @@ export class CallGateway
       );
 
       this.clearPendingDisconnect(callId, userId);
+      const confirmed = await this.sessionRepository.findByCallId(callId);
+      if (confirmed) this.emitGroupInvitationState(confirmed);
       this.recordSocketReconnect(callId, userId);
       if (lateJoin) {
         client.emit('call_joined', {
@@ -2025,6 +2133,7 @@ export class CallGateway
         callId,
         userId,
         answeredElsewhere: true,
+        ...(invitationId ? { invitationId } : {}),
       });
     } catch (error) {
       this.metrics.recordCallEvent(
@@ -2182,6 +2291,7 @@ export class CallGateway
       payload.callId,
       userId,
       payload.reason,
+      ...(payload.invitationId ? [payload.invitationId] : []),
     );
     if (result.isGroupInvitation) {
       if (result.didTransition) {
@@ -2190,8 +2300,13 @@ export class CallGateway
           callId: payload.callId,
           userId,
           reason: result.reason,
+          isGroupCall: true,
+          ...(payload.invitationId
+            ? { invitationId: payload.invitationId }
+            : {}),
         });
       }
+      this.emitGroupInvitationState(result.session);
       return;
     }
     this.clearPendingUnansweredCall(payload.callId);
@@ -2232,6 +2347,17 @@ export class CallGateway
     const payload = {
       callId: session.callId,
       reason,
+      ...(session.isGroupCall &&
+      Object.keys(session.groupInvitations ?? {}).length
+        ? {
+            groupInvitationIds: Object.fromEntries(
+              Object.entries(session.groupInvitations).map(([id, invite]) => [
+                id,
+                invite.invitationId,
+              ]),
+            ),
+          }
+        : {}),
     } satisfies RecentTerminalCall;
     this.rememberRecentTerminalCall(session, payload);
 
@@ -2243,6 +2369,21 @@ export class CallGateway
         ),
       ])
       .emit('call_ended', payload);
+  }
+
+  private emitGroupInvitationState(session: CallSession): void {
+    if (
+      !session?.isGroupCall ||
+      session.status !== 'active' ||
+      !Object.keys(session.groupInvitations ?? {}).length
+    )
+      return;
+    const projected = clientCallSession(session);
+    this.server.to(session.callId).emit('group_invitation_state', {
+      callId: session.callId,
+      lifecycleRevision: session.lifecycleRevision,
+      invitations: projected.groupInvitations,
+    });
   }
 
   private rememberRecentTerminalCall(
@@ -2297,7 +2438,13 @@ export class CallGateway
 
       if (call.isGroupCall && !groupLifecycleCapable) continue;
 
-      recent.push({ callId: call.callId, reason: call.reason });
+      recent.push({
+        callId: call.callId,
+        reason: call.reason,
+        ...(call.groupInvitationIds
+          ? { groupInvitationIds: call.groupInvitationIds }
+          : {}),
+      });
     }
 
     if (calls.size === 0) {
@@ -2569,7 +2716,12 @@ export class CallGateway
       );
       // Failed checks remain eligible on the next scan; no event delivery is required.
       this.membershipScanCursor = batch.cursor;
-      for (const session of batch.sessions) {
+      for (let session of batch.sessions) {
+        session =
+          (await this.sessionRepository.expireGroupInvitations(
+            session.callId,
+            new Date(),
+          )) ?? session;
         // A leave CAS can commit without its response reaching the process.
         // Recover departed guests independently of conversation RPC availability.
         await Promise.all(
@@ -2596,6 +2748,9 @@ export class CallGateway
                 this.server.in(userId).socketsLeave(session.callId);
                 this.server.to(this.groupUserRoom(userId)).emit('call_ended', {
                   callId: session.callId,
+                  invitationId:
+                    current.groupInvitations[userId]?.invitationId ??
+                    session.callId,
                   reason: 'ended',
                 });
                 this.emitClosedProducers(
@@ -2612,6 +2767,7 @@ export class CallGateway
             }),
           ),
         );
+        this.emitGroupInvitationState(session);
         let removedUserIds: string[];
         let conversation:
           | Awaited<ReturnType<typeof getCurrentGroupConversation>>
@@ -2676,6 +2832,9 @@ export class CallGateway
                       .emit('call_ended', {
                         callId: session.callId,
                         reason: 'membership_removed',
+                        invitationId:
+                          result.session.groupInvitations[userId]
+                            ?.invitationId ?? session.callId,
                       });
                     this.server.in(userId).socketsLeave(session.callId);
                     this.emitClosedProducers(

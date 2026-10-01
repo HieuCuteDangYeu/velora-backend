@@ -14,6 +14,21 @@ export type CallSessionStatus =
 
 export type CallType = 'VOICE' | 'VIDEO';
 
+export type GroupInvitation = {
+  invitationId: string;
+  requestId?: string;
+  expiresAt: string;
+  sentAt: string;
+  status:
+    | 'ringing'
+    | 'joining'
+    | 'in_call'
+    | 'declined'
+    | 'busy'
+    | 'expired'
+    | 'left';
+};
+
 export class CallSession {
   callId!: string;
   conversationId!: string;
@@ -27,6 +42,7 @@ export class CallSession {
   groupName?: string;
   groupAvatarUrl?: string;
   groupIdentityRevision!: number;
+  groupInvitations!: Record<string, GroupInvitation>;
   initiatorDisplayName?: string;
   initiatorAvatarUrl?: string;
   ringTimeoutMs?: number;
@@ -88,6 +104,7 @@ export class CallSession {
       partial.groupConfirmedAnswerActionIds ?? {};
     this.lifecycleRevision = partial.lifecycleRevision ?? 0;
     this.groupIdentityRevision = partial.groupIdentityRevision ?? 0;
+    this.groupInvitations = partial.groupInvitations ?? {};
   }
 
   private toDate(value?: Date | string): Date | undefined {

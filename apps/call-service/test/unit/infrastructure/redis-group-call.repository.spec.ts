@@ -84,6 +84,287 @@ describeWithRedis('Redis group-call transitions', () => {
     });
   };
 
+  it('re-invites atomically with durable delivery, expiry and stale-action fencing', async () => {
+    const callId = 'reinvite';
+    const now = new Date();
+    await repository.save(group(callId));
+    const expiry = new Date(now.getTime() + 30_000);
+    const invite = await repository.inviteGroupMember(
+      callId,
+      'host',
+      'guest',
+      'request-1',
+      'invite-1',
+      now,
+      expiry,
+    );
+    expect(invite.outcome).toBe('sent');
+    expect(
+      await repository.inviteGroupMember(
+        callId,
+        'host',
+        'guest',
+        'request-1',
+        'discarded-id',
+        now,
+        expiry,
+      ),
+    ).toMatchObject({ outcome: 'already_sent' });
+    expect(
+      await repository.inviteGroupMember(
+        callId,
+        'host',
+        'guest',
+        'request-2',
+        'discarded-id',
+        now,
+        expiry,
+      ),
+    ).toMatchObject({ outcome: 'cooldown' });
+    expect(await redis.zcard('call:sessions:group-invitation-events')).toBe(1);
+    expect(
+      (
+        await repository.joinParticipant(
+          callId,
+          'guest',
+          now,
+          'stale-answer',
+          false,
+          callId,
+        )
+      ).outcome,
+    ).toBe('invitation_expired');
+    expect(
+      (
+        await repository.rejectGroupInvitation(
+          callId,
+          'guest',
+          now,
+          'rejected',
+          callId,
+        )
+      ).outcome,
+    ).toBe('terminal');
+    expect(
+      (
+        await repository.rejectGroupInvitation(
+          callId,
+          'guest',
+          now,
+          'rejected',
+          'invite-1',
+        )
+      ).outcome,
+    ).toBe('rejected');
+    const later = new Date(now.getTime() + 11_000);
+    const second = await repository.inviteGroupMember(
+      callId,
+      'host',
+      'guest',
+      'request-2',
+      'invite-2',
+      later,
+      new Date(later.getTime() + 30_000),
+    );
+    expect(second.outcome).toBe('sent');
+    expect(second.session?.declinedUserIds).not.toContain('guest');
+    expect(
+      (
+        await repository.rejectGroupInvitation(
+          callId,
+          'guest',
+          later,
+          'rejected',
+          'invite-1',
+        )
+      ).outcome,
+    ).toBe('terminal');
+    const joining = await repository.joinParticipant(
+      callId,
+      'guest',
+      later,
+      'winner',
+      false,
+      'invite-2',
+    );
+    expect(joining.outcome).toBe('joined');
+    await repository.confirmGroupInvitationJoin(
+      callId,
+      'guest',
+      'winner',
+      later,
+    );
+    expect(
+      (await repository.findByCallId(callId))?.groupInvitations.guest.status,
+    ).toBe('in_call');
+    expect(
+      (await repository.joinParticipant(callId, 'guest', later, 'winner'))
+        .outcome,
+    ).toBe('joined');
+    expect(
+      (await repository.findByCallId(callId))?.groupInvitations.guest.status,
+    ).toBe('in_call');
+    expect(
+      (await repository.joinParticipant(callId, 'guest', later, 'other-device'))
+        .outcome,
+    ).not.toBe('joined');
+    expect(
+      (
+        await repository.joinParticipant(
+          callId,
+          'guest',
+          later,
+          'winner',
+          false,
+          'invite-1',
+        )
+      ).outcome,
+    ).toBe('invitation_expired');
+    await repository.transitionToTerminal(
+      callId,
+      'guest',
+      'left',
+      later,
+      'leave',
+      'winner',
+    );
+    expect(
+      (await repository.findByCallId(callId))?.groupInvitations.guest.status,
+    ).toBe('left');
+    const thirdTime = new Date(later.getTime() + 11_000);
+    await repository.inviteGroupMember(
+      callId,
+      'host',
+      'guest',
+      'request-3',
+      'invite-3',
+      thirdTime,
+      new Date(thirdTime.getTime() + 1000),
+    );
+    const expired = await repository.expireGroupInvitations(
+      callId,
+      new Date(thirdTime.getTime() + 1001),
+    );
+    expect(expired?.groupInvitations.guest.status).toBe('expired');
+    expect(expired?.status).toBe('active');
+    expect(expired?.participantIds).toEqual(['host']);
+    const replayTime = new Date(thirdTime.getTime() + 11_000);
+    expect(
+      (
+        await repository.inviteGroupMember(
+          callId,
+          'host',
+          'guest',
+          'request-1',
+          'must-not-ring',
+          replayTime,
+          new Date(replayTime.getTime() + 30_000),
+        )
+      ).outcome,
+    ).toBe('already_sent');
+    expect(
+      (await repository.findByCallId(callId))?.groupInvitations.guest
+        .invitationId,
+    ).toBe('invite-3');
+    const events = await repository.claimPendingGroupInvitationEvents(
+      new Date(thirdTime.getTime() + 2000),
+      100,
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'call.rejected',
+        invitationId: 'invite-1',
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'call.rejected',
+        invitationId: 'invite-3',
+        reason: 'timeout',
+      }),
+    );
+    await repository.transitionToTerminal(
+      callId,
+      'host',
+      'ended',
+      thirdTime,
+      'leave',
+    );
+    const terminal = await redis.get(`call:${callId}:session`);
+    expect(
+      (
+        await repository.inviteGroupMember(
+          callId,
+          'host',
+          'guest',
+          'late-request',
+          'late-id',
+          thirdTime,
+          expiry,
+        )
+      ).outcome,
+    ).toBe('terminal');
+    expect(await redis.get(`call:${callId}:session`)).toBe(terminal);
+  });
+
+  it('gives late joiners a private native identity and closes the earlier ringing invitation', async () => {
+    const callId = 'late-after-ring',
+      now = new Date();
+    await repository.save(group(callId));
+    await repository.inviteGroupMember(
+      callId,
+      'host',
+      'guest',
+      'old-request',
+      'old-native',
+      now,
+      new Date(now.getTime() + 30_000),
+    );
+    const joined = await repository.joinParticipant(
+      callId,
+      'guest',
+      now,
+      'winner-secret',
+      true,
+      'late-native',
+    );
+    expect(joined.outcome).toBe('joined');
+    expect(joined.session?.groupInvitations.guest.invitationId).toBe(
+      'late-native',
+    );
+    await repository.confirmGroupInvitationJoin(
+      callId,
+      'guest',
+      'winner-secret',
+      now,
+    );
+    expect(
+      (await repository.joinParticipant(callId, 'guest', now, 'winner-secret'))
+        .outcome,
+    ).toBe('joined');
+    expect(
+      (
+        await repository.joinParticipant(
+          callId,
+          'guest',
+          now,
+          'winner-secret',
+          false,
+          'old-native',
+        )
+      ).outcome,
+    ).toBe('invitation_expired');
+    expect(
+      await repository.claimPendingGroupInvitationEvents(now, 100),
+    ).toContainEqual(
+      expect.objectContaining({
+        event: 'call.rejected',
+        invitationId: 'old-native',
+        reason: 'answered_elsewhere',
+      }),
+    );
+  });
+
   it('updates only live group identity and fences stale or terminal snapshots', async () => {
     const callId = 'identity-cas';
     await repository.save(

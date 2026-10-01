@@ -44,6 +44,7 @@ export class RejectCallUseCase {
     callId: string,
     userId: string,
     reason = 'rejected',
+    invitationId?: string,
   ): Promise<RejectCallResult> {
     reason = normalizeClientTerminalReason(reason) ?? 'rejected';
     const existingSession = await this.sessionRepository.findByCallId(callId);
@@ -53,6 +54,7 @@ export class RejectCallUseCase {
         userId,
         new Date(),
         reason,
+        ...(invitationId ? [invitationId] : []),
       );
       const session = transition.session;
       if (transition.outcome === 'not_found' || !session) {

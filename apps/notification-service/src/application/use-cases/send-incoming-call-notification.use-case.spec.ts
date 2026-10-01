@@ -15,7 +15,8 @@ it('persists group identity with the incoming notification job', async () => {
     initiatorId: 'host',
     targetUserId: 'guest',
     conversationId: 'conversation',
-    callId: 'room-1',
+    callId: 'invite-new',
+    roomCallId: 'room-1',
     callType: 'VOICE',
     initiatorDisplayName: 'Ada',
     isGroupCall: true,
@@ -27,7 +28,9 @@ it('persists group identity with the incoming notification job', async () => {
 
   expect(repository.create).toHaveBeenCalledWith(
     expect.objectContaining({
+      idempotencyKey: 'incoming-call:invite-new:guest',
       dataJson: expect.objectContaining({
+        roomCallId: 'room-1',
         isGroupCall: true,
         groupName: 'Team Velora',
         groupAvatarUrl: 'https://cdn.example/group.png',

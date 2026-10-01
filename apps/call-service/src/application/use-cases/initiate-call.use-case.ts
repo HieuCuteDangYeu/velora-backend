@@ -27,6 +27,7 @@ import {
   safeCallErrorCode,
   shortCallIdentifier,
 } from '../../infrastructure/gateways/call-debug';
+import { assertCurrentGroupMember } from './assert-current-group-member';
 
 interface ConversationDetailResponse {
   id?: string;
@@ -65,6 +66,38 @@ export class InitiateCallUseCase {
     @Inject('CONVERSATION_SERVICE_RMQ')
     private readonly conversationClient: ClientProxy,
   ) {}
+
+  async inviteGroupMember(
+    callId: string,
+    actorId: string,
+    userId: string,
+    requestId: string,
+  ) {
+    const existing = await this.sessionRepository.findByCallId(callId);
+    if (
+      !existing?.isGroupCall ||
+      existing.status !== 'active' ||
+      !existing.participantIds.includes(actorId)
+    )
+      throw new ForbiddenException('Only joined group members can invite');
+    const members = await assertCurrentGroupMember(
+      this.conversationClient,
+      existing.conversationId,
+      actorId,
+    );
+    if (actorId === userId || !members.includes(userId))
+      throw new ForbiddenException('Not a current group member');
+    const now = new Date();
+    return this.sessionRepository.inviteGroupMember(
+      callId,
+      actorId,
+      userId,
+      requestId,
+      randomUUID(),
+      now,
+      new Date(now.getTime() + this.ringTimeoutMs),
+    );
+  }
 
   async execute(
     conversationId: string,
@@ -177,6 +210,19 @@ export class InitiateCallUseCase {
         initiatorAvatarUrl: initiatorDisplay?.avatar?.trim() || undefined,
         ringTimeoutMs: this.ringTimeoutMs,
         expiresAt,
+        groupInvitations: isGroupCall
+          ? Object.fromEntries(
+              invitedUserIds.map((id) => [
+                id,
+                {
+                  invitationId: callId,
+                  expiresAt: expiresAt.toISOString(),
+                  sentAt: now.toISOString(),
+                  status: 'ringing' as const,
+                },
+              ]),
+            )
+          : {},
         callType,
         status: isGroupCall ? 'active' : 'initiated',
         participantIds: [initiatorId],

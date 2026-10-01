@@ -103,29 +103,48 @@ describe('PushTokensController', () => {
     expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', pushToken);
   });
 
-  it('forwards a declared group lifecycle version and rejects unsupported versions', async () => {
-    const { controller, registerPushToken } = createController();
-    registerPushToken.execute.mockResolvedValue({ id: 'token-1' });
-
-    await withGatewaySecret('gateway-secret', async () => {
-      await controller.register('user-1', 'gateway-secret', {
+  it.each(['fcm', 'apns_voip'])(
+    'forwards v2/v3 %s capabilities and rejects unsupported versions',
+    async (provider) => {
+      const { controller, registerPushToken } = createController();
+      registerPushToken.execute.mockResolvedValue({ id: 'token-1' });
+      const token = {
         ...pushToken,
+        provider,
+        ...(provider === 'apns_voip'
+          ? {
+              platform: 'ios',
+              bundleId: 'com.quan.velora',
+              deliveryEnvironment: 'production',
+            }
+          : {}),
+      };
+
+      await withGatewaySecret('gateway-secret', async () => {
+        for (const version of [2, 3])
+          await controller.register('user-1', 'gateway-secret', {
+            ...token,
+            groupLifecycleVersion: version,
+          });
+        await expect(
+          controller.register('user-1', 'gateway-secret', {
+            ...token,
+            groupLifecycleVersion: 4,
+          }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      });
+
+      expect(registerPushToken.execute).toHaveBeenCalledTimes(2);
+      expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', {
+        ...token,
         groupLifecycleVersion: 2,
       });
-      await expect(
-        controller.register('user-1', 'gateway-secret', {
-          ...pushToken,
-          groupLifecycleVersion: 3,
-        }),
-      ).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    expect(registerPushToken.execute).toHaveBeenCalledTimes(1);
-    expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', {
-      ...pushToken,
-      groupLifecycleVersion: 2,
-    });
-  });
+      expect(registerPushToken.execute).toHaveBeenCalledWith('user-1', {
+        ...token,
+        groupLifecycleVersion: 3,
+      });
+    },
+  );
 
   it('rejects lifecycle ordering metadata without a device id', async () => {
     const { controller, registerPushToken } = createController();

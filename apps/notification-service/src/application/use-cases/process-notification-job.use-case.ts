@@ -179,7 +179,9 @@ export class ProcessNotificationJobUseCase {
 
     const payload = this.readIncomingCallPayload(processingJob);
     const tokens = [...androidTokens, ...voipTokens].filter(
-      (token) => !payload.isGroupCall || token.groupLifecycleVersion >= 2,
+      (token) =>
+        !payload.isGroupCall ||
+        token.groupLifecycleVersion >= (payload.roomCallId ? 3 : 2),
     );
 
     if (tokens.length === 0) {
@@ -353,6 +355,7 @@ export class ProcessNotificationJobUseCase {
           targetUserId: payload.targetUserId,
           conversationId: job.conversationId,
           callId: job.callId,
+          ...(payload.roomCallId ? { roomCallId: payload.roomCallId } : {}),
           actorUserId: job.actorUserId,
           callType: payload.callType,
           initiatorDisplayName: payload.initiatorDisplayName,
@@ -401,6 +404,7 @@ export class ProcessNotificationJobUseCase {
           targetUserId: payload.targetUserId,
           conversationId: job.conversationId,
           callId: job.callId,
+          ...(payload.roomCallId ? { roomCallId: payload.roomCallId } : {}),
           actorUserId: job.actorUserId,
           callType: payload.callType,
           initiatorDisplayName: payload.initiatorDisplayName,
@@ -598,6 +602,11 @@ export class ProcessNotificationJobUseCase {
     const data = this.readDataJson(job.dataJson);
 
     return {
+      ...(data.isGroupCall === true &&
+      typeof data.roomCallId === 'string' &&
+      data.roomCallId.trim()
+        ? { roomCallId: data.roomCallId }
+        : {}),
       initiatorId:
         typeof data.initiatorId === 'string' && data.initiatorId.trim()
           ? data.initiatorId
@@ -702,6 +711,7 @@ export class ProcessNotificationJobUseCase {
 }
 
 type IncomingCallPayload = {
+  roomCallId?: string;
   initiatorId: string;
   targetUserId: string;
   callType: 'VOICE' | 'VIDEO';

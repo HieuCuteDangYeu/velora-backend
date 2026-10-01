@@ -208,6 +208,7 @@ describe('CallGateway reconnect recovery', () => {
     expect(emit).toHaveBeenCalledWith('call_ended', {
       callId: session.callId,
       reason: 'membership_removed',
+      invitationId: session.callId,
     });
     expect(socketsLeave).toHaveBeenCalledWith(session.callId);
     expect(expire).toHaveBeenCalledTimes(3);
@@ -519,6 +520,14 @@ describe('CallGateway reconnect recovery', () => {
       ...activeSession,
       isGroupCall: true,
       invitedUserIds: ['user-a', 'user-b'],
+      groupInvitations: {
+        'user-b': {
+          invitationId: 'latest-native',
+          sentAt: '2099-01-01T00:00:00Z',
+          expiresAt: '2099-01-01T00:00:30Z',
+          status: 'ringing',
+        },
+      },
     });
     const gateway = createGateway({
       leaveCallUseCase: {
@@ -561,7 +570,13 @@ describe('CallGateway reconnect recovery', () => {
       recentTerminalCalls: [],
     });
     expect(modernGuest.emit).toHaveBeenCalledWith('call_socket_ready', {
-      recentTerminalCalls: [{ callId: 'call-1', reason: 'ended' }],
+      recentTerminalCalls: [
+        {
+          callId: 'call-1',
+          reason: 'ended',
+          groupInvitationIds: { 'user-b': 'latest-native' },
+        },
+      ],
     });
   });
 
@@ -2196,6 +2211,7 @@ describe('CallGateway reconnect recovery', () => {
       callId: 'group-room',
       userId: 'guest',
       reason: 'rejected',
+      isGroupCall: true,
     });
   });
 
@@ -2835,12 +2851,15 @@ function createGateway(overrides?: {
     (overrides?.mediaEngine ?? {
       listActiveProducers: jest.fn().mockResolvedValue([]),
     }) as never,
-    (overrides?.sessionRepository ?? {
-      findByCallId: jest.fn(),
-      scanActiveGroupCalls: jest
-        .fn()
-        .mockResolvedValue({ cursor: '0', sessions: [] }),
-    }) as never,
+    {
+      expireGroupInvitations: jest.fn().mockResolvedValue(null),
+      ...(overrides?.sessionRepository ?? {
+        findByCallId: jest.fn(),
+        scanActiveGroupCalls: jest
+          .fn()
+          .mockResolvedValue({ cursor: '0', sessions: [] }),
+      }),
+    } as never,
     (overrides?.stateRepository ?? {
       getParticipant: jest.fn(),
       upsertParticipant: jest.fn(),

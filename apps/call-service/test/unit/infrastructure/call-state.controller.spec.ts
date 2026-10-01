@@ -262,6 +262,7 @@ describe('CallStateController', () => {
   });
 
   it('rejects users outside the call', async () => {
+    // Nonmembers never gain access through an invitation identifier.
     const { controller } = createController(session);
 
     await expect(
@@ -270,5 +271,37 @@ describe('CallStateController', () => {
       found: true,
       authorized: false,
     });
+  });
+
+  it('reports a fresh invite deadline and account busy without resurrecting initial ringing', async () => {
+    const groupSession = new CallSession({
+      ...session,
+      isGroupCall: true,
+      status: 'active',
+      participantIds: ['user-a'],
+      expiresAt: new Date('2020-01-01T00:00:00Z'),
+      groupInvitations: {
+        'user-b': {
+          invitationId: 'fresh',
+          status: 'busy',
+          sentAt: '2099-01-01T00:00:00Z',
+          expiresAt: '2099-01-01T00:00:30Z',
+        },
+      },
+    });
+    const { controller } = createController(groupSession);
+    expect(
+      (await controller.getCallState({ callId: 'call-1', userId: 'user-b' }))
+        .call,
+    ).toMatchObject({
+      status: 'rejected',
+      invitationId: 'fresh',
+      expiresAt: '2099-01-01T00:00:30.000Z',
+    });
+    groupSession.groupInvitations['user-b'].status = 'ringing';
+    expect(
+      (await controller.getCallState({ callId: 'call-1', userId: 'user-b' }))
+        .call?.status,
+    ).toBe('ringing');
   });
 });

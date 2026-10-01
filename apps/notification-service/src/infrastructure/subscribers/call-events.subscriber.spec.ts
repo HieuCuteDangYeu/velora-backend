@@ -89,6 +89,68 @@ describe('CallEventsSubscriber', () => {
     );
   });
 
+  it('uses a fresh native identity per re-invite while retaining the media room', async () => {
+    await subscriber.handleCallInitiated(
+      {
+        ...payload,
+        callType: 'VOICE',
+        isGroupCall: true,
+        invitationId: 'invite-2',
+      },
+      context(),
+    );
+    expect(sendIncomingCallNotification.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'invite-2',
+        roomCallId: payload.callId,
+      }),
+    );
+    await subscriber.handleCallRejected(
+      {
+        ...payload,
+        isGroupCall: true,
+        invitationId: 'invite-1',
+        invitedUserIds: [payload.targetUserId],
+      },
+      context(),
+    );
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'invite-1',
+        recipientUserIds: [payload.targetUserId],
+        status: 'rejected',
+      }),
+    );
+  });
+
+  it('ends each latest group invitation without ending another recipient native identity', async () => {
+    await subscriber.handleCallEnded(
+      {
+        ...payload,
+        isGroupCall: true,
+        invitedUserIds: ['host', 'guest'],
+        groupInvitationIds: { host: payload.callId, guest: 'invite-new' },
+      },
+      context(),
+    );
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledTimes(2);
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: 'invite-new',
+        recipientUserIds: ['guest'],
+        status: 'ended',
+      }),
+    );
+    expect(sendCallStateUpdate.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: payload.callId,
+        recipientUserIds: ['host'],
+        status: 'ended',
+      }),
+    );
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
   it('only sends a declined group invitation to that invitee', async () => {
     await subscriber.handleCallRejected(
       { ...payload, invitedUserIds: [payload.targetUserId] },

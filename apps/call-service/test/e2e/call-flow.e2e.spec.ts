@@ -983,6 +983,7 @@ type ConversationDetail = {
 
 class FakeConversationClient {
   unavailable = false;
+  deleted = false;
   constructor(
     private readonly conversationsById: Record<string, ConversationDetail>,
   ) {}
@@ -995,7 +996,7 @@ class FakeConversationClient {
       return throwError(() => new Error('broker unavailable'));
 
     const conversation = this.conversationsById[payload.id];
-    if (!conversation) {
+    if (!conversation || this.deleted) {
       return throwError(() => new Error('Conversation not found'));
     }
 
@@ -1710,7 +1711,7 @@ describe('Call Service P0 flow (e2e)', () => {
       const groupGateway = groupApp.get(CallGateway);
       const connectGroupClient = async (
         token: string,
-        groupLifecycleVersion: number | null = 2,
+        groupLifecycleVersion: number | null = 3,
       ) => {
         const socket = io(`${groupUrl}/call`, {
           autoConnect: false,
@@ -1838,6 +1839,13 @@ describe('Call Service P0 flow (e2e)', () => {
         lateGuestUser.id,
       ]);
       expect(lateResult.session).not.toHaveProperty('groupAnswerActionIds');
+      const lateInvitation = (
+        lateResult.session as unknown as {
+          groupInvitations: Record<string, { invitationId: string }>;
+        }
+      ).groupInvitations[lateGuestUser.id];
+      expect(lateInvitation.invitationId).not.toBe(callId);
+      expect(lateInvitation.invitationId).not.toBe('late-action');
       await expect(latePeer).resolves.toEqual(
         expect.objectContaining({ userId: lateGuestUser.id }),
       );
@@ -2401,6 +2409,91 @@ describe('Call Service P0 flow (e2e)', () => {
           .invitedUserIds,
       ).toEqual([callerUser.id, lateGuestUser.id]);
       await expect(unselectedInvite).resolves.toBeNull();
+      const reInviteIncoming = onceEvent<{
+        callId: string;
+        invitationId: string;
+      }>(secondGuest, 'incoming_call');
+      const sentInvite = onceEvent<{ outcome: string }>(
+        host,
+        'group_member_invited',
+      );
+      host.emit('invite_group_member', {
+        callId: selectedCallId,
+        userId: secondGuestUser.id,
+        requestId: 'invite-second',
+      });
+      const freshInvite = await reInviteIncoming;
+      expect(freshInvite.callId).toBe(selectedCallId);
+      expect(freshInvite.invitationId).not.toBe(selectedCallId);
+      expect((await sentInvite).outcome).toBe('sent');
+      const duplicateInvite = onceEvent<{ outcome: string }>(
+        host,
+        'group_member_invited',
+      );
+      const duplicateRing = waitForOptionalEvent(
+        secondGuest,
+        'incoming_call',
+        100,
+      );
+      host.emit('invite_group_member', {
+        callId: selectedCallId,
+        userId: secondGuestUser.id,
+        requestId: 'invite-second',
+      });
+      expect((await duplicateInvite).outcome).toBe('already_sent');
+      await expect(duplicateRing).resolves.toBeNull();
+      await groupApp.get(PublishCallAnswerOutboxUseCase).execute();
+      expect(groupPublisher.events).toContainEqual(
+        expect.objectContaining({
+          event: 'call.initiated',
+          payload: expect.objectContaining({
+            callId: selectedCallId,
+            invitationId: freshInvite.invitationId,
+            targetUserId: secondGuestUser.id,
+          }),
+        }),
+      );
+      const staleAccept = onceEvent<{ outcome: string }>(
+        secondGuest,
+        'incoming_call_acceptance',
+      );
+      secondGuest.emit('accept_incoming_call', {
+        callId: selectedCallId,
+        actionId: 'stale-invite-answer',
+      });
+      expect((await staleAccept).outcome).toBe('expired');
+      const validAccept = onceEvent<{ outcome: string }>(
+        secondGuest,
+        'incoming_call_acceptance',
+      );
+      secondGuest.emit('accept_incoming_call', {
+        callId: selectedCallId,
+        invitationId: freshInvite.invitationId,
+        actionId: 'new-invite-winner',
+      });
+      expect((await validAccept).outcome).toBe('accepted');
+      const beforeStaleReject = JSON.parse(
+        (await groupRedis.get(`call:${selectedCallId}:session`))!,
+      );
+      secondGuest.emit('reject_call', {
+        callId: selectedCallId,
+        invitationId: selectedCallId,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(
+        JSON.parse((await groupRedis.get(`call:${selectedCallId}:session`))!)
+          .participantIds,
+      ).toEqual(beforeStaleReject.participantIds);
+      const outsiderReInvite = onceEvent<{ status: string }>(
+        outsider,
+        'exception',
+      );
+      outsider.emit('invite_group_member', {
+        callId: selectedCallId,
+        userId: lateGuestUser.id,
+        requestId: 'outsider-invite',
+      });
+      expect((await outsiderReInvite).status).toBe('error');
       const selectedEnded = onceEvent<{ callId: string }>(
         lateGuest,
         'call_ended',
@@ -2677,6 +2770,50 @@ describe('Call Service P0 flow (e2e)', () => {
           }),
         );
       }
+      // Deletion is authoritative absence, unlike the retryable RPC outage above.
+      groupConversations['conv-group'].participantIds = [
+        callerUser.id,
+        secondGuestUser.id,
+      ];
+      const deletingHostJoined = onceEvent<{ callId: string }>(
+        host,
+        'call_joined',
+      );
+      const deletingGuestInvite = onceEvent<{ callId: string }>(
+        secondGuest,
+        'incoming_call',
+      );
+      host.emit('initiate_call', {
+        conversationId: 'conv-group',
+        callType: 'VOICE',
+        selectedInviteeIds: [secondGuestUser.id],
+      });
+      const [{ callId: deletedCallId }] = await Promise.all([
+        deletingHostJoined,
+        deletingGuestInvite,
+      ]);
+      const deletionEnded = onceEvent<{ callId: string }>(
+        secondGuest,
+        'call_ended',
+      );
+      groupConversationClient.deleted = true;
+      await sweepMembership();
+      expect((await deletionEnded).callId).toBe(deletedCallId);
+      expect(
+        JSON.parse((await groupRedis.get(`call:${deletedCallId}:session`))!)
+          .status,
+      ).toBe('ended');
+      expect(groupMedia.getRoomState(deletedCallId)).toBeUndefined();
+      const deletedInviteAttempt = onceEvent<{ status: string }>(
+        host,
+        'exception',
+      );
+      host.emit('invite_group_member', {
+        callId: deletedCallId,
+        userId: secondGuestUser.id,
+        requestId: 'after-delete',
+      });
+      expect((await deletedInviteAttempt).status).toBe('error');
     } finally {
       groupSockets.forEach((socket) => socket.disconnect());
       if (groupApp) await groupApp.close();

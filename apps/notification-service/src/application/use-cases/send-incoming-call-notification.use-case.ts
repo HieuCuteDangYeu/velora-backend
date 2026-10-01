@@ -9,6 +9,7 @@ export type SendIncomingCallNotificationInput = {
   targetUserId: string;
   conversationId: string;
   callId: string;
+  roomCallId?: string;
   callType: 'VOICE' | 'VIDEO';
   initiatorDisplayName: string;
   initiatorAvatarUrl?: string;
@@ -45,6 +46,7 @@ export class SendIncomingCallNotificationUseCase {
       dataJson: {
         type: 'INCOMING_CALL',
         callId: input.callId,
+        ...(input.roomCallId ? { roomCallId: input.roomCallId } : {}),
         callType: input.callType,
         recipientUserId: input.recipientUserId,
         initiatorId: input.initiatorId,

@@ -113,16 +113,25 @@ export class CallStateController {
         initiatorId: session.initiatorId,
         targetUserId: session.targetUserId,
         recipientUserId: payload.userId,
+        ...(session.groupInvitations[payload.userId]
+          ? {
+              invitationId:
+                session.groupInvitations[payload.userId].invitationId,
+            }
+          : {}),
         callType: session.callType,
         status:
           session.isGroupCall &&
           session.status === 'active' &&
-          session.declinedUserIds.includes(payload.userId)
+          (session.declinedUserIds.includes(payload.userId) ||
+            session.groupInvitations[payload.userId]?.status === 'busy')
             ? 'rejected'
             : session.isGroupCall &&
                 session.status === 'active' &&
                 !session.participantIds.includes(payload.userId)
-              ? session.expiresAt && session.expiresAt <= new Date()
+              ? (session.groupInvitations[payload.userId]?.expiresAt ??
+                  session.expiresAt?.toISOString() ??
+                  '') <= new Date().toISOString()
                 ? 'ended'
                 : 'ringing'
               : session.status,
@@ -133,7 +142,9 @@ export class CallStateController {
         groupAvatarUrl: session.groupAvatarUrl,
         ringTimeoutMs: getSessionRingTimeoutMs(session.ringTimeoutMs),
         expiresAt: getSessionExpiryDate(
-          session.expiresAt,
+          session.groupInvitations[payload.userId]
+            ? new Date(session.groupInvitations[payload.userId].expiresAt)
+            : session.expiresAt,
           session.ringTimeoutMs,
         ).toISOString(),
       },

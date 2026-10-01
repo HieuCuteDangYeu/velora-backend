@@ -14,6 +14,8 @@ const callLifecyclePayloadSchema = z.object({
   recipientUserId: z.string().min(1),
   invitedUserIds: z.array(z.string().min(1)).optional(),
   isGroupCall: z.boolean().optional(),
+  invitationId: z.string().min(1).optional(),
+  groupInvitationIds: z.record(z.string(), z.string().min(1)).optional(),
   groupName: z.string().min(1).optional(),
   groupAvatarUrl: z.string().min(1).optional(),
   userId: z.string().min(1),
@@ -100,7 +102,10 @@ export class CallEventsSubscriber {
           initiatorId: parsed.data.initiatorId,
           targetUserId: parsed.data.targetUserId,
           conversationId: parsed.data.conversationId,
-          callId: parsed.data.callId,
+          callId: parsed.data.invitationId ?? parsed.data.callId,
+          ...(parsed.data.invitationId
+            ? { roomCallId: parsed.data.callId }
+            : {}),
           callType: parsed.data.callType,
           initiatorDisplayName: parsed.data.initiatorDisplayName,
           initiatorAvatarUrl: parsed.data.initiatorAvatarUrl,
@@ -111,6 +116,38 @@ export class CallEventsSubscriber {
           expiresAt: parsed.data.expiresAt,
         });
       } else {
+        const recipients = parsed.data.invitedUserIds ?? [
+          parsed.data.initiatorId,
+          parsed.data.targetUserId,
+        ];
+        if (
+          parsed.data.isGroupCall &&
+          (parsed.data.invitationId || parsed.data.groupInvitationIds)
+        ) {
+          await Promise.all(
+            recipients.map((id) =>
+              this.sendCallStateUpdate.execute({
+                recipientUserIds: [id],
+                ...(event === 'call.answered'
+                  ? { iosRecipientUserIds: [parsed.data.targetUserId] }
+                  : {}),
+                conversationId: parsed.data.conversationId,
+                callId:
+                  parsed.data.invitationId ??
+                  parsed.data.groupInvitationIds?.[id] ??
+                  parsed.data.callId,
+                status: this.callStateStatus(event, parsed.data.reason),
+                reason: parsed.data.reason,
+                isGroupCall: true,
+                answerActionHash: parsed.data.answerActionHash,
+                lifecycleRevision: parsed.data.lifecycleRevision,
+                at: parsed.data.at,
+              }),
+            ),
+          );
+          channel.ack(message);
+          return;
+        }
         await this.sendCallStateUpdate.execute({
           recipientUserIds: parsed.data.invitedUserIds ?? [
             parsed.data.initiatorId,

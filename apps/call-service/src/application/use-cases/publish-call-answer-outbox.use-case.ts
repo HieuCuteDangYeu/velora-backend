@@ -79,6 +79,11 @@ export class PublishCallAnswerOutboxUseCase {
             recipientUserId: event.userId,
             invitedUserIds: [event.userId],
             isGroupCall: true,
+            // Capture the invitation at commit time: a delayed rejection must
+            // never dismiss a newer re-invite of the same live room.
+            groupInvitationIds: undefined,
+            ...(event.invitationId ? { invitationId: event.invitationId } : {}),
+            ...(event.expiresAt ? { expiresAt: event.expiresAt } : {}),
             lifecycleRevision: event.lifecycleRevision,
             ...(event.event === 'call.answered' && event.actionId
               ? {

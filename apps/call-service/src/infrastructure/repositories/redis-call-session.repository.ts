@@ -68,6 +68,7 @@ local now = ARGV[1]
 local userId = ARGV[2]
 local actionId = ARGV[4] or ''
 local allowLateJoin = session.isGroupCall and ARGV[5] == '1'
+local invitation = (session.groupInvitations or {})[userId]
 if session.expiresAt and session.expiresAt <= now and (session.status == 'initiated' or session.status == 'ringing') then
   session.status = 'ended'
   session.terminalReason = 'no_answer'
@@ -116,7 +117,15 @@ for _, participantId in ipairs(session.participantIds or {}) do
     break
   end
 end
-if session.isGroupCall and not isAlreadyParticipant and not allowLateJoin and session.expiresAt and session.expiresAt <= now then
+local invitationExpiresAt = invitation and invitation.expiresAt or session.expiresAt
+local recovering = isAlreadyParticipant and actionId ~= '' and
+   (session.groupConfirmedAnswerActionIds or {})[userId] == actionId
+if session.isGroupCall and not allowLateJoin and userId ~= session.initiatorId and
+   invitation and invitation.invitationId ~= (ARGV[7] ~= '' and ARGV[7] or session.callId) and
+   not (ARGV[7] == '' and recovering) then
+  return {'invitation_expired', raw, '0'}
+end
+if session.isGroupCall and not isAlreadyParticipant and not allowLateJoin and invitationExpiresAt and invitationExpiresAt <= now then
   return {'invitation_expired', raw, '0'}
 end
 if session.isGroupCall and not isAlreadyParticipant and #session.participantIds >= tonumber(ARGV[6]) then
@@ -139,6 +148,18 @@ if session.isGroupCall then
 end
 
 local joinedNow = not isAlreadyParticipant
+local supersededInvitationId = nil
+if allowLateJoin and joinedNow and userId ~= session.initiatorId then
+  if invitation and invitation.status == 'ringing' and ARGV[7] ~= '' and invitation.invitationId ~= ARGV[7] then
+    local outboxType = redis.call('TYPE', KEYS[7]).ok
+    if outboxType ~= 'none' and outboxType ~= 'zset' then return redis.error_reply('Invalid group invitation outbox type') end
+    supersededInvitationId = invitation.invitationId
+  end
+  session.groupInvitations = session.groupInvitations or {}
+  session.groupInvitations[userId] = {invitationId = ARGV[7] ~= '' and ARGV[7] or session.callId,
+    sentAt = now, expiresAt = session.expiresAt or now, status = 'joining'}
+  invitation = session.groupInvitations[userId]
+end
 if joinedNow then
   table.insert(session.participantIds, userId)
   if session.isGroupCall then
@@ -152,6 +173,7 @@ end
 if session.isGroupCall and userId ~= session.initiatorId and actionId ~= '' then
   session.groupAnswerActionIds = session.groupAnswerActionIds or {}
   session.groupAnswerActionIds[userId] = actionId
+  if invitation and not recovering then invitation.status = 'joining' end
 end
 if userId == session.targetUserId and session.status == 'initiated' then
   session.status = 'ringing'
@@ -165,6 +187,9 @@ local encoded = cjson.encode(session)
 redis.call('SET', KEYS[1], encoded, 'EX', ttl)
 if session.isGroupCall then
   redis.call('HSET', KEYS[5], userId, session.callId)
+end
+if supersededInvitationId then
+  redis.call('ZADD', KEYS[7], ARGV[3], cjson.encode({event = 'call.rejected', callId = session.callId, userId = userId, invitationId = supersededInvitationId, reason = 'answered_elsewhere', lifecycleRevision = session.lifecycleRevision, at = now}))
 end
 return {'joined', encoded, joinedNow and '1' or '0'}
 `;
@@ -185,6 +210,8 @@ if not joined then return 0 end
 session.groupConfirmedAnswerActionIds = session.groupConfirmedAnswerActionIds or {}
 if session.groupConfirmedAnswerActionIds[userId] == actionId then return 1 end
 session.groupConfirmedAnswerActionIds[userId] = actionId
+local invitation = (session.groupInvitations or {})[userId]
+if invitation then invitation.status = 'in_call' end
 session.updatedAt = ARGV[3]
 session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
 local ttl = redis.call('TTL', KEYS[1])
@@ -192,7 +219,8 @@ if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
 redis.call('SET', KEYS[1], cjson.encode(session), 'EX', ttl)
 redis.call('ZADD', KEYS[2], ARGV[4], cjson.encode({
   event = 'call.answered', callId = session.callId, userId = userId,
-  actionId = actionId, lifecycleRevision = session.lifecycleRevision, at = ARGV[3]
+  actionId = actionId, lifecycleRevision = session.lifecycleRevision, at = ARGV[3],
+  invitationId = invitation and invitation.invitationId or nil
 }))
 return 1
 `;
@@ -214,6 +242,8 @@ end
 if not joined then return 0 end
 session.participantIds = remaining
 session.groupAnswerActionIds[userId] = nil
+local invitation = (session.groupInvitations or {})[userId]
+if invitation then invitation.status = 'ringing' end
 session.updatedAt = ARGV[3]
 session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
 local ttl = redis.call('TTL', KEYS[1])
@@ -231,6 +261,10 @@ if not raw then return {'not_found'} end
 local session = cjson.decode(raw)
 local userId = ARGV[1]
 local now = ARGV[2]
+local invitation = (session.groupInvitations or {})[userId]
+if invitation and invitation.invitationId ~= (ARGV[5] ~= '' and ARGV[5] or session.callId) then
+  return {'terminal', raw}
+end
 if not session.isGroupCall or userId == session.initiatorId then
   return {'forbidden', raw}
 end
@@ -239,7 +273,8 @@ for _, invitedUserId in ipairs(session.invitedUserIds or {}) do
   if invitedUserId == userId then invited = true break end
 end
 if not invited then return {'forbidden', raw} end
-if session.status ~= 'active' or (session.expiresAt and session.expiresAt <= now) then
+local invitationExpiresAt = invitation and invitation.expiresAt or session.expiresAt
+if session.status ~= 'active' or (invitationExpiresAt and invitationExpiresAt <= now) then
   return {'terminal', raw}
 end
 for _, participantId in ipairs(session.participantIds or {}) do
@@ -250,6 +285,7 @@ for _, declinedUserId in ipairs(session.declinedUserIds or {}) do
 end
 session.declinedUserIds = session.declinedUserIds or {}
 table.insert(session.declinedUserIds, userId)
+if invitation then invitation.status = ARGV[4] == 'busy' and 'busy' or 'declined' end
 session.updatedAt = now
 session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
 local ttl = redis.call('TTL', KEYS[1])
@@ -258,7 +294,8 @@ local encoded = cjson.encode(session)
 redis.call('SET', KEYS[1], encoded, 'EX', ttl)
 redis.call('ZADD', KEYS[2], ARGV[3], cjson.encode({
   event = 'call.rejected', callId = session.callId, userId = userId,
-  reason = ARGV[4], lifecycleRevision = session.lifecycleRevision, at = now
+  reason = ARGV[4], lifecycleRevision = session.lifecycleRevision, at = now,
+  invitationId = invitation and invitation.invitationId or nil
 }))
 return {'rejected', encoded}
 `;
@@ -269,6 +306,80 @@ for _, event in ipairs(events) do
   redis.call('ZADD', KEYS[1], ARGV[2], event)
 end
 return events
+`;
+
+const INVITE_GROUP_MEMBER_SCRIPT = `
+${LIVE_ACTIVE_CALL_ID_LUA}
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {'terminal'} end
+local session = cjson.decode(raw)
+if not session.isGroupCall or session.status ~= 'active' then return {'terminal', raw} end
+local actorJoined = false
+for _, id in ipairs(session.participantIds or {}) do
+  if id == ARGV[1] then actorJoined = true end
+  if id == ARGV[2] then return {'joined', raw} end
+end
+if not actorJoined or ARGV[1] == ARGV[2] then return {'forbidden', raw} end
+local priorRequest = redis.call('GET', KEYS[4])
+if priorRequest then return {priorRequest == 'busy' and 'busy' or 'already_sent', raw} end
+local previous = (session.groupInvitations or {})[ARGV[2]]
+if previous and previous.requestId == ARGV[3] then return {previous.status == 'busy' and 'busy' or 'already_sent', raw} end
+if previous and (previous.status == 'joining' or previous.status == 'in_call' or
+   (previous.status == 'ringing' and previous.expiresAt > ARGV[5])) then return {'cooldown', raw} end
+if previous and ARGV[8] < previous.sentAt then return {'cooldown', raw} end
+if #session.participantIds >= ${GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS} then return {'full', raw} end
+local outboxType = redis.call('TYPE', KEYS[3]).ok
+if outboxType ~= 'none' and outboxType ~= 'zset' then return redis.error_reply('Invalid group invitation outbox type') end
+local busyCall = liveActiveCallId(KEYS[2], ARGV[2])
+local status = busyCall and busyCall ~= session.callId and 'busy' or 'ringing'
+session.groupInvitations = session.groupInvitations or {}
+session.groupInvitations[ARGV[2]] = {invitationId = ARGV[4], requestId = ARGV[3], sentAt = ARGV[5], expiresAt = ARGV[6], status = status}
+local invited = false
+for _, id in ipairs(session.invitedUserIds or {}) do if id == ARGV[2] then invited = true end end
+if not invited then table.insert(session.invitedUserIds, ARGV[2]) end
+local remaining = {}
+for _, id in ipairs(session.declinedUserIds or {}) do if id ~= ARGV[2] then table.insert(remaining, id) end end
+session.declinedUserIds = remaining
+session.groupAnswerActionIds = session.groupAnswerActionIds or {}
+session.groupConfirmedAnswerActionIds = session.groupConfirmedAnswerActionIds or {}
+session.groupAnswerActionIds[ARGV[2]] = nil
+session.groupConfirmedAnswerActionIds[ARGV[2]] = nil
+session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
+session.updatedAt = ARGV[5]
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
+local encoded = cjson.encode(session)
+redis.call('SET', KEYS[1], encoded, 'EX', ttl)
+redis.call('SET', KEYS[4], status, 'EX', ttl)
+if status == 'ringing' then
+  redis.call('ZADD', KEYS[3], ARGV[7], cjson.encode({event = 'call.initiated', callId = session.callId, userId = ARGV[2], invitationId = ARGV[4], expiresAt = ARGV[6], lifecycleRevision = session.lifecycleRevision, at = ARGV[5]}))
+end
+return {status == 'busy' and 'busy' or 'sent', encoded}
+`;
+
+const EXPIRE_GROUP_INVITATIONS_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return '' end
+local session = cjson.decode(raw)
+if not session.isGroupCall or session.status ~= 'active' then return '' end
+local outboxType = redis.call('TYPE', KEYS[2]).ok
+if outboxType ~= 'none' and outboxType ~= 'zset' then return redis.error_reply('Invalid group invitation outbox type') end
+local changed = false
+for id, invitation in pairs(session.groupInvitations or {}) do
+  if invitation.status == 'ringing' and invitation.expiresAt <= ARGV[1] then
+    invitation.status = 'expired'
+    session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
+    redis.call('ZADD', KEYS[2], ARGV[2], cjson.encode({event = 'call.rejected', callId = session.callId, userId = id, invitationId = invitation.invitationId, reason = 'timeout', lifecycleRevision = session.lifecycleRevision, at = ARGV[1]}))
+    changed = true
+  end
+end
+if not changed then return raw end
+session.updatedAt = ARGV[1]
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
+local encoded = cjson.encode(session)
+redis.call('SET', KEYS[1], encoded, 'EX', ttl)
+return encoded
 `;
 
 const CLAIM_INCOMING_ANSWER_SCRIPT = `
@@ -669,6 +780,8 @@ else
     session.groupAnswerActionIds[userId] = nil
     session.groupConfirmedAnswerActionIds = session.groupConfirmedAnswerActionIds or {}
     session.groupConfirmedAnswerActionIds[userId] = nil
+    local invitation = (session.groupInvitations or {})[userId]
+    if invitation then invitation.status = 'left' end
     session.updatedAt = now
     session.lifecycleRevision = (session.lifecycleRevision or 0) + 1
     local ttl = redis.call('TTL', KEYS[1])
@@ -686,7 +799,8 @@ else
     if mode == 'membership_removed' then
       redis.call('ZADD', KEYS[10], nowMs, cjson.encode({
         event = 'call.rejected', callId = session.callId, userId = userId,
-        reason = 'membership_removed', lifecycleRevision = session.lifecycleRevision, at = now
+        reason = 'membership_removed', lifecycleRevision = session.lifecycleRevision, at = now,
+        invitationId = invitation and invitation.invitationId or nil
       }))
     end
     return {'participant_left', encoded, requestedReason ~= '' and requestedReason or 'left', '1'}
@@ -1076,12 +1190,60 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     }
   }
 
+  async inviteGroupMember(
+    callId: string,
+    actorId: string,
+    userId: string,
+    requestId: string,
+    invitationId: string,
+    now: Date,
+    expiresAt: Date,
+  ) {
+    const result = await this.redis.eval(
+      INVITE_GROUP_MEMBER_SCRIPT,
+      4,
+      this.key(callId),
+      ACTIVE_CALLS_BY_USER_KEY,
+      GROUP_INVITATION_EVENT_OUTBOX_KEY,
+      `${this.key(callId)}:invite:${userId}:${requestId}`,
+      actorId,
+      userId,
+      requestId,
+      invitationId,
+      now.toISOString(),
+      expiresAt.toISOString(),
+      String(now.getTime()),
+      new Date(now.getTime() - 10_000).toISOString(),
+    );
+    if (!Array.isArray(result))
+      throw new Error('Invalid group invitation result');
+    return {
+      outcome: String(result[0]) as Awaited<
+        ReturnType<ICallSessionRepository['inviteGroupMember']>
+      >['outcome'],
+      session: this.toSession(result[1] ? String(result[1]) : undefined),
+    };
+  }
+
+  async expireGroupInvitations(callId: string, now: Date) {
+    const raw = await this.redis.eval(
+      EXPIRE_GROUP_INVITATIONS_SCRIPT,
+      2,
+      this.key(callId),
+      GROUP_INVITATION_EVENT_OUTBOX_KEY,
+      now.toISOString(),
+      String(now.getTime()),
+    );
+    return this.toSession(raw ? String(raw) : undefined);
+  }
+
   async joinParticipant(
     callId: string,
     userId: string,
     now: Date,
     actionId?: string,
     allowLateJoin = false,
+    invitationId?: string,
   ): Promise<CallJoinTransition> {
     const result = await this.redis.eval(
       JOIN_PARTICIPANT_SCRIPT,
@@ -1099,6 +1261,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       actionId ?? '',
       allowLateJoin ? '1' : '0',
       String(GROUP_VOICE_PROVISIONAL_MAX_PARTICIPANTS),
+      invitationId ?? '',
     );
     if (!Array.isArray(result)) {
       throw new Error('Invalid call join transition result');
@@ -1116,6 +1279,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     now: Date,
     reason: string,
+    invitationId?: string,
   ): Promise<GroupInvitationRejection> {
     const result = await this.redis.eval(
       REJECT_GROUP_INVITATION_SCRIPT,
@@ -1126,6 +1290,7 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
       now.toISOString(),
       String(now.getTime()),
       reason,
+      invitationId ?? '',
     );
     if (!Array.isArray(result)) {
       throw new Error('Invalid group rejection transition result');

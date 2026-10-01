@@ -87,16 +87,42 @@ export type CallTerminalOutboxEvent = {
 
 export type GroupInvitationOutboxEvent = {
   key: string;
-  event: 'call.answered' | 'call.rejected';
+  event: 'call.initiated' | 'call.answered' | 'call.rejected';
   callId: string;
   userId: string;
   lifecycleRevision: number;
   at: string;
   actionId?: string;
   reason?: string;
+  invitationId?: string;
+  expiresAt?: string;
 };
 
 export abstract class ICallSessionRepository {
+  abstract inviteGroupMember(
+    callId: string,
+    actorId: string,
+    userId: string,
+    requestId: string,
+    invitationId: string,
+    now: Date,
+    expiresAt: Date,
+  ): Promise<{
+    outcome:
+      | 'sent'
+      | 'already_sent'
+      | 'cooldown'
+      | 'busy'
+      | 'joined'
+      | 'full'
+      | 'forbidden'
+      | 'terminal';
+    session: CallSession | null;
+  }>;
+  abstract expireGroupInvitations(
+    callId: string,
+    now: Date,
+  ): Promise<CallSession | null>;
   abstract save(session: CallSession): Promise<CallSession>;
   abstract refreshGroupIdentity(
     callId: string,
@@ -129,12 +155,14 @@ export abstract class ICallSessionRepository {
     now: Date,
     actionId?: string,
     allowLateJoin?: boolean,
+    invitationId?: string,
   ): Promise<CallJoinTransition>;
   abstract rejectGroupInvitation(
     callId: string,
     userId: string,
     now: Date,
     reason: string,
+    invitationId?: string,
   ): Promise<GroupInvitationRejection>;
   abstract confirmGroupInvitationJoin(
     callId: string,

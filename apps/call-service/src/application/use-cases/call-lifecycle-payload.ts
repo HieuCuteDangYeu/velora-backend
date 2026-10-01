@@ -38,6 +38,15 @@ export function buildCallLifecycleMetadata(session: CallSession, now: Date) {
       ? {
           isGroupCall: true,
           groupName: session.groupName || 'Group call',
+          ...(Object.keys(session.groupInvitations ?? {}).length
+            ? {
+                groupInvitationIds: Object.fromEntries(
+                  Object.entries(session.groupInvitations).map(
+                    ([id, invite]) => [id, invite.invitationId],
+                  ),
+                ),
+              }
+            : {}),
           ...(session.groupAvatarUrl
             ? { groupAvatarUrl: session.groupAvatarUrl }
             : {}),

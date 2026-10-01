@@ -48,6 +48,8 @@ export interface ActiveProducerResult {
   revision?: number;
 }
 
+export type ActiveSpeakerResult = { userId: string; producerId: string } | null;
+
 export interface ConsumedMediaResult {
   consumerId: string;
   producerId: string;
@@ -65,6 +67,10 @@ export interface RestartIceResult {
 }
 
 export abstract class ICallMediaEngine {
+  abstract observeGroupSpeaker(
+    callId: string,
+    listener: (speaker: ActiveSpeakerResult, revision: number) => void,
+  ): Promise<void>;
   abstract createRoom(callId: string): Promise<void>;
   abstract getRouterRtpCapabilities(
     callId: string,

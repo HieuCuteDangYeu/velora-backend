@@ -2787,6 +2787,232 @@ describe('CallGateway reconnect recovery', () => {
   });
 });
 
+describe('CallGateway group speaker publication', () => {
+  function fixture() {
+    const session = new CallSession({
+      callId: 'speaker-call',
+      conversationId: 'speaker-conversation',
+      initiatorId: 'user-a',
+      targetUserId: 'user-b',
+      isGroupCall: true,
+      callType: 'VOICE',
+      status: 'active',
+      participantIds: ['user-a', 'user-b'],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const producer = {
+      userId: 'user-a',
+      producerId: 'audio-a',
+      kind: 'audio',
+      paused: false,
+    };
+    const mediaEngine = {
+      listActiveProducers: jest.fn().mockResolvedValue([producer]),
+      observeGroupSpeaker: jest.fn().mockResolvedValue(undefined),
+    };
+    const sessionRepository = {
+      findByCallId: jest.fn().mockResolvedValue(session),
+    };
+    const gateway = createGateway({
+      mediaEngine,
+      sessionRepository,
+      produceUseCase: {
+        execute: jest.fn().mockResolvedValue({ producerId: 'audio-a' }),
+      },
+    });
+    const emit = jest.fn();
+    gateway.server = { to: jest.fn().mockReturnValue({ emit }) } as never;
+    const internals = gateway as unknown as {
+      groupMicStates: Map<
+        string,
+        { producerId: string; enabled: boolean; revision: number }
+      >;
+      reconnectStartedAtByParticipant: Map<string, number>;
+      publishGroupSpeaker: (
+        callId: string,
+        speaker: { userId: string; producerId: string } | null,
+        revision: number,
+      ) => Promise<void>;
+    };
+    internals.groupMicStates.set('speaker-call:user-a', {
+      producerId: 'audio-a',
+      enabled: true,
+      revision: 2,
+    });
+    const publish = (
+      speaker: { userId: string; producerId: string } | null = producer,
+    ) => internals.publishGroupSpeaker('speaker-call', speaker, 1);
+    return {
+      gateway,
+      internals,
+      session,
+      mediaEngine,
+      sessionRepository,
+      emit,
+      publish,
+    };
+  }
+
+  it('publishes only bounded speaker identity and mic revision to the joined call room', async () => {
+    const f = fixture();
+    await f.publish();
+    expect(f.gateway.server.to).toHaveBeenCalledWith('speaker-call');
+    expect(f.emit).toHaveBeenCalledWith('group_active_speaker', {
+      callId: 'speaker-call',
+      revision: 1,
+      speaker: { userId: 'user-a', producerId: 'audio-a', micRevision: 2 },
+    });
+    await f.publish(null);
+    expect(f.emit).toHaveBeenLastCalledWith('group_active_speaker', {
+      callId: 'speaker-call',
+      revision: 1,
+      speaker: null,
+    });
+  });
+
+  it('suppresses muted, unknown, replaced, absent or reconnecting speakers', async () => {
+    const f = fixture();
+    for (const state of [
+      undefined,
+      { producerId: 'audio-a', enabled: false, revision: 3 },
+      { producerId: 'replacement', enabled: true, revision: 3 },
+    ]) {
+      if (state) f.internals.groupMicStates.set('speaker-call:user-a', state);
+      else f.internals.groupMicStates.delete('speaker-call:user-a');
+      await f.publish();
+      expect(f.emit).toHaveBeenLastCalledWith(
+        'group_active_speaker',
+        expect.objectContaining({ speaker: null }),
+      );
+    }
+    f.internals.groupMicStates.set('speaker-call:user-a', {
+      producerId: 'audio-a',
+      enabled: true,
+      revision: 2,
+    });
+    f.internals.reconnectStartedAtByParticipant.set('speaker-call:user-a', 1);
+    await f.publish();
+    expect(f.emit).toHaveBeenLastCalledWith(
+      'group_active_speaker',
+      expect.objectContaining({ speaker: null }),
+    );
+    f.internals.reconnectStartedAtByParticipant.clear();
+    f.mediaEngine.listActiveProducers.mockResolvedValueOnce([]);
+    await f.publish();
+    expect(f.emit).toHaveBeenLastCalledWith(
+      'group_active_speaker',
+      expect.objectContaining({ speaker: null }),
+    );
+  });
+
+  it('never publishes group speaker events for direct or terminal sessions', async () => {
+    const f = fixture();
+    f.sessionRepository.findByCallId.mockResolvedValueOnce({
+      ...f.session,
+      isGroupCall: false,
+    });
+    await f.publish();
+    f.sessionRepository.findByCallId.mockResolvedValueOnce({
+      ...f.session,
+      status: 'ended',
+    });
+    await f.publish();
+    expect(f.emit).not.toHaveBeenCalled();
+  });
+
+  it('rechecks mute, termination and membership after an asynchronous media lookup', async () => {
+    const f = fixture();
+    f.mediaEngine.listActiveProducers.mockImplementationOnce(() => {
+      f.internals.groupMicStates.set('speaker-call:user-a', {
+        producerId: 'audio-a',
+        enabled: false,
+        revision: 3,
+      });
+      return Promise.resolve([
+        {
+          userId: 'user-a',
+          producerId: 'audio-a',
+          kind: 'audio',
+          paused: false,
+        },
+      ]);
+    });
+    await f.publish();
+    expect(f.emit).toHaveBeenLastCalledWith(
+      'group_active_speaker',
+      expect.objectContaining({ speaker: null }),
+    );
+    f.emit.mockClear();
+    f.sessionRepository.findByCallId
+      .mockResolvedValueOnce(f.session)
+      .mockResolvedValueOnce({ ...f.session, status: 'ended' });
+    await f.publish();
+    expect(f.emit).not.toHaveBeenCalled();
+    f.internals.groupMicStates.set('speaker-call:user-a', {
+      producerId: 'audio-a',
+      enabled: true,
+      revision: 4,
+    });
+    f.sessionRepository.findByCallId
+      .mockResolvedValueOnce(f.session)
+      .mockResolvedValueOnce({ ...f.session, participantIds: ['user-b'] });
+    await f.publish();
+    expect(f.emit).toHaveBeenLastCalledWith(
+      'group_active_speaker',
+      expect.objectContaining({ speaker: null }),
+    );
+  });
+
+  it('registers the group audio observer without letting an observer failure break producer ACK', async () => {
+    const f = fixture();
+    f.mediaEngine.observeGroupSpeaker.mockRejectedValueOnce(
+      new Error('decorative observer unavailable'),
+    );
+    const client = createSocket({
+      id: 'speaker-socket',
+      userId: 'user-a',
+      callIds: ['speaker-call'],
+      groupLifecycleVersion: 3,
+    });
+    await expect(
+      f.gateway.handleProduce(
+        {
+          callId: 'speaker-call',
+          transportId: 'send',
+          kind: 'audio',
+          rtpParameters: {},
+          audioEnabled: true,
+        },
+        client,
+      ),
+    ).resolves.toBeUndefined();
+    expect(client.emit).toHaveBeenCalledWith(
+      'producer_created',
+      expect.objectContaining({ producerId: 'audio-a' }),
+    );
+    expect(f.mediaEngine.observeGroupSpeaker).toHaveBeenCalledWith(
+      'speaker-call',
+      expect.any(Function),
+    );
+    f.mediaEngine.observeGroupSpeaker.mockClear();
+    f.sessionRepository.findByCallId.mockResolvedValueOnce({
+      ...f.session,
+      isGroupCall: false,
+    });
+    await f.gateway.handleProduce(
+      {
+        callId: 'speaker-call',
+        transportId: 'send',
+        kind: 'audio',
+        rtpParameters: {},
+      },
+      client,
+    );
+    expect(f.mediaEngine.observeGroupSpeaker).not.toHaveBeenCalled();
+  });
+});
+
 function createGateway(overrides?: {
   initiateCallUseCase?: { execute: jest.Mock };
   joinCallUseCase?: { execute: jest.Mock };
@@ -2803,6 +3029,7 @@ function createGateway(overrides?: {
   recoverActiveCallsAfterMediaRestartUseCase?: { execute: jest.Mock };
   runtimeLease?: { acquire: jest.Mock; assertHeld: jest.Mock };
   mediaEngine?: {
+    observeGroupSpeaker?: jest.Mock;
     listActiveProducers: jest.Mock;
     pauseProducer?: jest.Mock;
     resumeProducer?: jest.Mock;
@@ -2848,9 +3075,12 @@ function createGateway(overrides?: {
     (overrides?.resumeConsumerUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.restartIceUseCase ?? { execute: jest.fn() }) as never,
     {} as never,
-    (overrides?.mediaEngine ?? {
-      listActiveProducers: jest.fn().mockResolvedValue([]),
-    }) as never,
+    {
+      observeGroupSpeaker: jest.fn().mockResolvedValue(undefined),
+      ...(overrides?.mediaEngine ?? {
+        listActiveProducers: jest.fn().mockResolvedValue([]),
+      }),
+    } as never,
     {
       expireGroupInvitations: jest.fn().mockResolvedValue(null),
       ...(overrides?.sessionRepository ?? {

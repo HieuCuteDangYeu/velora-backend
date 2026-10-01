@@ -521,6 +521,63 @@ export class CallGateway
     return `${callId}:${userId}`;
   }
 
+  private async publishGroupSpeaker(
+    callId: string,
+    speaker: { userId: string; producerId: string } | null,
+    revision: number,
+  ): Promise<void> {
+    this.runtimeLease.assertHeld();
+    const session = await this.sessionRepository.findByCallId(callId);
+    if (!session?.isGroupCall || session.status !== 'active') return;
+    const mic =
+      speaker &&
+      this.groupMicStates.get(this.groupMicStateKey(callId, speaker.userId));
+    const eligible =
+      speaker &&
+      mic?.enabled === true &&
+      mic.producerId === speaker.producerId &&
+      session.participantIds.includes(speaker.userId) &&
+      !this.reconnectStartedAtByParticipant.has(
+        this.disconnectKey(callId, speaker.userId),
+      );
+    const producer =
+      eligible &&
+      (await this.mediaEngine.listActiveProducers(callId)).find(
+        (entry) =>
+          entry.producerId === speaker.producerId &&
+          entry.userId === speaker.userId &&
+          entry.kind === 'audio' &&
+          entry.paused !== true,
+      );
+    const latestSession = await this.sessionRepository.findByCallId(callId);
+    if (!latestSession?.isGroupCall || latestSession.status !== 'active')
+      return;
+    this.runtimeLease.assertHeld();
+    // Recheck the synchronous mic projection after the media lookup: mute,
+    // producer replacement and participant cleanup can win during that await.
+    const currentMic =
+      speaker &&
+      this.groupMicStates.get(this.groupMicStateKey(callId, speaker.userId));
+    const current =
+      producer &&
+      currentMic === mic &&
+      latestSession.participantIds.includes(speaker.userId) &&
+      !this.reconnectStartedAtByParticipant.has(
+        this.disconnectKey(callId, speaker.userId),
+      );
+    this.server.to(callId).emit('group_active_speaker', {
+      callId,
+      revision,
+      speaker: current
+        ? {
+            userId: speaker.userId,
+            producerId: speaker.producerId,
+            micRevision: mic.revision,
+          }
+        : null,
+    });
+  }
+
   private clearGroupMicState(callId: string, userId?: string): void {
     const prefix = userId
       ? this.groupMicStateKey(callId, userId)
@@ -1264,6 +1321,26 @@ export class CallGateway
         ? { paused: !micState.enabled, revision: micState.revision }
         : {}),
     });
+    if (isGroupAudio) {
+      // A decorative indicator must never fail an otherwise successful call.
+      await this.mediaEngine
+        .observeGroupSpeaker(payload.callId, (speaker, revision) => {
+          void this.publishGroupSpeaker(
+            payload.callId,
+            speaker,
+            revision,
+          ).catch((error: unknown) => {
+            this.logger.warn(
+              `Group speaker update failed errorCode=${safeCallErrorCode(error)}`,
+            );
+          });
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `Group speaker observer unavailable errorCode=${safeCallErrorCode(error)}`,
+          );
+        });
+    }
   }
 
   @SubscribeMessage('close_producer')

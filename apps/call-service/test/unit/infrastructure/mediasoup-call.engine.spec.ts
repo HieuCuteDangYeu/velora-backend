@@ -1,4 +1,257 @@
 import { MediasoupCallMediaEngine } from '../../../src/infrastructure/engines/mediasoup-call.engine';
+import { EventEmitter } from 'node:events';
+
+async function createSpeakerFixture() {
+  const producer = Object.assign(new EventEmitter(), {
+    id: 'speaker-audio',
+    paused: false,
+    closed: false,
+    pause: jest.fn(() => {
+      producer.paused = true;
+      return Promise.resolve();
+    }),
+    resume: jest.fn(() => {
+      producer.paused = false;
+      return Promise.resolve();
+    }),
+    close: jest.fn(() => {
+      producer.closed = true;
+    }),
+  });
+  const transport = Object.assign(new EventEmitter(), {
+    id: 'speaker-transport',
+    closed: false,
+    dtlsState: 'connected',
+    iceState: 'completed',
+    observer: new EventEmitter(),
+    connect: jest.fn().mockResolvedValue(undefined),
+    produce: jest.fn().mockResolvedValue(producer),
+    close: jest.fn(),
+  });
+  const observer = Object.assign(new EventEmitter(), {
+    closed: false,
+    addProducer: jest.fn().mockResolvedValue(undefined),
+    close: jest.fn(() => {
+      observer.closed = true;
+    }),
+  });
+  const router = {
+    id: 'speaker-router',
+    rtpCapabilities: { codecs: [], headerExtensions: [] },
+    close: jest.fn(),
+    createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    createAudioLevelObserver: jest.fn().mockResolvedValue(observer),
+  };
+  const { engine } = createEngine(jest.fn().mockResolvedValue(router));
+  await engine.createRoom('speaker-call');
+  await engine.createSendTransport('speaker-call', 'user-a');
+  await engine.connectTransport('speaker-call', 'user-a', transport.id, {});
+  await engine.produce('speaker-call', 'user-a', transport.id, 'audio', {});
+  const listener = jest.fn();
+  return { engine, producer, transport, observer, router, listener };
+}
+
+describe('Mediasoup group speaker observer', () => {
+  it('coalesces registration and emits bounded identity heartbeats plus silence', async () => {
+    const f = await createSpeakerFixture();
+    await Promise.all([
+      f.engine.observeGroupSpeaker('speaker-call', f.listener),
+      f.engine.observeGroupSpeaker('speaker-call', f.listener),
+    ]);
+    expect(f.router.createAudioLevelObserver).toHaveBeenCalledTimes(1);
+    expect(f.router.createAudioLevelObserver).toHaveBeenCalledWith({
+      maxEntries: 1,
+      threshold: -60,
+      interval: 500,
+    });
+    expect(f.observer.addProducer).toHaveBeenCalledTimes(1);
+    f.observer.emit('volumes', [{ producer: f.producer, volume: -25 }]);
+    f.observer.emit('volumes', [{ producer: f.producer, volume: -20 }]);
+    f.observer.emit('silence');
+    expect(f.listener.mock.calls).toEqual([
+      [{ userId: 'user-a', producerId: f.producer.id }, 1],
+      [{ userId: 'user-a', producerId: f.producer.id }, 2],
+      [null, 3],
+    ]);
+  });
+
+  it('clears immediately on mute and ignores delayed muted producer samples', async () => {
+    const f = await createSpeakerFixture();
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    await f.engine.pauseProducer('speaker-call', 'user-a', f.producer.id);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 2);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 3);
+    await f.engine.resumeProducer('speaker-call', 'user-a', f.producer.id);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    expect(f.listener).toHaveBeenLastCalledWith(
+      { userId: 'user-a', producerId: f.producer.id },
+      4,
+    );
+  });
+
+  it('clears disconnected transport and rejects unknown, closed or detached producers', async () => {
+    const f = await createSpeakerFixture();
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    f.transport.iceState = 'disconnected';
+    f.transport.emit('icestatechange', 'disconnected');
+    expect(f.listener).toHaveBeenLastCalledWith(null, 2);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 3);
+    f.transport.iceState = 'completed';
+    f.observer.emit('volumes', [
+      { producer: { ...f.producer, id: 'unknown' } },
+    ]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 4);
+    await f.engine.closeProducer('speaker-call', 'user-a', f.producer.id);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 5);
+  });
+
+  it('registers only audio producers and never emits video as a speaker', async () => {
+    const f = await createSpeakerFixture();
+    const video = Object.assign(new EventEmitter(), {
+      id: 'video',
+      closed: false,
+      paused: false,
+      close: jest.fn(),
+    });
+    f.transport.produce.mockResolvedValueOnce(video);
+    await f.engine.produce(
+      'speaker-call',
+      'user-a',
+      f.transport.id,
+      'video',
+      {},
+    );
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    expect(f.observer.addProducer).toHaveBeenCalledTimes(1);
+    expect(f.observer.addProducer).toHaveBeenCalledWith({
+      producerId: f.producer.id,
+    });
+    f.observer.emit('volumes', [{ producer: video }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 1);
+  });
+
+  it('clears a departing participant and rejects its old producer after replacement', async () => {
+    const f = await createSpeakerFixture();
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    const replacement = Object.assign(new EventEmitter(), {
+      id: 'replacement-audio',
+      closed: false,
+      paused: false,
+      close: jest.fn(),
+    });
+    const transport = Object.assign(new EventEmitter(), {
+      ...f.transport,
+      id: 'replacement-send',
+      observer: new EventEmitter(),
+      produce: jest.fn().mockResolvedValue(replacement),
+    });
+    f.router.createWebRtcTransport.mockResolvedValueOnce(transport);
+    await f.engine.createSendTransport('speaker-call', 'user-a');
+    await f.engine.connectTransport('speaker-call', 'user-a', transport.id, {});
+    await f.engine.produce('speaker-call', 'user-a', transport.id, 'audio', {});
+    expect(f.listener).toHaveBeenLastCalledWith(null, 2);
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 3);
+    f.observer.emit('volumes', [{ producer: replacement }]);
+    expect(f.listener).toHaveBeenLastCalledWith(
+      { userId: 'user-a', producerId: replacement.id },
+      4,
+    );
+    await f.engine.closeParticipant('speaker-call', 'user-a');
+    expect(f.listener).toHaveBeenLastCalledWith(null, 5);
+    expect(f.observer.close).not.toHaveBeenCalled();
+    f.observer.emit('volumes', [{ producer: replacement }]);
+    expect(f.listener).toHaveBeenLastCalledWith(null, 6);
+  });
+
+  it('closes the observer and suppresses late events after room termination', async () => {
+    const f = await createSpeakerFixture();
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    await f.engine.closeRoom('speaker-call');
+    f.observer.emit('volumes', [{ producer: f.producer }]);
+    f.observer.emit('silence');
+    expect(f.observer.close).toHaveBeenCalledTimes(1);
+    expect(f.listener).not.toHaveBeenCalled();
+  });
+
+  it('closes an observer allocated after terminal cleanup instead of leaking it', async () => {
+    const f = await createSpeakerFixture();
+    let finish: (value: typeof f.observer) => void = () => undefined;
+    f.router.createAudioLevelObserver.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    await f.engine.closeRoom('speaker-call');
+    finish(f.observer);
+    await pending;
+    expect(f.observer.close).toHaveBeenCalledTimes(1);
+    expect(f.observer.addProducer).not.toHaveBeenCalled();
+  });
+
+  it('allows retry after observer creation or producer registration failure', async () => {
+    const f = await createSpeakerFixture();
+    f.router.createAudioLevelObserver.mockRejectedValueOnce(
+      new Error('observer unavailable'),
+    );
+    await expect(
+      f.engine.observeGroupSpeaker('speaker-call', f.listener),
+    ).rejects.toThrow('observer unavailable');
+    f.observer.addProducer.mockRejectedValueOnce(
+      new Error('registration unavailable'),
+    );
+    await expect(
+      f.engine.observeGroupSpeaker('speaker-call', f.listener),
+    ).resolves.toBeUndefined();
+    await expect(
+      f.engine.observeGroupSpeaker('speaker-call', f.listener),
+    ).resolves.toBeUndefined();
+    expect(f.router.createAudioLevelObserver).toHaveBeenCalledTimes(2);
+    expect(f.observer.addProducer).toHaveBeenCalledTimes(2);
+  });
+
+  it('isolates one failed registration and still observes another healthy participant', async () => {
+    const f = await createSpeakerFixture();
+    const second = Object.assign(new EventEmitter(), {
+      id: 'second-audio',
+      closed: false,
+      paused: false,
+      close: jest.fn(),
+    });
+    const transport = Object.assign(new EventEmitter(), {
+      ...f.transport,
+      id: 'second-send',
+      observer: new EventEmitter(),
+      produce: jest.fn().mockResolvedValue(second),
+    });
+    f.router.createWebRtcTransport.mockResolvedValueOnce(transport);
+    await f.engine.createSendTransport('speaker-call', 'user-b');
+    await f.engine.connectTransport('speaker-call', 'user-b', transport.id, {});
+    await f.engine.produce('speaker-call', 'user-b', transport.id, 'audio', {});
+    f.observer.addProducer.mockRejectedValueOnce(
+      new Error('first producer disconnected'),
+    );
+    await f.engine.observeGroupSpeaker('speaker-call', f.listener);
+    expect(f.observer.addProducer.mock.calls).toEqual([
+      [{ producerId: f.producer.id }],
+      [{ producerId: second.id }],
+    ]);
+    f.observer.emit('volumes', [{ producer: second }]);
+    expect(f.listener).toHaveBeenLastCalledWith(
+      { userId: 'user-b', producerId: second.id },
+      1,
+    );
+  });
+});
 
 type RouterDouble = {
   id: string;

@@ -7,6 +7,7 @@ import {
 import * as mediasoup from 'mediasoup';
 import type {
   ActiveProducerResult,
+  ActiveSpeakerResult,
   ClosedMediaConsumerResult,
   ClosedParticipantMediaResult,
   ConsumedMediaResult,
@@ -58,6 +59,12 @@ type RoomRuntimeState = {
     string,
     { callId: string; userId: string; transportId: string; producerId: string }
   >;
+  speakerObserver?: mediasoup.types.AudioLevelObserver;
+  speakerObserverCreation?: Promise<mediasoup.types.AudioLevelObserver>;
+  speakerProducerIds: Set<string>;
+  speakerListener?: (speaker: ActiveSpeakerResult, revision: number) => void;
+  speakerRevision: number;
+  speakingProducerId: string | null;
 };
 
 @Injectable()
@@ -210,7 +217,100 @@ export class MediasoupCallMediaEngine
       producerMeta: new Map(),
       consumers: new Map(),
       consumerMeta: new Map(),
+      speakerProducerIds: new Set(),
+      speakerRevision: 0,
+      speakingProducerId: null,
     });
+  }
+
+  async observeGroupSpeaker(
+    callId: string,
+    listener: (speaker: ActiveSpeakerResult, revision: number) => void,
+  ): Promise<void> {
+    const room = this.getRoomOrThrow(callId);
+    room.speakerListener = listener;
+    if (!room.speakerObserverCreation) {
+      room.speakerObserverCreation = this.createSpeakerObserver(room);
+    }
+    let observer: mediasoup.types.AudioLevelObserver;
+    try {
+      observer = await room.speakerObserverCreation;
+    } catch (error) {
+      room.speakerObserverCreation = undefined;
+      throw error;
+    }
+    if (this.rooms.get(callId) !== room || observer.closed) return;
+    for (const [producerId, meta] of room.producerMeta) {
+      if (this.rooms.get(callId) !== room || observer.closed) return;
+      if (meta.kind !== 'audio' || room.speakerProducerIds.has(producerId))
+        continue;
+      room.speakerProducerIds.add(producerId);
+      try {
+        await observer.addProducer({ producerId });
+      } catch (error) {
+        room.speakerProducerIds.delete(producerId);
+        this.logger.warn(
+          `Group speaker producer registration failed errorCode=${safeCallErrorCode(error)}`,
+        );
+      }
+    }
+  }
+
+  private async createSpeakerObserver(
+    room: RoomRuntimeState,
+  ): Promise<mediasoup.types.AudioLevelObserver> {
+    const observer = await room.router.createAudioLevelObserver({
+      maxEntries: 1,
+      threshold: -60,
+      interval: 500,
+    });
+    if (this.rooms.get(room.callId) !== room) {
+      observer.close();
+      return observer;
+    }
+    room.speakerObserver = observer;
+    observer.on('volumes', (volumes) => {
+      const entry = volumes[0];
+      const producer = entry?.producer;
+      const meta = producer && room.producerMeta.get(producer.id);
+      const transport = meta && room.transports.get(meta.transportId);
+      const live =
+        producer &&
+        meta?.kind === 'audio' &&
+        room.producers.get(producer.id) === producer &&
+        !producer.closed &&
+        !producer.paused &&
+        transport &&
+        !transport.closed &&
+        transport.dtlsState === 'connected' &&
+        (transport.iceState === 'connected' ||
+          transport.iceState === 'completed');
+      this.publishSpeaker(
+        room,
+        live ? { userId: meta.userId, producerId: producer.id } : null,
+      );
+    });
+    observer.on('silence', () => this.publishSpeaker(room, null));
+    observer.on('routerclose', () => this.publishSpeaker(room, null));
+    return observer;
+  }
+
+  private publishSpeaker(
+    room: RoomRuntimeState,
+    speaker: ActiveSpeakerResult,
+  ): void {
+    if (this.rooms.get(room.callId) !== room) return;
+    room.speakingProducerId = speaker?.producerId ?? null;
+    // Heartbeats let clients expire a highlight when a final packet is lost.
+    room.speakerListener?.(speaker, ++room.speakerRevision);
+  }
+
+  private clearSpeakingProducer(
+    room: RoomRuntimeState,
+    producerId: string,
+  ): void {
+    room.speakerProducerIds.delete(producerId);
+    if (room.speakingProducerId === producerId) this.publishSpeaker(room, null);
   }
 
   getRouterRtpCapabilities(
@@ -505,6 +605,7 @@ export class MediasoupCallMediaEngine
     }
 
     producer.on('transportclose', () => {
+      this.clearSpeakingProducer(room, producer.id);
       room.producers.delete(producer.id);
       room.producerMeta.delete(producer.id);
       const producerKey = this.producerUserKindKey(userId, kind);
@@ -821,6 +922,7 @@ export class MediasoupCallMediaEngine
     }
 
     await producer.pause();
+    if (room.speakingProducerId === producerId) this.publishSpeaker(room, null);
   }
 
   async resumeProducer(
@@ -863,6 +965,7 @@ export class MediasoupCallMediaEngine
       throw new Error('Producer not found');
     }
 
+    this.clearSpeakingProducer(room, producerId);
     producer.close();
     room.producers.delete(producerId);
     room.producerMeta.delete(producerId);
@@ -960,7 +1063,9 @@ export class MediasoupCallMediaEngine
 
     const room = this.rooms.get(callId);
     if (room) {
+      this.rooms.delete(callId);
       for (const resource of [
+        ...(room.speakerObserver ? [room.speakerObserver] : []),
         ...room.consumers.values(),
         ...room.producers.values(),
         ...room.transports.values(),
@@ -974,7 +1079,6 @@ export class MediasoupCallMediaEngine
           );
         }
       }
-      this.rooms.delete(callId);
     }
     // Terminal use cases may start their Redis cleanup while room creation is
     // still pending. Clear once more after that creation and media teardown.
@@ -1080,8 +1184,28 @@ export class MediasoupCallMediaEngine
     });
 
     transport.on('dtlsstatechange', (state) => {
+      if (state !== 'connected') {
+        for (const [producerId, meta] of room.producerMeta) {
+          if (
+            meta.transportId === transport.id &&
+            room.speakingProducerId === producerId
+          )
+            this.publishSpeaker(room, null);
+        }
+      }
       if (state === 'closed') {
         transport.close();
+      }
+    });
+
+    transport.on('icestatechange', (state) => {
+      if (state === 'connected' || state === 'completed') return;
+      for (const [producerId, meta] of room.producerMeta) {
+        if (
+          meta.transportId === transport.id &&
+          room.speakingProducerId === producerId
+        )
+          this.publishSpeaker(room, null);
       }
     });
 

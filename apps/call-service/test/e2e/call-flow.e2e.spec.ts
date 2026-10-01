@@ -1011,6 +1011,30 @@ class FakeConversationClient {
 }
 
 class FakeCallMediaEngine {
+  private readonly speakerListeners = new Map<
+    string,
+    (
+      speaker: { userId: string; producerId: string } | null,
+      revision: number,
+    ) => void
+  >();
+  observeGroupSpeaker(
+    callId: string,
+    listener: (
+      speaker: { userId: string; producerId: string } | null,
+      revision: number,
+    ) => void,
+  ): Promise<void> {
+    this.speakerListeners.set(callId, listener);
+    return Promise.resolve();
+  }
+  emitGroupSpeaker(
+    callId: string,
+    speaker: { userId: string; producerId: string } | null,
+    revision: number,
+  ): void {
+    this.speakerListeners.get(callId)?.(speaker, revision);
+  }
   private roomCounter = 0;
   private transportCounter = 0;
   private producerCounter = 0;
@@ -1293,6 +1317,7 @@ class FakeCallMediaEngine {
   }
 
   closeRoom(callId: string): Promise<void> {
+    this.speakerListeners.delete(callId);
     const room = this.rooms.get(callId);
     if (!room) return Promise.resolve();
 
@@ -2219,6 +2244,18 @@ describe('Call Service P0 flow (e2e)', () => {
         }),
       );
 
+      const mutedSpeaker = onceEvent(host, 'group_active_speaker');
+      groupMedia.emitGroupSpeaker(
+        callId,
+        { userId: calleeUser.id, producerId },
+        1,
+      );
+      await expect(mutedSpeaker).resolves.toEqual({
+        callId,
+        revision: 1,
+        speaker: null,
+      });
+
       const micChanged = onceEvent<{
         producerId: string;
         enabled: boolean;
@@ -2242,6 +2279,39 @@ describe('Call Service P0 flow (e2e)', () => {
       await expect(micAck).resolves.toEqual(
         expect.objectContaining({ status: 'applied', requestId: 'mic-on-2' }),
       );
+      const outsiderSpeaker = waitForOptionalEvent(
+        outsider,
+        'group_active_speaker',
+        250,
+      );
+      const losingSpeaker = waitForOptionalEvent(
+        losingDevice,
+        'group_active_speaker',
+        250,
+      );
+      const speakers = [host, recoveredGuest, secondGuest].map((client) =>
+        onceEvent(client, 'group_active_speaker'),
+      );
+      groupMedia.emitGroupSpeaker(
+        callId,
+        { userId: calleeUser.id, producerId },
+        2,
+      );
+      for (const received of speakers)
+        await expect(received).resolves.toEqual({
+          callId,
+          revision: 2,
+          speaker: { userId: calleeUser.id, producerId, micRevision: 2 },
+        });
+      await expect(outsiderSpeaker).resolves.toBeNull();
+      await expect(losingSpeaker).resolves.toBeNull();
+      const silence = onceEvent(host, 'group_active_speaker');
+      groupMedia.emitGroupSpeaker(callId, null, 3);
+      await expect(silence).resolves.toEqual({
+        callId,
+        revision: 3,
+        speaker: null,
+      });
       const staleMicAck = onceEvent<{
         enabled: boolean;
         revision: number;

@@ -64,7 +64,8 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
       const timer = setTimeout(() => controller.abort(), remainingMs);
       timer.unref();
 
-      const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
+      const { key: apiKey, index: keyIndex } =
+        await this.keyPool.acquireAsync(remainingMs);
 
       try {
         const response = await fetch(`${this.baseUrl()}/chat/completions`, {

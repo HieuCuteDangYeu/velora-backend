@@ -148,6 +148,50 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Asynchronously acquires an available API key. If all non-exhausted keys are
+   * in cooldown, waits for the earliest key to cool down (up to maxWaitMs) before
+   * throwing GroqKeyPoolExhaustedError.
+   */
+  async acquireAsync(
+    maxWaitMs = 10_000,
+  ): Promise<{ key: string; index: number }> {
+    try {
+      return this.acquire();
+    } catch (err) {
+      if (!(err instanceof GroqKeyPoolExhaustedError)) throw err;
+      if (err.cooldownKeys === 0 || err.exhaustedKeys >= err.totalKeys) {
+        throw err;
+      }
+
+      const now = Date.now();
+      const todayUtc = this.utcDateString(now);
+      let earliestWaitMs = Infinity;
+
+      for (const s of this.keys) {
+        if (s.exhaustedOnUtcDate && s.exhaustedOnUtcDate >= todayUtc) continue;
+        const wait = Math.max(0, s.cooldownUntil - now);
+        if (wait < earliestWaitMs) {
+          earliestWaitMs = wait;
+        }
+      }
+
+      if (earliestWaitMs <= maxWaitMs) {
+        this.logger.debug(
+          `All active Groq keys cooling down, waiting ${earliestWaitMs}ms before acquiring`,
+        );
+        if (earliestWaitMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, earliestWaitMs + 50),
+          );
+        }
+        return this.acquire();
+      }
+
+      throw err;
+    }
+  }
+
+  /**
    * Record a successful API call. Reads rate-limit headers to track remaining quota.
    */
   reportSuccess(index: number, headers?: Headers): void {
@@ -331,11 +375,25 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     // Check response body for daily-limit keywords.
     if (responseBody) {
       const lower = responseBody.toLowerCase();
+      // If the error explicitly mentions per-minute rate limits, it is NOT a daily limit.
       if (
-        /\b(tokens?\s+per\s+day|daily\s+(token|limit|quota|allocation)|tpd)\b/.test(
-          lower,
-        ) ||
-        /\b(daily|per[_\s-]?day)\b/.test(lower)
+        lower.includes('requests per minute') ||
+        lower.includes('tokens per minute') ||
+        lower.includes('(rpm)') ||
+        lower.includes('(tpm)')
+      ) {
+        return false;
+      }
+
+      // Strip documentation URLs and footer links that reference "daily limits"
+      const bodyWithoutDocLinks = lower
+        .replace(/https?:\/\/[^\s]+/g, '')
+        .replace(/visit\s+[^\s]+\s+for\s+more\s+information[^\n.]*/g, '');
+
+      if (
+        /\b(tokens?\s+per\s+day|requests?\s+per\s+day|\btpd\b|\brpd\b|daily\s+(token|request|allocation|quota))\b/i.test(
+          bodyWithoutDocLinks,
+        )
       ) {
         return true;
       }

@@ -69,7 +69,8 @@ export class GroqTextClient {
 
       let keyIndex: number | undefined;
       try {
-        const { key: apiKey, index } = this.keyPool.acquire();
+        const { key: apiKey, index } =
+          await this.keyPool.acquireAsync(remainingMs);
         keyIndex = index;
         const response = await fetch(`${this.baseUrl()}/chat/completions`, {
           method: 'POST',

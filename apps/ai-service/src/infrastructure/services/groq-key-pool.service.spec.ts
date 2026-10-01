@@ -237,4 +237,40 @@ describe('GroqKeyPool', () => {
       pool.onModuleDestroy();
     });
   });
+
+  describe('documentation link and RPM exclusion', () => {
+    it('does not mark key as TPD-exhausted when error mentions RPM with doc link', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      pool.reportRateLimited(
+        0,
+        fakeHeaders({ 'retry-after': '1' }),
+        'Rate limit reached for model in org on requests per minute (RPM): Limit 30, Used 30. Visit https://console.groq.com/docs/rate-limits for more information on reload times and daily limits.',
+      );
+      // Key 0 should only have TPM cooldown, NOT TPD exhaustion
+      expect(pool.acquire().key).toBe('gsk_b');
+      // If we advance past cooldown, key 0 should be available again
+      (pool as any).keys[0].cooldownUntil = 0;
+      expect(pool.acquire().key).toBe('gsk_a');
+      pool.onModuleDestroy();
+    });
+  });
+
+  describe('acquireAsync', () => {
+    it('waits for cooldown to expire instead of throwing', async () => {
+      const pool = initPool('gsk_a,gsk_b');
+      // Set short cooldown of 100ms on both keys, with cooldownUntil > now + 1000 to trigger throw in acquire()
+      const now = Date.now();
+      (pool as any).keys[0].cooldownUntil = now + 1500;
+      (pool as any).keys[1].cooldownUntil = now + 1500;
+      // acquire() would throw because both keys are in cooldown > 1s:
+      expect(() => pool.acquire()).toThrow(GroqKeyPoolExhaustedError);
+
+      // Now set a real short cooldown of 150ms on key 0 and test acquireAsync
+      (pool as any).keys[0].cooldownUntil = Date.now() + 150;
+      // acquireAsync() should wait and succeed:
+      const result = await pool.acquireAsync(500);
+      expect(result.key).toBe('gsk_a');
+      pool.onModuleDestroy();
+    });
+  });
 });

@@ -7,7 +7,10 @@ import type {
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
+import {
+  GroqKeyPool,
+  GroqKeyPoolExhaustedError,
+} from '@ai/infrastructure/services/groq-key-pool.service';
 
 interface GroqCompletionResponse {
   choices?: Array<{
@@ -300,6 +303,13 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
 
   private shouldRetry(error: unknown, modelRole?: string): boolean {
     if (modelRole === 'ROUTER') return false;
+    if (
+      error instanceof GroqKeyPoolExhaustedError &&
+      error.cooldownKeys > 0 &&
+      error.exhaustedKeys < error.totalKeys
+    ) {
+      return true;
+    }
     return (
       error instanceof GroqStructuredCompletionProviderError &&
       error.transient === true &&
@@ -309,6 +319,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   }
 
   private retryDelayMs(error: unknown, state: CallState): number {
+    if (error instanceof GroqKeyPoolExhaustedError) return 2000;
     if (!(error instanceof GroqStructuredCompletionProviderError)) return 0;
     if (error.retryAfterMs !== undefined) return error.retryAfterMs;
     return this.parseDurationMs(state.rateLimit?.resetTokens) ?? 0;
@@ -321,7 +332,8 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     maxTokens: number,
     state: CallState,
   ): Promise<T> {
-    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
+    const { key: apiKey, index: keyIndex } =
+      await this.keyPool.acquireAsync(timeoutMs);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();

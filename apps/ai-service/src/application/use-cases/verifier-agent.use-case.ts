@@ -410,14 +410,20 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         endTime: chunk.endTime,
         evidenceText:
           chunk.evidenceText?.trim() ||
-          (chunk.title ? `Title: ${chunk.title}` : undefined) ||
-          (chunk.evidenceType === 'METADATA'
-            ? [chunk.title, chunk.description, chunk.chunkText]
-                .map((val) => val?.trim())
-                .filter((val): val is string => Boolean(val && val.length > 0))
-                .join(' - ')
-                .trim() || undefined
-            : undefined),
+          [
+            chunk.title ? `Title: ${chunk.title.trim()}` : undefined,
+            Array.isArray(chunk.tags) && chunk.tags.length > 0
+              ? `Tags: ${chunk.tags.join(', ')}`
+              : undefined,
+            chunk.description?.trim()
+              ? `Description: ${chunk.description.trim()}`
+              : undefined,
+            chunk.chunkText?.trim(),
+          ]
+            .filter((val): val is string => Boolean(val && val.length > 0))
+            .join(' - ')
+            .trim() ||
+          undefined,
       })),
     });
   }
@@ -558,6 +564,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
               if (chunk.title?.trim()) texts.push(chunk.title.trim());
               if (chunk.description?.trim())
                 texts.push(chunk.description.trim());
+              if (Array.isArray(chunk.tags) && chunk.tags.length > 0) {
+                texts.push(...chunk.tags, chunk.tags.join(', '));
+              }
               if (
                 chunk.chunkText?.trim() &&
                 !texts.includes(chunk.chunkText.trim())
@@ -633,6 +642,20 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
               {
                 evidenceType: 'METADATA' as const,
                 evidenceText: chunk.title.trim(),
+              },
+            ]
+          : []),
+        ...(Array.isArray(chunk.tags)
+          ? chunk.tags.map((t) => ({
+              evidenceType: 'METADATA' as const,
+              evidenceText: t,
+            }))
+          : []),
+        ...(Array.isArray(chunk.tags) && chunk.tags.length > 0
+          ? [
+              {
+                evidenceType: 'METADATA' as const,
+                evidenceText: chunk.tags.join(', '),
               },
             ]
           : []),

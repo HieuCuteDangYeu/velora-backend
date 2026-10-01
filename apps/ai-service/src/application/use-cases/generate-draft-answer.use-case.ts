@@ -80,30 +80,32 @@ export class GenerateDraftAnswerUseCase {
       title: chunk.title?.trim() || undefined,
       evidenceText:
         chunk.evidenceText?.trim() ||
-        (chunk.title ? `Title: ${chunk.title.trim()}` : '') ||
-        (chunk.evidenceType === 'METADATA'
-          ? [chunk.title, chunk.description, chunk.chunkText]
-              .map((val) => val?.trim())
-              .filter((val): val is string => Boolean(val && val.length > 0))
-              .join(' - ')
-              .trim()
-          : ''),
+        [
+          chunk.title ? `Title: ${chunk.title.trim()}` : undefined,
+          Array.isArray(chunk.tags) && chunk.tags.length > 0
+            ? `Tags: ${chunk.tags.join(', ')}`
+            : undefined,
+          chunk.description?.trim()
+            ? `Description: ${chunk.description.trim()}`
+            : undefined,
+          chunk.chunkText?.trim(),
+        ]
+          .filter((val): val is string => Boolean(val && val.length > 0))
+          .join(' - ')
+          .trim(),
     }));
     const authorizedEvidenceText = answerEvidence.flatMap(({ chunk }) => {
       const texts: string[] = [];
-      const text =
-        chunk.evidenceText?.trim() ||
-        (chunk.title ? `Title: ${chunk.title.trim()}` : '') ||
-        (chunk.evidenceType === 'METADATA'
-          ? [chunk.title, chunk.description, chunk.chunkText]
-              .map((val) => val?.trim())
-              .filter((val): val is string => Boolean(val && val.length > 0))
-              .join(' - ')
-              .trim()
-          : '');
+      const text = chunk.evidenceText?.trim();
       if (text) texts.push(text);
       if (chunk.title?.trim()) texts.push(chunk.title.trim());
       if (chunk.description?.trim()) texts.push(chunk.description.trim());
+      if (Array.isArray(chunk.tags) && chunk.tags.length > 0) {
+        texts.push(...chunk.tags, chunk.tags.join(', '));
+      }
+      if (chunk.chunkText?.trim() && !texts.includes(chunk.chunkText.trim())) {
+        texts.push(chunk.chunkText.trim());
+      }
       return texts;
     });
     const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);

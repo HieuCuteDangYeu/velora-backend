@@ -280,13 +280,17 @@ export class BuildRagCitationsUseCase {
       const evidenceType = chunk.evidenceType ?? 'TRANSCRIPT';
       const evidence =
         chunk.evidenceText?.trim() ||
-        (evidenceType === 'METADATA'
-          ? [chunk.title, chunk.description, chunk.chunkText]
-              .map((val) => val?.trim())
-              .filter((val): val is string => Boolean(val && val.length > 0))
-              .join(' - ')
-              .trim()
-          : '');
+        [
+          chunk.title?.trim(),
+          Array.isArray(chunk.tags) && chunk.tags.length > 0
+            ? chunk.tags.join(', ')
+            : undefined,
+          chunk.description?.trim(),
+          chunk.chunkText?.trim(),
+        ]
+          .filter((val): val is string => Boolean(val && val.length > 0))
+          .join(' - ')
+          .trim();
       if (!evidence) continue;
 
       const startTime = this.toOptionalNumber(chunk.startTime);

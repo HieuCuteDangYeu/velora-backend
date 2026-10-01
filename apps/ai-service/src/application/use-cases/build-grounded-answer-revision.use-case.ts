@@ -78,14 +78,19 @@ export class BuildGroundedAnswerRevisionUseCase {
       if (!answerEvidenceIds.has(`e${index}`)) return [];
       const evidenceText =
         chunk.evidenceText?.trim() ||
-        (chunk.title ? `Title: ${chunk.title.trim()}` : undefined) ||
-        (chunk.evidenceType === 'METADATA'
-          ? [chunk.title, chunk.description, chunk.chunkText]
-              .map((val) => val?.trim())
-              .filter((val): val is string => Boolean(val && val.length > 0))
-              .join(' - ')
-              .trim() || undefined
-          : undefined);
+        [
+          chunk.title ? `Title: ${chunk.title.trim()}` : undefined,
+          Array.isArray(chunk.tags) && chunk.tags.length > 0
+            ? `Tags: ${chunk.tags.join(', ')}`
+            : undefined,
+          chunk.description?.trim()
+            ? `Description: ${chunk.description.trim()}`
+            : undefined,
+          chunk.chunkText?.trim(),
+        ]
+          .filter((val): val is string => Boolean(val && val.length > 0))
+          .join(' - ')
+          .trim();
       if (!evidenceText) return [];
       return [
         {

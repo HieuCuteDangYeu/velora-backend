@@ -112,4 +112,44 @@ describe('TeiRerankerAdapter', () => {
     ).resolves.toHaveLength(5);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('retries when TEI returns 429 overloaded and succeeds', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: 'Model is overloaded',
+            error_type: 'Overloaded',
+          }),
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { index: 0, score: 0.8 },
+            { index: 1, score: 0.3 },
+          ]),
+          { status: 200 },
+        ),
+      );
+    const adapter = new TeiRerankerAdapter(
+      new ConfigService({
+        TEI_RERANKER_BASE_URL: 'http://rag-reranker:80',
+        AI_RAG_NEURAL_RERANK_MAX_RETRIES: '2',
+      }),
+      new EvidenceDiversitySelector(new ConfigService()),
+    );
+
+    const result = await adapter.rerank({
+      queryText: 'query',
+      candidates: [candidate('a'), candidate('b')],
+      limit: 2,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe('a');
+  });
 });

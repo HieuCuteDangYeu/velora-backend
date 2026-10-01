@@ -206,7 +206,13 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
               : 'Transcript evidence';
         const groundedEvidence =
           match.evidenceText?.trim() ||
-          (evidenceType === 'METADATA' ? match.chunkText.trim() : '');
+          (evidenceType === 'METADATA'
+            ? [match.title, match.description, match.chunkText]
+                .map((val) => val?.trim())
+                .filter((val): val is string => Boolean(val && val.length > 0))
+                .join(' - ')
+                .trim()
+            : '');
 
         return [
           `Shared reel evidence source ${index + 1}`,

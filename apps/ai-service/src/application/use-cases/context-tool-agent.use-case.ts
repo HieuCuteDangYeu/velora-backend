@@ -203,9 +203,19 @@ export class ContextToolAgentUseCase {
       } catch (error: unknown) {
         providerStatus = 'ERROR';
         this.logger.warn(
-          `[ContextToolAgent] reranking failed: ${this.errorMessage(error)}`,
+          `[ContextToolAgent] reranking failed: ${this.errorMessage(error)}. Falling back to retrieved chunks.`,
+        );
+        rerankedChunks = retrievedChunks.slice(
+          0,
+          retrievalPlan.rerankLimit ?? 8,
         );
       }
+    }
+    if (rerankedChunks.length === 0 && retrievedChunks.length > 0) {
+      rerankedChunks = retrievedChunks.slice(
+        0,
+        retrievalPlan?.rerankLimit ?? 8,
+      );
     }
 
     const contextToolExecution: RagContextToolExecutionDiagnostics = {

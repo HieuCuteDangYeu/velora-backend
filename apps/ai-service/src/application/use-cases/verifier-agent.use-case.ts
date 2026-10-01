@@ -411,7 +411,11 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         evidenceText:
           chunk.evidenceText?.trim() ||
           (chunk.evidenceType === 'METADATA'
-            ? chunk.chunkText.trim()
+            ? [chunk.title, chunk.description, chunk.chunkText]
+                .map((val) => val?.trim())
+                .filter((val): val is string => Boolean(val && val.length > 0))
+                .join(' - ')
+                .trim() || undefined
             : undefined),
       })),
     });
@@ -546,9 +550,20 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         ? validateRagAnswerContract({
             answer: state.answer ?? '',
             question: state.userMessage,
-            evidence: boundedEvidence.map(
-              (chunk) => chunk.evidenceText?.trim() || chunk.chunkText.trim(),
-            ),
+            evidence: boundedEvidence.map((chunk) => {
+              const text = chunk.evidenceText?.trim();
+              if (text) return text;
+              if (chunk.evidenceType === 'METADATA') {
+                return [chunk.title, chunk.description, chunk.chunkText]
+                  .map((val) => val?.trim())
+                  .filter((val): val is string =>
+                    Boolean(val && val.length > 0),
+                  )
+                  .join(' - ')
+                  .trim();
+              }
+              return chunk.chunkText.trim();
+            }),
             evidenceRequired:
               state.route?.intent === 'REEL_VIDEO_QUESTION' &&
               (state.route.requiredEvidence?.length ?? 0) > 0,
@@ -598,7 +613,15 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       answer: state.answer ?? '',
       candidates: (state.rerankedChunks ?? []).map((chunk) => ({
         evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
-        evidenceText: chunk.evidenceText?.trim() || '',
+        evidenceText:
+          chunk.evidenceText?.trim() ||
+          (chunk.evidenceType === 'METADATA'
+            ? [chunk.title, chunk.description, chunk.chunkText]
+                .map((val) => val?.trim())
+                .filter((val): val is string => Boolean(val && val.length > 0))
+                .join(' - ')
+                .trim()
+            : ''),
       })),
     });
   }

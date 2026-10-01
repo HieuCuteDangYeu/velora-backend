@@ -681,11 +681,20 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             }),
         );
       } catch (error: unknown) {
-        const executionContext = this.executionContexts.get(nodeTimings);
-        if (executionContext) {
-          executionContext.retrievalExecution = retrievalExecution;
-        }
-        throw error;
+        this.logger.warn(
+          `[RagGraph] neural reranker failed: ${error instanceof Error ? error.message : String(error)}. Falling back to retrieved chunks.`,
+        );
+        rerankedChunks = state.retrievedChunks.slice(
+          0,
+          state.retrievalPlan.rerankLimit ?? 8,
+        );
+      }
+
+      if (rerankedChunks.length === 0 && state.retrievedChunks.length > 0) {
+        rerankedChunks = state.retrievedChunks.slice(
+          0,
+          state.retrievalPlan.rerankLimit ?? 8,
+        );
       }
 
       this.logger.log(`[RagGraph] reranked=${rerankedChunks.length}`);

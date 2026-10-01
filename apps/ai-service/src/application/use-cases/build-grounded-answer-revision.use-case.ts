@@ -79,7 +79,11 @@ export class BuildGroundedAnswerRevisionUseCase {
       const evidenceText =
         chunk.evidenceText?.trim() ||
         (chunk.evidenceType === 'METADATA'
-          ? chunk.chunkText.trim()
+          ? [chunk.title, chunk.description, chunk.chunkText]
+              .map((val) => val?.trim())
+              .filter((val): val is string => Boolean(val && val.length > 0))
+              .join(' - ')
+              .trim() || undefined
           : undefined);
       if (!evidenceText) return [];
       return [

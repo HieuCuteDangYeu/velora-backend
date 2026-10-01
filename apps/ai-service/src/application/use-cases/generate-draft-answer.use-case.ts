@@ -80,13 +80,25 @@ export class GenerateDraftAnswerUseCase {
       title: chunk.title?.trim() || undefined,
       evidenceText:
         chunk.evidenceText?.trim() ||
-        (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : ''),
+        (chunk.evidenceType === 'METADATA'
+          ? [chunk.title, chunk.description, chunk.chunkText]
+              .map((val) => val?.trim())
+              .filter((val): val is string => Boolean(val && val.length > 0))
+              .join(' - ')
+              .trim()
+          : ''),
     }));
     const authorizedEvidenceText = answerEvidence.flatMap(({ chunk }) => {
       const texts: string[] = [];
       const text =
         chunk.evidenceText?.trim() ||
-        (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : '');
+        (chunk.evidenceType === 'METADATA'
+          ? [chunk.title, chunk.description, chunk.chunkText]
+              .map((val) => val?.trim())
+              .filter((val): val is string => Boolean(val && val.length > 0))
+              .join(' - ')
+              .trim()
+          : '');
       if (text) texts.push(text);
       if (chunk.title?.trim()) texts.push(chunk.title.trim());
       if (chunk.description?.trim()) texts.push(chunk.description.trim());

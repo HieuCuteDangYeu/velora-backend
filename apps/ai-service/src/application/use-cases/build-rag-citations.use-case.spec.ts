@@ -491,4 +491,58 @@ describe('BuildRagCitationsUseCase', () => {
       },
     });
   });
+
+  it('attributes citations for METADATA evidence when evidenceText is empty but title is present', async () => {
+    const attribute = jest.fn().mockImplementation(() =>
+      Promise.resolve({
+        selections: [{ evidenceId: 'e0', confidence: 0.98 }],
+        claims: [
+          {
+            claim: 'This Reel is titled Pet Chat Group Episode 22.',
+            supported: true,
+            evidenceIds: ['e0'],
+          },
+        ],
+        factualClaimCount: 1,
+        supportedClaimCount: 1,
+        coverage: 1,
+      }),
+    );
+    const attributionService: ICitationAttributionService = { attribute };
+    const useCase = new BuildRagCitationsUseCase(attributionService);
+    const state = buildState();
+    state.rerankedChunks = [
+      {
+        chunkId: 'reel:r1:doc',
+        reelId: 'r1',
+        title: 'Pet Chat Group Episode 22',
+        tags: [],
+        chunkText: '',
+        evidenceText: undefined,
+        evidenceType: 'METADATA',
+        startTime: null,
+        endTime: null,
+        distance: null,
+        score: 0.9,
+      },
+    ];
+    state.answer = 'This Reel is titled Pet Chat Group Episode 22.';
+
+    const result = await useCase.execute(state);
+
+    expect(attribute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidates: [
+          expect.objectContaining({
+            evidenceId: 'e0',
+            evidenceType: 'METADATA',
+            evidenceText: 'Pet Chat Group Episode 22',
+            title: 'Pet Chat Group Episode 22',
+          }),
+        ],
+      }),
+    );
+    expect(result.citations).toHaveLength(1);
+    expect(result.citations[0].evidenceType).toBe('METADATA');
+  });
 });

@@ -236,4 +236,22 @@ describe('ContextToolAgentUseCase', () => {
       }),
     ]);
   });
+
+  it('falls back to retrieved chunks when reranking fails', async () => {
+    const retrievalEngine = {
+      retrieve: jest.fn().mockResolvedValue([match]),
+      rerank: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('TEI reranker failed with status 429: Overloaded'),
+        ),
+    };
+    const built = buildAgent({ retrievalEngine });
+
+    const result = await built.agent.execute(state());
+
+    expect(result.retrievedChunks).toHaveLength(1);
+    expect(result.rerankedChunks).toHaveLength(1);
+    expect(result.rerankedChunks[0].chunkId).toBe('chunk-1');
+  });
 });

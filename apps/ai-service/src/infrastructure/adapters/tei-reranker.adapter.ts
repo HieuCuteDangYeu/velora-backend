@@ -68,37 +68,50 @@ export class TeiRerankerAdapter implements IRerankerService {
     queryText: string,
     candidates: ReelContextSearchResult[],
   ): Promise<TeiScore[]> {
-    const controller = new AbortController();
     const timeoutMs = this.number(
       'AI_RAG_NEURAL_RERANK_TIMEOUT_MS',
       5_000,
       500,
       30_000,
     );
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
-    try {
-      const requestBody = this.payload(queryText, candidates);
-      const response = await fetch(`${this.baseUrl()}/rerank`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      });
-      const raw = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `TEI reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
-        );
+    const maxRetries = this.number('AI_RAG_NEURAL_RERANK_MAX_RETRIES', 2, 0, 5);
+
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 150));
       }
-      const responsePayload = JSON.parse(raw) as unknown;
-      if (!Array.isArray(responsePayload)) {
-        throw new Error('TEI reranker returned an invalid response');
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      timer.unref();
+      try {
+        const requestBody = this.payload(queryText, candidates);
+        const response = await fetch(`${this.baseUrl()}/rerank`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+        });
+        const raw = await response.text();
+        if (!response.ok) {
+          const isTransientOverload =
+            response.status === 429 || response.status === 503;
+          if (isTransientOverload && attempt < maxRetries) {
+            continue;
+          }
+          throw new Error(
+            `TEI reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          );
+        }
+        const responsePayload = JSON.parse(raw) as unknown;
+        if (!Array.isArray(responsePayload)) {
+          throw new Error('TEI reranker returned an invalid response');
+        }
+        return responsePayload as TeiScore[];
+      } finally {
+        clearTimeout(timer);
       }
-      return responsePayload as TeiScore[];
-    } finally {
-      clearTimeout(timer);
     }
+    throw new Error('TEI reranker request failed');
   }
 
   private boundCandidates(

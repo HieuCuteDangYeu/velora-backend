@@ -127,6 +127,7 @@ export class GenerateDraftAnswerUseCase {
       'Prefer the exact names, numbers, units, and relations stated by the supplied evidence. Do not import details from omitted or unrelated evidence.',
       'When the evidence directly states the requested fact, reuse its distinctive nouns, names, values, and relations instead of replacing them with broad synonyms or a high-level summary.',
       'For quantity, count, measurement, threshold, date, duration, or age questions, state the directly supported value and unit or relation explicitly. If evidence uses digits, preserve them or spell them out; never replace a supported quantity with a vague phrase.',
+      'For metadata, title, tag list, quantity/count, opening statement, or direct quote questions, provide ONLY the exact value, title, tags, or quote directly without conversational preambles or lead-in framing (do NOT write "The title of the Reel is...", "The opening statement is: ...", "The tags associated with this Reel are...", or "According to the transcript...").',
       'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
       'For SHORT_FACT questions, prefer one direct sentence. EXPLANATION and SUMMARY answers may be longer only when the question requires it.',
       'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
@@ -184,7 +185,7 @@ export class GenerateDraftAnswerUseCase {
       }
       try {
         raw = await request(
-          `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation in the shortest complete form within the supplied answer budget, state any required supported quantity explicitly, and return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
+          `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation in the shortest complete form within the supplied answer budget, state any required supported quantity explicitly, omit conversational preambles for titles, quotes, or tags, and return a non-empty, exhaustive claim mapping using only the supplied authorized evidence IDs.`,
         );
         return synthesized(raw);
       } catch (retryError: unknown) {
@@ -237,6 +238,33 @@ export class GenerateDraftAnswerUseCase {
             {
               claim: answer,
               evidenceIds: [titleCandidate.evidenceId],
+            },
+          ],
+          modelRole: 'ANSWER',
+          diagnostics,
+          finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+          fallbackReason: reason,
+        };
+      }
+    }
+
+    if (
+      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+      state.route.reelQuestionType === 'REEL_METADATA' &&
+      /\btags?\b/i.test(state.userMessage)
+    ) {
+      const tagCandidate = candidates.find(
+        ({ chunk }) =>
+          Array.isArray(chunk.tags) && chunk.tags.filter(Boolean).length > 0,
+      );
+      if (tagCandidate?.chunk.tags) {
+        const answer = tagCandidate.chunk.tags.filter(Boolean).join(', ');
+        return {
+          answer,
+          claims: [
+            {
+              claim: answer,
+              evidenceIds: [tagCandidate.evidenceId],
             },
           ],
           modelRole: 'ANSWER',

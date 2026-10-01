@@ -120,6 +120,7 @@ export class BuildGroundedAnswerRevisionUseCase {
           'Reuse distinctive source wording, names, values, and relations when they directly answer the question; do not paraphrase away the decisive fact.',
           'Do not construct arbitrary source substrings and do not invent facts.',
           'Return the shortest complete revised answer for the supplied answer shape and budget, plus the smallest supporting evidence ID set.',
+          'For metadata, title, tag, quantity, opening statement, or quote questions, provide the exact value directly without conversational preambles (e.g. do not write "The title is...", "The tags are...", etc.).',
           'If the current answer is supported but indirect, repetitive, or over-verbose, delete the unrelated material while preserving the supported fact that answers the question.',
           'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
           'Never invent an evidence ID. Return only JSON matching the schema.',

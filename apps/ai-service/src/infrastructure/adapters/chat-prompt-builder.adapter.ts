@@ -95,6 +95,7 @@ Answering rules:
 18. Before drafting a factual reel answer, locate the words, quantity, or relation in the grounded evidence that supports the answer. State that supported fact, not a plausible reformulation based only on the question.
 19. When the evidence directly states the requested fact, reuse its distinctive nouns, names, values, and relations instead of replacing them with broad synonyms or a high-level summary.
 20. When revising after verification, replace unsupported wording with the closest directly supported wording from the retrieved evidence. Do not repeat an unsupported draft.
+21. For metadata, title, tag, quantity, opening statement, or quote questions, output the exact value, title, tag list, or quote directly without conversational preambles or lead-in phrases (e.g. do not write "The title is...", "The title of the Reel is...", "The opening statement is: ...", "The tags associated with this Reel are...", "According to the transcript...", or "In this Reel...").
 
 ${revisionInstruction ? `VERIFIER REVISION INSTRUCTION:\n${revisionInstruction}\n` : ''}
 

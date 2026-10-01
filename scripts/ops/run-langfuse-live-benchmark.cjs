@@ -54,6 +54,86 @@ function tokenRecall(expected, actual) {
   );
 }
 
+function tokenF1(expected, actual) {
+  const expectedTokens = tokens(expected);
+  const actualTokens = tokens(actual);
+  if (!expectedTokens.length && !actualTokens.length) return 1;
+  if (!expectedTokens.length || !actualTokens.length) return 0;
+
+  const expectedCounts = new Map();
+  for (const token of expectedTokens) {
+    expectedCounts.set(token, (expectedCounts.get(token) || 0) + 1);
+  }
+  let commonCount = 0;
+  const actualCounts = new Map();
+  for (const token of actualTokens) {
+    actualCounts.set(token, (actualCounts.get(token) || 0) + 1);
+  }
+  for (const [token, count] of actualCounts.entries()) {
+    if (expectedCounts.has(token)) {
+      commonCount += Math.min(count, expectedCounts.get(token));
+    }
+  }
+  if (commonCount === 0) return 0;
+  const precision = commonCount / actualTokens.length;
+  const recall = commonCount / expectedTokens.length;
+  return (2 * precision * recall) / (precision + recall);
+}
+
+function normalizePunctuation(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/["'“”‘’`]/g, '')
+    .replace(/[-_.,:;!?(){}[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const SHORT_STOPWORDS = new Set([
+  'a',
+  'an',
+  'as',
+  'at',
+  'by',
+  'do',
+  'he',
+  'if',
+  'in',
+  'is',
+  'it',
+  'me',
+  'my',
+  'no',
+  'of',
+  'on',
+  'or',
+  'so',
+  'to',
+  'up',
+  'we',
+]);
+
+function containmentMatch(expected, actual) {
+  const normExpected = normalizePunctuation(expected);
+  const normActual = normalizePunctuation(actual);
+  if (!normExpected || !normActual) return 0;
+  if (normActual === normExpected) return 1;
+  if (normActual.includes(normExpected)) return 1;
+
+  if (normExpected.includes(normActual)) {
+    const actTokens = tokens(normActual);
+    if (actTokens.length >= 2) return 1;
+    if (
+      actTokens.length === 1 &&
+      (/^\d+$/.test(actTokens[0]) ||
+        (actTokens[0].length >= 3 && !SHORT_STOPWORDS.has(actTokens[0])))
+    ) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 function citationEvidenceIds(citations) {
   if (!Array.isArray(citations)) return [];
   return [
@@ -113,6 +193,16 @@ function deterministicEvaluations(input, expectedOutput, output) {
     {
       name: 'answer_exact_match',
       value: normalize(expectedAnswer) === normalize(actualAnswer) ? 1 : 0,
+      dataType: 'NUMERIC',
+    },
+    {
+      name: 'answer_containment_match',
+      value: containmentMatch(expectedAnswer, actualAnswer),
+      dataType: 'NUMERIC',
+    },
+    {
+      name: 'answer_token_f1',
+      value: tokenF1(expectedAnswer, actualAnswer),
       dataType: 'NUMERIC',
     },
     {
@@ -824,9 +914,11 @@ if (require.main === module)
 module.exports = {
   aggregateEvaluations,
   citationEvidenceIds,
+  containmentMatch,
   deterministicEvaluations,
   normalize,
   excludeInFlightCase,
   prepareInFlightRetry,
+  tokenF1,
   tokenRecall,
 };

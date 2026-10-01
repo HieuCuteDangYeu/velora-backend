@@ -3,9 +3,11 @@ const test = require('node:test');
 
 const {
   aggregateEvaluations,
+  containmentMatch,
   deterministicEvaluations,
   excludeInFlightCase,
   prepareInFlightRetry,
+  tokenF1,
   tokenRecall,
 } = require('./run-langfuse-live-benchmark.cjs');
 
@@ -99,12 +101,16 @@ test('scores a grounded exact answer deterministically', () => {
   };
   assert.deepEqual(
     deterministicEvaluations(input, expected, output).map((item) => item.value),
-    [1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1],
   );
 });
 
-test('token recall and aggregate scores remain bounded', () => {
+test('token recall, token F1, and aggregate scores remain bounded', () => {
   assert.equal(tokenRecall('one two three', 'one three'), 2 / 3);
+  assert.equal(
+    tokenF1('one two three', 'one three'),
+    (2 * 1 * (2 / 3)) / (1 + 2 / 3),
+  );
   const input = {
     reelIds: ['reel-1'],
     evidenceIds: ['evidence-1'],
@@ -128,8 +134,38 @@ test('token recall and aggregate scores remain bounded', () => {
   };
   const aggregate = aggregateEvaluations([{ input, expectedOutput, output }]);
   assert.equal(aggregate.answer_token_recall, 0.5);
+  assert.equal(aggregate.answer_token_f1, (2 * 1 * 0.5) / (1 + 0.5));
+  assert.equal(aggregate.answer_containment_match, 1);
   assert.ok(
     Object.values(aggregate).every((value) => value >= 0 && value <= 1),
+  );
+});
+
+test('containmentMatch handles preambles and concise answers robustly', () => {
+  assert.equal(
+    containmentMatch(
+      "The Broken Hero's Return Episode 17",
+      'The title of the Reel is "The Broken Hero\'s Return Episode 17".',
+    ),
+    1,
+  );
+  assert.equal(
+    containmentMatch('You betrayed 12 of The abandoned human girl.', '12'),
+    1,
+  );
+  assert.equal(
+    containmentMatch(
+      'You prepared all this for me?',
+      'The opening statement is: “You prepared all this for me?”',
+    ),
+    1,
+  );
+  assert.equal(
+    containmentMatch(
+      'totally unrelated sentence',
+      'something completely different',
+    ),
+    0,
   );
 });
 
@@ -161,6 +197,6 @@ test('scores production-shaped RagCitationDto without explicit evidenceId determ
   };
   assert.deepEqual(
     deterministicEvaluations(input, expected, output).map((item) => item.value),
-    [1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1],
   );
 });

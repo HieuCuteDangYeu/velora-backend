@@ -3,6 +3,7 @@ import type {
   RagCitationDiagnostics,
   RagCitationEvidenceMapping,
   RagAnswerFallbackReason,
+  RagContextToolExecutionDiagnostics,
   RagFinalizationMode,
   RagPersistedRouteDecision,
   RagRetrievalExecutionDiagnostics,
@@ -28,6 +29,7 @@ export interface RagWorkflowTraceMetrics {
     routeDecision?: RagPersistedRouteDecision;
     retrievalPlanActual?: RagRetrievalPlanActual;
     retrievalExecution?: RagRetrievalExecutionDiagnostics;
+    contextToolExecution?: RagContextToolExecutionDiagnostics;
     contextSufficiency?: unknown;
     route?: unknown;
     retrievalPlan?: unknown;

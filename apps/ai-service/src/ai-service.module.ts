@@ -3,6 +3,7 @@ import { BackfillUserMemoryEmbeddingsUseCase } from '@ai/application/use-cases/b
 import { BuildRagCitationsUseCase } from '@ai/application/use-cases/build-rag-citations.use-case';
 import { BuildGroundedAnswerRevisionUseCase } from '@ai/application/use-cases/build-grounded-answer-revision.use-case';
 import { CheckContextSufficiencyUseCase } from '@ai/application/use-cases/check-context-sufficiency.use-case';
+import { ContextToolAgentUseCase } from '@ai/application/use-cases/context-tool-agent.use-case';
 import { CountDocumentTokensUseCase } from '@ai/application/use-cases/count-document-tokens.use-case';
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
 import { ExtractReelMetadataUseCase } from '@ai/application/use-cases/extract-reel-metadata.use-case';
@@ -175,6 +176,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     BackfillUserMemoryEmbeddingsUseCase,
 
     QueryRouterAgentUseCase,
+    ContextToolAgentUseCase,
     PlanRetrievalUseCase,
     RetrieveReelEvidenceUseCase,
     RerankRetrievedEvidenceUseCase,
@@ -199,6 +201,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     {
       provide: 'IRetrievalAgentPolicy',
       useClass: RetrievalAgentPolicyAdapter,
+    },
+    {
+      provide: 'IContextToolAgentPolicy',
+      useExisting: 'IRetrievalAgentPolicy',
     },
     {
       provide: 'IRetrievalEngine',

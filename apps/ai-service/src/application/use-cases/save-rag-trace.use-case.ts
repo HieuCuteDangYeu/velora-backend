@@ -78,12 +78,14 @@ export class SaveRagTraceUseCase {
                   needsVerification: input.state.route.needsVerification,
                   recommendationActionType:
                     input.state.route.recommendationAction?.type,
+                  toolPlan: input.state.route.toolPlan,
                 }
               : undefined,
             retrievalPlanActual: input.state.retrievalPlan
               ? this.toPersistedRetrievalPlan(input.state.retrievalPlan)
               : undefined,
             retrievalExecution: input.state.retrievalExecution,
+            contextToolExecution: input.state.contextToolExecution,
             route: input.state.route?.diagnostics,
             retrievalPlan: input.state.retrievalPlan?.diagnostics,
             retrievalCounts: {

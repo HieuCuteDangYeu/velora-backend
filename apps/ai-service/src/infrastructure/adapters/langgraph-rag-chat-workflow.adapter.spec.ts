@@ -76,6 +76,52 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).toBe('citationNode');
   });
 
+  it('routes context acquisition through the unified tool agent when enabled', () => {
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      {
+        get: jest.fn((key: string) =>
+          key === 'RAG_CONTEXT_TOOL_AGENT_ENABLED' ? 'true' : undefined,
+        ),
+      } as never,
+      undefined as never,
+      undefined,
+      undefined,
+      undefined,
+      {} as never,
+    ) as unknown as {
+      routesAfterQueryRouter: (state: RagChatWorkflowState) => string[];
+      buildGraph: (timings: Record<string, number>) => unknown;
+    };
+
+    const destinations = workflow.routesAfterQueryRouter(
+      state({
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          recommendationAction: { type: 'NONE', reason: 'none' },
+          needsRetrieval: true,
+        },
+      }),
+    );
+
+    expect(destinations).toContain('contextToolAgentNode');
+    expect(destinations).not.toContain('retrievalPlannerNode');
+    expect(destinations).not.toContain('memorySelectorNode');
+    expect(workflow.buildGraph({})).toBeDefined();
+  });
+
   it('routes successful semantic context negatives through answer verification', () => {
     expect(
       routeAfterVerifier.routeAfterContextSufficiency(

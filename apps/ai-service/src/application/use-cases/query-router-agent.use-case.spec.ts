@@ -448,17 +448,45 @@ describe('QueryRouterAgentUseCase', () => {
       ]).toEqual(flags);
       const input = service.generateObject.mock
         .calls[0][0] as GenerateStructuredObjectInput;
-      expect(input.schemaVersion).toBe('router-semantic-v4');
+      expect(input.schemaVersion).toBe('router-semantic-v5');
       expect(input.jsonSchema.required).toEqual([
         'intent',
         'referenceTarget',
         'reelQuestionType',
         'requiredEvidence',
         'recommendationAction',
+        'tools',
         'reason',
       ]);
     },
   );
+
+  it('filters model-selected tools through the classified intent policy', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          tools: ['get_reel_context', 'search_user_memory', 'unknown_tool'],
+        }),
+      ),
+    };
+
+    const result = await new QueryRouterAgentUseCase(
+      service as never,
+      config,
+    ).execute({
+      message: 'What did the speaker say?',
+      hasSharedReelContext: true,
+    });
+
+    expect(result.toolPlan).toEqual({
+      allowedTools: ['search_reel_content', 'get_reel_context'],
+      requiredTools: ['search_reel_content'],
+    });
+  });
 
   it.each(['RECOMMEND_REELS', 'SUGGEST_QUERIES'])(
     'keeps read-only discovery %s on normal chat',

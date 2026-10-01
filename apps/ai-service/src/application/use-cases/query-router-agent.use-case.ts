@@ -2,6 +2,8 @@ import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-
 import type {
   RagChatIntent,
   RagChatRouteDecision,
+  RagAgentToolName,
+  RagToolPlan,
   RagRecommendationAction,
   RagReferenceTarget,
   RagReelQuestionType,
@@ -27,6 +29,7 @@ interface RawRouteDecision {
   reelQuestionType?: unknown;
   requiredEvidence?: unknown;
   recommendationAction?: unknown;
+  tools?: unknown;
   reason?: unknown;
 }
 
@@ -130,6 +133,13 @@ export class QueryRouterAgentUseCase {
     'METADATA',
     'CONVERSATION_MEMORY',
     'USER_MEMORY',
+  ]);
+
+  private readonly validAgentTools = new Set<RagAgentToolName>([
+    'search_reel_content',
+    'get_reel_context',
+    'search_user_memory',
+    'get_conversation_summary',
   ]);
 
   constructor(
@@ -397,7 +407,7 @@ export class QueryRouterAgentUseCase {
       userPrompt: this.buildUserPrompt(input.input),
       jsonSchema: this.getJsonSchema(),
       maxTokens: input.maxTokens ?? this.config.maxCompletionTokens('ROUTER'),
-      schemaVersion: 'router-semantic-v4',
+      schemaVersion: 'router-semantic-v5',
       temperature: 0,
       model: input.model,
       modelRole: 'ROUTER',
@@ -433,7 +443,7 @@ export class QueryRouterAgentUseCase {
   private buildSystemPrompt(): string {
     return `
 You route Velora AI messages by meaning. Return only schema-valid JSON and never answer the user.
-Output exactly these top-level fields and no others: intent, referenceTarget, reelQuestionType, requiredEvidence, recommendationAction, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives retrieval/memory/verification flags and result-count policy; do not output those fields.
+Output exactly these top-level fields and no others: intent, referenceTarget, reelQuestionType, requiredEvidence, recommendationAction, tools, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives retrieval/memory/verification flags and result-count policy; do not output those fields.
 Apply every definition by semantic meaning regardless of the language used in the user message, recent history, or reel. Emit only the canonical enum values in this schema; never translate enum values into natural-language labels.
 
 Intent meanings:
@@ -481,6 +491,13 @@ Invariants:
 - Conversation memory is for prior conversation context; user memory is only for stable preferences/profile.
 - RECOMMEND_REELS is only for explicit content discovery. Use a clean topic query; broad discovery may allow personalized fallback, topic-specific discovery may not.
 - SUGGEST_QUERIES is only for requested search terms. Otherwise recommendationAction is NONE.
+- tools contains only the context tools that may be useful for this request. The application validates this list before exposing tools to another agent.
+- REEL_VIDEO_QUESTION may use search_reel_content and optionally get_reel_context.
+- USER_MEMORY_QUESTION may use search_user_memory.
+- CONVERSATION_MEMORY_QUESTION may use get_conversation_summary.
+- NORMAL_CHAT may use search_user_memory and/or get_conversation_summary only when the question needs them.
+- TASK_ACTION_REQUEST may not use context tools.
+- Do not select tools that belong to another intent or invent tool names.
 - Specific factual, quantitative, causal, relational, comparative, or sequence questions about the reel use TRANSCRIPT_CONTENT unless the user explicitly asks about visual appearance, on-screen text/layout, or metadata.
 - Both discovery actions require intent=NORMAL_CHAT, referenceTarget=NONE, reelQuestionType=NONE, requiredEvidence=[NONE]. Internal search is not an external task. For NONE use query="", allowPersonalizedFallback=false and suggestedQueries=[]. For RECOMMEND_REELS use suggestedQueries=[]; for SUGGEST_QUERIES provide suggestions and allowPersonalizedFallback=false.
 - Evidence is minimal for the classified question: TRANSCRIPT_CONTENT=[TRANSCRIPT], VISUAL_CONTENT=[VISUAL], REEL_METADATA=[METADATA], GENERAL_REEL_SUMMARY=[TRANSCRIPT,METADATA]. Non-reel routes use their own memory evidence or [NONE], never reel modalities.
@@ -532,6 +549,7 @@ Classify the current user message.
         'reelQuestionType',
         'requiredEvidence',
         'recommendationAction',
+        'tools',
         'reason',
       ],
       properties: {
@@ -604,6 +622,21 @@ Classify the current user message.
             },
           },
         },
+        tools: {
+          type: 'array',
+          description:
+            'Context tools that may be used for this request. The application validates them against the classified intent.',
+          maxItems: 4,
+          items: {
+            type: 'string',
+            enum: [
+              'search_reel_content',
+              'get_reel_context',
+              'search_user_memory',
+              'get_conversation_summary',
+            ],
+          },
+        },
         reason: { type: 'string', maxLength: 240 },
       },
     };
@@ -630,6 +663,7 @@ Classify the current user message.
       intent,
       reelQuestionType,
     );
+    const toolPlan = this.normalizeToolPlan(raw.tools, intent);
 
     return {
       intent,
@@ -649,11 +683,56 @@ Classify the current user message.
         raw.recommendationAction,
         intent,
       ),
+      toolPlan,
       reason:
         typeof raw.reason === 'string' && raw.reason.trim()
           ? raw.reason.trim()
           : 'No router reason provided.',
     };
+  }
+
+  private normalizeToolPlan(
+    value: unknown,
+    intent: RagChatIntent,
+  ): RagToolPlan {
+    const requested = Array.isArray(value)
+      ? value.filter(
+          (tool): tool is RagAgentToolName =>
+            typeof tool === 'string' &&
+            this.validAgentTools.has(tool as RagAgentToolName),
+        )
+      : [];
+
+    const allowedByIntent: Record<RagChatIntent, RagAgentToolName[]> = {
+      NORMAL_CHAT: ['search_user_memory', 'get_conversation_summary'],
+      REEL_VIDEO_QUESTION: ['search_reel_content', 'get_reel_context'],
+      CONVERSATION_MEMORY_QUESTION: ['get_conversation_summary'],
+      USER_MEMORY_QUESTION: ['search_user_memory'],
+      TASK_ACTION_REQUEST: [],
+    };
+    const requiredByIntent: Partial<Record<RagChatIntent, RagAgentToolName[]>> =
+      {
+        REEL_VIDEO_QUESTION: ['search_reel_content'],
+        CONVERSATION_MEMORY_QUESTION: ['get_conversation_summary'],
+        USER_MEMORY_QUESTION: ['search_user_memory'],
+      };
+    const allowedSet = new Set(allowedByIntent[intent]);
+    const requiredTools = requiredByIntent[intent] ?? [];
+    const allowedTools = [
+      ...new Set([
+        ...requiredTools,
+        ...requested.filter((tool) => allowedSet.has(tool)),
+      ]),
+    ];
+
+    if (
+      allowedTools.includes('get_reel_context') &&
+      !allowedTools.includes('search_reel_content')
+    ) {
+      allowedTools.unshift('search_reel_content');
+    }
+
+    return { allowedTools, requiredTools };
   }
 
   private normalizeReferenceTarget(value: unknown): RagReferenceTarget {
@@ -990,6 +1069,7 @@ Classify the current user message.
         type: 'NONE',
         reason,
       },
+      toolPlan: { allowedTools: [], requiredTools: [] },
       reason,
     };
   }

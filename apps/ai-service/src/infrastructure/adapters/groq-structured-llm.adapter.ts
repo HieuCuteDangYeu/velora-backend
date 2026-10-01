@@ -333,7 +333,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     state: CallState,
   ): Promise<T> {
     const { key: apiKey, index: keyIndex } =
-      await this.keyPool.acquireAsync(timeoutMs);
+      await this.keyPool.acquireAsync(Math.max(timeoutMs, 45_000));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();

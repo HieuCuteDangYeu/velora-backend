@@ -153,7 +153,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
    * throwing GroqKeyPoolExhaustedError.
    */
   async acquireAsync(
-    maxWaitMs = 10_000,
+    maxWaitMs = 45_000,
   ): Promise<{ key: string; index: number }> {
     try {
       return this.acquire();
@@ -227,7 +227,11 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
 
     // Check for TPD exhaustion evidence.
     if (this.isTPDExhaustion(headers, responseBody)) {
-      this.reportTPDExhausted(index);
+      const reason =
+        responseBody?.slice(0, 120) ||
+        headers?.get?.('x-ratelimit-reset-tokens') ||
+        'reset-tokens > 1h';
+      this.reportTPDExhausted(index, reason);
       return;
     }
 
@@ -241,13 +245,14 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Mark a key as TPD-exhausted until the next UTC midnight. */
-  reportTPDExhausted(index: number): void {
+  reportTPDExhausted(index: number, reason?: string): void {
     const state = this.at(index);
     if (!state) return;
     state.exhaustedOnUtcDate = this.utcDateString(Date.now());
     state.remainingTokens = 0;
     this.logger.warn(
-      `Key #${index} marked TPD-exhausted for ${state.exhaustedOnUtcDate}`,
+      `Key #${index} marked TPD-exhausted for ${state.exhaustedOnUtcDate}` +
+        (reason ? ` (reason: ${reason})` : ''),
     );
   }
 
@@ -380,18 +385,21 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         lower.includes('requests per minute') ||
         lower.includes('tokens per minute') ||
         lower.includes('(rpm)') ||
-        lower.includes('(tpm)')
+        lower.includes('(tpm)') ||
+        lower.includes('limit 8000') ||
+        lower.includes('limit 1000')
       ) {
         return false;
       }
 
       // Strip documentation URLs and footer links that reference "daily limits"
       const bodyWithoutDocLinks = lower
-        .replace(/https?:\/\/[^\s]+/g, '')
-        .replace(/visit\s+[^\s]+\s+for\s+more\s+information[^\n.]*/g, '');
+        .replace(/https?:\/\/[^\s"',)]+/gi, '')
+        .replace(/visit\s+.*?for\s+more\s+information[^\n.]*/gi, '')
+        .replace(/upgrade to dev tier[^\n.]*/gi, '');
 
       if (
-        /\b(tokens?\s+per\s+day|requests?\s+per\s+day|\btpd\b|\brpd\b|daily\s+(token|request|allocation|quota))\b/i.test(
+        /\b(tokens?\s+per\s+day|requests?\s+per\s+day|\btpd\b|\brpd\b|daily_limit_exceeded|exceeded your daily limit)\b/i.test(
           bodyWithoutDocLinks,
         )
       ) {
@@ -400,6 +408,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     }
 
     // Check if reset time is far away (> 1 hour implies daily, not per-minute).
+    // Note: NEVER inspect x-ratelimit-reset-requests here (requests reset daily, not per-minute).
     const resetTokens = headers?.get?.('x-ratelimit-reset-tokens')?.trim();
     if (resetTokens) {
       const resetMs = this.parseDurationMs(resetTokens);
@@ -416,23 +425,19 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       return 5_000;
     }
 
-    // 1) Explicit retry-after header.
+    // 1) Explicit retry-after header (capped at 60s to prevent burst starvation).
     const retryAfter = this.parseRetryAfterMs(headers.get('retry-after'));
-    if (retryAfter !== undefined) return retryAfter;
+    if (retryAfter !== undefined) return Math.min(retryAfter, 60_000);
 
-    // 2) x-ratelimit-reset-tokens duration.
+    // 2) x-ratelimit-reset-tokens duration (capped at 60s).
     const resetTokens = headers.get('x-ratelimit-reset-tokens')?.trim();
     if (resetTokens) {
       const ms = this.parseDurationMs(resetTokens);
-      if (ms !== undefined) return ms;
+      if (ms !== undefined) return Math.min(ms, 60_000);
     }
 
-    // 3) x-ratelimit-reset-requests duration.
-    const resetRequests = headers.get('x-ratelimit-reset-requests')?.trim();
-    if (resetRequests) {
-      const ms = this.parseDurationMs(resetRequests);
-      if (ms !== undefined) return ms;
-    }
+    // Note: Do NOT use x-ratelimit-reset-requests here because that header
+    // reflects the daily request quota reset (hours away) rather than the TPM token window.
 
     // Default: 5 seconds.
     return 5_000;

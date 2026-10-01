@@ -377,17 +377,34 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
    * - Reset time is > 1 hour (daily limits reset at UTC midnight, not within minutes)
    */
   private isTPDExhaustion(headers?: Headers, responseBody?: string): boolean {
+    // SAFEGUARD: If retry-after header is present and <= 3600s (1 hour), it is NEVER
+    // a daily limit. Real Groq TPD errors only reset at UTC midnight (many hours away).
+    // This catches all RPM / per-org burst limits that send large but sub-hour retry-after.
+    const retryAfterRaw = headers?.get?.('retry-after');
+    if (retryAfterRaw != null) {
+      const retryAfterS = Number(retryAfterRaw);
+      if (Number.isFinite(retryAfterS) && retryAfterS <= 3_600) {
+        return false;
+      }
+    }
+
     // Check response body for daily-limit keywords.
     if (responseBody) {
       const lower = responseBody.toLowerCase();
-      // If the error explicitly mentions per-minute rate limits, it is NOT a daily limit.
+      // If the error explicitly mentions per-minute or per-hour rate limits, it is NOT a daily limit.
       if (
         lower.includes('requests per minute') ||
         lower.includes('tokens per minute') ||
+        lower.includes('requests per hour') ||
+        lower.includes('tokens per hour') ||
         lower.includes('(rpm)') ||
         lower.includes('(tpm)') ||
+        lower.includes('(rph)') ||
+        lower.includes('(tph)') ||
         lower.includes('limit 8000') ||
-        lower.includes('limit 1000')
+        lower.includes('limit 1000') ||
+        lower.includes('rate_limit_exceeded') ||
+        lower.includes('try again in')
       ) {
         return false;
       }

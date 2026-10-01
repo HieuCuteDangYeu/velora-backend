@@ -253,6 +253,32 @@ describe('GroqKeyPool', () => {
       expect(pool.acquire().key).toBe('gsk_a');
       pool.onModuleDestroy();
     });
+
+    it('does not mark key as TPD when retry-after is 522s (large but sub-hour)', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      // This simulates the groq per-org burst limit with a large retry-after
+      pool.reportRateLimited(
+        0,
+        fakeHeaders({ 'retry-after': '522' }),
+        'Rate limit reached for model openai/gpt-oss-20b in organization org_xxx service tier on_demand',
+      );
+      // Should be cooldown (capped at 60s), NOT TPD exhaustion
+      (pool as any).keys[0].cooldownUntil = 0;
+      expect(pool.acquire().key).toBe('gsk_a');
+      pool.onModuleDestroy();
+    });
+
+    it('does not mark key as TPD when body contains "try again in"', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      pool.reportRateLimited(
+        0,
+        fakeHeaders({ 'retry-after': '5' }),
+        'Rate limit reached: Limit 8000, Used 7500. Please try again in 1.5s.',
+      );
+      (pool as any).keys[0].cooldownUntil = 0;
+      expect(pool.acquire().key).toBe('gsk_a');
+      pool.onModuleDestroy();
+    });
   });
 
   describe('acquireAsync', () => {

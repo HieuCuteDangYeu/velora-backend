@@ -191,7 +191,35 @@ export class ContextToolAgentUseCase {
       }
     }
 
-    const retrievedChunks = [...retrievedById.values()];
+    let retrievedChunks = [...retrievedById.values()];
+    if (
+      providerStatus === 'ERROR' &&
+      retrievedChunks.length === 0 &&
+      state.route?.needsRetrieval &&
+      (state.accessibleReelIds?.length ?? 0) > 0
+    ) {
+      try {
+        const query =
+          state.retrievalRepairQuery?.trim() || state.userMessage;
+        const fallbackPlan = this.buildRetrievalPlan(query, {});
+        const fallbackItems = await this.retrievalEngine.retrieve({
+          userId: state.userId,
+          query,
+          route: state.route,
+          plan: fallbackPlan,
+          accessibleReelIds: state.accessibleReelIds,
+          traceId: state.traceId,
+        });
+        if (fallbackItems.length > 0) {
+          retrievedChunks = fallbackItems;
+          retrievalPlan = fallbackPlan;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `[ContextToolAgent] fallback retrieval failed: ${this.errorMessage(err)}`,
+        );
+      }
+    }
     let rerankedChunks: TranscriptMatch[] = [];
     if (retrievalPlan && retrievedChunks.length > 0) {
       try {

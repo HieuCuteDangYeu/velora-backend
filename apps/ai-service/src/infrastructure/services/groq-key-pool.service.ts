@@ -442,15 +442,15 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       return 5_000;
     }
 
-    // 1) Explicit retry-after header (capped at 60s to prevent burst starvation).
+    // 1) Explicit retry-after header (capped at 30s to allow rapid rolling recovery).
     const retryAfter = this.parseRetryAfterMs(headers.get('retry-after'));
-    if (retryAfter !== undefined) return Math.min(retryAfter, 60_000);
+    if (retryAfter !== undefined) return Math.min(retryAfter, 30_000);
 
-    // 2) x-ratelimit-reset-tokens duration (capped at 60s).
+    // 2) x-ratelimit-reset-tokens duration (capped at 30s).
     const resetTokens = headers.get('x-ratelimit-reset-tokens')?.trim();
     if (resetTokens) {
       const ms = this.parseDurationMs(resetTokens);
-      if (ms !== undefined) return Math.min(ms, 60_000);
+      if (ms !== undefined) return Math.min(ms, 30_000);
     }
 
     // Note: Do NOT use x-ratelimit-reset-requests here because that header

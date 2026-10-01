@@ -70,7 +70,7 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
       timer.unref();
 
       const { key: apiKey, index: keyIndex } =
-        await this.keyPool.acquireAsync(remainingMs);
+        await this.keyPool.acquireAsync(Math.max(remainingMs, 45_000));
       try {
         const response = await fetch(`${this.baseUrl()}/audio/transcriptions`, {
           method: 'POST',

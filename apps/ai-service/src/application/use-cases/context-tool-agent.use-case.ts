@@ -204,11 +204,11 @@ export class ContextToolAgentUseCase {
         const fallbackPlan = this.buildRetrievalPlan(query, {});
         const fallbackItems = await this.retrievalEngine.retrieve({
           userId: state.userId,
-          query,
+          conversationId: state.conversationId,
           route: state.route,
           plan: fallbackPlan,
           accessibleReelIds: state.accessibleReelIds,
-          traceId: state.traceId,
+          diagnostics: retrievalExecution,
         });
         if (fallbackItems.length > 0) {
           retrievedChunks = fallbackItems;

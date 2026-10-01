@@ -66,6 +66,10 @@ export class MediasoupCallMediaEngine
   // creating the router. Keep room creation single-flight per call so the
   // same durable answer action cannot leak a second router.
   private readonly roomCreationPromises = new Map<string, Promise<void>>();
+  private readonly roomCreationWorkers = new Map<
+    string,
+    mediasoup.types.Worker
+  >();
   private readonly producerCreationPromises = new Map<
     string,
     Promise<ProducedMediaResult>
@@ -139,6 +143,7 @@ export class MediasoupCallMediaEngine
     } finally {
       if (this.roomCreationPromises.get(callId) === creation) {
         this.roomCreationPromises.delete(callId);
+        this.roomCreationWorkers.delete(callId);
       }
     }
   }
@@ -148,7 +153,7 @@ export class MediasoupCallMediaEngine
     // check while this request was scheduled.
     if (this.rooms.has(callId)) return;
 
-    const worker = await this.getNextWorker();
+    const worker = await this.getNextWorker(callId);
     const router = await worker.createRouter({
       mediaCodecs: [
         {
@@ -919,13 +924,40 @@ export class MediasoupCallMediaEngine
     }
   }
 
-  private async getNextWorker(): Promise<mediasoup.types.Worker> {
+  private async getNextWorker(callId: string): Promise<mediasoup.types.Worker> {
     if (this.workers.length === 0) {
       await this.bootstrapWorkers(this.workerCount);
     }
 
-    const worker = this.workers[this.workerCursor % this.workers.length];
-    this.workerCursor = (this.workerCursor + 1) % this.workers.length;
+    // ponytail: room count approximates load; use measured CPU/media load if
+    // unequal call workloads make this insufficient. Scan rooms to avoid
+    // maintaining counters across every room cleanup path.
+    const roomCounts = new Map<mediasoup.types.Worker, number>();
+    for (const room of this.rooms.values()) {
+      roomCounts.set(room.worker, (roomCounts.get(room.worker) ?? 0) + 1);
+    }
+    for (const [pendingCallId, pendingWorker] of this.roomCreationWorkers) {
+      if (!this.rooms.has(pendingCallId)) {
+        roomCounts.set(pendingWorker, (roomCounts.get(pendingWorker) ?? 0) + 1);
+      }
+    }
+
+    let selectedIndex = this.workerCursor % this.workers.length;
+    for (let offset = 1; offset < this.workers.length; offset += 1) {
+      const index = (this.workerCursor + offset) % this.workers.length;
+      if (
+        (roomCounts.get(this.workers[index]) ?? 0) <
+        (roomCounts.get(this.workers[selectedIndex]) ?? 0)
+      ) {
+        selectedIndex = index;
+      }
+    }
+
+    const worker = this.workers[selectedIndex];
+    this.workerCursor = (selectedIndex + 1) % this.workers.length;
+    // Reserve before returning: other calls can select a worker before this
+    // call's createRouter promise resolves and enters the rooms map.
+    this.roomCreationWorkers.set(callId, worker);
     return worker;
   }
 

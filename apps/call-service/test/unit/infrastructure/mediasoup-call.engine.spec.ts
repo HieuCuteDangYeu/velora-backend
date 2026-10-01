@@ -25,6 +25,113 @@ const waitForRoomAllocation = async () => {
   await Promise.resolve();
 };
 
+describe('MediasoupCallMediaEngine worker selection', () => {
+  const createWorkerPool = () => {
+    let routerSequence = 0;
+    const createRouter = (): RouterDouble => ({
+      id: `router-${++routerSequence}`,
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+    });
+    const result = createEngine(jest.fn().mockImplementation(createRouter));
+    const secondWorker = {
+      pid: 2,
+      createRouter: jest.fn().mockImplementation(createRouter),
+    };
+    (result.engine as unknown as { workers: unknown[] }).workers.push(
+      secondWorker,
+    );
+    return { ...result, secondWorker, createRouter };
+  };
+
+  it('rotates between workers when room counts are equal', async () => {
+    const { engine, stateRepository } = createWorkerPool();
+    for (let index = 0; index < 4; index += 1) {
+      await engine.createRoom(`call-${index}`);
+    }
+
+    expect(
+      stateRepository.saveRoom.mock.calls.map(
+        ([room]) => (room as { workerId: string }).workerId,
+      ),
+    ).toEqual(['1', '2', '1', '2']);
+  });
+
+  it('fills the less occupied worker after calls end, including repeated cleanup', async () => {
+    const { engine, stateRepository } = createWorkerPool();
+    for (let index = 0; index < 4; index += 1) {
+      await engine.createRoom(`call-${index}`);
+    }
+    await engine.closeRoom('call-1');
+    await engine.closeRoom('call-3');
+    await engine.closeRoom('call-3');
+
+    await engine.createRoom('call-4');
+    await engine.createRoom('call-5');
+    await engine.createRoom('call-6');
+
+    expect(
+      stateRepository.saveRoom.mock.calls
+        .slice(4)
+        .map(([room]) => (room as { workerId: string }).workerId),
+    ).toEqual(['2', '2', '1']);
+  });
+
+  it('counts pending router allocation before selecting for another call', async () => {
+    const { engine, worker, secondWorker, createRouter } = createWorkerPool();
+    await engine.createRoom('call-a');
+    await engine.createRoom('call-b');
+    await engine.closeRoom('call-b');
+
+    let resolveRouter: (router: RouterDouble) => void = () => undefined;
+    secondWorker.createRouter.mockImplementationOnce(
+      () => new Promise<RouterDouble>((resolve) => (resolveRouter = resolve)),
+    );
+    const pending = engine.createRoom('call-pending');
+    const next = engine.createRoom('call-next');
+    await next;
+
+    expect(worker.createRouter).toHaveBeenCalledTimes(2);
+    expect(secondWorker.createRouter).toHaveBeenCalledTimes(2);
+    resolveRouter(createRouter());
+    await pending;
+  });
+
+  it('releases a failed allocation so the empty worker is selected again', async () => {
+    const { engine, worker, secondWorker } = createWorkerPool();
+    await engine.createRoom('call-a');
+    secondWorker.createRouter.mockRejectedValueOnce(
+      new Error('allocation failed'),
+    );
+
+    await expect(engine.createRoom('call-b')).rejects.toThrow(
+      'allocation failed',
+    );
+    await engine.createRoom('call-b');
+
+    expect(worker.createRouter).toHaveBeenCalledTimes(1);
+    expect(secondWorker.createRouter).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts an allocated room only once while Redis persistence is pending', async () => {
+    const { engine, worker, secondWorker, stateRepository } =
+      createWorkerPool();
+    let resolveSave: () => void = () => undefined;
+    stateRepository.saveRoom.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveSave = resolve)),
+    );
+    const pending = engine.createRoom('call-a');
+    await waitForRoomAllocation();
+    await engine.createRoom('call-b');
+    await engine.createRoom('call-c');
+
+    expect(worker.createRouter).toHaveBeenCalledTimes(2);
+    expect(secondWorker.createRouter).toHaveBeenCalledTimes(1);
+    resolveSave();
+    await pending;
+  });
+});
+
 describe('MediasoupCallMediaEngine room creation', () => {
   it('coalesces concurrent room creation for an idempotent incoming-answer retry', async () => {
     const router: RouterDouble = {
@@ -532,8 +639,8 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
       await createConsumerEngine();
     recvTransport.consume.mockReset();
 
-    let resolveFirst: (consumer: (typeof consumers)[number]) => void =
-      () => undefined;
+    let resolveFirst: (consumer: (typeof consumers)[number]) => void = () =>
+      undefined;
     recvTransport.consume
       .mockImplementationOnce(
         () =>
@@ -580,13 +687,7 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
     const { engine, recvTransport, consumers, room } =
       await createConsumerEngine();
 
-    await engine.consume(
-      'call-consumer',
-      'user-b',
-      'recv-1',
-      'producer-1',
-      {},
-    );
+    await engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {});
     recvTransport.consume.mockRejectedValueOnce(new Error('allocation failed'));
 
     await expect(
@@ -600,13 +701,7 @@ describe('MediasoupCallMediaEngine consumer lifecycle', () => {
   it('closes explicit consumer cleanup idempotently and enforces ownership', async () => {
     const { engine, consumers, room } = await createConsumerEngine();
 
-    await engine.consume(
-      'call-consumer',
-      'user-b',
-      'recv-1',
-      'producer-1',
-      {},
-    );
+    await engine.consume('call-consumer', 'user-b', 'recv-1', 'producer-1', {});
 
     await expect(
       engine.closeConsumer('call-consumer', 'user-a', 'consumer-1'),

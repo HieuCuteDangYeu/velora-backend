@@ -353,38 +353,48 @@ function saveState(file, state) {
 
 function apiClient(baseUrl, credentials) {
   let cookies = '';
-  return async function request(method, pathname, body) {
-    const response = await fetch(new URL(pathname, `${baseUrl}/`), {
-      method,
-      headers: {
-        ...(body ? { 'content-type': 'application/json' } : {}),
-        ...(cookies ? { cookie: cookies } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(30_000),
-    });
-    const setCookie = response.headers.get('set-cookie');
-    if (setCookie) {
-      cookies = setCookie
-        .split(/,(?=\s*[^;=]+=)/)
-        .map((value) => value.split(';')[0])
-        .join('; ');
+  return async function request(method, pathname, body, maxRetries = 3) {
+    for (let attempt = 0; attempt < maxRetries; attempt += 1) {
+      try {
+        const response = await fetch(new URL(pathname, `${baseUrl}/`), {
+          method,
+          headers: {
+            ...(body ? { 'content-type': 'application/json' } : {}),
+            ...(cookies ? { cookie: cookies } : {}),
+          },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+          signal: AbortSignal.timeout(45_000),
+        });
+        const setCookie = response.headers.get('set-cookie');
+        if (setCookie) {
+          cookies = setCookie
+            .split(/,(?=\s*[^;=]+=)/)
+            .map((value) => value.split(';')[0])
+            .join('; ');
+        }
+        const raw = await response.text();
+        let payload;
+        try {
+          payload = raw ? JSON.parse(raw) : null;
+        } catch {
+          payload = raw;
+        }
+        if (response.status === 401 && pathname !== '/auth/login') {
+          await request('POST', '/auth/login', credentials);
+          return request(method, pathname, body);
+        }
+        if (!response.ok) {
+          throw new Error(`${method} ${pathname} failed (${response.status})`);
+        }
+        return payload;
+      } catch (error) {
+        if (attempt + 1 < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1_000));
+          continue;
+        }
+        throw error;
+      }
     }
-    const raw = await response.text();
-    let payload;
-    try {
-      payload = raw ? JSON.parse(raw) : null;
-    } catch {
-      payload = raw;
-    }
-    if (response.status === 401 && pathname !== '/auth/login') {
-      await request('POST', '/auth/login', credentials);
-      return request(method, pathname, body);
-    }
-    if (!response.ok) {
-      throw new Error(`${method} ${pathname} failed (${response.status})`);
-    }
-    return payload;
   };
 }
 
@@ -575,7 +585,7 @@ async function runCase({
     request,
     conversationId,
     userMessage?.createdAt,
-    autoExcludeTimeouts ? 15 : 60,
+    autoExcludeTimeouts ? 45 : 60,
   );
   const output = outputFromMessage(assistant, item, conversationId);
   state.cases[caseId] = {

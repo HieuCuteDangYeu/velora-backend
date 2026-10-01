@@ -410,6 +410,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         endTime: chunk.endTime,
         evidenceText:
           chunk.evidenceText?.trim() ||
+          (chunk.title ? `Title: ${chunk.title}` : undefined) ||
           (chunk.evidenceType === 'METADATA'
             ? [chunk.title, chunk.description, chunk.chunkText]
                 .map((val) => val?.trim())
@@ -550,19 +551,20 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         ? validateRagAnswerContract({
             answer: state.answer ?? '',
             question: state.userMessage,
-            evidence: boundedEvidence.map((chunk) => {
+            evidence: boundedEvidence.flatMap((chunk) => {
+              const texts: string[] = [];
               const text = chunk.evidenceText?.trim();
-              if (text) return text;
-              if (chunk.evidenceType === 'METADATA') {
-                return [chunk.title, chunk.description, chunk.chunkText]
-                  .map((val) => val?.trim())
-                  .filter((val): val is string =>
-                    Boolean(val && val.length > 0),
-                  )
-                  .join(' - ')
-                  .trim();
+              if (text) texts.push(text);
+              if (chunk.title?.trim()) texts.push(chunk.title.trim());
+              if (chunk.description?.trim())
+                texts.push(chunk.description.trim());
+              if (
+                chunk.chunkText?.trim() &&
+                !texts.includes(chunk.chunkText.trim())
+              ) {
+                texts.push(chunk.chunkText.trim());
               }
-              return chunk.chunkText.trim();
+              return texts;
             }),
             evidenceRequired:
               state.route?.intent === 'REEL_VIDEO_QUESTION' &&
@@ -611,18 +613,30 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
   private exactProvenance(state: RagChatWorkflowState) {
     return assessExactEvidenceProvenance({
       answer: state.answer ?? '',
-      candidates: (state.rerankedChunks ?? []).map((chunk) => ({
-        evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
-        evidenceText:
-          chunk.evidenceText?.trim() ||
-          (chunk.evidenceType === 'METADATA'
-            ? [chunk.title, chunk.description, chunk.chunkText]
-                .map((val) => val?.trim())
-                .filter((val): val is string => Boolean(val && val.length > 0))
-                .join(' - ')
-                .trim()
-            : ''),
-      })),
+      candidates: (state.rerankedChunks ?? []).flatMap((chunk) => [
+        {
+          evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+          evidenceText:
+            chunk.evidenceText?.trim() ||
+            (chunk.evidenceType === 'METADATA'
+              ? [chunk.title, chunk.description, chunk.chunkText]
+                  .map((val) => val?.trim())
+                  .filter((val): val is string =>
+                    Boolean(val && val.length > 0),
+                  )
+                  .join(' - ')
+                  .trim()
+              : ''),
+        },
+        ...(chunk.title?.trim()
+          ? [
+              {
+                evidenceType: 'METADATA' as const,
+                evidenceText: chunk.title.trim(),
+              },
+            ]
+          : []),
+      ]),
     });
   }
 }

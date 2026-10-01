@@ -80,6 +80,7 @@ export class GenerateDraftAnswerUseCase {
       title: chunk.title?.trim() || undefined,
       evidenceText:
         chunk.evidenceText?.trim() ||
+        (chunk.title ? `Title: ${chunk.title.trim()}` : '') ||
         (chunk.evidenceType === 'METADATA'
           ? [chunk.title, chunk.description, chunk.chunkText]
               .map((val) => val?.trim())
@@ -92,6 +93,7 @@ export class GenerateDraftAnswerUseCase {
       const texts: string[] = [];
       const text =
         chunk.evidenceText?.trim() ||
+        (chunk.title ? `Title: ${chunk.title.trim()}` : '') ||
         (chunk.evidenceType === 'METADATA'
           ? [chunk.title, chunk.description, chunk.chunkText]
               .map((val) => val?.trim())

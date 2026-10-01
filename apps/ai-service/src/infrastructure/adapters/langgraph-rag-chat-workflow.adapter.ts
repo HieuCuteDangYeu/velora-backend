@@ -1084,12 +1084,15 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           claim.evidenceIds.some((evidenceId) => /^e\d+$/.test(evidenceId)),
         ) ??
           false);
+      const isMetadataQuestion =
+        state.route?.reelQuestionType === 'REEL_METADATA';
       if (
         state.route?.intent === 'REEL_VIDEO_QUESTION' &&
         failedVerification &&
         (verifierUnavailable ||
           verifierFalseNegativeCandidate ||
-          extractiveAnswerHasLocalProvenance)
+          extractiveAnswerHasLocalProvenance ||
+          isMetadataQuestion)
       ) {
         const fallback =
           this.langfuseTracing?.observeSync(

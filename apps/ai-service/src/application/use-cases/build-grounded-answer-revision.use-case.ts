@@ -78,6 +78,7 @@ export class BuildGroundedAnswerRevisionUseCase {
       if (!answerEvidenceIds.has(`e${index}`)) return [];
       const evidenceText =
         chunk.evidenceText?.trim() ||
+        (chunk.title ? `Title: ${chunk.title.trim()}` : undefined) ||
         (chunk.evidenceType === 'METADATA'
           ? [chunk.title, chunk.description, chunk.chunkText]
               .map((val) => val?.trim())

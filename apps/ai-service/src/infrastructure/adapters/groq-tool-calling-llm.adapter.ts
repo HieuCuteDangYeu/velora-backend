@@ -27,10 +27,21 @@ interface GroqToolCompletionResponse {
 export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
   private readonly logger = new Logger(GroqToolCallingLlmAdapter.name);
 
+  private readonly keyPool: GroqKeyPool;
+
   constructor(
     private readonly config: ConfigService,
-    private readonly keyPool: GroqKeyPool,
-  ) {}
+    keyPool?: GroqKeyPool,
+  ) {
+    this.keyPool = keyPool ?? new GroqKeyPool(config);
+    if (!keyPool) {
+      try {
+        this.keyPool.onModuleInit();
+      } catch {
+        // Fallback for minimal test environments
+      }
+    }
+  }
 
   async complete(
     input: ToolCallingCompletionInput,
@@ -39,81 +50,97 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
       input.model?.trim() ||
       this.config.getOrThrow<string>('AI_RETRIEVAL_TOOL_MODEL');
     const timeoutMs = this.resolveTimeout(input.timeoutMs);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
+    const deadline = Date.now() + timeoutMs;
+    const maxAttempts = Math.min(3, Math.max(1, this.keyPool.size));
 
-    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
-
-    try {
-      const response = await fetch(`${this.baseUrl()}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model,
-          messages: input.messages.map((message) => this.toMessage(message)),
-          tools: input.tools.map((tool) => ({
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
-            },
-          })),
-          tool_choice: input.toolChoice ?? 'auto',
-          parallel_tool_calls: false,
-          max_completion_tokens: input.maxTokens ?? 600,
-          temperature: input.temperature ?? 0.1,
-        }),
-        signal: controller.signal,
-      });
-
-      const raw = await response.text();
-      let payload: GroqToolCompletionResponse = {};
-      try {
-        payload = JSON.parse(raw) as GroqToolCompletionResponse;
-      } catch {
-        throw new Error('Groq tool-calling response was invalid JSON');
-      }
-      if (!response.ok) {
-        if (response.status === 429) {
-          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
-        } else if (response.status >= 500) {
-          this.keyPool.reportTransientFailure(keyIndex);
-        }
-        const message =
-          payload.error?.message ||
-          raw.trim() ||
-          `Groq tool-calling request failed with status ${response.status}`;
-        this.logger.warn(message);
-        throw new Error(message);
-      }
-
-      const choice = payload.choices?.[0];
-      const message = choice?.message;
-      if (!message)
-        throw new Error('Groq tool-calling response contained no message');
-      this.keyPool.reportSuccess(keyIndex, response.headers);
-      return {
-        content: message.content?.trim() || undefined,
-        toolCalls: (message.tool_calls ?? [])
-          .map((call, index) => this.parseToolCall(call, index))
-          .filter((call): call is LlmToolCall => Boolean(call)),
-        finishReason: choice?.finish_reason ?? undefined,
-      };
-    } catch (error: unknown) {
-      this.keyPool.reportTransientFailure(keyIndex);
-      if (controller.signal.aborted)
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
         throw new Error(
           `Groq tool-calling request timed out after ${timeoutMs}ms`,
         );
-      throw error;
-    } finally {
-      clearTimeout(timer);
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      timer.unref();
+
+      const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
+
+      try {
+        const response = await fetch(`${this.baseUrl()}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            messages: input.messages.map((message) => this.toMessage(message)),
+            tools: input.tools.map((tool) => ({
+              type: 'function',
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+              },
+            })),
+            tool_choice: input.toolChoice ?? 'auto',
+            parallel_tool_calls: false,
+            max_completion_tokens: input.maxTokens ?? 600,
+            temperature: input.temperature ?? 0.1,
+          }),
+          signal: controller.signal,
+        });
+
+        const raw = await response.text();
+        let payload: GroqToolCompletionResponse = {};
+        try {
+          payload = JSON.parse(raw) as GroqToolCompletionResponse;
+        } catch {
+          throw new Error('Groq tool-calling response was invalid JSON');
+        }
+        if (!response.ok) {
+          if (response.status === 429) {
+            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            if (attempt + 1 < maxAttempts) {
+              continue;
+            }
+          } else if (response.status >= 500) {
+            this.keyPool.reportTransientFailure(keyIndex);
+          }
+          const message =
+            payload.error?.message ||
+            raw.trim() ||
+            `Groq tool-calling request failed with status ${response.status}`;
+          this.logger.warn(message);
+          throw new Error(message);
+        }
+
+        const choice = payload.choices?.[0];
+        const message = choice?.message;
+        if (!message)
+          throw new Error('Groq tool-calling response contained no message');
+        this.keyPool.reportSuccess(keyIndex, response.headers);
+        return {
+          content: message.content?.trim() || undefined,
+          toolCalls: (message.tool_calls ?? [])
+            .map((call, index) => this.parseToolCall(call, index))
+            .filter((call): call is LlmToolCall => Boolean(call)),
+          finishReason: choice?.finish_reason ?? undefined,
+        };
+      } catch (error: unknown) {
+        this.keyPool.reportTransientFailure(keyIndex);
+        if (controller.signal.aborted)
+          throw new Error(
+            `Groq tool-calling request timed out after ${timeoutMs}ms`,
+          );
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     }
+
+    throw new Error('Groq tool-calling exceeded max retry attempts');
   }
 
   private toMessage(message: ToolCallingMessage): Record<string, unknown> {

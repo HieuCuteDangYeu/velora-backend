@@ -11,10 +11,21 @@ export interface GroqTextMessage {
 export class GroqTextClient {
   private readonly logger = new Logger(GroqTextClient.name);
 
+  private readonly keyPool: GroqKeyPool;
+
   constructor(
     private readonly config: ConfigService,
-    private readonly keyPool: GroqKeyPool,
-  ) {}
+    keyPool?: GroqKeyPool,
+  ) {
+    this.keyPool = keyPool ?? new GroqKeyPool(config);
+    if (!keyPool) {
+      try {
+        this.keyPool.onModuleInit();
+      } catch {
+        // Fallback for minimal test environments
+      }
+    }
+  }
 
   async generateText(input: {
     prompt: string;
@@ -42,66 +53,83 @@ export class GroqTextClient {
     timeoutMs?: number;
     onToken?: (token: string) => void;
   }): Promise<string> {
-    const controller = new AbortController();
     const timeoutMs = this.timeout(input.timeoutMs);
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
+    const deadline = Date.now() + timeoutMs;
     const streaming = Boolean(input.onToken);
-    let keyIndex: number | undefined;
-    try {
-      const { key: apiKey, index } = this.keyPool.acquire();
-      keyIndex = index;
-      const response = await fetch(`${this.baseUrl()}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          ...(streaming ? { Accept: 'text/event-stream' } : {}),
-        },
-        body: JSON.stringify({
-          model: input.model,
-          messages: input.messages,
-          max_completion_tokens: input.maxTokens ?? 450,
-          temperature: input.temperature ?? 0.2,
-          reasoning_effort: this.reasoningEffort(input.model),
-          stream: streaming,
-        }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const raw = await response.text();
-        if (response.status === 429) {
-          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
-        } else if (response.status >= 500) {
+    const maxAttempts = Math.min(3, Math.max(1, this.keyPool.size));
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new Error(`Groq text request timed out after ${timeoutMs}ms`);
+      }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      timer.unref();
+
+      let keyIndex: number | undefined;
+      try {
+        const { key: apiKey, index } = this.keyPool.acquire();
+        keyIndex = index;
+        const response = await fetch(`${this.baseUrl()}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            ...(streaming ? { Accept: 'text/event-stream' } : {}),
+          },
+          body: JSON.stringify({
+            model: input.model,
+            messages: input.messages,
+            max_completion_tokens: input.maxTokens ?? 450,
+            temperature: input.temperature ?? 0.2,
+            reasoning_effort: this.reasoningEffort(input.model),
+            stream: streaming,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const raw = await response.text();
+          if (response.status === 429) {
+            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            if (attempt + 1 < maxAttempts) {
+              keyIndex = undefined;
+              continue;
+            }
+          } else if (response.status >= 500) {
+            this.keyPool.reportTransientFailure(keyIndex);
+          }
+          keyIndex = undefined;
+          throw new Error(
+            `Groq text request failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          );
+        }
+        this.keyPool.reportSuccess(keyIndex, response.headers);
+        keyIndex = undefined;
+        if (streaming) return await this.readStream(response, input.onToken!);
+        const payload = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string | null } }>;
+        };
+        const content = payload.choices?.[0]?.message?.content?.trim() || '';
+        if (!content)
+          throw new Error('Groq text request returned empty content');
+        return content;
+      } catch (error: unknown) {
+        if (keyIndex !== undefined) {
           this.keyPool.reportTransientFailure(keyIndex);
         }
-        keyIndex = undefined;
-        throw new Error(
-          `Groq text request failed with status ${response.status}: ${raw.slice(0, 500)}`,
+        if (controller.signal.aborted)
+          throw new Error(`Groq text request timed out after ${timeoutMs}ms`);
+        this.logger.debug(
+          `Groq text request failed: ${error instanceof Error ? error.message : String(error)}`,
         );
+        throw error;
+      } finally {
+        clearTimeout(timer);
       }
-      this.keyPool.reportSuccess(keyIndex, response.headers);
-      keyIndex = undefined;
-      if (streaming) return await this.readStream(response, input.onToken!);
-      const payload = (await response.json()) as {
-        choices?: Array<{ message?: { content?: string | null } }>;
-      };
-      const content = payload.choices?.[0]?.message?.content?.trim() || '';
-      if (!content) throw new Error('Groq text request returned empty content');
-      return content;
-    } catch (error: unknown) {
-      if (keyIndex !== undefined) {
-        this.keyPool.reportTransientFailure(keyIndex);
-      }
-      if (controller.signal.aborted)
-        throw new Error(`Groq text request timed out after ${timeoutMs}ms`);
-      this.logger.debug(
-        `Groq text request failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      throw error;
-    } finally {
-      clearTimeout(timer);
     }
+
+    throw new Error('Groq text request exceeded max retry attempts');
   }
 
   private async readStream(

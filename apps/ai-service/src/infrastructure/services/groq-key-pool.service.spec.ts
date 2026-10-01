@@ -15,7 +15,10 @@ function makeConfig(overrides: Record<string, string> = {}): ConfigService {
   } as unknown as ConfigService;
 }
 
-function initPool(keys: string, extra: Record<string, string> = {}): GroqKeyPool {
+function initPool(
+  keys: string,
+  extra: Record<string, string> = {},
+): GroqKeyPool {
   const pool = new GroqKeyPool(makeConfig({ GROQ_API_KEYS: keys, ...extra }));
   pool.onModuleInit();
   return pool;

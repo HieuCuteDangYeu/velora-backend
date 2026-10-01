@@ -15,10 +15,21 @@ interface GroqTranscriptionPayload {
 
 @Injectable()
 export class GroqTranscriptionAdapter implements ITranscriptionService {
+  private readonly keyPool: GroqKeyPool;
+
   constructor(
     private readonly config: ConfigService,
-    private readonly keyPool: GroqKeyPool,
-  ) {}
+    keyPool?: GroqKeyPool,
+  ) {
+    this.keyPool = keyPool ?? new GroqKeyPool(config);
+    if (!keyPool) {
+      try {
+        this.keyPool.onModuleInit();
+      } catch {
+        // Fallback for minimal test environments
+      }
+    }
+  }
 
   async transcribeAudio(
     audioBuffer: Buffer,
@@ -43,54 +54,79 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
     if (options?.initialPrompt?.trim())
       form.append('prompt', options.initialPrompt.trim().slice(0, 2_000));
 
-    const controller = new AbortController();
     const timeoutMs = this.positiveInt('AI_TRANSCRIPTION_TIMEOUT_MS', 120_000);
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    timer.unref();
-    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
-    try {
-      const response = await fetch(`${this.baseUrl()}/audio/transcriptions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: form,
-        signal: controller.signal,
-      });
-      const raw = await response.text();
-      let payload: GroqTranscriptionPayload = {};
-      try {
-        payload = JSON.parse(raw) as GroqTranscriptionPayload;
-      } catch {
-        payload = {};
-      }
-      if (!response.ok) {
-        if (response.status === 429) {
-          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
-        } else if (response.status >= 500) {
-          this.keyPool.reportTransientFailure(keyIndex);
-        }
+    const deadline = Date.now() + timeoutMs;
+    const maxAttempts = Math.min(3, Math.max(1, this.keyPool.size));
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
         throw new Error(
-          `Groq transcription failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          `Groq transcription request timed out after ${timeoutMs}ms`,
         );
       }
-      this.keyPool.reportSuccess(keyIndex, response.headers);
-      const text = payload.text?.trim() ?? '';
-      return {
-        text,
-        segments:
-          this.normalizeWords(payload.words) ??
-          this.normalizeSegments(payload.segments),
-        wordCount: text ? text.split(/\s+/u).length : 0,
-        provider: 'groq',
-        model,
-        version:
-          this.config.get<string>('AI_TRANSCRIPTION_VERSION')?.trim() ||
-          'groq-whisper-v1',
-      };
-    } finally {
-      clearTimeout(timer);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      timer.unref();
+
+      const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
+      try {
+        const response = await fetch(`${this.baseUrl()}/audio/transcriptions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: form,
+          signal: controller.signal,
+        });
+        const raw = await response.text();
+        let payload: GroqTranscriptionPayload = {};
+        try {
+          payload = JSON.parse(raw) as GroqTranscriptionPayload;
+        } catch {
+          payload = {};
+        }
+        if (!response.ok) {
+          if (response.status === 429) {
+            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            if (attempt + 1 < maxAttempts) {
+              continue;
+            }
+          } else if (response.status >= 500) {
+            this.keyPool.reportTransientFailure(keyIndex);
+          }
+          throw new Error(
+            `Groq transcription failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          );
+        }
+        this.keyPool.reportSuccess(keyIndex, response.headers);
+        const text = payload.text?.trim() ?? '';
+        return {
+          text,
+          segments:
+            this.normalizeWords(payload.words) ??
+            this.normalizeSegments(payload.segments),
+          wordCount: text ? text.split(/\s+/u).length : 0,
+          provider: 'groq',
+          model,
+          version:
+            this.config.get<string>('AI_TRANSCRIPTION_VERSION')?.trim() ||
+            'groq-whisper-v1',
+        };
+      } catch (error: unknown) {
+        this.keyPool.reportTransientFailure(keyIndex);
+        if (controller.signal.aborted) {
+          throw new Error(
+            `Groq transcription request timed out after ${timeoutMs}ms`,
+          );
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     }
+
+    throw new Error('Groq transcription exceeded max retry attempts');
   }
 
   private normalizeWords(

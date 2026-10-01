@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 /** Per-key runtime state tracked by the pool. */
@@ -51,7 +56,9 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.keys = this.loadKeys();
-    this.logger.log(`Groq key pool initialized with ${this.keys.length} key(s)`);
+    this.logger.log(
+      `Groq key pool initialized with ${this.keys.length} key(s)`,
+    );
     // Periodic cleanup every 60 s: clear expired cooldowns and TPD resets.
     this.cleanupTimer = setInterval(() => this.cleanup(), 60_000);
     this.cleanupTimer.unref();
@@ -116,29 +123,61 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       return { key: state.key, index: state.index };
     }
 
+    // If non-exhausted keys exist but are in short cooldown (e.g. single key with retry-after: 0),
+    // pick the earliest cooling key if single-key or within 1s.
+    if (exhaustedCount < total && cooldownCount > 0) {
+      let earliestState: KeyState | undefined;
+      for (let i = 0; i < total; i++) {
+        const s = this.keys[i];
+        if (s.exhaustedOnUtcDate && s.exhaustedOnUtcDate >= todayUtc) continue;
+        if (!earliestState || s.cooldownUntil < earliestState.cooldownUntil) {
+          earliestState = s;
+        }
+      }
+      if (
+        earliestState &&
+        (total === 1 || earliestState.cooldownUntil <= now + 1000)
+      ) {
+        this.roundRobinIndex = (earliestState.index + 1) % total;
+        earliestState.lastUsedAt = now;
+        return { key: earliestState.key, index: earliestState.index };
+      }
+    }
+
     throw new GroqKeyPoolExhaustedError(total, exhaustedCount, cooldownCount);
   }
 
   /**
    * Record a successful API call. Reads rate-limit headers to track remaining quota.
    */
-  reportSuccess(index: number, headers: Headers): void {
+  reportSuccess(index: number, headers?: Headers): void {
     const state = this.at(index);
     if (!state) return;
     state.consecutiveFailures = 0;
     state.cooldownUntil = 0;
 
-    const remainingTokens = this.headerInt(headers, 'x-ratelimit-remaining-tokens');
-    const remainingRequests = this.headerInt(headers, 'x-ratelimit-remaining-requests');
+    const remainingTokens = this.headerInt(
+      headers,
+      'x-ratelimit-remaining-tokens',
+    );
+    const remainingRequests = this.headerInt(
+      headers,
+      'x-ratelimit-remaining-requests',
+    );
     if (remainingTokens !== undefined) state.remainingTokens = remainingTokens;
-    if (remainingRequests !== undefined) state.remainingRequests = remainingRequests;
+    if (remainingRequests !== undefined)
+      state.remainingRequests = remainingRequests;
   }
 
   /**
    * Record a 429 rate-limit response. Sets TPM cooldown from headers.
    * If evidence suggests TPD exhaustion, marks the key dead until UTC midnight.
    */
-  reportRateLimited(index: number, headers: Headers, responseBody?: string): void {
+  reportRateLimited(
+    index: number,
+    headers?: Headers,
+    responseBody?: string,
+  ): void {
     const state = this.at(index);
     if (!state) return;
 
@@ -184,8 +223,38 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
 
   private loadKeys(): KeyState[] {
     // Prefer comma-separated GROQ_API_KEYS, fall back to single GROQ_API_KEY.
-    const multiRaw = this.config.get<string>('GROQ_API_KEYS')?.trim();
-    const singleRaw = this.config.get<string>('GROQ_API_KEY')?.trim();
+    const config = this.config as {
+      get?: <T>(key: string) => T | undefined;
+      getOrThrow?: <T>(key: string) => T;
+    };
+
+    let multiRaw: string | undefined;
+    try {
+      multiRaw = config.get?.<string>('GROQ_API_KEYS')?.trim();
+    } catch {
+      // ignore
+    }
+    if (!multiRaw && typeof config.getOrThrow === 'function') {
+      try {
+        multiRaw = config.getOrThrow<string>('GROQ_API_KEYS')?.trim();
+      } catch {
+        // ignore
+      }
+    }
+
+    let singleRaw: string | undefined;
+    try {
+      singleRaw = config.get?.<string>('GROQ_API_KEY')?.trim();
+    } catch {
+      // ignore
+    }
+    if (!singleRaw && typeof config.getOrThrow === 'function') {
+      try {
+        singleRaw = config.getOrThrow<string>('GROQ_API_KEY')?.trim();
+      } catch {
+        // ignore
+      }
+    }
 
     let rawKeys: string[];
     if (multiRaw) {
@@ -241,7 +310,9 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         state.cooldownUntil = 0;
       }
       if (state.exhaustedOnUtcDate && state.exhaustedOnUtcDate < todayUtc) {
-        this.logger.log(`Key #${state.index} TPD exhaustion cleared (new UTC day)`);
+        this.logger.log(
+          `Key #${state.index} TPD exhaustion cleared (new UTC day)`,
+        );
         state.exhaustedOnUtcDate = '';
         state.remainingTokens = undefined;
         state.remainingRequests = undefined;
@@ -256,12 +327,14 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
    * - Body contains "daily" or "tokens per day" keywords
    * - Reset time is > 1 hour (daily limits reset at UTC midnight, not within minutes)
    */
-  private isTPDExhaustion(headers: Headers, responseBody?: string): boolean {
+  private isTPDExhaustion(headers?: Headers, responseBody?: string): boolean {
     // Check response body for daily-limit keywords.
     if (responseBody) {
       const lower = responseBody.toLowerCase();
       if (
-        /\b(tokens?\s+per\s+day|daily\s+(token|limit|quota|allocation)|tpd)\b/.test(lower) ||
+        /\b(tokens?\s+per\s+day|daily\s+(token|limit|quota|allocation)|tpd)\b/.test(
+          lower,
+        ) ||
         /\b(daily|per[_\s-]?day)\b/.test(lower)
       ) {
         return true;
@@ -269,7 +342,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     }
 
     // Check if reset time is far away (> 1 hour implies daily, not per-minute).
-    const resetTokens = headers.get('x-ratelimit-reset-tokens')?.trim();
+    const resetTokens = headers?.get?.('x-ratelimit-reset-tokens')?.trim();
     if (resetTokens) {
       const resetMs = this.parseDurationMs(resetTokens);
       if (resetMs !== undefined && resetMs > 3_600_000) {
@@ -280,7 +353,11 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     return false;
   }
 
-  private parseCooldownMs(headers: Headers): number {
+  private parseCooldownMs(headers?: Headers): number {
+    if (!headers || typeof headers.get !== 'function') {
+      return 5_000;
+    }
+
     // 1) Explicit retry-after header.
     const retryAfter = this.parseRetryAfterMs(headers.get('retry-after'));
     if (retryAfter !== undefined) return retryAfter;
@@ -329,11 +406,16 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         total + Number(m[1]) * multipliers[m[2] as keyof typeof multipliers],
       0,
     );
-    return Number.isFinite(ms) ? Math.min(Math.round(ms), 86_400_000) : undefined;
+    return Number.isFinite(ms)
+      ? Math.min(Math.round(ms), 86_400_000)
+      : undefined;
   }
 
-  private headerInt(headers: Headers, name: string): number | undefined {
-    const raw = headers.get(name)?.trim();
+  private headerInt(
+    headers: Headers | undefined,
+    name: string,
+  ): number | undefined {
+    const raw = headers?.get ? headers.get(name)?.trim() : undefined;
     if (!raw) return undefined;
     const value = Number(raw);
     return Number.isFinite(value) ? Math.max(0, Math.round(value)) : undefined;

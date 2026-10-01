@@ -141,11 +141,21 @@ export class GroqStructuredCompletionTimeoutError extends Error {
 @Injectable()
 export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   private readonly logger = new Logger(GroqStructuredLlmAdapter.name);
+  private readonly keyPool: GroqKeyPool;
 
   constructor(
     private readonly config: ConfigService,
-    private readonly keyPool: GroqKeyPool,
-  ) {}
+    keyPool?: GroqKeyPool,
+  ) {
+    this.keyPool = keyPool ?? new GroqKeyPool(config);
+    if (!keyPool) {
+      try {
+        this.keyPool.onModuleInit();
+      } catch {
+        // Fallback for minimal test environments
+      }
+    }
+  }
 
   async generateObject<T>(input: GenerateStructuredObjectInput): Promise<T> {
     const model = input.model?.trim();
@@ -393,7 +403,11 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         this.providerMessage(payload),
       );
       if (response.status === 429) {
-        this.keyPool.reportRateLimited(keyIndex, response.headers, this.providerMessage(payload));
+        this.keyPool.reportRateLimited(
+          keyIndex,
+          response.headers,
+          this.providerMessage(payload),
+        );
       } else if (response.status >= 500) {
         this.keyPool.reportTransientFailure(keyIndex);
       }

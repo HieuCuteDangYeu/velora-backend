@@ -59,6 +59,7 @@ import { PrismaRagHierarchyShadowObservationRepository } from '@ai/infrastructur
 import { PrismaRagTraceRepository } from '@ai/infrastructure/repositories/prisma-rag-trace.repository';
 import { PrismaUserMemoryRepository } from '@ai/infrastructure/repositories/prisma-user-memory.repository';
 import { R2AudioStorageService } from '@ai/infrastructure/services/r2-audio-storage.service';
+import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 import { LangfuseTracingService } from '@ai/infrastructure/services/langfuse-tracing.service';
 import { REEL_INDEX_QUERY_QUEUE } from '@common/processing/interfaces/semantic-index.interface';
 import { Module } from '@nestjs/common';
@@ -157,6 +158,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     LangfuseTracingService,
     EvidenceDiversitySelector,
     TeiRerankerAdapter,
+    GroqKeyPool,
     GroqTextClient,
 
     StreamChatUseCase,

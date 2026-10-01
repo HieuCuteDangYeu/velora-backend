@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 
 export interface GroqTextMessage {
   role: 'system' | 'user' | 'assistant';
@@ -10,7 +11,10 @@ export interface GroqTextMessage {
 export class GroqTextClient {
   private readonly logger = new Logger(GroqTextClient.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly keyPool: GroqKeyPool,
+  ) {}
 
   async generateText(input: {
     prompt: string;
@@ -43,11 +47,14 @@ export class GroqTextClient {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
     const streaming = Boolean(input.onToken);
+    let keyIndex: number | undefined;
     try {
+      const { key: apiKey, index } = this.keyPool.acquire();
+      keyIndex = index;
       const response = await fetch(`${this.baseUrl()}/chat/completions`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${this.config.getOrThrow<string>('GROQ_API_KEY')}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
           ...(streaming ? { Accept: 'text/event-stream' } : {}),
         },
@@ -63,10 +70,18 @@ export class GroqTextClient {
       });
       if (!response.ok) {
         const raw = await response.text();
+        if (response.status === 429) {
+          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+        } else if (response.status >= 500) {
+          this.keyPool.reportTransientFailure(keyIndex);
+        }
+        keyIndex = undefined;
         throw new Error(
           `Groq text request failed with status ${response.status}: ${raw.slice(0, 500)}`,
         );
       }
+      this.keyPool.reportSuccess(keyIndex, response.headers);
+      keyIndex = undefined;
       if (streaming) return await this.readStream(response, input.onToken!);
       const payload = (await response.json()) as {
         choices?: Array<{ message?: { content?: string | null } }>;
@@ -75,6 +90,9 @@ export class GroqTextClient {
       if (!content) throw new Error('Groq text request returned empty content');
       return content;
     } catch (error: unknown) {
+      if (keyIndex !== undefined) {
+        this.keyPool.reportTransientFailure(keyIndex);
+      }
       if (controller.signal.aborted)
         throw new Error(`Groq text request timed out after ${timeoutMs}ms`);
       this.logger.debug(

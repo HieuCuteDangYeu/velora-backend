@@ -7,6 +7,7 @@ import type {
 } from '@ai/domain/interfaces/tool-calling-llm.service.interface';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 
 interface GroqToolCall {
   id?: string;
@@ -26,7 +27,10 @@ interface GroqToolCompletionResponse {
 export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
   private readonly logger = new Logger(GroqToolCallingLlmAdapter.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly keyPool: GroqKeyPool,
+  ) {}
 
   async complete(
     input: ToolCallingCompletionInput,
@@ -39,11 +43,13 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
 
+    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
+
     try {
       const response = await fetch(`${this.baseUrl()}/chat/completions`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${this.config.getOrThrow<string>('GROQ_API_KEY')}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -73,6 +79,11 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
         throw new Error('Groq tool-calling response was invalid JSON');
       }
       if (!response.ok) {
+        if (response.status === 429) {
+          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+        } else if (response.status >= 500) {
+          this.keyPool.reportTransientFailure(keyIndex);
+        }
         const message =
           payload.error?.message ||
           raw.trim() ||
@@ -85,6 +96,7 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
       const message = choice?.message;
       if (!message)
         throw new Error('Groq tool-calling response contained no message');
+      this.keyPool.reportSuccess(keyIndex, response.headers);
       return {
         content: message.content?.trim() || undefined,
         toolCalls: (message.tool_calls ?? [])
@@ -93,6 +105,7 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
         finishReason: choice?.finish_reason ?? undefined,
       };
     } catch (error: unknown) {
+      this.keyPool.reportTransientFailure(keyIndex);
       if (controller.signal.aborted)
         throw new Error(
           `Groq tool-calling request timed out after ${timeoutMs}ms`,

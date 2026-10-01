@@ -7,6 +7,7 @@ import type {
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 
 interface GroqCompletionResponse {
   choices?: Array<{
@@ -141,7 +142,10 @@ export class GroqStructuredCompletionTimeoutError extends Error {
 export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   private readonly logger = new Logger(GroqStructuredLlmAdapter.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly keyPool: GroqKeyPool,
+  ) {}
 
   async generateObject<T>(input: GenerateStructuredObjectInput): Promise<T> {
     const model = input.model?.trim();
@@ -307,6 +311,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     maxTokens: number,
     state: CallState,
   ): Promise<T> {
+    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
@@ -316,7 +321,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
       response = await fetch(`${this.baseUrl()}/chat/completions`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${this.required('GROQ_API_KEY')}`,
+          Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -342,6 +347,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         signal: controller.signal,
       });
     } catch {
+      this.keyPool.reportTransientFailure(keyIndex);
       if (controller.signal.aborted)
         throw new GroqStructuredCompletionTimeoutError(model, timeoutMs);
       throw new GroqStructuredCompletionProviderError(
@@ -386,6 +392,11 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         code,
         this.providerMessage(payload),
       );
+      if (response.status === 429) {
+        this.keyPool.reportRateLimited(keyIndex, response.headers, this.providerMessage(payload));
+      } else if (response.status >= 500) {
+        this.keyPool.reportTransientFailure(keyIndex);
+      }
       throw new GroqStructuredCompletionProviderError(
         model,
         response.status,
@@ -396,6 +407,8 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         state.rateLimit,
       );
     }
+
+    this.keyPool.reportSuccess(keyIndex, response.headers);
 
     const choice = payload.choices?.[0];
     state.finishReason = choice?.finish_reason ?? undefined;

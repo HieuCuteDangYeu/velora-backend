@@ -1,6 +1,7 @@
 import type { TranscriptionResult } from '@common/ai/interfaces/transcription-result.interface';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 import type {
   ITranscriptionService,
   TranscriptionOptions,
@@ -14,7 +15,10 @@ interface GroqTranscriptionPayload {
 
 @Injectable()
 export class GroqTranscriptionAdapter implements ITranscriptionService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly keyPool: GroqKeyPool,
+  ) {}
 
   async transcribeAudio(
     audioBuffer: Buffer,
@@ -43,11 +47,12 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
     const timeoutMs = this.positiveInt('AI_TRANSCRIPTION_TIMEOUT_MS', 120_000);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
+    const { key: apiKey, index: keyIndex } = this.keyPool.acquire();
     try {
       const response = await fetch(`${this.baseUrl()}/audio/transcriptions`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${this.config.getOrThrow<string>('GROQ_API_KEY')}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: form,
         signal: controller.signal,
@@ -59,10 +64,17 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
       } catch {
         payload = {};
       }
-      if (!response.ok)
+      if (!response.ok) {
+        if (response.status === 429) {
+          this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+        } else if (response.status >= 500) {
+          this.keyPool.reportTransientFailure(keyIndex);
+        }
         throw new Error(
           `Groq transcription failed with status ${response.status}: ${raw.slice(0, 500)}`,
         );
+      }
+      this.keyPool.reportSuccess(keyIndex, response.headers);
       const text = payload.text?.trim() ?? '';
       return {
         text,

@@ -132,3 +132,35 @@ test('token recall and aggregate scores remain bounded', () => {
     Object.values(aggregate).every((value) => value >= 0 && value <= 1),
   );
 });
+
+test('scores production-shaped RagCitationDto without explicit evidenceId deterministically', () => {
+  const input = {
+    reelIds: ['06d45cee-d6cd-4a2b-bb70-930a791d67b8'],
+    evidenceIds: ['reel:06d45cee-d6cd-4a2b-bb70-930a791d67b8:chunk:0'],
+    modality: 'TRANSCRIPT',
+  };
+  const expected = {
+    answer: 'The narrator woke up with a fever.',
+    reelIds: ['06d45cee-d6cd-4a2b-bb70-930a791d67b8'],
+    evidenceIds: ['reel:06d45cee-d6cd-4a2b-bb70-930a791d67b8:chunk:0'],
+    modality: 'TRANSCRIPT',
+  };
+  const output = {
+    answer: 'The narrator woke up with a fever.',
+    citations: [
+      {
+        sourceType: 'REEL',
+        reelId: '06d45cee-d6cd-4a2b-bb70-930a791d67b8',
+        evidenceType: 'TRANSCRIPT',
+        title: 'Pet Chat Group Episode 22',
+        startTime: 0,
+        endTime: 44.78,
+        quote: 'Woke up with a fever the next day.',
+      },
+    ],
+  };
+  assert.deepEqual(
+    deterministicEvaluations(input, expected, output).map((item) => item.value),
+    [1, 1, 1, 1, 1],
+  );
+});

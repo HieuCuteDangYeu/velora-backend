@@ -64,6 +64,9 @@ function citationEvidenceIds(citations) {
           citation?.sourceId,
           citation?.chunkId,
           citation?.id,
+          typeof citation?.reelId === 'string' && citation.reelId
+            ? `reel:${citation.reelId}`
+            : null,
         ])
         .filter((value) => typeof value === 'string' && value.trim()),
     ),
@@ -77,21 +80,35 @@ function deterministicEvaluations(input, expectedOutput, output) {
     expectedOutput?.evidenceIds ?? input?.evidenceIds ?? [],
   );
   const actualEvidence = citationEvidenceIds(output?.citations);
-  const matchedEvidence = actualEvidence.filter((id) =>
-    expectedEvidence.has(id),
-  );
+  const actualEvidenceSet = new Set(actualEvidence);
+  const citations = Array.isArray(output?.citations) ? output.citations : [];
+  const expectedModality = expectedOutput?.modality ?? input?.modality;
+
+  const matchedEvidence = Array.from(expectedEvidence).filter((id) => {
+    if (actualEvidenceSet.has(id)) return true;
+    if (id.startsWith('reel:')) {
+      const reelId = id.split(':')[1];
+      return citations.some(
+        (citation) =>
+          citation?.reelId === reelId &&
+          (!expectedModality ||
+            !citation?.evidenceType ||
+            citation.evidenceType === expectedModality),
+      );
+    }
+    return false;
+  });
   const expectedReelId = expectedOutput?.reelIds?.[0] ?? input?.reelIds?.[0];
   const citedReels = new Set(
-    (Array.isArray(output?.citations) ? output.citations : [])
+    citations
       .map((citation) => citation?.reelId)
       .filter((value) => typeof value === 'string' && value),
   );
   const modalities = new Set(
-    (Array.isArray(output?.citations) ? output.citations : [])
+    citations
       .map((citation) => citation?.evidenceType)
       .filter((value) => typeof value === 'string' && value),
   );
-  const expectedModality = expectedOutput?.modality ?? input?.modality;
   return [
     {
       name: 'answer_exact_match',
@@ -504,6 +521,61 @@ async function main() {
     baseUrl: process.env.LANGFUSE_BASE_URL,
   });
   try {
+    if (args['rescore-summary']) {
+      const targetStateFile = path.resolve(String(args['rescore-summary']));
+      const targetState = loadState(targetStateFile);
+      const targetRunId = String(
+        args['run-id'] ||
+          targetState.runId ||
+          path.basename(targetStateFile, '.state.json'),
+      );
+      const dataset = await client.dataset.get(
+        targetState.datasetName || DATASET_NAME,
+      );
+      const items = [...dataset.items].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      );
+      const completedItems = items.filter(
+        (item) => targetState.cases[item.id]?.status === 'COMPLETED',
+      );
+      const summary = {
+        schemaVersion: 'langfuse-live-benchmark-summary-v1',
+        runId: targetRunId,
+        datasetName: targetState.datasetName || DATASET_NAME,
+        datasetFingerprint: targetState.datasetFingerprint,
+        datasetRunId: targetState.datasetRunId ?? null,
+        totalCases: items.length,
+        completedCases: completedItems.length,
+        excludedCases: items.filter(
+          (item) => targetState.cases[item.id]?.status === 'EXCLUDED',
+        ).length,
+        pendingCases:
+          items.length -
+          completedItems.length -
+          items.filter(
+            (item) => targetState.cases[item.id]?.status === 'EXCLUDED',
+          ).length,
+        productionRagRequestAttempts: Object.values(targetState.cases).reduce(
+          (total, item) => total + (item.attemptCount ?? 0),
+          0,
+        ),
+        deterministicMetrics: aggregateEvaluations(
+          completedItems.map((item) => ({
+            input: item.input,
+            expectedOutput: item.expectedOutput,
+            output: targetState.cases[item.id]?.output,
+          })),
+        ),
+        stateFile: targetStateFile,
+        completedAt: new Date().toISOString(),
+      };
+      const summaryFile = targetStateFile.endsWith('.state.json')
+        ? targetStateFile.replace(/\.state\.json$/, '.summary.json')
+        : `${targetStateFile}.summary.json`;
+      writeJsonAtomically(summaryFile, summary);
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
     if (
       !process.env.BACKEND_URL ||
       !process.env.VELORA_TEST_EMAIL ||
@@ -631,7 +703,10 @@ async function main() {
           productionRagCallsAuthorized: TARGET_CASES,
         },
         data: pending,
-        maxConcurrency: 1,
+        maxConcurrency: Math.min(
+          Math.max(Number.parseInt(args.concurrency ?? '1', 10) || 1, 1),
+          4,
+        ),
         task: async (item) => {
           if (halted)
             throw new Error(

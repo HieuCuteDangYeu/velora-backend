@@ -77,13 +77,21 @@ export class GenerateDraftAnswerUseCase {
     const authorizedEvidence = answerEvidence.map(({ chunk, evidenceId }) => ({
       evidenceId,
       evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+      title: chunk.title?.trim() || undefined,
       evidenceText:
         chunk.evidenceText?.trim() ||
         (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : ''),
     }));
-    const authorizedEvidenceText = authorizedEvidence.map(
-      (item) => item.evidenceText,
-    );
+    const authorizedEvidenceText = answerEvidence.flatMap(({ chunk }) => {
+      const texts: string[] = [];
+      const text =
+        chunk.evidenceText?.trim() ||
+        (chunk.evidenceType === 'METADATA' ? chunk.chunkText.trim() : '');
+      if (text) texts.push(text);
+      if (chunk.title?.trim()) texts.push(chunk.title.trim());
+      if (chunk.description?.trim()) texts.push(chunk.description.trim());
+      return texts;
+    });
     const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
     const maxAnswerChars =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
@@ -197,6 +205,32 @@ export class GenerateDraftAnswerUseCase {
             chunk,
             evidenceId: `e${index}`,
           }));
+    if (
+      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+      state.route.reelQuestionType === 'REEL_METADATA' &&
+      /\btitle\b/i.test(state.userMessage)
+    ) {
+      const titleCandidate = candidates.find(
+        ({ chunk }) => (chunk.title?.trim().length ?? 0) > 0,
+      );
+      if (titleCandidate?.chunk.title) {
+        const answer = titleCandidate.chunk.title.trim();
+        return {
+          answer,
+          claims: [
+            {
+              claim: answer,
+              evidenceIds: [titleCandidate.evidenceId],
+            },
+          ],
+          modelRole: 'ANSWER',
+          diagnostics,
+          finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+          fallbackReason: reason,
+        };
+      }
+    }
+
     const result = this.extractiveTranscriptFallback(state, candidates);
     if (!result) return undefined;
     return {

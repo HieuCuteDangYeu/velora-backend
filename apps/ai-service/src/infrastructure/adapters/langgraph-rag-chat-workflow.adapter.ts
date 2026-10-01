@@ -3,7 +3,10 @@ import { BuildGroundedAnswerRevisionUseCase } from '@ai/application/use-cases/bu
 import { CheckContextSufficiencyUseCase } from '@ai/application/use-cases/check-context-sufficiency.use-case';
 import { ContextToolAgentUseCase } from '@ai/application/use-cases/context-tool-agent.use-case';
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
-import { GenerateDraftAnswerUseCase } from '@ai/application/use-cases/generate-draft-answer.use-case';
+import {
+  GenerateDraftAnswerUseCase,
+  type RagDraftAnswer,
+} from '@ai/application/use-cases/generate-draft-answer.use-case';
 import { MemoryAgentUseCase } from '@ai/application/use-cases/memory-agent.use-case';
 import { PlanRetrievalUseCase } from '@ai/application/use-cases/plan-retrieval.use-case';
 import { QueryRouterAgentUseCase } from '@ai/application/use-cases/query-router-agent.use-case';
@@ -787,11 +790,60 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           : await groundedRevisionUseCase.executeWithProvenance(state)
         : undefined;
       const groundedAnswer = groundedRevision?.answer;
-      const draft = groundedAnswer
-        ? undefined
-        : await this.timed('draftAnswerNode', nodeTimings, () =>
-            this.generateDraftAnswerUseCase.execute(state),
-          );
+      let draft: RagDraftAnswer | undefined;
+      try {
+        draft = groundedAnswer
+          ? undefined
+          : await this.timed('draftAnswerNode', nodeTimings, () =>
+              this.generateDraftAnswerUseCase.execute(state),
+            );
+      } catch (error: unknown) {
+        this.logger.warn(
+          `[RagGraph] Draft answer generation failed: ${this.errorMessage(error)}, falling back to no-context answer`,
+        );
+        const fallbackAnswer = this.createNoContextAnswerUseCase.execute(state);
+        return {
+          answer: fallbackAnswer,
+          answerClaims: [],
+          answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+          answerFallbackReason: 'UNUSABLE_SYNTHESIS',
+          citations: [],
+          citationCoverage: {
+            mode: 'NOT_REQUIRED',
+            coverage: 1,
+            factualClaimCount: 0,
+            supportedClaimCount: 0,
+            unsupportedClaims: [],
+          },
+          verification: {
+            passed: true,
+            confidence: 1,
+            issues: [],
+            requiresRevision: false,
+            supportedClaimMappings: [],
+            contradictions: [],
+            diagnostics: {
+              providerStatus: 'NOT_CALLED',
+              decisionSource: 'NOT_REQUIRED',
+              finalPassed: true,
+              confidence: 1,
+              issues: [],
+              requiresRevision: false,
+              escalated: false,
+            },
+          },
+          finalFailureSource: 'NONE',
+          draftHistory: [
+            ...state.draftHistory,
+            {
+              revision: state.draftRevision,
+              source: state.nextDraftSource,
+              answer: fallbackAnswer.slice(0, 1500),
+            },
+          ].slice(-this.integer('AI_RAG_MAX_ANSWER_REVISIONS', 1, 0, 2) - 1),
+          draftRevision: state.draftRevision + 1,
+        };
+      }
       const answer = groundedAnswer ?? draft!.answer;
       const answerGenerationMode = groundedRevision
         ? 'SYNTHESIZED'
@@ -844,6 +896,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
+      if (
+        state.answerFallbackReason === 'UNUSABLE_SYNTHESIS' &&
+        state.verification?.passed
+      ) {
+        return { verification: state.verification };
+      }
+
       const verification = await this.timed('verifierNode', nodeTimings, () =>
         this.verifierAgentUseCase.execute(state),
       );
@@ -886,6 +945,18 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
+      if (state.answerFallbackReason === 'UNUSABLE_SYNTHESIS') {
+        return {
+          citations: [],
+          citationCoverage: {
+            mode: 'NOT_REQUIRED',
+            coverage: 1,
+            factualClaimCount: 0,
+            supportedClaimCount: 0,
+            unsupportedClaims: [],
+          },
+        };
+      }
       const assessment = await this.timed('citationNode', nodeTimings, () =>
         this.buildRagCitationsUseCase.execute(state),
       );

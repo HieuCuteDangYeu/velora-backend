@@ -1150,4 +1150,79 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
       savedState.failureDiagnostics.semanticInconsistencyDetails,
     ).not.toHaveProperty('reelId');
   });
+
+  it('falls back to no-context answer when draft answer generation throws an error', async () => {
+    const generateDraftAnswer = {
+      execute: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('Answer model returned an evidence-dependent refusal'),
+        ),
+    };
+    const createNoContextAnswer = {
+      execute: jest
+        .fn()
+        .mockReturnValue(
+          'I do not have enough shared reel metadata to answer that reliably.',
+        ),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      generateDraftAnswer as never,
+      undefined as never,
+      undefined as never,
+      createNoContextAnswer as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+    ) as unknown as {
+      createDraftAnswerNode: (
+        timings: Record<string, number>,
+      ) => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+
+    const node = workflow.createDraftAnswerNode({});
+    const mockState = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      userMessage: 'What title is assigned to this Reel?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION' as const,
+        reelQuestionType: 'REEL_METADATA' as const,
+        requiredEvidence: ['METADATA' as const],
+      },
+      retrievedChunks: [],
+      rerankedChunks: [],
+      retryCount: 0,
+      retrievalRetryCount: 0,
+      citationRetryCount: 0,
+      citationAttempts: [],
+      draftHistory: [],
+      draftRevision: 0,
+      nextDraftSource: 'INITIAL' as const,
+    } as unknown as RagChatWorkflowState;
+
+    const result = await node(mockState);
+
+    expect(result).toMatchObject({
+      answer:
+        'I do not have enough shared reel metadata to answer that reliably.',
+      answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      answerFallbackReason: 'UNUSABLE_SYNTHESIS',
+      citations: [],
+      citationCoverage: { mode: 'NOT_REQUIRED' },
+      verification: { passed: true },
+      finalFailureSource: 'NONE',
+    });
+    expect(createNoContextAnswer.execute).toHaveBeenCalled();
+  });
 });

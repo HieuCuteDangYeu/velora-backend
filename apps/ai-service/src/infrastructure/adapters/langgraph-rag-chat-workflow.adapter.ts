@@ -830,6 +830,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               issues: [],
               requiresRevision: false,
               escalated: false,
+              exactProvenance: {
+                supported: false,
+                supportingEvidenceIndexes: [],
+              },
             },
           },
           finalFailureSource: 'NONE',

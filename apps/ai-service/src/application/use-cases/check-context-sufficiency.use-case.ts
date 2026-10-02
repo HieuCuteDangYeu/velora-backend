@@ -426,9 +426,21 @@ ${JSON.stringify(
   private getRequiredEvidence(
     state: RagChatWorkflowState,
   ): RagRequiredEvidence[] {
-    return state.route?.requiredEvidence?.length
-      ? state.route.requiredEvidence
+    const raw: RagRequiredEvidence[] = state.route?.requiredEvidence?.length
+      ? [...state.route.requiredEvidence]
       : ['TRANSCRIPT'];
+
+    if (
+      state.route?.reelQuestionType === 'TRANSCRIPT_CONTENT' ||
+      state.route?.reelQuestionType === 'REEL_METADATA'
+    ) {
+      const nonVisual = raw.filter(
+        (item): item is RagRequiredEvidence => item !== 'VISUAL',
+      );
+      return nonVisual.length > 0 ? nonVisual : ['TRANSCRIPT'];
+    }
+
+    return raw;
   }
 
   private getMissingRequiredEvidence(

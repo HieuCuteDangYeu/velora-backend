@@ -352,4 +352,43 @@ describe('CheckContextSufficiencyUseCase', () => {
       diagnostics: { providerStatus: 'ERROR', decisionSource: 'FAIL_CLOSED' },
     });
   });
+
+  it('does not require visual evidence when reelQuestionType is TRANSCRIPT_CONTENT even if VISUAL was listed in requiredEvidence', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: true,
+        confidence: 0.95,
+        supportedEvidenceIds: ['reel:1:chunk:0'],
+        reason: 'Transcript provides the answer.',
+        recommendedAction: 'ANSWER',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+
+    const transcriptState = {
+      userMessage: 'What is said in the opening?',
+      route: {
+        needsRetrieval: true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+      rerankedChunks: [
+        {
+          id: 'reel:1:chunk:0',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Hello world opening statement',
+          chunkText: 'Hello world opening statement',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    const result = await useCase.execute(transcriptState);
+    expect(result.sufficient).toBe(true);
+    expect(result.missingEvidence).toEqual([]);
+    expect(result.diagnostics.decisionSource).toBe('LLM');
+  });
 });

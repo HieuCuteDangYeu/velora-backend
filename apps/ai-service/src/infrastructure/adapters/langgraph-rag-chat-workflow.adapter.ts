@@ -526,7 +526,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             needsConversationSummary: false,
             needsVerification: true,
             reelQuestionType: 'TRANSCRIPT_CONTENT',
-            requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+            requiredEvidence: ['TRANSCRIPT'],
             recommendationAction: { type: 'NONE', reason: 'Fail-safe route' },
             toolPlan: {
               allowedTools: ['search_reel_content', 'get_reel_context'],

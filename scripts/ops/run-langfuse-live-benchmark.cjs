@@ -585,7 +585,7 @@ async function runCase({
     request,
     conversationId,
     userMessage?.createdAt,
-    autoExcludeTimeouts ? 45 : 60,
+    autoExcludeTimeouts ? 65 : 80,
   );
   const output = outputFromMessage(assistant, item, conversationId);
   state.cases[caseId] = {

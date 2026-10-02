@@ -995,6 +995,57 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
     expect(draft.execute).not.toHaveBeenCalled();
   });
 
+  it('falls back to draft generation when grounded verifier revision throws an error', async () => {
+    const groundedRevision = {
+      executeWithProvenance: jest
+        .fn()
+        .mockRejectedValue(new Error('Groq 429 rate limit exceeded')),
+    };
+    const draft = {
+      execute: jest.fn().mockResolvedValue({
+        answer: 'Draft answer fallback.',
+        claims: [],
+        modelRole: 'ANSWER',
+        diagnostics: [],
+      }),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      draft as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+      groundedRevision as never,
+    ) as unknown as DiagnosticWorkflow;
+
+    const result = await workflow.createDraftAnswerNode({})({
+      ...base(),
+      nextDraftSource: 'VERIFIER_REVISION',
+      verification: {
+        passed: false,
+        confidence: 0,
+        issues: ['Requires revision.'],
+        requiresRevision: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      answer: 'Draft answer fallback.',
+    });
+    expect(groundedRevision.executeWithProvenance).toHaveBeenCalledTimes(1);
+    expect(draft.execute).toHaveBeenCalledTimes(1);
+  });
+
   it('bounds graph-generated draft history at configured revision capacity', async () => {
     const workflow = makeWorkflow();
     const draft = workflow.createDraftAnswerNode({});

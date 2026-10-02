@@ -1,5 +1,8 @@
 import { BuildRagCitationsUseCase } from '@ai/application/use-cases/build-rag-citations.use-case';
-import { BuildGroundedAnswerRevisionUseCase } from '@ai/application/use-cases/build-grounded-answer-revision.use-case';
+import {
+  BuildGroundedAnswerRevisionUseCase,
+  type GroundedAnswerRevision,
+} from '@ai/application/use-cases/build-grounded-answer-revision.use-case';
 import { CheckContextSufficiencyUseCase } from '@ai/application/use-cases/check-context-sufficiency.use-case';
 import { ContextToolAgentUseCase } from '@ai/application/use-cases/context-tool-agent.use-case';
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
@@ -831,16 +834,23 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
       const groundedRevisionUseCase = this.buildGroundedAnswerRevisionUseCase;
-      const groundedRevision = groundedRevisionUseCase
-        ? this.langfuseTracing
-          ? await this.langfuseTracing.observe(
-              'answerRevision',
-              () => groundedRevisionUseCase.executeWithProvenance(state),
-              { source: 'GROUNDED_VERIFIER_REVISION' },
-              'chain',
-            )
-          : await groundedRevisionUseCase.executeWithProvenance(state)
-        : undefined;
+      let groundedRevision: GroundedAnswerRevision | undefined;
+      try {
+        groundedRevision = groundedRevisionUseCase
+          ? this.langfuseTracing
+            ? await this.langfuseTracing.observe(
+                'answerRevision',
+                () => groundedRevisionUseCase.executeWithProvenance(state),
+                { source: 'GROUNDED_VERIFIER_REVISION' },
+                'chain',
+              )
+            : await groundedRevisionUseCase.executeWithProvenance(state)
+          : undefined;
+      } catch (error: unknown) {
+        this.logger.warn(
+          `[RagGraph] Grounded answer revision failed: ${this.errorMessage(error)}, falling back to draft generation`,
+        );
+      }
       const groundedAnswer = groundedRevision?.answer;
       let draft: RagDraftAnswer | undefined;
       try {

@@ -1775,30 +1775,49 @@ cleanup_stale_failed_snapshots() {
 
 cleanup_unused_velora_application_sha_tags() {
   local preserve_target="${1:-false}"
-  local dockerhub_username service repo ref image_id
-  local keep_ids_file
+  local dockerhub_username service repo ref image_id snapshot runtime_sha snapshot_sha
+  local keep_ids_file refs_file
+  local -a snapshots=("$PREVIOUS_RELEASE_FILE")
 
-  dockerhub_username="$(read_env_value DOCKERHUB_USERNAME)"
+  dockerhub_username="$(read_env_value DOCKERHUB_USERNAME)" || return 1
   keep_ids_file="$(mktemp)"
+  refs_file="$(mktemp)"
   : >"$keep_ids_file"
 
   # Preserve every image referenced by any running/stopped container without
   # inspecting container objects. A broken Created container can make
   # `docker inspect <container>` block indefinitely on Docker Desktop.
+  docker ps -a --no-trunc --format '{{.Image}}' >"$refs_file" || return 1
   while IFS= read -r ref; do
     [[ -n "$ref" ]] || continue
-    image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
-    [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-  done < <(docker ps -a --format '{{.Image}}' 2>/dev/null | sort -u)
+    image_id="$(docker image inspect --format '{{.Id}}' "$ref")" || return 1
+    [[ -n "$image_id" ]] || return 1
+    printf '%s\n' "$image_id" >>"$keep_ids_file"
+  done <"$refs_file"
 
-  # Preserve the exact previous-release images kept for one-step rollback.
-  if [[ -f "$PREVIOUS_RELEASE_FILE" ]]; then
+  # Failed DB-risk deployments need their emergency recovery images too. Keep
+  # an interrupted deployment's snapshot when its checkout is still running.
+  snapshots+=("$BLOCKED_DIR"/*.rollback.json)
+  [[ -z "$TEMP_SNAPSHOT" ]] || snapshots+=("$TEMP_SNAPSHOT")
+  for snapshot in "$STATE_DIR"/.rollback-*.json; do
+    [[ -f "$snapshot" ]] || continue
+    runtime_sha="$(git -C "$APP_DIR" rev-parse HEAD)" || return 1
+    snapshot_sha="$(jq -er '.to_sha' "$snapshot")" || return 1
+    if [[ "$snapshot_sha" == "$runtime_sha" ]]; then
+      snapshots+=("$snapshot")
+    fi
+  done
+  for snapshot in "${snapshots[@]}"; do
+    [[ -f "$snapshot" ]] || continue
+    jq -e '(.services | type == "object") and all(.services[]; type == "string" and length > 0)' "$snapshot" >/dev/null || return 1
+    jq -r '.services[]' "$snapshot" >"$refs_file" || return 1
     while IFS= read -r ref; do
       [[ -n "$ref" ]] || continue
-      image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
-      [[ -n "$image_id" ]] && printf '%s\n' "$image_id" >>"$keep_ids_file"
-    done < <(jq -r '.services[]' "$PREVIOUS_RELEASE_FILE")
-  fi
+      image_id="$(docker image inspect --format '{{.Id}}' "$ref")" || return 1
+      [[ -n "$image_id" ]] || return 1
+      printf '%s\n' "$image_id" >>"$keep_ids_file"
+    done <"$refs_file"
+  done
 
   # Preserve a non-blocked/retry target so already pulled immutable images can
   # be reused. A failed target that was automatically rolled back is not kept.
@@ -1812,31 +1831,41 @@ cleanup_unused_velora_application_sha_tags() {
 
   sort -u -o "$keep_ids_file" "$keep_ids_file"
 
-  # Remove stale immutable application SHA tags only when their image is neither
-  # in use, retained by rollback, nor deliberately retained as the current target.
+  # Only Velora owns these repositories; leave other projects and profile-gated
+  # infrastructure alone. Never force removal of an image used by a container.
   if [[ -n "$dockerhub_username" ]]; then
     log "==> Removing stale unused Velora application SHA tags..."
     for service in "${APP_SERVICES[@]}"; do
       repo="${dockerhub_username}/${service}"
       while IFS= read -r ref; do
-        [[ "$ref" =~ :[0-9a-f]{40}$ ]] || continue
+        [[ "$ref" =~ :[0-9a-f]{40}$ || "$ref" == *:latest ]] || continue
         image_id="$(docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
         [[ -n "$image_id" ]] || continue
         if grep -Fxq -- "$image_id" "$keep_ids_file"; then
           continue
         fi
-        docker image rm "$ref" >/dev/null 2>&1 || true
+        docker image rm "$ref" >/dev/null 2>&1 || warn "could not remove unused image tag $ref"
       done < <(docker image ls "$repo" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
     done
   fi
 
-  rm -f -- "$keep_ids_file"
+  log "==> Removing unused Velora rollback tags..."
+  docker image ls --filter 'reference=velora-rollback/*' --format '{{.Repository}}:{{.Tag}}' >"$refs_file" || return 1
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    image_id="$(docker image inspect --format '{{.Id}}' "$ref")" || return 1
+    if ! grep -Fxq -- "$image_id" "$keep_ids_file"; then
+      docker image rm "$ref" >/dev/null 2>&1 || warn "could not remove unused rollback tag $ref"
+    fi
+  done <"$refs_file"
+
+  rm -f -- "$keep_ids_file" "$refs_file"
 }
 
 reclaim_unused_docker_images() {
   local preserve_target="${1:-false}"
 
-  cleanup_unused_velora_application_sha_tags "$preserve_target"
+  cleanup_unused_velora_application_sha_tags "$preserve_target" || return 1
 
   log "==> Pruning dangling Docker images..."
   docker image prune -f >/dev/null || warn "failed to prune dangling Docker images"

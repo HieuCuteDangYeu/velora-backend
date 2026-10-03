@@ -3,9 +3,25 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const dns = require('node:dns');
 const fs = require('node:fs');
 const path = require('node:path');
 const dotenv = require('dotenv');
+
+try {
+  dns.setDefaultResultOrder('ipv4first');
+} catch {
+  // Ignore on older Node runtimes
+}
+
+const origLookup = dns.lookup;
+dns.lookup = function (hostname, options, callback) {
+  if (typeof options === 'function') {
+    callback = options;
+    options = {};
+  }
+  return origLookup(hostname, { ...options, family: 4 }, callback);
+};
 
 const DATASET_NAME = 'velora/rag-scraped-v1-provisional';
 const TARGET_CASES = 220;
@@ -353,7 +369,7 @@ function saveState(file, state) {
 
 function apiClient(baseUrl, credentials) {
   let cookies = '';
-  return async function request(method, pathname, body, maxRetries = 3) {
+  return async function request(method, pathname, body, maxRetries = 5) {
     for (let attempt = 0; attempt < maxRetries; attempt += 1) {
       try {
         const response = await fetch(new URL(pathname, `${baseUrl}/`), {
@@ -384,12 +400,21 @@ function apiClient(baseUrl, credentials) {
           return request(method, pathname, body);
         }
         if (!response.ok) {
+          const isRetryableStatus = [408, 429, 500, 502, 503, 504].includes(
+            response.status,
+          );
+          if (isRetryableStatus && attempt + 1 < maxRetries) {
+            const delayMs = Math.min(10_000, 1_000 * 2 ** attempt);
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            continue;
+          }
           throw new Error(`${method} ${pathname} failed (${response.status})`);
         }
         return payload;
       } catch (error) {
         if (attempt + 1 < maxRetries) {
-          await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 1_000));
+          const delayMs = Math.min(10_000, 1_000 * 2 ** attempt);
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
           continue;
         }
         throw error;
@@ -440,12 +465,17 @@ async function waitForBotMessage(
 ) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
-    const messages = await request(
-      'GET',
-      `/conversations/${conversationId}/messages?limit=50`,
-    );
-    const assistant = findBotMessage(messages, userCreatedAt);
-    if (assistant) return assistant;
+    try {
+      const messages = await request(
+        'GET',
+        `/conversations/${conversationId}/messages?limit=50`,
+      );
+      const assistant = findBotMessage(messages, userCreatedAt);
+      if (assistant) return assistant;
+    } catch (error) {
+      if (attempt + 1 >= maxAttempts) throw error;
+      // Continue polling if a transient 502/network error occurred during a poll attempt
+    }
   }
   throw new Error(`bot response timeout for ${conversationId}`);
 }
@@ -585,7 +615,7 @@ async function runCase({
     request,
     conversationId,
     userMessage?.createdAt,
-    autoExcludeTimeouts ? 65 : 80,
+    autoExcludeTimeouts ? 90 : 100,
   );
   const output = outputFromMessage(assistant, item, conversationId);
   state.cases[caseId] = {
@@ -917,7 +947,8 @@ async function main() {
 
 if (require.main === module)
   main().catch((error) => {
-    console.error(error.message);
+    console.error(error?.stack || error?.message || error);
+    if (error?.cause) console.error('Cause:', error.cause);
     process.exitCode = 1;
   });
 

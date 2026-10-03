@@ -89,3 +89,6 @@ apps/notification-service/secrets/
 
 # Narto scraper data & checkpoints
 scripts/narto-scraper/*.json
+
+# Benchmarks
+.benchmarks/

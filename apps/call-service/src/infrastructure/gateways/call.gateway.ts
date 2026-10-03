@@ -67,100 +67,31 @@ import {
   getSessionRingTimeoutMs,
 } from '../../domain/call-lifecycle-config';
 
-type InitiateCallPayload = {
-  conversationId: string;
-  targetUserId?: string;
-  selectedInviteeIds?: string[];
-  callType: 'VOICE' | 'VIDEO';
-};
+import type {
+  AcceptIncomingCallPayload,
+  InitiateCallPayload,
+  JoinCallPayload,
+  LeaveCallPayload,
+  LegacyAnswerCallPayload,
+  RejoinCallPayload,
+} from './call-lifecycle-payloads';
 
-type JoinCallPayload = {
-  callId: string;
-};
-
-type LegacyAnswerCallPayload = JoinCallPayload & {
-  /**
-   * Optional so existing clients keep their original answer_call contract.
-   * A rollback-capable new client sends its native action id, which lets the
-   * active state update distinguish its own winner from another device.
-   */
-  actionId?: string;
-};
-
-type AcceptIncomingCallPayload = JoinCallPayload & {
-  actionId: string;
-  invitationId?: string;
-};
-
-type RejoinCallPayload = {
-  callId: string;
-  actionId?: string;
-};
-
-type LeaveCallPayload = {
-  callId: string;
-  invitationId?: string;
-  reason?: string;
-  /** A supplied winner action must match; it never grants socket permission. */
-  actionId?: string;
-};
-
-type CreateTransportPayload = {
-  callId: string;
-  direction: 'send' | 'recv';
-};
-
-type ConnectTransportPayload = {
-  callId: string;
-  transportId: string;
-  dtlsParameters: Record<string, unknown>;
-};
-
-type ProducePayload = {
-  callId: string;
-  transportId: string;
-  kind: 'audio' | 'video';
-  rtpParameters: Record<string, unknown>;
-  requestId?: string;
-  audioEnabled?: boolean;
-};
-
-type CloseProducerPayload = {
-  callId: string;
-  producerId: string;
-  kind: 'audio' | 'video';
-  requestId?: string;
-};
-
-type ConsumePayload = {
-  callId: string;
-  transportId: string;
-  producerId: string;
-  rtpCapabilities: Record<string, unknown>;
-  requestId?: string;
-};
-
-type ResumeConsumerPayload = {
-  callId: string;
-  consumerId: string;
-};
-
-type CloseConsumerPayload = {
-  callId: string;
-  consumerId: string;
-  requestId?: string;
-};
+import type {
+  CloseConsumerPayload,
+  CloseProducerPayload,
+  ConnectTransportPayload,
+  ConsumePayload,
+  CreateTransportPayload,
+  ProducePayload,
+  RestartIcePayload,
+  ResumeConsumerPayload,
+} from './call-media-payloads';
 
 type ConsumerClosedAckPayload = {
   callId: string;
   consumerId: string;
   status: 'closed' | 'already_closed';
   requestId?: string;
-};
-
-type RestartIcePayload = {
-  callId: string;
-  transportId: string;
 };
 
 type SetCallTypePayload = {

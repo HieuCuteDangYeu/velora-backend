@@ -7,7 +7,7 @@ self-hosted Langfuse; there is no Python evaluator runtime here.
 Import the provisional scraped candidate set with:
 
 ```sh
-pnpm ops:langfuse:dataset:import --input /secure/rag-scraped-v1-provisional.jsonl --dry-run
+pnpm ops:langfuse:dataset:import --input eval/rag/datasets/rag-scraped-v1-provisional.jsonl --dry-run
 ```
 
 The importer requires exactly 220 `GENERATED_CANDIDATE` rows and preserves Reel

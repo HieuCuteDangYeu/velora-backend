@@ -115,4 +115,3 @@ test('publishSemanticScores creates expected scores and flushes', async () => {
   assert.equal(createdScores[0].datasetRunId, 'test-run-123');
   assert.equal(createdScores[0].metadata.caseId, 'CASE-001');
 });
-

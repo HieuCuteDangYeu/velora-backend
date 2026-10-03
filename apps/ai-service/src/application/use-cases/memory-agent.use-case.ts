@@ -66,8 +66,8 @@ export class MemoryAgentUseCase {
       case 'REEL_VIDEO_QUESTION':
         return {
           includeRecentHistory: true,
-          includeConversationSummary: true,
-          includeUserMemory: true,
+          includeConversationSummary: route.needsConversationSummary,
+          includeUserMemory: route.needsUserMemory,
           includeRetrievedChunks: true,
           reason:
             'Reel/video question uses retrieved chunks plus memory context.',

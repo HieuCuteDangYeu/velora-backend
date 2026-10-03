@@ -4,7 +4,8 @@ import type {
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { IRagTraceRepository } from '@ai/domain/interfaces/rag-trace.repository.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 @Injectable()
 export class SaveRagTraceUseCase {
@@ -13,6 +14,9 @@ export class SaveRagTraceUseCase {
   constructor(
     @Inject('IRagTraceRepository')
     private readonly ragTraceRepository: IRagTraceRepository,
+    @Optional()
+    @Inject('IAiApplicationConfig')
+    private readonly config?: IAiApplicationConfig,
   ) {}
 
   async execute(input: {
@@ -20,6 +24,7 @@ export class SaveRagTraceUseCase {
     latencyMs: number;
     nodeTimings: Record<string, number>;
     productionExecutionId?: string;
+    langfuseTraceId?: string;
   }): Promise<string | undefined> {
     try {
       const trace = await this.ragTraceRepository.create({
@@ -68,6 +73,30 @@ export class SaveRagTraceUseCase {
           supportedClaimCount:
             input.state.citationCoverage?.supportedClaimCount,
           diagnostics: {
+            ...(input.langfuseTraceId
+              ? { langfuseTraceId: input.langfuseTraceId }
+              : {}),
+            generationEvidenceIds: input.state.generationEvidence?.map(
+              (item) => item.sourceId,
+            ),
+            ...(this.config?.boolean(
+              'AI_RAG_CAPTURE_EVALUATION_CONTEXT',
+              false,
+            ) && input.state.generationEvidence
+              ? { generationEvidence: input.state.generationEvidence }
+              : {}),
+            evaluationCapture: {
+              release:
+                this.config?.get<string>('LANGFUSE_RELEASE') ??
+                this.config?.get<string>('RELEASE_SHA') ??
+                this.config?.get<string>('VELORA_IMAGE_TAG'),
+              contextCaptured: Boolean(
+                this.config?.boolean(
+                  'AI_RAG_CAPTURE_EVALUATION_CONTEXT',
+                  false,
+                ) && input.state.generationEvidence,
+              ),
+            },
             routeDecision: input.state.route
               ? {
                   intent: input.state.route.intent,
@@ -281,6 +310,7 @@ export class SaveRagTraceUseCase {
 
   private toPersistedRetrievalPlan(plan: RagRetrievalPlan) {
     return {
+      sourceOrder: plan.sourceOrder,
       mode: plan.mode,
       query: plan.query.slice(0, 500),
       rewrittenQuery: plan.rewrittenQuery?.slice(0, 500),

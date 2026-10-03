@@ -1,5 +1,8 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
-import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import type {
+  RagChatWorkflowState,
+  RagGenerationEvidence,
+} from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type {
   IStructuredLlmService,
   StructuredLlmCallDiagnostics,
@@ -27,6 +30,7 @@ export interface GroundedAnswerRevision {
   evidenceIds: string[];
   modelRole: 'ANSWER_REVISION';
   diagnostics: StructuredLlmCallDiagnostics[];
+  generationEvidence: RagGenerationEvidence[];
 }
 
 @Injectable()
@@ -95,6 +99,8 @@ export class BuildGroundedAnswerRevisionUseCase {
       return [
         {
           evidenceId: `e${index}`,
+          sourceId: chunk.chunkId,
+          indexVersion: chunk.indexVersion,
           reelId: chunk.reelId,
           evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
           evidenceText,
@@ -202,6 +208,7 @@ export class BuildGroundedAnswerRevisionUseCase {
     return {
       answer,
       evidenceIds,
+      generationEvidence: evidence,
       modelRole: 'ANSWER_REVISION',
       diagnostics,
     };

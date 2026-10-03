@@ -208,3 +208,49 @@ test('retains context sufficiency diagnostics without private text', () => {
   assert.match(output, /REFUSE_NO_CONTEXT/);
   assert.doesNotMatch(output, /private evidence reasoning/);
 });
+
+test('generation bodies stay redacted unless both capture and export opt-ins are present', () => {
+  const cases = [
+    {
+      caseId: 'a',
+      conversationId: 'c',
+      userMessageId: 'u',
+      assistantMessageId: 'a',
+    },
+  ];
+  const traces = [
+    {
+      id: 'database-trace',
+      conversationId: 'c',
+      retrievedChunkIds: [],
+      rerankedChunkIds: [],
+      workflowMetrics: {
+        diagnostics: {
+          productionExecutionId: 'p',
+          langfuseTraceId: 'otel',
+          evaluationCapture: { contextCaptured: true, release: 'sha' },
+          generationEvidence: [
+            {
+              sourceId: 's',
+              evidenceType: 'TRANSCRIPT',
+              evidenceText: 'private evidence',
+            },
+          ],
+        },
+      },
+    },
+  ];
+  assert.ok(
+    !JSON.stringify(buildTraceRows(cases, traces)).includes('private evidence'),
+  );
+  assert.ok(
+    JSON.stringify(buildTraceRows(cases, traces, null, true)).includes(
+      'private evidence',
+    ),
+  );
+  assert.equal(
+    buildTraceRows(cases, traces)[0].workflowMetrics.diagnostics
+      .langfuseTraceId,
+    'otel',
+  );
+});

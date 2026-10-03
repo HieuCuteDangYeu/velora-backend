@@ -28,6 +28,8 @@ export interface SemanticIndexSearchFilters {
 }
 
 export interface SemanticIndexSearchRequest {
+  /** Read the beginning of a scoped transcript, rather than rank by similarity. */
+  sourceOrder?: 'ASC';
   queryText?: string;
   queryEmbedding?: number[];
   queryEmbeddingModel?: string;
@@ -42,6 +44,7 @@ export interface SemanticIndexSearchRequest {
 
 export interface SemanticIndexSearchResult {
   id: string;
+  indexVersion?: string;
   reelId: string;
   parentId?: string;
   ordinal: number;

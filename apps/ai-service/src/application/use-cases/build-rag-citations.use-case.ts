@@ -11,6 +11,7 @@ import type {
   RagCitationDiagnostics,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { truncateEvidenceText } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 
 interface GroundedCitationCandidate {
@@ -272,7 +273,20 @@ export class BuildRagCitationsUseCase {
     const seen = new Set<string>();
     const candidates: GroundedCitationCandidate[] = [];
 
-    for (const chunk of state.rerankedChunks) {
+    const sources = state.generationEvidence
+      ? state.generationEvidence.flatMap((item) => {
+          const source = state.rerankedChunks.find(
+            (chunk) =>
+              chunk.chunkId === item.sourceId &&
+              chunk.reelId === item.reelId &&
+              (chunk.evidenceType ?? 'TRANSCRIPT') === item.evidenceType,
+          );
+          return source
+            ? [{ ...source, chunkId: item.sourceId, ...item, tags: [] }]
+            : [];
+        })
+      : state.rerankedChunks;
+    for (const chunk of sources) {
       const key = `${chunk.reelId}:${chunk.chunkId}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -280,22 +294,24 @@ export class BuildRagCitationsUseCase {
       const evidenceType = chunk.evidenceType ?? 'TRANSCRIPT';
       const evidence =
         chunk.evidenceText?.trim() ||
-        [
-          chunk.title?.trim(),
-          Array.isArray(chunk.tags) && chunk.tags.length > 0
-            ? chunk.tags.join(', ')
-            : undefined,
-          chunk.description?.trim(),
-          chunk.chunkText?.trim(),
-        ]
-          .filter((val): val is string => Boolean(val && val.length > 0))
-          .join(' - ')
-          .trim();
+        (evidenceType === 'METADATA'
+          ? [
+              chunk.title?.trim(),
+              chunk.tags?.join(', '),
+              chunk.description?.trim(),
+              chunk.chunkText?.trim(),
+            ]
+              .filter(Boolean)
+              .join(' - ')
+          : chunk.chunkText?.trim());
       if (!evidence) continue;
 
       const startTime = this.toOptionalNumber(chunk.startTime);
       const endTime = this.toOptionalNumber(chunk.endTime);
-      const evidenceId = `e${candidates.length}`;
+      const evidenceId =
+        'evidenceId' in chunk
+          ? String(chunk.evidenceId)
+          : `e${candidates.length}`;
 
       candidates.push({
         attribution: {
@@ -314,7 +330,7 @@ export class BuildRagCitationsUseCase {
           title: chunk.title ?? undefined,
           startTime,
           endTime,
-          quote: this.exactQuote(evidence, 240),
+          quote: truncateEvidenceText(evidence, 240, state.answer),
         },
         sourceEvidenceId: chunk.chunkId,
       });

@@ -149,6 +149,7 @@ export interface RagChatRouteDecision {
 export type RagRetrievalMode = 'NONE' | 'REEL_VECTOR' | 'REEL_HYBRID';
 
 export interface RagRetrievalPlan {
+  sourceOrder?: 'ASC';
   mode: RagRetrievalMode;
   query: string;
   rewrittenQuery?: string;
@@ -168,6 +169,7 @@ export interface RagRetrievalPlan {
 
 export type RagRetrievalPlanActual = Pick<
   RagRetrievalPlan,
+  | 'sourceOrder'
   | 'mode'
   | 'query'
   | 'rewrittenQuery'
@@ -386,6 +388,17 @@ export interface RagChatWorkflowInput {
   memory?: AiChatMemoryContext;
 }
 
+export interface RagGenerationEvidence {
+  evidenceId: string;
+  sourceId: string;
+  reelId: string;
+  evidenceType: 'TRANSCRIPT' | 'VISUAL' | 'METADATA';
+  evidenceText: string;
+  indexVersion?: string;
+  startTime?: number | null;
+  endTime?: number | null;
+}
+
 export interface RagChatWorkflowResult {
   answer: string;
   citations?: RagCitation[];
@@ -438,6 +451,7 @@ export interface RagChatWorkflowState {
   answer?: string;
   answerClaims?: RagAnswerClaim[];
   answerDiagnostics?: StructuredLlmCallDiagnostics[];
+  generationEvidence?: RagGenerationEvidence[];
   answerGenerationMode?: RagAnswerGenerationMode;
   answerFallbackReason?: RagAnswerFallbackReason;
   verification?: RagVerificationResult;

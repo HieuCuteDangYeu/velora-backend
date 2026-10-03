@@ -88,6 +88,7 @@ const RagChatStateSchema = new StateSchema({
   answer: z.string().optional(),
   answerClaims: z.array(z.any()).optional(),
   answerDiagnostics: z.array(z.any()).default([]),
+  generationEvidence: z.array(z.any()).optional(),
   answerGenerationMode: z
     .enum(['SYNTHESIZED', 'EXTRACTIVE_TRANSCRIPT_FALLBACK'])
     .optional(),
@@ -258,6 +259,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         latencyMs,
         nodeTimings,
         productionExecutionId,
+        ...(root?.traceId && !/^0+$/.test(root.traceId)
+          ? { langfuseTraceId: root.traceId }
+          : {}),
       });
       this.langfuseTracing?.setRootOutput(
         root,
@@ -535,7 +539,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               allowedTools: ['search_reel_content', 'get_reel_context'],
               requiredTools: ['search_reel_content'],
             },
-            reason: 'Fail-safe route activated after semantic router rate limit',
+            reason:
+              'Fail-safe route activated after semantic router rate limit',
             diagnostics: {
               modelRole: 'ROUTER',
               providerStatus: 'ERROR',
@@ -930,6 +935,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             ]
           : draft!.claims,
         answerDiagnostics: draft?.diagnostics,
+        generationEvidence:
+          groundedRevision?.generationEvidence ?? draft?.generationEvidence,
         answerGenerationMode,
         answerFallbackReason: groundedRevision
           ? undefined

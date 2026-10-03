@@ -35,7 +35,34 @@ export class TeiRerankerAdapter implements IRerankerService {
       this.number('AI_RAG_RERANK_MAX_LIMIT', 8, 1, 20),
     );
     const candidates = this.boundCandidates(input.candidates);
-    const response = await this.request(input.queryText, candidates);
+    const batchSize = Math.max(
+      2,
+      Math.floor(
+        (this.safeBatchTokens() -
+          this.queryTokenBudget(this.safeBatchTokens())) /
+          128,
+      ),
+    );
+    const response: TeiScore[] = [];
+    for (let offset = 0; offset < candidates.length; offset += batchSize) {
+      const batch = candidates.slice(offset, offset + batchSize);
+      const scores = await this.request(input.queryText, batch);
+      const usable = scores.filter(
+        (item) =>
+          Number.isInteger(Number(item.index)) &&
+          Number(item.index) >= 0 &&
+          Number(item.index) < batch.length &&
+          Number.isFinite(Number(item.score)),
+      );
+      if (!usable.length)
+        throw new Error('TEI reranker returned no usable candidates');
+      response.push(
+        ...usable.map((item) => ({
+          ...item,
+          index: Number(item.index) + offset,
+        })),
+      );
+    }
     const seen = new Set<number>();
     const scored = response
       .map((item) => {
@@ -123,16 +150,12 @@ export class TeiRerankerAdapter implements IRerankerService {
       2,
       50,
     );
-    const safeBatchTokens = this.safeBatchTokens();
-    const queryTokens = this.queryTokenBudget(safeBatchTokens);
-    const maxCandidatesByBudget = Math.max(
-      2,
-      Math.floor((safeBatchTokens - queryTokens) / 128),
-    );
-    return candidates.slice(
-      0,
-      Math.min(configuredLimit, maxCandidatesByBudget),
-    );
+    return [...candidates]
+      .sort(
+        (a, b) =>
+          (b.score ?? 0) - (a.score ?? 0) || a.chunkId.localeCompare(b.chunkId),
+      )
+      .slice(0, configuredLimit);
   }
 
   private payload(
@@ -176,12 +199,13 @@ export class TeiRerankerAdapter implements IRerankerService {
 
   private context(candidate: ReelContextSearchResult): string {
     return [
-      candidate.title,
-      candidate.description,
-      candidate.tags.join(' '),
       candidate.evidenceText?.trim() ||
         candidate.retrievalText?.trim() ||
         candidate.chunkText.trim(),
+      candidate.title,
+      candidate.evidenceType === 'METADATA'
+        ? candidate.tags.join(' ')
+        : undefined,
     ]
       .filter(Boolean)
       .join('\n');

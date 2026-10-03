@@ -202,6 +202,154 @@ const emptyRetrievalDiagnostics = (): RagRetrievalExecutionDiagnostics => ({
 });
 
 describe('DeterministicRetrievalEngineAdapter', () => {
+  it('reads opening statements in source order instead of retrieving a semantically similar later window', async () => {
+    const { adapter, semanticIndexService, embeddingService, generateObject } =
+      buildAdapter({});
+    const openingPlan = await adapter.plan({
+      message: 'What is the opening statement?',
+      route: transcriptRoute,
+    });
+    await adapter.retrieve({
+      userId: 'u',
+      conversationId: 'c',
+      route: transcriptRoute,
+      plan: openingPlan,
+      accessibleReelIds: ['reel-1'],
+    });
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledWith({
+      filters: { reelIds: ['reel-1'] },
+      sourceOrder: 'ASC',
+      limit: 1,
+    });
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+  it('reads typed metadata without a planner, embedding, or transcript search', async () => {
+    const {
+      adapter,
+      generateObject,
+      embeddingService,
+      searchChunks,
+      semanticIndexService,
+    } = buildAdapter({});
+    const route = {
+      ...transcriptRoute,
+      reelQuestionType: 'REEL_METADATA' as const,
+      requiredEvidence: ['METADATA' as const],
+    };
+    const metadataPlan = await adapter.plan({
+      message: 'Which tags are associated with this Reel?',
+      route,
+    });
+    jest
+      .mocked(semanticIndexService.getReelDocument)
+      .mockResolvedValue({ ...reelDocument, tags: ['canonical-tag'] });
+    const result = await adapter.retrieve({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      route,
+      plan: metadataPlan,
+      accessibleReelIds: ['reel-1'],
+    });
+    expect(result).toEqual([
+      expect.objectContaining({
+        chunkId: 'reel-document-1',
+        evidenceType: 'METADATA',
+        tags: ['canonical-tag'],
+        evidenceText: expect.stringContaining('Tags: canonical-tag'),
+      }),
+    ]);
+    expect(generateObject).not.toHaveBeenCalled();
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(searchChunks).not.toHaveBeenCalled();
+  });
+
+  it('never returns a metadata document outside Content-resolved access', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({});
+    jest
+      .mocked(semanticIndexService.getReelDocument)
+      .mockResolvedValue({ ...reelDocument, reelId: 'private-reel' });
+    await expect(
+      adapter.retrieve({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        route: {
+          ...transcriptRoute,
+          reelQuestionType: 'REEL_METADATA',
+          requiredEvidence: ['METADATA'],
+        },
+        plan,
+        accessibleReelIds: ['reel-1'],
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('does not choose an arbitrary Reel when a metadata referent is ambiguous', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({});
+    jest
+      .mocked(semanticIndexService.searchReels)
+      .mockResolvedValue([
+        reelCandidate,
+        { ...reelCandidate, id: 'other', reelId: 'reel-2' },
+      ]);
+    await expect(
+      adapter.retrieve({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        route: {
+          ...transcriptRoute,
+          reelQuestionType: 'REEL_METADATA',
+          requiredEvidence: ['METADATA'],
+        },
+        plan,
+        accessibleReelIds: ['reel-1', 'reel-2'],
+      }),
+    ).resolves.toEqual([]);
+    expect(semanticIndexService.getReelDocument).not.toHaveBeenCalled();
+  });
+
+  it('expands only selected transcript hits and rejects wrong-version or out-of-scope neighbors', async () => {
+    const { adapter, rerank, semanticIndexService } = buildAdapter({});
+    const hit = {
+      ...directCandidate,
+      chunkId: directCandidate.id,
+      chunkText: directCandidate.evidenceText!,
+      indexVersion: 'v1',
+      distance: null,
+    };
+    rerank.mockResolvedValue([hit]);
+    jest.mocked(semanticIndexService.getAdjacentChunks).mockResolvedValue([
+      {
+        ...directCandidate,
+        id: 'good-neighbor',
+        ordinal: 1,
+        indexVersion: 'v1',
+      },
+      {
+        ...directCandidate,
+        id: 'private',
+        reelId: 'private-reel',
+        indexVersion: 'v1',
+      },
+      { ...directCandidate, id: 'stale', indexVersion: 'v0' },
+    ]);
+    const result = await adapter.rerank({
+      plan: { ...plan, shouldRerank: true },
+      retrievedChunks: [hit],
+    });
+    expect(result.map((item) => item.chunkId)).toEqual([
+      hit.chunkId,
+      'good-neighbor',
+    ]);
+    expect(semanticIndexService.getAdjacentChunks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eligibleReelIds: ['reel-1'],
+        requiredIndexVersion: 'v1',
+        parentId: hit.parentId,
+      }),
+    );
+  });
+
   it('uses an explicit bounded contract for semantic retrieval planning', async () => {
     const { adapter, generateObject } = buildAdapter({
       AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',

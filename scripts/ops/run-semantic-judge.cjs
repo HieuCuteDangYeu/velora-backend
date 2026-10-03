@@ -5,12 +5,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const dotenv = require('dotenv');
-
-dotenv.config();
+const {
+  EVALUATOR_VERSION,
+  fingerprint,
+} = require('./rag-evaluation-contract.cjs');
 
 const {
   JudgePoolController,
   DEFAULT_GROQ_MODEL,
+  judgeFingerprint,
 } = require('./rag-semantic-judge.cjs');
 
 function parseArgs(argv) {
@@ -46,7 +49,10 @@ function saveJsonAtomic(filePath, data) {
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
   const tmpPath = `${resolved}.tmp.${Date.now()}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
   fs.renameSync(tmpPath, resolved);
 }
 
@@ -56,9 +62,7 @@ function computeStats(values) {
   const sum = sorted.reduce((acc, v) => acc + v, 0);
   const mid = Math.floor(sorted.length / 2);
   const median =
-    sorted.length % 2 !== 0
-      ? sorted[mid]
-      : (sorted[mid - 1] + sorted[mid]) / 2;
+    sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 
   return {
     mean: Math.round((sum / sorted.length) * 10000) / 10000,
@@ -69,16 +73,13 @@ function computeStats(values) {
   };
 }
 
-async function fetchDatasetItems(datasetName) {
-  const { LangfuseClient } = require('@langfuse/client');
-  const client = new LangfuseClient({
-    publicKey: process.env.LANGFUSE_PUBLIC_KEY,
-    secretKey: process.env.LANGFUSE_SECRET_KEY,
-    baseUrl: process.env.LANGFUSE_BASE_URL,
-  });
-
-  const dataset = await client.dataset.get(datasetName);
-  return dataset.items || [];
+function availableStats(values) {
+  return values.length
+    ? computeStats(values)
+    : { mean: null, median: null, min: null, max: null, count: 0 };
+}
+function formatMetric(value) {
+  return value === null ? 'UNAVAILABLE' : value.toFixed(4);
 }
 
 async function publishSemanticScores({
@@ -94,9 +95,10 @@ async function publishSemanticScores({
       baseUrl: process.env.LANGFUSE_BASE_URL,
     });
 
+  let published = 0;
   try {
     for (const [caseId, evaluation] of Object.entries(caseEvaluations)) {
-      if (!evaluation || evaluation.error) continue;
+      if (!evaluation || evaluation.error || !evaluation.traceId) continue;
 
       const metrics = [
         {
@@ -125,27 +127,38 @@ async function publishSemanticScores({
         if (typeof m.score !== 'number') continue;
 
         client.score.create({
-          datasetRunId,
+          traceId: evaluation.traceId,
+          ...(evaluation.observationId
+            ? { observationId: evaluation.observationId }
+            : {}),
           name: m.name,
           value: m.score,
           dataType: 'NUMERIC',
           comment: m.reasoning,
           metadata: {
             caseId,
+            evaluatorVersion: EVALUATOR_VERSION,
+            datasetRunId,
             provider: evaluation.provider,
             model: evaluation.model,
           },
         });
 
+        published += 1;
         // Also publish with standard prefix semantic_ for unambiguous filtering
         client.score.create({
-          datasetRunId,
+          traceId: evaluation.traceId,
+          ...(evaluation.observationId
+            ? { observationId: evaluation.observationId }
+            : {}),
           name: `semantic_${m.name}`,
           value: m.score,
           dataType: 'NUMERIC',
           comment: m.reasoning,
           metadata: {
             caseId,
+            evaluatorVersion: EVALUATOR_VERSION,
+            datasetRunId,
             provider: evaluation.provider,
             model: evaluation.model,
           },
@@ -153,6 +166,7 @@ async function publishSemanticScores({
       }
     }
     await client.flush();
+    return published;
   } finally {
     await client.shutdown();
   }
@@ -160,6 +174,7 @@ async function publishSemanticScores({
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  dotenv.config({ quiet: true });
 
   let statePath = args.state;
   if (!statePath) {
@@ -174,226 +189,307 @@ async function main() {
   }
 
   const state = loadJson(statePath);
-  const runId = state.runId || path.basename(statePath).replace(/\.state\.json$/, '');
-  const datasetName = state.datasetName || args.dataset || 'velora/rag-scraped-v1-provisional';
+  const runId =
+    state.runId || path.basename(statePath).replace(/\.state\.json$/, '');
+  const datasetName =
+    state.datasetName || args.dataset || 'velora/rag-scraped-v1-provisional';
   const outputPath =
-    args.output || path.join(path.dirname(statePath), `${runId}.semantic.json`);
+    args.output ||
+    path.join(path.dirname(statePath), `${runId}.semantic-v2.json`);
   const ledgerDir =
-    args.ledger || path.join(path.dirname(statePath), 'judge-ledgers', runId);
+    args.ledger ||
+    path.join(
+      path.dirname(statePath),
+      'judge-ledgers',
+      `${runId}-${EVALUATOR_VERSION}`,
+    );
 
-  const concurrency = Math.max(1, Math.min(4, Number.parseInt(args.concurrency ?? '2', 10) || 2));
+  const concurrency = Math.max(
+    1,
+    Math.min(4, Number.parseInt(args.concurrency ?? '2', 10) || 2),
+  );
   const limit = args.limit ? Number.parseInt(args.limit, 10) : Infinity;
 
-  console.log(`[Judge] Initializing LLM-as-a-Judge for Run: ${runId}`);
-  console.log(`[Judge] State: ${statePath}`);
-  console.log(`[Judge] Output: ${outputPath}`);
-  console.log(`[Judge] Concurrency: ${concurrency}`);
+  fs.mkdirSync(path.dirname(path.resolve(outputPath)), { recursive: true });
+  const lockPath = `${path.resolve(outputPath)}.lock`;
+  const lock = fs.openSync(lockPath, 'wx', 0o600);
+  try {
+    console.log(`[Judge] Initializing LLM-as-a-Judge for Run: ${runId}`);
+    console.log(`[Judge] State: ${statePath}`);
+    console.log(`[Judge] Output: ${outputPath}`);
+    console.log(`[Judge] Concurrency: ${concurrency}`);
 
-  // Load existing semantic results if available for resumption
-  let semanticData = {
-    schemaVersion: 'velora-rag-semantic-evaluation-v1',
-    runId,
-    datasetName,
-    datasetRunId: state.datasetRunId || null,
-    totalCases: 0,
-    evaluatedCases: 0,
-    metrics: {},
-    cases: {},
-    startedAt: new Date().toISOString(),
-    completedAt: null,
-  };
+    // Load existing semantic results if available for resumption
+    let semanticData = {
+      schemaVersion: EVALUATOR_VERSION,
+      evaluatorVersion: EVALUATOR_VERSION,
+      judgeFingerprint: judgeFingerprint(),
+      sourceStateFingerprint: fingerprint(state),
+      runId,
+      datasetName,
+      datasetRunId: state.datasetRunId || null,
+      totalCases: 0,
+      unavailableCases: 0,
+      evaluatedCases: 0,
+      metrics: {},
+      cases: {},
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+    };
 
-  if (fs.existsSync(outputPath)) {
-    try {
-      semanticData = loadJson(outputPath);
-      console.log(
-        `[Judge] Resuming from existing output: ${Object.keys(semanticData.cases).length} cases already scored`,
-      );
-    } catch {
-      // Start fresh if unreadable
-    }
-  }
-
-  // Fetch dataset items from Langfuse
-  console.log(`[Judge] Fetching dataset items for "${datasetName}"...`);
-  const datasetItems = await fetchDatasetItems(datasetName);
-  console.log(`[Judge] Loaded ${datasetItems.length} dataset items from Langfuse`);
-
-  const itemMap = new Map(datasetItems.map((it) => [it.id, it]));
-
-  // Setup Groq key pool & quota controllers
-  const groqKeys = (process.env.GROQ_API_KEYS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  if (!groqKeys.length) {
-    throw new Error('GROQ_API_KEYS environment variable is required');
-  }
-
-  const tpmLimit = Number.parseInt(args['tpm-limit'] ?? '6500', 10) || 6500;
-  const pool = new JudgePoolController({
-    groqApiKeys: groqKeys,
-    cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
-    cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
-    ledgerBaseDir: ledgerDir,
-    tpmLimitPerKey: tpmLimit,
-    maxRetries: 3,
-  });
-
-  // Filter completed benchmark cases to evaluate
-  const candidateCaseIds = Object.entries(state.cases)
-    .filter(([, caseEntry]) => caseEntry.status === 'COMPLETED')
-    .map(([id]) => id)
-    .slice(0, limit);
-
-  semanticData.totalCases = candidateCaseIds.length;
-
-  const pendingCaseIds = candidateCaseIds.filter(
-    (id) => !semanticData.cases[id] || semanticData.cases[id].error,
-  );
-
-  console.log(
-    `[Judge] Total candidate cases: ${candidateCaseIds.length}, Pending: ${pendingCaseIds.length}`,
-  );
-
-  let processedCount = candidateCaseIds.length - pendingCaseIds.length;
-
-  // Process queue with concurrency
-  const queue = [...pendingCaseIds];
-  const workers = Array.from({ length: concurrency }, async (_, workerIdx) => {
-    while (queue.length > 0) {
-      const caseId = queue.shift();
-      if (!caseId) break;
-
-      const caseEntry = state.cases[caseId];
-      const item = itemMap.get(caseId);
-
-      if (!item) {
-        console.warn(`[Worker ${workerIdx}] Warning: Dataset item ${caseId} not found in Langfuse dataset.`);
-        semanticData.cases[caseId] = {
-          error: `Dataset item ${caseId} not found`,
-        };
-        continue;
-      }
-
-      const question = item.input?.question;
-      const referenceAnswer = item.expectedOutput?.answer;
-      const generatedAnswer = caseEntry.output?.answer;
-      const citations = caseEntry.output?.citations || [];
-
+    if (fs.existsSync(outputPath)) {
       try {
-        const evaluation = await pool.evaluateCase({
-          caseId,
-          question,
-          referenceAnswer,
-          generatedAnswer,
-          context: citations,
-        });
-
-        semanticData.cases[caseId] = evaluation;
-        processedCount += 1;
-
+        semanticData = loadJson(outputPath);
+        if (
+          semanticData.evaluatorVersion !== EVALUATOR_VERSION ||
+          semanticData.judgeFingerprint !== judgeFingerprint() ||
+          semanticData.sourceStateFingerprint !== fingerprint(state)
+        )
+          throw new Error('Semantic resume identity mismatch');
         console.log(
-          `[Progress] [${processedCount}/${candidateCaseIds.length}] Case: ${caseId} | ` +
-            `Faith: ${evaluation.faithfulness.score.toFixed(2)} | ` +
-            `Fact: ${evaluation.factualCorrectness.score.toFixed(2)} | ` +
-            `Rel: ${evaluation.responseRelevancy.score.toFixed(2)} | ` +
-            `Comp: ${evaluation.contextCompleteness.score.toFixed(2)} ` +
-            `(${evaluation.provider}:${evaluation.model})`,
+          `[Judge] Resuming from existing output: ${Object.keys(semanticData.cases).length} cases already scored`,
         );
-
-        // Checkpoint every case
-        saveJsonAtomic(outputPath, semanticData);
       } catch (error) {
-        console.error(`[Judge Error] Case ${caseId} failed: ${error.message}`);
-        semanticData.cases[caseId] = {
-          caseId,
-          error: error.message,
-        };
-        saveJsonAtomic(outputPath, semanticData);
+        throw new Error(
+          `Refusing to replace incompatible semantic results: ${error.message}`,
+        );
       }
     }
-  });
 
-  await Promise.all(workers);
+    // References must come from the saved experiment, never a mutable dataset read.
+    console.log(
+      `[Judge] Loading frozen dataset snapshot for "${datasetName}"...`,
+    );
+    const datasetItems = state.datasetSnapshot;
+    if (
+      !Array.isArray(datasetItems) ||
+      fingerprint(datasetItems) !== state.snapshotFingerprint
+    )
+      throw new Error(
+        'A verified frozen datasetSnapshot is required; do not refetch mutable references for judging',
+      );
+    console.log(
+      `[Judge] Loaded ${datasetItems.length} dataset items from Langfuse`,
+    );
 
-  // Compute final statistics
-  const validEvaluations = Object.values(semanticData.cases).filter(
-    (ev) => ev && !ev.error && ev.faithfulness,
-  );
+    const itemMap = new Map(datasetItems.map((it) => [it.id, it]));
 
-  const faithfulnessScores = validEvaluations.map((ev) => ev.faithfulness.score);
-  const factualCorrectnessScores = validEvaluations.map(
-    (ev) => ev.factualCorrectness.score,
-  );
-  const responseRelevancyScores = validEvaluations.map(
-    (ev) => ev.responseRelevancy.score,
-  );
-  const contextCompletenessScores = validEvaluations.map(
-    (ev) => ev.contextCompleteness.score,
-  );
+    // Setup Groq key pool & quota controllers
+    const groqKeys = (process.env.GROQ_API_KEYS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
 
-  const metrics = {
-    faithfulness: computeStats(faithfulnessScores),
-    factual_correctness: computeStats(factualCorrectnessScores),
-    response_relevancy: computeStats(responseRelevancyScores),
-    context_completeness: computeStats(contextCompletenessScores),
-    overall_mean:
-      Math.round(
-        ((computeStats(faithfulnessScores).mean +
-          computeStats(factualCorrectnessScores).mean +
-          computeStats(responseRelevancyScores).mean +
-          computeStats(contextCompletenessScores).mean) /
-          4) *
-          10000,
-      ) / 10000,
-  };
-
-  semanticData.evaluatedCases = validEvaluations.length;
-  semanticData.metrics = metrics;
-  semanticData.completedAt = new Date().toISOString();
-
-  saveJsonAtomic(outputPath, semanticData);
-
-  console.log('\n======================================================');
-  console.log('             SEMANTIC RAG EVALUATION REPORT           ');
-  console.log('======================================================');
-  console.log(`Run ID:                ${runId}`);
-  console.log(`Evaluated Cases:       ${validEvaluations.length} / ${candidateCaseIds.length}`);
-  console.log(`Judge Model:           ${DEFAULT_GROQ_MODEL} (Groq pool)`);
-  console.log('------------------------------------------------------');
-  console.log(
-    `Faithfulness:          Mean=${metrics.faithfulness.mean.toFixed(4)} | Median=${metrics.faithfulness.median.toFixed(4)}`,
-  );
-  console.log(
-    `Factual Correctness:   Mean=${metrics.factual_correctness.mean.toFixed(4)} | Median=${metrics.factual_correctness.median.toFixed(4)}`,
-  );
-  console.log(
-    `Response Relevancy:    Mean=${metrics.response_relevancy.mean.toFixed(4)} | Median=${metrics.response_relevancy.median.toFixed(4)}`,
-  );
-  console.log(
-    `Context Completeness:  Mean=${metrics.context_completeness.mean.toFixed(4)} | Median=${metrics.context_completeness.median.toFixed(4)}`,
-  );
-  console.log('------------------------------------------------------');
-  console.log(`Overall Semantic Mean: ${metrics.overall_mean.toFixed(4)}`);
-  console.log('======================================================\n');
-
-  // Publish to Langfuse if requested
-  if (args.publish) {
-    if (!state.datasetRunId) {
-      console.warn('[Judge] No datasetRunId found in state file; skipping Langfuse score publication');
-    } else {
-      console.log(`[Judge] Publishing semantic scores to Langfuse (Dataset Run: ${state.datasetRunId})...`);
-      await publishSemanticScores({
-        datasetRunId: state.datasetRunId,
-        caseEvaluations: semanticData.cases,
-      });
-      console.log('[Judge] Scores successfully published to Langfuse!');
+    if (
+      !groqKeys.length &&
+      Object.values(state.cases).some((item) =>
+        Array.isArray(item.output?.generationEvidence),
+      )
+    ) {
+      throw new Error('GROQ_API_KEYS environment variable is required');
     }
-  }
 
-  console.log(`[Judge] Full results saved to: ${outputPath}`);
+    const tpmLimit = Number.parseInt(args['tpm-limit'] ?? '6500', 10) || 6500;
+    const pool = new JudgePoolController({
+      groqApiKeys: groqKeys,
+      cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+      cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
+      ledgerBaseDir: ledgerDir,
+      tpmLimitPerKey: tpmLimit,
+      maxRetries: 3,
+    });
+
+    // Filter completed benchmark cases to evaluate
+    const candidateCaseIds = Object.entries(state.cases)
+      .filter(([, caseEntry]) => caseEntry.status === 'COMPLETED')
+      .map(([id]) => id)
+      .slice(0, limit);
+
+    semanticData.totalCases = candidateCaseIds.length;
+
+    const pendingCaseIds = candidateCaseIds.filter(
+      (id) => !semanticData.cases[id] || semanticData.cases[id].error,
+    );
+
+    console.log(
+      `[Judge] Total candidate cases: ${candidateCaseIds.length}, Pending: ${pendingCaseIds.length}`,
+    );
+
+    let processedCount = candidateCaseIds.length - pendingCaseIds.length;
+
+    // Process queue with concurrency
+    const queue = [...pendingCaseIds];
+    const workers = Array.from(
+      { length: concurrency },
+      async (_, workerIdx) => {
+        while (queue.length > 0) {
+          const caseId = queue.shift();
+          if (!caseId) break;
+
+          const caseEntry = state.cases[caseId];
+          const item = itemMap.get(caseId);
+
+          if (!item) {
+            console.warn(
+              `[Worker ${workerIdx}] Warning: Dataset item ${caseId} not found in Langfuse dataset.`,
+            );
+            semanticData.cases[caseId] = {
+              error: `Dataset item ${caseId} not found`,
+            };
+            continue;
+          }
+
+          const question = item.input?.question;
+          const referenceAnswer = item.expectedOutput?.acceptedAnswers?.length
+            ? item.expectedOutput.acceptedAnswers
+            : item.expectedOutput?.answer;
+          const generatedAnswer = caseEntry.output?.answer;
+          const context = caseEntry.output?.generationEvidence;
+          if (!Array.isArray(context)) {
+            semanticData.cases[caseId] = {
+              caseId,
+              status: 'UNAVAILABLE',
+              error: 'Exact generation context was not captured',
+            };
+            continue;
+          }
+
+          try {
+            const evaluation = await pool.evaluateCase({
+              caseId,
+              question,
+              referenceAnswer,
+              generatedAnswer,
+              context,
+            });
+
+            semanticData.cases[caseId] = {
+              ...evaluation,
+              traceId: caseEntry.output?.traceId,
+            };
+            processedCount += 1;
+
+            console.log(
+              `[Progress] [${processedCount}/${candidateCaseIds.length}] Case: ${caseId} | ` +
+                `Faith: ${evaluation.faithfulness.score.toFixed(2)} | ` +
+                `Fact: ${evaluation.factualCorrectness.score.toFixed(2)} | ` +
+                `Rel: ${evaluation.responseRelevancy.score.toFixed(2)} | ` +
+                `Comp: ${evaluation.contextCompleteness.score.toFixed(2)} ` +
+                `(${evaluation.provider}:${evaluation.model})`,
+            );
+
+            // Checkpoint every case
+            saveJsonAtomic(outputPath, semanticData);
+          } catch (error) {
+            console.error(
+              `[Judge Error] Case ${caseId} failed: ${error.message}`,
+            );
+            semanticData.cases[caseId] = {
+              caseId,
+              status: 'UNAVAILABLE',
+              error: error.message,
+            };
+            saveJsonAtomic(outputPath, semanticData);
+          }
+        }
+      },
+    );
+
+    await Promise.all(workers);
+
+    // Compute final statistics
+    const validEvaluations = Object.values(semanticData.cases).filter(
+      (ev) => ev && !ev.error && ev.faithfulness,
+    );
+
+    const faithfulnessScores = validEvaluations.map(
+      (ev) => ev.faithfulness.score,
+    );
+    const factualCorrectnessScores = validEvaluations.map(
+      (ev) => ev.factualCorrectness.score,
+    );
+    const responseRelevancyScores = validEvaluations.map(
+      (ev) => ev.responseRelevancy.score,
+    );
+    const contextCompletenessScores = validEvaluations.map(
+      (ev) => ev.contextCompleteness.score,
+    );
+
+    const metrics = {
+      faithfulness: availableStats(faithfulnessScores),
+      factual_correctness: availableStats(factualCorrectnessScores),
+      response_relevancy: availableStats(responseRelevancyScores),
+      context_completeness: availableStats(contextCompletenessScores),
+      overall_mean: validEvaluations.length
+        ? Math.round(
+            ((availableStats(faithfulnessScores).mean +
+              availableStats(factualCorrectnessScores).mean +
+              availableStats(responseRelevancyScores).mean +
+              availableStats(contextCompletenessScores).mean) /
+              4) *
+              10000,
+          ) / 10000
+        : null,
+    };
+
+    semanticData.evaluatedCases = validEvaluations.length;
+    semanticData.unavailableCases =
+      candidateCaseIds.length - validEvaluations.length;
+    semanticData.metrics = metrics;
+    semanticData.completedAt = new Date().toISOString();
+
+    saveJsonAtomic(outputPath, semanticData);
+
+    console.log('\n======================================================');
+    console.log('             SEMANTIC RAG EVALUATION REPORT           ');
+    console.log('======================================================');
+    console.log(`Run ID:                ${runId}`);
+    console.log(
+      `Evaluated Cases:       ${validEvaluations.length} / ${candidateCaseIds.length}`,
+    );
+    console.log(`Judge Model:           ${DEFAULT_GROQ_MODEL} (Groq pool)`);
+    console.log('------------------------------------------------------');
+    console.log(
+      `Faithfulness:          Mean=${formatMetric(metrics.faithfulness.mean)} | Median=${formatMetric(metrics.faithfulness.median)}`,
+    );
+    console.log(
+      `Factual Correctness:   Mean=${formatMetric(metrics.factual_correctness.mean)} | Median=${formatMetric(metrics.factual_correctness.median)}`,
+    );
+    console.log(
+      `Response Relevancy:    Mean=${formatMetric(metrics.response_relevancy.mean)} | Median=${formatMetric(metrics.response_relevancy.median)}`,
+    );
+    console.log(
+      `Context Completeness:  Mean=${formatMetric(metrics.context_completeness.mean)} | Median=${formatMetric(metrics.context_completeness.median)}`,
+    );
+    console.log('------------------------------------------------------');
+    console.log(`Overall Semantic Mean: ${formatMetric(metrics.overall_mean)}`);
+    console.log('======================================================\n');
+
+    // Publish to Langfuse if requested
+    if (args.publish) {
+      if (!state.datasetRunId) {
+        console.warn(
+          '[Judge] No datasetRunId found in state file; skipping Langfuse score publication',
+        );
+      } else {
+        console.log(
+          `[Judge] Publishing semantic scores to Langfuse (Dataset Run: ${state.datasetRunId})...`,
+        );
+        const published = await publishSemanticScores({
+          datasetRunId: state.datasetRunId,
+          caseEvaluations: semanticData.cases,
+        });
+        console.log(
+          `[Judge] Published ${published} case-dimension score pairs to matching Langfuse traces`,
+        );
+      }
+    }
+
+    console.log(`[Judge] Full results saved to: ${outputPath}`);
+  } finally {
+    fs.closeSync(lock);
+    fs.unlinkSync(lockPath);
+  }
 }
 
 if (require.main === module) {
@@ -404,6 +500,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  availableStats,
   computeStats,
   loadJson,
   parseArgs,

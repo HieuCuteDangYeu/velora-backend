@@ -6,6 +6,32 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { BuildRagCitationsUseCase } from './build-rag-citations.use-case';
 
 describe('BuildRagCitationsUseCase', () => {
+  it('preserves prompt-local IDs and original source IDs after generation evidence selection', async () => {
+    const state = buildState();
+    state.generationEvidence = [
+      {
+        evidenceId: 'e3',
+        sourceId: state.rerankedChunks[0].chunkId,
+        reelId: 'r1',
+        evidenceType: 'VISUAL',
+        evidenceText: 'Visible text: Cannot find module @nestjs/config',
+      },
+    ];
+    const attribute = jest.fn().mockResolvedValue({
+      selections: [{ evidenceId: 'e3' }],
+      coverage: 1,
+      factualClaimCount: 1,
+      supportedClaimCount: 1,
+      claims: [],
+    });
+    const result = await new BuildRagCitationsUseCase({ attribute }).execute(
+      state,
+    );
+    expect(attribute.mock.calls[0][0].candidates[0].evidenceId).toBe('e3');
+    expect(
+      result.coverage.diagnostics?.selectedEvidenceMappings?.[0].evidenceId,
+    ).toBe(state.rerankedChunks[0].chunkId);
+  });
   const buildState = (): RagChatWorkflowState => ({
     userId: 'user-1',
     conversationId: 'conversation-1',

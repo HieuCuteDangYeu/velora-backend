@@ -3,6 +3,86 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
+  it('keeps complete canonical metadata values beyond ordinary prompt preview limits', async () => {
+    const title = 't'.repeat(220);
+    const tags = Array.from({ length: 30 }, (_, i) => `tag-${i}`);
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject: jest.fn() } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const input = {
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'REEL_METADATA',
+        requiredEvidence: ['METADATA'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'doc',
+          reelId: 'r',
+          evidenceType: 'METADATA',
+          title,
+          tags,
+          evidenceText: `Title: ${title}. Tags: ${tags.join(', ')}`,
+          chunkText: '',
+          distance: null,
+        },
+      ],
+    };
+    const titleResult = await useCase.execute({
+      ...input,
+      userMessage: 'What title is assigned to this Reel?',
+    } as never);
+    expect(titleResult.answer).toBe(title);
+    const tagResult = await useCase.execute({
+      ...input,
+      userMessage: 'Which tags are associated with this Reel?',
+    } as never);
+    expect(tagResult.answer).toBe(tags.join(', '));
+    expect(tagResult.generationEvidence?.[0].evidenceText).toBe(
+      `Tags: ${tags.join(', ')}`,
+    );
+  });
+  it.each([
+    'What title is assigned to this Reel?',
+    'Which tags are associated with this Reel?',
+  ])(
+    'answers exact typed metadata without synthesizing unrelated transcript: %s',
+    async (question) => {
+      const service = { generateObject: jest.fn() };
+      const useCase = new GenerateDraftAnswerUseCase(
+        service as never,
+        { build: jest.fn() },
+        { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+      );
+      const result = await useCase.execute({
+        userMessage: question,
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'REEL_METADATA',
+          requiredEvidence: ['METADATA'],
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'document',
+            reelId: 'r',
+            evidenceType: 'METADATA',
+            evidenceText: 'Title: Canonical title. Tags: canonical',
+            chunkText: 'Title: Canonical title. Tags: canonical',
+            title: 'Canonical title',
+            tags: ['canonical'],
+            distance: null,
+          },
+        ],
+      } as never);
+      expect(result.answer).toBe(
+        question.includes('title') ? 'Canonical title' : 'canonical',
+      );
+      expect(result.generationEvidence?.[0].sourceId).toBe('document');
+      expect(service.generateObject).not.toHaveBeenCalled();
+    },
+  );
   const config = {
     model: jest.fn(() => 'test/test/answer'),
     timeoutMs: jest.fn(() => 10_000),
@@ -54,6 +134,12 @@ describe('GenerateDraftAnswerUseCase', () => {
       modelRole: 'ANSWER',
       diagnostics: [],
       finalizationMode: 'SYNTHESIZED',
+      generationEvidence: expect.arrayContaining([
+        expect.objectContaining({
+          evidenceId: 'e0',
+          evidenceText: 'The zorb is coupled to the quasar.',
+        }),
+      ]),
     });
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({

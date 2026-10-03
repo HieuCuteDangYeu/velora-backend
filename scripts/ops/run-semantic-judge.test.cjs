@@ -88,6 +88,7 @@ test('publishSemanticScores creates expected scores and flushes', async () => {
     datasetRunId: 'test-run-123',
     caseEvaluations: {
       'CASE-001': {
+        traceId: 'trace-1',
         faithfulness: { score: 1.0, reasoning: 'Faithful' },
         factualCorrectness: { score: 0.8, reasoning: 'Mostly correct' },
         responseRelevancy: { score: 0.9, reasoning: 'Relevant' },
@@ -112,6 +113,15 @@ test('publishSemanticScores creates expected scores and flushes', async () => {
   assert.ok(names.includes('semantic_response_relevancy'));
   assert.ok(names.includes('context_completeness'));
   assert.ok(names.includes('semantic_context_completeness'));
-  assert.equal(createdScores[0].datasetRunId, 'test-run-123');
+  assert.equal(createdScores[0].traceId, 'trace-1');
+  assert.equal(createdScores[0].datasetRunId, undefined);
   assert.equal(createdScores[0].metadata.caseId, 'CASE-001');
+});
+
+test('no available judgments yields null means rather than a fabricated zero', () => {
+  const { availableStats } = require('./run-semantic-judge.cjs');
+  assert.equal(availableStats([]).mean, null);
+  assert.equal(availableStats([]).count, 0);
+  assert.equal(availableStats([0]).mean, 0);
+  assert.equal(availableStats([0]).count, 1);
 });

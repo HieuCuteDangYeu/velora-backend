@@ -22,6 +22,53 @@ describe('TeiRerankerAdapter', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
+  it('scores late candidates across bounded batches and puts evidence before long metadata', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation((_url, init) => {
+        if (typeof init?.body !== 'string')
+          throw new Error('Missing request body');
+        const body = JSON.parse(init.body) as { texts: string[] };
+        expect(body.texts.every((text) => text.startsWith('decisive'))).toBe(
+          true,
+        );
+        return Promise.resolve(
+          new Response(
+            JSON.stringify(
+              body.texts.map((text, index) => ({
+                index,
+                score: text.includes('winner') ? 1 : 0.1,
+              })),
+            ),
+            { status: 200 },
+          ),
+        );
+      });
+    const adapter = new TeiRerankerAdapter(
+      new ConfigService({
+        TEI_RERANKER_BASE_URL: 'http://test',
+        AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '8',
+      }),
+    );
+    const candidates = Array.from({ length: 8 }, (_, index) => ({
+      ...(candidate(String(index)) as object),
+      chunkId: String(index),
+      reelId: 'reel-1',
+      tags: [],
+      evidenceText: index === 7 ? 'decisive winner' : 'decisive other',
+      chunkText: 'unused',
+      title: 'metadata '.repeat(200),
+      distance: null,
+    }));
+    const result = await adapter.rerank({
+      queryText: 'question',
+      candidates,
+      limit: 1,
+    });
+    expect(result[0].chunkId).toBe('7');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('maps TEI ranking indexes back to original candidates', async () => {
     jest.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
@@ -110,7 +157,7 @@ describe('TeiRerankerAdapter', () => {
         limit: 5,
       }),
     ).resolves.toHaveLength(5);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it('retries when TEI returns 429 overloaded and succeeds', async () => {

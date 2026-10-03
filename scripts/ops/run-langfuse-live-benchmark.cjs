@@ -23,6 +23,13 @@ dns.lookup = function (hostname, options, callback) {
   return origLookup(hostname, { ...options, family: 4 }, callback);
 };
 
+const {
+  EVALUATOR_VERSION,
+  verifyDataset,
+  fingerprint,
+  strictEvaluations,
+} = require('./rag-evaluation-contract.cjs');
+
 const DATASET_NAME = 'velora/rag-scraped-v1-provisional';
 const TARGET_CASES = 220;
 const BOT_USER_ID =
@@ -267,6 +274,39 @@ function aggregateEvaluations(cases) {
   );
 }
 
+function benchmarkEvaluations(input, expectedOutput, output) {
+  return [
+    ...deterministicEvaluations(input, expectedOutput, output).map((score) =>
+      score.name === 'evidence_recall'
+        ? { ...score, name: 'reel_evidence_proxy_recall' }
+        : score,
+    ),
+    ...strictEvaluations(input, expectedOutput, output),
+  ];
+}
+function aggregateBenchmarkEvaluations(cases) {
+  const values = new Map();
+  for (const item of cases)
+    for (const score of benchmarkEvaluations(
+      item.input,
+      item.expectedOutput,
+      item.output,
+    )) {
+      const list = values.get(score.name) ?? [];
+      list.push(score.value);
+      values.set(score.name, list);
+    }
+  return Object.fromEntries(
+    [...values].map(([key, values]) => [
+      key,
+      {
+        mean: values.reduce((a, b) => a + b, 0) / values.length,
+        count: values.length,
+      },
+    ]),
+  );
+}
+
 const RETRYABLE_FAILURE_CATEGORIES = new Set([
   'TEI_RERANKER_OVERLOADED',
   'TEI_RERANKER_PAYLOAD_FIXED',
@@ -440,9 +480,16 @@ function outputFromMessage(message, item, conversationId) {
       : Array.isArray(message?.citations)
         ? message.citations
         : [],
-    reelId: item.input?.reelIds?.[0] ?? null,
-    evidenceIds: item.input?.evidenceIds ?? [],
-    modality: item.input?.modality ?? null,
+    evidenceIds: citationEvidenceIds(
+      message?.metadata?.citations ?? message?.citations,
+    ),
+    modalities: [
+      ...new Set(
+        (message?.metadata?.citations ?? message?.citations ?? []).map(
+          (citation) => citation.evidenceType,
+        ),
+      ),
+    ],
     conversationId,
     assistantMessageId: message?.id ?? null,
   };
@@ -630,6 +677,15 @@ async function runCase({
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const datasetName = String(args.dataset || DATASET_NAME);
+  const expectedCases = Number(
+    args['expected-cases'] ??
+      (datasetName === DATASET_NAME ? TARGET_CASES : NaN),
+  );
+  if (!Number.isInteger(expectedCases) || expectedCases < 1)
+    throw new Error(
+      'A non-provisional dataset requires an explicit positive --expected-cases',
+    );
   dotenv.config({
     path: args['langfuse-env'] || path.resolve(process.cwd(), '.env'),
   });
@@ -660,10 +716,19 @@ async function main() {
           path.basename(targetStateFile, '.state.json'),
       );
       const dataset = await client.dataset.get(
-        targetState.datasetName || DATASET_NAME,
+        targetState.datasetName || datasetName,
       );
       const items = [...dataset.items].sort((left, right) =>
         left.id.localeCompare(right.id),
+      );
+      verifyDataset(
+        targetState,
+        items.map(({ id, input, expectedOutput, metadata }) => ({
+          id,
+          input,
+          expectedOutput,
+          metadata,
+        })),
       );
       const completedItems = items.filter(
         (item) => targetState.cases[item.id]?.status === 'COMPLETED',
@@ -671,7 +736,7 @@ async function main() {
       const summary = {
         schemaVersion: 'langfuse-live-benchmark-summary-v1',
         runId: targetRunId,
-        datasetName: targetState.datasetName || DATASET_NAME,
+        datasetName: targetState.datasetName || datasetName,
         datasetFingerprint: targetState.datasetFingerprint,
         datasetRunId: targetState.datasetRunId ?? null,
         totalCases: items.length,
@@ -699,10 +764,11 @@ async function main() {
         stateFile: targetStateFile,
         completedAt: new Date().toISOString(),
       };
-      const summaryFile = targetStateFile.endsWith('.state.json')
-        ? targetStateFile.replace(/\.state\.json$/, '.summary.json')
-        : `${targetStateFile}.summary.json`;
-      writeJsonAtomically(summaryFile, summary);
+      if (!args.output || fs.existsSync(path.resolve(String(args.output))))
+        throw new Error(
+          'Rescoring requires a new --output path; original summaries are immutable',
+        );
+      writeJsonAtomically(path.resolve(String(args.output)), summary);
       console.log(JSON.stringify(summary, null, 2));
       return;
     }
@@ -713,14 +779,22 @@ async function main() {
     ) {
       throw new Error('BACKEND_URL and benchmark credentials are required');
     }
-    const dataset = await client.dataset.get(DATASET_NAME);
+    const dataset = await client.dataset.get(datasetName);
     const items = [...dataset.items].sort((left, right) =>
       left.id.localeCompare(right.id),
     );
-    if (items.length !== TARGET_CASES)
+    if (items.length !== expectedCases)
       throw new Error(
-        `expected ${TARGET_CASES} dataset items, received ${items.length}`,
+        `expected ${expectedCases} dataset items, received ${items.length}`,
       );
+    const datasetSnapshot = items.map(
+      ({ id, input, expectedOutput, metadata }) => ({
+        id,
+        input,
+        expectedOutput,
+        metadata,
+      }),
+    );
     const itemIds = items.map((item) => item.id);
     const datasetFingerprint = sha256(
       JSON.stringify(
@@ -735,7 +809,15 @@ async function main() {
     if (args.resume || fs.existsSync(stateFile)) {
       state = loadState(stateFile);
       if (
-        state.datasetName !== DATASET_NAME ||
+        Object.values(state.cases).every((item) =>
+          ['COMPLETED', 'EXCLUDED'].includes(item.status),
+        )
+      )
+        throw new Error(
+          'Completed runs are immutable; use analyze-rag-benchmark with a new output path',
+        );
+      if (
+        state.datasetName !== datasetName ||
         state.datasetFingerprint !== datasetFingerprint
       )
         throw new Error('dataset fingerprint mismatch; refusing resume');
@@ -745,7 +827,7 @@ async function main() {
       state = {
         schemaVersion: 'langfuse-live-benchmark-state-v1',
         runId,
-        datasetName: DATASET_NAME,
+        datasetName: datasetName,
         datasetFingerprint,
         itemIds,
         createdAt: new Date().toISOString(),
@@ -754,6 +836,11 @@ async function main() {
         ),
       };
       saveState(stateFile, state);
+    }
+    if (!state.datasetSnapshot) {
+      state.datasetSnapshot = datasetSnapshot;
+      state.evaluatorVersion = EVALUATOR_VERSION;
+      state.snapshotFingerprint = fingerprint(datasetSnapshot);
     }
     for (const item of Object.values(state.cases)) {
       if (item.status !== 'PENDING' && item.attemptCount === undefined)
@@ -812,7 +899,7 @@ async function main() {
     console.log(
       JSON.stringify({
         runId,
-        datasetName: DATASET_NAME,
+        datasetName: datasetName,
         totalCases: items.length,
         distinctReels: reelIds.length,
         pendingCases: pending.length,
@@ -830,7 +917,7 @@ async function main() {
         metadata: {
           datasetVersion: 'rag-scraped-v1-provisional',
           benchmarkRunId: runId,
-          productionRagCallsAuthorized: TARGET_CASES,
+          productionRagCallsAuthorized: expectedCases,
         },
         data: pending,
         maxConcurrency: Math.min(
@@ -892,7 +979,7 @@ async function main() {
           async ({ input, expectedOutput, output }) =>
             output?.status === 'EXCLUDED'
               ? []
-              : deterministicEvaluations(input, expectedOutput, output),
+              : benchmarkEvaluations(input, expectedOutput, output),
         ],
       });
       state.datasetRunId = result.datasetRunId ?? state.datasetRunId ?? null;
@@ -902,9 +989,10 @@ async function main() {
       (item) => state.cases[item.id]?.status === 'COMPLETED',
     );
     const summary = {
-      schemaVersion: 'langfuse-live-benchmark-summary-v1',
+      schemaVersion: 'langfuse-live-benchmark-summary-v2',
+      evaluatorVersion: EVALUATOR_VERSION,
       runId,
-      datasetName: DATASET_NAME,
+      datasetName: datasetName,
       datasetFingerprint,
       datasetRunId: state.datasetRunId ?? null,
       totalCases: items.length,
@@ -921,7 +1009,7 @@ async function main() {
         (total, item) => total + (item.attemptCount ?? 0),
         0,
       ),
-      deterministicMetrics: aggregateEvaluations(
+      deterministicMetrics: aggregateBenchmarkEvaluations(
         completedItems.map((item) => ({
           input: item.input,
           expectedOutput: item.expectedOutput,
@@ -934,7 +1022,7 @@ async function main() {
     const summaryFile = path.join(stateDir, `${runId}.summary.json`);
     writeJsonAtomically(summaryFile, summary);
     console.log(JSON.stringify(summary, null, 2));
-    if (summary.completedCases + summary.excludedCases !== TARGET_CASES) {
+    if (summary.completedCases + summary.excludedCases !== expectedCases) {
       process.exitCode = 2;
     } else if (summary.excludedCases > 0) {
       process.exitCode = 3;
@@ -953,6 +1041,8 @@ if (require.main === module)
   });
 
 module.exports = {
+  benchmarkEvaluations,
+  outputFromMessage,
   aggregateEvaluations,
   citationEvidenceIds,
   containmentMatch,

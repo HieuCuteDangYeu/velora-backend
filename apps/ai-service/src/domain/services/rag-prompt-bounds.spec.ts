@@ -9,6 +9,24 @@ import {
 } from './rag-prompt-bounds';
 
 describe('rag prompt bounds', () => {
+  it('never promotes search enrichment into source evidence', () => {
+    expect(
+      boundEvidence(
+        [
+          {
+            chunkId: 'c',
+            reelId: 'r',
+            evidenceType: 'TRANSCRIPT',
+            chunkText: '',
+            retrievalText: 'Unverified enriched fact',
+            tags: [],
+            distance: null,
+          },
+        ],
+        DEFAULT_RAG_PROMPT_BOUNDS,
+      ),
+    ).toEqual([]);
+  });
   it('bounds pathological recent history by count and total characters', () => {
     const messages = Array.from({ length: 12 }, (_, index) => ({
       role: 'user',
@@ -55,7 +73,7 @@ describe('rag prompt bounds', () => {
     expect(value).not.toContain('epsilon');
   });
 
-  it('preserves evidence tails when a fact may occur near the chunk end', () => {
+  it('returns a contiguous source span without splicing unrelated evidence', () => {
     const value = truncateEvidenceText(
       'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega',
       36,
@@ -63,8 +81,10 @@ describe('rag prompt bounds', () => {
 
     expect(value.length).toBeLessThanOrEqual(36);
     expect(value.startsWith('alpha')).toBe(true);
-    expect(value.endsWith('omega')).toBe(true);
-    expect(value).toContain('...');
+    expect(
+      'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega',
+    ).toContain(value);
+    expect(value).not.toContain('...');
   });
 
   it('preserves quantitative evidence from the omitted middle of a long window', () => {

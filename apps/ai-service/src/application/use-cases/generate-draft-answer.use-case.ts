@@ -2,6 +2,7 @@ import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-
 import type { IChatPromptBuilder } from '@ai/domain/interfaces/chat-prompt-builder.interface';
 import type {
   RagAnswerFallbackReason,
+  RagGenerationEvidence,
   RagAnswerGenerationMode,
   RagAnswerClaim,
   RagChatWorkflowState,
@@ -42,6 +43,7 @@ export interface RagDraftAnswer {
   claims: RagAnswerClaim[];
   modelRole: 'ANSWER';
   diagnostics: StructuredLlmCallDiagnostics[];
+  generationEvidence?: RagGenerationEvidence[];
   finalizationMode: RagAnswerGenerationMode;
   fallbackReason?: RagAnswerFallbackReason;
 }
@@ -76,6 +78,11 @@ export class GenerateDraftAnswerUseCase {
     );
     const authorizedEvidence = answerEvidence.map(({ chunk, evidenceId }) => ({
       evidenceId,
+      sourceId: chunk.chunkId,
+      reelId: chunk.reelId,
+      indexVersion: chunk.indexVersion,
+      startTime: chunk.startTime,
+      endTime: chunk.endTime,
       evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
       title: chunk.title?.trim() || undefined,
       evidenceText:
@@ -94,6 +101,46 @@ export class GenerateDraftAnswerUseCase {
           .join(' - ')
           .trim(),
     }));
+    if (
+      state.route?.reelQuestionType === 'REEL_METADATA' &&
+      state.rerankedChunks.every((chunk) => chunk.evidenceType === 'METADATA')
+    ) {
+      const direct = this.buildExtractiveFallback(
+        state,
+        'UNUSABLE_SYNTHESIS',
+        diagnostics,
+      );
+      if (
+        direct &&
+        /^(?:what|which|list|show|give|tell)\b/i.test(
+          state.userMessage.trim(),
+        ) &&
+        !/\b(?:why|how|changed?|compare|difference|before|after)\b/i.test(
+          state.userMessage,
+        ) &&
+        /\b(?:title|tags?)\b/i.test(state.userMessage) &&
+        !(
+          /\btitle\b/i.test(state.userMessage) &&
+          /\btags?\b/i.test(state.userMessage)
+        )
+      ) {
+        return {
+          ...direct,
+          fallbackReason: undefined,
+          finalizationMode: 'SYNTHESIZED',
+          generationEvidence: authorizedEvidence
+            .filter((item) =>
+              direct.claims.some((claim) =>
+                claim.evidenceIds.includes(item.evidenceId),
+              ),
+            )
+            .map((item) => ({
+              ...item,
+              evidenceText: `${/\btitle\b/i.test(state.userMessage) ? 'Title' : 'Tags'}: ${direct.answer}`,
+            })),
+        };
+      }
+    }
     const authorizedEvidenceText = answerEvidence.flatMap(({ chunk }) => {
       const texts: string[] = [];
       const text = chunk.evidenceText?.trim();
@@ -166,12 +213,17 @@ export class GenerateDraftAnswerUseCase {
         authorizedEvidenceText,
       ),
       diagnostics,
+      generationEvidence: authorizedEvidence,
       finalizationMode: 'SYNTHESIZED',
     });
     const fallback = (
       reason: RagAnswerFallbackReason,
-    ): RagDraftAnswer | undefined =>
-      this.buildExtractiveFallback(state, reason, diagnostics);
+    ): RagDraftAnswer | undefined => {
+      const answer = this.buildExtractiveFallback(state, reason, diagnostics);
+      return answer
+        ? { ...answer, generationEvidence: authorizedEvidence }
+        : undefined;
+    };
 
     let raw: RawDraftAnswer;
     try {
@@ -231,7 +283,12 @@ export class GenerateDraftAnswerUseCase {
         ({ chunk }) => (chunk.title?.trim().length ?? 0) > 0,
       );
       if (titleCandidate?.chunk.title) {
-        const answer = titleCandidate.chunk.title.trim();
+        const source = state.rerankedChunks.find(
+          (chunk) =>
+            chunk.chunkId === titleCandidate.chunk.chunkId &&
+            chunk.reelId === titleCandidate.chunk.reelId,
+        );
+        const answer = (source?.title ?? titleCandidate.chunk.title).trim();
         return {
           answer,
           claims: [
@@ -258,7 +315,14 @@ export class GenerateDraftAnswerUseCase {
           Array.isArray(chunk.tags) && chunk.tags.filter(Boolean).length > 0,
       );
       if (tagCandidate?.chunk.tags) {
-        const answer = tagCandidate.chunk.tags.filter(Boolean).join(', ');
+        const source = state.rerankedChunks.find(
+          (chunk) =>
+            chunk.chunkId === tagCandidate.chunk.chunkId &&
+            chunk.reelId === tagCandidate.chunk.reelId,
+        );
+        const answer = (source?.tags ?? tagCandidate.chunk.tags)
+          .filter(Boolean)
+          .join(', ');
         return {
           answer,
           claims: [

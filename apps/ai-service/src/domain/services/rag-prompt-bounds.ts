@@ -197,140 +197,60 @@ export function truncatePromptText(value: string, maxChars: number): string {
   return `${normalized.slice(0, boundary > Math.floor(budget * 0.6) ? boundary : budget).trim()}...`;
 }
 
-/**
- * Keep both ends of long evidence windows because a transcript fact may be
- * introduced near the beginning and qualified near the end of a chunk.
- */
+/** Select one contiguous source window; never fabricate a quote by joining fragments. */
 export function truncateEvidenceText(
   value: string,
   maxChars: number,
   focusText?: string,
 ): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (normalized.length <= maxChars) return normalized;
-
-  const marker = '...';
-  const contentBudget = Math.max(2, maxChars - marker.length * 2);
-  const headBudget = Math.floor(contentBudget * 0.3);
-  const tailBudget = Math.floor(contentBudget * 0.3);
-  const middleBudget = contentBudget - headBudget - tailBudget;
-  const quantityPattern =
-    /\b(?:\d+(?:[.,]\d+)?|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b/gi;
-  const quantityMatches = [...normalized.matchAll(quantityPattern)];
-  const focusStopwords = new Set([
-    'a',
-    'an',
-    'and',
-    'are',
-    'at',
-    'about',
-    'can',
-    'did',
-    'do',
-    'does',
-    'during',
-    'for',
-    'from',
-    'go',
-    'how',
-    'in',
-    'into',
-    'is',
-    'of',
-    'on',
-    'said',
-    'say',
-    'says',
-    'still',
-    'the',
-    'they',
-    'to',
-    'under',
-    'was',
-    'were',
-    'what',
-    'where',
-    'while',
-    'who',
-    'why',
-    'with',
-  ]);
-  const focusTokens = new Set(
-    (focusText?.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(
-      (token) => token.length >= 3 && !focusStopwords.has(token),
+  const text = value.replace(/\s+/g, ' ').trim();
+  if (text.length <= maxChars) return text;
+  const budget = Math.max(0, Math.floor(maxChars));
+  if (!budget) return '';
+  const focus = new Set(
+    (focusText?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+      (word) =>
+        word.length > 3 &&
+        ![
+          'what',
+          'which',
+          'does',
+          'this',
+          'that',
+          'with',
+          'from',
+          'reel',
+          'video',
+          'statement',
+        ].includes(word),
     ),
   );
-  const focusMatches = [...normalized.matchAll(/[a-z0-9]+/gi)].filter((match) =>
-    focusTokens.has(match[0].toLowerCase()),
-  );
-  const importantMatches = [...quantityMatches, ...focusMatches]
-    .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
-    .filter(
-      (match, index, matches) =>
-        index === 0 || match.index !== matches[index - 1].index,
+  const opening =
+    /\b(?:opening|first (?:statement|sentence)|beginning)\b/i.test(
+      focusText ?? '',
     );
-  const omittedImportantMatches = importantMatches.filter((match) => {
-    const index = match.index ?? 0;
-    return index >= headBudget && index < normalized.length - tailBudget;
-  });
-
-  if (omittedImportantMatches.length > 0) {
-    const first = omittedImportantMatches[0];
-    const last = omittedImportantMatches.at(-1) ?? first;
-    const middleStart = Math.max(headBudget, (first.index ?? headBudget) - 24);
-    const middleEnd = Math.min(
-      normalized.length - tailBudget,
-      (last.index ?? middleStart) + last[0].length + 24,
-    );
-    let middle = normalized.slice(middleStart, middleEnd).trim();
-
-    if (middle.length > middleBudget) {
-      middle = omittedImportantMatches
-        .map((match) => {
-          const index = match.index ?? headBudget;
-          return normalized
-            .slice(
-              Math.max(headBudget, index - 12),
-              Math.min(
-                normalized.length - tailBudget,
-                index + match[0].length + 12,
-              ),
-            )
-            .trim();
-        })
-        .join(marker);
+  const matches = [...text.matchAll(/[\p{L}\p{N}]+/gu)];
+  let anchor = 0;
+  let best = -1;
+  if (!opening) {
+    for (const match of matches) {
+      const score =
+        (focus.has(match[0].toLowerCase()) ? 3 : 0) +
+        (/^\d/.test(match[0]) ? 1 : 0);
+      if (score > best) {
+        best = score;
+        anchor = match.index ?? 0;
+      }
     }
-
-    if (middle.length > middleBudget) {
-      middle = omittedImportantMatches.map((match) => match[0]).join(' ');
-    }
-
-    const head = normalized
-      .slice(0, headBudget)
-      .replace(/\s+\S*$/, '')
-      .trim();
-    const tail = normalized
-      .slice(-tailBudget)
-      .replace(/^\S*\s+/, '')
-      .trim();
-    const preserved = [head, middle, tail].filter(Boolean).join(marker);
-    if (preserved.length <= maxChars) return preserved;
   }
-
-  const contentBudgetWithOneMarker = Math.max(2, maxChars - marker.length);
-  const fallbackHeadBudget = Math.ceil(contentBudgetWithOneMarker * 0.6);
-  const fallbackTailBudget = contentBudgetWithOneMarker - fallbackHeadBudget;
-  const headCandidate = normalized.slice(0, fallbackHeadBudget);
-  const headBoundary = headCandidate.lastIndexOf(' ');
-  const head = (
-    headBoundary > 0 ? headCandidate.slice(0, headBoundary) : headCandidate
-  ).trimEnd();
-  const tailCandidate = normalized.slice(-fallbackTailBudget);
-  const tailBoundary = tailCandidate.indexOf(' ');
-  const tail = (
-    tailBoundary >= 0 ? tailCandidate.slice(tailBoundary + 1) : tailCandidate
-  ).trimStart();
-  return `${head}${marker}${tail}`;
+  let start = Math.max(0, anchor - Math.floor(budget / 3));
+  const sentenceStart = text.lastIndexOf('. ', anchor);
+  if (sentenceStart >= start) start = sentenceStart + 2;
+  if (start > 0 && text[start - 1] !== ' ')
+    start = text.indexOf(' ', start) + 1;
+  const end = Math.min(text.length, start + budget);
+  const boundary = end < text.length ? text.lastIndexOf(' ', end) : end;
+  return text.slice(start, boundary > start ? boundary : end).trim();
 }
 
 export function boundPromptText(value: unknown, maxChars: number): string {
@@ -421,12 +341,16 @@ export function boundEvidence(
       ? truncateEvidenceText
       : truncatePromptText;
   const bounded = boundTextItems(
-    candidates,
+    candidates.filter(
+      (candidate) =>
+        candidate.evidenceType === 'METADATA' ||
+        Boolean(candidate.evidenceText?.trim() || candidate.chunkText?.trim()),
+    ),
     (candidate) =>
       candidate.evidenceText?.trim() ||
       (candidate.evidenceType === 'METADATA'
         ? candidate.chunkText.trim()
-        : (candidate.retrievalText ?? candidate.chunkText).trim()),
+        : candidate.chunkText.trim()),
     (candidate, text) => ({
       ...candidate,
       evidenceText: text,

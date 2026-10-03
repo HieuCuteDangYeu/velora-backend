@@ -19,7 +19,10 @@ const {
 test('formatRetrievedContext formats citations cleanly and handles edge cases', () => {
   assert.equal(formatRetrievedContext(null), 'No context retrieved.');
   assert.equal(formatRetrievedContext([]), 'No context retrieved.');
-  assert.equal(formatRetrievedContext('raw string context'), 'raw string context');
+  assert.equal(
+    formatRetrievedContext('raw string context'),
+    'raw string context',
+  );
 
   const citations = [
     {
@@ -57,19 +60,18 @@ test('buildJudgePrompt generates prompt with all 4 RAG dimensions', () => {
 test('clampScore handles boundary and malformed inputs', () => {
   assert.equal(clampScore(1.0), 1.0);
   assert.equal(clampScore(0.0), 0.0);
-  assert.equal(clampScore(1.5), 1.0);
-  assert.equal(clampScore(-0.5), 0.0);
-  assert.equal(clampScore('0.85'), 0.85);
-  assert.equal(clampScore('invalid'), 0.0);
+  assert.throws(() => clampScore(1.5), /unavailable/);
+  assert.throws(() => clampScore(-0.5), /unavailable/);
+  assert.throws(() => clampScore('0.85'), /unavailable/);
+  assert.throws(() => clampScore('invalid'), /unavailable/);
   assert.equal(clampScore(0.333333), 0.333);
 });
 
 test('extractJson parses direct JSON and markdown fenced blocks', () => {
   assert.deepEqual(extractJson('{"hello": "world"}'), { hello: 'world' });
-  assert.deepEqual(
-    extractJson('```json\n{"status": "ok"}\n```'),
-    { status: 'ok' },
-  );
+  assert.deepEqual(extractJson('```json\n{"status": "ok"}\n```'), {
+    status: 'ok',
+  });
   assert.deepEqual(
     extractJson('Some text before\n```\n{"key": 123}\n```\nSome text after'),
     { key: 123 },
@@ -173,7 +175,7 @@ test('JudgePoolController rotates keys and records results in quota ledger', asy
   const pool = new JudgePoolController({
     groqApiKeys: ['key-alpha', 'key-beta'],
     ledgerBaseDir: tempDir,
-    tpmLimitPerKey: 5000,
+    tpmLimitPerKey: 50000,
   });
 
   const res1 = await pool.evaluateCase({
@@ -197,9 +199,13 @@ test('JudgePoolController rotates keys and records results in quota ledger', asy
   assert.equal(res1.caseId, 'CASE-001');
   assert.equal(res1.faithfulness.score, 1.0);
   assert.equal(res2.caseId, 'CASE-002');
-  assert.deepEqual(calledKeys, ['key-alpha', 'key-beta']);
+  assert.deepEqual(
+    calledKeys,
+    Array.from({ length: 8 }, (_, i) => (i % 2 ? 'key-beta' : 'key-alpha')),
+  );
 
   // Calling CASE-001 again should hit ledger without calling provider
+  pool.nextKeyIndex = 1;
   const res1Repeat = await pool.evaluateCase({
     caseId: 'CASE-001',
     question: 'Q1',
@@ -209,5 +215,28 @@ test('JudgePoolController rotates keys and records results in quota ledger', asy
     fetchFn: mockFetch,
   });
   assert.equal(res1Repeat.caseId, 'CASE-001');
-  assert.equal(calledKeys.length, 2); // No additional provider call
+  assert.equal(calledKeys.length, 8); // No additional provider call
+});
+
+test('rejects over-budget judge prompts instead of waiting forever or making a provider call', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'judge-budget-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pool = new JudgePoolController({
+    groqApiKeys: ['mock'],
+    tpmLimitPerKey: 2000,
+    ledgerBaseDir: dir,
+  });
+  await assert.rejects(
+    pool.evaluateCase({
+      caseId: 'large',
+      question: 'question',
+      generatedAnswer: 'answer',
+      referenceAnswer: 'reference',
+      context: 'evidence '.repeat(10000),
+      fetchFn: async () => {
+        throw new Error('Must not call provider');
+      },
+    }),
+    /TPM budget/,
+  );
 });

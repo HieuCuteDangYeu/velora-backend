@@ -21,6 +21,41 @@ const config = {
 };
 
 describe('PrismaSemanticIndexRepository single-vector search', () => {
+  it('fails source-order reads closed without an explicit Reel scope', async () => {
+    const query = jest.fn();
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await expect(
+      repository.searchChunks({ sourceOrder: 'ASC' }),
+    ).resolves.toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('reads active source windows chronologically within the requested scope', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await repository.searchChunks({
+      sourceOrder: 'ASC',
+      filters: { reelIds: ['authorized'] },
+      requiredIndexVersion: 'v1',
+      limit: 1,
+    });
+    const sql = query.mock.calls[0][0] as {
+      strings: string[];
+      values: unknown[];
+    };
+    expect(sql.strings.join('')).toContain(
+      'ORDER BY t."startTime" ASC NULLS LAST',
+    );
+    expect(sql.strings.join('')).toContain('"isActive"');
+    expect(sql.values).toContain('authorized');
+    expect(sql.values).toContain('v1');
+  });
   const queries: unknown[] = [];
   const transaction = {
     $executeRawUnsafe: jest.fn(),

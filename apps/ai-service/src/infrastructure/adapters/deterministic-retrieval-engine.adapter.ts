@@ -106,7 +106,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     const queries = this.getQueries(input.plan);
     const includeVisual = input.route.requiredEvidence.includes('VISUAL');
     const includeTranscript =
-      !includeVisual ||
+      (!includeVisual && !input.route.requiredEvidence.includes('METADATA')) ||
       input.route.requiredEvidence.includes('TRANSCRIPT') ||
       input.route.requiredEvidence.includes('AUDIO');
     const allCandidates: TranscriptMatch[] = [];
@@ -123,6 +123,78 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       throw error;
     }
     this.initializeAccessDiagnostics(diagnostics, accessibleReelIds);
+    if (
+      input.route.reelQuestionType === 'REEL_METADATA' &&
+      accessibleReelIds.length > 0
+    ) {
+      const targets =
+        accessibleReelIds.length === 1
+          ? accessibleReelIds
+          : (
+              await this.semanticIndexService.searchReels({
+                queryText: queries.join(' '),
+                filters: { reelIds: accessibleReelIds },
+                limit: input.plan.searchLimit,
+              })
+            )
+              .filter((item) => accessibleReelIds.includes(item.reelId))
+              .map((item) => item.reelId);
+      const targetIds = [...new Set(targets)];
+      if (targetIds.length !== 1) return [];
+      const documents = await Promise.all(
+        targetIds.map(async (id) => {
+          const document = await this.semanticIndexService.getReelDocument(id);
+          return document?.reelId === id ? document : null;
+        }),
+      );
+      const metadata = documents.flatMap((document): TranscriptMatch[] => {
+        if (!document || !accessibleReelIds.includes(document.reelId))
+          return [];
+        const evidenceText = [
+          document.title ? `Title: ${document.title}` : '',
+          document.description ? `Description: ${document.description}` : '',
+          document.tags.length ? `Tags: ${document.tags.join(', ')}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        return evidenceText
+          ? [
+              {
+                chunkId: document.id,
+                reelId: document.reelId,
+                indexVersion: document.indexVersion,
+                title: document.title,
+                description: document.description,
+                tags: document.tags,
+                evidenceType: 'METADATA',
+                evidenceText,
+                chunkText: evidenceText,
+                distance: null,
+              },
+            ]
+          : [];
+      });
+      if (diagnostics) diagnostics.retrievedCount = metadata.length;
+      return metadata;
+    }
+    if (
+      input.plan.sourceOrder === 'ASC' &&
+      accessibleReelIds.length === 1 &&
+      includeTranscript &&
+      !includeVisual
+    ) {
+      const candidates = await this.semanticIndexService.searchChunks({
+        filters: { reelIds: accessibleReelIds },
+        sourceOrder: 'ASC',
+        limit: 1,
+      });
+      const hydrated = await this.hydrateAndExpand(
+        candidates,
+        accessibleReelIds,
+      );
+      if (diagnostics) diagnostics.retrievedCount = hydrated.length;
+      return hydrated;
+    }
     if (input.plan.mode === 'NONE') {
       if (diagnostics) {
         diagnostics.queryCount = diagnostics.queries.length;
@@ -204,8 +276,52 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
             limit: input.plan.rerankLimit,
           })
         : input.retrievedChunks.slice(0, input.plan.rerankLimit);
-      if (input.diagnostics) input.diagnostics.rerankedCount = reranked.length;
-      return reranked;
+      const scoped = reranked.flatMap((item) => {
+        const original = input.retrievedChunks.find(
+          (candidate) =>
+            candidate.chunkId === item.chunkId &&
+            candidate.reelId === item.reelId,
+        );
+        return original ? [{ ...original, rerankScore: item.rerankScore }] : [];
+      });
+      const assembled: TranscriptMatch[] = [...scoped];
+      const eligibleReelIds = [
+        ...new Set(input.retrievedChunks.map((item) => item.reelId)),
+      ];
+      for (const item of scoped) {
+        if (
+          item.evidenceType !== 'TRANSCRIPT' ||
+          !item.parentId ||
+          !item.indexVersion
+        )
+          continue;
+        const neighbors = await this.semanticIndexService.getAdjacentChunks({
+          chunkId: item.chunkId,
+          reelId: item.reelId,
+          parentId: item.parentId,
+          eligibleReelIds,
+          requiredIndexVersion: item.indexVersion,
+          limit: 2,
+        });
+        const document = await this.semanticIndexService.getReelDocument(
+          item.reelId,
+        );
+        for (const neighbor of neighbors.sort(
+          (a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id),
+        )) {
+          if (
+            neighbor.reelId !== item.reelId ||
+            neighbor.parentId !== item.parentId ||
+            neighbor.indexVersion !== item.indexVersion ||
+            neighbor.evidenceType !== 'TRANSCRIPT'
+          )
+            continue;
+          assembled.push(this.toTranscriptMatch(neighbor, document));
+        }
+      }
+      const result = this.dedupeByChunkId(assembled);
+      if (input.diagnostics) input.diagnostics.rerankedCount = result.length;
+      return result;
     } catch (error: unknown) {
       this.recordFailure(input.diagnostics, 'RERANK', error);
       throw error;
@@ -389,7 +505,9 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     candidates: SemanticIndexSearchResult[],
     accessibleReelIds: string[],
   ): Promise<TranscriptMatch[]> {
-    const expanded = await this.expandNeighbours(candidates, accessibleReelIds);
+    const expanded = candidates.filter((candidate) =>
+      accessibleReelIds.includes(candidate.reelId),
+    );
     const documents = await Promise.all(
       [...new Set(expanded.map((candidate) => candidate.reelId))].map(
         async (reelId) =>
@@ -402,12 +520,16 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     const documentByReelId = new Map<string, SemanticReelDocument | null>(
       documents,
     );
-    return expanded.map((candidate) =>
-      this.toTranscriptMatch(
-        candidate,
-        documentByReelId.get(candidate.reelId) ?? null,
-      ),
-    );
+    return expanded.flatMap((candidate) => {
+      const document = documentByReelId.get(candidate.reelId) ?? null;
+      if (
+        candidate.indexVersion &&
+        document &&
+        candidate.indexVersion !== document.indexVersion
+      )
+        return [];
+      return [this.toTranscriptMatch(candidate, document)];
+    });
   }
 
   private buildSearchRequest(
@@ -444,29 +566,6 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       0,
       8,
     );
-  }
-
-  private async expandNeighbours(
-    chunks: SemanticIndexSearchResult[],
-    eligibleReelIds: string[],
-  ): Promise<SemanticIndexSearchResult[]> {
-    const neighbours = await Promise.all(
-      chunks.slice(0, 10).map(async (chunk) => {
-        if (!chunk.parentId || chunk.evidenceType === 'VISUAL') return [];
-        return await this.semanticIndexService.getAdjacentChunks({
-          chunkId: chunk.id,
-          reelId: chunk.reelId,
-          parentId: chunk.parentId,
-          eligibleReelIds,
-          limit: 3,
-        });
-      }),
-    );
-    const byId = new Map<string, SemanticIndexSearchResult>();
-    for (const chunk of [...chunks, ...neighbours.flat()]) {
-      byId.set(chunk.id, chunk);
-    }
-    return [...byId.values()];
   }
 
   private hierarchicalRetrievalEnabled(requested: boolean): boolean {
@@ -590,11 +689,14 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     const evidenceText = candidate.evidenceText?.trim() || undefined;
     return {
       chunkId: candidate.id,
+      parentId: candidate.parentId,
+      ordinal: candidate.ordinal,
+      indexVersion: candidate.indexVersion,
       reelId: candidate.reelId,
       title: document?.title,
       description: document?.description,
       tags: candidate.tags,
-      chunkText: evidenceText ?? retrievalText,
+      chunkText: evidenceText ?? '',
       retrievalText,
       evidenceText,
       evidenceType: candidate.evidenceType,
@@ -680,6 +782,44 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         rerankLimit: 0,
         shouldRerank: false,
         reason: 'Router decided retrieval is not needed.',
+        diagnostics: {
+          modelRole: 'RETRIEVAL_PLANNER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'NOT_REQUIRED',
+        },
+      };
+    }
+    if (
+      input.route.reelQuestionType === 'TRANSCRIPT_CONTENT' &&
+      /\b(?:opening statement|first (?:statement|sentence)|first thing (?:said|spoken))\b/i.test(
+        message,
+      )
+    ) {
+      return {
+        mode: 'REEL_HYBRID',
+        sourceOrder: 'ASC',
+        query: message,
+        queries: [message],
+        searchLimit: 1,
+        rerankLimit: 1,
+        shouldRerank: false,
+        reason: 'Read the beginning of the authorized transcript.',
+        diagnostics: {
+          modelRole: 'RETRIEVAL_PLANNER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'NOT_REQUIRED',
+        },
+      };
+    }
+    if (input.route.reelQuestionType === 'REEL_METADATA') {
+      return {
+        mode: 'REEL_HYBRID',
+        query: message,
+        queries: [message],
+        searchLimit: 5,
+        rerankLimit: 5,
+        shouldRerank: false,
+        reason: 'Read typed authorized Reel metadata.',
         diagnostics: {
           modelRole: 'RETRIEVAL_PLANNER',
           providerStatus: 'NOT_CALLED',

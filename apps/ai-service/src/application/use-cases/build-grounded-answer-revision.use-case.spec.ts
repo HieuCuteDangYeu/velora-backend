@@ -95,6 +95,9 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       answer: fixture.answer,
       evidenceIds: fixture.evidenceIds,
       modelRole: 'ANSWER_REVISION',
+      generationEvidence: expect.arrayContaining([
+        expect.objectContaining({ sourceId: 'chunk-0', evidenceId: 'e0' }),
+      ]),
       diagnostics: [],
     });
   });

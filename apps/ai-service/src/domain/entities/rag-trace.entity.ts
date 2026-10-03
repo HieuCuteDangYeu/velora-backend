@@ -1,5 +1,6 @@
 import type {
   RagCitation,
+  RagGenerationEvidence,
   RagCitationDiagnostics,
   RagCitationEvidenceMapping,
   RagAnswerFallbackReason,
@@ -70,6 +71,10 @@ export interface RagWorkflowTraceMetrics {
     finalFailureSource?: string;
     failure?: RagWorkflowFailureDiagnostics;
     productionExecutionId?: string;
+    langfuseTraceId?: string;
+    generationEvidenceIds?: string[];
+    generationEvidence?: RagGenerationEvidence[];
+    evaluationCapture?: { release?: string; contextCaptured: boolean };
   };
 }
 

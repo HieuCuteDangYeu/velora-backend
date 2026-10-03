@@ -25,6 +25,7 @@ type SemanticTable =
 
 interface SearchRow {
   id: string;
+  indexVersion?: string;
   reelId: string;
   parentId: string | null;
   ordinal: number;
@@ -277,7 +278,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
           ${requiredIndexVersion ? Prisma.sql`AND "indexVersion" = ${requiredIndexVersion}` : Prisma.empty}
         LIMIT 1
       )
-      SELECT c."id", c."reelId", c."parentId", c."ordinal", c."userId",
+      SELECT c."id", c."indexVersion", c."reelId", c."parentId", c."ordinal", c."userId",
         c."retrievalText" AS "text", c."retrievalText" AS "retrievalText",
         c."evidenceText", 'TRANSCRIPT'::text AS "evidenceType", c."tags",
         c."startTime", c."endTime", c."sourceDurationMs", c."sourceOrientation",
@@ -345,6 +346,24 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     target: SemanticTable,
     input: SemanticIndexSearchRequest,
   ): Promise<SemanticIndexSearchResult[]> {
+    if (target === 'ReelChunk' && input.sourceOrder === 'ASC') {
+      if (!this.cleanStrings(input.filters?.reelIds).length) return [];
+      const where = this.filters(
+        input.filters ?? {},
+        [],
+        input.requiredIndexVersion,
+      );
+      const limit = this.boundedInt(input.limit, 1, 1, 20);
+      const rows = await this.prisma.$queryRaw<SearchRow[]>(Prisma.sql`
+        SELECT t."id", t."indexVersion", t."reelId", t."parentId", t."ordinal", t."userId",
+          t."retrievalText" AS "text", t."retrievalText", t."evidenceText", 'TRANSCRIPT'::text AS "evidenceType", t."tags",
+          t."startTime", t."endTime", t."sourceDurationMs", t."sourceOrientation", t."sourceLengthClass",
+          0::double precision AS "rrfScore", NULL::double precision AS "vectorDistance", NULL::bigint AS "vectorRank", NULL::bigint AS "keywordRank", NULL::bigint AS "metadataRank"
+        FROM "ReelChunk" t WHERE t."isActive" = true ${where}
+        ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC LIMIT ${limit}
+      `);
+      return rows.map((row) => this.toSearchResult(row));
+    }
     const normalized = this.normalizeSearch(input);
     const table = Prisma.raw(`"${target}"`);
     const evidenceType: SemanticIndexEvidenceType =
@@ -415,7 +434,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         UNION SELECT "rowId" FROM keyword_candidates
         UNION SELECT "rowId" FROM metadata_candidates
       )
-      SELECT t."id", t."reelId", t."parentId", t."ordinal", t."userId",
+      SELECT t."id", t."indexVersion", t."reelId", t."parentId", t."ordinal", t."userId",
         t."retrievalText" AS "text", t."retrievalText" AS "retrievalText",
         t."evidenceText", ${evidenceType}::text AS "evidenceType", t."tags",
         t."startTime", t."endTime", t."sourceDurationMs", t."sourceOrientation",

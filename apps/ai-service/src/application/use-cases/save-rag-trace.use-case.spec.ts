@@ -2,6 +2,45 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { SaveRagTraceUseCase } from './save-rag-trace.use-case';
 
 describe('SaveRagTraceUseCase', () => {
+  it.each([false, true])(
+    'captures generation bodies only under explicit evaluation opt-in: %s',
+    async (capture) => {
+      const create = jest.fn();
+      const useCase = new SaveRagTraceUseCase({ create }, {
+        boolean: () => capture,
+        get: () => 'release-sha',
+      } as never);
+      await useCase.execute({
+        state: {
+          userId: 'u',
+          conversationId: 'c',
+          userMessage: 'q',
+          retrievedChunks: [],
+          rerankedChunks: [],
+          retryCount: 0,
+          retrievalRetryCount: 0,
+          citationRetryCount: 0,
+          draftHistory: [],
+          generationEvidence: [
+            {
+              evidenceId: 'e0',
+              sourceId: 'source',
+              reelId: 'r',
+              evidenceType: 'TRANSCRIPT',
+              evidenceText: 'private generation evidence',
+            },
+          ],
+        } as never,
+        latencyMs: 1,
+        nodeTimings: {},
+      });
+      const diagnostics = create.mock.calls[0][0].workflowMetrics.diagnostics;
+      expect(diagnostics.generationEvidenceIds).toEqual(['source']);
+      expect(
+        JSON.stringify(diagnostics).includes('private generation evidence'),
+      ).toBe(capture);
+    },
+  );
   it('persists bounded graph diagnostics under existing workflow metrics', async () => {
     const create = jest.fn().mockResolvedValue(undefined);
     const useCase = new SaveRagTraceUseCase({ create });

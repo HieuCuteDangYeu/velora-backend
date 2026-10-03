@@ -2,6 +2,9 @@ export type ReelEvidenceType = 'TRANSCRIPT' | 'VISUAL' | 'METADATA';
 
 export interface ReelContextSearchResult {
   chunkId: string;
+  parentId?: string;
+  ordinal?: number;
+  indexVersion?: string;
   reelId: string;
   title?: string;
   description?: string;

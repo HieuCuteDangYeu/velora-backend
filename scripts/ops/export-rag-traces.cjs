@@ -49,6 +49,7 @@ const SAFE_STRING_KEYS = new Set([
   'status',
   'usageSource',
   'version',
+  'release',
   'embeddingProvider',
   'embeddingModel',
   'embeddingVersion',
@@ -122,14 +123,16 @@ function sanitizeCitations(value) {
 function semanticContextIds(traces) {
   return [
     ...new Set(
-      traces.flatMap((trace) => [
-        ...(Array.isArray(trace.retrievedChunkIds)
-          ? trace.retrievedChunkIds
-          : []),
-        ...(Array.isArray(trace.rerankedChunkIds)
-          ? trace.rerankedChunkIds
-          : []),
-      ]).filter((id) => typeof id === 'string' && id.length > 0),
+      traces
+        .flatMap((trace) => [
+          ...(Array.isArray(trace.retrievedChunkIds)
+            ? trace.retrievedChunkIds
+            : []),
+          ...(Array.isArray(trace.rerankedChunkIds)
+            ? trace.rerankedChunkIds
+            : []),
+        ])
+        .filter((id) => typeof id === 'string' && id.length > 0),
     ),
   ];
 }
@@ -227,7 +230,12 @@ function contextsForIds(ids, semanticContexts) {
   });
 }
 
-function buildTraceRows(cases, traces, semanticContexts = null) {
+function buildTraceRows(
+  cases,
+  traces,
+  semanticContexts = null,
+  includeEvaluationContext = false,
+) {
   const expected = new Map(cases.map((item) => [item.caseId, item]));
   if (expected.size !== cases.length)
     throw new Error('runner report contains duplicate case IDs');
@@ -257,6 +265,7 @@ function buildTraceRows(cases, traces, semanticContexts = null) {
     const trace = matches[0];
     const row = {
       caseId,
+      conversationId: trace.conversationId,
       traceId: trace.id,
       intent: trace.intent,
       needsRetrieval: trace.needsRetrieval,
@@ -269,6 +278,13 @@ function buildTraceRows(cases, traces, semanticContexts = null) {
       nodeTimings: sanitize(trace.nodeTimings, 'nodeTimings'),
       workflowMetrics: sanitize(trace.workflowMetrics, 'workflowMetrics'),
     };
+    if (
+      includeEvaluationContext &&
+      trace.workflowMetrics?.diagnostics?.evaluationCapture?.contextCaptured
+    ) {
+      row.workflowMetrics.diagnostics.generationEvidence =
+        trace.workflowMetrics.diagnostics.generationEvidence;
+    }
     if (semanticContexts) {
       row.retrievedContexts = contextsForIds(
         trace.retrievedChunkIds,
@@ -289,7 +305,7 @@ async function main() {
   const envFile = arg('--env-file');
   if (!reportPath || !outputPath || !envFile)
     throw new Error('--runner-report, --output, and --env-file are required');
-  dotenv.config({ path: envFile });
+  dotenv.config({ path: envFile, quiet: true });
   if (!process.env.AI_DATABASE_URL)
     throw new Error('AI_DATABASE_URL is required for read-only trace export');
   const includeSemanticContext = process.argv.includes(
@@ -300,6 +316,15 @@ async function main() {
       'REEL_INDEXING_DATABASE_URL is required with --include-semantic-context',
     );
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+  if (report.cases && !Array.isArray(report.cases)) {
+    report.cases = Object.entries(report.cases)
+      .filter(([, item]) => item.status === 'COMPLETED')
+      .map(([caseId, item]) => ({
+        ...item,
+        caseId,
+        assistantMessageId: item.output?.assistantMessageId,
+      }));
+  }
   if (!Array.isArray(report.cases))
     throw new Error('runner report must contain cases');
   const conversationIds = report.cases.map((item) => item.conversationId);
@@ -328,21 +353,27 @@ async function main() {
     });
     let semanticContexts = null;
     if (includeSemanticContext) {
-      const { PrismaClient: IndexingClient } = require(
-        '@prisma/reel-indexing-client',
-      );
+      const {
+        PrismaClient: IndexingClient,
+      } = require('@prisma/reel-indexing-client');
       indexing = new IndexingClient();
       semanticContexts = await loadSemanticContexts(
         indexing,
         semanticContextIds(traces),
       );
     }
-    const rows = buildTraceRows(report.cases, traces, semanticContexts);
+    const rows = buildTraceRows(
+      report.cases,
+      traces,
+      semanticContexts,
+      process.argv.includes('--include-evaluation-context'),
+    );
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
     const temporary = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(
       temporary,
       `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+      { mode: 0o600 },
     );
     fs.renameSync(temporary, outputPath);
     console.log(

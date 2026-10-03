@@ -45,6 +45,7 @@ TARGET_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 TEMP_SNAPSHOT="$STATE_DIR/inflight.json"
 printf '%s\n' '{"services":{"api-gateway":"velora-rollback/api-gateway:previous"}}' >"$PREVIOUS_RELEASE_FILE"
 printf '%s\n' '{"services":{"api-gateway":"velora-rollback/api-gateway:emergency"}}' >"$BLOCKED_DIR/failed.rollback.json"
+printf '%s\n' '{"services":{}}' >"$BLOCKED_DIR/empty.rollback.json"
 printf '%s\n' '{"services":{"api-gateway":"velora-rollback/api-gateway:inflight"}}' >"$TEMP_SNAPSHOT"
 printf '%s\n' '{"to_sha":"runtime-sha","services":{"api-gateway":"velora-rollback/api-gateway:interrupted"}}' >"$STATE_DIR/.rollback-live.json"
 printf '%s\n' '{"to_sha":"old-sha","services":{"api-gateway":"velora-rollback/api-gateway:orphan"}}' >"$STATE_DIR/.rollback-old.json"
@@ -60,7 +61,10 @@ for tag in running stopped previous emergency inflight interrupted bbbbbbbbbbbbb
   fi
 done
 grep -Fxq 'image prune -f' "$DOCKER_CALLS"
-! grep -Eq '^inspect |^image rm .*nginx|^image rm -f|^system prune|^volume ' "$DOCKER_CALLS"
+if grep -Eq '^inspect |^image rm .*nginx|^image rm -f|^system prune|^volume ' "$DOCKER_CALLS"; then
+  printf 'cleanup used a forbidden Docker operation\n' >&2
+  exit 1
+fi
 
 : >"$DOCKER_CALLS"
 cleanup_unused_velora_application_sha_tags false
@@ -83,7 +87,10 @@ for failure in inventory invalid_snapshot missing_image; do
     printf 'cleanup accepted unsafe state: %s\n' "$failure" >&2
     exit 1
   fi
-  ! grep -Eq '^image rm |^image prune ' "$DOCKER_CALLS"
+  if grep -Eq '^image rm |^image prune ' "$DOCKER_CALLS"; then
+    printf 'cleanup deleted images with unsafe state: %s\n' "$failure" >&2
+    exit 1
+  fi
 done
 
 printf 'image cleanup container/recovery safety: PASS\n'

@@ -1,9 +1,16 @@
+export interface TurnIceServer {
+  urls: string[];
+  username: string;
+  credential: string;
+}
+
 export interface CreateSendTransportResult {
   transportId: string;
   direction: 'send';
   iceParameters: Record<string, unknown>;
   iceCandidates: unknown[];
   dtlsParameters: Record<string, unknown>;
+  iceServers?: TurnIceServer[];
 }
 
 export interface CreateRecvTransportResult {
@@ -12,6 +19,7 @@ export interface CreateRecvTransportResult {
   iceParameters: Record<string, unknown>;
   iceCandidates: unknown[];
   dtlsParameters: Record<string, unknown>;
+  iceServers?: TurnIceServer[];
 }
 
 export interface ProducedMediaResult {

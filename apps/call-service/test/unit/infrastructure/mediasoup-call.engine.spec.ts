@@ -207,6 +207,70 @@ describe('MediasoupCallMediaEngine room creation', () => {
   });
 });
 
+describe('MediasoupCallMediaEngine TURN signaling', () => {
+  const originalEnv = process.env;
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it.each(['send', 'recv'] as const)(
+    'includes TURN for %s without persisting credentials',
+    async (direction) => {
+      process.env = {
+        ...originalEnv,
+        TURN_URLS:
+          'turn:relay.example.com:80,turns:relay.example.com:443?transport=tcp',
+        TURN_USERNAME: 'test-user',
+        TURN_CREDENTIAL: 'test-password',
+      };
+      const transport = {
+        id: `transport-${direction}`,
+        iceParameters: {},
+        iceCandidates: [],
+        dtlsParameters: {},
+        close: jest.fn(),
+        on: jest.fn(),
+        observer: { on: jest.fn() },
+      };
+      const router = {
+        id: 'router-turn',
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        close: jest.fn(),
+        createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+      };
+      const { engine, stateRepository } = createEngine(
+        jest.fn().mockResolvedValue(router),
+      );
+      await engine.createRoom('call-turn');
+      const result =
+        direction === 'send'
+          ? await engine.createSendTransport('call-turn', 'user-a')
+          : await engine.createRecvTransport('call-turn', 'user-a');
+
+      expect(result.iceServers).toEqual([
+        {
+          urls: [
+            'turn:relay.example.com:80',
+            'turns:relay.example.com:443?transport=tcp',
+          ],
+          username: 'test-user',
+          credential: 'test-password',
+        },
+      ]);
+      expect(stateRepository.saveTransportState).toHaveBeenCalledWith({
+        transportId: transport.id,
+        callId: 'call-turn',
+        userId: 'user-a',
+        direction,
+        connected: false,
+      });
+      expect(router.createWebRtcTransport.mock.calls[0][0]).not.toHaveProperty(
+        'iceServers',
+      );
+    },
+  );
+});
+
 describe('MediasoupCallMediaEngine producer lifecycle', () => {
   const createConnectedEngine = async () => {
     const producer = {

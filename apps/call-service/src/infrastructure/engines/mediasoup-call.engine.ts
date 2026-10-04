@@ -26,6 +26,7 @@ import {
   getAnnouncedIpAddressFamily,
   validateMediasoupNetworkConfiguration,
 } from './mediasoup-network-configuration';
+import { readTurnIceServers } from './turn-configuration';
 
 type MediaType = 'audio' | 'video';
 type TransportDirection = 'send' | 'recv';
@@ -97,6 +98,7 @@ export class MediasoupCallMediaEngine
   private readonly webRtcServerPort = this.readOptionalPort(
     process.env.MEDIASOUP_WEBRTC_SERVER_PORT,
   );
+  private readonly iceServers = readTurnIceServers();
 
   constructor(private readonly stateRepository: RedisCallStateRepository) {}
 
@@ -1104,6 +1106,7 @@ export class MediasoupCallMediaEngine
       iceParameters: transport.iceParameters,
       iceCandidates: transport.iceCandidates,
       dtlsParameters: transport.dtlsParameters,
+      ...(this.iceServers ? { iceServers: this.iceServers } : {}),
     };
   }
 

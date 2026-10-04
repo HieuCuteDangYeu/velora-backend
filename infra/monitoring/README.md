@@ -82,8 +82,8 @@ Useful first queries:
 ```promql
 up{job="monitoring-service"}
 velora_process_resident_memory_bytes{service="monitoring-service"}
-sum(rate(velora_monitoring_rpc_requests_total[5m]))
-histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[5m])))
+sum(rate(velora_monitoring_rpc_requests_total[1m]))
+histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[1m])))
 ```
 
 Grafana is bound to localhost only:
@@ -125,9 +125,38 @@ CPU-seconds, but the dashboard API normalizes them before returning them.
 
 ## Retention and scrape interval
 
-The local profile uses a 15-second scrape interval and three-day Prometheus
-retention. This keeps the footprint small for development and the thesis test
-server. Increase retention only after measuring actual TSDB disk/RAM usage.
+The default uses a 5-second scrape and rule evaluation interval, a 3-second
+scrape timeout, and three-day Prometheus retention. Live overview and timeseries
+CPU, rate, error ratio, and histogram quantile queries use rolling one-minute
+windows. Successful overviews are shared for up to five seconds per monitoring
+instance, and concurrent callers share the same query batch; failed requests
+are retried on the next call. The lightweight status endpoint queries only the
+two exporter health signals and does not trigger an overview.
+
+Timeseries defaults to 10-second points and accepts a 15-minute history; the
+existing 24-hour range cap and 300-second maximum step remain. The CPU alert
+fires when the one-minute mean is above 70 percent continuously for 60 seconds.
+All other alert holds and their existing five/fifteen-minute event or pipeline
+windows remain unchanged, including recent Reel failure counts.
+
+Five-second scraping produces three times as many samples as the previous
+15-second interval. Measure TSDB disk/RAM usage before increasing retention.
+
+## Applying configuration changes
+
+The deployment scripts select Prometheus for changes under
+`infra/monitoring/prometheus/` and force-recreate it to refresh its read-only
+configuration mounts. A Git push or file update alone does not reload a running
+Prometheus process. For a deployment that bypasses these scripts, after updating
+the checkout run from the deployment directory:
+
+```bash
+docker compose up -d --force-recreate --no-deps prometheus
+```
+
+Then verify `/api/v1/status/config` reports `scrape_interval: 5s`,
+`scrape_timeout: 3s`, and `evaluation_interval: 5s`, and inspect the targets.
+The Compose command does not enable the HTTP lifecycle reload endpoint.
 
 ## Security
 

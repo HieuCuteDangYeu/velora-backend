@@ -54,4 +54,23 @@ describe('MonitoringController', () => {
       } as never),
     ).toThrow(BadRequestException);
   });
+  it('forwards the ten-second default for fifteen-minute history', async () => {
+    const { controller, monitoringClient } = createController();
+    await controller.timeseries({
+      query: {
+        metric: 'host_cpu',
+        from: '2026-10-04T12:00:00Z',
+        to: '2026-10-04T12:15:00Z',
+      },
+    } as never);
+    expect(monitoringClient.send).toHaveBeenCalledWith(
+      'system.metrics.timeseries',
+      {
+        metric: 'host_cpu',
+        from: '2026-10-04T12:00:00Z',
+        to: '2026-10-04T12:15:00Z',
+        stepSeconds: 10,
+      },
+    );
+  });
 });

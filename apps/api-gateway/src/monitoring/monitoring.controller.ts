@@ -86,7 +86,7 @@ export class MonitoringController {
           metric: query.metric,
           from: query.from,
           to: query.to,
-          stepSeconds: query.stepSeconds ? Number(query.stepSeconds) : 60,
+          stepSeconds: query.stepSeconds ? Number(query.stepSeconds) : 10,
         })
         .pipe(timeout(7000)),
     );

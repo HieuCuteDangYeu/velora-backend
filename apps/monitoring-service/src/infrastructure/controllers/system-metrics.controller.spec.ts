@@ -4,13 +4,14 @@ describe('SystemMetricsController container resources', () => {
   const prometheus = {
     scalar: jest.fn(),
     vector: jest.fn(),
+    range: jest.fn(),
   };
   const metrics = { recordRpc: jest.fn() };
   const docker = {
     snapshot: jest.fn(),
     snapshotMetadata: jest.fn().mockResolvedValue(null),
   };
-  const controller = new SystemMetricsController(
+  let controller = new SystemMetricsController(
     prometheus as never,
     metrics as never,
     docker as never,
@@ -18,6 +19,12 @@ describe('SystemMetricsController container resources', () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    controller = new SystemMetricsController(
+      prometheus as never,
+      metrics as never,
+      docker as never,
+    );
+    jest.restoreAllMocks();
   });
 
   it('returns the current Docker Engine snapshot', async () => {
@@ -152,7 +159,9 @@ describe('SystemMetricsController container resources', () => {
       ),
     ).toBe(true);
 
-    expect(prometheus.scalar.mock.calls.map(([query]) => query)).toEqual(
+    expect(
+      prometheus.scalar.mock.calls.map(([query]) => query as string),
+    ).toEqual(
       expect.arrayContaining([
         'max(up{job="notification-service"})',
         expect.stringContaining('velora_notification_database_up'),
@@ -162,5 +171,145 @@ describe('SystemMetricsController container resources', () => {
         ),
       ]),
     );
+  });
+});
+
+describe('SystemMetricsController live queries and overview sharing', () => {
+  const createController = () => {
+    const prometheus = {
+      scalar: jest.fn().mockResolvedValue(0),
+      range: jest.fn().mockResolvedValue([]),
+    };
+    const metrics = { recordRpc: jest.fn() };
+    const controller = new SystemMetricsController(
+      prometheus as never,
+      metrics as never,
+      { snapshotMetadata: jest.fn().mockResolvedValue(null) } as never,
+    );
+    return { controller, prometheus, metrics };
+  };
+  afterEach(() => jest.restoreAllMocks());
+
+  it('uses one-minute windows for every live rate/quantile query', async () => {
+    const { controller, prometheus } = createController();
+    await controller.overview();
+    const queries = prometheus.scalar.mock.calls.map(
+      ([query]) => query as string,
+    );
+    const rates = queries.filter((query) => query.includes('rate('));
+    expect(queries).toHaveLength(130);
+    expect(rates.length).toBeGreaterThan(50);
+    expect(
+      rates.every((query) => query.includes('[1m]') && !query.includes('[5m]')),
+    ).toBe(true);
+  });
+
+  it('coalesces in-flight overviews and expires successful results after five seconds', async () => {
+    const { controller, prometheus, metrics } = createController();
+    let now = 1000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    let resolveSample!: (value: number) => void;
+    // One pending scalar is enough to hold the entire batch open.
+    prometheus.scalar.mockResolvedValue(0).mockImplementationOnce(
+      () =>
+        new Promise<number>((resolve) => {
+          resolveSample = resolve;
+        }),
+    );
+    const first = controller.overview();
+    now += 6000;
+    const second = controller.overview();
+    expect(prometheus.scalar).toHaveBeenCalledTimes(130);
+    resolveSample(1);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    now += 4999;
+    expect(await controller.overview()).toEqual(a);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(130);
+    now += 1;
+    await controller.overview();
+    expect(prometheus.scalar).toHaveBeenCalledTimes(260);
+    expect(metrics.recordRpc).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not cache failed overviews and permits an immediate retry', async () => {
+    const { controller, prometheus } = createController();
+    prometheus.scalar.mockRejectedValueOnce(
+      new Error('Prometheus unavailable'),
+    );
+    await expect(controller.overview()).rejects.toThrow();
+    await expect(controller.overview()).resolves.toMatchObject({
+      source: 'prometheus',
+    });
+    expect(prometheus.scalar).toHaveBeenCalledTimes(260);
+  });
+
+  it('does not serve an expired success after a refresh failure', async () => {
+    const { controller, prometheus } = createController();
+    let now = 1000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    await controller.overview();
+    now += 5000;
+    prometheus.scalar.mockRejectedValueOnce(
+      new Error('Prometheus unavailable'),
+    );
+    await expect(controller.overview()).rejects.toThrow();
+    await expect(controller.overview()).resolves.toMatchObject({
+      source: 'prometheus',
+    });
+    expect(prometheus.scalar).toHaveBeenCalledTimes(390);
+  });
+
+  it.each([undefined, 10])(
+    'accepts fifteen minutes of history at ten-second points (step %s)',
+    async (stepSeconds) => {
+      const { controller, prometheus } = createController();
+      const from = '2026-10-04T12:00:00.000Z';
+      const to = '2026-10-04T12:15:00.000Z';
+      await expect(
+        controller.timeseries({ metric: 'host_cpu', from, to, stepSeconds }),
+      ).resolves.toMatchObject({ stepSeconds: 10, points: [] });
+      expect(prometheus.range).toHaveBeenCalledWith(
+        '1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))',
+        from,
+        to,
+        10,
+      );
+    },
+  );
+
+  it.each([9, 10.5, 301, NaN])(
+    'rejects invalid timeseries step %s',
+    async (stepSeconds) => {
+      const { controller, prometheus } = createController();
+      await expect(
+        controller.timeseries({
+          metric: 'host_cpu',
+          from: '2026-10-04T12:00:00Z',
+          to: '2026-10-04T12:15:00Z',
+          stepSeconds,
+        }),
+      ).rejects.toThrow('stepSeconds');
+      expect(prometheus.range).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves the metric whitelist and 24-hour range cap', async () => {
+    const { controller, prometheus } = createController();
+    await expect(
+      controller.timeseries({
+        metric: 'arbitrary_query',
+        from: '2026-10-04T12:00:00Z',
+        to: '2026-10-04T12:15:00Z',
+      }),
+    ).rejects.toThrow('metric must be');
+    await expect(
+      controller.timeseries({
+        metric: 'cpu',
+        from: '2026-10-02T12:00:00Z',
+        to: '2026-10-04T12:15:00Z',
+      }),
+    ).rejects.toThrow('24 hours');
+    expect(prometheus.range).not.toHaveBeenCalled();
   });
 });

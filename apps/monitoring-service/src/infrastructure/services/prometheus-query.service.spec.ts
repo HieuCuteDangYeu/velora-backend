@@ -71,4 +71,81 @@ describe('PrometheusQueryService vector queries', () => {
       expect.objectContaining({ headers: { Accept: 'application/json' } }),
     );
   });
+  it('sends bounded history and ten-second steps to Prometheus and filters non-finite values', async () => {
+    const fetchMock = jest.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'success',
+          data: {
+            result: [
+              {
+                metric: {},
+                values: [
+                  [1, '0.5'],
+                  [2, 'NaN'],
+                  [3, '+Inf'],
+                ],
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    const service = new PrometheusQueryService(configService as never);
+    const from = '2026-10-04T12:00:00Z';
+    const to = '2026-10-04T12:15:00Z';
+    await withFetchMock(fetchMock, async () => {
+      await expect(
+        service.range('rate(counter[1m])', from, to, 10),
+      ).resolves.toEqual([{ timestamp: 1, value: 0.5 }]);
+    });
+    const url = new URL(fetchMock.mock.calls[0][0] as string);
+    expect(url.pathname).toBe('/api/v1/query_range');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      query: 'rate(counter[1m])',
+      start: from,
+      end: to,
+      step: '10',
+    });
+  });
+
+  it('uses the existing four-second query timeout and surfaces transport failures', async () => {
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    const service = new PrometheusQueryService(configService as never);
+    const fetchMock = jest.fn().mockRejectedValue(new Error('timeout'));
+    try {
+      await withFetchMock(fetchMock, async () => {
+        await expect(service.scalar('up')).rejects.toThrow(
+          'Prometheus request failed: timeout',
+        );
+      });
+      expect(timeout).toHaveBeenCalledWith(4000);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it.each([
+    [
+      503,
+      { status: 'success', data: { result: [] } },
+      'Prometheus returned HTTP 503',
+    ],
+    [
+      200,
+      { status: 'error', error: 'invalid query' },
+      'Prometheus query failed: invalid query',
+    ],
+  ])(
+    'surfaces upstream errors (HTTP %s)',
+    async (status, envelope, message) => {
+      const service = new PrometheusQueryService(configService as never);
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify(envelope), { status }));
+      await withFetchMock(fetchMock, async () => {
+        await expect(service.scalar('up')).rejects.toThrow(message);
+      });
+    },
+  );
 });

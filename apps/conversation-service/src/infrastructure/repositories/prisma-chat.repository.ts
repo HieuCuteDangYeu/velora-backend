@@ -6,6 +6,8 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   Prisma,
@@ -50,6 +52,7 @@ const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
+const MAX_PENDING_MESSAGE_TRANSACTIONS = 100;
 
 type AnchorBoundary = {
   createdAt: Date;
@@ -59,6 +62,10 @@ type AnchorBoundary = {
 @Injectable()
 export class PrismaChatRepository implements IChatRepository {
   private readonly logger = new Logger(PrismaChatRepository.name);
+  private readonly messageTransactions = new Map<
+    string,
+    { tail: Promise<void>; pending: number }
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -126,45 +133,49 @@ export class PrismaChatRepository implements IChatRepository {
       previewText = typeMap[message.type] || 'Tin nhắn mới';
     }
 
-    // BƯỚC 2: Thực thi DB song song (Prisma Transaction)
-    // Giúp giảm Round-trip time xuống DB từ 2 lần còn 1 lần
+    // Persist the message and conversation preview atomically. Only this
+    // transaction is queued; post-commit cache and delivery work stays outside.
     let savedMsg: PrismaMessage;
     try {
-      [savedMsg] = await this.retryMessageTransaction(() =>
-        this.prisma.$transaction([
-          // Op 1: Tạo message
-          this.prisma.message.create({
-            data: {
-              type: message.type,
-              clientMessageId,
-              signalType: message.signalType ?? 1,
-              content: contentToSave,
-              media: message.media
-                ? (message.media as unknown as Prisma.InputJsonValue)
-                : null,
-              metadata: message.metadata
-                ? (message.metadata as unknown as Prisma.InputJsonValue)
-                : null,
-              registrationId: message.registrationId,
-              senderId: message.senderId,
-              isRecalled: false,
-              replyToId: message.replyToId,
-              replyPreview: replyPreview
-                ? (replyPreview as unknown as Prisma.InputJsonValue)
-                : null,
-              conversationId: message.conversationId,
-              readBy: [],
-            },
-          }),
-          // Op 2: Update conversation (Last message)
-          this.prisma.conversation.update({
-            where: { id: message.conversationId },
-            data: {
-              lastMessage: previewText,
-              lastMessageAt: new Date(),
-            },
-          }),
-        ]),
+      [savedMsg] = await this.enqueueMessageTransaction(
+        message.conversationId,
+        () =>
+          this.retryMessageTransaction(() =>
+            this.prisma.$transaction([
+              // Op 1: Tạo message
+              this.prisma.message.create({
+                data: {
+                  type: message.type,
+                  clientMessageId,
+                  signalType: message.signalType ?? 1,
+                  content: contentToSave,
+                  media: message.media
+                    ? (message.media as unknown as Prisma.InputJsonValue)
+                    : null,
+                  metadata: message.metadata
+                    ? (message.metadata as unknown as Prisma.InputJsonValue)
+                    : null,
+                  registrationId: message.registrationId,
+                  senderId: message.senderId,
+                  isRecalled: false,
+                  replyToId: message.replyToId,
+                  replyPreview: replyPreview
+                    ? (replyPreview as unknown as Prisma.InputJsonValue)
+                    : null,
+                  conversationId: message.conversationId,
+                  readBy: [],
+                },
+              }),
+              // Op 2: Update conversation (Last message)
+              this.prisma.conversation.update({
+                where: { id: message.conversationId },
+                data: {
+                  lastMessage: previewText,
+                  lastMessageAt: new Date(),
+                },
+              }),
+            ]),
+          ),
       );
     } catch (error: unknown) {
       // The compound unique index is the source of truth. A retry may race
@@ -1198,6 +1209,38 @@ export class PrismaChatRepository implements IChatRepository {
       await this.redis.del(`chat:history:${conversationId}`);
     } catch (error) {
       this.logger.error(error);
+    }
+  }
+
+  private async enqueueMessageTransaction<T>(
+    conversationId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    // Every send writes the same conversation document. Serializing only the
+    // transaction avoids local write-conflict storms; retries still handle
+    // contention with other instances or other conversation mutations.
+    const queue = this.messageTransactions.get(conversationId) ?? {
+      tail: Promise.resolve(),
+      pending: 0,
+    };
+    if (queue.pending >= MAX_PENDING_MESSAGE_TRANSACTIONS) {
+      throw new HttpException(
+        'Conversation write queue is full',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+    this.messageTransactions.set(conversationId, queue);
+    queue.pending += 1;
+    const result = queue.tail.then(operation);
+    queue.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      return await result;
+    } finally {
+      queue.pending -= 1;
+      if (queue.pending === 0) this.messageTransactions.delete(conversationId);
     }
   }
 

@@ -71,6 +71,76 @@ const transactionHarness = ($transaction: jest.Mock) => {
 };
 
 describe('message transaction conflicts', () => {
+  it('serializes writes to one conversation while allowing other conversations to proceed', async () => {
+    let releaseFirst!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let active = 0;
+    let peak = 0;
+    let calls = 0;
+    const transaction = jest.fn(async () => {
+      const call = ++calls;
+      active += 1;
+      peak = Math.max(peak, active);
+      if (call === 1) await blocked;
+      active -= 1;
+      return [createStoredMessage()];
+    });
+    const { repository } = transactionHarness(transaction);
+    const first = repository.createMessageIdempotently(createMessage());
+    const second = repository.createMessageIdempotently(createMessage());
+    const otherMessage = createMessage();
+    otherMessage.conversationId = 'conversation-2';
+    await repository.createMessageIdempotently(otherMessage);
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(peak).toBe(2);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(transaction).toHaveBeenCalledTimes(3);
+    expect((repository as any).messageTransactions.size).toBe(0);
+  });
+
+  it('releases a failed transaction so the next send can commit', async () => {
+    const failure = prismaError('P1001');
+    const transaction = jest
+      .fn()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce([createStoredMessage()]);
+    const { repository } = transactionHarness(transaction);
+    const results = await Promise.allSettled([
+      repository.createMessageIdempotently(createMessage()),
+      repository.createMessageIdempotently(createMessage()),
+    ]);
+    expect(results[0]).toEqual({ status: 'rejected', reason: failure });
+    expect(results[1].status).toBe('fulfilled');
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect((repository as any).messageTransactions.size).toBe(0);
+  });
+
+  it('rejects excess queued writes before database mutation and clears the queue after draining', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const transaction = jest.fn(async () => {
+      await blocked;
+      return [createStoredMessage()];
+    });
+    const { repository } = transactionHarness(transaction);
+    const writes = Array.from({ length: 101 }, () =>
+      repository.createMessageIdempotently(createMessage()),
+    );
+    const settled = Promise.allSettled(writes);
+    await expect(writes[100]).rejects.toMatchObject({ status: 429 });
+    expect(transaction).toHaveBeenCalledTimes(1);
+    release();
+    const results = await settled;
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(100);
+    expect(transaction).toHaveBeenCalledTimes(100);
+    expect((repository as any).messageTransactions.size).toBe(0);
+  });
+
   it('retries the complete rolled-back transaction with the same identity, then runs post-commit work once', async () => {
     const transaction = jest
       .fn()

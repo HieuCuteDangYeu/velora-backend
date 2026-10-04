@@ -69,8 +69,10 @@ export class GroqTextClient {
 
       let keyIndex: number | undefined;
       try {
-        const { key: apiKey, index } =
-          await this.keyPool.acquireAsync(Math.max(remainingMs, 45_000));
+        const { key: apiKey, index } = await this.keyPool.acquireAsync(
+          Math.max(remainingMs, 45_000),
+          input.model,
+        );
         keyIndex = index;
         const response = await fetch(`${this.baseUrl()}/chat/completions`, {
           method: 'POST',
@@ -92,20 +94,25 @@ export class GroqTextClient {
         if (!response.ok) {
           const raw = await response.text();
           if (response.status === 429) {
-            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            this.keyPool.reportRateLimited(
+              keyIndex,
+              response.headers,
+              raw,
+              input.model,
+            );
             if (attempt + 1 < maxAttempts) {
               keyIndex = undefined;
               continue;
             }
           } else if (response.status >= 500) {
-            this.keyPool.reportTransientFailure(keyIndex);
+            this.keyPool.reportTransientFailure(keyIndex, input.model);
           }
           keyIndex = undefined;
           throw new Error(
             `Groq text request failed with status ${response.status}: ${raw.slice(0, 500)}`,
           );
         }
-        this.keyPool.reportSuccess(keyIndex, response.headers);
+        this.keyPool.reportSuccess(keyIndex, response.headers, input.model);
         keyIndex = undefined;
         if (streaming) return await this.readStream(response, input.onToken!);
         const payload = (await response.json()) as {
@@ -117,7 +124,7 @@ export class GroqTextClient {
         return content;
       } catch (error: unknown) {
         if (keyIndex !== undefined) {
-          this.keyPool.reportTransientFailure(keyIndex);
+          this.keyPool.reportTransientFailure(keyIndex, input.model);
         }
         if (controller.signal.aborted)
           throw new Error(`Groq text request timed out after ${timeoutMs}ms`);

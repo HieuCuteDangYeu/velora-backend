@@ -124,6 +124,100 @@ function buildAgent(
 }
 
 describe('ContextToolAgentUseCase', () => {
+  it('records bounded provider failure diagnostics without response content', async () => {
+    const error = Object.assign(new Error('secret provider response'), {
+      code: 'TOOL_PROVIDER_HTTP_ERROR',
+      httpStatus: 429,
+    });
+    const built = buildAgent({
+      toolLlm: { complete: jest.fn().mockRejectedValue(error) },
+    });
+    const result = await built.agent.execute(state());
+    expect(result.contextToolExecution.failures).toEqual([
+      {
+        stage: 'TOOL_MODEL',
+        errorCode: 'TOOL_PROVIDER_HTTP_ERROR',
+        httpStatus: 429,
+      },
+    ]);
+    expect(JSON.stringify(result.contextToolExecution)).not.toContain('secret');
+  });
+  it.each(['search_reel_content', 'get_reel_context'])(
+    'preserves the original opening constraint through %s query rewrites',
+    async (name) => {
+      const built = buildAgent({
+        toolLlm: {
+          complete: jest
+            .fn()
+            .mockResolvedValueOnce({
+              toolCalls: [
+                {
+                  id: 'call',
+                  name,
+                  arguments: {
+                    reelId: 'reel-1',
+                    query: 'Docker dependencies',
+                    limit: 20,
+                  },
+                },
+              ],
+            })
+            .mockResolvedValueOnce({ toolCalls: [] }),
+        },
+      });
+      await built.agent.execute(
+        state({ userMessage: 'What is the opening statement?' }),
+      );
+      expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accessibleReelIds: ['reel-1'],
+          plan: expect.objectContaining({
+            sourceOrder: 'ASC',
+            searchLimit: 1,
+            shouldRerank: false,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('preserves opening order when the tool provider fails', async () => {
+    const built = buildAgent({
+      toolLlm: {
+        complete: jest.fn().mockRejectedValue(new Error('unavailable')),
+      },
+    });
+    await built.agent.execute(
+      state({ userMessage: 'What is the first sentence?' }),
+    );
+    expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: expect.objectContaining({
+          sourceOrder: 'ASC',
+          shouldRerank: false,
+        }),
+      }),
+    );
+  });
+
+  it('does not reinterpret a metadata question as transcript retrieval', async () => {
+    const built = buildAgent();
+    await built.agent.execute(
+      state({
+        route: {
+          ...route,
+          reelQuestionType: 'REEL_METADATA',
+          requiredEvidence: ['METADATA'],
+        },
+      }),
+    );
+    expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: expect.objectContaining({ requiredEvidence: ['METADATA'] }),
+        plan: expect.objectContaining({ shouldRerank: false, searchLimit: 5 }),
+      }),
+    );
+  });
   it('uses only router-approved Reel tools and reranks returned evidence', async () => {
     const built = buildAgent();
 

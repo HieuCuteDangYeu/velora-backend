@@ -56,16 +56,18 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 0) {
-        throw new Error(
-          `Groq tool-calling request timed out after ${timeoutMs}ms`,
-        );
+        throw Object.assign(new Error('Groq tool-calling request timed out'), {
+          code: 'TOOL_PROVIDER_TIMEOUT',
+        });
       }
+      const { key: apiKey, index: keyIndex } = await this.keyPool.acquireAsync(
+        Math.max(remainingMs, 45_000),
+        model,
+      );
+
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), remainingMs);
       timer.unref();
-
-      const { key: apiKey, index: keyIndex } =
-        await this.keyPool.acquireAsync(Math.max(remainingMs, 45_000));
 
       try {
         const response = await fetch(`${this.baseUrl()}/chat/completions`, {
@@ -98,30 +100,45 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
         try {
           payload = JSON.parse(raw) as GroqToolCompletionResponse;
         } catch {
-          throw new Error('Groq tool-calling response was invalid JSON');
+          if (response.ok)
+            throw Object.assign(
+              new Error('Groq tool-calling response was invalid JSON'),
+              { code: 'TOOL_PROVIDER_INVALID_RESPONSE' },
+            );
         }
         if (!response.ok) {
           if (response.status === 429) {
-            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            this.keyPool.reportRateLimited(
+              keyIndex,
+              response.headers,
+              raw,
+              model,
+            );
             if (attempt + 1 < maxAttempts) {
               continue;
             }
           } else if (response.status >= 500) {
-            this.keyPool.reportTransientFailure(keyIndex);
+            this.keyPool.reportTransientFailure(keyIndex, model);
           }
           const message =
             payload.error?.message ||
             raw.trim() ||
             `Groq tool-calling request failed with status ${response.status}`;
           this.logger.warn(message);
-          throw new Error(message);
+          throw Object.assign(new Error(message), {
+            code: 'TOOL_PROVIDER_HTTP_ERROR',
+            httpStatus: response.status,
+          });
         }
 
         const choice = payload.choices?.[0];
         const message = choice?.message;
         if (!message)
-          throw new Error('Groq tool-calling response contained no message');
-        this.keyPool.reportSuccess(keyIndex, response.headers);
+          throw Object.assign(
+            new Error('Groq tool-calling response contained no message'),
+            { code: 'TOOL_PROVIDER_INVALID_RESPONSE' },
+          );
+        this.keyPool.reportSuccess(keyIndex, response.headers, model);
         return {
           content: message.content?.trim() || undefined,
           toolCalls: (message.tool_calls ?? [])
@@ -130,10 +147,11 @@ export class GroqToolCallingLlmAdapter implements IToolCallingLlmService {
           finishReason: choice?.finish_reason ?? undefined,
         };
       } catch (error: unknown) {
-        this.keyPool.reportTransientFailure(keyIndex);
+        this.keyPool.reportTransientFailure(keyIndex, model);
         if (controller.signal.aborted)
-          throw new Error(
-            `Groq tool-calling request timed out after ${timeoutMs}ms`,
+          throw Object.assign(
+            new Error('Groq tool-calling request timed out'),
+            { code: 'TOOL_PROVIDER_TIMEOUT' },
           );
         throw error;
       } finally {

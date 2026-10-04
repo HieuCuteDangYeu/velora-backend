@@ -332,8 +332,10 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     maxTokens: number,
     state: CallState,
   ): Promise<T> {
-    const { key: apiKey, index: keyIndex } =
-      await this.keyPool.acquireAsync(Math.max(timeoutMs, 45_000));
+    const { key: apiKey, index: keyIndex } = await this.keyPool.acquireAsync(
+      Math.max(timeoutMs, 45_000),
+      model,
+    );
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
@@ -369,7 +371,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         signal: controller.signal,
       });
     } catch {
-      this.keyPool.reportTransientFailure(keyIndex);
+      this.keyPool.reportTransientFailure(keyIndex, model);
       if (controller.signal.aborted)
         throw new GroqStructuredCompletionTimeoutError(model, timeoutMs);
       throw new GroqStructuredCompletionProviderError(
@@ -419,9 +421,10 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
           keyIndex,
           response.headers,
           this.providerMessage(payload),
+          model,
         );
       } else if (response.status >= 500) {
-        this.keyPool.reportTransientFailure(keyIndex);
+        this.keyPool.reportTransientFailure(keyIndex, model);
       }
       throw new GroqStructuredCompletionProviderError(
         model,
@@ -434,7 +437,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
       );
     }
 
-    this.keyPool.reportSuccess(keyIndex, response.headers);
+    this.keyPool.reportSuccess(keyIndex, response.headers, model);
 
     const choice = payload.choices?.[0];
     state.finishReason = choice?.finish_reason ?? undefined;

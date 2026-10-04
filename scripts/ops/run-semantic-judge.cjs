@@ -223,6 +223,7 @@ async function main() {
     let semanticData = {
       schemaVersion: EVALUATOR_VERSION,
       evaluatorVersion: EVALUATOR_VERSION,
+      eligibilityPolicy: 'healthy-provider-stages-v1',
       judgeFingerprint: judgeFingerprint(),
       sourceStateFingerprint: fingerprint(state),
       runId,
@@ -241,6 +242,7 @@ async function main() {
       try {
         semanticData = loadJson(outputPath);
         if (
+          semanticData.eligibilityPolicy !== 'healthy-provider-stages-v1' ||
           semanticData.evaluatorVersion !== EVALUATOR_VERSION ||
           semanticData.judgeFingerprint !== judgeFingerprint() ||
           semanticData.sourceStateFingerprint !== fingerprint(state)
@@ -345,6 +347,19 @@ async function main() {
             : item.expectedOutput?.answer;
           const generatedAnswer = caseEntry.output?.answer;
           const context = caseEntry.output?.generationEvidence;
+          if (caseEntry.output?.executionHealth?.status !== 'AVAILABLE') {
+            semanticData.cases[caseId] = {
+              caseId,
+              status: 'UNAVAILABLE',
+              error: 'Provider-stage health is degraded or unproven',
+              executionHealth: caseEntry.output?.executionHealth ?? {
+                status: 'UNKNOWN',
+                failedStages: [],
+              },
+            };
+            saveJsonAtomic(outputPath, semanticData);
+            continue;
+          }
           if (!Array.isArray(context)) {
             semanticData.cases[caseId] = {
               caseId,

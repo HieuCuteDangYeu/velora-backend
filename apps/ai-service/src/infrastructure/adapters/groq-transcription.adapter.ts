@@ -69,8 +69,10 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
       const timer = setTimeout(() => controller.abort(), remainingMs);
       timer.unref();
 
-      const { key: apiKey, index: keyIndex } =
-        await this.keyPool.acquireAsync(Math.max(remainingMs, 45_000));
+      const { key: apiKey, index: keyIndex } = await this.keyPool.acquireAsync(
+        Math.max(remainingMs, 45_000),
+        model,
+      );
       try {
         const response = await fetch(`${this.baseUrl()}/audio/transcriptions`, {
           method: 'POST',
@@ -89,18 +91,23 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
         }
         if (!response.ok) {
           if (response.status === 429) {
-            this.keyPool.reportRateLimited(keyIndex, response.headers, raw);
+            this.keyPool.reportRateLimited(
+              keyIndex,
+              response.headers,
+              raw,
+              model,
+            );
             if (attempt + 1 < maxAttempts) {
               continue;
             }
           } else if (response.status >= 500) {
-            this.keyPool.reportTransientFailure(keyIndex);
+            this.keyPool.reportTransientFailure(keyIndex, model);
           }
           throw new Error(
             `Groq transcription failed with status ${response.status}: ${raw.slice(0, 500)}`,
           );
         }
-        this.keyPool.reportSuccess(keyIndex, response.headers);
+        this.keyPool.reportSuccess(keyIndex, response.headers, model);
         const text = payload.text?.trim() ?? '';
         return {
           text,
@@ -115,7 +122,7 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
             'groq-whisper-v1',
         };
       } catch (error: unknown) {
-        this.keyPool.reportTransientFailure(keyIndex);
+        this.keyPool.reportTransientFailure(keyIndex, model);
         if (controller.signal.aborted) {
           throw new Error(
             `Groq transcription request timed out after ${timeoutMs}ms`,

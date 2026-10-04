@@ -34,6 +34,44 @@ afterEach(() => {
 });
 
 describe('GroqKeyPool', () => {
+  it('keeps daily exhaustion isolated to the reported model', async () => {
+    const pool = initPool('gsk_a');
+    try {
+      pool.reportTPDExhausted(0, undefined, 'openai/gpt-oss-120b');
+      expect(() => pool.acquire('openai/gpt-oss-120b')).toThrow(
+        GroqKeyPoolExhaustedError,
+      );
+      await expect(
+        pool.acquireAsync(0, 'openai/gpt-oss-20b'),
+      ).resolves.toMatchObject({ index: 0 });
+      pool.reportSuccess(0, undefined, 'openai/gpt-oss-20b');
+      expect(() => pool.acquire('openai/gpt-oss-120b')).toThrow(
+        GroqKeyPoolExhaustedError,
+      );
+      expect(pool.acquire('whisper-large-v3').index).toBe(0);
+    } finally {
+      pool.onModuleDestroy();
+    }
+  });
+
+  it('keeps rate-limit cooldown isolated to the reported model', () => {
+    const pool = initPool('gsk_a,gsk_b');
+    try {
+      for (const index of [0, 1])
+        pool.reportRateLimited(
+          index,
+          fakeHeaders({ 'retry-after': '60' }),
+          '',
+          'answer-model',
+        );
+      expect(() => pool.acquire('answer-model')).toThrow(
+        GroqKeyPoolExhaustedError,
+      );
+      expect(pool.acquire('tool-model').index).toBe(0);
+    } finally {
+      pool.onModuleDestroy();
+    }
+  });
   describe('initialization', () => {
     it('loads keys from GROQ_API_KEYS (comma-separated)', () => {
       const pool = initPool('gsk_a,gsk_b,gsk_c');

@@ -6,6 +6,7 @@ const {
   retrievalMetrics,
   attachTrace,
   fingerprint,
+  executionHealth,
 } = require('./rag-evaluation-contract.cjs');
 const { analyze } = require('./analyze-rag-benchmark.cjs');
 const {
@@ -13,6 +14,35 @@ const {
   buildDimensionPrompt,
 } = require('./rag-semantic-judge.cjs');
 const { outputFromMessage } = require('./run-langfuse-live-benchmark.cjs');
+
+test('provider outages are classified independently of a successful fallback answer', () => {
+  assert.deepEqual(
+    executionHealth({
+      route: { providerStatus: 'ERROR' },
+      finalFailureSource: 'NONE',
+    }),
+    {
+      status: 'DEGRADED',
+      failedStages: ['route'],
+    },
+  );
+  assert.equal(executionHealth({}).status, 'UNKNOWN');
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: { needsRetrieval: false, needsVerification: false },
+      verification: { providerStatus: 'NOT_CALLED' },
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      answerCalls: [{ providerStatus: 429 }],
+    }).status,
+    'DEGRADED',
+  );
+});
 
 test('same-Reel citations do not masquerade as chunk retrieval; unavailable differs from zero', () => {
   const expected = { evidenceIds: ['reel:r:chunk:0'], modality: 'VISUAL' };

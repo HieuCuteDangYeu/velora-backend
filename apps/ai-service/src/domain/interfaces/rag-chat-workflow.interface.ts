@@ -62,6 +62,11 @@ export interface RagContextToolExecutionDiagnostics {
   stepCount: number;
   calls: RagContextToolCallDiagnostics[];
   providerStatus: 'SUCCESS' | 'ERROR';
+  failures?: Array<{
+    stage: 'TOOL_MODEL' | 'FALLBACK_RETRIEVAL' | 'RERANK';
+    errorCode: string;
+    httpStatus?: number;
+  }>;
 }
 
 export type RagReferenceTarget =

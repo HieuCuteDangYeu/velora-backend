@@ -125,6 +125,50 @@ function attachTrace(output, trace, conversationId) {
       ? { generationEvidence: diagnostics.generationEvidence }
       : {}),
     release: diagnostics.evaluationCapture?.release,
+    executionHealth: executionHealth(diagnostics),
+  };
+}
+
+function executionHealth(diagnostics) {
+  const failedStages = [];
+  for (const stage of [
+    'route',
+    'retrievalPlan',
+    'contextToolExecution',
+    'contextSufficiency',
+    'verification',
+    'citationDiagnostics',
+  ]) {
+    if (diagnostics?.[stage]?.providerStatus === 'ERROR')
+      failedStages.push(stage);
+  }
+  const answer = diagnostics?.answerCalls?.at(-1);
+  if (
+    answer &&
+    (answer.errorCode ||
+      answer.providerStatus === 'TIMEOUT' ||
+      (typeof answer.providerStatus === 'number' &&
+        answer.providerStatus >= 400))
+  ) {
+    failedStages.push('answer');
+  }
+  if (diagnostics?.finalFailureSource === 'PROVIDER_ERROR')
+    failedStages.push('workflow');
+  return {
+    status: failedStages.length
+      ? 'DEGRADED'
+      : diagnostics?.route?.providerStatus === 'SUCCESS' &&
+          diagnostics?.routeDecision &&
+          (!diagnostics.routeDecision.needsRetrieval ||
+            (diagnostics.contextSufficiency?.providerStatus &&
+              (diagnostics.contextToolExecution?.providerStatus ||
+                diagnostics.retrievalPlan?.providerStatus))) &&
+          (!diagnostics.routeDecision.needsVerification ||
+            (diagnostics.verification?.providerStatus &&
+              diagnostics.citationDiagnostics?.providerStatus))
+        ? 'AVAILABLE'
+        : 'UNKNOWN',
+    failedStages,
   };
 }
 
@@ -183,4 +227,5 @@ module.exports = {
   retrievalMetrics,
   strictEvaluations,
   attachTrace,
+  executionHealth,
 };

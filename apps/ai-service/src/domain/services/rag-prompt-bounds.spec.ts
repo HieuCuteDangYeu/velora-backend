@@ -9,6 +9,18 @@ import {
 } from './rag-prompt-bounds';
 
 describe('rag prompt bounds', () => {
+  it('retains earlier clauses when the focus already fits in the prefix', () => {
+    const source = `After the change, I felt tired for days. ${'ordinary context '.repeat(15)}I woke up the next day feeling better. ${'ending '.repeat(15)}`;
+    const excerpt = truncateEvidenceText(
+      source,
+      400,
+      'What happened the next day?',
+    );
+    expect(excerpt).toContain('After the change, I felt tired for days.');
+    expect(excerpt).toContain('I woke up the next day feeling better.');
+    expect(excerpt.length).toBeLessThanOrEqual(400);
+    expect(source).toContain(excerpt);
+  });
   it('never promotes search enrichment into source evidence', () => {
     expect(
       boundEvidence(

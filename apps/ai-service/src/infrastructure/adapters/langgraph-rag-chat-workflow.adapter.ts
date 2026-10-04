@@ -501,59 +501,15 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
-      let route: RagChatRouteDecision;
-      try {
-        route = await this.timed('queryRouterNode', nodeTimings, () =>
-          this.queryRouterAgentUseCase.execute({
-            message: state.userMessage,
-            recentHistory: this.formatRecentHistory(state),
-            hasSharedReelContext: state.hasSharedReelContext,
-            sharedReelCount: state.accessibleReelIds?.length ?? 0,
-            referentContext: this.buildRouterReferentContext(state),
-          }),
-        );
-      } catch (error: unknown) {
-        const isSemanticInconsistency =
-          error &&
-          typeof error === 'object' &&
-          'causeCode' in error &&
-          (error as { causeCode?: string }).causeCode ===
-            'ROUTER_SEMANTIC_INCONSISTENT';
-
-        if (
-          !isSemanticInconsistency &&
-          state.hasSharedReelContext &&
-          (state.accessibleReelIds?.length ?? 0) > 0
-        ) {
-          this.logger.warn(
-            `[RagGraph] queryRouterNode provider failure: ${error instanceof Error ? error.message : String(error)}. Activating fail-safe reel route.`,
-          );
-          route = {
-            intent: 'REEL_VIDEO_QUESTION',
-            referenceTarget: 'SHARED_REEL',
-            needsRetrieval: true,
-            needsUserMemory: false,
-            needsConversationSummary: false,
-            needsVerification: true,
-            reelQuestionType: 'TRANSCRIPT_CONTENT',
-            requiredEvidence: ['TRANSCRIPT'],
-            recommendationAction: { type: 'NONE', reason: 'Fail-safe route' },
-            toolPlan: {
-              allowedTools: ['search_reel_content', 'get_reel_context'],
-              requiredTools: ['search_reel_content'],
-            },
-            reason:
-              'Fail-safe route activated after semantic router rate limit',
-            diagnostics: {
-              modelRole: 'ROUTER',
-              providerStatus: 'ERROR',
-              decisionSource: 'FAIL_SAFE',
-            },
-          };
-        } else {
-          throw error;
-        }
-      }
+      const route = await this.timed('queryRouterNode', nodeTimings, () =>
+        this.queryRouterAgentUseCase.execute({
+          message: state.userMessage,
+          recentHistory: this.formatRecentHistory(state),
+          hasSharedReelContext: state.hasSharedReelContext,
+          sharedReelCount: state.accessibleReelIds?.length ?? 0,
+          referentContext: this.buildRouterReferentContext(state),
+        }),
+      );
 
       this.logger.debug(
         `[RagGraph] route intent=${route.intent} retrieval=${route.needsRetrieval} recommendation=${route.recommendationAction.type}`,
@@ -1021,18 +977,6 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
-      if (state.answerFallbackReason === 'UNUSABLE_SYNTHESIS') {
-        return {
-          citations: [],
-          citationCoverage: {
-            mode: 'NOT_REQUIRED',
-            coverage: 1,
-            factualClaimCount: 0,
-            supportedClaimCount: 0,
-            unsupportedClaims: [],
-          },
-        };
-      }
       const assessment = await this.timed('citationNode', nodeTimings, () =>
         this.buildRagCitationsUseCase.execute(state),
       );

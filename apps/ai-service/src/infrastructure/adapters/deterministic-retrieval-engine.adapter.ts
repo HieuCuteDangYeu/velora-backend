@@ -1,3 +1,4 @@
+import { sourceRetrievalPlan } from '@ai/domain/services/rag-source-retrieval-plan';
 import type {
   IContentService,
   TranscriptMatch,
@@ -788,44 +789,8 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         },
       };
     }
-    if (
-      input.route.reelQuestionType === 'TRANSCRIPT_CONTENT' &&
-      /\b(?:opening statement|first (?:statement|sentence)|first thing (?:said|spoken))\b/i.test(
-        message,
-      )
-    ) {
-      return {
-        mode: 'REEL_HYBRID',
-        sourceOrder: 'ASC',
-        query: message,
-        queries: [message],
-        searchLimit: 1,
-        rerankLimit: 1,
-        shouldRerank: false,
-        reason: 'Read the beginning of the authorized transcript.',
-        diagnostics: {
-          modelRole: 'RETRIEVAL_PLANNER',
-          providerStatus: 'NOT_CALLED',
-          decisionSource: 'NOT_REQUIRED',
-        },
-      };
-    }
-    if (input.route.reelQuestionType === 'REEL_METADATA') {
-      return {
-        mode: 'REEL_HYBRID',
-        query: message,
-        queries: [message],
-        searchLimit: 5,
-        rerankLimit: 5,
-        shouldRerank: false,
-        reason: 'Read typed authorized Reel metadata.',
-        diagnostics: {
-          modelRole: 'RETRIEVAL_PLANNER',
-          providerStatus: 'NOT_CALLED',
-          decisionSource: 'NOT_REQUIRED',
-        },
-      };
-    }
+    const sourcePlan = sourceRetrievalPlan(message, input.route);
+    if (sourcePlan) return sourcePlan;
     const semanticCalls: RagStructuredCallFailureDiagnostic[] = [];
     try {
       const raw =

@@ -47,6 +47,7 @@ export class GroqKeyPoolExhaustedError extends Error {
 export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(GroqKeyPool.name);
   private keys: KeyState[] = [];
+  private readonly modelKeys = new Map<string, KeyState[]>();
   private roundRobinIndex = 0;
   private cleanupTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -56,6 +57,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
 
   onModuleInit(): void {
     this.keys = this.loadKeys();
+    this.modelKeys.clear();
     this.logger.log(
       `Groq key pool initialized with ${this.keys.length} key(s)`,
     );
@@ -74,17 +76,18 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   // ──────────────────────────── Public API ────────────────────────────
 
   /** Returns a healthy key via round-robin, skipping cooldown/exhausted keys. */
-  acquire(): { key: string; index: number } {
+  acquire(model?: string): { key: string; index: number } {
+    const keys = this.keysFor(model);
     const now = Date.now();
     const todayUtc = this.utcDateString(now);
-    const total = this.keys.length;
+    const total = keys.length;
     let exhaustedCount = 0;
     let cooldownCount = 0;
 
     // Try up to `total` keys starting from the round-robin cursor.
     for (let attempt = 0; attempt < total; attempt++) {
       const idx = (this.roundRobinIndex + attempt) % total;
-      const state = this.keys[idx];
+      const state = keys[idx];
 
       // Skip TPD-exhausted keys (unless it's a new UTC day).
       if (state.exhaustedOnUtcDate && state.exhaustedOnUtcDate >= todayUtc) {
@@ -128,7 +131,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     if (exhaustedCount < total && cooldownCount > 0) {
       let earliestState: KeyState | undefined;
       for (let i = 0; i < total; i++) {
-        const s = this.keys[i];
+        const s = keys[i];
         if (s.exhaustedOnUtcDate && s.exhaustedOnUtcDate >= todayUtc) continue;
         if (!earliestState || s.cooldownUntil < earliestState.cooldownUntil) {
           earliestState = s;
@@ -154,9 +157,10 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
    */
   async acquireAsync(
     maxWaitMs = 45_000,
+    model?: string,
   ): Promise<{ key: string; index: number }> {
     try {
-      return this.acquire();
+      return this.acquire(model);
     } catch (err) {
       if (!(err instanceof GroqKeyPoolExhaustedError)) throw err;
       if (err.cooldownKeys === 0 || err.exhaustedKeys >= err.totalKeys) {
@@ -167,7 +171,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       const todayUtc = this.utcDateString(now);
       let earliestWaitMs = Infinity;
 
-      for (const s of this.keys) {
+      for (const s of this.keysFor(model)) {
         if (s.exhaustedOnUtcDate && s.exhaustedOnUtcDate >= todayUtc) continue;
         const wait = Math.max(0, s.cooldownUntil - now);
         if (wait < earliestWaitMs) {
@@ -184,7 +188,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
             setTimeout(resolve, earliestWaitMs + 50),
           );
         }
-        return this.acquire();
+        return this.acquire(model);
       }
 
       throw err;
@@ -194,8 +198,8 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   /**
    * Record a successful API call. Reads rate-limit headers to track remaining quota.
    */
-  reportSuccess(index: number, headers?: Headers): void {
-    const state = this.at(index);
+  reportSuccess(index: number, headers?: Headers, model?: string): void {
+    const state = this.at(index, model);
     if (!state) return;
     state.consecutiveFailures = 0;
     state.cooldownUntil = 0;
@@ -221,8 +225,9 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     index: number,
     headers?: Headers,
     responseBody?: string,
+    model?: string,
   ): void {
-    const state = this.at(index);
+    const state = this.at(index, model);
     if (!state) return;
 
     // Check for TPD exhaustion evidence.
@@ -231,7 +236,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         responseBody?.slice(0, 120) ||
         headers?.get?.('x-ratelimit-reset-tokens') ||
         'reset-tokens > 1h';
-      this.reportTPDExhausted(index, reason);
+      this.reportTPDExhausted(index, reason, model);
       return;
     }
 
@@ -245,8 +250,8 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Mark a key as TPD-exhausted until the next UTC midnight. */
-  reportTPDExhausted(index: number, reason?: string): void {
-    const state = this.at(index);
+  reportTPDExhausted(index: number, reason?: string, model?: string): void {
+    const state = this.at(index, model);
     if (!state) return;
     state.exhaustedOnUtcDate = this.utcDateString(Date.now());
     state.remainingTokens = 0;
@@ -257,8 +262,8 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Record a transient failure (network error, 5xx). Short cooldown after threshold. */
-  reportTransientFailure(index: number): void {
-    const state = this.at(index);
+  reportTransientFailure(index: number, model?: string): void {
+    const state = this.at(index, model);
     if (!state) return;
     state.consecutiveFailures++;
   }
@@ -347,14 +352,33 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     }));
   }
 
-  private at(index: number): KeyState | undefined {
-    return this.keys[index];
+  private keysFor(model?: string): KeyState[] {
+    if (!model) return this.keys;
+    let keys = this.modelKeys.get(model);
+    if (!keys) {
+      keys = this.keys.map(({ key, index }) => ({
+        key,
+        index,
+        cooldownUntil: 0,
+        exhaustedOnUtcDate: '',
+        remainingTokens: undefined,
+        remainingRequests: undefined,
+        lastUsedAt: 0,
+        consecutiveFailures: 0,
+      }));
+      this.modelKeys.set(model, keys);
+    }
+    return keys;
+  }
+
+  private at(index: number, model?: string): KeyState | undefined {
+    return this.keysFor(model)[index];
   }
 
   private cleanup(): void {
     const now = Date.now();
     const todayUtc = this.utcDateString(now);
-    for (const state of this.keys) {
+    for (const state of [this.keys, ...this.modelKeys.values()].flat()) {
       if (state.cooldownUntil > 0 && state.cooldownUntil <= now) {
         state.cooldownUntil = 0;
       }

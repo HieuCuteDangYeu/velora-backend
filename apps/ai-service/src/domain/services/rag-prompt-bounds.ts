@@ -243,9 +243,12 @@ export function truncateEvidenceText(
       }
     }
   }
-  let start = Math.max(0, anchor - Math.floor(budget / 3));
+  // Keep the prefix when it already contains the focus. Moving a near-full
+  // window to a later sentence unnecessarily drops earlier source clauses.
+  let start =
+    anchor < budget ? 0 : Math.max(0, anchor - Math.floor(budget / 3));
   const sentenceStart = text.lastIndexOf('. ', anchor);
-  if (sentenceStart >= start) start = sentenceStart + 2;
+  if (start > 0 && sentenceStart >= start) start = sentenceStart + 2;
   if (start > 0 && text[start - 1] !== ' ')
     start = text.indexOf(' ', start) + 1;
   const end = Math.min(text.length, start + budget);

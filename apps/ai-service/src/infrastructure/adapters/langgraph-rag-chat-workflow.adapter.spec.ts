@@ -750,84 +750,91 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     });
   });
 
-  it('retains per-attempt citation diagnostics before a later attempt overwrites coverage', async () => {
-    const firstAssessment: RagCitationAssessment = {
-      citations: [],
-      coverage: {
-        mode: 'FALLBACK',
-        coverage: 0,
-        factualClaimCount: 1,
-        supportedClaimCount: 0,
-        unsupportedClaims: [],
-        diagnostics: {
-          decisionSource: 'FALLBACK',
-          selectedEvidenceIds: [],
-          deterministicSupportingEvidenceIds: [],
-          providerStatus: 'ERROR',
-          modelRole: 'CITATION_ATTRIBUTION',
-          semanticCalls: [
-            {
-              modelRole: 'CITATION_ATTRIBUTION',
-              model: 'test/test/citation',
-              providerStatus: 'TIMEOUT',
-              latencyMs: 4_000,
-              configuredTimeoutMs: 4_000,
-              configuredMaxCompletionTokens: 768,
-              attempt: 1,
-              errorCode: 'STRUCTURED_COMPLETION_TIMEOUT',
-            },
-          ],
-        },
-      },
-    };
-    const buildCitations = {
-      execute: jest.fn().mockResolvedValue(firstAssessment),
-    };
-    const workflow = new LangGraphRagChatWorkflowAdapter(
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      buildCitations as never,
-      undefined as never,
-      { get: jest.fn() } as never,
-      undefined as never,
-    ) as unknown as {
-      createCitationNode: (
-        nodeTimings: Record<string, number>,
-      ) => (
-        state: RagChatWorkflowState,
-      ) => Promise<Partial<RagChatWorkflowState>>;
-    };
-
-    const result = await workflow.createCitationNode({})(state());
-
-    expect(result).toMatchObject({
-      citationAttempts: [
-        {
-          attempt: 0,
-          decisionSource: 'FALLBACK',
+  it.each([undefined, 'UNUSABLE_SYNTHESIS'] as const)(
+    'retains citation diagnostics for fallback %s',
+    async (answerFallbackReason) => {
+      const firstAssessment: RagCitationAssessment = {
+        citations: [],
+        coverage: {
+          mode: 'FALLBACK',
           coverage: 0,
-          providerStatus: 'ERROR',
-          semanticCalls: [
-            expect.objectContaining({
-              errorCode: 'STRUCTURED_COMPLETION_TIMEOUT',
-            }),
-          ],
+          factualClaimCount: 1,
+          supportedClaimCount: 0,
+          unsupportedClaims: [],
+          diagnostics: {
+            decisionSource: 'FALLBACK',
+            selectedEvidenceIds: [],
+            deterministicSupportingEvidenceIds: [],
+            providerStatus: 'ERROR',
+            modelRole: 'CITATION_ATTRIBUTION',
+            semanticCalls: [
+              {
+                modelRole: 'CITATION_ATTRIBUTION',
+                model: 'test/test/citation',
+                providerStatus: 'TIMEOUT',
+                latencyMs: 4_000,
+                configuredTimeoutMs: 4_000,
+                configuredMaxCompletionTokens: 768,
+                attempt: 1,
+                errorCode: 'STRUCTURED_COMPLETION_TIMEOUT',
+              },
+            ],
+          },
         },
-      ],
-      citationDiagnostics: expect.objectContaining({
-        providerStatus: 'ERROR',
-      }),
-    });
-  });
+      };
+      const buildCitations = {
+        execute: jest.fn().mockResolvedValue(firstAssessment),
+      };
+      const workflow = new LangGraphRagChatWorkflowAdapter(
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        buildCitations as never,
+        undefined as never,
+        { get: jest.fn() } as never,
+        undefined as never,
+      ) as unknown as {
+        createCitationNode: (
+          nodeTimings: Record<string, number>,
+        ) => (
+          state: RagChatWorkflowState,
+        ) => Promise<Partial<RagChatWorkflowState>>;
+      };
+
+      const result = await workflow.createCitationNode({})({
+        ...state(),
+        answerFallbackReason,
+      });
+      expect(buildCitations.execute).toHaveBeenCalledTimes(1);
+
+      expect(result).toMatchObject({
+        citationAttempts: [
+          {
+            attempt: 0,
+            decisionSource: 'FALLBACK',
+            coverage: 0,
+            providerStatus: 'ERROR',
+            semanticCalls: [
+              expect.objectContaining({
+                errorCode: 'STRUCTURED_COMPLETION_TIMEOUT',
+              }),
+            ],
+          },
+        ],
+        citationDiagnostics: expect.objectContaining({
+          providerStatus: 'ERROR',
+        }),
+      });
+    },
+  );
 });
 
 describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
@@ -1097,121 +1104,124 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
 });
 
 describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
-  it('captures router diagnostics in Langfuse when graph execution fails before returning state', async () => {
-    const save = { execute: jest.fn().mockResolvedValue(undefined) };
-    const queryRouterError = Object.assign(
-      new Error('Semantic router is temporarily unavailable'),
-      {
-        name: 'RouterUnavailableError',
-        code: 'ROUTER_UNAVAILABLE',
-        causeCode: 'ROUTER_SEMANTIC_INCONSISTENT',
-        semanticInconsistencyType: 'REQUIRED_EVIDENCE_MISMATCH',
-        semanticInconsistencyDetails: {
-          actualIntent: 'REEL_VIDEO_QUESTION',
-          actualReelQuestionType: 'TRANSCRIPT_CONTENT',
-          actualEvidence: ['TRANSCRIPT'],
-          expectedEvidence: ['TRANSCRIPT'],
-          query: 'must-not-persist',
-          reelId: 'must-not-persist',
-        },
-        semanticCalls: [
-          {
-            modelRole: 'ROUTER',
-            model: 'test/test/router',
-            providerStatus: 200,
-            latencyMs: 12,
-            configuredTimeoutMs: 30_000,
-            configuredMaxCompletionTokens: 512,
-            finishReason: 'stop',
-            endpointContract: 'CHAT_JSON_SCHEMA',
-            responseContentType: 'string',
-            contentPresent: true,
-            toolCallsPresent: false,
-            attempt: 1,
-            requestId: 'must-not-persist',
+  it.each(['ROUTER_SEMANTIC_INCONSISTENT', 'GROQ_KEY_POOL_EXHAUSTED'])(
+    'preserves %s rather than inventing a transcript route',
+    async (causeCode) => {
+      const save = { execute: jest.fn().mockResolvedValue(undefined) };
+      const queryRouterError = Object.assign(
+        new Error('Semantic router is temporarily unavailable'),
+        {
+          name: 'RouterUnavailableError',
+          code: 'ROUTER_UNAVAILABLE',
+          causeCode,
+          semanticInconsistencyType: 'REQUIRED_EVIDENCE_MISMATCH',
+          semanticInconsistencyDetails: {
+            actualIntent: 'REEL_VIDEO_QUESTION',
+            actualReelQuestionType: 'TRANSCRIPT_CONTENT',
+            actualEvidence: ['TRANSCRIPT'],
+            expectedEvidence: ['TRANSCRIPT'],
+            query: 'must-not-persist',
+            reelId: 'must-not-persist',
           },
-        ],
-      },
-    );
-    const workflow = new LangGraphRagChatWorkflowAdapter(
-      { execute: jest.fn().mockRejectedValue(queryRouterError) } as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      undefined as never,
-      save as never,
-      { get: jest.fn() } as never,
-      {
-        resolveReelContextAccess: jest.fn().mockResolvedValue(['reel-1']),
-      } as never,
-      undefined,
-      undefined,
-      {
-        withRoot: (
-          _metadata: unknown,
-          operation: (root: unknown) => Promise<unknown>,
-        ) => operation({ traceId: 'trace-1' }),
-        observe: (_name: unknown, operation: () => Promise<unknown>) =>
-          operation(),
-        recordSemanticCalls: jest.fn(),
-        setRootOutput: jest.fn(),
-      } as never,
-    );
-
-    await expect(
-      workflow.execute({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        message: 'question',
-      }),
-    ).rejects.toMatchObject({ code: 'ROUTER_UNAVAILABLE' });
-
-    expect(save.execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        state: expect.objectContaining({
-          finalFailureSource: 'PROVIDER_ERROR',
-          failureDiagnostics: expect.objectContaining({
-            failedNode: 'queryRouterNode',
-            errorName: 'RouterUnavailableError',
-            errorCode: 'ROUTER_UNAVAILABLE',
-            causeCode: 'ROUTER_SEMANTIC_INCONSISTENT',
-            semanticInconsistencyType: 'REQUIRED_EVIDENCE_MISMATCH',
-            semanticInconsistencyDetails: {
-              actualIntent: 'REEL_VIDEO_QUESTION',
-              actualReelQuestionType: 'TRANSCRIPT_CONTENT',
-              actualEvidence: ['TRANSCRIPT'],
-              expectedEvidence: ['TRANSCRIPT'],
+          semanticCalls: [
+            {
+              modelRole: 'ROUTER',
+              model: 'test/test/router',
+              providerStatus: 200,
+              latencyMs: 12,
+              configuredTimeoutMs: 30_000,
+              configuredMaxCompletionTokens: 512,
+              finishReason: 'stop',
+              endpointContract: 'CHAT_JSON_SCHEMA',
+              responseContentType: 'string',
+              contentPresent: true,
+              toolCallsPresent: false,
+              attempt: 1,
+              requestId: 'must-not-persist',
             },
-            semanticCalls: [
-              expect.objectContaining({
-                model: 'test/test/router',
-                providerStatus: 200,
-                endpointContract: 'CHAT_JSON_SCHEMA',
-              }),
-            ],
+          ],
+        },
+      );
+      const workflow = new LangGraphRagChatWorkflowAdapter(
+        { execute: jest.fn().mockRejectedValue(queryRouterError) } as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        undefined as never,
+        save as never,
+        { get: jest.fn() } as never,
+        {
+          resolveReelContextAccess: jest.fn().mockResolvedValue(['reel-1']),
+        } as never,
+        undefined,
+        undefined,
+        {
+          withRoot: (
+            _metadata: unknown,
+            operation: (root: unknown) => Promise<unknown>,
+          ) => operation({ traceId: 'trace-1' }),
+          observe: (_name: unknown, operation: () => Promise<unknown>) =>
+            operation(),
+          recordSemanticCalls: jest.fn(),
+          setRootOutput: jest.fn(),
+        } as never,
+      );
+
+      await expect(
+        workflow.execute({
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+          message: 'question',
+        }),
+      ).rejects.toMatchObject({ code: 'ROUTER_UNAVAILABLE' });
+
+      expect(save.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          state: expect.objectContaining({
+            finalFailureSource: 'PROVIDER_ERROR',
+            failureDiagnostics: expect.objectContaining({
+              failedNode: 'queryRouterNode',
+              errorName: 'RouterUnavailableError',
+              errorCode: 'ROUTER_UNAVAILABLE',
+              causeCode,
+              semanticInconsistencyType: 'REQUIRED_EVIDENCE_MISMATCH',
+              semanticInconsistencyDetails: {
+                actualIntent: 'REEL_VIDEO_QUESTION',
+                actualReelQuestionType: 'TRANSCRIPT_CONTENT',
+                actualEvidence: ['TRANSCRIPT'],
+                expectedEvidence: ['TRANSCRIPT'],
+              },
+              semanticCalls: [
+                expect.objectContaining({
+                  model: 'test/test/router',
+                  providerStatus: 200,
+                  endpointContract: 'CHAT_JSON_SCHEMA',
+                }),
+              ],
+            }),
           }),
         }),
-      }),
-    );
+      );
 
-    const savedState = save.execute.mock.calls[0][0].state;
-    expect(savedState.failureDiagnostics.semanticCalls[0]).not.toHaveProperty(
-      'requestId',
-    );
-    expect(
-      savedState.failureDiagnostics.semanticInconsistencyDetails,
-    ).not.toHaveProperty('query');
-    expect(
-      savedState.failureDiagnostics.semanticInconsistencyDetails,
-    ).not.toHaveProperty('reelId');
-  });
+      const savedState = save.execute.mock.calls[0][0].state;
+      expect(savedState.failureDiagnostics.semanticCalls[0]).not.toHaveProperty(
+        'requestId',
+      );
+      expect(
+        savedState.failureDiagnostics.semanticInconsistencyDetails,
+      ).not.toHaveProperty('query');
+      expect(
+        savedState.failureDiagnostics.semanticInconsistencyDetails,
+      ).not.toHaveProperty('reelId');
+    },
+  );
 
   it('falls back to no-context answer when draft answer generation throws an error', async () => {
     const generateDraftAnswer = {

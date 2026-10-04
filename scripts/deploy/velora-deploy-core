@@ -176,6 +176,8 @@ readonly -A RMQ_QUEUE_BY_SERVICE=(
 MODE="deploy"
 DRY_RUN=false
 FORCE=false
+TURN_ENV_BASELINE=""
+TURN_ENV_APPROVED=false
 RETRY_FAILED=false
 APPROVE_DB_SHA=""
 DEPLOY_ID=""
@@ -208,6 +210,7 @@ Usage:
   velora-deploy
   velora-deploy --dry-run
   velora-deploy --force
+  velora-deploy --approve-turn-env <last-healthy-env-backup> [--dry-run]
   velora-deploy --retry-failed
   velora-deploy --rollback
   velora-deploy --approve-db-change <40-char-sha>
@@ -216,6 +219,8 @@ Options:
   --dry-run                 Print/validate the deployment plan without changing running production containers.
   --force                   Reconcile normal application services for the approved release.
                             Does not blindly restart RAG or worker lanes.
+  --approve-turn-env FILE   Approve only TURN env changes against a last-healthy backup.
+                            Refuses a plan touching services other than call-service.
   --retry-failed            Retry the currently promoted SHA even if it was blocked after a
                             previous release-specific failure.
   --rollback                Manually restore the previous healthy release snapshot.
@@ -315,6 +320,108 @@ env_hash() {
   sha256sum "$APP_DIR/.env" | awk '{print $1}'
 }
 
+approve_turn_env() {
+  [[ -n "$STORED_ENV_HASH" && "$CURRENT_ENV_HASH" != "$STORED_ENV_HASH" ]] \
+    || fail "TURN approval requires env drift and a recorded healthy env hash"
+  local service
+  for service in "${PULL_SERVICES[@]}" "${RECONCILE_SERVICES[@]}"; do
+    [[ "$service" == call-service ]] || fail "TURN approval cannot deploy another application service"
+  done
+  (( ${#INFRA_RECONCILE_SERVICES[@]} == 0 )) \
+    && [[ "$DB_RISK" == false ]] || fail "TURN approval cannot include infrastructure or database changes"
+
+  # Compare bytes outside canonical TURN assignments, not a permissive dotenv
+  # parser: exports, duplicate keys, comments and unrelated edits stay guarded.
+  if ! python3 - "$TURN_ENV_BASELINE" "$APP_DIR/.env" "$STORED_ENV_HASH" "$CURRENT_ENV_HASH" <<'PY'
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+try:
+    before, after = (Path(p).read_bytes() for p in sys.argv[1:3])
+except OSError:
+    raise SystemExit("Cannot read the TURN env baseline/current file.")
+if hashlib.sha256(before).hexdigest() != sys.argv[3]:
+    raise SystemExit("TURN baseline does not match the last healthy env hash.")
+if hashlib.sha256(after).hexdigest() != sys.argv[4]:
+    raise SystemExit("Current env changed after deployment planning.")
+keys = {b"TURN_URLS", b"TURN_USERNAME", b"TURN_CREDENTIAL"}
+assignment = re.compile(rb"^(TURN_URLS|TURN_USERNAME|TURN_CREDENTIAL)=(.*?)(?:\r?\n)?$")
+
+def split(data):
+    other, values = [], {}
+    for line in data.splitlines(keepends=True):
+        match = assignment.fullmatch(line)
+        if match:
+            key, value = match.groups()
+            if key in values:
+                raise SystemExit("Duplicate TURN assignments are not approved.")
+            value = value.strip()
+            if value.startswith((b'"', b"'")):
+                quote = value[:1]
+                if len(value) < 2 or not value.endswith(quote) or quote in value[1:-1]:
+                    raise SystemExit("TURN approval requires single-line literal values.")
+                value = value[1:-1]
+            elif b'"' in value or b"'" in value:
+                raise SystemExit("TURN approval requires single-line literal values.")
+            if b"$" in value or b"`" in value:
+                raise SystemExit("TURN approval does not allow variable interpolation or backticks.")
+            values[key] = value
+        else:
+            if re.match(rb"^\s*(?:export\s+)?TURN_(?:URLS|USERNAME|CREDENTIAL)\s*=", line):
+                raise SystemExit("Use canonical TURN_KEY=value assignments for scoped approval.")
+            # Do not mistake text inside a multiline secret for a TURN key.
+            quoted = re.match(rb'''^\s*(?:export\s+)?[A-Za-z_]\w*\s*=\s*(['"`])''', line)
+            if quoted and not re.search(rb"(?<!\\)" + quoted[1], line[quoted.end():]):
+                raise SystemExit("Scoped TURN approval does not support multiline env assignments.")
+            other.append(line)
+    return b"".join(other), values
+
+old_other, _ = split(before)
+new_other, values = split(after)
+if old_other != new_other:
+    raise SystemExit("Changes outside the three TURN assignments are not approved.")
+if re.search(rb"\$(?:\{)?TURN_(?:URLS|USERNAME|CREDENTIAL)\b", new_other):
+    raise SystemExit("Other env assignments must not depend on TURN variables.")
+if any(values.values()) and (set(values) != keys or not all(values.values())):
+    raise SystemExit("TURN settings must be all configured or all cleared.")
+PY
+  then
+    fail "Scoped TURN env validation failed; configuration remains unapproved"
+  fi
+  add_app_and_worker_companions call-service
+  TURN_ENV_APPROVED=true
+  log "Approved TURN-only env drift for call-service; healthy env hash is unchanged until deployment succeeds."
+}
+
+restore_turn_env_for_rollback() {
+  [[ "$TURN_ENV_APPROVED" == true ]] || return 0
+  # Never overwrite an operator edit made after this approval.
+  python3 - "$TURN_ENV_BASELINE" "$APP_DIR/.env" "$STORED_ENV_HASH" "$CURRENT_ENV_HASH" <<'PY'
+import hashlib
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+baseline, current = map(Path, sys.argv[1:3])
+data = baseline.read_bytes()
+if hashlib.sha256(data).hexdigest() != sys.argv[3]:
+    raise SystemExit("Cannot restore TURN env: baseline changed.")
+if hashlib.sha256(current.read_bytes()).hexdigest() != sys.argv[4]:
+    raise SystemExit("Cannot restore TURN env: current env changed; operator intervention required.")
+fd, name = tempfile.mkstemp(prefix=".env-turn-rollback-", dir=current.parent)
+try:
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(data)
+    os.replace(name, current)
+finally:
+    if os.path.exists(name):
+        os.unlink(name)
+PY
+}
+
 format_epoch_utc() {
   local epoch="$1"
   if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -395,6 +502,14 @@ parse_args() {
         FORCE=true
         shift
         ;;
+      --approve-turn-env)
+        [[ "$MODE" == "deploy" ]] || fail "--approve-turn-env cannot be combined with $MODE"
+        TURN_ENV_BASELINE="${2:-}"
+        [[ -n "$TURN_ENV_BASELINE" && "$TURN_ENV_BASELINE" != --* ]] \
+          || fail "--approve-turn-env requires a last-healthy env backup file"
+        [[ "$TURN_ENV_BASELINE" == /* ]] || fail "TURN env backup path must be absolute"
+        shift 2
+        ;;
       --retry-failed)
         [[ "$MODE" == "deploy" ]] || fail "--retry-failed cannot be combined with $MODE"
         RETRY_FAILED=true
@@ -423,9 +538,11 @@ parse_args() {
     esac
   done
 
-  if [[ "$MODE" != "deploy" && ( "$DRY_RUN" == true || "$FORCE" == true || "$RETRY_FAILED" == true ) ]]; then
+  if [[ "$MODE" != "deploy" && ( "$DRY_RUN" == true || "$FORCE" == true || "$RETRY_FAILED" == true || -n "$TURN_ENV_BASELINE" ) ]]; then
     fail "deployment flags cannot be combined with $MODE"
   fi
+  [[ -z "$TURN_ENV_BASELINE" || "$FORCE" != true ]] \
+    || fail "--approve-turn-env cannot be combined with --force"
 }
 
 init() {
@@ -546,7 +663,7 @@ publish_deployment_metrics() {
       ;;
     config-drift)
       reason="${reason:-The production .env changed since the last healthy release.}"
-      action="${action:-Review the .env change, then run velora-deploy --force if it is intentional.}"
+      action="${action:-Review .env. For TURN-only changes use velora-deploy --approve-turn-env <last-healthy-env-backup>; otherwise review the full application impact before using --force.}"
       ;;
     health-check)
       reason="${reason:-The promoted release failed post-deployment health verification.}"
@@ -1737,6 +1854,10 @@ promote_snapshot_to_previous_release() {
 }
 
 persist_success_state() {
+  if [[ "$TURN_ENV_APPROVED" == true ]]; then
+    [[ "$(env_hash)" == "$CURRENT_ENV_HASH" ]] \
+      || fail "Env changed during the TURN deployment; healthy state was not updated"
+  fi
   if [[ -n "$LAST_DEPLOYED_SHA" ]]; then
     printf '%s\n' "$LAST_DEPLOYED_SHA" >"$PREVIOUS_SHA_FILE"
   fi
@@ -1886,7 +2007,7 @@ already_deployed_path() {
 
   if [[ "$env_drift" == true ]]; then
     warn "CONFIG DRIFT DETECTED: .env changed since the healthy release; timer will not restart services automatically"
-    warn "Use 'velora-deploy --force' after reviewing the configuration change"
+    warn "For TURN-only drift, use --approve-turn-env <last-healthy-env-backup>; otherwise review before using --force"
   fi
 
   log "Already successfully deployed: $TARGET_SHA"
@@ -2014,7 +2135,7 @@ perform_deployment() {
   # The common 5-minute timer path should not fail merely because RAM/disk is
   # temporarily tight when no deployment is needed. Verify the current release
   # and retry any pending GitHub receipt without mutating production.
-  if [[ "$TARGET_SHA" == "$LAST_DEPLOYED_SHA" && "$FORCE" != true ]]; then
+  if [[ "$TARGET_SHA" == "$LAST_DEPLOYED_SHA" && "$FORCE" != true && -z "$TURN_ENV_BASELINE" ]]; then
     validate_rabbitmq_static_config
     validate_rabbitmq_live
     already_deployed_path
@@ -2032,10 +2153,14 @@ perform_deployment() {
   ensure_manual_db_approval
   check_blocked_release
 
-  if [[ -n "$STORED_ENV_HASH" && "$CURRENT_ENV_HASH" != "$STORED_ENV_HASH" && "$FORCE" != true ]]; then
+  if [[ -n "$TURN_ENV_BASELINE" ]]; then
+    approve_turn_env
+  fi
+
+  if [[ -n "$STORED_ENV_HASH" && "$CURRENT_ENV_HASH" != "$STORED_ENV_HASH" && "$FORCE" != true && "$TURN_ENV_APPROVED" != true ]]; then
     warn "CONFIG DRIFT DETECTED: .env changed since the last healthy release"
     warn "Automatic deployment is paused to avoid partially applying new environment values"
-    warn "Review the .env change, then run: velora-deploy --force"
+    warn "For TURN-only drift, use --approve-turn-env <last-healthy-env-backup>; otherwise review before using --force"
     publish_deployment_metrics "config-drift"
     exit 22
   fi
@@ -2057,6 +2182,10 @@ perform_deployment() {
   prepull_managed_infra
   snapshot_current_release
 
+  if [[ "$TURN_ENV_APPROVED" == true ]]; then
+    [[ "$(env_hash)" == "$CURRENT_ENV_HASH" ]] \
+      || fail "Env changed after TURN approval; refusing to change production containers"
+  fi
   checkout_release "$TARGET_SHA"
 
   # Re-validate Compose using the real production checkout and immutable tag.
@@ -2068,7 +2197,9 @@ perform_deployment() {
   if verify_deployment_health; then
     # Keep removed services alive until the target release passes health checks
     # so an automatic rollback can still restore the previous Compose model.
-    remove_removed_compose_services || warn "deprecated Compose service cleanup failed"
+    if [[ "$TURN_ENV_APPROVED" != true ]]; then
+      remove_removed_compose_services || warn "deprecated Compose service cleanup failed"
+    fi
     persist_success_state
     public_smoke_warning_only
     save_local_deployment_receipt "success"
@@ -2104,7 +2235,7 @@ perform_deployment() {
 
   if [[ -n "$TEMP_SNAPSHOT" && -f "$TEMP_SNAPSHOT" && -n "$LAST_DEPLOYED_SHA" ]]; then
     warn "attempting automatic rollback to $LAST_DEPLOYED_SHA"
-    if rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
+    if restore_turn_env_for_rollback && rollback_from_snapshot "$TEMP_SNAPSHOT" "$LAST_DEPLOYED_SHA"; then
       DEPLOYMENT_FAILURE_STATUS="health-check"
       DEPLOYMENT_FAILURE_DETAIL="$target_failure_detail"
       DEPLOYMENT_FAILURE_ACTION="$target_failure_action"

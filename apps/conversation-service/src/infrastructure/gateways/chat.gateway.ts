@@ -257,6 +257,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
+    let phase = 'persist';
+    let acknowledged = false;
     try {
       const result = await this.sendMessageUseCase.execute(payload, senderId);
       const savedMessage = result.message;
@@ -269,6 +271,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Always reconcile the sending socket. For an idempotent retry this is
       // the only event: all fan-out must happen exactly once.
       client.emit('message_synced', savedMessageDto);
+      acknowledged = true;
+      phase = 'dispatch';
 
       if (!result.created) {
         this.recordSendMessageOutcome(startedAt, 'success');
@@ -349,7 +353,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
 
       this.recordSendMessageOutcome(startedAt, 'success');
-    } catch {
+    } catch (error: unknown) {
+      const candidate =
+        error && typeof error === 'object' && 'code' in error
+          ? error.code
+          : null;
+      const code =
+        typeof candidate === 'string' && /^P\d{4}$/.test(candidate)
+          ? candidate
+          : 'UNKNOWN';
+      // Log only a safe code and stage, not Prisma query arguments, content or tokens.
+      this.logger.warn(
+        `send_message failed phase=${phase} code=${code} acknowledged=${acknowledged}`,
+      );
       this.recordSendMessageOutcome(startedAt, 'error');
       this.server.to(client.id).emit('message_failed', {
         conversationId: payload.conversationId,

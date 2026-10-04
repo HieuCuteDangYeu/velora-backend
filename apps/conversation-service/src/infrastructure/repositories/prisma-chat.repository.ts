@@ -49,6 +49,7 @@ const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
+const MESSAGE_TRANSACTION_ATTEMPTS = 6;
 
 type AnchorBoundary = {
   createdAt: Date;
@@ -129,40 +130,42 @@ export class PrismaChatRepository implements IChatRepository {
     // Giúp giảm Round-trip time xuống DB từ 2 lần còn 1 lần
     let savedMsg: PrismaMessage;
     try {
-      [savedMsg] = await this.prisma.$transaction([
-        // Op 1: Tạo message
-        this.prisma.message.create({
-          data: {
-            type: message.type,
-            clientMessageId,
-            signalType: message.signalType ?? 1,
-            content: contentToSave,
-            media: message.media
-              ? (message.media as unknown as Prisma.InputJsonValue)
-              : null,
-            metadata: message.metadata
-              ? (message.metadata as unknown as Prisma.InputJsonValue)
-              : null,
-            registrationId: message.registrationId,
-            senderId: message.senderId,
-            isRecalled: false,
-            replyToId: message.replyToId,
-            replyPreview: replyPreview
-              ? (replyPreview as unknown as Prisma.InputJsonValue)
-              : null,
-            conversationId: message.conversationId,
-            readBy: [],
-          },
-        }),
-        // Op 2: Update conversation (Last message)
-        this.prisma.conversation.update({
-          where: { id: message.conversationId },
-          data: {
-            lastMessage: previewText,
-            lastMessageAt: new Date(),
-          },
-        }),
-      ]);
+      [savedMsg] = await this.retryMessageTransaction(() =>
+        this.prisma.$transaction([
+          // Op 1: Tạo message
+          this.prisma.message.create({
+            data: {
+              type: message.type,
+              clientMessageId,
+              signalType: message.signalType ?? 1,
+              content: contentToSave,
+              media: message.media
+                ? (message.media as unknown as Prisma.InputJsonValue)
+                : null,
+              metadata: message.metadata
+                ? (message.metadata as unknown as Prisma.InputJsonValue)
+                : null,
+              registrationId: message.registrationId,
+              senderId: message.senderId,
+              isRecalled: false,
+              replyToId: message.replyToId,
+              replyPreview: replyPreview
+                ? (replyPreview as unknown as Prisma.InputJsonValue)
+                : null,
+              conversationId: message.conversationId,
+              readBy: [],
+            },
+          }),
+          // Op 2: Update conversation (Last message)
+          this.prisma.conversation.update({
+            where: { id: message.conversationId },
+            data: {
+              lastMessage: previewText,
+              lastMessageAt: new Date(),
+            },
+          }),
+        ]),
+      );
     } catch (error: unknown) {
       // The compound unique index is the source of truth. A retry may race
       // with the original request, so P2002 is a successful idempotent read.
@@ -1195,6 +1198,33 @@ export class PrismaChatRepository implements IChatRepository {
       await this.redis.del(`chat:history:${conversationId}`);
     } catch (error) {
       this.logger.error(error);
+    }
+  }
+
+  private async retryMessageTransaction<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await operation();
+      } catch (error: unknown) {
+        // P2034 means the transaction failed with a write conflict/deadlock.
+        // Retry the whole transaction with fresh Prisma promises; never repeat
+        // post-commit socket, push, cache or media side effects here.
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== 'P2034' ||
+          attempt + 1 >= MESSAGE_TRANSACTION_ATTEMPTS
+        ) {
+          throw error;
+        }
+        if (attempt === 0) {
+          this.logger.warn('Message transaction conflict; retrying code=P2034');
+        }
+        const backoffMs =
+          Math.min(400, 50 * 2 ** attempt) + Math.floor(Math.random() * 50);
+        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+      }
     }
   }
 

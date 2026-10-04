@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/conversation-client';
 import { Message } from './domain/entities/message.entity';
 import { ConversationMicroserviceController } from './infrastructure/controllers/conversation.controller';
@@ -35,6 +36,146 @@ const createStoredMessage = () => ({
   reactions: null,
   createdAt: new Date('2026-07-15T00:00:00.000Z'),
   readBy: [],
+});
+
+const prismaError = (code: string) =>
+  new Prisma.PrismaClientKnownRequestError('private query detail', {
+    code,
+    clientVersion: '5.22.0',
+  });
+const transactionHarness = ($transaction: jest.Mock) => {
+  const prisma = {
+    $transaction,
+    conversation: {
+      findUnique: jest.fn().mockResolvedValue({ participantIds: ['sender-1'] }),
+      update: jest.fn().mockReturnValue({}),
+    },
+    message: {
+      create: jest.fn().mockReturnValue({}),
+      findFirst: jest.fn().mockResolvedValue(createStoredMessage()),
+    },
+  };
+  const redis = { del: jest.fn() };
+  const encryption = {
+    encrypt: jest.fn((s: string) => `encrypted:${s}`),
+    decrypt: jest.fn((s: string) => s.replace('encrypted:', '')),
+  };
+  const repository = new PrismaChatRepository(
+    prisma as never,
+    redis as never,
+    encryption,
+    {} as never,
+    {} as never,
+  );
+  return { repository, prisma, redis, encryption };
+};
+
+describe('message transaction conflicts', () => {
+  it('retries the complete rolled-back transaction with the same identity, then runs post-commit work once', async () => {
+    const transaction = jest
+      .fn()
+      .mockRejectedValueOnce(prismaError('P2034'))
+      .mockRejectedValueOnce(prismaError('P2034'))
+      .mockResolvedValue([createStoredMessage()]);
+    const { repository, prisma, redis, encryption } =
+      transactionHarness(transaction);
+    const result = await repository.createMessageIdempotently(createMessage());
+    expect(result.created).toBe(true);
+    expect(transaction).toHaveBeenCalledTimes(3);
+    expect(prisma.message.create).toHaveBeenCalledTimes(3);
+    for (const [args] of prisma.message.create.mock.calls)
+      expect(args.data.clientMessageId).toBe('client-message-1');
+    expect(encryption.encrypt).toHaveBeenCalledTimes(1);
+    expect(redis.del).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops after six conflicted attempts without running post-commit work', async () => {
+    const conflict = prismaError('P2034');
+    const transaction = jest.fn().mockRejectedValue(conflict);
+    const { repository, redis } = transactionHarness(transaction);
+    await expect(
+      repository.createMessageIdempotently(createMessage()),
+    ).rejects.toBe(conflict);
+    expect(transaction).toHaveBeenCalledTimes(6);
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it.each(['P1001', 'P2010'])(
+    'does not retry ambiguous or unrelated database errors (%s)',
+    async (code) => {
+      const error = prismaError(code);
+      const transaction = jest.fn().mockRejectedValue(error);
+      const { repository } = transactionHarness(transaction);
+      await expect(
+        repository.createMessageIdempotently(createMessage()),
+      ).rejects.toBe(error);
+      expect(transaction).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('retains unique-conflict reconciliation after a transaction retry', async () => {
+    const transaction = jest
+      .fn()
+      .mockRejectedValueOnce(prismaError('P2034'))
+      .mockRejectedValueOnce(prismaError('P2002'));
+    const { repository, prisma, redis } = transactionHarness(transaction);
+    const result = await repository.createMessageIdempotently(createMessage());
+    expect(result.created).toBe(false);
+    expect(result.message.id).toBe('message-1');
+    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(prisma.message.findFirst).toHaveBeenCalledTimes(1);
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it('does not retry failures after a successful commit', async () => {
+    const transaction = jest.fn().mockResolvedValue([createStoredMessage()]);
+    const { repository } = transactionHarness(transaction);
+    const failure = prismaError('P2034');
+    jest
+      .spyOn(repository as never, 'syncPendingMediaTracking')
+      .mockRejectedValueOnce(failure as never);
+    await expect(
+      repository.createMessageIdempotently(createMessage()),
+    ).rejects.toBe(failure);
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs only a safe error code and phase when the socket send fails', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => {});
+    try {
+      const gateway = new ChatGateway(
+        { execute: jest.fn().mockRejectedValue(prismaError('P2034')) } as never,
+        {} as never,
+        {} as never,
+        { recordSendMessage: jest.fn() } as never,
+        {
+          assertConversationParticipant: jest.fn().mockResolvedValue(undefined),
+        } as never,
+        {} as never,
+        {} as never,
+      );
+      const emit = jest.fn();
+      gateway.server = { to: jest.fn().mockReturnValue({ emit }) } as never;
+      await gateway.handleMessage(
+        createMessage() as never,
+        { id: 'socket-1', data: { userId: 'sender-1' } } as never,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        'send_message failed phase=persist code=P2034 acknowledged=false',
+      );
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(
+        'private query detail',
+      );
+      expect(emit).toHaveBeenCalledWith('message_failed', {
+        conversationId: 'conversation-1',
+        clientMessageId: 'client-message-1',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('message idempotency', () => {

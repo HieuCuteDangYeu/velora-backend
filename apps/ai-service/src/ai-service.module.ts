@@ -22,7 +22,7 @@ import { RerankRetrievedEvidenceUseCase } from '@ai/application/use-cases/rerank
 import { RetrieveReelEvidenceUseCase } from '@ai/application/use-cases/retrieve-reel-evidence.use-case';
 import { ReviewIndexQualityUseCase } from '@ai/application/use-cases/review-index-quality.use-case';
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
-import { SaveRagTraceUseCase } from '@ai/application/use-cases/save-rag-trace.use-case';
+import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
 import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-case';
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
@@ -55,8 +55,7 @@ import { AiController } from '@ai/infrastructure/controller/ai.controller';
 import { IndexQualityAgentController } from '@ai/infrastructure/controllers/index-quality-agent.controller';
 import { PrismaService } from '@ai/infrastructure/prisma/prisma.service';
 import { PrismaConversationMemoryRepository } from '@ai/infrastructure/repositories/prisma-conversation-memory.repository';
-import { PrismaRagHierarchyShadowObservationRepository } from '@ai/infrastructure/repositories/prisma-rag-hierarchy-shadow-observation.repository';
-import { PrismaRagTraceRepository } from '@ai/infrastructure/repositories/prisma-rag-trace.repository';
+import { LangfuseRagHierarchyShadowObservationRepository } from '@ai/infrastructure/repositories/langfuse-rag-hierarchy-shadow-observation.repository';
 import { PrismaUserMemoryRepository } from '@ai/infrastructure/repositories/prisma-user-memory.repository';
 import { R2AudioStorageService } from '@ai/infrastructure/services/r2-audio-storage.service';
 import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
@@ -191,7 +190,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     CreateNoContextAnswerUseCase,
     BuildRagCitationsUseCase,
     BuildGroundedAnswerRevisionUseCase,
-    SaveRagTraceUseCase,
+    BuildRagTraceSnapshotUseCase,
     MemoryWriterAgentUseCase,
     ExtractReelMetadataUseCase,
     ReviewIndexQualityUseCase,
@@ -256,12 +255,8 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       useClass: PrismaUserMemoryRepository,
     },
     {
-      provide: 'IRagTraceRepository',
-      useClass: PrismaRagTraceRepository,
-    },
-    {
       provide: 'IRagHierarchyShadowObservationRepository',
-      useClass: PrismaRagHierarchyShadowObservationRepository,
+      useClass: LangfuseRagHierarchyShadowObservationRepository,
     },
     {
       provide: 'IMemoryExtractorService',

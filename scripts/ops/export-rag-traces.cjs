@@ -5,6 +5,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const dotenv = require('dotenv');
+const {
+  createLangfuseClient,
+  loadSessionTraces,
+} = require('./langfuse-rag-traces.cjs');
 
 function arg(name) {
   const index = process.argv.indexOf(name);
@@ -306,8 +310,10 @@ async function main() {
   if (!reportPath || !outputPath || !envFile)
     throw new Error('--runner-report, --output, and --env-file are required');
   dotenv.config({ path: envFile, quiet: true });
-  if (!process.env.AI_DATABASE_URL)
-    throw new Error('AI_DATABASE_URL is required for read-only trace export');
+  if (arg('--source') && arg('--source') !== 'langfuse')
+    throw new Error(
+      'Only Langfuse trace export is supported; the PostgreSQL trace table is retired',
+    );
   const includeSemanticContext = process.argv.includes(
     '--include-semantic-context',
   );
@@ -330,27 +336,12 @@ async function main() {
   const conversationIds = report.cases.map((item) => item.conversationId);
   if (new Set(conversationIds).size !== conversationIds.length)
     throw new Error('runner report contains duplicate conversation IDs');
-  const { PrismaClient } = require('@prisma/ai-client');
-  const prisma = new PrismaClient();
   let indexing;
   try {
-    const traces = await prisma.ragTrace.findMany({
-      where: { conversationId: { in: conversationIds } },
-      select: {
-        id: true,
-        conversationId: true,
-        intent: true,
-        needsRetrieval: true,
-        retrievedChunkIds: true,
-        rerankedChunkIds: true,
-        citations: true,
-        verifierPassed: true,
-        verifierConfidence: true,
-        latencyMs: true,
-        nodeTimings: true,
-        workflowMetrics: true,
-      },
-    });
+    const traces = await loadSessionTraces(
+      createLangfuseClient(),
+      conversationIds,
+    );
     let semanticContexts = null;
     if (includeSemanticContext) {
       const {
@@ -378,6 +369,7 @@ async function main() {
     fs.renameSync(temporary, outputPath);
     console.log(
       JSON.stringify({
+        TRACE_SOURCE: 'langfuse',
         TRACE_PROVENANCE: 'COMPLETE',
         TRACE_ROWS_EXPORTED: rows.length,
         PRIVATE_EVIDENCE_TEXT_EXPORTED: includeSemanticContext ? 'YES' : 'NO',
@@ -385,7 +377,6 @@ async function main() {
       }),
     );
   } finally {
-    await prisma.$disconnect();
     if (indexing) await indexing.$disconnect();
   }
 }

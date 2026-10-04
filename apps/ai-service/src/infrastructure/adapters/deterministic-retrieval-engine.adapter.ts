@@ -733,7 +733,6 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
 
     this.logger.log(
       `[HierarchicalRetrievalShadow] ${JSON.stringify({
-        query: input.input.queryText,
         directMs: input.directMs,
         hierarchicalMs: input.hierarchicalMs,
         direct: directIds.length,

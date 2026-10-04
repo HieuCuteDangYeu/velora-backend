@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const dotenv = require('dotenv');
-const { PrismaClient: AiPrismaClient } = require('@prisma/ai-client');
+const { createLangfuseClient, loadLangfuseHierarchyShadowObservations } = require('./langfuse-rag-traces.cjs');
 const {
   PrismaClient: ReelIndexingPrismaClient,
 } = require('@prisma/reel-indexing-client');
@@ -156,35 +156,16 @@ async function loadCandidateEvidence(indexing, ids) {
 }
 
 async function exportLabelTemplate({ since, until, limit, output }) {
-  const ai = new AiPrismaClient();
   const indexing = new ReelIndexingPrismaClient();
 
   try {
-    const observations = await ai.ragHierarchyShadowObservation.findMany({
-      where: {
-        ...(since || until
-          ? {
-              createdAt: {
-                ...(since ? { gte: since } : {}),
-                ...(until ? { lte: until } : {}),
-              },
-            }
-          : {}),
-      },
-      select: {
-        id: true,
-        queryText: true,
-        retrievalMode: true,
-        requiredEvidence: true,
-        directChunkIds: true,
-        hierarchicalChunkIds: true,
-        directMs: true,
-        hierarchicalMs: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
+    const observations = (await loadLangfuseHierarchyShadowObservations(createLangfuseClient(), {
+      ...(since ? { fromStartTime: since.toISOString() } : {}),
+      toStartTime: (until || new Date()).toISOString(),
+      environment: process.env.LANGFUSE_TRACING_ENVIRONMENT || 'production',
+    })).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+    if (observations.some((item) => !item.queryText))
+      throw new Error('HIERARCHY_LABEL_QUERY=MISSING: label export requires query capture via LANGFUSE_CAPTURE_CONTENT in an isolated evaluation environment');
 
     const allCandidateIds = [
       ...new Set(
@@ -228,10 +209,10 @@ async function exportLabelTemplate({ since, until, limit, output }) {
 
     const resolvedOutput = path.resolve(process.cwd(), output);
     fs.mkdirSync(path.dirname(resolvedOutput), { recursive: true });
-    fs.writeFileSync(resolvedOutput, `${JSON.stringify(template, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(resolvedOutput, `${JSON.stringify(template, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     return { output: resolvedOutput, cases: template.cases.length };
   } finally {
-    await Promise.allSettled([ai.$disconnect(), indexing.$disconnect()]);
+    await indexing.$disconnect();
   }
 }
 

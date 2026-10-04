@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const dotenv = require('dotenv');
-const { PrismaClient: AiPrismaClient } = require('@prisma/ai-client');
+const { createLangfuseClient, loadLangfuseRagTraces, loadLangfuseHierarchyShadowObservations } = require('./langfuse-rag-traces.cjs');
 const {
   PrismaClient: ReelIndexingPrismaClient,
 } = require('@prisma/reel-indexing-client');
@@ -186,7 +186,6 @@ function criterion(name, passed, actual, expected) {
 }
 
 async function collectReadinessEvidence({ since, benchmarkPath }) {
-  const ai = new AiPrismaClient();
   const indexing = new ReelIndexingPrismaClient();
 
   const thresholds = {
@@ -249,28 +248,8 @@ async function collectReadinessEvidence({ since, benchmarkPath }) {
   try {
     const [traces, shadowObservations, completedIndexAttempts, activeVisualScenes, latestIndexAttempt] =
       await Promise.all([
-        ai.ragTrace.findMany({
-          where: { createdAt: { gte: since } },
-          select: {
-            createdAt: true,
-            needsRetrieval: true,
-            citations: true,
-            nodeTimings: true,
-            workflowMetrics: true,
-          },
-          orderBy: { createdAt: 'asc' },
-        }),
-        ai.ragHierarchyShadowObservation.findMany({
-          where: { createdAt: { gte: since } },
-          select: {
-            directMs: true,
-            hierarchicalMs: true,
-            overlapAtK: true,
-            jaccard: true,
-            createdAt: true,
-          },
-          orderBy: { createdAt: 'asc' },
-        }),
+        loadLangfuseRagTraces(createLangfuseClient(), { fromStartTime: since.toISOString(), toStartTime: new Date().toISOString(), environment: process.env.LANGFUSE_TRACING_ENVIRONMENT || 'production' }),
+        loadLangfuseHierarchyShadowObservations(createLangfuseClient(), { fromStartTime: since.toISOString(), toStartTime: new Date().toISOString(), environment: process.env.LANGFUSE_TRACING_ENVIRONMENT || 'production' }),
         indexing.indexingAttempt.count({
           where: { createdAt: { gte: since }, status: 'COMPLETED' },
         }),
@@ -479,7 +458,7 @@ async function collectReadinessEvidence({ since, benchmarkPath }) {
       },
     };
   } finally {
-    await Promise.allSettled([ai.$disconnect(), indexing.$disconnect()]);
+    await indexing.$disconnect();
   }
 }
 

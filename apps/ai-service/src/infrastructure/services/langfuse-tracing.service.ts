@@ -7,7 +7,13 @@ import {
 } from '@langfuse/tracing';
 import { Injectable } from '@nestjs/common';
 import type { StructuredLlmCallDiagnostics } from '@ai/domain/interfaces/structured-llm.service.interface';
-import { langfuseEnabled, redactLangfuseValue } from './langfuse-telemetry';
+import type { RagMonitoringSnapshot } from '@ai/domain/interfaces/rag-monitoring-trace.interface';
+import type { RagHierarchyShadowObservation } from '@ai/domain/interfaces/rag-hierarchy-shadow-observation.repository.interface';
+import {
+  langfuseEnabled,
+  redactLangfuseValue,
+  sanitizeRagSnapshot,
+} from './langfuse-telemetry';
 
 export interface RagTraceRootMetadata {
   productionExecutionId: string;
@@ -106,10 +112,18 @@ export class LangfuseTracingService {
     root: LangfuseSpan | undefined,
     output: SafeSummary,
     answer?: string,
+    snapshot?: RagMonitoringSnapshot,
   ): void {
     root?.update({
+      ...(output.outcome === 'FAILED' ? { level: 'ERROR' as const } : {}),
       output: redactLangfuseValue({
         ...output,
+        ...(snapshot
+          ? {
+              schemaVersion: 'rag-monitoring-v1',
+              ragTrace: sanitizeRagSnapshot(snapshot),
+            }
+          : {}),
         ...(this.captureContent && answer
           ? { response: answer.slice(0, 4_000) }
           : {}),
@@ -233,6 +247,31 @@ export class LangfuseTracingService {
       );
       generation.end();
     }
+  }
+
+  recordHierarchyShadow(value: RagHierarchyShadowObservation): void {
+    if (!this.enabled) return;
+    const observation = startObservation('rag.hierarchy-shadow', {
+      output: redactLangfuseValue({
+        schemaVersion: 'rag-hierarchy-shadow-v1',
+        ...(this.captureContent
+          ? { query: value.queryText.slice(0, 2_000) }
+          : {}),
+        userId: value.userId,
+        conversationId: value.conversationId,
+        retrievalMode: value.retrievalMode,
+        requiredEvidence: value.requiredEvidence,
+        directChunkIds: value.directChunkIds,
+        hierarchicalChunkIds: value.hierarchicalChunkIds,
+        directCount: value.directChunkIds.length,
+        hierarchicalCount: value.hierarchicalChunkIds.length,
+        directMs: value.directMs,
+        hierarchicalMs: value.hierarchicalMs,
+        overlapAtK: value.overlapAtK,
+        jaccard: value.jaccard,
+      }),
+    });
+    observation.end();
   }
 
   summary(value: unknown, latencyMs?: number): SafeSummary {

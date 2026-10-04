@@ -2,10 +2,88 @@ import {
   createLangfuseSdk,
   langfuseEnabled,
   redactLangfuseValue,
+  maskLangfuseData,
+  sanitizeRagSnapshot,
 } from './langfuse-telemetry';
 import { LangfuseTracingService } from './langfuse-tracing.service';
 
 describe('Langfuse telemetry', () => {
+  it('masks serialized SDK attributes without discarding structured diagnostics', () => {
+    const masked = maskLangfuseData(
+      JSON.stringify({
+        ragTrace: sanitizeRagSnapshot({
+          message: 'private question',
+          answer: 'private answer',
+          retrievedChunkIds: Array.from({ length: 40 }, (_, i) => `chunk-${i}`),
+          workflowMetrics: {
+            answerRetryCount: 1,
+            diagnostics: {
+              productionExecutionId: 'execution-1',
+              retrievalPlanActual: {
+                query: 'private query',
+                mode: 'REEL_HYBRID',
+              },
+              answerCalls: [
+                {
+                  modelRole: 'ANSWER',
+                  providerStatus: 200,
+                  requestId: 'private-id',
+                },
+              ],
+            },
+          },
+        }),
+      }),
+    );
+    expect(typeof masked).toBe('string');
+    const snapshot = JSON.parse(masked as string).ragTrace;
+    expect(snapshot.retrievedChunkIds).toHaveLength(40);
+    expect(snapshot.workflowMetrics.diagnostics).toMatchObject({
+      productionExecutionId: 'execution-1',
+      retrievalPlanActual: { mode: 'REEL_HYBRID' },
+      answerCalls: [{ modelRole: 'ANSWER', providerStatus: 200 }],
+    });
+    expect(masked).not.toMatch(/private/);
+  });
+
+  it.each([false, true])(
+    'preserves exact evaluation evidence only with capture opt-in: %s',
+    (capture) => {
+      const previous = process.env.AI_RAG_CAPTURE_EVALUATION_CONTEXT;
+      process.env.AI_RAG_CAPTURE_EVALUATION_CONTEXT = String(capture);
+      try {
+        const masked = maskLangfuseData(
+          JSON.stringify({
+            ragTrace: sanitizeRagSnapshot({
+              generationEvidence: [
+                {
+                  sourceId: 'chunk-1',
+                  evidenceText: 'private evidence'.repeat(30),
+                  requestId: 'private-id',
+                },
+              ],
+            }),
+          }),
+        );
+        const evidence = JSON.parse(masked as string).ragTrace
+          .generationEvidence;
+        if (capture)
+          expect(evidence).toEqual([
+            {
+              sourceId: 'chunk-1',
+              evidenceText: 'private evidence'.repeat(30),
+            },
+          ]);
+        else expect(evidence).toBeUndefined();
+        expect(masked).not.toContain('private-id');
+      } finally {
+        if (previous === undefined)
+          delete process.env.AI_RAG_CAPTURE_EVALUATION_CONTEXT;
+        else process.env.AI_RAG_CAPTURE_EVALUATION_CONTEXT = previous;
+      }
+    },
+  );
+
   it('requires explicit enablement and both remote credentials', () => {
     expect(
       langfuseEnabled({

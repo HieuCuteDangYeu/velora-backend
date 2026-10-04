@@ -1,16 +1,15 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
-import { SaveRagTraceUseCase } from './save-rag-trace.use-case';
+import { BuildRagTraceSnapshotUseCase } from './build-rag-trace-snapshot.use-case';
 
-describe('SaveRagTraceUseCase', () => {
+describe('BuildRagTraceSnapshotUseCase', () => {
   it.each([false, true])(
     'captures generation bodies only under explicit evaluation opt-in: %s',
-    async (capture) => {
-      const create = jest.fn();
-      const useCase = new SaveRagTraceUseCase({ create }, {
+    (capture) => {
+      const useCase = new BuildRagTraceSnapshotUseCase({
         boolean: () => capture,
         get: () => 'release-sha',
       } as never);
-      await useCase.execute({
+      const snapshot = useCase.execute({
         state: {
           userId: 'u',
           conversationId: 'c',
@@ -34,16 +33,15 @@ describe('SaveRagTraceUseCase', () => {
         latencyMs: 1,
         nodeTimings: {},
       });
-      const diagnostics = create.mock.calls[0][0].workflowMetrics.diagnostics;
+      const diagnostics = snapshot.workflowMetrics.diagnostics;
       expect(diagnostics.generationEvidenceIds).toEqual(['source']);
       expect(
         JSON.stringify(diagnostics).includes('private generation evidence'),
       ).toBe(capture);
     },
   );
-  it('persists bounded graph diagnostics under existing workflow metrics', async () => {
-    const create = jest.fn().mockResolvedValue(undefined);
-    const useCase = new SaveRagTraceUseCase({ create });
+  it('builds bounded graph diagnostics under existing workflow metrics', () => {
+    const useCase = new BuildRagTraceSnapshotUseCase();
     const state = {
       userId: 'u',
       conversationId: 'c',
@@ -256,12 +254,12 @@ describe('SaveRagTraceUseCase', () => {
       },
     } as unknown as RagChatWorkflowState;
 
-    await useCase.execute({
+    const snapshot = useCase.execute({
       state,
       latencyMs: 5,
       nodeTimings: { draftAnswerNode: 1 },
     });
-    expect(create).toHaveBeenCalledWith(
+    expect(snapshot).toEqual(
       expect.objectContaining({
         workflowMetrics: expect.objectContaining({
           retrievalRetryCount: 2,
@@ -332,10 +330,9 @@ describe('SaveRagTraceUseCase', () => {
     );
   });
 
-  it('bounds actual retrieval-plan text in persisted diagnostics', async () => {
-    const create = jest.fn().mockResolvedValue(undefined);
-    const useCase = new SaveRagTraceUseCase({ create });
-    await useCase.execute({
+  it('bounds actual retrieval-plan text in captured diagnostics', () => {
+    const useCase = new BuildRagTraceSnapshotUseCase();
+    const snapshot = useCase.execute({
       state: {
         userId: 'u',
         conversationId: 'c',
@@ -365,8 +362,7 @@ describe('SaveRagTraceUseCase', () => {
       nodeTimings: {},
     });
 
-    const actual =
-      create.mock.calls[0][0].workflowMetrics.diagnostics.retrievalPlanActual;
+    const actual = snapshot.workflowMetrics.diagnostics.retrievalPlanActual;
     expect(actual.query).toHaveLength(500);
     expect(actual.rewrittenQuery).toHaveLength(500);
     expect(actual.queries).toEqual([
@@ -400,11 +396,10 @@ describe('SaveRagTraceUseCase', () => {
     ],
   ] as const)(
     'records %s finalization provenance',
-    async (mode, reason, expected) => {
-      const create = jest.fn().mockResolvedValue(undefined);
-      const useCase = new SaveRagTraceUseCase({ create });
+    (mode, reason, expected) => {
+      const useCase = new BuildRagTraceSnapshotUseCase();
 
-      await useCase.execute({
+      const snapshot = useCase.execute({
         state: {
           userId: 'u',
           conversationId: 'c',
@@ -433,48 +428,43 @@ describe('SaveRagTraceUseCase', () => {
         nodeTimings: {},
       });
 
-      expect(
-        create.mock.calls[0][0].workflowMetrics.diagnostics.finalization,
-      ).toMatchObject({
+      expect(snapshot.workflowMetrics.diagnostics.finalization).toMatchObject({
         ...expected,
         groundingVerification: 'GROUNDING_VERIFIED',
         verifierDecision: 'PASS',
       });
       if (reason) {
-        expect(
-          create.mock.calls[0][0].workflowMetrics.diagnostics.finalization,
-        ).toMatchObject({ fallbackReason: reason });
+        expect(snapshot.workflowMetrics.diagnostics.finalization).toMatchObject(
+          { fallbackReason: reason },
+        );
       }
     },
   );
 
-  it('persists production execution correlation without changing the RagTrace shape', async () => {
-    const create = jest.fn().mockResolvedValue({ id: 'rag-trace-1' });
-    const useCase = new SaveRagTraceUseCase({ create });
+  it('builds production execution correlation without changing the RagTrace shape', () => {
+    const useCase = new BuildRagTraceSnapshotUseCase();
 
-    await expect(
-      useCase.execute({
-        state: {
-          userId: 'u',
-          conversationId: 'c',
-          userMessage: 'question',
-          retrievedChunks: [],
-          rerankedChunks: [],
-          retryCount: 0,
-          retrievalRetryCount: 0,
-          citationRetryCount: 0,
-          draftHistory: [],
-          citationAttempts: [],
-          nextDraftSource: 'INITIAL',
-          finalFailureSource: 'NONE',
-        },
-        latencyMs: 1,
-        nodeTimings: {},
-        productionExecutionId: 'production-execution-1',
-      }),
-    ).resolves.toBe('rag-trace-1');
+    const snapshot = useCase.execute({
+      state: {
+        userId: 'u',
+        conversationId: 'c',
+        userMessage: 'question',
+        retrievedChunks: [],
+        rerankedChunks: [],
+        retryCount: 0,
+        retrievalRetryCount: 0,
+        citationRetryCount: 0,
+        draftHistory: [],
+        citationAttempts: [],
+        nextDraftSource: 'INITIAL',
+        finalFailureSource: 'NONE',
+      },
+      latencyMs: 1,
+      nodeTimings: {},
+      productionExecutionId: 'production-execution-1',
+    });
 
-    expect(create.mock.calls[0][0].workflowMetrics.diagnostics).toMatchObject({
+    expect(snapshot.workflowMetrics.diagnostics).toMatchObject({
       productionExecutionId: 'production-execution-1',
     });
   });

@@ -16,7 +16,7 @@ import { QueryRouterAgentUseCase } from '@ai/application/use-cases/query-router-
 import { RerankRetrievedEvidenceUseCase } from '@ai/application/use-cases/rerank-retrieved-evidence.use-case';
 import { RetrieveReelEvidenceUseCase } from '@ai/application/use-cases/retrieve-reel-evidence.use-case';
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
-import { SaveRagTraceUseCase } from '@ai/application/use-cases/save-rag-trace.use-case';
+import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
 import type {
@@ -139,7 +139,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     private readonly streamFinalAnswerUseCase: StreamFinalAnswerUseCase,
     private readonly createNoContextAnswerUseCase: CreateNoContextAnswerUseCase,
     private readonly buildRagCitationsUseCase: BuildRagCitationsUseCase,
-    private readonly saveRagTraceUseCase: SaveRagTraceUseCase,
+    private readonly buildRagTraceSnapshotUseCase: BuildRagTraceSnapshotUseCase,
     private readonly config: ConfigService,
 
     @Inject('IContentService')
@@ -254,28 +254,31 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       const latencyMs = Date.now() - startedAt;
       const tokenUsage = executionContext.tokenUsage;
       this.executionContexts.delete(nodeTimings);
-      const ragTraceId = await this.saveRagTraceUseCase.execute({
-        state: result,
-        latencyMs,
-        nodeTimings,
-        productionExecutionId,
-        ...(root?.traceId && !/^0+$/.test(root.traceId)
-          ? { langfuseTraceId: root.traceId }
-          : {}),
-      });
-      this.langfuseTracing?.setRootOutput(
-        root,
-        {
-          outcome,
-          latencyMs,
-          productionExecutionId,
-          ...(ragTraceId ? { ragTraceId } : {}),
-          retrievedCount: result.retrievedChunks.length,
-          rerankedCount: result.rerankedChunks.length,
-          fallbackUsed: Boolean(result.answerFallbackReason),
-        },
-        result.answer,
-      );
+      try {
+        this.langfuseTracing?.setRootOutput(
+          root,
+          {
+            outcome,
+            latencyMs,
+            productionExecutionId,
+            retrievedCount: result.retrievedChunks.length,
+            rerankedCount: result.rerankedChunks.length,
+            fallbackUsed: Boolean(result.answerFallbackReason),
+          },
+          result.answer,
+          root
+            ? this.buildRagTraceSnapshotUseCase.execute({
+                state: result,
+                latencyMs,
+                nodeTimings,
+                productionExecutionId,
+                langfuseTraceId: root.traceId,
+              })
+            : undefined,
+        );
+      } catch {
+        this.logger.warn('Langfuse RAG diagnostics capture failed');
+      }
       this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
     }
   }

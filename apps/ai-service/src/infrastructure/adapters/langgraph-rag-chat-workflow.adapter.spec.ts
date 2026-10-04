@@ -1097,7 +1097,7 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
 });
 
 describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
-  it('persists router diagnostics when graph execution fails before returning state', async () => {
+  it('captures router diagnostics in Langfuse when graph execution fails before returning state', async () => {
     const save = { execute: jest.fn().mockResolvedValue(undefined) };
     const queryRouterError = Object.assign(
       new Error('Semantic router is temporarily unavailable'),
@@ -1152,6 +1152,17 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
         resolveReelContextAccess: jest.fn().mockResolvedValue(['reel-1']),
       } as never,
       undefined,
+      undefined,
+      {
+        withRoot: (
+          _metadata: unknown,
+          operation: (root: unknown) => Promise<unknown>,
+        ) => operation({ traceId: 'trace-1' }),
+        observe: (_name: unknown, operation: () => Promise<unknown>) =>
+          operation(),
+        recordSemanticCalls: jest.fn(),
+        setRootOutput: jest.fn(),
+      } as never,
     );
 
     await expect(
@@ -1275,5 +1286,105 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
       finalFailureSource: 'NONE',
     });
     expect(createNoContextAnswer.execute).toHaveBeenCalled();
+  });
+});
+
+describe('LangGraphRagChatWorkflowAdapter monitoring isolation', () => {
+  function monitoredWorkflow(capture: () => unknown) {
+    const snapshot = { execute: jest.fn(capture) };
+    const output = jest.fn();
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      snapshot as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+      undefined,
+      undefined,
+      {
+        withRoot: (
+          _metadata: unknown,
+          operation: (root: unknown) => Promise<unknown>,
+        ) => operation({ traceId: 'langfuse-trace-1' }),
+        setRootOutput: output,
+        recordSemanticCalls: jest.fn(),
+      } as never,
+    );
+    const invoke = jest.fn((state: RagChatWorkflowState) =>
+      Promise.resolve({
+        ...state,
+        answer: 'answer',
+        finalFailureSource: 'NONE',
+      }),
+    );
+    jest
+      .spyOn(workflow as never, 'buildGraph')
+      .mockReturnValue({ invoke } as never);
+    return { workflow, snapshot, output, invoke };
+  }
+
+  it('captures a single correlated snapshot without changing the public response', async () => {
+    const { workflow, snapshot, output } = monitoredWorkflow(() => ({
+      diagnostic: true,
+    }));
+    await expect(
+      workflow.execute({
+        userId: 'u',
+        conversationId: 'c',
+        message: 'question',
+      }),
+    ).resolves.toEqual({
+      answer: 'answer',
+      citations: [],
+      recommendedReels: [],
+      suggestedQueries: [],
+    });
+    expect(snapshot.execute).toHaveBeenCalledTimes(1);
+    expect(snapshot.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        langfuseTraceId: 'langfuse-trace-1',
+        productionExecutionId: expect.any(String),
+      }),
+    );
+    expect(output).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ outcome: 'SUCCEEDED' }),
+      'answer',
+      { diagnostic: true },
+    );
+  });
+
+  it('keeps the result and original workflow error when monitoring fails', async () => {
+    const { workflow, invoke } = monitoredWorkflow(() => {
+      throw new Error('monitoring unavailable');
+    });
+    await expect(
+      workflow.execute({
+        userId: 'u',
+        conversationId: 'c',
+        message: 'question',
+      }),
+    ).resolves.toMatchObject({ answer: 'answer' });
+    const original = Object.assign(new Error('workflow failed'), {
+      code: 'PROVIDER_FAILURE',
+    });
+    invoke.mockRejectedValueOnce(original);
+    await expect(
+      workflow.execute({
+        userId: 'u',
+        conversationId: 'c',
+        message: 'question',
+      }),
+    ).rejects.toBe(original);
   });
 });

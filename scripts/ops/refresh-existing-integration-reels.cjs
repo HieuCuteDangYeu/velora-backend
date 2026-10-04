@@ -253,7 +253,7 @@ async function main() {
         status: 'NOT_EVALUATED',
         exactCaseCount: benchmarkCases.length,
         reason:
-          'The production chat workflow persists conversation and RagTrace records. Skipped because this refresh is explicitly read-only and must not mutate the database.',
+          'The production chat workflow persists conversation records and emits Langfuse traces. Skipped because this refresh is explicitly read-only and must not mutate the database.',
         cases: benchmarkCases,
       },
     };

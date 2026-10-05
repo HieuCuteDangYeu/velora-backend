@@ -16,7 +16,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { catchError, lastValueFrom, of, timeout } from 'rxjs';
+import { lastValueFrom, timeout } from 'rxjs';
 import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { SendMessageUseCase } from '../../application/use-cases/send-message.use-case';
@@ -260,7 +260,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     let phase = 'persist';
     let acknowledged = false;
     try {
-      const result = await this.sendMessageUseCase.execute(payload, senderId);
+      const result = await this.prometheusMetrics.measurePhase(
+        'persist_total',
+        () => this.sendMessageUseCase.execute(payload, senderId),
+      );
       const savedMessage = result.message;
       const savedMessageDto = ChatMapper.toDto(savedMessage);
 
@@ -279,9 +282,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         return;
       }
 
-      client
-        .to(this.conversationRooms(payload.conversationId))
-        .emit('new_message', savedMessageDto);
+      await this.prometheusMetrics.measurePhase('fanout', () =>
+        client
+          .to(this.conversationRooms(payload.conversationId))
+          .emit('new_message', savedMessageDto),
+      );
 
       // Update conversation sidebar for all participants (lastMessage, ordering)
       const conversation = await this.chatRepository.findConversation(
@@ -744,15 +749,16 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const token = this.extractAccessToken(client);
     if (token) {
-      const user = await lastValueFrom(
-        this.authClient
-          .send<AuthUser | null>('auth.verify_token', { token })
-          .pipe(
-            timeout(5000),
-            catchError(() => of(null)),
-          ),
-        { defaultValue: null },
-      );
+      const request = () =>
+        lastValueFrom(
+          this.authClient
+            .send<AuthUser | null>('auth.verify_token', { token })
+            .pipe(timeout(5000)),
+          { defaultValue: null },
+        );
+      const user = await this.prometheusMetrics
+        .measurePhase('socket_auth', request)
+        .catch(() => null);
 
       if (user?.id) {
         socketData['userId'] = user.id;

@@ -112,15 +112,16 @@ export class AuthController {
   @MessagePattern('auth.verify_token')
   async verifyToken(@Payload() data: { token: string }) {
     try {
-      return await this.observe(
-        'verify_token',
-        () => this.verifyTokenUseCase.execute(data.token),
-        true,
+      return await this.observe('verify_token', () =>
+        this.verifyTokenUseCase.execute(data.token),
       );
-    } catch {
+    } catch (error) {
       throw new RpcException({
-        statusCode: 401,
-        message: 'Invalid or expired token',
+        statusCode: error instanceof InvalidTokenError ? 401 : 503,
+        message:
+          error instanceof InvalidTokenError
+            ? 'Invalid or expired token'
+            : 'Authentication service unavailable',
       });
     }
   }
@@ -264,7 +265,6 @@ export class AuthController {
   private async observe<T>(
     operation: AuthOperation,
     action: () => Promise<T>,
-    allErrorsAreRejected = false,
   ): Promise<T> {
     const startedAt = process.hrtime.bigint();
     try {
@@ -278,7 +278,7 @@ export class AuthController {
     } catch (error) {
       this.metrics.recordRequest(
         operation,
-        allErrorsAreRejected || this.isRejected(error) ? 'rejected' : 'error',
+        this.isRejected(error) ? 'rejected' : 'error',
         this.elapsedSeconds(startedAt),
       );
       throw error;

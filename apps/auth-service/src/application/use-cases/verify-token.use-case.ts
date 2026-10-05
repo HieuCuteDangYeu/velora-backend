@@ -20,7 +20,19 @@ export class VerifyTokenUseCase {
   ) {}
 
   async execute(token: string): Promise<AuthUser> {
-    const payload = await this.jwtService.verifyAsync<JwtPayload>(token);
+    let payload: JwtPayload;
+    try {
+      payload = await this.jwtService.verifyAsync<JwtPayload>(token);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        ['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(
+          error.name,
+        )
+      )
+        throw new InvalidTokenError();
+      throw error;
+    }
 
     let roles: string[] | null = null;
 

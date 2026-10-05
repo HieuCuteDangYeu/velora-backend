@@ -1,14 +1,17 @@
+import { isRpcError } from '@common/constants/rpc-error.types';
 import { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import {
   CanActivate,
   ExecutionContext,
   Inject,
   Injectable,
+  Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { Request } from 'express';
-import { catchError, lastValueFrom, timeout } from 'rxjs';
+import { lastValueFrom, timeout, TimeoutError } from 'rxjs';
 
 export interface AuthenticatedRequest extends Request {
   user?: AuthUser;
@@ -17,6 +20,8 @@ export interface AuthenticatedRequest extends Request {
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
+  private readonly logger = new Logger(JwtAuthGuard.name);
+
   constructor(
     @Inject('AUTH_SERVICE') private readonly authClient: ClientProxy,
   ) {}
@@ -29,20 +34,25 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('No authentication token found');
     }
 
+    const startedAt = Date.now();
     try {
       const user = await lastValueFrom(
-        this.authClient.send<AuthUser>('auth.verify_token', { token }).pipe(
-          timeout(5000),
-          catchError(() => {
-            throw new UnauthorizedException('Invalid or Expired Token');
-          }),
-        ),
+        this.authClient
+          .send<AuthUser>('auth.verify_token', { token })
+          .pipe(timeout(5000)),
       );
 
       request.user = user;
       return true;
-    } catch {
-      throw new UnauthorizedException('Authentication failed');
+    } catch (error) {
+      if (isRpcError(error) && error.statusCode === 401)
+        throw new UnauthorizedException('Invalid or expired token');
+      this.logger.warn(
+        `auth.verify_token unavailable reason=${error instanceof TimeoutError ? 'timeout' : 'upstream'} elapsed_ms=${Date.now() - startedAt}`,
+      );
+      throw new ServiceUnavailableException(
+        'Authentication service unavailable',
+      );
     }
   }
 

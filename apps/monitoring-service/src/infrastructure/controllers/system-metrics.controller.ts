@@ -552,6 +552,9 @@ export class SystemMetricsController {
         userQueueReady,
         userQueueUnacked,
         userConsumers,
+        chatPhaseP95,
+        chatPhaseRates,
+        chatPhaseErrors,
       ] = await Promise.all([
         this.prometheus.scalar('max(up{job="monitoring-service"})'),
         this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -701,6 +704,15 @@ export class SystemMetricsController {
         this.prometheus.scalar(RANGE_QUERIES.user_queue_ready),
         this.prometheus.scalar(RANGE_QUERIES.user_queue_unacked),
         this.prometheus.scalar(RANGE_QUERIES.user_consumers),
+        this.prometheus.vector(
+          'histogram_quantile(0.95, sum by (phase, le) (rate(velora_conversation_send_phase_duration_seconds_bucket[1m])))',
+        ),
+        this.prometheus.vector(
+          'sum by (phase) (rate(velora_conversation_send_phase_duration_seconds_count[1m]))',
+        ),
+        this.prometheus.vector(
+          'sum by (phase) (rate(velora_conversation_send_phase_duration_seconds_count{status="error"}[1m]))',
+        ),
       ]);
 
       const hostMemoryUsedBytes = subtractMetric(
@@ -766,6 +778,18 @@ export class SystemMetricsController {
           rejectRate: conversationRejectRate,
           errorRate: conversationErrorRate,
           p95SendLatencySeconds: conversationP95SendLatencySeconds,
+          sendPhases: chatPhaseRates.map((sample) => ({
+            phase: sample.metric.phase,
+            callsPerSecond: sample.value,
+            errorsPerSecond:
+              chatPhaseErrors.find(
+                (error) => error.metric.phase === sample.metric.phase,
+              )?.value ?? 0,
+            p95Seconds:
+              chatPhaseP95.find(
+                (p95) => p95.metric.phase === sample.metric.phase,
+              )?.value ?? null,
+          })),
         },
         call: {
           up: targetStatus(callUp),

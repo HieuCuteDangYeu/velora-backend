@@ -219,7 +219,10 @@ describe('message transaction conflicts', () => {
         { execute: jest.fn().mockRejectedValue(prismaError('P2034')) } as never,
         {} as never,
         {} as never,
-        { recordSendMessage: jest.fn() } as never,
+        {
+          recordSendMessage: jest.fn(),
+          measurePhase: jest.fn((_phase, action: () => unknown) => action()),
+        } as never,
         {
           assertConversationParticipant: jest.fn().mockResolvedValue(undefined),
         } as never,
@@ -366,6 +369,7 @@ describe('message idempotency', () => {
       findConversation: jest.fn(),
     };
     const prometheusMetrics = {
+      measurePhase: jest.fn((_phase, action: () => unknown) => action()),
       recordMessageCreated: jest.fn(),
       recordSendMessage: jest.fn(),
     };
@@ -416,6 +420,7 @@ describe('message idempotency', () => {
       assertConversationParticipant: jest.fn(),
     };
     const prometheusMetrics = {
+      measurePhase: jest.fn((_phase, action: () => unknown) => action()),
       recordMessageCreated: jest.fn(),
       recordSendMessage: jest.fn(),
     };

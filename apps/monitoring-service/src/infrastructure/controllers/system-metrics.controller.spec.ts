@@ -19,6 +19,7 @@ describe('SystemMetricsController container resources', () => {
 
   beforeEach(() => {
     jest.resetAllMocks();
+    prometheus.vector.mockResolvedValue([]);
     controller = new SystemMetricsController(
       prometheus as never,
       metrics as never,
@@ -178,6 +179,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
   const createController = () => {
     const prometheus = {
       scalar: jest.fn().mockResolvedValue(0),
+      vector: jest.fn().mockResolvedValue([]),
       range: jest.fn().mockResolvedValue([]),
     };
     const metrics = { recordRpc: jest.fn() };
@@ -201,6 +203,29 @@ describe('SystemMetricsController live queries and overview sharing', () => {
     expect(rates.length).toBeGreaterThan(50);
     expect(
       rates.every((query) => query.includes('[1m]') && !query.includes('[5m]')),
+    ).toBe(true);
+  });
+
+  it('aggregates phase samples by label while tolerating an empty p95 vector', async () => {
+    const { controller, prometheus } = createController();
+    prometheus.vector
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ metric: { phase: 'queue_wait' }, value: 12 }])
+      .mockResolvedValueOnce([{ metric: { phase: 'queue_wait' }, value: 0.5 }]);
+    const result = await controller.overview();
+    expect(result.conversation.sendPhases).toEqual([
+      {
+        phase: 'queue_wait',
+        callsPerSecond: 12,
+        errorsPerSecond: 0.5,
+        p95Seconds: null,
+      },
+    ]);
+    expect(prometheus.vector).toHaveBeenCalledTimes(3);
+    expect(
+      prometheus.vector.mock.calls.every(([query]) =>
+        (query as string).includes('[1m]'),
+      ),
     ).toBe(true);
   });
 

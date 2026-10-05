@@ -1,6 +1,18 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
+export type ChatPhase =
+  | 'socket_auth'
+  | 'membership'
+  | 'queue_wait'
+  | 'mongo_write'
+  | 'conversation_read'
+  | 'user_lookup'
+  | 'cache_invalidation'
+  | 'fanout'
+  | 'notification'
+  | 'persist_total';
+
 type SendMessageStatus = 'success' | 'rejected' | 'error';
 
 type HistogramState = {
@@ -20,14 +32,55 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     'error',
   ];
   private readonly durationBuckets = [
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5,
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 8, 10, 15, 30, 60,
   ];
   private readonly sendMessageCounts = new Map<SendMessageStatus, number>();
   private readonly sendMessageDurations = new Map<
     SendMessageStatus,
     HistogramState
   >();
+  private readonly phaseDurations = new Map<string, HistogramState>();
   private messagesCreated = 0;
+
+  async measurePhase<T>(
+    phase: ChatPhase,
+    action: () => T | PromiseLike<T>,
+  ): Promise<T> {
+    const startedAt = process.hrtime.bigint();
+    let status: 'success' | 'error' = 'success';
+    try {
+      return await action();
+    } catch (error) {
+      status = 'error';
+      throw error;
+    } finally {
+      this.recordPhase(
+        phase,
+        Number(process.hrtime.bigint() - startedAt) / 1e9,
+        status,
+      );
+    }
+  }
+
+  recordPhase(
+    phase: ChatPhase,
+    seconds: number,
+    status: 'success' | 'error' = 'success',
+  ): void {
+    const key = `${phase}:${status}`;
+    const state = this.phaseDurations.get(key) ?? {
+      bucketCounts: this.durationBuckets.map(() => 0),
+      count: 0,
+      sum: 0,
+    };
+    const duration = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0;
+    state.count++;
+    state.sum += duration;
+    this.durationBuckets.forEach((bucket, index) => {
+      if (duration <= bucket) state.bucketCounts[index]++;
+    });
+    this.phaseDurations.set(key, state);
+  }
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 
   constructor() {
@@ -212,6 +265,30 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     lines.push(
       `velora_conversation_messages_created_total${labels} ${this.messagesCreated}`,
     );
+
+    const phaseMetric = 'velora_conversation_send_phase_duration_seconds';
+    this.metricHeader(
+      lines,
+      phaseMetric,
+      'Duration per chat processing step; nested steps overlap, fanout is socket enqueue, notification is HTTP acceptance, not push delivery.',
+      'histogram',
+    );
+    for (const [key, state] of this.phaseDurations) {
+      const [phase, status] = key.split(':');
+      const phaseLabels = { service: this.serviceName, phase, status };
+      this.durationBuckets.forEach((bucket, index) =>
+        lines.push(
+          `${phaseMetric}_bucket${this.labels({ ...phaseLabels, le: String(bucket) })} ${state.bucketCounts[index]}`,
+        ),
+      );
+      lines.push(
+        `${phaseMetric}_bucket${this.labels({ ...phaseLabels, le: '+Inf' })} ${state.count}`,
+      );
+      lines.push(`${phaseMetric}_sum${this.labels(phaseLabels)} ${state.sum}`);
+      lines.push(
+        `${phaseMetric}_count${this.labels(phaseLabels)} ${state.count}`,
+      );
+    }
 
     // Keep event-loop delay scoped to the current scrape window.
     this.eventLoopDelay.reset();

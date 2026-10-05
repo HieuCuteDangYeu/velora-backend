@@ -38,6 +38,10 @@ import {
   type MarkMessagesAsSeenResult,
   type MediaProcessingSyncResult,
 } from '../../domain/interfaces/chat.repository.interface';
+import {
+  ConversationPrometheusMetricsService,
+  type ChatPhase,
+} from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 // Mappers
@@ -80,7 +84,17 @@ export class PrismaChatRepository implements IChatRepository {
 
     @Inject('IChatMediaService')
     private readonly chatMediaService: IChatMediaService,
+    private readonly metrics?: ConversationPrometheusMetricsService,
   ) {}
+
+  private measure<T>(
+    phase: ChatPhase,
+    action: () => T | PromiseLike<T>,
+  ): Promise<T> {
+    return this.metrics
+      ? this.metrics.measurePhase(phase, action)
+      : Promise.resolve().then(action);
+  }
 
   // --- 1. CREATE MESSAGE ---
   async createMessage(message: Message): Promise<Message> {
@@ -141,40 +155,42 @@ export class PrismaChatRepository implements IChatRepository {
         message.conversationId,
         () =>
           this.retryMessageTransaction(() =>
-            this.prisma.$transaction([
-              // Op 1: Tạo message
-              this.prisma.message.create({
-                data: {
-                  type: message.type,
-                  clientMessageId,
-                  signalType: message.signalType ?? 1,
-                  content: contentToSave,
-                  media: message.media
-                    ? (message.media as unknown as Prisma.InputJsonValue)
-                    : null,
-                  metadata: message.metadata
-                    ? (message.metadata as unknown as Prisma.InputJsonValue)
-                    : null,
-                  registrationId: message.registrationId,
-                  senderId: message.senderId,
-                  isRecalled: false,
-                  replyToId: message.replyToId,
-                  replyPreview: replyPreview
-                    ? (replyPreview as unknown as Prisma.InputJsonValue)
-                    : null,
-                  conversationId: message.conversationId,
-                  readBy: [],
-                },
-              }),
-              // Op 2: Update conversation (Last message)
-              this.prisma.conversation.update({
-                where: { id: message.conversationId },
-                data: {
-                  lastMessage: previewText,
-                  lastMessageAt: new Date(),
-                },
-              }),
-            ]),
+            this.measure('mongo_write', () =>
+              this.prisma.$transaction([
+                // Op 1: Tạo message
+                this.prisma.message.create({
+                  data: {
+                    type: message.type,
+                    clientMessageId,
+                    signalType: message.signalType ?? 1,
+                    content: contentToSave,
+                    media: message.media
+                      ? (message.media as unknown as Prisma.InputJsonValue)
+                      : null,
+                    metadata: message.metadata
+                      ? (message.metadata as unknown as Prisma.InputJsonValue)
+                      : null,
+                    registrationId: message.registrationId,
+                    senderId: message.senderId,
+                    isRecalled: false,
+                    replyToId: message.replyToId,
+                    replyPreview: replyPreview
+                      ? (replyPreview as unknown as Prisma.InputJsonValue)
+                      : null,
+                    conversationId: message.conversationId,
+                    readBy: [],
+                  },
+                }),
+                // Op 2: Update conversation (Last message)
+                this.prisma.conversation.update({
+                  where: { id: message.conversationId },
+                  data: {
+                    lastMessage: previewText,
+                    lastMessageAt: new Date(),
+                  },
+                }),
+              ]),
+            ),
           ),
       );
     } catch (error: unknown) {
@@ -543,9 +559,11 @@ export class PrismaChatRepository implements IChatRepository {
 
   async findConversation(id: string): Promise<Conversation | null> {
     // 1. Lấy dữ liệu thô từ MongoDB
-    const foundConv = await this.prisma.conversation.findUnique({
-      where: { id },
-    });
+    const foundConv = await this.measure('conversation_read', () =>
+      this.prisma.conversation.findUnique({
+        where: { id },
+      }),
+    );
 
     if (!foundConv) return null;
 
@@ -1206,7 +1224,9 @@ export class PrismaChatRepository implements IChatRepository {
 
   private async clearConversationCache(conversationId: string) {
     try {
-      await this.redis.del(`chat:history:${conversationId}`);
+      await this.measure('cache_invalidation', () =>
+        this.redis.del(`chat:history:${conversationId}`),
+      );
     } catch (error) {
       this.logger.error(error);
     }
@@ -1231,7 +1251,14 @@ export class PrismaChatRepository implements IChatRepository {
     }
     this.messageTransactions.set(conversationId, queue);
     queue.pending += 1;
-    const result = queue.tail.then(operation);
+    const queuedAt = process.hrtime.bigint();
+    const result = queue.tail.then(() => {
+      this.metrics?.recordPhase(
+        'queue_wait',
+        Number(process.hrtime.bigint() - queuedAt) / 1e9,
+      );
+      return operation();
+    });
     queue.tail = result.then(
       () => undefined,
       () => undefined,
@@ -1295,10 +1322,12 @@ export class PrismaChatRepository implements IChatRepository {
   }
 
   async assertConversationParticipant(conversationId: string, userId: string) {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { participantIds: true },
-    });
+    const conversation = await this.measure('membership', () =>
+      this.prisma.conversation.findUnique({
+        where: { id: conversationId },
+        select: { participantIds: true },
+      }),
+    );
 
     if (!conversation) {
       throw new NotFoundException('Conversation not found');

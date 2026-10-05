@@ -7,6 +7,7 @@ import type { IChatMediaService } from '../../domain/interfaces/chat-media.servi
 import type { IConversationMutationRepository } from '../../domain/interfaces/conversation-mutation.repository.interface';
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
+import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConversationMapper } from './conversation.mapper';
 import { PrismaChatRepository } from './prisma-chat.repository';
@@ -86,6 +87,7 @@ export class PrismaConversationChatRepository
     encryptionRepository: IEncryptionRepository,
     @Inject('IUserService') userService: IUserService,
     @Inject('IChatMediaService') chatMediaService: IChatMediaService,
+    metrics?: ConversationPrometheusMetricsService,
   ) {
     super(
       conversationPrisma,
@@ -93,6 +95,7 @@ export class PrismaConversationChatRepository
       encryptionRepository,
       userService,
       chatMediaService,
+      metrics,
     );
   }
 

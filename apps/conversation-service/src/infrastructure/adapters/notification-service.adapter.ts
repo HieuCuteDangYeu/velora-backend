@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { Conversation } from '../../domain/entities/conversation.entity';
 import { Message } from '../../domain/entities/message.entity';
 
@@ -18,7 +19,10 @@ export class NotificationServiceAdapter {
   private readonly notificationServiceUrl: string;
   private readonly internalSecret: string | undefined;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly metrics?: ConversationPrometheusMetricsService,
+  ) {
     this.notificationServiceUrl = (
       this.configService.get<string>('NOTIFICATION_SERVICE_URL') ||
       'http://localhost:3015'
@@ -90,7 +94,18 @@ export class NotificationServiceAdapter {
     let response: Response;
 
     try {
-      response = await this.postNewMessageNotification(payload);
+      const startedAt = process.hrtime.bigint();
+      let status: 'success' | 'error' = 'error';
+      try {
+        response = await this.postNewMessageNotification(payload);
+        status = response.ok ? 'success' : 'error';
+      } finally {
+        this.metrics?.recordPhase(
+          'notification',
+          Number(process.hrtime.bigint() - startedAt) / 1e9,
+          status,
+        );
+      }
     } catch (error) {
       this.logRequestFailure(message.id, error);
       return;

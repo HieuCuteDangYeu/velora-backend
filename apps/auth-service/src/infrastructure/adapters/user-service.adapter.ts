@@ -13,7 +13,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { UserAlreadyExistsError } from '@user/domain/errors/user-already-exists.error';
 import { UsernameAlreadyTakenError } from '@user/domain/errors/username-already-taken.error';
-import { catchError, lastValueFrom, of, throwError } from 'rxjs';
+import { catchError, lastValueFrom, of, throwError, timeout } from 'rxjs';
 import { IUserService } from '../../domain/interfaces/user-service.interface';
 
 @Injectable()
@@ -100,11 +100,7 @@ export class UserServiceAdapter implements IUserService {
     return lastValueFrom(
       this.rmqClient
         .send<ValidateUserResponse | null>('user.find_by_id', id)
-        .pipe(
-          catchError(() => {
-            return of(null);
-          }),
-        ),
+        .pipe(timeout(5000)),
       { defaultValue: null },
     );
   }

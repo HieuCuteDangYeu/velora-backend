@@ -1,6 +1,7 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Message } from '../../domain/entities/message.entity';
+import { Conversation } from '../../domain/entities/conversation.entity';
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { ProcessBotReplyUseCase } from './process-bot-reply.use-case';
@@ -23,14 +24,18 @@ export class TriggerBotReplyUseCase {
   async execute(
     userMessage: Message,
     senderId: string,
+    conversationSnapshot?: Conversation | null,
   ): Promise<TriggerBotReplyResult> {
     if (userMessage.type !== 'text' || senderId === BOT_USER_ID) {
       return { triggered: false };
     }
 
-    const conversation = await this.chatRepository.findConversation(
-      userMessage.conversationId,
-    );
+    // The gateway has just loaded this conversation for dispatch. Reuse that
+    // snapshot instead of hydrating the same participants through User RPC twice.
+    const conversation =
+      conversationSnapshot === undefined
+        ? await this.chatRepository.findConversation(userMessage.conversationId)
+        : conversationSnapshot;
 
     if (!conversation?.participantIds?.includes(BOT_USER_ID)) {
       return { triggered: false };

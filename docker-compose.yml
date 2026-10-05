@@ -39,6 +39,9 @@ services:
       - '3018'
     env_file:
       - .env
+    environment:
+      # Shared Aiven budget is small; do not use Prisma's CPU-based default.
+      USER_DATABASE_CONNECTION_LIMIT: ${USER_DATABASE_CONNECTION_LIMIT:-2}
     depends_on:
       rabbitmq:
         condition: service_healthy

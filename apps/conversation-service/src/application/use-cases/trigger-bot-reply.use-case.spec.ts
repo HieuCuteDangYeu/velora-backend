@@ -1,5 +1,6 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { Message } from '../../domain/entities/message.entity';
+import { Conversation } from '../../domain/entities/conversation.entity';
 import { TriggerBotReplyUseCase } from './trigger-bot-reply.use-case';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
@@ -17,6 +18,43 @@ const userMessage = () =>
   });
 
 describe('TriggerBotReplyUseCase', () => {
+  it.each([false, true])(
+    'reuses dispatch membership with bot=%s',
+    async (withBot) => {
+      const repository = { findConversation: jest.fn() };
+      const process = { execute: jest.fn().mockResolvedValue({}) };
+      const useCase = new TriggerBotReplyUseCase(
+        repository as never,
+        process as never,
+      );
+      const conversation = new Conversation({
+        id: CONVERSATION_ID,
+        participantIds: withBot ? [USER_ID, BOT_USER_ID] : [USER_ID],
+      });
+      expect(
+        await useCase.execute(userMessage(), USER_ID, conversation),
+      ).toEqual({
+        triggered: withBot,
+        ...(withBot ? { botReply: undefined, botError: undefined } : {}),
+      });
+      expect(repository.findConversation).not.toHaveBeenCalled();
+      expect(process.execute).toHaveBeenCalledTimes(withBot ? 1 : 0);
+    },
+  );
+
+  it('does not hydrate a known missing dispatch conversation again', async () => {
+    const repository = { findConversation: jest.fn() };
+    const process = { execute: jest.fn() };
+    const useCase = new TriggerBotReplyUseCase(
+      repository as never,
+      process as never,
+    );
+    expect(await useCase.execute(userMessage(), USER_ID, null)).toEqual({
+      triggered: false,
+    });
+    expect(repository.findConversation).not.toHaveBeenCalled();
+    expect(process.execute).not.toHaveBeenCalled();
+  });
   it('preserves an AI failure for the transport layer to emit', async () => {
     const chatRepository = {
       findConversation: jest.fn().mockResolvedValue({

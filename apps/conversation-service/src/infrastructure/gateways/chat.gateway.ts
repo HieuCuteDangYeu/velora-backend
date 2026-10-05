@@ -314,7 +314,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         senderId,
       );
 
-      void this.triggerBotReplyUseCase.execute(savedMessage, senderId).then(
+      const botReply = this.triggerBotReplyUseCase.execute(
+        savedMessage,
+        senderId,
+        conversation,
+      );
+      void botReply.then(
         async (botResult) => {
           if (botResult.botReply) {
             this.emitToConversation(

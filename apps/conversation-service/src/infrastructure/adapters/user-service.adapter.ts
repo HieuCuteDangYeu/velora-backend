@@ -8,6 +8,10 @@ import { IUserService } from '../../domain/interfaces/user-service.interface';
 @Injectable()
 export class UserServiceAdapter implements IUserService {
   private readonly logger = new Logger(UserServiceAdapter.name);
+  private readonly participantLookups = new Map<
+    string,
+    Promise<ValidateUserResponse | null>
+  >();
 
   constructor(
     @Inject('USER_SERVICE_RMQ') private readonly client: ClientProxy,
@@ -30,7 +34,24 @@ export class UserServiceAdapter implements IUserService {
     );
   }
 
-  async findUsersByIds(ids: string[]): Promise<ValidateUserResponse | null> {
+  findUsersByIds(ids: string[]): Promise<ValidateUserResponse | null> {
+    const uniqueIds = [...new Set(ids)].sort();
+    const key = JSON.stringify(uniqueIds);
+    const pending = this.participantLookups.get(key);
+    if (pending) return pending;
+
+    const lookup = this.loadParticipants(uniqueIds).finally(() => {
+      this.participantLookups.delete(key);
+    });
+    this.participantLookups.set(key, lookup);
+    return lookup;
+  }
+
+  // Share only concurrent profile hydration. Completed results are never cached;
+  // membership checks and token verification do not use this map.
+  private async loadParticipants(
+    ids: string[],
+  ): Promise<ValidateUserResponse | null> {
     const request = () =>
       lastValueFrom(
         this.client

@@ -263,6 +263,8 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       DOCKER_ENGINE_SOCKET: ${DOCKER_ENGINE_SOCKET:-/var/run/docker.sock}
+      # Two Prisma clients: one connection each, two total on this instance.
+      MONITORING_DATABASE_CONNECTION_LIMIT: ${MONITORING_DATABASE_CONNECTION_LIMIT:-1}
     expose:
       - '3016'
     group_add:
@@ -385,6 +387,8 @@ services:
     environment:
       NOTIFICATION_APNS_REQUEST_TIMEOUT_MS: ${NOTIFICATION_APNS_REQUEST_TIMEOUT_MS:-5000}
       NOTIFICATION_RETRY_POLL_INTERVAL_MS: ${NOTIFICATION_RETRY_POLL_INTERVAL_MS:-3000}
+      # Shared PostgreSQL instance has a 20-connection server budget.
+      NOTIFICATION_DATABASE_CONNECTION_LIMIT: ${NOTIFICATION_DATABASE_CONNECTION_LIMIT:-4}
     depends_on:
       rabbitmq:
         condition: service_healthy

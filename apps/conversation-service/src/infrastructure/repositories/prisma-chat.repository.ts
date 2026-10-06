@@ -58,6 +58,8 @@ const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
 const MAX_PENDING_MESSAGE_TRANSACTIONS = 100;
+const MESSAGE_TRANSACTION_MAX_WAIT_MS = 2_000;
+const MESSAGE_TRANSACTION_TIMEOUT_MS = 5_000;
 
 type AnchorBoundary = {
   createdAt: Date;
@@ -111,10 +113,14 @@ export class PrismaChatRepository implements IChatRepository {
     const clientMessageId =
       message.clientMessageId?.trim() || `server:${randomUUID()}`;
 
-    await this.assertConversationParticipant(
-      message.conversationId,
-      message.senderId,
-    );
+    // Reply hydration reads another message before the transaction. Authorize
+    // that read first; every send is checked again inside the write transaction.
+    if (message.replyToId) {
+      await this.assertConversationParticipant(
+        message.conversationId,
+        message.senderId,
+      );
+    }
 
     // BƯỚC 1: Chuẩn bị dữ liệu (CPU bound - cực nhanh)
     let contentToSave = message.content;
@@ -158,40 +164,78 @@ export class PrismaChatRepository implements IChatRepository {
         () =>
           this.retryMessageTransaction(() =>
             this.measure('mongo_write', () =>
-              this.prisma.$transaction([
-                // Op 1: Tạo message
-                this.prisma.message.create({
-                  data: {
-                    type: message.type,
-                    clientMessageId,
-                    signalType: message.signalType ?? 1,
-                    content: contentToSave,
-                    media: message.media
-                      ? (message.media as unknown as Prisma.InputJsonValue)
-                      : null,
-                    metadata: message.metadata
-                      ? (message.metadata as unknown as Prisma.InputJsonValue)
-                      : null,
-                    registrationId: message.registrationId,
-                    senderId: message.senderId,
-                    isRecalled: false,
-                    replyToId: message.replyToId,
-                    replyPreview: replyPreview
-                      ? (replyPreview as unknown as Prisma.InputJsonValue)
-                      : null,
-                    conversationId: message.conversationId,
-                    readBy: [],
-                  },
-                }),
-                // Op 2: Update conversation (Last message)
-                this.prisma.conversation.update({
-                  where: { id: message.conversationId },
-                  data: {
-                    lastMessage: previewText,
-                    lastMessageAt: new Date(),
-                  },
-                }),
-              ]),
+              this.prisma.$transaction(
+                async (tx) => {
+                  // Read membership and the delivery snapshot after entering the
+                  // room queue. A concurrent membership update conflicts with
+                  // the preview write and forces a fresh transaction retry.
+                  const conversation = await this.measure('membership', () =>
+                    tx.conversation.findUnique({
+                      where: { id: message.conversationId },
+                    }),
+                  );
+                  if (!conversation) {
+                    throw new NotFoundException('Conversation not found');
+                  }
+                  if (!conversation.participantIds.includes(message.senderId)) {
+                    throw new ForbiddenException(
+                      'You are not allowed to access messages in this conversation',
+                    );
+                  }
+
+                  const persisted = await tx.message.create({
+                    data: {
+                      type: message.type,
+                      clientMessageId,
+                      signalType: message.signalType ?? 1,
+                      content: contentToSave,
+                      media: message.media
+                        ? (message.media as unknown as Prisma.InputJsonValue)
+                        : null,
+                      metadata: message.metadata
+                        ? (message.metadata as unknown as Prisma.InputJsonValue)
+                        : null,
+                      registrationId: message.registrationId,
+                      senderId: message.senderId,
+                      isRecalled: false,
+                      replyToId: message.replyToId,
+                      replyPreview: replyPreview
+                        ? (replyPreview as unknown as Prisma.InputJsonValue)
+                        : null,
+                      conversationId: message.conversationId,
+                      readBy: [],
+                    },
+                  });
+                  const timestamp = new Date();
+                  // updateMany avoids Prisma's final read-back. Check its count
+                  // inside the transaction so a missing preview rolls back the
+                  // message rather than committing an orphaned send.
+                  const updated = await tx.conversation.updateMany({
+                    where: { id: message.conversationId },
+                    data: {
+                      lastMessage: previewText,
+                      lastMessageAt: timestamp,
+                      updatedAt: timestamp,
+                    },
+                  });
+                  if (updated.count !== 1) {
+                    throw new NotFoundException('Conversation not found');
+                  }
+                  return [
+                    persisted,
+                    {
+                      ...conversation,
+                      lastMessage: previewText,
+                      lastMessageAt: timestamp,
+                      updatedAt: timestamp,
+                    },
+                  ] as const;
+                },
+                {
+                  maxWait: MESSAGE_TRANSACTION_MAX_WAIT_MS,
+                  timeout: MESSAGE_TRANSACTION_TIMEOUT_MS,
+                },
+              ),
             ),
           ),
       );

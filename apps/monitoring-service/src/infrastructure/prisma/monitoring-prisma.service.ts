@@ -1,16 +1,7 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { PrismaClient } from '@prisma/monitoring-client';
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from './prisma.service';
 
 @Injectable()
-export class MonitoringPrismaService
-  extends PrismaClient
-  implements OnModuleInit, OnModuleDestroy
-{
-  async onModuleInit() {
-    await this.$connect();
-  }
-
-  async onModuleDestroy() {
-    await this.$disconnect();
-  }
-}
+// This is a separate client for telemetry. Apply the same connection budget
+// and lifecycle as the main monitoring client; the limit is per client.
+export class MonitoringPrismaService extends PrismaService {}

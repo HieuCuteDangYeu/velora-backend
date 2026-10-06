@@ -47,7 +47,20 @@ export class NotificationRetryScheduler
 
     this.isRunning = true;
     try {
-      const result = await this.retryNotificationJobs.execute(20);
+      const result = {
+        attemptedCount: 0,
+        failures: [] as Awaited<
+          ReturnType<RetryNotificationJobsUseCase['execute']>
+        >['failures'],
+      };
+      // Drain a bounded backlog without adding a three-second pause after
+      // every full batch. isRunning still prevents overlapping polls.
+      for (let batch = 0; batch < 5; batch++) {
+        const next = await this.retryNotificationJobs.execute(20);
+        result.attemptedCount += next.attemptedCount;
+        result.failures.push(...next.failures);
+        if (next.attemptedCount < 20 || next.failures.length > 0) break;
+      }
 
       if (this.databaseUnavailable) {
         this.databaseUnavailable = false;

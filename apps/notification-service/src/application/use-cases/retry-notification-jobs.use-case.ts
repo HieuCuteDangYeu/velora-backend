@@ -23,13 +23,21 @@ export class RetryNotificationJobsUseCase {
     const jobs = await this.notificationJobRepository.findRetryable(limit);
     const failures: NotificationRetryFailure[] = [];
 
-    for (const job of jobs) {
-      try {
-        await this.processNotificationJob.execute(job);
-      } catch (error) {
-        failures.push({ jobId: job.id, error });
-      }
-    }
+    let index = 0;
+    // Two workers for this non-overlapping poll, not one task per queued job.
+    // Call event delivery remains immediate; DB operations share the pool gate.
+    await Promise.all(
+      Array.from({ length: Math.min(2, jobs.length) }, async () => {
+        while (index < jobs.length) {
+          const job = jobs[index++];
+          try {
+            await this.processNotificationJob.execute(job);
+          } catch (error) {
+            failures.push({ jobId: job.id, error });
+          }
+        }
+      }),
+    );
 
     return {
       attemptedCount: jobs.length,

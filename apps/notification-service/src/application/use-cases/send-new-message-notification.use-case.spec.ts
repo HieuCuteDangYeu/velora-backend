@@ -1,130 +1,95 @@
-import { NotificationJob } from '../../domain/entities/notification-job.entity';
 import type { INotificationJobRepository } from '../../domain/interfaces/notification-job.repository.interface';
-import { ProcessNotificationJobUseCase } from './process-notification-job.use-case';
 import { SendNewMessageNotificationUseCase } from './send-new-message-notification.use-case';
 
-const ACTOR_ID = '11111111-1111-4111-8111-111111111111';
-const MEMBER_ID = '22222222-2222-4222-8222-222222222222';
-const THIRD_ID = '33333333-3333-4333-8333-333333333333';
-
-const makeJob = (recipientUserId: string, index: number) =>
-  new NotificationJob({
-    id: `job-${index}`,
-    type: 'NEW_MESSAGE',
-    recipientUserId,
-    actorUserId: ACTOR_ID,
-    conversationId: 'conversation-id',
-    messageId: 'message-id',
-    callId: null,
-    title: 'Core Team',
-    body: 'Alice: Hello there',
-    dataJson: { type: 'NEW_MESSAGE' },
-    expiresAt: null,
-    status: 'pending',
-    attemptCount: 0,
-    nextAttemptAt: null,
-  });
+const input = {
+  recipientUserIds: ['member', 'third', 'member'],
+  actorUserId: 'actor',
+  conversationId: 'conversation',
+  messageId: 'message',
+  title: 'Core Team',
+  body: 'Alice: Hello',
+};
 
 describe('SendNewMessageNotificationUseCase', () => {
-  let notificationJobRepository: { create: jest.Mock };
-  let processNotificationJob: { execute: jest.Mock };
-  let useCase: SendNewMessageNotificationUseCase;
-
-  beforeEach(() => {
-    notificationJobRepository = {
-      create: jest
-        .fn()
-        .mockImplementation((input) =>
-          Promise.resolve(
-            makeJob(
-              input.recipientUserId,
-              input.recipientUserId === MEMBER_ID ? 1 : 2,
-            ),
-          ),
-        ),
-    };
-    processNotificationJob = {
-      execute: jest.fn().mockImplementation((job: NotificationJob) =>
-        Promise.resolve({
-          jobId: job.id,
-          status: 'sent',
-        }),
+  it('acknowledges only a committed batch, without inline push delivery', async () => {
+    let commit!: (count: number) => void;
+    const repository = {
+      enqueueMany: jest.fn(
+        () =>
+          new Promise<number>((resolve) => {
+            commit = resolve;
+          }),
       ),
     };
-    useCase = new SendNewMessageNotificationUseCase(
-      notificationJobRepository as unknown as INotificationJobRepository,
-      processNotificationJob as unknown as ProcessNotificationJobUseCase,
+    const useCase = new SendNewMessageNotificationUseCase(
+      repository as unknown as INotificationJobRepository,
     );
-  });
-
-  it('creates and processes one independent job for every unique recipient', async () => {
-    const result = await useCase.execute({
-      recipientUserIds: [MEMBER_ID, THIRD_ID, MEMBER_ID],
-      actorUserId: ACTOR_ID,
-      conversationId: 'conversation-id',
-      messageId: 'message-id',
-      title: 'Core Team',
-      body: 'Alice: Hello there',
+    const settled = jest.fn();
+    const pending = useCase.execute(input).then((value) => {
+      settled();
+      return value;
     });
-
-    expect(notificationJobRepository.create).toHaveBeenCalledTimes(2);
-    expect(notificationJobRepository.create).toHaveBeenNthCalledWith(1, {
-      type: 'NEW_MESSAGE',
-      recipientUserId: MEMBER_ID,
-      actorUserId: ACTOR_ID,
-      conversationId: 'conversation-id',
-      messageId: 'message-id',
-      title: 'Core Team',
-      body: 'Alice: Hello there',
-      dataJson: { type: 'NEW_MESSAGE' },
-    });
-    expect(notificationJobRepository.create).toHaveBeenNthCalledWith(2, {
-      type: 'NEW_MESSAGE',
-      recipientUserId: THIRD_ID,
-      actorUserId: ACTOR_ID,
-      conversationId: 'conversation-id',
-      messageId: 'message-id',
-      title: 'Core Team',
-      body: 'Alice: Hello there',
-      dataJson: { type: 'NEW_MESSAGE' },
-    });
-    expect(processNotificationJob.execute).toHaveBeenCalledTimes(2);
-    expect(result.recipientCount).toBe(2);
-    expect(result.results.map((entry) => entry.recipientUserId)).toEqual([
-      MEMBER_ID,
-      THIRD_ID,
-    ]);
-  });
-
-  it('normalizes whitespace before deduplicating recipients defensively', async () => {
-    const result = await useCase.execute({
-      recipientUserIds: [` ${MEMBER_ID} `, MEMBER_ID, ''],
-      actorUserId: ACTOR_ID,
-      conversationId: 'conversation-id',
-      messageId: 'message-id',
-      title: 'Alice',
-      body: 'Hello there',
-    });
-
-    expect(notificationJobRepository.create).toHaveBeenCalledTimes(1);
-    expect(notificationJobRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ recipientUserId: MEMBER_ID }),
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(repository.enqueueMany).toHaveBeenCalledTimes(1);
+    const jobs = repository.enqueueMany.mock.calls[0][0];
+    expect(jobs).toEqual(
+      ['member', 'third'].map((recipientUserId) => ({
+        type: 'NEW_MESSAGE',
+        recipientUserId,
+        actorUserId: 'actor',
+        conversationId: 'conversation',
+        messageId: 'message',
+        title: 'Core Team',
+        body: 'Alice: Hello',
+        dataJson: { type: 'NEW_MESSAGE' },
+        idempotencyKey: `new-message:${JSON.stringify(['conversation', 'message', recipientUserId])}`,
+      })),
     );
-    expect(result.recipientCount).toBe(1);
+    commit(2);
+    await expect(pending).resolves.toEqual({
+      recipientCount: 2,
+      createdCount: 2,
+      status: 'queued',
+    });
   });
 
-  it('returns an empty summary instead of creating jobs when no recipient survives normalization', async () => {
+  it('normalizes recipients and keeps replay identity independent of title/body', async () => {
+    const repository = { enqueueMany: jest.fn().mockResolvedValue(0) };
+    const useCase = new SendNewMessageNotificationUseCase(repository as never);
+    await useCase.execute({
+      ...input,
+      recipientUserIds: [' member ', 'member', ''],
+    });
+    await useCase.execute({
+      ...input,
+      recipientUserIds: ['member'],
+      title: 'Updated',
+    });
+    expect(repository.enqueueMany.mock.calls[0][0]).toHaveLength(1);
+    expect(repository.enqueueMany.mock.calls[0][0][0].idempotencyKey).toEqual(
+      repository.enqueueMany.mock.calls[1][0][0].idempotencyKey,
+    );
     const result = await useCase.execute({
+      ...input,
       recipientUserIds: ['', '   '],
-      actorUserId: ACTOR_ID,
-      conversationId: 'conversation-id',
-      messageId: 'message-id',
-      title: 'Alice',
-      body: 'Hello there',
     });
+    expect(result).toEqual({
+      recipientCount: 0,
+      createdCount: 0,
+      status: 'queued',
+    });
+  });
 
-    expect(notificationJobRepository.create).not.toHaveBeenCalled();
-    expect(processNotificationJob.execute).not.toHaveBeenCalled();
-    expect(result).toEqual({ recipientCount: 0, results: [] });
+  it('propagates persistence failure instead of returning a false acceptance', async () => {
+    const repository = {
+      enqueueMany: jest
+        .fn()
+        .mockRejectedValue(new Error('database unavailable')),
+    };
+    const useCase = new SendNewMessageNotificationUseCase(repository as never);
+    await expect(useCase.execute(input)).rejects.toThrow(
+      'database unavailable',
+    );
   });
 });

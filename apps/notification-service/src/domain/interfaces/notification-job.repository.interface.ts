@@ -5,6 +5,8 @@ import {
 
 export abstract class INotificationJobRepository {
   abstract create(input: CreateNotificationJobInput): Promise<NotificationJob>;
+  /** Persist a batch atomically; replayed idempotency keys keep their state. */
+  abstract enqueueMany(inputs: CreateNotificationJobInput[]): Promise<number>;
   /**
    * Atomically lease an eligible job. A null return means that another worker
    * already owns it (or it is no longer eligible), so delivery must not run.

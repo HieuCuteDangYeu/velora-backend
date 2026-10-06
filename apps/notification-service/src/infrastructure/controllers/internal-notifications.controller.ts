@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Headers,
+  HttpCode,
+  HttpStatus,
   InternalServerErrorException,
   Post,
   UnauthorizedException,
@@ -84,6 +86,7 @@ export class InternalNotificationsController {
   ) {}
 
   @Post('new-message')
+  @HttpCode(HttpStatus.ACCEPTED)
   async sendNewMessage(
     @Headers('x-internal-secret') internalSecret: string | undefined,
     @Body() body: unknown,

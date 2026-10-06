@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 
 import { PrismaClient } from '@prisma/notification-client';
+import { DatabaseWorkQueue } from './database-work-queue';
 
 @Injectable()
 export class PrismaService
@@ -22,6 +23,19 @@ export class PrismaService
       url = connection.toString();
     }
     super(url ? { datasources: { db: { url } } } : undefined);
+    const configuredPool = url
+      ? new URL(url).searchParams.get('connection_limit')
+      : null;
+    const pool = Number(configuredPool);
+    // Never expand the pool. A smaller explicit URL limit also limits work.
+    const concurrency =
+      Number.isSafeInteger(pool) && pool > 0 ? Math.min(4, pool) : 4;
+    const work = new DatabaseWorkQueue(concurrency);
+    // Notification does not use explicit/interactive transactions. Each
+    // middleware call owns one complete Prisma operation, including any
+    // engine-managed transaction. Review this gate before adding a callback
+    // transaction: a transaction waiting for its own slot could deadlock.
+    this.$use((params, next) => work.run(() => next(params)));
   }
 
   async onModuleInit() {

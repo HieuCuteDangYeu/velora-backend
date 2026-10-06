@@ -19,6 +19,19 @@ const PROCESSING_LEASE_MS = 5 * 60_000;
 export class PrismaNotificationJobRepository implements INotificationJobRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  async enqueueMany(inputs: CreateNotificationJobInput[]): Promise<number> {
+    if (inputs.length === 0) return 0;
+    const result = await this.prisma.notificationJob.createMany({
+      data: inputs.map((input) => ({
+        ...input,
+        dataJson: input.dataJson as Prisma.InputJsonValue | undefined,
+        status: 'pending',
+      })),
+      skipDuplicates: true,
+    });
+    return result.count;
+  }
+
   async create(input: CreateNotificationJobInput): Promise<NotificationJob> {
     const data = {
       type: input.type,
@@ -51,35 +64,20 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
     const processingLeaseExpiredAt = new Date(
       now.getTime() - PROCESSING_LEASE_MS,
     );
-    const claimed = await this.prisma.notificationJob.updateMany({
-      where: {
-        id,
-        OR: [
-          { status: 'pending' },
-          {
-            status: 'failed',
-            nextAttemptAt: {
-              lte: now,
-            },
-          },
-          {
-            status: 'processing',
-            updatedAt: {
-              lte: processingLeaseExpiredAt,
-            },
-          },
-        ],
-      },
-      data: {
-        status: 'processing',
-        attemptCount: {
-          increment: 1,
-        },
-        updatedAt: now,
-      },
-    });
+    // A single atomic UPDATE avoids Prisma updateMany's transaction overhead.
+    // Bind values; preserve the existing eligibility and five-minute lease.
+    const claimed = await this.prisma.$executeRaw`
+      UPDATE notification_jobs
+      SET status = 'processing', attempt_count = attempt_count + 1,
+          updated_at = ${now}
+      WHERE id = ${id} AND (
+        status = 'pending'
+        OR (status = 'failed' AND next_attempt_at <= ${now})
+        OR (status = 'processing' AND updated_at <= ${processingLeaseExpiredAt})
+      )
+    `;
 
-    if (claimed.count === 0) {
+    if (claimed === 0) {
       return null;
     }
 

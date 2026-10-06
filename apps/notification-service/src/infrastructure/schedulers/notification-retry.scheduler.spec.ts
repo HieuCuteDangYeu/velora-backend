@@ -85,6 +85,39 @@ describe('NotificationRetryScheduler', () => {
     expect(metrics.recordRetrySchedulerRun).toHaveBeenCalledWith('success');
   });
 
+  it('drains up to five full batches per poll and then yields', async () => {
+    const retry = {
+      execute: jest
+        .fn()
+        .mockResolvedValue({ attemptedCount: 20, failures: [] }),
+    };
+    const metrics = createMetrics();
+    const scheduler = new NotificationRetryScheduler(
+      retry as never,
+      metrics as never,
+    );
+    await scheduler.handleRetries();
+    expect(retry.execute).toHaveBeenCalledTimes(5);
+    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(100, 0);
+  });
+
+  it('stops draining on a failed batch so DB/provider failures do not spin', async () => {
+    const failure = { jobId: 'job', error: new Error('unavailable') };
+    const retry = {
+      execute: jest
+        .fn()
+        .mockResolvedValue({ attemptedCount: 20, failures: [failure] }),
+    };
+    const metrics = createMetrics();
+    const scheduler = new NotificationRetryScheduler(
+      retry as never,
+      metrics as never,
+    );
+    await scheduler.handleRetries();
+    expect(retry.execute).toHaveBeenCalledTimes(1);
+    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(20, 1);
+  });
+
   it('records an internal scheduler failure without throwing from the interval callback', async () => {
     const retryNotificationJobs = {
       execute: jest.fn().mockRejectedValue(new Error('unexpected failure')),

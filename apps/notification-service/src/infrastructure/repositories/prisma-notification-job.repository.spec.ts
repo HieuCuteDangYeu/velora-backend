@@ -7,11 +7,6 @@ type QueryCondition = {
   expiresAt?: { gt: Date } | null;
 };
 
-type UpdateManyInput = {
-  where: { id: string; OR: QueryCondition[] };
-  data: Record<string, unknown>;
-};
-
 type FindManyInput = {
   where: { AND: Array<{ OR: QueryCondition[] }> };
   orderBy: Array<
@@ -62,41 +57,65 @@ describe('PrismaNotificationJobRepository', () => {
     });
   });
 
-  it('atomically claims only jobs that are eligible for delivery', async () => {
-    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+  it('atomically claims pending, due failed and stale processing jobs in one SQL operation', async () => {
+    const executeRaw = jest.fn().mockResolvedValue(0);
     const findUniqueOrThrow = jest.fn();
     const repository = new PrismaNotificationJobRepository({
-      notificationJob: { updateMany, findUniqueOrThrow },
+      $executeRaw: executeRaw,
+      notificationJob: { findUniqueOrThrow },
     } as never);
     const before = Date.now();
-
     await expect(repository.claimForProcessing('job-1')).resolves.toBeNull();
-
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
-    expect(updateMany).toHaveBeenCalledTimes(1);
-    const input = updateMany.mock.calls[0]?.[0] as UpdateManyInput;
-    const eligibleStates = input.where.OR;
-    const staleProcessing = eligibleStates.find(
-      (condition: { status?: string }) => condition.status === 'processing',
-    );
+    const [strings, now, id, dueAt, leaseExpiry] = executeRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      Date,
+      string,
+      Date,
+      Date,
+    ];
+    const sql = strings.join('?');
+    expect(sql).toContain('attempt_count = attempt_count + 1');
+    expect(sql).toContain("status = 'pending'");
+    expect(sql).toContain("status = 'failed' AND next_attempt_at <=");
+    expect(sql).toContain("status = 'processing' AND updated_at <=");
+    expect(id).toBe('job-1');
+    expect(now).toEqual(dueAt);
+    expect(leaseExpiry.getTime()).toBeGreaterThanOrEqual(before - 300_100);
+    expect(leaseExpiry.getTime()).toBeLessThanOrEqual(Date.now() - 299_900);
+  });
 
-    expect(eligibleStates).toEqual(
-      expect.arrayContaining([
-        { status: 'pending' },
-        expect.objectContaining({ status: 'failed' }),
-      ]),
+  it('returns the claimed job and batches durable message identities without resetting replays', async () => {
+    const record = {
+      id: 'job-1',
+      type: 'NEW_MESSAGE',
+      status: 'processing',
+      attemptCount: 1,
+    };
+    const createMany = jest.fn().mockResolvedValue({ count: 1 });
+    const findUniqueOrThrow = jest.fn().mockResolvedValue(record);
+    const repository = new PrismaNotificationJobRepository({
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      notificationJob: { createMany, findUniqueOrThrow },
+    } as never);
+    await expect(repository.claimForProcessing('job-1')).resolves.toEqual(
+      expect.objectContaining(record),
     );
-    expect(staleProcessing.updatedAt.lte).toBeInstanceOf(Date);
-    expect(staleProcessing.updatedAt.lte.getTime()).toBeGreaterThanOrEqual(
-      before - 300_100,
-    );
-    expect(input.data).toEqual(
-      expect.objectContaining({
-        status: 'processing',
-        attemptCount: { increment: 1 },
-        updatedAt: expect.any(Date),
-      }),
-    );
+    const input = {
+      type: 'NEW_MESSAGE' as const,
+      recipientUserId: 'user',
+      title: 'Chat',
+      body: 'Hello',
+      idempotencyKey: 'identity',
+    };
+    await expect(repository.enqueueMany([input])).resolves.toBe(1);
+    expect(createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ ...input, status: 'pending' })],
+      skipDuplicates: true,
+    });
+    createMany.mockClear();
+    await expect(repository.enqueueMany([])).resolves.toBe(0);
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it('reclaims only notification jobs whose processing lease has expired', async () => {

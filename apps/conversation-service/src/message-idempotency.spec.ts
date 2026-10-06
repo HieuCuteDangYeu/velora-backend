@@ -65,7 +65,7 @@ const transactionHarness = ($transaction: jest.Mock) => {
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     message: {
-      create: jest.fn().mockResolvedValue(createStoredMessage()),
+      createMany: jest.fn().mockResolvedValue({ count: 1 }),
       findFirst: jest.fn().mockResolvedValue(createStoredMessage()),
     },
   };
@@ -98,6 +98,39 @@ const transactionHarness = ($transaction: jest.Mock) => {
 };
 
 describe('message transaction conflicts', () => {
+  it('returns the same initial fields written to Mongo without a read-back', async () => {
+    const { repository, prisma } = transactionHarness(jest.fn());
+    const input = createMessage();
+    input.type = undefined as never;
+    input.signalType = undefined as never;
+    input.registrationId = 0;
+    const result = await repository.createMessageIdempotently(input);
+    const insert = prisma.message.createMany.mock.calls[0][0] as {
+      data: ReturnType<typeof createStoredMessage>[];
+    };
+    expect(insert.data[0]).toMatchObject({
+      type: 'text',
+      signalType: 1,
+      registrationId: 0,
+      media: null,
+      metadata: null,
+      recalledAt: null,
+      replyToId: null,
+      replyPreview: null,
+      reactions: null,
+      readBy: [],
+    });
+    expect(result.message).toMatchObject({
+      id: insert.data[0].id,
+      createdAt: insert.data[0].createdAt,
+      type: 'text',
+      signalType: 1,
+      registrationId: 0,
+      readBy: [],
+    });
+    expect(prisma.message.findFirst).not.toHaveBeenCalled();
+  });
+
   it('returns the transaction snapshot with the committed preview and explicit timestamps', async () => {
     const transaction = jest
       .fn()
@@ -145,7 +178,7 @@ describe('message transaction conflicts', () => {
       await expect(
         repository.createMessageIdempotently(createMessage()),
       ).rejects.toBeInstanceOf(error);
-      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.message.createMany).not.toHaveBeenCalled();
       expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(transaction).not.toHaveBeenCalled();
@@ -160,7 +193,19 @@ describe('message transaction conflicts', () => {
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toBeInstanceOf(NotFoundException);
-    expect(prisma.message.create).toHaveBeenCalledTimes(1);
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it('aborts an unexpected empty insert before preview or post-commit work', async () => {
+    const commit = jest.fn();
+    const { repository, prisma, redis } = transactionHarness(commit);
+    prisma.message.createMany.mockResolvedValue({ count: 0 });
+    await expect(
+      repository.createMessageIdempotently(createMessage()),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
@@ -196,7 +241,7 @@ describe('message transaction conflicts', () => {
       status: 'rejected',
       reason: expect.any(ForbiddenException),
     });
-    expect(prisma.message.create).toHaveBeenCalledTimes(1);
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
   });
 
   it('authorizes reply hydration before reading the reply target', async () => {
@@ -299,9 +344,15 @@ describe('message transaction conflicts', () => {
     const result = await repository.createMessageIdempotently(createMessage());
     expect(result.created).toBe(true);
     expect(transaction).toHaveBeenCalledTimes(3);
-    expect(prisma.message.create).toHaveBeenCalledTimes(3);
-    for (const [args] of prisma.message.create.mock.calls)
-      expect(args.data.clientMessageId).toBe('client-message-1');
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(3);
+    for (const [args] of prisma.message.createMany.mock.calls)
+      expect(args.data[0].clientMessageId).toBe('client-message-1');
+    const ids = prisma.message.createMany.mock.calls.map(
+      ([args]) => (args as { data: Array<{ id: string }> }).data[0].id,
+    );
+    expect(new Set(ids).size).toBe(1);
+    expect(ids[0]).toMatch(/^[a-f0-9]{24}$/);
+    expect(result.message.id).toBe(ids[0]);
     expect(encryption.encrypt).toHaveBeenCalledTimes(1);
     expect(redis.del).toHaveBeenCalledTimes(1);
   });
@@ -583,9 +634,15 @@ describe('message idempotency', () => {
   it('resolves a concurrent insert conflict to the original message', async () => {
     const duplicateError = prismaError('P2002');
     const { repository, prisma } = transactionHarness(jest.fn());
-    prisma.message.create
-      .mockResolvedValueOnce(createStoredMessage())
+    prisma.message.createMany
+      .mockResolvedValueOnce({ count: 1 })
       .mockRejectedValueOnce(duplicateError);
+    prisma.message.findFirst.mockImplementation(() => {
+      const insert = prisma.message.createMany.mock.calls[0][0] as {
+        data: ReturnType<typeof createStoredMessage>[];
+      };
+      return Promise.resolve(insert.data[0]);
+    });
 
     const [first, retry] = await Promise.all([
       repository.createMessageIdempotently(createMessage()),
@@ -593,9 +650,9 @@ describe('message idempotency', () => {
     ]);
 
     expect([first.created, retry.created].sort()).toEqual([false, true]);
-    expect(first.message.id).toBe('message-1');
-    expect(retry.message.id).toBe('message-1');
-    expect(prisma.message.create).toHaveBeenCalledTimes(2);
+    expect(first.message.id).toMatch(/^[a-f0-9]{24}$/);
+    expect(retry.message.id).toBe(first.message.id);
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(2);
     expect(prisma.message.findFirst).toHaveBeenCalledWith({
       where: {
         conversationId: 'conversation-1',

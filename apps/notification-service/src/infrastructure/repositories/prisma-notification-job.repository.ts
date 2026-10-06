@@ -64,9 +64,9 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
     const processingLeaseExpiredAt = new Date(
       now.getTime() - PROCESSING_LEASE_MS,
     );
-    // A single atomic UPDATE avoids Prisma updateMany's transaction overhead.
-    // Bind values; preserve the existing eligibility and five-minute lease.
-    const claimed = await this.prisma.$executeRaw`
+    // Return the claimed snapshot in the same atomic statement. Avoid another
+    // round trip; preserve the existing eligibility and five-minute lease.
+    const records = await this.prisma.$queryRaw<PrismaNotificationJob[]>`
       UPDATE notification_jobs
       SET status = 'processing', attempt_count = attempt_count + 1,
           updated_at = ${now}
@@ -75,17 +75,15 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
         OR (status = 'failed' AND next_attempt_at <= ${now})
         OR (status = 'processing' AND updated_at <= ${processingLeaseExpiredAt})
       )
+      RETURNING id, type, recipient_user_id AS "recipientUserId",
+        actor_user_id AS "actorUserId", conversation_id AS "conversationId",
+        message_id AS "messageId", call_id AS "callId", title, body,
+        data_json AS "dataJson", expires_at AS "expiresAt", status,
+        idempotency_key AS "idempotencyKey", attempt_count AS "attemptCount",
+        next_attempt_at AS "nextAttemptAt", last_error AS "lastError",
+        created_at AS "createdAt", updated_at AS "updatedAt", sent_at AS "sentAt"
     `;
-
-    if (claimed === 0) {
-      return null;
-    }
-
-    const record = await this.prisma.notificationJob.findUniqueOrThrow({
-      where: { id },
-    });
-
-    return this.toDomain(record);
+    return records.length === 0 ? null : this.toDomain(records[0]);
   }
 
   async markSent(id: string): Promise<NotificationJob> {

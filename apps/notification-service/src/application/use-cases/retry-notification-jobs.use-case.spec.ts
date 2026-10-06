@@ -1,7 +1,7 @@
 import { RetryNotificationJobsUseCase } from './retry-notification-jobs.use-case';
 
 describe('RetryNotificationJobsUseCase', () => {
-  it('processes a backlog with at most two workers and continues after a failure', async () => {
+  it('processes a backlog with at most four workers and continues after a failure', async () => {
     const jobs = Array.from({ length: 6 }, (_, i) => ({ id: `job-${i}` }));
     let active = 0;
     let peak = 0;
@@ -20,7 +20,7 @@ describe('RetryNotificationJobsUseCase', () => {
       processNotificationJob as never,
     );
     const result = await useCase.execute(20);
-    expect(peak).toBe(2);
+    expect(peak).toBe(4);
     expect(active).toBe(0);
     expect(result.attemptedCount).toBe(6);
     expect(result.failures).toEqual([

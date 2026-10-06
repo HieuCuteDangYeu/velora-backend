@@ -58,16 +58,16 @@ describe('PrismaNotificationJobRepository', () => {
   });
 
   it('atomically claims pending, due failed and stale processing jobs in one SQL operation', async () => {
-    const executeRaw = jest.fn().mockResolvedValue(0);
+    const queryRaw = jest.fn().mockResolvedValue([]);
     const findUniqueOrThrow = jest.fn();
     const repository = new PrismaNotificationJobRepository({
-      $executeRaw: executeRaw,
+      $queryRaw: queryRaw,
       notificationJob: { findUniqueOrThrow },
     } as never);
     const before = Date.now();
     await expect(repository.claimForProcessing('job-1')).resolves.toBeNull();
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
-    const [strings, now, id, dueAt, leaseExpiry] = executeRaw.mock.calls[0] as [
+    const [strings, now, id, dueAt, leaseExpiry] = queryRaw.mock.calls[0] as [
       TemplateStringsArray,
       Date,
       string,
@@ -79,6 +79,7 @@ describe('PrismaNotificationJobRepository', () => {
     expect(sql).toContain("status = 'pending'");
     expect(sql).toContain("status = 'failed' AND next_attempt_at <=");
     expect(sql).toContain("status = 'processing' AND updated_at <=");
+    expect(sql).toContain('RETURNING id, type');
     expect(id).toBe('job-1');
     expect(now).toEqual(dueAt);
     expect(leaseExpiry.getTime()).toBeGreaterThanOrEqual(before - 300_100);
@@ -95,12 +96,13 @@ describe('PrismaNotificationJobRepository', () => {
     const createMany = jest.fn().mockResolvedValue({ count: 1 });
     const findUniqueOrThrow = jest.fn().mockResolvedValue(record);
     const repository = new PrismaNotificationJobRepository({
-      $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([record]),
       notificationJob: { createMany, findUniqueOrThrow },
     } as never);
     await expect(repository.claimForProcessing('job-1')).resolves.toEqual(
       expect.objectContaining(record),
     );
+    expect(findUniqueOrThrow).not.toHaveBeenCalled();
     const input = {
       type: 'NEW_MESSAGE' as const,
       recipientUserId: 'user',

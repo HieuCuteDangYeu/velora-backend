@@ -20,6 +20,10 @@ describe('Conversation Mongo command observations', () => {
       duration: 125,
     });
     observe({
+      query: 'db.messages.insertMany([{ private: "content" }])',
+      duration: 150,
+    });
+    observe({
       query: 'db.messages.aggregate([{"secret": "token"}])',
       duration: 50,
     });
@@ -29,6 +33,7 @@ describe('Conversation Mongo command observations', () => {
     observe({ query: 'private query', duration: 99 });
     expect(metrics.recordMongoCommand.mock.calls).toEqual([
       ['message_insert', 0.125],
+      ['message_insert', 0.15],
       ['message_read', 0.05],
       ['conversation_read', 0.075],
       ['conversation_update', 0.1],

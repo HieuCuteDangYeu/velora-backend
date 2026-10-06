@@ -16,6 +16,7 @@ import {
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { Types } from 'mongoose';
 
 // Entities & Interfaces
 import {
@@ -112,6 +113,7 @@ export class PrismaChatRepository implements IChatRepository {
     // a client key before reaching this method.
     const clientMessageId =
       message.clientMessageId?.trim() || `server:${randomUUID()}`;
+    const messageId = new Types.ObjectId().toHexString();
 
     // Reply hydration reads another message before the transaction. Authorize
     // that read first; every send is checked again inside the write transaction.
@@ -183,29 +185,42 @@ export class PrismaChatRepository implements IChatRepository {
                     );
                   }
 
-                  const persisted = await tx.message.create({
-                    data: {
-                      type: message.type,
-                      clientMessageId,
-                      signalType: message.signalType ?? 1,
-                      content: contentToSave,
-                      media: message.media
-                        ? (message.media as unknown as Prisma.InputJsonValue)
-                        : null,
-                      metadata: message.metadata
-                        ? (message.metadata as unknown as Prisma.InputJsonValue)
-                        : null,
-                      registrationId: message.registrationId,
-                      senderId: message.senderId,
-                      isRecalled: false,
-                      replyToId: message.replyToId,
-                      replyPreview: replyPreview
-                        ? (replyPreview as unknown as Prisma.InputJsonValue)
-                        : null,
-                      conversationId: message.conversationId,
-                      readBy: [],
-                    },
+                  // All initial values are known here. createMany avoids the
+                  // read-back issued by create; keep this insert and the preview
+                  // update in the same authorized, retryable transaction.
+                  const persisted: PrismaMessage = {
+                    id: messageId,
+                    type: message.type ?? 'text',
+                    clientMessageId,
+                    signalType: message.signalType ?? 1,
+                    content: contentToSave,
+                    media: message.media
+                      ? (message.media as unknown as Prisma.JsonValue)
+                      : null,
+                    metadata: message.metadata
+                      ? (message.metadata as unknown as Prisma.JsonValue)
+                      : null,
+                    registrationId: message.registrationId ?? null,
+                    senderId: message.senderId,
+                    isRecalled: false,
+                    recalledAt: null,
+                    replyToId: message.replyToId ?? null,
+                    replyPreview: replyPreview
+                      ? (replyPreview as unknown as Prisma.JsonValue)
+                      : null,
+                    conversationId: message.conversationId,
+                    reactions: null,
+                    createdAt: new Date(),
+                    readBy: [],
+                  };
+                  const inserted = await tx.message.createMany({
+                    data: [persisted],
                   });
+                  if (inserted.count !== 1) {
+                    throw new InternalServerErrorException(
+                      'Message insert did not create one record',
+                    );
+                  }
                   const timestamp = new Date();
                   // updateMany avoids Prisma's final read-back. Check its count
                   // inside the transaction so a missing preview rolls back the

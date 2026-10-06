@@ -24,10 +24,10 @@ export class RetryNotificationJobsUseCase {
     const failures: NotificationRetryFailure[] = [];
 
     let index = 0;
-    // Two workers for this non-overlapping poll, not one task per queued job.
+    // Four workers for this non-overlapping poll, not one task per queued job.
     // Call event delivery remains immediate; DB operations share the pool gate.
     await Promise.all(
-      Array.from({ length: Math.min(2, jobs.length) }, async () => {
+      Array.from({ length: Math.min(4, jobs.length) }, async () => {
         while (index < jobs.length) {
           const job = jobs[index++];
           try {

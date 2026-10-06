@@ -20,7 +20,7 @@ control the number of workflows contending for those slots.
   job has a stable conversation/message/recipient identity using the existing
   unique idempotency-key column. Replays skip existing rows without resetting
   sent/processing/retry state. The batch is atomic, including multiple recipients.
-- The existing scheduler finds durable pending/retry jobs and uses at most two
+- The existing scheduler finds durable pending/retry jobs and uses at most four
   workers in its non-overlapping poll. It drains at most five batches of 20 per
   poll, yielding on a partial or failed batch. Provider failures, expiry and
   processing leases retain their existing policies. Call event delivery remains
@@ -31,10 +31,10 @@ control the number of workflows contending for those slots.
   overflow rejects with a service-unavailable error rather than false acceptance.
   This gate introduces no new client or connection pool. Push-token operations
   and immediate call jobs use the same gate.
-- Atomic job claim uses one parameterized SQL UPDATE, followed by the existing
-  job read, preserving pending/due-failed/stale-processing eligibility, attempt
-  increments and the five-minute lease. This removes updateMany's implicit
-  transaction overhead. Only claimed jobs may be delivered.
+- Atomic job claim uses one parameterized SQL UPDATE RETURNING, preserving
+  pending/due-failed/stale-processing eligibility, attempt
+  increments and the five-minute lease. There is no separate claim read-back.
+  Only claimed jobs may be delivered.
 
 Notification currently has no explicit callback/array Prisma transactions.
 Review the middleware gate before adding one: holding an outer transaction
@@ -54,3 +54,18 @@ error, not a success. No guarantee of exactly-once provider delivery is made.
 
 The gate/budget apply per replica. Replicas must share the same instance-wide
 connection budget; adding replicas must not multiply the four-connection pool.
+
+## Reducing database round trips
+
+Conversation now assigns a standard ObjectId and initial Message fields before
+`createMany` inserts one record, avoiding `create`'s message read-back. Fresh
+membership authorization, message insert and preview update still share the
+queued transaction. Retries keep the same ObjectId/client identity; count must
+be one and a unique conflict still reconciles the original stored message.
+When the Message schema changes, keep the initial snapshot/defaults in sync.
+Command metrics classify both insertOne and insertMany as message_insert.
+
+Notification uses four bounded workers to overlap provider I/O without adding
+database connections. Its shared gate still caps database operations at four
+or the smaller configured pool. Measure backlog drain separately from intake;
+four workers do not establish a sustained push capacity by themselves.

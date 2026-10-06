@@ -20,6 +20,8 @@ export interface MediaProcessingSyncResult {
 export interface CreateMessageResult {
   message: Message;
   created: boolean;
+  /** Conversation returned by the same committed transaction, before User RPC enrichment. */
+  conversation?: Conversation;
 }
 
 export interface MarkMessagesAsSeenResult {
@@ -80,6 +82,9 @@ export abstract class IChatRepository {
     conversation: Conversation,
   ): Promise<Conversation>;
   abstract findConversation(id: string): Promise<Conversation | null>;
+  abstract populateConversationParticipants(
+    conversation: Conversation,
+  ): Promise<Conversation>;
   abstract markMessagesAsSeen(
     conversationId: string,
     userId: string,

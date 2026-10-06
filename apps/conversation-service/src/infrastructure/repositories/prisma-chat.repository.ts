@@ -12,6 +12,7 @@ import {
 import {
   Prisma,
   type Message as PrismaMessage,
+  type Conversation as PrismaConversation,
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
@@ -150,8 +151,9 @@ export class PrismaChatRepository implements IChatRepository {
     // Persist the message and conversation preview atomically. Only this
     // transaction is queued; post-commit cache and delivery work stays outside.
     let savedMsg: PrismaMessage;
+    let savedConversation: PrismaConversation;
     try {
-      [savedMsg] = await this.enqueueMessageTransaction(
+      [savedMsg, savedConversation] = await this.enqueueMessageTransaction(
         message.conversationId,
         () =>
           this.retryMessageTransaction(() =>
@@ -235,7 +237,11 @@ export class PrismaChatRepository implements IChatRepository {
     // messages. A delayed cache write could otherwise resurrect recalled data.
     await this.clearConversationCache(domainMsg.conversationId);
 
-    return { message: domainMsg, created: true };
+    return {
+      message: domainMsg,
+      created: true,
+      conversation: ConversationMapper.toDomain(savedConversation),
+    };
   }
 
   async syncMediaProcessingResult(
@@ -567,9 +573,16 @@ export class PrismaChatRepository implements IChatRepository {
 
     if (!foundConv) return null;
 
-    // 2. Chuyển sang Domain Entity
-    const domainConv = ConversationMapper.toDomain(foundConv);
+    return this.populateConversationParticipants(
+      ConversationMapper.toDomain(foundConv),
+    );
+  }
 
+  // Enrich the transaction snapshot after sender ACK, without another Mongo read.
+  // This is a per-send snapshot, never a cached authorization decision.
+  async populateConversationParticipants(
+    domainConv: Conversation,
+  ): Promise<Conversation> {
     // 3. Gọi User Service để lấy thông tin chi tiết Participants
     try {
       const response = await this.userService.findUsersByIds(
@@ -604,7 +617,7 @@ export class PrismaChatRepository implements IChatRepository {
       // Nếu User Service chết, log lỗi nhưng KHÔNG throw exception.
       // Vẫn trả về conversation để user chat được (dù không thấy avatar/tên)
       this.logger.error(
-        `[findConversation] Failed to fetch participants for ${id}`,
+        `[findConversation] Failed to fetch participants for ${domainConv.id}`,
         error,
       );
       domainConv.participants = [];
@@ -1293,7 +1306,10 @@ export class PrismaChatRepository implements IChatRepository {
         }
         const backoffMs =
           Math.min(400, 50 * 2 ** attempt) + Math.floor(Math.random() * 50);
-        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+        await this.measure(
+          'retry_backoff',
+          () => new Promise<void>((resolve) => setTimeout(resolve, backoffMs)),
+        );
       }
     }
   }

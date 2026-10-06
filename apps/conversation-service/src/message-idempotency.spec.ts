@@ -1,6 +1,7 @@
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/conversation-client';
 import { Message } from './domain/entities/message.entity';
+import { Conversation } from './domain/entities/conversation.entity';
 import { ConversationMicroserviceController } from './infrastructure/controllers/conversation.controller';
 import { ChatGateway } from './infrastructure/gateways/chat.gateway';
 import { PrismaChatRepository } from './infrastructure/repositories/prisma-chat.repository';
@@ -38,6 +39,20 @@ const createStoredMessage = () => ({
   readBy: [],
 });
 
+const createStoredConversation = () => ({
+  id: 'conversation-1',
+  creatorId: 'sender-1',
+  participantIds: ['sender-1'],
+  name: null,
+  picture: null,
+  memberJoinedAt: null,
+  isGroup: false,
+  lastMessage: 'hello',
+  lastMessageAt: new Date('2026-07-15T00:00:00.000Z'),
+  createdAt: new Date('2026-07-15T00:00:00.000Z'),
+  updatedAt: new Date('2026-07-15T00:00:00.000Z'),
+});
+
 const prismaError = (code: string) =>
   new Prisma.PrismaClientKnownRequestError('private query detail', {
     code,
@@ -71,6 +86,53 @@ const transactionHarness = ($transaction: jest.Mock) => {
 };
 
 describe('message transaction conflicts', () => {
+  it('returns the committed preview snapshot without a second membership or conversation read', async () => {
+    const transaction = jest
+      .fn()
+      .mockResolvedValue([createStoredMessage(), createStoredConversation()]);
+    const { repository, prisma } = transactionHarness(transaction);
+    const result = await repository.createMessageIdempotently(createMessage());
+    expect(result.conversation).toEqual(
+      expect.objectContaining({
+        id: 'conversation-1',
+        participantIds: ['sender-1'],
+        lastMessage: 'hello',
+      }),
+    );
+    expect(prisma.conversation.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'conversation-1' },
+      data: { lastMessage: 'hello', lastMessageAt: expect.any(Date) },
+    });
+    expect(transaction).toHaveBeenCalledWith([
+      prisma.message.create.mock.results[0].value,
+      prisma.conversation.update.mock.results[0].value,
+    ]);
+  });
+
+  it.each([
+    [
+      'removed participant',
+      { participantIds: ['other-user'] },
+      ForbiddenException,
+    ],
+    ['missing conversation', null, NotFoundException],
+  ])(
+    'rejects %s at persistence before any mutation',
+    async (_case, record, error) => {
+      const transaction = jest.fn();
+      const { repository, prisma, redis } = transactionHarness(transaction);
+      prisma.conversation.findUnique.mockResolvedValue(record);
+      await expect(
+        repository.createMessageIdempotently(createMessage()),
+      ).rejects.toBeInstanceOf(error);
+      expect(prisma.message.create).not.toHaveBeenCalled();
+      expect(prisma.conversation.update).not.toHaveBeenCalled();
+      expect(transaction).not.toHaveBeenCalled();
+      expect(redis.del).not.toHaveBeenCalled();
+    },
+  );
+
   it('serializes writes to one conversation while allowing other conversations to proceed', async () => {
     let releaseFirst!: () => void;
     const blocked = new Promise<void>((resolve) => {
@@ -85,7 +147,7 @@ describe('message transaction conflicts', () => {
       peak = Math.max(peak, active);
       if (call === 1) await blocked;
       active -= 1;
-      return [createStoredMessage()];
+      return [createStoredMessage(), createStoredConversation()];
     });
     const { repository } = transactionHarness(transaction);
     const first = repository.createMessageIdempotently(createMessage());
@@ -106,7 +168,10 @@ describe('message transaction conflicts', () => {
     const transaction = jest
       .fn()
       .mockRejectedValueOnce(failure)
-      .mockResolvedValueOnce([createStoredMessage()]);
+      .mockResolvedValueOnce([
+        createStoredMessage(),
+        createStoredConversation(),
+      ]);
     const { repository } = transactionHarness(transaction);
     const results = await Promise.allSettled([
       repository.createMessageIdempotently(createMessage()),
@@ -125,7 +190,7 @@ describe('message transaction conflicts', () => {
     });
     const transaction = jest.fn(async () => {
       await blocked;
-      return [createStoredMessage()];
+      return [createStoredMessage(), createStoredConversation()];
     });
     const { repository } = transactionHarness(transaction);
     const writes = Array.from({ length: 101 }, () =>
@@ -146,7 +211,7 @@ describe('message transaction conflicts', () => {
       .fn()
       .mockRejectedValueOnce(prismaError('P2034'))
       .mockRejectedValueOnce(prismaError('P2034'))
-      .mockResolvedValue([createStoredMessage()]);
+      .mockResolvedValue([createStoredMessage(), createStoredConversation()]);
     const { repository, prisma, redis, encryption } =
       transactionHarness(transaction);
     const result = await repository.createMessageIdempotently(createMessage());
@@ -198,7 +263,9 @@ describe('message transaction conflicts', () => {
   });
 
   it('does not retry failures after a successful commit', async () => {
-    const transaction = jest.fn().mockResolvedValue([createStoredMessage()]);
+    const transaction = jest
+      .fn()
+      .mockResolvedValue([createStoredMessage(), createStoredConversation()]);
     const { repository } = transactionHarness(transaction);
     const failure = prismaError('P2034');
     jest
@@ -252,6 +319,185 @@ describe('message transaction conflicts', () => {
 });
 
 describe('message idempotency', () => {
+  it('reuses the committed snapshot in HTTP delivery and keeps it out of the response', async () => {
+    const snapshot = new Conversation(createStoredConversation());
+    const repository = {
+      findConversation: jest.fn(),
+      populateConversationParticipants: jest.fn().mockResolvedValue(snapshot),
+    };
+    const notifyNewMessage = jest.fn().mockResolvedValue(undefined);
+    const controller = new ConversationMicroserviceController(
+      {
+        execute: jest.fn().mockResolvedValue({
+          message: createMessage(),
+          created: true,
+          conversation: snapshot,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        emitToConversation: jest.fn(),
+        emitConversationMessageActivity: jest.fn(),
+      } as never,
+      { execute: jest.fn().mockResolvedValue({}) } as never,
+      { notifyNewMessage } as never,
+      repository as never,
+      {} as never,
+    );
+    const response = await controller.handleCreateMessage(
+      createMessage() as never,
+    );
+    expect(repository.findConversation).not.toHaveBeenCalled();
+    expect(repository.populateConversationParticipants).toHaveBeenCalledWith(
+      snapshot,
+    );
+    expect(notifyNewMessage).toHaveBeenCalledWith(
+      snapshot,
+      expect.any(Message),
+      'sender-1',
+    );
+    expect(response).toEqual({
+      message: expect.objectContaining({ id: 'message-1' }),
+      created: true,
+    });
+    expect(response).not.toHaveProperty('conversation');
+  });
+
+  it('enriches a per-send snapshot through User RPC without reading Mongo or caching it', async () => {
+    const findUnique = jest.fn();
+    const findUsersByIds = jest
+      .fn()
+      .mockResolvedValue([{ id: 'sender-1', name: 'Sender' }]);
+    const repository = new PrismaChatRepository(
+      { conversation: { findUnique } } as never,
+      {} as never,
+      {} as never,
+      { findUsersByIds } as never,
+      {} as never,
+    );
+    for (let i = 0; i < 2; i++) {
+      const snapshot = new Conversation(createStoredConversation());
+      await expect(
+        repository.populateConversationParticipants(snapshot),
+      ).resolves.toMatchObject({
+        participants: [{ id: 'sender-1', name: 'Sender' }],
+      });
+    }
+    expect(findUsersByIds).toHaveBeenCalledTimes(2);
+    expect(findUnique).not.toHaveBeenCalled();
+  });
+
+  it('ACKs before participant enrichment and reuses the transaction snapshot for delivery', async () => {
+    const order: string[] = [];
+    const snapshot = new Conversation(createStoredConversation());
+    const sendMessageUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        message: createMessage(),
+        created: true,
+        conversation: snapshot,
+      }),
+    };
+    const chatRepository = {
+      assertConversationParticipant: jest.fn(),
+      findConversation: jest.fn(),
+      populateConversationParticipants: jest.fn(
+        (conversation: Conversation) => {
+          order.push('participants');
+          return Promise.resolve(conversation);
+        },
+      ),
+    };
+    const notificationService = {
+      notifyNewMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const triggerBotReplyUseCase = { execute: jest.fn().mockResolvedValue({}) };
+    const gateway = new ChatGateway(
+      sendMessageUseCase as never,
+      triggerBotReplyUseCase as never,
+      notificationService as never,
+      {
+        measurePhase: jest.fn((_phase, action: () => unknown) => action()),
+        recordMessageCreated: jest.fn(),
+        recordSendMessage: jest.fn(),
+      } as never,
+      chatRepository as never,
+      {} as never,
+      {} as never,
+    );
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+    } as never;
+    await gateway.handleMessage(
+      createMessage() as never,
+      {
+        id: 'socket-1',
+        data: { userId: 'sender-1' },
+        emit: jest.fn(() => order.push('ACK')),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never,
+    );
+    expect(order).toEqual(['ACK', 'participants']);
+    expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
+    expect(chatRepository.findConversation).not.toHaveBeenCalled();
+    expect(
+      chatRepository.populateConversationParticipants,
+    ).toHaveBeenCalledWith(snapshot);
+    expect(notificationService.notifyNewMessage).toHaveBeenCalledWith(
+      snapshot,
+      expect.any(Message),
+      'sender-1',
+    );
+    expect(triggerBotReplyUseCase.execute).toHaveBeenCalledWith(
+      expect.any(Message),
+      'sender-1',
+      snapshot,
+    );
+  });
+
+  it('still reports a persistence membership rejection without ACK or peer fanout', async () => {
+    const metrics = {
+      measurePhase: jest.fn((_phase, action: () => unknown) => action()),
+      recordSendMessage: jest.fn(),
+    };
+    const gateway = new ChatGateway(
+      {
+        execute: jest.fn().mockRejectedValue(new ForbiddenException()),
+      } as never,
+      {} as never,
+      {} as never,
+      metrics as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const emit = jest.fn();
+    gateway.server = { to: jest.fn().mockReturnValue({ emit }) } as never;
+    const socket = {
+      id: 'socket-1',
+      data: { userId: 'sender-1' },
+      emit: jest.fn(),
+      to: jest.fn(),
+    };
+    await gateway.handleMessage(createMessage() as never, socket as never);
+    expect(socket.emit).not.toHaveBeenCalled();
+    expect(socket.to).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
+      'message_failed',
+      expect.objectContaining({ clientMessageId: 'client-message-1' }),
+    );
+    expect(metrics.recordSendMessage).toHaveBeenCalledWith(
+      'rejected',
+      expect.any(Number),
+    );
+  });
+
   it('resolves a concurrent insert conflict to the original message', async () => {
     const storedMessage = createStoredMessage();
     const duplicateError = new Prisma.PrismaClientKnownRequestError(
@@ -271,7 +517,7 @@ describe('message idempotency', () => {
       },
       $transaction: jest
         .fn()
-        .mockResolvedValueOnce([storedMessage])
+        .mockResolvedValueOnce([storedMessage, createStoredConversation()])
         .mockRejectedValueOnce(duplicateError),
     };
     const repository = new PrismaChatRepository(

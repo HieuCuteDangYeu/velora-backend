@@ -240,23 +240,8 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
-    try {
-      await this.chatRepository.assertConversationParticipant(
-        payload.conversationId,
-        senderId,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Rejected send_message for socket ${client.id}: ${(error as Error).message}`,
-      );
-      this.server.to(client.id).emit('message_failed', {
-        conversationId: payload.conversationId,
-        clientMessageId: payload.clientMessageId,
-      });
-      this.recordSendMessageOutcome(startedAt, 'rejected');
-      return;
-    }
-
+    // The persistence repository checks current membership before any mutation.
+    // Do not repeat that Mongo read here; room joins still check membership separately.
     let phase = 'persist';
     let acknowledged = false;
     try {
@@ -289,9 +274,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
 
       // Update conversation sidebar for all participants (lastMessage, ordering)
-      const conversation = await this.chatRepository.findConversation(
-        payload.conversationId,
-      );
+      const conversation = result.conversation
+        ? await this.chatRepository.populateConversationParticipants(
+            result.conversation,
+          )
+        : await this.chatRepository.findConversation(payload.conversationId);
       if (conversation) {
         conversation.lastMessage =
           savedMessage.content ?? savedMessage.type ?? null;
@@ -376,7 +363,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.warn(
         `send_message failed phase=${phase} code=${code} acknowledged=${acknowledged}`,
       );
-      this.recordSendMessageOutcome(startedAt, 'error');
+      const rejected =
+        phase === 'persist' &&
+        (error instanceof ForbiddenException ||
+          error instanceof NotFoundException);
+      this.recordSendMessageOutcome(startedAt, rejected ? 'rejected' : 'error');
       this.server.to(client.id).emit('message_failed', {
         conversationId: payload.conversationId,
         clientMessageId: payload.clientMessageId,

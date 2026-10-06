@@ -388,9 +388,11 @@ export class ConversationMicroserviceController {
         ChatMapper.toDto(savedMessage),
       );
 
-      const conversation = await this.chatRepository.findConversation(
-        dto.conversationId,
-      );
+      const conversation = result.conversation
+        ? await this.chatRepository.populateConversationParticipants(
+            result.conversation,
+          )
+        : await this.chatRepository.findConversation(dto.conversationId);
       if (conversation) {
         conversation.lastMessage =
           savedMessage.content ?? savedMessage.type ?? null;

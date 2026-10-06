@@ -5,6 +5,7 @@ export type ChatPhase =
   | 'socket_auth'
   | 'membership'
   | 'queue_wait'
+  | 'retry_backoff'
   | 'mongo_write'
   | 'conversation_read'
   | 'user_lookup'
@@ -12,6 +13,12 @@ export type ChatPhase =
   | 'fanout'
   | 'notification'
   | 'persist_total';
+
+export type MongoCommand =
+  | 'message_insert'
+  | 'message_read'
+  | 'conversation_read'
+  | 'conversation_update';
 
 type SendMessageStatus = 'success' | 'rejected' | 'error';
 
@@ -40,7 +47,25 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     HistogramState
   >();
   private readonly phaseDurations = new Map<string, HistogramState>();
+  private readonly mongoDurations = new Map<MongoCommand, HistogramState>();
   private messagesCreated = 0;
+
+  // Prisma query-event timings are command observations, not pool-wait measurements
+  // or success/failure guarantees. Never attach raw queries, IDs, or content.
+  recordMongoCommand(command: MongoCommand, seconds: number): void {
+    const state = this.mongoDurations.get(command) ?? {
+      bucketCounts: this.durationBuckets.map(() => 0),
+      count: 0,
+      sum: 0,
+    };
+    const duration = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0;
+    state.count++;
+    state.sum += duration;
+    this.durationBuckets.forEach((bucket, index) => {
+      if (duration <= bucket) state.bucketCounts[index]++;
+    });
+    this.mongoDurations.set(command, state);
+  }
 
   async measurePhase<T>(
     phase: ChatPhase,
@@ -287,6 +312,31 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
       lines.push(`${phaseMetric}_sum${this.labels(phaseLabels)} ${state.sum}`);
       lines.push(
         `${phaseMetric}_count${this.labels(phaseLabels)} ${state.count}`,
+      );
+    }
+
+    const mongoMetric = 'velora_conversation_mongo_command_duration_seconds';
+    this.metricHeader(
+      lines,
+      mongoMetric,
+      'Prisma query-event Mongo command duration across Conversation service; not connection-pool wait or server-only execution time.',
+      'histogram',
+    );
+    for (const [command, state] of this.mongoDurations) {
+      const commandLabels = { service: this.serviceName, command };
+      this.durationBuckets.forEach((bucket, index) =>
+        lines.push(
+          `${mongoMetric}_bucket${this.labels({ ...commandLabels, le: String(bucket) })} ${state.bucketCounts[index]}`,
+        ),
+      );
+      lines.push(
+        `${mongoMetric}_bucket${this.labels({ ...commandLabels, le: '+Inf' })} ${state.count}`,
+      );
+      lines.push(
+        `${mongoMetric}_sum${this.labels(commandLabels)} ${state.sum}`,
+      );
+      lines.push(
+        `${mongoMetric}_count${this.labels(commandLabels)} ${state.count}`,
       );
     }
 

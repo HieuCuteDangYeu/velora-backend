@@ -34,7 +34,16 @@ import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-r
 import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases/enrich-reel-from-existing-hls.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
-import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
+import { CreateReelSeriesUseCase } from '@content/application/use-cases/create-reel-series.use-case';
+import { ListOwnedReelSeriesUseCase } from '@content/application/use-cases/list-owned-reel-series.use-case';
+import { GetReelSeriesEpisodesUseCase } from '@content/application/use-cases/get-reel-series-episodes.use-case';
+import { ListReelSeriesCandidatesUseCase } from '@content/application/use-cases/list-reel-series-candidates.use-case';
+import { GetReelSeriesUseCase } from '@content/application/use-cases/get-reel-series.use-case';
+import { UpdateReelSeriesUseCase } from '@content/application/use-cases/update-reel-series.use-case';
+import { DeleteReelSeriesUseCase } from '@content/application/use-cases/delete-reel-series.use-case';
+import { AddReelsToSeriesUseCase } from '@content/application/use-cases/add-reels-to-series.use-case';
+import { RemoveReelFromSeriesUseCase } from '@content/application/use-cases/remove-reel-from-series.use-case';
+import { ReorderReelSeriesUseCase } from '@content/application/use-cases/reorder-reel-series.use-case';
 import { ResolveReelShareLinkUseCase } from '@content/application/use-cases/resolve-reel-share-link.use-case';
 import { ResolveReelContextAccessUseCase } from '@content/application/use-cases/resolve-reel-context-access.use-case';
 import { RevokeReelShareLinkUseCase } from '@content/application/use-cases/revoke-reel-share-link.use-case';
@@ -110,7 +119,16 @@ export class ContentController {
     private readonly searchPublicReelsUseCase: SearchPublicReelsUseCase,
     private readonly getSearchSuggestionsUseCase: GetSearchSuggestionsUseCase,
     private readonly getFriendsReelsUseCase: GetFriendsReelsUseCase,
-    private readonly reelSeriesUseCase: ReelSeriesUseCase,
+    private readonly createReelSeriesUseCase: CreateReelSeriesUseCase,
+    private readonly listOwnedReelSeriesUseCase: ListOwnedReelSeriesUseCase,
+    private readonly getReelSeriesEpisodesUseCase: GetReelSeriesEpisodesUseCase,
+    private readonly listReelSeriesCandidatesUseCase: ListReelSeriesCandidatesUseCase,
+    private readonly getReelSeriesUseCase: GetReelSeriesUseCase,
+    private readonly updateReelSeriesUseCase: UpdateReelSeriesUseCase,
+    private readonly deleteReelSeriesUseCase: DeleteReelSeriesUseCase,
+    private readonly addReelsToSeriesUseCase: AddReelsToSeriesUseCase,
+    private readonly removeReelFromSeriesUseCase: RemoveReelFromSeriesUseCase,
+    private readonly reorderReelSeriesUseCase: ReorderReelSeriesUseCase,
   ) {}
 
   private toSerializable(reel: Reel): Record<string, unknown> {
@@ -253,7 +271,9 @@ export class ContentController {
     return cursor ? `${cursor.createdAt.toISOString()}|${cursor.id}` : null;
   }
 
-  private serializeEpisodeCursor(cursor: ReelSeriesEpisodeCursor | null): string | null {
+  private serializeEpisodeCursor(
+    cursor: ReelSeriesEpisodeCursor | null,
+  ): string | null {
     return cursor ? `${cursor.episodeNumber}|${cursor.id}` : null;
   }
 
@@ -335,7 +355,10 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.create(data.ownerId.trim(), parsed.data),
+        await this.createReelSeriesUseCase.execute(
+          data.ownerId.trim(),
+          parsed.data,
+        ),
       );
     } catch (error: unknown) {
       this.throwReelSeriesError(error, 'Create Reel Series');
@@ -354,13 +377,15 @@ export class ContentController {
       });
     }
 
-    const result = await this.reelSeriesUseCase.listOwned(
+    const result = await this.listOwnedReelSeriesUseCase.execute(
       data.ownerId.trim(),
       parsed.data,
     );
 
     return {
-      items: result.items.map((series) => this.toReelSeriesListSerializable(series)),
+      items: result.items.map((series) =>
+        this.toReelSeriesListSerializable(series),
+      ),
       nextCursor: this.serializeCursor(result.nextCursor),
     };
   }
@@ -375,7 +400,9 @@ export class ContentController {
       query?: unknown;
     },
   ) {
-    const parsed = ListReelSeriesEpisodesRpcQuerySchema.safeParse(data?.query ?? {});
+    const parsed = ListReelSeriesEpisodesRpcQuerySchema.safeParse(
+      data?.query ?? {},
+    );
     if (!data?.seriesId?.trim() || !data?.viewerId?.trim() || !parsed.success) {
       throw new RpcException({
         statusCode: 400,
@@ -384,7 +411,7 @@ export class ContentController {
     }
 
     try {
-      const result = await this.reelSeriesUseCase.getEpisodePage(
+      const result = await this.getReelSeriesEpisodesUseCase.execute(
         data.seriesId.trim(),
         data.viewerId.trim(),
         data.isAdmin === true,
@@ -420,7 +447,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.get(
+        await this.getReelSeriesUseCase.execute(
           data.seriesId.trim(),
           data.viewerId.trim(),
           data.isAdmin === true,
@@ -451,7 +478,7 @@ export class ContentController {
     }
 
     try {
-      const result = await this.reelSeriesUseCase.listCandidates(
+      const result = await this.listReelSeriesCandidatesUseCase.execute(
         data.seriesId.trim(),
         data.ownerId.trim(),
         parsed.data,
@@ -480,7 +507,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.update(
+        await this.updateReelSeriesUseCase.execute(
           data.seriesId.trim(),
           data.ownerId.trim(),
           parsed.data,
@@ -503,7 +530,7 @@ export class ContentController {
     }
 
     try {
-      await this.reelSeriesUseCase.delete(
+      await this.deleteReelSeriesUseCase.execute(
         data.seriesId.trim(),
         data.ownerId.trim(),
       );
@@ -527,7 +554,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.addReels(
+        await this.addReelsToSeriesUseCase.execute(
           data.seriesId.trim(),
           data.ownerId.trim(),
           parsed.data,
@@ -555,7 +582,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.removeReel(
+        await this.removeReelFromSeriesUseCase.execute(
           data.seriesId.trim(),
           data.reelId.trim(),
           data.ownerId.trim(),
@@ -580,7 +607,7 @@ export class ContentController {
 
     try {
       return this.toReelSeriesSerializable(
-        await this.reelSeriesUseCase.reorder(
+        await this.reorderReelSeriesUseCase.execute(
           data.seriesId.trim(),
           data.ownerId.trim(),
           parsed.data,

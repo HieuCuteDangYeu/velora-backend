@@ -24,7 +24,16 @@ import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases
 import { RefreshGlobalRecommendationSlateUseCase } from '@content/application/use-cases/refresh-global-recommendation-slate.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
-import { ReelSeriesUseCase } from '@content/application/use-cases/reel-series.use-case';
+import { CreateReelSeriesUseCase } from '@content/application/use-cases/create-reel-series.use-case';
+import { ListOwnedReelSeriesUseCase } from '@content/application/use-cases/list-owned-reel-series.use-case';
+import { GetReelSeriesEpisodesUseCase } from '@content/application/use-cases/get-reel-series-episodes.use-case';
+import { ListReelSeriesCandidatesUseCase } from '@content/application/use-cases/list-reel-series-candidates.use-case';
+import { GetReelSeriesUseCase } from '@content/application/use-cases/get-reel-series.use-case';
+import { UpdateReelSeriesUseCase } from '@content/application/use-cases/update-reel-series.use-case';
+import { DeleteReelSeriesUseCase } from '@content/application/use-cases/delete-reel-series.use-case';
+import { AddReelsToSeriesUseCase } from '@content/application/use-cases/add-reels-to-series.use-case';
+import { RemoveReelFromSeriesUseCase } from '@content/application/use-cases/remove-reel-from-series.use-case';
+import { ReorderReelSeriesUseCase } from '@content/application/use-cases/reorder-reel-series.use-case';
 import { ResolveReelShareLinkUseCase } from '@content/application/use-cases/resolve-reel-share-link.use-case';
 import { ResolveReelContextAccessUseCase } from '@content/application/use-cases/resolve-reel-context-access.use-case';
 import { RevokeReelShareLinkUseCase } from '@content/application/use-cases/revoke-reel-share-link.use-case';
@@ -171,7 +180,16 @@ function createRmqClientRegistration(name: string, queue: string) {
     RefreshGlobalRecommendationSlateUseCase,
     GetSearchSuggestionsUseCase,
     GetFriendsReelsUseCase,
-    ReelSeriesUseCase,
+    CreateReelSeriesUseCase,
+    ListOwnedReelSeriesUseCase,
+    GetReelSeriesEpisodesUseCase,
+    ListReelSeriesCandidatesUseCase,
+    GetReelSeriesUseCase,
+    UpdateReelSeriesUseCase,
+    DeleteReelSeriesUseCase,
+    AddReelsToSeriesUseCase,
+    RemoveReelFromSeriesUseCase,
+    ReorderReelSeriesUseCase,
 
     {
       provide: 'REDIS_CLIENT',

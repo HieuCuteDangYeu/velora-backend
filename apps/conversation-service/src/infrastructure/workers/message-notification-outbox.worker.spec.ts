@@ -308,7 +308,7 @@ describe('Message notification outbox', () => {
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
   });
 
-  it('does not overlap polls and bounds intake to two concurrent requests', async () => {
+  it('does not overlap polls and bounds intake to four concurrent requests', async () => {
     const h = makeHarness(
       Array.from({ length: 6 }, (_, index) => makeRecord(index + 1)),
     );
@@ -321,11 +321,11 @@ describe('Message notification outbox', () => {
     const batch = worker.runOnce();
     expect(worker.runOnce()).toBe(batch);
     await flush();
-    expect(started).toBe(2);
+    expect(started).toBe(4);
     gates[0].resolve();
     gates[1].resolve();
     await flush();
-    expect(started).toBe(4);
+    expect(started).toBe(6);
     gates[2].resolve();
     gates[3].resolve();
     await flush();

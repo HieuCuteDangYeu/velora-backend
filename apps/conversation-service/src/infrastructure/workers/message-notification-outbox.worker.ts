@@ -17,7 +17,9 @@ import { ConversationMapper } from '../repositories/conversation.mapper';
 
 const POLL_MS = 1_000;
 const BATCH_SIZE = 20;
-const CONCURRENCY = 2;
+// Overlap four bounded claim/read/intake pipelines, without changing DB pools.
+// Notification intake still shares that service's existing database work gate.
+const CONCURRENCY = 4;
 const LEASE_MS = 30_000;
 
 @Injectable()

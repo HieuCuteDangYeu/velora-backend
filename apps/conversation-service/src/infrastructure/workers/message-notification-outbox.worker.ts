@@ -6,6 +6,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/conversation-client';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
 import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
@@ -105,18 +106,25 @@ export class MessageNotificationOutboxWorker
     const claimId = randomUUID();
     let attempts = 1;
     try {
-      const claimed = await this.prisma.message.updateMany({
-        where: {
-          id,
-          notificationNextAttemptAt: { not: null, lte: new Date() },
+      const claimed = await this.updateIntent(
+        id,
+        {
+          notificationNextAttemptAt: {
+            $type: 'date',
+            $lte: { $date: new Date().toISOString() },
+          },
         },
-        data: {
-          notificationClaimId: claimId,
-          notificationNextAttemptAt: new Date(Date.now() + LEASE_MS),
-          notificationAttemptCount: { increment: 1 },
+        {
+          $set: {
+            notificationClaimId: claimId,
+            notificationNextAttemptAt: {
+              $date: new Date(Date.now() + LEASE_MS).toISOString(),
+            },
+          },
+          $inc: { notificationAttemptCount: 1 },
         },
-      });
-      if (claimed.count !== 1) return;
+      );
+      if (claimed !== 1) return;
       const record = await this.prisma.message.findUnique({
         where: { id },
         include: { conversation: true },
@@ -165,17 +173,22 @@ export class MessageNotificationOutboxWorker
       if (this.stopped) return; // Restart reclaims the expired lease.
       const backoffMs = Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 8));
       try {
-        const rescheduled = await this.prisma.message.updateMany({
-          where: { id, notificationClaimId: claimId },
-          data: {
-            notificationClaimId: null,
-            notificationNextAttemptAt: new Date(
-              Date.now() + backoffMs + Math.floor(Math.random() * 1_000),
-            ),
+        const rescheduled = await this.updateIntent(
+          id,
+          { notificationClaimId: claimId },
+          {
+            $set: {
+              notificationClaimId: null,
+              notificationNextAttemptAt: {
+                $date: new Date(
+                  Date.now() + backoffMs + Math.floor(Math.random() * 1_000),
+                ).toISOString(),
+              },
+            },
           },
-        });
+        );
         this.metrics.recordNotificationOutbox(
-          rescheduled.count === 1 ? 'retry' : 'lease_lost',
+          rescheduled === 1 ? 'retry' : 'lease_lost',
         );
       } catch {
         // Do not delete an intent when even rescheduling fails. The persisted
@@ -190,16 +203,54 @@ export class MessageNotificationOutboxWorker
     claimId: string,
     outcome: 'queued' | 'cancelled',
   ): Promise<void> {
-    const completed = await this.prisma.message.updateMany({
-      where: { id, notificationClaimId: claimId },
-      data: {
-        notificationRecipientIds: [],
-        notificationNextAttemptAt: null,
-        notificationClaimId: null,
+    const completed = await this.updateIntent(
+      id,
+      { notificationClaimId: claimId },
+      {
+        $set: {
+          notificationRecipientIds: [],
+          notificationNextAttemptAt: null,
+          notificationClaimId: null,
+        },
       },
-    });
-    this.metrics.recordNotificationOutbox(
-      completed.count === 1 ? outcome : 'lease_lost',
     );
+    this.metrics.recordNotificationOutbox(
+      completed === 1 ? outcome : 'lease_lost',
+    );
+  }
+
+  // Prisma updateMany reads matching IDs before its write. These single-document
+  // mutations need only an atomic predicate + update, with no read-back. Keep the
+  // due/claim guard in Mongo's actual write predicate so another worker cannot
+  // acquire or clear a lease between a preliminary read and the update.
+  private async updateIntent(
+    id: string,
+    guard: Prisma.InputJsonObject,
+    update: Prisma.InputJsonObject,
+  ): Promise<number> {
+    const result = await this.prisma.$runCommandRaw({
+      update: 'messages',
+      updates: [
+        {
+          q: { _id: { $oid: id }, ...guard },
+          u: update,
+          multi: false,
+          upsert: false,
+        },
+      ],
+      ordered: true,
+      writeConcern: { w: 'majority' },
+    });
+    // Mongo can return ok:1 with a per-write error. An ambiguous/unacknowledged
+    // result must retain the intent, never count as durable completion.
+    if (
+      result.ok !== 1 ||
+      (Array.isArray(result.writeErrors) && result.writeErrors.length > 0) ||
+      result.writeConcernError ||
+      (result.n !== 0 && result.n !== 1)
+    ) {
+      throw new Error('Notification intent update was not acknowledged');
+    }
+    return result.n;
   }
 }

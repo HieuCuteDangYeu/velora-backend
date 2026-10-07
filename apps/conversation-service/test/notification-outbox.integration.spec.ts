@@ -4,6 +4,23 @@ import { Message } from '../src/domain/entities/message.entity';
 import { PrismaChatRepository } from '../src/infrastructure/repositories/prisma-chat.repository';
 import { MessageNotificationOutboxWorker } from '../src/infrastructure/workers/message-notification-outbox.worker';
 
+const waitFor = async (ready: Promise<void>) => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      ready,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Worker did not reach intake')),
+          10_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
 // Opt-in only, and refuse the application's actual database even by mistake.
 const uri = process.env.OUTBOX_TEST_DATABASE_URL;
 const integration = uri ? it : it.skip;
@@ -17,7 +34,15 @@ integration(
         'Use a new isolated velora_outbox_test_<16 hex> database',
       );
     }
-    const prisma = new PrismaClient({ datasources: { db: { url: uri! } } });
+    const queries: string[] = [];
+    const prisma = new PrismaClient({
+      datasources: { db: { url: uri! } },
+      log: [{ level: 'query', emit: 'event' }],
+    });
+    // Command prefixes only; never retain content/parameters in test evidence.
+    prisma.$on('query', (event) => {
+      queries.push(event.query.match(/^db\.[a-zA-Z.]+/)?.[0] ?? 'unknown');
+    });
     let created = false;
     try {
       await prisma.$runCommandRaw({ create: 'conversations' });
@@ -130,8 +155,13 @@ integration(
           encryption,
           metrics as never,
         );
+      queries.length = 0;
       await Promise.all([worker().runOnce(), worker().runOnce()]);
       expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      expect(queries).not.toContain('db.messages.updateMany');
+      expect(
+        queries.filter((query) => query === 'db.runCommand').length,
+      ).toBeGreaterThanOrEqual(2);
       const done = await prisma.message.findUniqueOrThrow({
         where: { id: original.id },
       });
@@ -146,6 +176,92 @@ integration(
       ).toEqual([]);
       await worker().runOnce();
       expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+
+      // Expire A's lease while its HTTP result is pending, then let B claim it.
+      // A's actual Mongo completion/reschedule must not change B's lease.
+      for (const outcome of ['success', 'failure']) {
+        await prisma.message.update({
+          where: { id: original.id },
+          data: {
+            notificationRecipientIds: ['member'],
+            notificationNextAttemptAt: new Date(0),
+          },
+        });
+        let firstStarted!: () => void;
+        let secondStarted!: () => void;
+        let finishFirst!: () => void;
+        let failFirst!: (error: Error) => void;
+        let finishSecond!: () => void;
+        const firstReady = new Promise<void>((resolve) => {
+          firstStarted = resolve;
+        });
+        const secondReady = new Promise<void>((resolve) => {
+          secondStarted = resolve;
+        });
+        const firstResult = new Promise<void>((resolve, reject) => {
+          finishFirst = resolve;
+          failFirst = reject;
+        });
+        const secondResult = new Promise<void>((resolve) => {
+          finishSecond = resolve;
+        });
+        notifications.notifyNewMessage
+          .mockImplementationOnce(() => {
+            firstStarted();
+            return firstResult;
+          })
+          .mockImplementationOnce(() => {
+            secondStarted();
+            return secondResult;
+          });
+        const first = worker().runOnce();
+        let second: Promise<void> | undefined;
+        try {
+          await waitFor(firstReady);
+          const firstLease = await prisma.message.findUniqueOrThrow({
+            where: { id: original.id },
+          });
+          await prisma.message.update({
+            where: { id: original.id },
+            data: { notificationNextAttemptAt: new Date(0) },
+          });
+          second = worker().runOnce();
+          await waitFor(secondReady);
+          const secondLease = await prisma.message.findUniqueOrThrow({
+            where: { id: original.id },
+          });
+          expect(secondLease.notificationClaimId).not.toBe(
+            firstLease.notificationClaimId,
+          );
+          if (outcome === 'success') finishFirst();
+          else failFirst(new Error('HTTP result lost'));
+          await first;
+          const fenced = await prisma.message.findUniqueOrThrow({
+            where: { id: original.id },
+          });
+          expect(fenced.notificationClaimId).toBe(
+            secondLease.notificationClaimId,
+          );
+          expect(fenced.notificationNextAttemptAt).toEqual(
+            secondLease.notificationNextAttemptAt,
+          );
+          expect(fenced.notificationRecipientIds).toEqual(['member']);
+          finishSecond();
+          await second;
+          expect(
+            (
+              await prisma.message.findUniqueOrThrow({
+                where: { id: original.id },
+              })
+            ).notificationNextAttemptAt,
+          ).toBeNull();
+        } finally {
+          finishFirst();
+          finishSecond();
+          await Promise.allSettled([first, ...(second ? [second] : [])]);
+        }
+      }
+      const beforeHistorical = notifications.notifyNewMessage.mock.calls.length;
       // Historical documents have absent fields, rather than explicit nulls.
       await prisma.$runCommandRaw({
         update: 'messages',
@@ -164,7 +280,9 @@ integration(
         ],
       });
       await worker().runOnce();
-      expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(
+        beforeHistorical,
+      );
       expect(
         await prisma.message.count({
           where: { notificationNextAttemptAt: { not: null } },

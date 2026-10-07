@@ -18,6 +18,12 @@ push intent even though chat persistence and socket delivery succeeded.
   Both scanning and claiming explicitly require a non-null due date: Mongo's
   BSON comparison ordering can otherwise match completed `null` dates with
   `<= now`. The real Mongo regression also checks a second poll after completion.
+  Lease mutations use conditional single-document Mongo commands through the
+  existing Prisma client, with `multi: false`, no upsert and majority write
+  acknowledgement. The due date/claim UUID is part of the actual write predicate;
+  no preliminary ID read is needed. Per-write or write-concern errors retain the
+  intent for retry. Typed Prisma reads still load the current message/conversation
+  before recall and membership checks.
 - Only HTTP 202 with a valid `queued` receipt completes an intent. Notification
   persists jobs before returning that receipt. Its existing per-recipient dedupe
   key makes ambiguous timeout/restart replays safe, including `createdCount: 0`.
@@ -37,8 +43,9 @@ retention/dedupe policy must keep job identities while outbox retries are possib
 ## Connection budget and monitoring
 
 The worker reuses Conversation's Mongo Prisma client. Notification's four-worker,
-four-connection PostgreSQL budget remains unchanged, as do Monitoring's two
-connections. No PostgreSQL client or pool setting is added here.
+four-connection PostgreSQL budget remains unchanged. Monitoring currently
+registers two Prisma clients with a limit of one each (two connections observed).
+No PostgreSQL client or pool setting is added here.
 
 - `velora_conversation_notification_outbox_pending`: persisted pending intents,
   including leases/backoff; sampled after a batch at most every ten seconds.
@@ -79,3 +86,13 @@ two-instance claiming, lease takeover fencing, recall/membership changes,
 nonoverlapping batches and shutdown. For a live smoke test, use fixture rooms
 without real push recipients, compare stored messages to durable jobs, and wait
 for pending intents to drain. Do not replay historical production messages.
+
+The real Mongo integration test also expires a lease while an HTTP result is
+pending, then verifies that a stale completion or failure cannot mutate the new
+owner's lease. A command-count probe compares the previous Prisma `updateMany`
+claim/completion (four Mongo commands, including two ID reads) with two conditional
+native updates. This isolates command overhead; use the same live load test to
+assess throughput and chat latency rather than extrapolating the probe result.
+
+References: [Prisma Mongo raw commands](https://www.prisma.io/docs/orm/prisma-client/using-raw-sql/raw-queries#runcommandraw),
+[MongoDB update command](https://www.mongodb.com/docs/manual/reference/command/update/).

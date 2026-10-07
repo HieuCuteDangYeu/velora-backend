@@ -57,38 +57,6 @@ const makeHarness = (records = [makeRecord()]) => {
         return Promise.resolve(due.slice(0, take).map(({ id }) => ({ id })));
       },
     ),
-    updateMany: jest.fn(
-      ({
-        where,
-        data,
-      }: {
-        where: {
-          id: string;
-          notificationClaimId?: string;
-          notificationNextAttemptAt?: { lte: Date };
-        };
-        data: Partial<
-          Omit<ReturnType<typeof makeRecord>, 'notificationAttemptCount'>
-        > & { notificationAttemptCount?: { increment: number } };
-      }) => {
-        const record = records.find(
-          (r) =>
-            r.id === where.id &&
-            (!where.notificationClaimId ||
-              r.notificationClaimId === where.notificationClaimId) &&
-            (!where.notificationNextAttemptAt ||
-              (r.notificationNextAttemptAt &&
-                r.notificationNextAttemptAt <=
-                  where.notificationNextAttemptAt.lte)),
-        );
-        if (!record) return Promise.resolve({ count: 0 });
-        const { notificationAttemptCount, ...rest } = data;
-        Object.assign(record, rest);
-        if (notificationAttemptCount)
-          record.notificationAttemptCount += notificationAttemptCount.increment;
-        return Promise.resolve({ count: 1 });
-      },
-    ),
     findUnique: jest.fn(({ where }: { where: { id: string } }) => {
       const record = records.find((r) => r.id === where.id);
       return Promise.resolve(record ? { ...record, conversation } : null);
@@ -99,6 +67,51 @@ const makeHarness = (records = [makeRecord()]) => {
       ),
     ),
   };
+  const runCommand = jest.fn(
+    ({
+      updates,
+    }: {
+      updates: {
+        q: {
+          _id: { $oid: string };
+          notificationClaimId?: string;
+          notificationNextAttemptAt?: {
+            $type: string;
+            $lte: { $date: string };
+          };
+        };
+        u: {
+          $set: Record<string, unknown>;
+          $inc?: { notificationAttemptCount: number };
+        };
+      }[];
+    }) => {
+      const { q, u } = updates[0];
+      const record = records.find(
+        (r) =>
+          r.id === q._id.$oid &&
+          (!q.notificationClaimId ||
+            r.notificationClaimId === q.notificationClaimId) &&
+          (!q.notificationNextAttemptAt ||
+            (r.notificationNextAttemptAt instanceof Date &&
+              r.notificationNextAttemptAt <=
+                new Date(q.notificationNextAttemptAt.$lte.$date))),
+      );
+      if (!record) return Promise.resolve({ ok: 1, n: 0 });
+      const values = Object.fromEntries(
+        Object.entries(u.$set).map(([key, value]) => [
+          key,
+          value && typeof value === 'object' && '$date' in value
+            ? new Date((value as { $date: string }).$date)
+            : value,
+        ]),
+      );
+      Object.assign(record, values);
+      if (u.$inc)
+        record.notificationAttemptCount += u.$inc.notificationAttemptCount;
+      return Promise.resolve({ ok: 1, n: 1 });
+    },
+  );
   const notifications = {
     notifyNewMessage: jest.fn().mockResolvedValue(undefined),
   };
@@ -117,7 +130,7 @@ const makeHarness = (records = [makeRecord()]) => {
   };
   const createWorker = () =>
     new MessageNotificationOutboxWorker(
-      { message } as never,
+      { message, $runCommandRaw: runCommand } as never,
       notifications as never,
       chats as never,
       encryption as never,
@@ -126,6 +139,7 @@ const makeHarness = (records = [makeRecord()]) => {
   return {
     records,
     message,
+    runCommand,
     notifications,
     chats,
     encryption,
@@ -282,8 +296,8 @@ describe('Message notification outbox', () => {
   it('retains work on a database failure while rescheduling', async () => {
     const h = makeHarness();
     h.message.findUnique.mockRejectedValueOnce(new Error('DB unavailable'));
-    const update = h.message.updateMany.getMockImplementation()!;
-    h.message.updateMany
+    const update = h.runCommand.getMockImplementation()!;
+    h.runCommand
       .mockImplementationOnce(update)
       .mockRejectedValueOnce(new Error('Still unavailable'));
     await h.createWorker().runOnce();
@@ -352,7 +366,7 @@ describe('Message notification outbox', () => {
     const h = makeHarness([historical]);
     await h.createWorker().runOnce();
     expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
-    expect(h.message.updateMany).not.toHaveBeenCalled();
+    expect(h.runCommand).not.toHaveBeenCalled();
     expect(h.message.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -361,4 +375,93 @@ describe('Message notification outbox', () => {
       }),
     );
   });
+
+  it('keeps due/claim guards on the actual write and never upserts', async () => {
+    const h = makeHarness();
+    await h.createWorker().runOnce();
+    expect(h.runCommand).toHaveBeenCalledTimes(2);
+    const claim = h.runCommand.mock.calls[0][0];
+    const complete = h.runCommand.mock.calls[1][0];
+    expect(claim).toMatchObject({
+      update: 'messages',
+      writeConcern: { w: 'majority' },
+      updates: [
+        {
+          q: {
+            _id: { $oid: h.records[0].id },
+            notificationNextAttemptAt: {
+              $type: 'date',
+              $lte: { $date: NOW.toISOString() },
+            },
+          },
+          multi: false,
+          upsert: false,
+        },
+      ],
+    });
+    expect(complete).toMatchObject({
+      updates: [
+        {
+          q: {
+            notificationClaimId: claim.updates[0].u.$set.notificationClaimId,
+          },
+        },
+      ],
+    });
+  });
+
+  it.each([
+    { ok: 0, n: 1 },
+    { ok: 1 },
+    { ok: 1, n: 2 },
+    { ok: 1, n: 1, writeErrors: [{ code: 121 }] },
+    { ok: 1, n: 1, writeConcernError: { code: 64 } },
+  ])('does not send after an ambiguous claim receipt %j', async (receipt) => {
+    const h = makeHarness();
+    h.runCommand.mockResolvedValueOnce(receipt as never);
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.records[0].notificationRecipientIds).toEqual([
+      'member',
+      'removed',
+    ]);
+    expect(h.records[0].notificationNextAttemptAt).not.toBeNull();
+  });
+
+  it('retains the intent when Mongo reports a per-write completion error', async () => {
+    const h = makeHarness();
+    const update = h.runCommand.getMockImplementation()!;
+    h.runCommand.mockImplementationOnce(update).mockResolvedValueOnce({
+      ok: 1,
+      n: 0,
+      writeErrors: [{ code: 121 }],
+    } as never);
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+    expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
+      NOW.getTime(),
+    );
+    expect(h.records[0].notificationRecipientIds).toEqual([
+      'member',
+      'removed',
+    ]);
+    expect(h.metrics.recordNotificationOutbox).toHaveBeenCalledWith('retry');
+    expect(h.metrics.recordNotificationOutbox).not.toHaveBeenCalledWith(
+      'queued',
+    );
+  });
+
+  it.each(['null', 'future'])(
+    'ignores a stale candidate whose due date is %s',
+    async (state) => {
+      const h = makeHarness();
+      h.records[0].notificationNextAttemptAt =
+        state === 'null' ? null : new Date(NOW.getTime() + 60_000);
+      h.message.findMany.mockResolvedValueOnce([{ id: h.records[0].id }]);
+      await h.createWorker().runOnce();
+      expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+      expect(h.records[0].notificationClaimId).toBeNull();
+      expect(h.records[0].notificationAttemptCount).toBe(0);
+    },
+  );
 });

@@ -139,6 +139,33 @@ integration(
       expect(done.notificationAttemptCount).toBe(1);
       expect(done.notificationRecipientIds).toEqual([]);
       expect(
+        await prisma.message.findMany({
+          where: { notificationNextAttemptAt: { not: null, lte: new Date() } },
+          select: { id: true },
+        }),
+      ).toEqual([]);
+      await worker().runOnce();
+      expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      // Historical documents have absent fields, rather than explicit nulls.
+      await prisma.$runCommandRaw({
+        update: 'messages',
+        updates: [
+          {
+            q: { _id: { $oid: original.id } },
+            u: {
+              $unset: {
+                notificationNextAttemptAt: '',
+                notificationClaimId: '',
+                notificationRecipientIds: '',
+                notificationAttemptCount: '',
+              },
+            },
+          },
+        ],
+      });
+      await worker().runOnce();
+      expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      expect(
         await prisma.message.count({
           where: { notificationNextAttemptAt: { not: null } },
         }),

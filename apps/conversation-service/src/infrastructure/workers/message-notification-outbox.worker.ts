@@ -76,7 +76,9 @@ export class MessageNotificationOutboxWorker
   private async drainBatch(): Promise<void> {
     const now = new Date();
     const candidates = await this.prisma.message.findMany({
-      where: { notificationNextAttemptAt: { lte: now } },
+      // Mongo's BSON ordering considers null < Date. Exclude it explicitly;
+      // otherwise completed intents can fill the batch and starve pending ones.
+      where: { notificationNextAttemptAt: { not: null, lte: now } },
       orderBy: [{ notificationNextAttemptAt: 'asc' }, { id: 'asc' }],
       take: BATCH_SIZE,
       select: { id: true },
@@ -104,7 +106,10 @@ export class MessageNotificationOutboxWorker
     let attempts = 1;
     try {
       const claimed = await this.prisma.message.updateMany({
-        where: { id, notificationNextAttemptAt: { lte: new Date() } },
+        where: {
+          id,
+          notificationNextAttemptAt: { not: null, lte: new Date() },
+        },
         data: {
           notificationClaimId: claimId,
           notificationNextAttemptAt: new Date(Date.now() + LEASE_MS),

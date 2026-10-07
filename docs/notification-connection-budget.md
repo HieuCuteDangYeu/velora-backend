@@ -47,10 +47,12 @@ The Conversation `notification` phase now measures HTTP intake; its earlier
 values included processing, so they are not equivalent delivery benchmarks.
 Measure job backlog/drain and provider outcomes separately during retests.
 
-The HTTP handoff from Conversation still has no durable sender outbox. A crash
-before intake or an unsuccessful HTTP request can leave a saved chat without
-a push job; idempotent intake does not close that gap. A full queue returns an
-error, not a success. No guarantee of exactly-once provider delivery is made.
+Conversation now commits a recipient snapshot and due date with each public
+message, then retries Notification intake from an embedded Mongo outbox. A
+full queue still returns an error, but the saved intent remains pending until a
+valid durable receipt arrives. See [the outbox contract](conversation-notification-outbox.md)
+for leases, fencing, rollout and scope. No guarantee of exactly-once provider
+delivery is made.
 
 The gate/budget apply per replica. Replicas must share the same instance-wide
 connection budget; adding replicas must not multiply the four-connection pool.

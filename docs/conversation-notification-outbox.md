@@ -15,6 +15,9 @@ push intent even though chat persistence and socket delivery succeeded.
 - One worker per instance polls a maximum of 20 candidates each second, with two
   concurrent requests. Atomic claims hold a 30-second lease. A UUID fences both
   completion and retry so an expired worker cannot clear a newer claim.
+  Both scanning and claiming explicitly require a non-null due date: Mongo's
+  BSON comparison ordering can otherwise match completed `null` dates with
+  `<= now`. The real Mongo regression also checks a second poll after completion.
 - Only HTTP 202 with a valid `queued` receipt completes an intent. Notification
   persists jobs before returning that receipt. Its existing per-recipient dedupe
   key makes ambiguous timeout/restart replays safe, including `createdCount: 0`.

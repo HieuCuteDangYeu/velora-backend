@@ -353,5 +353,12 @@ describe('Message notification outbox', () => {
     await h.createWorker().runOnce();
     expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
     expect(h.message.updateMany).not.toHaveBeenCalled();
+    expect(h.message.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          notificationNextAttemptAt: { not: null, lte: expect.any(Date) },
+        },
+      }),
+    );
   });
 });

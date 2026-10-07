@@ -36,7 +36,7 @@ model RefreshToken {
   token             String    @unique // SHA-256 hash; legacy rows may contain raw JWTs until upgraded
   encryptedToken    String?
   expiresAt         DateTime
-  absoluteExpiresAt DateTime?
+  absoluteExpiresAt DateTime? // Legacy metadata only; rolling expiry uses expiresAt
   revoked           Boolean   @default(false)
   replacedByTokenId String?
   rotationRequestId String?

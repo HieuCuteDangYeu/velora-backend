@@ -13,7 +13,6 @@ export interface IAuthRepository {
     userId: string,
     token: string,
     expiresAt: Date,
-    absoluteExpiresAt: Date,
   ): Promise<RefreshToken>;
   getUserRole(userId: string): Promise<string[]>;
   findRefreshToken(token: string): Promise<RefreshToken | null>;
@@ -25,7 +24,6 @@ export interface IAuthRepository {
     id: string,
     token: string,
     expiresAt: Date,
-    absoluteExpiresAt: Date,
     requestId?: string,
   ): Promise<RefreshTokenRotationResult | null>;
   updateRefreshToken(id: string, data: Partial<RefreshToken>): Promise<void>;

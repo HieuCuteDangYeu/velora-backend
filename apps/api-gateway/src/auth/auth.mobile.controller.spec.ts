@@ -282,7 +282,7 @@ describe('AuthController browser authentication regression coverage', () => {
     path: '/',
   });
 
-  it('keeps browser login cookie behavior unchanged', async () => {
+  it('sets browser refresh cookies to the rolling 90-day lifetime', async () => {
     const { authClient, controller } = createController();
     const response = createResponse();
     const dto = { email: 'user@example.com', password: 'password123' };
@@ -304,7 +304,29 @@ describe('AuthController browser authentication regression coverage', () => {
       2,
       'refresh_token',
       tokens.refreshToken,
-      expectedCookieOptions(7 * 24 * 60 * 60 * 1000),
+      expectedCookieOptions(90 * 24 * 60 * 60 * 1000),
+    );
+  });
+
+  it('sets the same 90-day refresh cookie for browser Google login', async () => {
+    const { authClient, controller } = createController();
+    const response = createResponse();
+    authClient.send.mockReturnValueOnce(of(tokens));
+    await controller.verifyGoogleToken(
+      { idToken: 'google-token' },
+      response as never,
+    );
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      1,
+      'access_token',
+      tokens.accessToken,
+      expectedCookieOptions(15 * 60 * 1000),
+    );
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      2,
+      'refresh_token',
+      tokens.refreshToken,
+      expectedCookieOptions(90 * 24 * 60 * 60 * 1000),
     );
   });
 
@@ -328,6 +350,18 @@ describe('AuthController browser authentication regression coverage', () => {
       'no-store',
     );
     expect(response.cookie).toHaveBeenCalledTimes(2);
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      1,
+      'access_token',
+      tokens.accessToken,
+      expectedCookieOptions(15 * 60 * 1000),
+    );
+    expect(response.cookie).toHaveBeenNthCalledWith(
+      2,
+      'refresh_token',
+      tokens.refreshToken,
+      expectedCookieOptions(90 * 24 * 60 * 60 * 1000),
+    );
     expect(response.clearCookie).not.toHaveBeenCalled();
   });
 

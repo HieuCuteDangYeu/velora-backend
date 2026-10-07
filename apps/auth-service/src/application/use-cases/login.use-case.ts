@@ -8,7 +8,6 @@ import { randomUUID } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import {
-  getRefreshSessionExpiresAt,
   getRefreshTokenExpiresAt,
   getRefreshTokenExpiresInSeconds,
 } from '../../domain/refresh-token.constants';
@@ -56,8 +55,7 @@ export class LoginUseCase {
     };
 
     const now = new Date();
-    const absoluteExpiresAt = getRefreshSessionExpiresAt(now);
-    const expiresAt = getRefreshTokenExpiresAt(now, absoluteExpiresAt);
+    const expiresAt = getRefreshTokenExpiresAt(now);
 
     const accessToken = await this.jwtService.signAsync(payload, {
       expiresIn: '15m',
@@ -71,7 +69,6 @@ export class LoginUseCase {
       user.id,
       refreshToken,
       expiresAt,
-      absoluteExpiresAt,
     );
 
     return {

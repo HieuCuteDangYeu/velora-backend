@@ -9,6 +9,7 @@ export class RefreshToken {
     public readonly replacedByTokenId: string | null = null,
     public readonly rotationRequestId: string | null = null,
     public readonly rotatedAt: Date | null = null,
+    // Retained for legacy rows; does not constrain rolling expiry.
     public readonly absoluteExpiresAt: Date | null = null,
     public readonly rotationRequestExpiresAt: Date | null = null,
   ) {}

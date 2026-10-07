@@ -82,7 +82,7 @@ describe('RefreshTokenUseCase', () => {
         'new-token-1',
         'user-1',
         'new-token-hash',
-        new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
         false,
         new Date(),
       ),
@@ -110,46 +110,127 @@ describe('RefreshTokenUseCase', () => {
       'stored-token-1',
       'new-refresh-token',
       expect.any(Date),
-      expect.any(Date),
       'request-1',
     );
   });
 
-  it('caps refresh-token lifetime at the absolute session expiry', async () => {
-    const { authRepository, jwtService, roleCache, userService, useCase } =
+  it.each([new Date(Date.now() - 120_000), new Date(Date.now() + 120_000)])(
+    'ignores historical absolute expiry %s when rotating an active token',
+    async (absoluteExpiresAt) => {
+      const { authRepository, jwtService, roleCache, userService, useCase } =
+        createUseCase();
+      const storedToken = new RefreshToken(
+        'stored-token-1',
+        'user-1',
+        'incoming-refresh-token',
+        new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+        false,
+        new Date(),
+        null,
+        null,
+        null,
+        absoluteExpiresAt,
+      );
+
+      jwtService.verifyAsync.mockResolvedValue(payload);
+      authRepository.findRefreshToken.mockResolvedValue(storedToken);
+      authRepository.getUserRole.mockResolvedValue(['USER']);
+      authRepository.rotateRefreshToken.mockResolvedValue({
+        token: storedToken,
+        refreshToken: 'new-refresh-token',
+      });
+      roleCache.setUserRoles.mockResolvedValue(undefined);
+      userService.findById.mockResolvedValue(user);
+      jwtService.signAsync
+        .mockResolvedValueOnce('new-access-token')
+        .mockResolvedValueOnce('new-refresh-token');
+
+      await useCase.execute('incoming-refresh-token', 'request-1');
+
+      const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
+      expect(refreshSignOptions.expiresIn).toBe(90 * 24 * 60 * 60);
+      const expiresAt = authRepository.rotateRefreshToken.mock
+        .calls[0][2] as Date;
+      expect(expiresAt.getTime() - Date.now()).toBeCloseTo(
+        90 * 24 * 60 * 60 * 1000,
+        -3,
+      );
+    },
+  );
+
+  it('keeps rolling from refresh time beyond the original login date', async () => {
+    jest.useFakeTimers();
+    try {
+      const loginAt = new Date('2026-01-01T00:00:00Z');
+      jest.setSystemTime(loginAt);
+      const { authRepository, jwtService, userService, useCase } =
+        createUseCase();
+      let current = new RefreshToken(
+        'original',
+        user.id,
+        'refresh',
+        new Date(loginAt.getTime() + 90 * 86400000),
+        false,
+        loginAt,
+      );
+      jwtService.verifyAsync.mockResolvedValue(payload);
+      jwtService.signAsync.mockResolvedValue('replacement');
+      userService.findById.mockResolvedValue(user);
+      authRepository.getUserRole.mockResolvedValue(['USER']);
+      authRepository.findRefreshToken.mockImplementation(() =>
+        Promise.resolve(current),
+      );
+      authRepository.rotateRefreshToken.mockImplementation(
+        (id: string, token: string, expiresAt: Date) => {
+          current = new RefreshToken(
+            id + '-next',
+            user.id,
+            token,
+            expiresAt,
+            false,
+            new Date(),
+          );
+          return Promise.resolve({ token: current, refreshToken: token });
+        },
+      );
+      for (const day of [80, 160, 240, 320, 400]) {
+        const now = new Date(loginAt.getTime() + day * 86400000);
+        jest.setSystemTime(now);
+        await useCase.execute(current.token, 'request-' + day);
+        expect(current.expiresAt.getTime()).toBe(now.getTime() + 90 * 86400000);
+        expect(jwtService.signAsync).toHaveBeenLastCalledWith(
+          expect.anything(),
+          { expiresIn: 90 * 86400, jwtid: expect.any(String) },
+        );
+      }
+      expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('revokes all tokens on an unrecoverable CAS conflict', async () => {
+    const { authRepository, jwtService, userService, useCase } =
       createUseCase();
-    const absoluteExpiresAt = new Date(Date.now() + 120_000);
-    const storedToken = new RefreshToken(
-      'stored-token-1',
-      'user-1',
-      'incoming-refresh-token',
-      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      false,
-      new Date(),
-      null,
-      null,
-      null,
-      absoluteExpiresAt,
-    );
-
     jwtService.verifyAsync.mockResolvedValue(payload);
-    authRepository.findRefreshToken.mockResolvedValue(storedToken);
+    authRepository.findRefreshToken.mockResolvedValue(
+      new RefreshToken(
+        'old',
+        user.id,
+        'refresh',
+        new Date(Date.now() + 60000),
+        false,
+        new Date(),
+      ),
+    );
     authRepository.getUserRole.mockResolvedValue(['USER']);
-    authRepository.rotateRefreshToken.mockResolvedValue({
-      token: storedToken,
-      refreshToken: 'new-refresh-token',
-    });
-    roleCache.setUserRoles.mockResolvedValue(undefined);
     userService.findById.mockResolvedValue(user);
-    jwtService.signAsync
-      .mockResolvedValueOnce('new-access-token')
-      .mockResolvedValueOnce('new-refresh-token');
-
-    await useCase.execute('incoming-refresh-token', 'request-1');
-
-    const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
-    expect(refreshSignOptions.expiresIn).toBeGreaterThanOrEqual(119);
-    expect(refreshSignOptions.expiresIn).toBeLessThanOrEqual(120);
+    jwtService.signAsync.mockResolvedValue('new-token');
+    authRepository.rotateRefreshToken.mockResolvedValue(null);
+    await expect(
+      useCase.execute('refresh', 'conflicting-request'),
+    ).rejects.toBeInstanceOf(InvalidTokenError);
+    expect(authRepository.revokeAllUserTokens).toHaveBeenCalledWith(user.id);
   });
 
   it('recovers a rotated token when the request ID is retried', async () => {

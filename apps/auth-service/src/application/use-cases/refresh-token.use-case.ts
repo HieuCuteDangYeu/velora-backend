@@ -94,11 +94,7 @@ export class RefreshTokenUseCase {
         return { accessToken, refreshToken: replacementToken };
       }
 
-      if (
-        !storedToken.isActive() ||
-        (storedToken.absoluteExpiresAt !== null &&
-          storedToken.absoluteExpiresAt <= new Date())
-      ) {
+      if (!storedToken.isActive()) {
         refreshOutcome = 'invalid';
         throw new InvalidTokenError();
       }
@@ -125,9 +121,7 @@ export class RefreshTokenUseCase {
       const newPayload = this.createJwtPayload(user);
 
       const now = new Date();
-      const absoluteExpiresAt =
-        storedToken.absoluteExpiresAt ?? storedToken.expiresAt;
-      const expiresAt = getRefreshTokenExpiresAt(now, absoluteExpiresAt);
+      const expiresAt = getRefreshTokenExpiresAt(now);
 
       const accessToken = await this.jwtService.signAsync(newPayload, {
         expiresIn: '15m',
@@ -142,7 +136,6 @@ export class RefreshTokenUseCase {
           storedToken.id,
           refreshToken,
           expiresAt,
-          absoluteExpiresAt,
           refreshRequestId,
         );
 

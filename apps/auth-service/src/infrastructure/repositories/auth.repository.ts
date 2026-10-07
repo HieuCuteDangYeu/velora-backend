@@ -58,7 +58,6 @@ export class AuthRepository implements IAuthRepository {
     userId: string,
     token: string,
     expiresAt: Date,
-    absoluteExpiresAt: Date,
   ): Promise<RefreshToken> {
     const savedToken: PrismaRefreshToken =
       await this.prisma.refreshToken.create({
@@ -67,7 +66,7 @@ export class AuthRepository implements IAuthRepository {
           token: this.hashToken(token),
           encryptedToken: this.encryptToken(token),
           expiresAt,
-          absoluteExpiresAt,
+          absoluteExpiresAt: null,
           revoked: false,
         },
       });
@@ -147,7 +146,6 @@ export class AuthRepository implements IAuthRepository {
     id: string,
     token: string,
     expiresAt: Date,
-    absoluteExpiresAt: Date,
     requestId?: string,
   ): Promise<RefreshTokenRotationResult | null> {
     const replacementId = randomUUID();
@@ -183,7 +181,7 @@ export class AuthRepository implements IAuthRepository {
               token: tokenHash,
               encryptedToken: this.encryptToken(token),
               expiresAt,
-              absoluteExpiresAt,
+              absoluteExpiresAt: null,
               revoked: false,
             },
           });

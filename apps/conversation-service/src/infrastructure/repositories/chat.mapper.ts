@@ -17,7 +17,13 @@ import { ReadStatus } from '../../domain/entities/read-status.entity';
 
 export class ChatMapper {
   static toDomain(
-    prismaMsg: PrismaMessage & {
+    prismaMsg: Omit<
+      PrismaMessage,
+      | 'notificationRecipientIds'
+      | 'notificationNextAttemptAt'
+      | 'notificationClaimId'
+      | 'notificationAttemptCount'
+    > & {
       media?: Prisma.JsonValue | null;
       metadata?: Prisma.JsonValue | null;
       readBy?: MessageReadStatus[];

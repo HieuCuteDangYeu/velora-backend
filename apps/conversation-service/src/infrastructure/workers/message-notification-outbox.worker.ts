@@ -1,0 +1,200 @@
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
+import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
+import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
+import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { ChatMapper } from '../repositories/chat.mapper';
+import { ConversationMapper } from '../repositories/conversation.mapper';
+
+const POLL_MS = 1_000;
+const BATCH_SIZE = 20;
+const CONCURRENCY = 2;
+const LEASE_MS = 30_000;
+
+@Injectable()
+export class MessageNotificationOutboxWorker
+  implements OnModuleInit, OnModuleDestroy
+{
+  private readonly logger = new Logger(MessageNotificationOutboxWorker.name);
+  private readonly shutdown = new AbortController();
+  private timer?: NodeJS.Timeout;
+  private running?: Promise<void>;
+  private stopped = false;
+  private nextBacklogSampleAt = 0;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationServiceAdapter,
+    @Inject('IChatRepository') private readonly chats: IChatRepository,
+    @Inject('IEncryptionRepository')
+    private readonly encryption: IEncryptionRepository,
+    private readonly metrics: ConversationPrometheusMetricsService,
+  ) {}
+
+  onModuleInit(): void {
+    this.timer = setInterval(() => {
+      void this.runOnce();
+    }, POLL_MS);
+    this.timer.unref();
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    this.stopped = true;
+    if (this.timer) clearInterval(this.timer);
+    this.shutdown.abort();
+    await this.running;
+  }
+
+  // One batch per instance at a time. Each candidate is claimed immediately
+  // before processing, so waiting in this batch does not consume its lease.
+  runOnce(): Promise<void> {
+    if (this.stopped) return Promise.resolve();
+    if (this.running) return this.running;
+    this.running = this.drainBatch()
+      .catch(() => {
+        if (!this.stopped) {
+          this.metrics.recordNotificationOutbox('poll_error');
+          this.logger.warn(
+            'Notification outbox poll failed; pending intents retained',
+          );
+        }
+      })
+      .finally(() => {
+        this.running = undefined;
+      });
+    return this.running;
+  }
+
+  private async drainBatch(): Promise<void> {
+    const now = new Date();
+    const candidates = await this.prisma.message.findMany({
+      where: { notificationNextAttemptAt: { lte: now } },
+      orderBy: [{ notificationNextAttemptAt: 'asc' }, { id: 'asc' }],
+      take: BATCH_SIZE,
+      select: { id: true },
+    });
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: CONCURRENCY }, async () => {
+        while (!this.stopped && cursor < candidates.length) {
+          const candidate = candidates[cursor++];
+          await this.deliver(candidate.id);
+        }
+      }),
+    );
+    if (!this.stopped && Date.now() >= this.nextBacklogSampleAt) {
+      const pending = await this.prisma.message.count({
+        where: { notificationNextAttemptAt: { not: null } },
+      });
+      this.metrics.setNotificationOutboxPending(pending);
+      this.nextBacklogSampleAt = Date.now() + 10_000;
+    }
+  }
+
+  private async deliver(id: string): Promise<void> {
+    const claimId = randomUUID();
+    let attempts = 1;
+    try {
+      const claimed = await this.prisma.message.updateMany({
+        where: { id, notificationNextAttemptAt: { lte: new Date() } },
+        data: {
+          notificationClaimId: claimId,
+          notificationNextAttemptAt: new Date(Date.now() + LEASE_MS),
+          notificationAttemptCount: { increment: 1 },
+        },
+      });
+      if (claimed.count !== 1) return;
+      const record = await this.prisma.message.findUnique({
+        where: { id },
+        include: { conversation: true },
+      });
+      // Another worker may have acquired an expired lease during a slow read.
+      if (!record || record.notificationClaimId !== claimId) return;
+      attempts = record.notificationAttemptCount;
+      const recipientIds = record.notificationRecipientIds.filter(
+        (userId) =>
+          userId !== record.senderId &&
+          record.conversation?.participantIds.includes(userId),
+      );
+      if (
+        record.isRecalled ||
+        !record.conversation ||
+        recipientIds.length === 0
+      ) {
+        await this.complete(id, claimId, 'cancelled');
+        return;
+      }
+      const message = ChatMapper.toDomain(record);
+      if (message.signalType === 0) {
+        message.content = this.encryption.decrypt(message.content);
+        if (
+          record.content &&
+          message.content === record.content &&
+          /^[a-f0-9]{32}:[a-f0-9]{32}:[a-f0-9]+$/i.test(record.content)
+        ) {
+          throw new Error('Notification content could not be decrypted');
+        }
+      }
+      const conversation = ConversationMapper.toDomain(record.conversation);
+      // Enrichment does not change the original recipient snapshot. Removed
+      // members are excluded; newly joined members never receive older intents.
+      conversation.participantIds = [record.senderId, ...recipientIds];
+      await this.chats.populateConversationParticipants(conversation);
+      if (this.stopped) return;
+      await this.notifications.notifyNewMessage(
+        conversation,
+        message,
+        record.senderId,
+        this.shutdown.signal,
+      );
+      await this.complete(id, claimId, 'queued');
+    } catch {
+      if (this.stopped) return; // Restart reclaims the expired lease.
+      const backoffMs = Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 8));
+      try {
+        const rescheduled = await this.prisma.message.updateMany({
+          where: { id, notificationClaimId: claimId },
+          data: {
+            notificationClaimId: null,
+            notificationNextAttemptAt: new Date(
+              Date.now() + backoffMs + Math.floor(Math.random() * 1_000),
+            ),
+          },
+        });
+        this.metrics.recordNotificationOutbox(
+          rescheduled.count === 1 ? 'retry' : 'lease_lost',
+        );
+      } catch {
+        // Do not delete an intent when even rescheduling fails. The persisted
+        // lease date makes it eligible again after restart/database recovery.
+        this.metrics.recordNotificationOutbox('poll_error');
+      }
+    }
+  }
+
+  private async complete(
+    id: string,
+    claimId: string,
+    outcome: 'queued' | 'cancelled',
+  ): Promise<void> {
+    const completed = await this.prisma.message.updateMany({
+      where: { id, notificationClaimId: claimId },
+      data: {
+        notificationRecipientIds: [],
+        notificationNextAttemptAt: null,
+        notificationClaimId: null,
+      },
+    });
+    this.metrics.recordNotificationOutbox(
+      completed.count === 1 ? outcome : 'lease_lost',
+    );
+  }
+}

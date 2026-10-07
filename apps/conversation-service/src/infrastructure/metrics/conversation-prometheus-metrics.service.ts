@@ -21,6 +21,12 @@ export type MongoCommand =
   | 'conversation_update';
 
 type SendMessageStatus = 'success' | 'rejected' | 'error';
+type OutboxOutcome =
+  | 'queued'
+  | 'retry'
+  | 'cancelled'
+  | 'lease_lost'
+  | 'poll_error';
 
 type HistogramState = {
   bucketCounts: number[];
@@ -49,6 +55,16 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
   private readonly phaseDurations = new Map<string, HistogramState>();
   private readonly mongoDurations = new Map<MongoCommand, HistogramState>();
   private messagesCreated = 0;
+  private outboxPending: number | undefined;
+  private readonly outboxCounts = new Map<OutboxOutcome, number>();
+
+  recordNotificationOutbox(outcome: OutboxOutcome): void {
+    this.outboxCounts.set(outcome, (this.outboxCounts.get(outcome) ?? 0) + 1);
+  }
+
+  setNotificationOutboxPending(count: number): void {
+    this.outboxPending = count;
+  }
 
   // Prisma query-event timings are command observations, not pool-wait measurements
   // or success/failure guarantees. Never attach raw queries, IDs, or content.
@@ -295,7 +311,7 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     this.metricHeader(
       lines,
       phaseMetric,
-      'Duration per chat processing step; nested steps overlap, fanout is socket enqueue, notification is HTTP acceptance, not push delivery.',
+      'Duration per chat processing step; nested steps overlap, fanout is socket enqueue, notification is background durable HTTP intake, not push delivery.',
       'histogram',
     );
     for (const [key, state] of this.phaseDurations) {
@@ -337,6 +353,35 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
       );
       lines.push(
         `${mongoMetric}_count${this.labels(commandLabels)} ${state.count}`,
+      );
+    }
+
+    this.metricHeader(
+      lines,
+      'velora_conversation_notification_outbox_total',
+      'Notification outbox outcomes; queued means durable intake, not device delivery.',
+      'counter',
+    );
+    for (const outcome of [
+      'queued',
+      'retry',
+      'cancelled',
+      'lease_lost',
+      'poll_error',
+    ] as const) {
+      lines.push(
+        `velora_conversation_notification_outbox_total${this.labels({ service: this.serviceName, outcome })} ${this.outboxCounts.get(outcome) ?? 0}`,
+      );
+    }
+    if (this.outboxPending !== undefined) {
+      this.metricHeader(
+        lines,
+        'velora_conversation_notification_outbox_pending',
+        'Pending notification intents including leased/backoff items; sampled every 10 seconds after a batch.',
+        'gauge',
+      );
+      lines.push(
+        `velora_conversation_notification_outbox_pending${labels} ${this.outboxPending}`,
       );
     }
 

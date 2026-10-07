@@ -107,6 +107,7 @@ export class PrismaChatRepository implements IChatRepository {
 
   async createMessageIdempotently(
     message: Message,
+    options?: { enqueueNotification: boolean },
   ): Promise<CreateMessageResult> {
     // Legacy internal producers do not supply a client key. They keep working
     // with a server-generated key; public HTTP and Socket entry points require
@@ -188,6 +189,19 @@ export class PrismaChatRepository implements IChatRepository {
                   // All initial values are known here. createMany avoids the
                   // read-back issued by create; keep this insert and the preview
                   // update in the same authorized, retryable transaction.
+                  // Snapshot the authorized audience in the same write. Internal
+                  // bot/system producers retain their existing no-push behavior.
+                  const recipientIds = options?.enqueueNotification
+                    ? [...new Set(conversation.participantIds)].filter(
+                        (id) => Boolean(id) && id !== message.senderId,
+                      )
+                    : [];
+                  const notificationRecipientIds =
+                    conversation.isGroup ||
+                    (conversation.participantIds.length === 2 &&
+                      recipientIds.length === 1)
+                      ? recipientIds
+                      : [];
                   const persisted: PrismaMessage = {
                     id: messageId,
                     type: message.type ?? 'text',
@@ -212,6 +226,11 @@ export class PrismaChatRepository implements IChatRepository {
                     reactions: null,
                     createdAt: new Date(),
                     readBy: [],
+                    notificationRecipientIds,
+                    notificationNextAttemptAt:
+                      notificationRecipientIds.length > 0 ? new Date() : null,
+                    notificationClaimId: null,
+                    notificationAttemptCount: 0,
                   };
                   const inserted = await tx.message.createMany({
                     data: [persisted],

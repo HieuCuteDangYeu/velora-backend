@@ -24,7 +24,6 @@ import { SendMessageUseCase } from '../../application/use-cases/send-message.use
 import { TriggerBotReplyUseCase } from '../../application/use-cases/trigger-bot-reply.use-case';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IChatMediaService } from '../../domain/interfaces/chat-media.service.interface';
-import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
 import { ChatGateway } from '../gateways/chat.gateway';
 import { ChatMapper } from '../repositories/chat.mapper';
 import { GetUserConversationsUseCase } from './../../application/use-cases/get-user-conversations.use-case';
@@ -45,7 +44,6 @@ export class ConversationMicroserviceController {
     private readonly getUserConversationsUseCase: GetUserConversationsUseCase,
     private readonly chatGateway: ChatGateway,
     private readonly triggerBotReplyUseCase: TriggerBotReplyUseCase,
-    private readonly notificationService: NotificationServiceAdapter,
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     @Inject('IChatMediaService')
     private readonly chatMediaService: IChatMediaService,
@@ -408,12 +406,6 @@ export class ConversationMicroserviceController {
           senderId,
         );
       }
-
-      void this.notificationService.notifyNewMessage(
-        conversation,
-        savedMessage,
-        senderId,
-      );
 
       void this.triggerBotReplyUseCase.execute(savedMessage, senderId).then(
         async (result) => {

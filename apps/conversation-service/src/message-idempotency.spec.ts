@@ -5,6 +5,7 @@ import { Conversation } from './domain/entities/conversation.entity';
 import { ConversationMicroserviceController } from './infrastructure/controllers/conversation.controller';
 import { ChatGateway } from './infrastructure/gateways/chat.gateway';
 import { PrismaChatRepository } from './infrastructure/repositories/prisma-chat.repository';
+import { SendMessageUseCase } from './application/use-cases/send-message.use-case';
 
 const createMessage = () =>
   new Message({
@@ -98,6 +99,75 @@ const transactionHarness = ($transaction: jest.Mock) => {
 };
 
 describe('message transaction conflicts', () => {
+  it('commits only the authorized recipient snapshot with the encrypted message', async () => {
+    const { repository, prisma } = transactionHarness(jest.fn());
+    prisma.conversation.findUnique.mockResolvedValue({
+      ...createStoredConversation(),
+      isGroup: true,
+      participantIds: ['sender-1', 'member-1', 'member-1', 'member-2'],
+    });
+    await repository.createMessageIdempotently(createMessage(), {
+      enqueueNotification: true,
+    });
+    expect(prisma.message.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          content: 'encrypted:hello',
+          notificationRecipientIds: ['member-1', 'member-2'],
+          notificationNextAttemptAt: expect.any(Date),
+          notificationClaimId: null,
+          notificationAttemptCount: 0,
+        }),
+      ],
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['internal producer', undefined, true, ['sender-1', 'member-1']],
+    [
+      'malformed direct chat',
+      { enqueueNotification: true },
+      false,
+      ['sender-1', 'member-1', 'member-2'],
+    ],
+    ['empty audience', { enqueueNotification: true }, true, ['sender-1']],
+  ])(
+    'does not enqueue push for %s',
+    async (_name, options, isGroup, participantIds) => {
+      const { repository, prisma } = transactionHarness(jest.fn());
+      prisma.conversation.findUnique.mockResolvedValue({
+        ...createStoredConversation(),
+        isGroup,
+        participantIds,
+      });
+      await repository.createMessageIdempotently(createMessage(), options);
+      expect(prisma.message.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            notificationRecipientIds: [],
+            notificationNextAttemptAt: null,
+          }),
+        ],
+      });
+    },
+  );
+
+  it('requests transactional notification intent from the shared public send use case', async () => {
+    const repository = {
+      createMessageIdempotently: jest
+        .fn()
+        .mockResolvedValue({ message: createMessage(), created: true }),
+    };
+    const useCase = new SendMessageUseCase(repository as never);
+    await useCase.execute(createMessage() as never, 'sender-1');
+    expect(repository.createMessageIdempotently).toHaveBeenCalledWith(
+      expect.any(Message),
+      { enqueueNotification: true },
+    );
+  });
+
   it('returns the same initial fields written to Mongo without a read-back', async () => {
     const { repository, prisma } = transactionHarness(jest.fn());
     const input = createMessage();
@@ -418,7 +488,6 @@ describe('message transaction conflicts', () => {
       const gateway = new ChatGateway(
         { execute: jest.fn().mockRejectedValue(prismaError('P2034')) } as never,
         {} as never,
-        {} as never,
         {
           recordSendMessage: jest.fn(),
           measurePhase: jest.fn((_phase, action: () => unknown) => action()),
@@ -458,7 +527,6 @@ describe('message idempotency', () => {
       findConversation: jest.fn(),
       populateConversationParticipants: jest.fn().mockResolvedValue(snapshot),
     };
-    const notifyNewMessage = jest.fn().mockResolvedValue(undefined);
     const controller = new ConversationMicroserviceController(
       {
         execute: jest.fn().mockResolvedValue({
@@ -480,7 +548,6 @@ describe('message idempotency', () => {
         emitConversationMessageActivity: jest.fn(),
       } as never,
       { execute: jest.fn().mockResolvedValue({}) } as never,
-      { notifyNewMessage } as never,
       repository as never,
       {} as never,
     );
@@ -490,11 +557,6 @@ describe('message idempotency', () => {
     expect(repository.findConversation).not.toHaveBeenCalled();
     expect(repository.populateConversationParticipants).toHaveBeenCalledWith(
       snapshot,
-    );
-    expect(notifyNewMessage).toHaveBeenCalledWith(
-      snapshot,
-      expect.any(Message),
-      'sender-1',
     );
     expect(response).toEqual({
       message: expect.objectContaining({ id: 'message-1' }),
@@ -547,14 +609,10 @@ describe('message idempotency', () => {
         },
       ),
     };
-    const notificationService = {
-      notifyNewMessage: jest.fn().mockResolvedValue(undefined),
-    };
     const triggerBotReplyUseCase = { execute: jest.fn().mockResolvedValue({}) };
     const gateway = new ChatGateway(
       sendMessageUseCase as never,
       triggerBotReplyUseCase as never,
-      notificationService as never,
       {
         measurePhase: jest.fn((_phase, action: () => unknown) => action()),
         recordMessageCreated: jest.fn(),
@@ -582,11 +640,7 @@ describe('message idempotency', () => {
     expect(
       chatRepository.populateConversationParticipants,
     ).toHaveBeenCalledWith(snapshot);
-    expect(notificationService.notifyNewMessage).toHaveBeenCalledWith(
-      snapshot,
-      expect.any(Message),
-      'sender-1',
-    );
+
     expect(triggerBotReplyUseCase.execute).toHaveBeenCalledWith(
       expect.any(Message),
       'sender-1',
@@ -603,7 +657,6 @@ describe('message idempotency', () => {
       {
         execute: jest.fn().mockRejectedValue(new ForbiddenException()),
       } as never,
-      {} as never,
       {} as never,
       metrics as never,
       {} as never,
@@ -671,7 +724,6 @@ describe('message idempotency', () => {
         created: false,
       }),
     };
-    const notificationService = { notifyNewMessage: jest.fn() };
     const triggerBotReplyUseCase = { execute: jest.fn() };
     const chatRepository = { findConversation: jest.fn() };
     const controller = new ConversationMicroserviceController(
@@ -683,9 +735,9 @@ describe('message idempotency', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
       { server: { to: serverTo } } as never,
       triggerBotReplyUseCase as never,
-      notificationService as never,
       chatRepository as never,
       {} as never,
     );
@@ -705,7 +757,6 @@ describe('message idempotency', () => {
     });
     expect(serverTo).not.toHaveBeenCalled();
     expect(chatRepository.findConversation).not.toHaveBeenCalled();
-    expect(notificationService.notifyNewMessage).not.toHaveBeenCalled();
     expect(triggerBotReplyUseCase.execute).not.toHaveBeenCalled();
   });
 
@@ -719,7 +770,6 @@ describe('message idempotency', () => {
         created: false,
       }),
     };
-    const notificationService = { notifyNewMessage: jest.fn() };
     const triggerBotReplyUseCase = { execute: jest.fn() };
     const chatRepository = {
       assertConversationParticipant: jest.fn().mockResolvedValue(undefined),
@@ -733,7 +783,6 @@ describe('message idempotency', () => {
     const gateway = new ChatGateway(
       sendMessageUseCase as never,
       triggerBotReplyUseCase as never,
-      notificationService as never,
       prometheusMetrics as never,
       chatRepository as never,
       {} as never,
@@ -766,7 +815,6 @@ describe('message idempotency', () => {
     expect(senderRoomEmit).not.toHaveBeenCalled();
     expect(serverTo).not.toHaveBeenCalled();
     expect(chatRepository.findConversation).not.toHaveBeenCalled();
-    expect(notificationService.notifyNewMessage).not.toHaveBeenCalled();
     expect(triggerBotReplyUseCase.execute).not.toHaveBeenCalled();
   });
 
@@ -783,7 +831,6 @@ describe('message idempotency', () => {
     };
     const gateway = new ChatGateway(
       sendMessageUseCase as never,
-      {} as never,
       {} as never,
       prometheusMetrics as never,
       chatRepository as never,

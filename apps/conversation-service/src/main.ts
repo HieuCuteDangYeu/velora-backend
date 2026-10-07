@@ -8,6 +8,7 @@ async function bootstrap() {
   // 1. Thay đổi: Dùng create() thay vì createMicroservice()
   // Để tạo ra HTTP Server cho Socket.IO handshake
   const app = await NestFactory.create(ConversationServiceModule);
+  app.enableShutdownHooks();
 
   const configService = app.get(ConfigService);
 

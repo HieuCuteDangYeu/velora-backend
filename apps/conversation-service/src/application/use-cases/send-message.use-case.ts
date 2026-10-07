@@ -31,8 +31,10 @@ export class SendMessageUseCase {
       replyToId: dto.replyToId,
     });
 
-    const result =
-      await this.chatRepository.createMessageIdempotently(newMessage);
+    const result = await this.chatRepository.createMessageIdempotently(
+      newMessage,
+      { enqueueNotification: true },
+    );
 
     this.logger.debug(
       result.created

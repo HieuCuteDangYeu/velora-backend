@@ -45,7 +45,6 @@ const createController = ({
     {} as never,
     chatGateway as never,
     {} as never,
-    {} as never,
     chatRepository as never,
     {} as never,
   );

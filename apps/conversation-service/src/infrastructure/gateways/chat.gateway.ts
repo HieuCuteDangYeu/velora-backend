@@ -28,7 +28,6 @@ import {
 } from '../../domain/entities/message.entity';
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
-import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { ChatMapper } from '../repositories/chat.mapper';
 
@@ -49,7 +48,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly sendMessageUseCase: SendMessageUseCase,
     private readonly triggerBotReplyUseCase: TriggerBotReplyUseCase,
-    private readonly notificationService: NotificationServiceAdapter,
     private readonly prometheusMetrics: ConversationPrometheusMetricsService,
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     @Inject('AUTH_SERVICE_RMQ') private readonly authClient: ClientProxy,
@@ -294,12 +292,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           senderId,
         );
       }
-
-      void this.notificationService.notifyNewMessage(
-        conversation,
-        savedMessage,
-        senderId,
-      );
 
       const botReply = this.triggerBotReplyUseCase.execute(
         savedMessage,

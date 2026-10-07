@@ -39,6 +39,7 @@ import { PrismaGroupManagementV2Repository } from 'apps/conversation-service/src
 import { PrismaKeyBundleRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-key-bundle.repository';
 import { SendMessageUseCase } from './application/use-cases/send-message.use-case';
 import { ChatGateway } from './infrastructure/gateways/chat.gateway';
+import { MessageNotificationOutboxWorker } from './infrastructure/workers/message-notification-outbox.worker';
 
 @Module({
   imports: [
@@ -184,6 +185,7 @@ import { ChatGateway } from './infrastructure/gateways/chat.gateway';
       useClass: ChatMediaServiceAdapter,
     },
     NotificationServiceAdapter,
+    MessageNotificationOutboxWorker,
 
     {
       provide: 'REDIS_CLIENT',

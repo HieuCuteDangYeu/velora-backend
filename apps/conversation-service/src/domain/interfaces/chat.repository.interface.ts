@@ -14,8 +14,8 @@ export interface MediaProcessingSyncResult {
 
 /**
  * `created` is deliberately part of the persistence contract.  Callers must
- * only produce externally visible side effects (socket events, push and bot
- * work) for a newly-created message, never for an idempotent retry.
+ * only dispatch socket events and bot work for a newly-created message.
+ * Notification intent is committed inside persistence and delivered separately.
  */
 export interface CreateMessageResult {
   message: Message;
@@ -52,6 +52,7 @@ export abstract class IChatRepository {
   abstract createMessage(message: Message): Promise<Message>;
   abstract createMessageIdempotently(
     message: Message,
+    options?: { enqueueNotification: boolean },
   ): Promise<CreateMessageResult>;
   abstract assertConversationParticipant(
     conversationId: string,

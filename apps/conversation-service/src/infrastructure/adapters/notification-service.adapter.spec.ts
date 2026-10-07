@@ -7,11 +7,17 @@ const ACTOR_ID = '11111111-1111-4111-8111-111111111111';
 const MEMBER_ID = '22222222-2222-4222-8222-222222222222';
 const THIRD_ID = '33333333-3333-4333-8333-333333333333';
 
-const okResponse = (status = 200): Response =>
+const okResponse = (
+  status = 202,
+  recipientCount = 1,
+  createdCount = recipientCount,
+): Response =>
   ({
-    ok: status >= 200 && status < 300,
     status,
-    text: jest.fn().mockResolvedValue('response body'),
+    json: jest
+      .fn()
+      .mockResolvedValue({ status: 'queued', recipientCount, createdCount }),
+    body: { cancel: jest.fn().mockResolvedValue(undefined) },
   }) as unknown as Response;
 
 const makeMessage = (partial: Partial<Message> = {}) =>
@@ -46,6 +52,7 @@ const makeAdapter = () => {
 
 describe('NotificationServiceAdapter message fanout', () => {
   let fetchMock: jest.Mock;
+  const originalFetch = global.fetch;
 
   beforeEach(() => {
     fetchMock = jest.fn();
@@ -53,6 +60,7 @@ describe('NotificationServiceAdapter message fanout', () => {
   });
 
   afterEach(() => {
+    global.fetch = originalFetch;
     jest.restoreAllMocks();
   });
 
@@ -76,7 +84,7 @@ describe('NotificationServiceAdapter message fanout', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, request] = fetchMock.mock.calls[0];
-    expect(JSON.parse(request.body)).toEqual({
+    expect(JSON.parse(String(request.body))).toEqual({
       recipientUserIds: [MEMBER_ID],
       actorUserId: ACTOR_ID,
       conversationId: 'conversation-id',
@@ -87,7 +95,7 @@ describe('NotificationServiceAdapter message fanout', () => {
   });
 
   it('fans a group notification out to every unique participant except the sender', async () => {
-    fetchMock.mockResolvedValue(okResponse());
+    fetchMock.mockResolvedValue(okResponse(202, 2));
     const adapter = makeAdapter();
     const conversation = new Conversation({
       id: 'conversation-id',
@@ -108,7 +116,7 @@ describe('NotificationServiceAdapter message fanout', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, request] = fetchMock.mock.calls[0];
-    expect(JSON.parse(request.body)).toEqual({
+    expect(JSON.parse(String(request.body))).toEqual({
       recipientUserIds: [MEMBER_ID, THIRD_ID],
       actorUserId: ACTOR_ID,
       conversationId: 'conversation-id',
@@ -137,7 +145,7 @@ describe('NotificationServiceAdapter message fanout', () => {
     );
 
     const [, request] = fetchMock.mock.calls[0];
-    expect(JSON.parse(request.body)).toEqual(
+    expect(JSON.parse(String(request.body))).toEqual(
       expect.objectContaining({
         recipientUserIds: [MEMBER_ID],
         title: 'Group chat',
@@ -146,61 +154,129 @@ describe('NotificationServiceAdapter message fanout', () => {
     );
   });
 
-  it('falls back to the legacy singular contract only when the batch schema returns 400', async () => {
-    fetchMock
-      .mockResolvedValueOnce(okResponse(400))
-      .mockResolvedValueOnce(okResponse())
-      .mockResolvedValueOnce(okResponse());
-    const adapter = makeAdapter();
+  it.each([400, 401, 429, 500, 503, 200])(
+    'retains failures and ambiguous HTTP %s for outbox retry without legacy fanout',
+    async (status) => {
+      fetchMock.mockResolvedValue(okResponse(status));
+      const conversation = new Conversation({
+        id: 'conversation-id',
+        creatorId: ACTOR_ID,
+        participantIds: [ACTOR_ID, MEMBER_ID],
+        isGroup: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      await expect(
+        makeAdapter().notifyNewMessage(conversation, makeMessage(), ACTOR_ID),
+      ).rejects.toThrow(`HTTP ${status}`);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    null,
+    { status: 'sent', recipientCount: 1, createdCount: 1 },
+    { status: 'queued', recipientCount: 2, createdCount: 1 },
+    { status: 'queued', recipientCount: 1, createdCount: -1 },
+    { status: 'queued', recipientCount: 1, createdCount: 2 },
+    { status: 'queued', recipientCount: 1 },
+  ])('rejects an invalid durable receipt %p', async (receipt) => {
+    fetchMock.mockResolvedValue({
+      status: 202,
+      json: jest.fn().mockResolvedValue(receipt),
+    });
     const conversation = new Conversation({
       id: 'conversation-id',
       creatorId: ACTOR_ID,
-      participantIds: [ACTOR_ID, MEMBER_ID, THIRD_ID],
-      participants: [{ id: ACTOR_ID, name: 'Alice' }],
-      name: 'Core Team',
+      participantIds: [ACTOR_ID, MEMBER_ID],
       isGroup: true,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-
-    await adapter.notifyNewMessage(conversation, makeMessage(), ACTOR_ID);
-
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const legacyBodies = fetchMock.mock.calls
-      .slice(1)
-      .map(([, request]) => JSON.parse(request.body));
-    expect(legacyBodies).toEqual([
-      expect.objectContaining({
-        recipientUserId: MEMBER_ID,
-        actorUserId: ACTOR_ID,
-        title: 'Core Team',
-        body: 'Alice: Hello there',
-      }),
-      expect.objectContaining({
-        recipientUserId: THIRD_ID,
-        actorUserId: ACTOR_ID,
-        title: 'Core Team',
-        body: 'Alice: Hello there',
-      }),
-    ]);
+    await expect(
+      makeAdapter().notifyNewMessage(conversation, makeMessage(), ACTOR_ID),
+    ).rejects.toThrow('did not confirm durable jobs');
   });
 
-  it('does not legacy-retry a 5xx response because the batch may have partially processed', async () => {
-    fetchMock.mockResolvedValue(okResponse(500));
-    const adapter = makeAdapter();
+  it('accepts a replay receipt with zero new jobs and keeps the same message identity', async () => {
     const conversation = new Conversation({
       id: 'conversation-id',
       creatorId: ACTOR_ID,
-      participantIds: [ACTOR_ID, MEMBER_ID, THIRD_ID],
-      name: 'Core Team',
-      isGroup: true,
+      participantIds: [ACTOR_ID, MEMBER_ID],
+      isGroup: false,
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-
+    fetchMock
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse(202, 1, 0));
+    const adapter = makeAdapter();
     await adapter.notifyNewMessage(conversation, makeMessage(), ACTOR_ID);
+    await adapter.notifyNewMessage(conversation, makeMessage(), ACTOR_ID);
+    expect(fetchMock.mock.calls[0][1].body).toEqual(
+      fetchMock.mock.calls[1][1].body,
+    );
+  });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+  it('propagates a timeout and network failures instead of treating them as accepted', async () => {
+    fetchMock.mockRejectedValue(new DOMException('Timed out', 'TimeoutError'));
+    const timeout = jest.spyOn(AbortSignal, 'timeout');
+    const conversation = new Conversation({
+      id: 'conversation-id',
+      creatorId: ACTOR_ID,
+      participantIds: [ACTOR_ID, MEMBER_ID],
+      isGroup: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await expect(
+      makeAdapter().notifyNewMessage(conversation, makeMessage(), ACTOR_ID),
+    ).rejects.toThrow('Timed out');
+    expect(timeout).toHaveBeenCalledWith(5000);
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('propagates shutdown into the request signal', async () => {
+    const shutdown = new AbortController();
+    fetchMock.mockImplementation((_url, options: RequestInit) => {
+      shutdown.abort();
+      expect(options.signal?.aborted).toBe(true);
+      return Promise.reject(new DOMException('Stopped', 'AbortError'));
+    });
+    const conversation = new Conversation({
+      id: 'conversation-id',
+      creatorId: ACTOR_ID,
+      participantIds: [ACTOR_ID, MEMBER_ID],
+      isGroup: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await expect(
+      makeAdapter().notifyNewMessage(
+        conversation,
+        makeMessage(),
+        ACTOR_ID,
+        shutdown.signal,
+      ),
+    ).rejects.toThrow('Stopped');
+  });
+
+  it('does not lose work when the internal secret is missing', async () => {
+    const adapter = new NotificationServiceAdapter({
+      get: () => undefined,
+    } as unknown as ConfigService);
+    const conversation = new Conversation({
+      id: 'conversation-id',
+      creatorId: ACTOR_ID,
+      participantIds: [ACTOR_ID, MEMBER_ID],
+      isGroup: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await expect(
+      adapter.notifyNewMessage(conversation, makeMessage(), ACTOR_ID),
+    ).rejects.toThrow('NOTIFICATION_INTERNAL_SECRET');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('does not send a notification when no recipient remains after excluding the sender', async () => {

@@ -49,7 +49,6 @@ describe('ChatGateway realtime membership helpers', () => {
       null as never,
       null as never,
       null as never,
-      null as never,
       chatRepository as unknown as IChatRepository,
       null as never,
       redis as never,

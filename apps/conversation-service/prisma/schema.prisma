@@ -120,10 +120,18 @@ model Message {
   createdAt DateTime            @default(now())
   readBy    MessageReadStatus[]
 
+  // Embedded notification intent, committed with the message and preview.
+  // Missing/null due dates on historical messages are deliberately not replayed.
+  notificationRecipientIds  String[] @default([])
+  notificationNextAttemptAt DateTime?
+  notificationClaimId       String?
+  notificationAttemptCount  Int @default(0)
+
   @@index([conversationId, createdAt(sort: Desc)])
   @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
   @@unique([conversationId, senderId, clientMessageId])
   @@index([replyToId])
+  @@index([notificationNextAttemptAt, id], map: "messages_notification_outbox_due")
   @@map("messages")
 }
 

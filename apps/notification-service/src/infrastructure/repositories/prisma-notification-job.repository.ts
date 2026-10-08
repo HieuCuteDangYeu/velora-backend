@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import {
   NotificationJob as PrismaNotificationJob,
   Prisma,
@@ -21,15 +22,43 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
 
   async enqueueMany(inputs: CreateNotificationJobInput[]): Promise<number> {
     if (inputs.length === 0) return 0;
-    const result = await this.prisma.notificationJob.createMany({
-      data: inputs.map((input) => ({
-        ...input,
-        dataJson: input.dataJson as Prisma.InputJsonValue | undefined,
-        status: 'pending',
-      })),
-      skipDuplicates: true,
-    });
-    return result.count;
+    // Keep Prisma's transactional chunking for unusually large batches, rather
+    // than exceeding PostgreSQL's bind-parameter limit in a single statement.
+    if (inputs.length > 1_000) {
+      const result = await this.prisma.notificationJob.createMany({
+        data: inputs.map((input) => ({
+          ...input,
+          dataJson: input.dataJson as Prisma.InputJsonValue | undefined,
+          status: 'pending',
+        })),
+        skipDuplicates: true,
+      });
+      return result.count;
+    }
+
+    const now = new Date();
+    const rows = inputs.map(
+      (input) => Prisma.sql`(
+      ${randomUUID()}, ${input.type}, ${input.recipientUserId},
+      ${input.actorUserId ?? null}, ${input.conversationId ?? null},
+      ${input.messageId ?? null}, ${input.callId ?? null},
+      ${input.title}, ${input.body},
+      ${input.dataJson === undefined ? null : JSON.stringify(input.dataJson)}::jsonb,
+      ${input.expiresAt ?? null}, 'pending', ${input.idempotencyKey ?? null},
+      ${now}, ${now}
+    )`,
+    );
+    // One PostgreSQL statement is atomic, including all recipients and dedupe.
+    // Unlike createMany, it needs no separate BEGIN/COMMIT round trips. A replay
+    // never resets the existing job's lease, attempts, or terminal state.
+    return this.prisma.$executeRaw(Prisma.sql`
+      INSERT INTO notification_jobs (
+        id, type, recipient_user_id, actor_user_id, conversation_id,
+        message_id, call_id, title, body, data_json, expires_at, status,
+        idempotency_key, created_at, updated_at
+      ) VALUES ${Prisma.join(rows)}
+      ON CONFLICT (idempotency_key) DO NOTHING
+    `);
   }
 
   async create(input: CreateNotificationJobInput): Promise<NotificationJob> {

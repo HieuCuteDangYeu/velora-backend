@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/notification-client';
 import { PrismaNotificationJobRepository } from './prisma-notification-job.repository';
 
 type QueryCondition = {
@@ -86,38 +87,22 @@ describe('PrismaNotificationJobRepository', () => {
     expect(leaseExpiry.getTime()).toBeLessThanOrEqual(Date.now() - 299_900);
   });
 
-  it('returns the claimed job and batches durable message identities without resetting replays', async () => {
+  it('returns the claimed snapshot without a second read', async () => {
     const record = {
       id: 'job-1',
       type: 'NEW_MESSAGE',
       status: 'processing',
       attemptCount: 1,
     };
-    const createMany = jest.fn().mockResolvedValue({ count: 1 });
     const findUniqueOrThrow = jest.fn().mockResolvedValue(record);
     const repository = new PrismaNotificationJobRepository({
       $queryRaw: jest.fn().mockResolvedValue([record]),
-      notificationJob: { createMany, findUniqueOrThrow },
+      notificationJob: { findUniqueOrThrow },
     } as never);
     await expect(repository.claimForProcessing('job-1')).resolves.toEqual(
       expect.objectContaining(record),
     );
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
-    const input = {
-      type: 'NEW_MESSAGE' as const,
-      recipientUserId: 'user',
-      title: 'Chat',
-      body: 'Hello',
-      idempotencyKey: 'identity',
-    };
-    await expect(repository.enqueueMany([input])).resolves.toBe(1);
-    expect(createMany).toHaveBeenCalledWith({
-      data: [expect.objectContaining({ ...input, status: 'pending' })],
-      skipDuplicates: true,
-    });
-    createMany.mockClear();
-    await expect(repository.enqueueMany([])).resolves.toBe(0);
-    expect(createMany).not.toHaveBeenCalled();
   });
 
   it('reclaims only notification jobs whose processing lease has expired', async () => {
@@ -153,5 +138,141 @@ describe('PrismaNotificationJobRepository', () => {
       { expiresAt: { sort: 'asc', nulls: 'last' } },
       { createdAt: 'asc' },
     ]);
+  });
+  describe('durable batch intake', () => {
+    const input = {
+      type: 'NEW_MESSAGE' as const,
+      recipientUserId: 'user-1',
+      actorUserId: 'actor-1',
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      title: "Chat '); DROP TABLE notification_jobs; --",
+      body: 'Hello',
+      dataJson: { type: 'NEW_MESSAGE', quote: "a'b" },
+      idempotencyKey: 'identity-1',
+    };
+
+    it('inserts all recipients atomically with parameterized values and never resets a replay', async () => {
+      const executeRaw = jest.fn().mockResolvedValue(2);
+      const createMany = jest.fn();
+      const repository = new PrismaNotificationJobRepository({
+        $executeRaw: executeRaw,
+        notificationJob: { createMany },
+      } as never);
+      const before = Date.now();
+      await expect(
+        repository.enqueueMany([
+          input,
+          { ...input, recipientUserId: 'user-2', idempotencyKey: 'identity-2' },
+        ]),
+      ).resolves.toBe(2);
+      expect(executeRaw).toHaveBeenCalledTimes(1);
+      expect(createMany).not.toHaveBeenCalled();
+      const query = executeRaw.mock.calls[0][0] as Prisma.Sql;
+      expect(query.text).toContain('INSERT INTO notification_jobs');
+      expect(query.text).toContain('ON CONFLICT (idempotency_key) DO NOTHING');
+      expect(query.text).not.toMatch(/DO UPDATE|BEGIN|COMMIT/);
+      expect(query.text).not.toContain(input.title);
+      expect(query.text).not.toContain(input.body);
+      expect(query.text).toContain('::jsonb');
+      for (const [i, row] of [
+        input,
+        { ...input, recipientUserId: 'user-2', idempotencyKey: 'identity-2' },
+      ].entries()) {
+        const values = query.values.slice(i * 14, (i + 1) * 14);
+        expect(values[0]).toMatch(/^[0-9a-f-]{36}$/);
+        expect(values.slice(1, 12)).toEqual([
+          row.type,
+          row.recipientUserId,
+          row.actorUserId,
+          row.conversationId,
+          row.messageId,
+          null,
+          row.title,
+          row.body,
+          JSON.stringify(row.dataJson),
+          null,
+          row.idempotencyKey,
+        ]);
+        expect(values[12]).toBeInstanceOf(Date);
+        expect((values[12] as Date).getTime()).toBeGreaterThanOrEqual(before);
+        expect(values[13]).toEqual(values[12]);
+      }
+      expect(query.values[0]).not.toEqual(query.values[14]);
+    });
+
+    it('preserves optional fields, call expiry and null identities without inventing JSON data', async () => {
+      const executeRaw = jest.fn().mockResolvedValue(1);
+      const repository = new PrismaNotificationJobRepository({
+        $executeRaw: executeRaw,
+      } as never);
+      const expiresAt = new Date('2030-01-01T00:00:00Z');
+      await repository.enqueueMany([
+        {
+          type: 'INCOMING_CALL',
+          recipientUserId: 'callee',
+          callId: 'call-1',
+          title: 'Call',
+          body: '',
+          expiresAt,
+        },
+      ]);
+      const query = executeRaw.mock.calls[0][0] as Prisma.Sql;
+      expect(query.values.slice(1, 12)).toEqual([
+        'INCOMING_CALL',
+        'callee',
+        null,
+        null,
+        null,
+        'call-1',
+        'Call',
+        '',
+        null,
+        expiresAt,
+        null,
+      ]);
+    });
+
+    it('returns zero for a replay and propagates ambiguous intake failures to the outbox', async () => {
+      const executeRaw = jest
+        .fn()
+        .mockResolvedValueOnce(0)
+        .mockRejectedValueOnce(new Error('connection lost'));
+      const repository = new PrismaNotificationJobRepository({
+        $executeRaw: executeRaw,
+      } as never);
+      await expect(repository.enqueueMany([input])).resolves.toBe(0);
+      await expect(repository.enqueueMany([input])).rejects.toThrow(
+        'connection lost',
+      );
+    });
+
+    it('does not touch the database for an empty batch', async () => {
+      const executeRaw = jest.fn();
+      const repository = new PrismaNotificationJobRepository({
+        $executeRaw: executeRaw,
+      } as never);
+      await expect(repository.enqueueMany([])).resolves.toBe(0);
+      expect(executeRaw).not.toHaveBeenCalled();
+    });
+
+    it('keeps transactional Prisma chunking for oversized recipient batches', async () => {
+      const executeRaw = jest.fn();
+      const createMany = jest.fn().mockResolvedValue({ count: 1_001 });
+      const repository = new PrismaNotificationJobRepository({
+        $executeRaw: executeRaw,
+        notificationJob: { createMany },
+      } as never);
+      const inputs = Array.from({ length: 1_001 }, (_, i) => ({
+        ...input,
+        idempotencyKey: `identity-${i}`,
+      }));
+      await expect(repository.enqueueMany(inputs)).resolves.toBe(1_001);
+      expect(executeRaw).not.toHaveBeenCalled();
+      expect(createMany).toHaveBeenCalledWith({
+        data: inputs.map((row) => ({ ...row, status: 'pending' })),
+        skipDuplicates: true,
+      });
+    });
   });
 });

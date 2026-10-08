@@ -13,4 +13,13 @@ export abstract class ICallStateRepository {
     userId: string,
   ): Promise<CallParticipant | null>;
   abstract clearCallState(callId: string): Promise<void>;
+  /**
+   * Participants whose reconnect deadline is at or before `deadlineBefore`.
+   * Durable counterpart of the gateway's in-process reconnect timers.
+   */
+  abstract listExpiredReconnects(
+    deadlineBefore: Date,
+    limit: number,
+  ): Promise<Array<{ callId: string; userId: string }>>;
+  abstract forgetReconnect(callId: string, userId: string): Promise<void>;
 }

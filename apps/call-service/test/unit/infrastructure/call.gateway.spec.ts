@@ -1,5 +1,5 @@
 import { GATEWAY_OPTIONS } from '@nestjs/websockets/constants';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Socket } from 'socket.io';
 import { of, Subject, throwError } from 'rxjs';
 import { CallParticipant } from '../../../src/domain/entities/call-participant.entity';
@@ -1073,6 +1073,150 @@ describe('CallGateway reconnect recovery', () => {
     expect(roomEmitter.emit).toHaveBeenNthCalledWith(3, 'call_ended', {
       callId: 'call-1',
       reason: 'disconnected',
+    });
+  });
+
+  describe('durable stale-reconnect sweep', () => {
+    const staleParticipant = (deadline: string, isConnected = false) =>
+      new CallParticipant({
+        userId: 'user-a',
+        callId: 'call-1',
+        role: 'host',
+        socketIds: [],
+        isConnected,
+        reconnectDeadlineAt: new Date(deadline),
+        joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+
+    const setup = (options: {
+      participant: CallParticipant | null;
+      leave?: jest.Mock;
+    }) => {
+      const leaveCallUseCase = {
+        execute:
+          options.leave ??
+          jest.fn().mockResolvedValue({
+            session: activeSession,
+            endedReason: 'disconnected',
+            shouldEmitPeerLeft: true,
+            didTransition: true,
+          }),
+      };
+      const stateRepository = {
+        getParticipant: jest.fn().mockResolvedValue(options.participant),
+        upsertParticipant: jest.fn(),
+        removeParticipant: jest.fn(),
+        listExpiredReconnects: jest
+          .fn()
+          .mockResolvedValue([{ callId: 'call-1', userId: 'user-a' }]),
+        forgetReconnect: jest.fn().mockResolvedValue(undefined),
+      };
+      const gateway = createGateway({ leaveCallUseCase, stateRepository });
+      const roomEmitter = { emit: jest.fn() };
+      gateway.server = {
+        to: jest.fn().mockReturnValue(roomEmitter),
+      } as never;
+      return { gateway, leaveCallUseCase, stateRepository, roomEmitter };
+    };
+
+    afterEach(() => {
+      jest.useFakeTimers();
+    });
+
+    it('ends a call whose reconnect deadline passed without the in-process timer finishing it', async () => {
+      // Deadline was 10s ago: the timer-based finalization never completed.
+      const { gateway, leaveCallUseCase, stateRepository, roomEmitter } = setup(
+        { participant: staleParticipant('2025-12-31T23:59:50.000Z') },
+      );
+      try {
+        await gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(stateRepository.listExpiredReconnects).toHaveBeenCalledWith(
+          new Date('2025-12-31T23:59:58.000Z'),
+          50,
+        );
+        expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
+          'call-1',
+          'user-a',
+          'disconnected',
+        );
+        expect(stateRepository.forgetReconnect).toHaveBeenCalledWith(
+          'call-1',
+          'user-a',
+        );
+        expect(roomEmitter.emit).toHaveBeenCalledWith('peer_left', {
+          callId: 'call-1',
+          userId: 'user-a',
+          reason: 'disconnected',
+        });
+        expect(roomEmitter.emit).toHaveBeenCalledWith('call_ended', {
+          callId: 'call-1',
+          reason: 'disconnected',
+        });
+      } finally {
+        gateway.onModuleDestroy();
+      }
+    });
+
+    it('does not end a call whose participant reconnected or re-armed a later deadline', async () => {
+      for (const participant of [
+        staleParticipant('2025-12-31T23:59:50.000Z', true),
+        staleParticipant('2026-01-01T00:00:10.000Z'),
+      ]) {
+        const { gateway, leaveCallUseCase } = setup({ participant });
+        try {
+          await gateway.onModuleInit();
+          await jest.advanceTimersByTimeAsync(0);
+          expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+        } finally {
+          gateway.onModuleDestroy();
+        }
+      }
+    });
+
+    it('drops index entries for vanished participants and sessions instead of retrying forever', async () => {
+      const vanished = setup({ participant: null });
+      try {
+        await vanished.gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(vanished.leaveCallUseCase.execute).not.toHaveBeenCalled();
+        expect(vanished.stateRepository.forgetReconnect).toHaveBeenCalledWith(
+          'call-1',
+          'user-a',
+        );
+      } finally {
+        vanished.gateway.onModuleDestroy();
+      }
+
+      const goneSession = setup({
+        participant: staleParticipant('2025-12-31T23:59:50.000Z'),
+        leave: jest.fn().mockRejectedValue(new NotFoundException()),
+      });
+      try {
+        await goneSession.gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(
+          goneSession.stateRepository.forgetReconnect,
+        ).toHaveBeenCalledWith('call-1', 'user-a');
+        expect(goneSession.roomEmitter.emit).not.toHaveBeenCalled();
+      } finally {
+        goneSession.gateway.onModuleDestroy();
+      }
+    });
+
+    it('keeps the entry for the next sweep when ending the call fails transiently', async () => {
+      const { gateway, stateRepository } = setup({
+        participant: staleParticipant('2025-12-31T23:59:50.000Z'),
+        leave: jest.fn().mockRejectedValue(new Error('Redis unavailable')),
+      });
+      try {
+        await gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+        expect(stateRepository.forgetReconnect).not.toHaveBeenCalled();
+      } finally {
+        gateway.onModuleDestroy();
+      }
     });
   });
 
@@ -3209,6 +3353,8 @@ function createGateway(overrides?: {
     getParticipant: jest.Mock;
     upsertParticipant: jest.Mock;
     removeParticipant: jest.Mock;
+    listExpiredReconnects?: jest.Mock;
+    forgetReconnect?: jest.Mock;
   };
   metrics?: {
     recordSocketDisconnect: jest.Mock;

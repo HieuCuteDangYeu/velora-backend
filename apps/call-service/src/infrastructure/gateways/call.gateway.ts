@@ -341,6 +341,10 @@ export class CallGateway
   private expirySweepInFlight = false;
   private membershipScanCursor = '0';
   private membershipSweepInFlight = false;
+  private reconnectSweepInFlight = false;
+  // The in-process timer owns the happy path; the durable sweep only acts on
+  // deadlines it has demonstrably missed.
+  private readonly reconnectSweepSlackMs = 2000;
 
   private async withGroupParticipantQueue<T>(
     callId: string,
@@ -403,10 +407,12 @@ export class CallGateway
     this.expirySweepTimer = setInterval(() => {
       void this.sweepExpiredCalls();
       void this.reconcileGroupMembership();
+      void this.sweepStaleReconnects();
     }, this.expirySweepIntervalMs);
     this.expirySweepTimer.unref?.();
     void this.sweepExpiredCalls();
     void this.reconcileGroupMembership();
+    void this.sweepStaleReconnects();
   }
 
   onModuleDestroy(): void {
@@ -2618,7 +2624,7 @@ export class CallGateway
             this.logger.warn(
               `Deferred disconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
             );
-            // ponytail: bound transient Redis retries; a durable sweep is needed for longer outages or process death.
+            // ponytail: bound transient Redis retries; sweepStaleReconnects covers longer outages.
             if (retryCount < 3) {
               rescheduled = true;
               this.scheduleDisconnectFinalization(
@@ -2686,6 +2692,97 @@ export class CallGateway
       );
     } finally {
       this.expirySweepInFlight = false;
+    }
+  }
+
+  /**
+   * Durable counterpart of `scheduleDisconnectFinalization`: finalizes
+   * participants whose reconnect deadline passed without the in-process timer
+   * completing (retries exhausted during a Redis outage, timer lost).
+   */
+  private async sweepStaleReconnects(): Promise<void> {
+    if (!this.server || this.reconnectSweepInFlight) return;
+
+    this.reconnectSweepInFlight = true;
+    try {
+      this.runtimeLease.assertHeld();
+      const stale = await this.stateRepository.listExpiredReconnects(
+        new Date(Date.now() - this.reconnectSweepSlackMs),
+        50,
+      );
+      for (const { callId, userId } of stale) {
+        try {
+          await this.withGroupParticipantQueue(callId, userId, () =>
+            this.finalizeStaleReconnect(callId, userId),
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Stale reconnect cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Durable reconnect sweep failed errorCode=${safeCallErrorCode(error)}`,
+      );
+    } finally {
+      this.reconnectSweepInFlight = false;
+    }
+  }
+
+  private async finalizeStaleReconnect(
+    callId: string,
+    userId: string,
+  ): Promise<void> {
+    const participant = await this.stateRepository.getParticipant(
+      callId,
+      userId,
+    );
+    if (
+      !participant ||
+      participant.isConnected ||
+      !participant.reconnectDeadlineAt
+    ) {
+      await this.stateRepository.forgetReconnect(callId, userId);
+      return;
+    }
+    // Reconnected and dropped again since the sweep listed it.
+    if (
+      participant.reconnectDeadlineAt.getTime() >
+      Date.now() - this.reconnectSweepSlackMs
+    ) {
+      return;
+    }
+
+    this.clearPendingDisconnect(callId, userId);
+    this.reconnectStartedAtByParticipant.delete(
+      this.disconnectKey(callId, userId),
+    );
+    let result: Awaited<ReturnType<LeaveCallUseCase['execute']>>;
+    try {
+      result = await this.leaveCallUseCase.execute(
+        callId,
+        userId,
+        'disconnected',
+      );
+    } catch (error) {
+      // The session is gone or no longer lists this user: nothing left to end.
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ForbiddenException
+      ) {
+        await this.stateRepository.forgetReconnect(callId, userId);
+        return;
+      }
+      throw error;
+    }
+    await this.stateRepository.forgetReconnect(callId, userId);
+    if (result.shouldEmitPeerLeft) {
+      this.emitClosedProducers(callId, userId, result.closedProducers);
+      this.emitPeerLeft(callId, userId, 'disconnected');
+    }
+    if (result.didTransition !== false) {
+      this.emitCallEnded(result.session, result.endedReason);
     }
   }
 

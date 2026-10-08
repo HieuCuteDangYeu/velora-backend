@@ -114,6 +114,27 @@ class FakeRedisClient {
     return Promise.resolve(Object.fromEntries(hash.entries()));
   }
 
+  hkeys(key: string): Promise<string[]> {
+    return Promise.resolve([...(this.hashes.get(key)?.keys() ?? [])]);
+  }
+
+  zrangebyscore(
+    key: string,
+    min: string | number,
+    max: string | number,
+    ...limit: unknown[]
+  ): Promise<string[]> {
+    const lower = min === '-inf' ? -Infinity : Number(min);
+    const count = limit[0] === 'LIMIT' ? Number(limit[2]) : Infinity;
+    return Promise.resolve(
+      [...(this.sortedSets.get(key) ?? [])]
+        .filter(([, score]) => score >= lower && score <= Number(max))
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, count)
+        .map(([member]) => member),
+    );
+  }
+
   hget(key: string, field: string): Promise<string | null> {
     const hash = this.hashes.get(key);
     return Promise.resolve(hash?.get(field) ?? null);

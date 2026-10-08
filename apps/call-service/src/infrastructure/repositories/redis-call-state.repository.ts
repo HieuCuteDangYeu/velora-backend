@@ -25,6 +25,10 @@ export interface StoredProducerState {
   kind: 'audio' | 'video';
 }
 
+// Sorted by reconnect deadline (ms); member is `callId|userId`. Self-heals: the
+// sweep drops members whose participant is gone or connected again.
+const RECONNECTING_PARTICIPANTS_KEY = 'call:participants:reconnecting';
+
 @Injectable()
 export class RedisCallStateRepository implements ICallStateRepository {
   constructor(@Inject('REDIS_CLIENT') private readonly redis: Redis) {}
@@ -50,10 +54,54 @@ export class RedisCallStateRepository implements ICallStateRepository {
       JSON.stringify(nextParticipant),
     );
     await this.redis.expire(key, 60 * 60 * 6);
+
+    const deadlineMs = nextParticipant.reconnectDeadlineAt?.getTime();
+    if (!nextParticipant.isConnected && Number.isFinite(deadlineMs)) {
+      await this.redis.zadd(
+        RECONNECTING_PARTICIPANTS_KEY,
+        deadlineMs as number,
+        this.reconnectMember(participant.callId, participant.userId),
+      );
+    } else {
+      await this.forgetReconnect(participant.callId, participant.userId);
+    }
   }
 
   async removeParticipant(callId: string, userId: string): Promise<void> {
     await this.redis.hdel(this.participantKey(callId), userId);
+    await this.forgetReconnect(callId, userId);
+  }
+
+  async listExpiredReconnects(
+    deadlineBefore: Date,
+    limit: number,
+  ): Promise<Array<{ callId: string; userId: string }>> {
+    const members = await this.redis.zrangebyscore(
+      RECONNECTING_PARTICIPANTS_KEY,
+      '-inf',
+      deadlineBefore.getTime(),
+      'LIMIT',
+      0,
+      Math.max(1, limit),
+    );
+    return members.flatMap((member) => {
+      const separator = member.indexOf('|');
+      return separator > 0
+        ? [
+            {
+              callId: member.slice(0, separator),
+              userId: member.slice(separator + 1),
+            },
+          ]
+        : [];
+    });
+  }
+
+  async forgetReconnect(callId: string, userId: string): Promise<void> {
+    await this.redis.zrem(
+      RECONNECTING_PARTICIPANTS_KEY,
+      this.reconnectMember(callId, userId),
+    );
   }
 
   async removeParticipantSocket(
@@ -78,12 +126,14 @@ export class RedisCallStateRepository implements ICallStateRepository {
 
     if (remainingSocketIds.length === 0) {
       await this.redis.hdel(this.participantKey(callId), userId);
+      await this.forgetReconnect(callId, userId);
       return nextParticipant;
     }
 
     const key = this.participantKey(callId);
     await this.redis.hset(key, userId, JSON.stringify(nextParticipant));
     await this.redis.expire(key, 60 * 60 * 6);
+    await this.forgetReconnect(callId, userId);
     return nextParticipant;
   }
 
@@ -108,6 +158,13 @@ export class RedisCallStateRepository implements ICallStateRepository {
   }
 
   async clearCallState(callId: string): Promise<void> {
+    const userIds = await this.redis.hkeys(this.participantKey(callId));
+    if (userIds.length > 0) {
+      await this.redis.zrem(
+        RECONNECTING_PARTICIPANTS_KEY,
+        ...userIds.map((userId) => this.reconnectMember(callId, userId)),
+      );
+    }
     await this.redis.eval(
       `local keys = {KEYS[1], KEYS[2], KEYS[3], KEYS[4]}
        for _, mediaIndex in ipairs({
@@ -276,6 +333,10 @@ export class RedisCallStateRepository implements ICallStateRepository {
 
   private sessionKey(callId: string): string {
     return `call:${callId}:session`;
+  }
+
+  private reconnectMember(callId: string, userId: string): string {
+    return `${callId}|${userId}`;
   }
 
   private participantKey(callId: string): string {

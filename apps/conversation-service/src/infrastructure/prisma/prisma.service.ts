@@ -25,7 +25,13 @@ export class PrismaService
       const match = event.query.match(
         /^db\.(messages|conversations)\.(insertOne|insertMany|aggregate|updateMany)\(/,
       );
-      const command = match && MONGO_COMMANDS[`${match[1]}.${match[2]}`];
+      const command = match
+        ? MONGO_COMMANDS[`${match[1]}.${match[2]}`]
+        : /^db\.runCommand\(\s*\{\s*"?update"?\s*:\s*"conversations"/.test(
+              event.query,
+            )
+          ? 'conversation_update'
+          : undefined;
       if (command) metrics.recordMongoCommand(command, event.duration / 1000);
     });
   }

@@ -61,9 +61,9 @@ const prismaError = (code: string) =>
   });
 const transactionHarness = ($transaction: jest.Mock) => {
   const models = {
+    $runCommandRaw: jest.fn().mockResolvedValue({ ok: 1, n: 1 }),
     conversation: {
       findUnique: jest.fn().mockResolvedValue(createStoredConversation()),
-      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     message: {
       createMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -72,6 +72,9 @@ const transactionHarness = ($transaction: jest.Mock) => {
   };
   const prisma = {
     ...models,
+    rootRunCommandRaw: jest.fn(() => {
+      throw new Error('root client forbidden');
+    }),
     $transaction: jest.fn(
       async (
         action: (tx: typeof models) => Promise<unknown>,
@@ -89,7 +92,7 @@ const transactionHarness = ($transaction: jest.Mock) => {
     decrypt: jest.fn((s: string) => s.replace('encrypted:', '')),
   };
   const repository = new PrismaChatRepository(
-    prisma as never,
+    { ...prisma, $runCommandRaw: prisma.rootRunCommandRaw } as never,
     redis as never,
     encryption,
     {} as never,
@@ -215,17 +218,32 @@ describe('message transaction conflicts', () => {
       }),
     );
     expect(prisma.conversation.findUnique).toHaveBeenCalledTimes(1);
-    expect(prisma.conversation.updateMany).toHaveBeenCalledWith({
-      where: { id: 'conversation-1' },
-      data: {
-        lastMessage: 'hello',
-        lastMessageAt: expect.any(Date),
-        updatedAt: expect.any(Date),
-      },
+    expect(prisma.$runCommandRaw).toHaveBeenCalledWith({
+      update: 'conversations',
+      updates: [
+        {
+          q: { _id: { $oid: 'conversation-1' } },
+          u: {
+            $set: {
+              lastMessage: 'hello',
+              lastMessageAt: { $date: expect.any(String) },
+              updatedAt: { $date: expect.any(String) },
+            },
+          },
+          multi: false,
+          upsert: false,
+        },
+      ],
+      ordered: true,
     });
+    const dates = prisma.$runCommandRaw.mock.calls[0][0].updates[0].u.$set as {
+      lastMessageAt: { $date: string };
+      updatedAt: { $date: string };
+    };
     expect(result.conversation?.updatedAt).toEqual(
-      prisma.conversation.updateMany.mock.calls[0][0].data.updatedAt,
+      new Date(dates.updatedAt.$date),
     );
+    expect(dates.lastMessageAt).toEqual(dates.updatedAt);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       maxWait: 2000,
       timeout: 5000,
@@ -249,7 +267,7 @@ describe('message transaction conflicts', () => {
         repository.createMessageIdempotently(createMessage()),
       ).rejects.toBeInstanceOf(error);
       expect(prisma.message.createMany).not.toHaveBeenCalled();
-      expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
+      expect(prisma.$runCommandRaw).not.toHaveBeenCalled();
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(transaction).not.toHaveBeenCalled();
       expect(redis.del).not.toHaveBeenCalled();
@@ -259,12 +277,33 @@ describe('message transaction conflicts', () => {
   it('aborts the transaction when preview update finds no conversation', async () => {
     const commit = jest.fn();
     const { repository, prisma, redis } = transactionHarness(commit);
-    prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+    prisma.$runCommandRaw.mockResolvedValue({ ok: 1, n: 0 });
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
     expect(commit).not.toHaveBeenCalled();
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing acknowledgement', {}],
+    ['failed command', { ok: 0, n: 1 }],
+    ['missing count', { ok: 1 }],
+    ['unexpected count', { ok: 1, n: 2 }],
+    ['write error', { ok: 1, n: 1, writeErrors: [{ code: 121 }] }],
+    ['malformed write errors', { ok: 1, n: 1, writeErrors: {} }],
+    ['ambiguous durability', { ok: 1, n: 1, writeConcernError: { code: 64 } }],
+  ])('rolls back an unacknowledged preview (%s)', async (_case, receipt) => {
+    const commit = jest.fn();
+    const { repository, prisma, redis } = transactionHarness(commit);
+    prisma.$runCommandRaw.mockResolvedValue(receipt);
+    await expect(
+      repository.createMessageIdempotently(createMessage()),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(prisma.rootRunCommandRaw).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
 
@@ -275,7 +314,7 @@ describe('message transaction conflicts', () => {
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toMatchObject({ status: 500 });
-    expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
+    expect(prisma.$runCommandRaw).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
@@ -290,10 +329,10 @@ describe('message transaction conflicts', () => {
       markEntered = resolve;
     });
     const { repository, prisma } = transactionHarness(jest.fn());
-    prisma.conversation.updateMany.mockImplementationOnce(async () => {
+    prisma.$runCommandRaw.mockImplementationOnce(async () => {
       markEntered();
       await blocked;
-      return { count: 1 };
+      return { ok: 1, n: 1 };
     });
     const first = repository.createMessageIdempotently(createMessage());
     const second = repository.createMessageIdempotently(createMessage());

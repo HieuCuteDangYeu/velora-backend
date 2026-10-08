@@ -29,6 +29,12 @@ describe('Conversation Mongo command observations', () => {
     });
     observe({ query: 'db.conversations.aggregate([])', duration: 75 });
     observe({ query: 'db.conversations.updateMany({})', duration: 100 });
+    observe({
+      query:
+        'db.runCommand({"update":"conversations","updates":[{"private":"content"}]})',
+      duration: 80,
+    });
+    observe({ query: 'db.runCommand({"update":"messages"})', duration: 99 });
     observe({ query: 'db.user_key_bundles.aggregate([])', duration: 99 });
     observe({ query: 'private query', duration: 99 });
     expect(metrics.recordMongoCommand.mock.calls).toEqual([
@@ -37,6 +43,7 @@ describe('Conversation Mongo command observations', () => {
       ['message_read', 0.05],
       ['conversation_read', 0.075],
       ['conversation_update', 0.1],
+      ['conversation_update', 0.08],
     ]);
     expect(JSON.stringify(metrics.recordMongoCommand.mock.calls)).not.toMatch(
       /secret|private|token|content/,

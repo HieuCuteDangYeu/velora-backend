@@ -241,18 +241,41 @@ export class PrismaChatRepository implements IChatRepository {
                     );
                   }
                   const timestamp = new Date();
-                  // updateMany avoids Prisma's final read-back. Check its count
-                  // inside the transaction so a missing preview rolls back the
-                  // message rather than committing an orphaned send.
-                  const updated = await tx.conversation.updateMany({
-                    where: { id: message.conversationId },
-                    data: {
-                      lastMessage: previewText,
-                      lastMessageAt: timestamp,
-                      updatedAt: timestamp,
-                    },
+                  // The ID is already authorized by this transaction's read.
+                  // A single update avoids updateMany's preliminary ID read.
+                  // Stay on tx: a conflicting membership change must abort the
+                  // message, preview and notification intent together.
+                  const updated = await tx.$runCommandRaw({
+                    update: 'conversations',
+                    updates: [
+                      {
+                        q: { _id: { $oid: message.conversationId } },
+                        u: {
+                          $set: {
+                            lastMessage: previewText,
+                            lastMessageAt: { $date: timestamp.toISOString() },
+                            updatedAt: { $date: timestamp.toISOString() },
+                          },
+                        },
+                        multi: false,
+                        upsert: false,
+                      },
+                    ],
+                    ordered: true,
                   });
-                  if (updated.count !== 1) {
+                  // No per-command writeConcern inside a transaction. Commit
+                  // controls durability; ambiguous receipts must abort first.
+                  if (
+                    updated?.ok !== 1 ||
+                    updated.writeErrors !== undefined ||
+                    updated.writeConcernError !== undefined ||
+                    (updated.n !== 0 && updated.n !== 1)
+                  ) {
+                    throw new InternalServerErrorException(
+                      'Conversation preview update was not acknowledged',
+                    );
+                  }
+                  if (updated.n !== 1) {
                     throw new NotFoundException('Conversation not found');
                   }
                   return [

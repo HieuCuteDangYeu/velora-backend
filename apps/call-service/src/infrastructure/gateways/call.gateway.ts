@@ -841,6 +841,23 @@ export class CallGateway
       noAnswerTimeoutMs: this.noAnswerTimeoutMs,
     } satisfies CallJoinedSocketPayload);
 
+    // The callee may have answered while the caller's socket was away, so the
+    // room broadcast was never delivered. The caller waits for this event to
+    // leave the ringing state; replaying it is idempotent for the client.
+    if (
+      result.role === 'host' &&
+      !result.session.isGroupCall &&
+      result.session.status === 'active'
+    ) {
+      client.emit('call_answered', {
+        callId: payload.callId,
+        userId: result.session.targetUserId,
+        ...(result.session.answerActionId
+          ? { answerActionId: result.session.answerActionId }
+          : {}),
+      });
+    }
+
     if (result.shouldEmitNewPeer) {
       client.to(payload.callId).emit('new_peer', {
         callId: payload.callId,

@@ -491,6 +491,108 @@ describe('CallGateway reconnect recovery', () => {
     expect(joinCallUseCase.execute).not.toHaveBeenCalled();
   });
 
+  it('replays call_answered to a caller who rejoins a direct call the callee already answered', async () => {
+    const joinCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'host',
+        session: new CallSession({
+          ...activeSession,
+          answerActionId: 'answer-action-1',
+        }),
+        rtpCapabilities: { codecs: [] },
+        shouldEmitNewPeer: false,
+      }),
+    };
+    const gateway = createGateway({
+      joinCallUseCase,
+      mediaEngine: { listActiveProducers: jest.fn().mockResolvedValue([]) },
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(activeSession),
+      },
+    });
+    const caller = createSocket({
+      id: 'socket-2',
+      userId: 'user-a',
+      emit: jest.fn(),
+      join: jest.fn().mockResolvedValue(undefined),
+    });
+
+    await gateway.handleJoinCall({ callId: 'call-1' }, caller);
+
+    const events = ((caller.emit as jest.Mock).mock.calls as unknown[][]).map(
+      ([event]) => event,
+    );
+    expect(events.indexOf('call_joined')).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf('call_answered')).toBeGreaterThan(
+      events.indexOf('call_joined'),
+    );
+    expect(caller.emit).toHaveBeenCalledWith('call_answered', {
+      callId: 'call-1',
+      userId: 'user-b',
+      answerActionId: 'answer-action-1',
+    });
+  });
+
+  it('does not replay call_answered while the direct call is still ringing or for the callee', async () => {
+    const ringing = new CallSession({
+      ...initiatedVoiceSession,
+      status: 'ringing',
+    });
+    const hostJoin = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'host',
+        session: ringing,
+        rtpCapabilities: { codecs: [] },
+        shouldEmitNewPeer: false,
+      }),
+    };
+    const ringingGateway = createGateway({
+      joinCallUseCase: hostJoin,
+      mediaEngine: { listActiveProducers: jest.fn().mockResolvedValue([]) },
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(ringing),
+      },
+    });
+    const caller = createSocket({
+      id: 'socket-2',
+      userId: 'user-a',
+      emit: jest.fn(),
+      join: jest.fn().mockResolvedValue(undefined),
+    });
+    await ringingGateway.handleJoinCall({ callId: 'call-0' }, caller);
+    expect(caller.emit).not.toHaveBeenCalledWith(
+      'call_answered',
+      expect.anything(),
+    );
+
+    const guestJoin = {
+      execute: jest.fn().mockResolvedValue({
+        role: 'guest',
+        session: activeSession,
+        rtpCapabilities: { codecs: [] },
+        shouldEmitNewPeer: false,
+      }),
+    };
+    const activeGateway = createGateway({
+      joinCallUseCase: guestJoin,
+      mediaEngine: { listActiveProducers: jest.fn().mockResolvedValue([]) },
+      sessionRepository: {
+        findByCallId: jest.fn().mockResolvedValue(activeSession),
+      },
+    });
+    const callee = createSocket({
+      id: 'socket-b',
+      userId: 'user-b',
+      emit: jest.fn(),
+      join: jest.fn().mockResolvedValue(undefined),
+    });
+    await activeGateway.handleJoinCall({ callId: 'call-1' }, callee);
+    expect(callee.emit).not.toHaveBeenCalledWith(
+      'call_answered',
+      expect.anything(),
+    );
+  });
+
   it('does not let an old same-account socket end a modern group call', async () => {
     const groupSession = new CallSession({
       ...activeSession,

@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/conversation-client';
 import { randomUUID } from 'node:crypto';
 import { Message } from '../src/domain/entities/message.entity';
 import { PrismaChatRepository } from '../src/infrastructure/repositories/prisma-chat.repository';
+import { readNotificationIntent } from '../src/infrastructure/repositories/notification-intent.reader';
 import { MessageNotificationOutboxWorker } from '../src/infrastructure/workers/message-notification-outbox.worker';
 
 const waitFor = async (ready: Promise<void>) => {
@@ -114,6 +115,50 @@ integration(
       expect(replay.created).toBe(false);
       expect(replay.message.id).toBe(original.id);
       expect(await prisma.message.count()).toBe(1);
+
+      // Verify the real BSON projection and indexed join, not a mocked pipeline.
+      const probeClaim = randomUUID();
+      await prisma.message.update({
+        where: { id: original.id },
+        data: {
+          notificationClaimId: probeClaim,
+          notificationAttemptCount: 1,
+        },
+      });
+      queries.length = 0;
+      const intent = await readNotificationIntent(
+        prisma,
+        original.id,
+        probeClaim,
+      );
+      expect(queries).toEqual(['db.messages.aggregate']);
+      expect(intent).toMatchObject({
+        id: original.id,
+        conversationId: conversation.id,
+        content: original.content,
+        senderId: 'sender',
+        signalType: 0,
+        type: 'text',
+        createdAt: original.createdAt,
+        notificationRecipientIds: ['member'],
+        notificationClaimId: probeClaim,
+        conversation: {
+          id: conversation.id,
+          participantIds: ['sender', 'member'],
+          isGroup: true,
+          name: null,
+        },
+      });
+      expect(
+        await readNotificationIntent(prisma, original.id, 'stale-claim'),
+      ).toBeNull();
+      await prisma.message.update({
+        where: { id: original.id },
+        data: {
+          notificationClaimId: null,
+          notificationAttemptCount: 0,
+        },
+      });
 
       // Inject a preview failure after the real insert inside the transaction.
       const transaction = (action: (tx: unknown) => Promise<unknown>) =>

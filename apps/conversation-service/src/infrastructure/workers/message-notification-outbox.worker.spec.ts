@@ -57,10 +57,33 @@ const makeHarness = (records = [makeRecord()]) => {
         return Promise.resolve(due.slice(0, take).map(({ id }) => ({ id })));
       },
     ),
-    findUnique: jest.fn(({ where }: { where: { id: string } }) => {
-      const record = records.find((r) => r.id === where.id);
-      return Promise.resolve(record ? { ...record, conversation } : null);
-    }),
+    aggregateRaw: jest.fn(
+      ({
+        pipeline,
+      }: {
+        pipeline: {
+          $match?: { _id: { $oid: string }; notificationClaimId: string };
+        }[];
+      }) => {
+        const match = pipeline[0].$match!;
+        const record = records.find(
+          (r) =>
+            r.id === match._id.$oid &&
+            r.notificationClaimId === match.notificationClaimId,
+        );
+        return Promise.resolve(
+          record
+            ? [
+                {
+                  ...record,
+                  createdAt: record.createdAt.toISOString(),
+                  conversation,
+                },
+              ]
+            : [],
+        );
+      },
+    ),
     count: jest.fn(() =>
       Promise.resolve(
         records.filter((r) => r.notificationNextAttemptAt).length,
@@ -195,6 +218,113 @@ describe('Message notification outbox', () => {
     expect(h.metrics.setNotificationOutboxPending).toHaveBeenCalledWith(0);
   });
 
+  it('reads current recall and membership after claiming, using one guarded lookup', async () => {
+    const h = makeHarness();
+    const claim = h.runCommand.getMockImplementation()!;
+    h.runCommand.mockImplementationOnce(async (command) => {
+      const result = await claim(command);
+      h.setConversation({
+        id: h.records[0].conversationId,
+        participantIds: ['sender'],
+        isGroup: true,
+        name: null,
+      });
+      return result;
+    });
+    await h.createWorker().runOnce();
+    expect(h.message.aggregateRaw).toHaveBeenCalledTimes(1);
+    expect(h.message.aggregateRaw).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pipeline: expect.arrayContaining([
+          {
+            $match: {
+              _id: { $oid: h.records[0].id },
+              notificationClaimId: expect.any(String),
+            },
+          },
+          expect.objectContaining({
+            $lookup: expect.objectContaining({
+              from: 'conversations',
+              localField: 'conversationId',
+              foreignField: '_id',
+            }),
+          }),
+        ]),
+      }),
+    );
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.metrics.recordNotificationOutbox).toHaveBeenCalledWith(
+      'cancelled',
+    );
+  });
+
+  it('does not notify when a message is recalled between claim and read', async () => {
+    const h = makeHarness();
+    const claim = h.runCommand.getMockImplementation()!;
+    h.runCommand.mockImplementationOnce(async (command) => {
+      const result = await claim(command);
+      h.records[0].isRecalled = true;
+      return result;
+    });
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.metrics.recordNotificationOutbox).toHaveBeenCalledWith(
+      'cancelled',
+    );
+  });
+
+  it('does not dispatch after a lease takeover before the saved record is read', async () => {
+    const h = makeHarness();
+    const claim = h.runCommand.getMockImplementation()!;
+    h.runCommand.mockImplementationOnce(async (command) => {
+      const result = await claim(command);
+      h.records[0].notificationClaimId = 'other-worker';
+      return result;
+    });
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.records[0].notificationClaimId).toBe('other-worker');
+    expect(h.records[0].notificationNextAttemptAt).not.toBeNull();
+    expect(h.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { senderId: 12 },
+    { createdAt: 'not-a-date' },
+    {
+      conversation: {
+        id: 'bad',
+        participantIds: 'member',
+        isGroup: true,
+        name: null,
+      },
+    },
+    { notificationRecipientIds: 'member' },
+  ])('retains malformed raw records instead of sending %j', async (invalid) => {
+    const h = makeHarness();
+    h.message.aggregateRaw.mockImplementationOnce(
+      () =>
+        Promise.resolve([
+          {
+            ...h.records[0],
+            createdAt: NOW.toISOString(),
+            conversation: null,
+            ...invalid,
+          },
+        ]) as never,
+    );
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
+      NOW.getTime(),
+    );
+    expect(h.records[0].notificationRecipientIds).toEqual([
+      'member',
+      'removed',
+    ]);
+    expect(h.metrics.recordNotificationOutbox).toHaveBeenCalledWith('retry');
+  });
+
   it('retains a failed intake and replays the same identity after backoff', async () => {
     const h = makeHarness();
     h.notifications.notifyNewMessage.mockRejectedValueOnce(
@@ -296,7 +426,7 @@ describe('Message notification outbox', () => {
 
   it('retains work on a database failure while rescheduling', async () => {
     const h = makeHarness();
-    h.message.findUnique.mockRejectedValueOnce(new Error('DB unavailable'));
+    h.message.aggregateRaw.mockRejectedValueOnce(new Error('DB unavailable'));
     const update = h.runCommand.getMockImplementation()!;
     h.runCommand
       .mockImplementationOnce(update)

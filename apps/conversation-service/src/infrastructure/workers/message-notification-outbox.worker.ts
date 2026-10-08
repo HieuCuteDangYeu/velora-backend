@@ -12,8 +12,9 @@ import type { IEncryptionRepository } from '../../domain/interfaces/encryption.r
 import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChatMapper } from '../repositories/chat.mapper';
-import { ConversationMapper } from '../repositories/conversation.mapper';
+import { Message } from '../../domain/entities/message.entity';
+import { Conversation } from '../../domain/entities/conversation.entity';
+import { readNotificationIntent } from '../repositories/notification-intent.reader';
 
 const POLL_MS = 1_000;
 const BATCH_SIZE = 20;
@@ -153,10 +154,7 @@ export class MessageNotificationOutboxWorker
       );
       if (claimed !== 1) return false;
       const record = await this.metrics.measurePhase('outbox_record_read', () =>
-        this.prisma.message.findUnique({
-          where: { id },
-          include: { conversation: true },
-        }),
+        readNotificationIntent(this.prisma, id, claimId),
       );
       // Another worker may have acquired an expired lease during a slow read.
       if (!record || record.notificationClaimId !== claimId) return false;
@@ -173,7 +171,17 @@ export class MessageNotificationOutboxWorker
       ) {
         return await this.complete(id, claimId, 'cancelled');
       }
-      const message = ChatMapper.toDomain(record);
+      // The intake adapter uses only identity, content and type, not chat history.
+      const message = new Message({
+        id: record.id,
+        conversationId: record.conversationId,
+        senderId: record.senderId,
+        type: record.type,
+        signalType: record.signalType,
+        content: record.content,
+        createdAt: record.createdAt,
+        isRecalled: record.isRecalled,
+      });
       if (message.signalType === 0) {
         message.content = this.encryption.decrypt(message.content);
         if (
@@ -184,7 +192,7 @@ export class MessageNotificationOutboxWorker
           throw new Error('Notification content could not be decrypted');
         }
       }
-      const conversation = ConversationMapper.toDomain(record.conversation);
+      const conversation = new Conversation(record.conversation);
       // Enrichment does not change the original recipient snapshot. Removed
       // members are excluded; newly joined members never receive older intents.
       conversation.participantIds = [record.senderId, ...recipientIds];

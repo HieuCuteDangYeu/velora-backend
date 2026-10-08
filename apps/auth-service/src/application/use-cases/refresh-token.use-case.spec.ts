@@ -114,49 +114,42 @@ describe('RefreshTokenUseCase', () => {
     );
   });
 
-  it.each([new Date(Date.now() - 120_000), new Date(Date.now() + 120_000)])(
-    'ignores historical absolute expiry %s when rotating an active token',
-    async (absoluteExpiresAt) => {
-      const { authRepository, jwtService, roleCache, userService, useCase } =
-        createUseCase();
-      const storedToken = new RefreshToken(
-        'stored-token-1',
-        'user-1',
-        'incoming-refresh-token',
-        new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-        false,
-        new Date(),
-        null,
-        null,
-        null,
-        absoluteExpiresAt,
-      );
+  it('issues a replacement valid for 90 days from the refresh time', async () => {
+    const { authRepository, jwtService, roleCache, userService, useCase } =
+      createUseCase();
+    const storedToken = new RefreshToken(
+      'stored-token-1',
+      'user-1',
+      'incoming-refresh-token',
+      new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      false,
+      new Date(),
+    );
 
-      jwtService.verifyAsync.mockResolvedValue(payload);
-      authRepository.findRefreshToken.mockResolvedValue(storedToken);
-      authRepository.getUserRole.mockResolvedValue(['USER']);
-      authRepository.rotateRefreshToken.mockResolvedValue({
-        token: storedToken,
-        refreshToken: 'new-refresh-token',
-      });
-      roleCache.setUserRoles.mockResolvedValue(undefined);
-      userService.findById.mockResolvedValue(user);
-      jwtService.signAsync
-        .mockResolvedValueOnce('new-access-token')
-        .mockResolvedValueOnce('new-refresh-token');
+    jwtService.verifyAsync.mockResolvedValue(payload);
+    authRepository.findRefreshToken.mockResolvedValue(storedToken);
+    authRepository.getUserRole.mockResolvedValue(['USER']);
+    authRepository.rotateRefreshToken.mockResolvedValue({
+      token: storedToken,
+      refreshToken: 'new-refresh-token',
+    });
+    roleCache.setUserRoles.mockResolvedValue(undefined);
+    userService.findById.mockResolvedValue(user);
+    jwtService.signAsync
+      .mockResolvedValueOnce('new-access-token')
+      .mockResolvedValueOnce('new-refresh-token');
 
-      await useCase.execute('incoming-refresh-token', 'request-1');
+    await useCase.execute('incoming-refresh-token', 'request-1');
 
-      const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
-      expect(refreshSignOptions.expiresIn).toBe(90 * 24 * 60 * 60);
-      const expiresAt = authRepository.rotateRefreshToken.mock
-        .calls[0][2] as Date;
-      expect(expiresAt.getTime() - Date.now()).toBeCloseTo(
-        90 * 24 * 60 * 60 * 1000,
-        -3,
-      );
-    },
-  );
+    const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
+    expect(refreshSignOptions.expiresIn).toBe(90 * 24 * 60 * 60);
+    const expiresAt = authRepository.rotateRefreshToken.mock
+      .calls[0][2] as Date;
+    expect(expiresAt.getTime() - Date.now()).toBeCloseTo(
+      90 * 24 * 60 * 60 * 1000,
+      -3,
+    );
+  });
 
   it('keeps rolling from refresh time beyond the original login date', async () => {
     jest.useFakeTimers();

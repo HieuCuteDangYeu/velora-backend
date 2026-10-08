@@ -25,30 +25,34 @@ integration('AuthRepository PostgreSQL integration', () => {
     await prisma.$disconnect();
   });
 
-  it('persists null caps and hashes/encrypts refresh tokens', async () => {
+  it('has removed the legacy column after migration', async () => {
+    const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'RefreshToken'
+        AND column_name = 'absoluteExpiresAt'
+    `;
+    expect(columns).toEqual([]);
+  });
+
+  it('persists rolling expiry and hashes/encrypts refresh tokens', async () => {
     const raw = 'login-' + randomUUID();
     const expiry = new Date(Date.now() + 90 * 86400000);
     const created = await repository.createRefreshToken(userId, raw, expiry);
     const row = await prisma.refreshToken.findUniqueOrThrow({
       where: { id: created.id },
     });
-    expect(row.absoluteExpiresAt).toBeNull();
     expect(row.expiresAt).toEqual(expiry);
     expect(row.token).toBe(createHash('sha256').update(raw).digest('hex'));
     expect(row.encryptedToken).not.toContain(raw);
     expect((await repository.findRefreshToken(raw))?.id).toBe(created.id);
   });
 
-  it('allows historical caps and atomically returns one winner for concurrent same-ID rotation', async () => {
+  it('atomically returns one winner for concurrent same-ID rotation', async () => {
     const old = await repository.createRefreshToken(
       userId,
       'old-' + randomUUID(),
       new Date(Date.now() + 86400000),
     );
-    await prisma.refreshToken.update({
-      where: { id: old.id },
-      data: { absoluteExpiresAt: new Date(Date.now() - 86400000) },
-    });
     const expiry = new Date(Date.now() + 90 * 86400000);
     const requestId = randomUUID();
     const candidates = ['a-' + randomUUID(), 'b-' + randomUUID()];
@@ -61,11 +65,14 @@ integration('AuthRepository PostgreSQL integration', () => {
     expect(results[0]?.token.id).toBe(results[1]?.token.id);
     expect(results[0]?.refreshToken).toBe(results[1]?.refreshToken);
     expect(candidates).toContain(results[0]?.refreshToken);
-    expect(results[0]?.token.absoluteExpiresAt).toBeNull();
     const consumed = await prisma.refreshToken.findUniqueOrThrow({
       where: { id: old.id },
     });
     expect(consumed.revoked).toBe(true);
+    expect(
+      (await repository.findRefreshToken(results[0]!.refreshToken))
+        ?.rotationRequestExpiresAt,
+    ).toBeNull();
     await expect(
       repository.recoverRotatedRefreshToken(old.id, requestId),
     ).resolves.toBe(results[0]?.refreshToken);

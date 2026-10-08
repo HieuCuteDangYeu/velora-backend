@@ -9,7 +9,6 @@ type Row = {
   revoked: boolean;
   createdAt: Date;
   expiresAt: Date;
-  absoluteExpiresAt: Date | null;
   replacedByTokenId?: string | null;
   rotationRequestId?: string | null;
   rotationRequestExpiresAt?: Date | null;
@@ -24,7 +23,6 @@ const setup = () => {
     create: jest.fn(({ data }: { data: Row }) => {
       const row = {
         createdAt: new Date(),
-        absoluteExpiresAt: null,
         replacedByTokenId: null,
         rotationRequestId: null,
         rotationRequestExpiresAt: null,
@@ -85,7 +83,6 @@ const setup = () => {
     revoked: false,
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + ttl),
-    absoluteExpiresAt: new Date(Date.now() - 86400000),
   });
   return { rows, delegate, prisma, repository };
 };
@@ -93,7 +90,7 @@ const setup = () => {
 describe('AuthRepository rolling rotation and recovery contract', () => {
   afterEach(() => jest.useRealTimers());
 
-  it('stores new tokens hashed/encrypted with a null legacy cap', async () => {
+  it('stores new tokens hashed/encrypted with their rolling expiry', async () => {
     const { repository, delegate } = setup();
     const expiresAt = new Date(Date.now() + ttl);
     await repository.createRefreshToken('user', 'raw-refresh', expiresAt);
@@ -101,7 +98,6 @@ describe('AuthRepository rolling rotation and recovery contract', () => {
     expect(data).toMatchObject({
       userId: 'user',
       expiresAt,
-      absoluteExpiresAt: null,
       revoked: false,
     });
     expect(data.token).toBe(
@@ -127,7 +123,6 @@ describe('AuthRepository rolling rotation and recovery contract', () => {
     expect(rows.get('old').revoked).toBe(true);
     expect(results[0]?.refreshToken).toBe('candidate-a');
     expect(results[1]?.refreshToken).toBe('candidate-a');
-    expect(results[0]?.token.absoluteExpiresAt).toBeNull();
     expect(results[0]?.token.expiresAt).toEqual(expiresAt);
     await expect(
       repository.recoverRotatedRefreshToken('old', 'request'),

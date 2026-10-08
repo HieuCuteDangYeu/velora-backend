@@ -303,6 +303,11 @@ export class CallGateway
   private readonly reconnectGraceMs = Number(
     process.env.CALL_RECONNECT_GRACE_MS || 15000,
   );
+  // Shorter than the in-call grace: while the caller is away the callee keeps
+  // ringing for a call that may already be abandoned.
+  private readonly ringReconnectGraceMs = Number(
+    process.env.CALL_RING_RECONNECT_GRACE_MS || 8000,
+  );
   private readonly noAnswerTimeoutMs = getCallNoAnswerTimeoutMs();
   private readonly expirySweepIntervalMs = Math.max(
     1000,
@@ -899,7 +904,10 @@ export class CallGateway
     }
     this.assertGroupLifecycleCapable(client, session);
 
-    if (session.status !== 'active') {
+    if (
+      session.status !== 'active' &&
+      !this.isRingingDirectCaller(session, userId)
+    ) {
       throw new ForbiddenException('Call is not recoverable');
     }
 
@@ -2472,8 +2480,9 @@ export class CallGateway
       return;
     }
 
-    if (session.status === 'active') {
-      const reconnectDeadlineAt = new Date(Date.now() + this.reconnectGraceMs);
+    const graceMs = this.disconnectGraceMs(session, userId);
+    if (session.status === 'active' || graceMs > 0) {
+      const reconnectDeadlineAt = new Date(Date.now() + graceMs);
       const reconnectKey = this.disconnectKey(callId, userId);
       if (!this.reconnectStartedAtByParticipant.has(reconnectKey)) {
         this.reconnectStartedAtByParticipant.set(reconnectKey, Date.now());
@@ -2492,7 +2501,7 @@ export class CallGateway
         userId,
         reconnectDeadlineAt: reconnectDeadlineAt.toISOString(),
       });
-      this.scheduleDisconnectFinalization(callId, userId);
+      this.scheduleDisconnectFinalization(callId, userId, graceMs);
       return;
     }
 
@@ -2511,6 +2520,32 @@ export class CallGateway
     if (result.didTransition !== false) {
       this.emitCallEnded(result.session, result.endedReason);
     }
+  }
+
+  /**
+   * How long a participant whose last socket dropped may reconnect before the
+   * call is torn down. Besides active calls, a direct-call caller gets a short
+   * window while the call is still ringing so a network switch does not cancel
+   * it; the ring deadline still bounds that window.
+   */
+  private disconnectGraceMs(session: CallSession, userId: string): number {
+    if (session.status === 'active') return this.reconnectGraceMs;
+    if (!this.isRingingDirectCaller(session, userId)) return 0;
+
+    const ringRemainingMs =
+      getSessionExpiryDate(
+        session.expiresAt,
+        session.ringTimeoutMs ?? this.noAnswerTimeoutMs,
+      ).getTime() - Date.now();
+    return Math.max(0, Math.min(this.ringReconnectGraceMs, ringRemainingMs));
+  }
+
+  private isRingingDirectCaller(session: CallSession, userId: string): boolean {
+    return (
+      !session.isGroupCall &&
+      userId === session.initiatorId &&
+      (session.status === 'initiated' || session.status === 'ringing')
+    );
   }
 
   private scheduleDisconnectFinalization(

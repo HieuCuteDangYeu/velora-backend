@@ -974,6 +974,292 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  describe('ringing direct-call caller reconnect grace', () => {
+    const ringingSession = new CallSession({
+      ...initiatedVoiceSession,
+      expiresAt: new Date('2026-01-01T00:00:30.000Z'),
+      ringTimeoutMs: 30000,
+    });
+    const connectedCaller = () =>
+      new CallParticipant({
+        userId: 'user-a',
+        callId: 'call-0',
+        role: 'host',
+        socketId: 'socket-1',
+        socketIds: ['socket-1'],
+        isConnected: true,
+        joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+    const leaveResult = {
+      session: ringingSession,
+      endedReason: 'disconnected',
+      shouldEmitPeerLeft: false,
+      didTransition: true,
+    };
+
+    it('keeps the call ringing for the caller until the shorter ring grace expires', async () => {
+      const leaveCallUseCase = {
+        execute: jest.fn().mockResolvedValue(leaveResult),
+      };
+      const stateRepository = {
+        getParticipant: jest
+          .fn()
+          .mockResolvedValueOnce(connectedCaller())
+          .mockResolvedValue(
+            new CallParticipant({
+              ...connectedCaller(),
+              socketIds: [],
+              socketId: undefined,
+              isConnected: false,
+              reconnectDeadlineAt: new Date('2026-01-01T00:00:08.000Z'),
+            }),
+          ),
+        upsertParticipant: jest.fn(),
+      };
+      const gateway = createGateway({
+        leaveCallUseCase,
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(ringingSession),
+        },
+        stateRepository,
+      });
+      const roomEmitter = { emit: jest.fn() };
+      gateway.server = {
+        to: jest.fn().mockReturnValue(roomEmitter),
+      } as never;
+
+      await gateway.handleDisconnect(
+        createSocket({
+          id: 'socket-1',
+          userId: 'user-a',
+          callIds: ['call-0'],
+        }),
+      );
+
+      expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isConnected: false,
+          reconnectDeadlineAt: new Date('2026-01-01T00:00:08.000Z'),
+        }),
+      );
+      expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(7999);
+      expect(leaveCallUseCase.execute).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1);
+      expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
+        'call-0',
+        'user-a',
+        'disconnected',
+      );
+      expect(roomEmitter.emit).toHaveBeenCalledWith('call_ended', {
+        callId: 'call-0',
+        reason: 'disconnected',
+      });
+    });
+
+    it('never extends the grace window past the ring deadline', async () => {
+      const nearlyExpired = new CallSession({
+        ...ringingSession,
+        expiresAt: new Date('2026-01-01T00:00:03.000Z'),
+      });
+      const stateRepository = {
+        getParticipant: jest.fn().mockResolvedValue(connectedCaller()),
+        upsertParticipant: jest.fn(),
+      };
+      const gateway = createGateway({
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(nearlyExpired),
+        },
+        stateRepository,
+      });
+      gateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+
+      await gateway.handleDisconnect(
+        createSocket({
+          id: 'socket-1',
+          userId: 'user-a',
+          callIds: ['call-0'],
+        }),
+      );
+
+      expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reconnectDeadlineAt: new Date('2026-01-01T00:00:03.000Z'),
+        }),
+      );
+    });
+
+    it('still ends the call immediately when the ring deadline has passed', async () => {
+      const expired = new CallSession({
+        ...ringingSession,
+        expiresAt: new Date('2025-12-31T23:59:59.000Z'),
+      });
+      const leaveCallUseCase = {
+        execute: jest.fn().mockResolvedValue(leaveResult),
+      };
+      const gateway = createGateway({
+        leaveCallUseCase,
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(expired),
+        },
+        stateRepository: {
+          getParticipant: jest.fn().mockResolvedValue(connectedCaller()),
+          upsertParticipant: jest.fn(),
+        },
+      });
+      gateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+
+      await gateway.handleDisconnect(
+        createSocket({
+          id: 'socket-1',
+          userId: 'user-a',
+          callIds: ['call-0'],
+        }),
+      );
+
+      expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
+        'call-0',
+        'user-a',
+        'disconnected',
+      );
+    });
+
+    it('does not grant the grace window to the callee or to group calls', async () => {
+      const calleeLeave = {
+        execute: jest.fn().mockResolvedValue(leaveResult),
+      };
+      const calleeParticipant = new CallParticipant({
+        userId: 'user-b',
+        callId: 'call-0',
+        role: 'guest',
+        socketId: 'socket-b',
+        socketIds: ['socket-b'],
+        isConnected: true,
+        joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+      const calleeGateway = createGateway({
+        leaveCallUseCase: calleeLeave,
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(ringingSession),
+        },
+        stateRepository: {
+          getParticipant: jest.fn().mockResolvedValue(calleeParticipant),
+          upsertParticipant: jest.fn(),
+        },
+      });
+      calleeGateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+      await calleeGateway.handleDisconnect(
+        createSocket({
+          id: 'socket-b',
+          userId: 'user-b',
+          callIds: ['call-0'],
+        }),
+      );
+      expect(calleeLeave.execute).toHaveBeenCalledTimes(1);
+
+      const groupLeave = {
+        execute: jest.fn().mockResolvedValue(leaveResult),
+      };
+      const groupGateway = createGateway({
+        leaveCallUseCase: groupLeave,
+        sessionRepository: {
+          findByCallId: jest
+            .fn()
+            .mockResolvedValue(
+              new CallSession({ ...ringingSession, isGroupCall: true }),
+            ),
+        },
+        stateRepository: {
+          getParticipant: jest.fn().mockResolvedValue(connectedCaller()),
+          upsertParticipant: jest.fn(),
+        },
+      });
+      groupGateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+      await groupGateway.handleDisconnect(
+        createSocket({
+          id: 'socket-1',
+          userId: 'user-a',
+          callIds: ['call-0'],
+        }),
+      );
+      expect(groupLeave.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the caller rejoin a ringing call but not the callee', async () => {
+      const joinCallUseCase = {
+        execute: jest.fn().mockResolvedValue({
+          role: 'host',
+          session: ringingSession,
+          rtpCapabilities: { codecs: [] },
+          shouldEmitNewPeer: false,
+        }),
+      };
+      const disconnectedCaller = new CallParticipant({
+        ...connectedCaller(),
+        socketIds: [],
+        socketId: undefined,
+        isConnected: false,
+        reconnectDeadlineAt: new Date('2026-01-01T00:00:08.000Z'),
+      });
+      const gateway = createGateway({
+        joinCallUseCase,
+        mediaEngine: {
+          listActiveProducers: jest.fn().mockResolvedValue([]),
+        },
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(ringingSession),
+        },
+        stateRepository: {
+          getParticipant: jest.fn().mockResolvedValue(disconnectedCaller),
+        },
+      });
+      const peerEmitter = { emit: jest.fn() };
+      const callerSocket = createSocket({
+        id: 'socket-2',
+        userId: 'user-a',
+        emit: jest.fn(),
+        join: jest.fn().mockResolvedValue(undefined),
+        to: jest.fn().mockReturnValue(peerEmitter),
+      });
+
+      await gateway.handleRejoinCall({ callId: 'call-0' }, callerSocket);
+
+      expect(joinCallUseCase.execute).toHaveBeenCalledWith(
+        'call-0',
+        'user-a',
+        'socket-2',
+      );
+      expect(callerSocket.emit).toHaveBeenCalledWith(
+        'call_rejoined',
+        expect.objectContaining({ callId: 'call-0' }),
+      );
+
+      joinCallUseCase.execute.mockClear();
+      await expect(
+        gateway.handleRejoinCall(
+          { callId: 'call-0' },
+          createSocket({
+            id: 'socket-b2',
+            userId: 'user-b',
+            emit: jest.fn(),
+            join: jest.fn().mockResolvedValue(undefined),
+          }),
+        ),
+      ).rejects.toThrow('Call is not recoverable');
+      expect(joinCallUseCase.execute).not.toHaveBeenCalled();
+    });
+  });
+
   it('closes a disconnected group guest audio before removing them from the room', async () => {
     const groupSession = new CallSession({
       ...activeSession,

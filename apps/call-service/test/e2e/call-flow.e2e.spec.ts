@@ -1412,6 +1412,7 @@ describe('Call Service P0 flow (e2e)', () => {
 
   beforeEach(async () => {
     process.env.CALL_RECONNECT_GRACE_MS = '50';
+    process.env.CALL_RING_RECONNECT_GRACE_MS = '150';
     // Give socket round-trips room to finish before the intentional timeout tests.
     process.env.CALL_NO_ANSWER_TIMEOUT_MS = '500';
     process.env.RABBITMQ_URL ||= 'amqp://127.0.0.1:5672';
@@ -1494,6 +1495,7 @@ describe('Call Service P0 flow (e2e)', () => {
     eventPublisher.reset();
     mediaEngine.reset();
     process.env.CALL_RECONNECT_GRACE_MS = originalReconnectGraceMs;
+    delete process.env.CALL_RING_RECONNECT_GRACE_MS;
     process.env.CALL_NO_ANSWER_TIMEOUT_MS = originalNoAnswerTimeoutMs;
     if (originalRabbitMqUrl === undefined) delete process.env.RABBITMQ_URL;
     else process.env.RABBITMQ_URL = originalRabbitMqUrl;
@@ -3699,7 +3701,7 @@ describe('Call Service P0 flow (e2e)', () => {
     await expectTerminalCallResourcesCleared(callId);
   });
 
-  it('fails fast when a ringing call disconnects before answer', async () => {
+  it('ends a ringing call when the caller stays disconnected past the ring grace window', async () => {
     const { caller, callee, callId } = await establishRingingCall();
 
     const callEnded = onceEvent<{ callId: string; reason: string }>(
@@ -3711,6 +3713,15 @@ describe('Call Service P0 flow (e2e)', () => {
     caller.disconnect();
     await callerDisconnected;
 
+    expect(await redis.get(`call:${callId}:session`)).not.toBeNull();
+    await waitForStoredParticipant(
+      callId,
+      callerUser.id,
+      (participant) =>
+        participant?.isConnected === false &&
+        typeof participant.reconnectDeadlineAt === 'string',
+    );
+
     await expect(callEnded).resolves.toEqual({
       callId,
       reason: 'disconnected',
@@ -3718,14 +3729,45 @@ describe('Call Service P0 flow (e2e)', () => {
     await expectTerminalCallResourcesCleared(callId);
   });
 
-  it('rejects rejoin attempts for calls that are not active', async () => {
-    const { caller, callId } = await establishRingingCall();
+  it('keeps a ringing call alive when the caller rejoins within the ring grace window', async () => {
+    const { caller, callee, callId } = await establishRingingCall();
+
+    const unexpectedCallEnded = waitForOptionalEvent(callee, 'call_ended', 250);
+    const callerDisconnected = waitForDisconnect(caller);
+    caller.disconnect();
+    await callerDisconnected;
+
+    await waitForStoredParticipant(
+      callId,
+      callerUser.id,
+      (participant) => participant?.isConnected === false,
+    );
+
+    const callerReconnected = await connectClient('caller-token');
+    const callRejoined = onceEvent<{
+      callId: string;
+      session: { status: string };
+    }>(callerReconnected, 'call_rejoined');
+    callerReconnected.emit('rejoin_call', { callId });
+
+    await expect(callRejoined).resolves.toEqual(
+      expect.objectContaining({
+        callId,
+        session: expect.objectContaining({ status: 'ringing' }),
+      }),
+    );
+    await expect(unexpectedCallEnded).resolves.toBeNull();
+    expect(await redis.get(`call:${callId}:session`)).not.toBeNull();
+  });
+
+  it('rejects ringing rejoin attempts from a user who is not the caller', async () => {
+    const { callee, callId } = await establishRingingCall();
 
     const exception = onceEvent<{ status: string; message: string }>(
-      caller,
+      callee,
       'exception',
     );
-    caller.emit('rejoin_call', { callId });
+    callee.emit('rejoin_call', { callId });
 
     await expect(exception).resolves.toEqual(
       expect.objectContaining({
@@ -3928,7 +3970,7 @@ describe('Call Service P0 flow (e2e)', () => {
     );
     expect(participantBeforeDisconnect?.socketIds).toHaveLength(2);
 
-    const unexpectedCallEnded = waitForOptionalEvent(callee, 'call_ended', 300);
+    const unexpectedCallEnded = waitForOptionalEvent(callee, 'call_ended', 250);
     const callerDisconnected = waitForDisconnect(caller);
     caller.disconnect();
     await callerDisconnected;

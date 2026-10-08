@@ -11,7 +11,7 @@ Use this skill for changes to registration, login, refresh/logout, roles, verifi
 
 - User Service owns identity/profile data; Auth Service owns credentials, roles, refresh-token state, and transient auth state.
 - Password and Google login issue 15-minute access tokens and refresh tokens valid for 90 days. Each successful fresh rotation sets replacement expiry to the refresh time plus `REFRESH_TOKEN_TTL_MS`, using `getRefreshTokenExpiresAt(now)`. Periodically refreshed sessions may continue indefinitely; do not add a deadline tied to the original login.
-- Individual persisted `expiresAt` and JWT signature/expiry still govern validity. The nullable Prisma/domain `absoluteExpiresAt` field is legacy metadata: ignore historical values, write null on new login/rotation rows, and retain the column without destructive cleanup. Previously expired or revoked tokens stay invalid; existing JWTs adopt the new TTL only after successful rotation.
+- Individual persisted `expiresAt` and JWT signature/expiry still govern validity. The legacy `absoluteExpiresAt` column is removed by `20261008130000_remove_refresh_token_absolute_expiry`; do not reintroduce it in the schema, domain entity or repository. The migration drops only that column and preserves token rows and recovery metadata. Deploy all Auth instances with the regenerated client before applying this contract migration, because old Prisma clients still select the removed field. Previously expired or revoked tokens stay invalid; existing JWTs adopt the new TTL only after successful rotation.
 - Refresh tokens have unique JWT IDs and are stored as SHA-256 hashes plus encrypted tokens. Preserve legacy lookup/upgrading, encryption and transactional compare-and-set consumption (`id` plus `revoked: false`), old-token revocation, and replacement linkage.
 - After JWT verification, a missing stored token or unrecoverable replay/rotation conflict revokes all refresh tokens for the verified user. An invalid JWT or expired individual token is rejected without introducing global revocation.
 - A revoked token may recover its already-issued replacement only with the same `refreshRequestId`, within the existing five-minute recovery window, and with an unrevoked, unexpired, encrypted replacement. Recovery returns the existing refresh token and expiry plus a new access token; it does not rotate again or extend either window. Preserve same-request CAS-conflict recovery.
@@ -42,7 +42,7 @@ Use this skill for changes to registration, login, refresh/logout, roles, verifi
 
 ## Focused verification
 
-Run `pnpm exec jest --runInBand apps/auth-service apps/api-gateway/src/auth`. Cover both login JWT lifetimes, repeated refresh beyond the login date, ignored legacy caps, expiry, replay, recovery-window boundaries, CAS, logout, browser cookies and mobile 401/403 clearing.
+Run `pnpm exec jest --runInBand apps/auth-service apps/api-gateway/src/auth`. Cover both login JWT lifetimes, repeated refresh beyond the login date, migration removal of the legacy column, expiry, replay, recovery-window boundaries, CAS, logout, browser cookies and mobile 401/403 clearing.
 
 For actual PostgreSQL concurrency/storage/revocation checks, run `auth.repository.integration.spec.ts` with `AUTH_TEST_DATABASE_URL` pointing to a disposable database initialized with the Auth Prisma schema. Never initialize or clear a production database for this test. Also run auth/gateway typechecks, scoped lint and builds when runtime code changes.
 

@@ -66,7 +66,6 @@ export class AuthRepository implements IAuthRepository {
           token: this.hashToken(token),
           encryptedToken: this.encryptToken(token),
           expiresAt,
-          absoluteExpiresAt: null,
           revoked: false,
         },
       });
@@ -181,7 +180,6 @@ export class AuthRepository implements IAuthRepository {
               token: tokenHash,
               encryptedToken: this.encryptToken(token),
               expiresAt,
-              absoluteExpiresAt: null,
               revoked: false,
             },
           });
@@ -258,7 +256,6 @@ export class AuthRepository implements IAuthRepository {
       token.replacedByTokenId,
       token.rotationRequestId,
       token.rotatedAt,
-      token.absoluteExpiresAt,
       token.rotationRequestExpiresAt,
     );
   }

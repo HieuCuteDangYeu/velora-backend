@@ -56,36 +56,49 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // --- 1. HANDLE CONNECTION ---
   async handleConnection(client: Socket) {
-    const userId = await this.resolveUserId(client);
-    if (userId) {
-      const wasOnlineBefore = await this.isUserOnline(userId);
-
-      await client.join(this.userRooms(userId));
-      await this.clearLastSeenAt(userId);
-
-      if (!wasOnlineBefore) {
-        await this.emitPresenceStateToAudience(userId, null);
+    // Nest does not await lifecycle hook promises. Required setup must fail
+    // closed locally; an auxiliary presence query must never reject the hook.
+    try {
+      const userId = await this.resolveUserId(client);
+      if (!userId) {
+        client.disconnect(true);
+        return;
       }
-
+      const wasOnlineBefore = await this.isUserOnline(userId);
+      await client.join(this.userRooms(userId));
+      try {
+        await this.clearLastSeenAt(userId);
+        if (!wasOnlineBefore) {
+          await this.emitPresenceStateToAudience(userId, null);
+        }
+      } catch {
+        // Identity and room membership are established. Presence can be stale
+        // during an outage; ordinary message authorization remains mandatory.
+        this.logger.warn('Online presence update failed; socket retained');
+      }
       console.log(`Client connected: ${client.id} (User: ${userId})`);
-      return;
+    } catch {
+      this.logger.warn('Socket setup failed; connection closed');
+      client.disconnect(true);
     }
-
-    client.disconnect(true);
   }
 
   // --- 2. HANDLE DISCONNECT ---
   async handleDisconnect(client: Socket) {
-    const userId = this.getResolvedUserId(client);
-
-    if (userId) {
-      const isStillOnline = await this.isUserOnline(userId);
-
-      if (!isStillOnline) {
-        const lastSeenAt = new Date().toISOString();
-        await this.setLastSeenAt(userId, lastSeenAt);
-        await this.emitPresenceStateToAudience(userId, lastSeenAt);
+    try {
+      const userId = this.getResolvedUserId(client);
+      if (userId) {
+        const isStillOnline = await this.isUserOnline(userId);
+        if (!isStillOnline) {
+          const lastSeenAt = new Date().toISOString();
+          await this.setLastSeenAt(userId, lastSeenAt);
+          await this.emitPresenceStateToAudience(userId, lastSeenAt);
+        }
       }
+    } catch {
+      // Disconnect cleanup is best effort, never an unhandled rejection that
+      // terminates other users' connections during a database/Redis outage.
+      this.logger.warn('Offline presence update failed');
     }
 
     console.log(`Client disconnected: ${client.id}`);

@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { Conversation } from '../../domain/entities/conversation.entity';
 import { Message } from '../../domain/entities/message.entity';
@@ -29,7 +29,7 @@ describe('ChatGateway realtime membership helpers', () => {
     findPresenceAudienceUserIds: jest.Mock;
     markMessagesAsSeen: jest.Mock;
   };
-  let redis: { del: jest.Mock };
+  let redis: { del: jest.Mock; set: jest.Mock };
   let gateway: ChatGateway;
   let emit: jest.Mock;
   let socketsLeave: jest.Mock;
@@ -38,12 +38,16 @@ describe('ChatGateway realtime membership helpers', () => {
   let inRoom: jest.Mock;
 
   beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     chatRepository = {
       assertConversationParticipant: jest.fn().mockResolvedValue(undefined),
       findPresenceAudienceUserIds: jest.fn().mockResolvedValue([]),
       markMessagesAsSeen: jest.fn().mockResolvedValue({}),
     };
-    redis = { del: jest.fn().mockResolvedValue(1) };
+    redis = {
+      del: jest.fn().mockResolvedValue(1),
+      set: jest.fn().mockResolvedValue('OK'),
+    };
 
     gateway = new ChatGateway(
       null as never,
@@ -65,6 +69,8 @@ describe('ChatGateway realtime membership helpers', () => {
       in: inRoom,
     } as unknown as Server;
   });
+
+  afterEach(() => jest.restoreAllMocks());
 
   it('dual-joins legacy and namespaced user rooms on connection', async () => {
     const client = {
@@ -94,6 +100,137 @@ describe('ChatGateway realtime membership helpers', () => {
       MEMBER_ID,
     );
     expect(client.join).toHaveBeenCalledWith(conversationRooms);
+  });
+
+  it.each(['audience', 'last-seen'])(
+    'contains an online presence %s outage after joining user rooms',
+    async (failure) => {
+      fetchSockets.mockResolvedValueOnce([]);
+      if (failure === 'audience') {
+        chatRepository.findPresenceAudienceUserIds.mockRejectedValueOnce(
+          new Error('Mongo I/O timeout'),
+        );
+      } else {
+        redis.del.mockRejectedValueOnce(new Error('Redis unavailable'));
+      }
+      const client = {
+        id: 'presence-failure',
+        data: { userId: OWNER_ID },
+        join: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn(),
+      };
+      await expect(
+        gateway.handleConnection(client as unknown as Socket),
+      ).resolves.toBeUndefined();
+      expect(client.join).toHaveBeenCalledWith(ownerRooms);
+      expect(client.disconnect).not.toHaveBeenCalled();
+      expect(Logger.prototype.warn).toHaveBeenCalledWith(
+        'Online presence update failed; socket retained',
+      );
+    },
+  );
+
+  it.each(['room', 'socket-query'])(
+    'closes only the affected socket when required %s setup fails',
+    async (failure) => {
+      const client = {
+        id: 'setup-failure',
+        data: { userId: OWNER_ID },
+        join: jest.fn().mockResolvedValue(undefined),
+        disconnect: jest.fn(),
+      };
+      if (failure === 'room')
+        client.join.mockRejectedValueOnce(new Error('Join failed'));
+      else fetchSockets.mockRejectedValueOnce(new Error('Redis unavailable'));
+      await expect(
+        gateway.handleConnection(client as unknown as Socket),
+      ).resolves.toBeUndefined();
+      expect(client.disconnect).toHaveBeenCalledWith(true);
+      expect(chatRepository.findPresenceAudienceUserIds).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not join or publish presence for an unauthenticated socket', async () => {
+    const client = {
+      id: 'unauthenticated',
+      data: {},
+      handshake: { auth: {}, headers: {} },
+      join: jest.fn(),
+      disconnect: jest.fn(),
+    };
+    await expect(
+      gateway.handleConnection(client as unknown as Socket),
+    ).resolves.toBeUndefined();
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect(client.join).not.toHaveBeenCalled();
+    expect(chatRepository.findPresenceAudienceUserIds).not.toHaveBeenCalled();
+  });
+
+  it('publishes online presence after successful authenticated setup', async () => {
+    fetchSockets.mockResolvedValueOnce([]);
+    chatRepository.findPresenceAudienceUserIds.mockResolvedValueOnce([
+      MEMBER_ID,
+    ]);
+    const client = {
+      id: 'online',
+      data: { userId: OWNER_ID },
+      join: jest.fn().mockResolvedValue(undefined),
+      disconnect: jest.fn(),
+    };
+    await gateway.handleConnection(client as unknown as Socket);
+    expect(emit).toHaveBeenCalledWith('user:online', {
+      userId: OWNER_ID,
+      lastSeenAt: null,
+    });
+    expect(client.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(['socket-query', 'last-seen', 'audience'])(
+    'contains an offline presence %s outage',
+    async (failure) => {
+      fetchSockets.mockResolvedValueOnce([]);
+      if (failure === 'socket-query')
+        fetchSockets
+          .mockReset()
+          .mockRejectedValueOnce(new Error('Redis unavailable'));
+      if (failure === 'last-seen')
+        redis.set.mockRejectedValueOnce(new Error('Redis unavailable'));
+      if (failure === 'audience')
+        chatRepository.findPresenceAudienceUserIds.mockRejectedValueOnce(
+          new Error('Mongo I/O timeout'),
+        );
+      await expect(
+        gateway.handleDisconnect({
+          id: 'offline',
+          data: { userId: OWNER_ID },
+        } as unknown as Socket),
+      ).resolves.toBeUndefined();
+      expect(Logger.prototype.warn).toHaveBeenCalledWith(
+        'Offline presence update failed',
+      );
+    },
+  );
+
+  it('publishes last-seen only after the final socket disconnects', async () => {
+    fetchSockets.mockResolvedValueOnce([{}]).mockResolvedValueOnce([]);
+    chatRepository.findPresenceAudienceUserIds.mockResolvedValueOnce([
+      MEMBER_ID,
+    ]);
+    const client = {
+      id: 'offline',
+      data: { userId: OWNER_ID },
+    } as unknown as Socket;
+    await gateway.handleDisconnect(client);
+    expect(redis.set).not.toHaveBeenCalled();
+    await gateway.handleDisconnect(client);
+    expect(redis.set).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+    );
+    expect(emit).toHaveBeenCalledWith('user:offline', {
+      userId: OWNER_ID,
+      lastSeenAt: expect.any(String),
+    });
   });
 
   it.each([

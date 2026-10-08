@@ -125,6 +125,7 @@ const makeHarness = (records = [makeRecord()]) => {
     decrypt: jest.fn((content: string) => content.replace('encrypted:', '')),
   };
   const metrics = {
+    measurePhase: jest.fn((_phase: string, action: () => unknown) => action()),
     recordNotificationOutbox: jest.fn(),
     setNotificationOutboxPending: jest.fn(),
   };

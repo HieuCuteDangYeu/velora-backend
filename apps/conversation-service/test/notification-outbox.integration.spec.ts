@@ -144,6 +144,9 @@ integration(
         notifyNewMessage: jest.fn().mockResolvedValue(undefined),
       };
       const metrics = {
+        measurePhase: jest.fn((_phase: string, action: () => unknown) =>
+          action(),
+        ),
         recordNotificationOutbox: jest.fn(),
         setNotificationOutboxPending: jest.fn(),
       };

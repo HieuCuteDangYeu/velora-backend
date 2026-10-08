@@ -12,6 +12,13 @@ export type ChatPhase =
   | 'cache_invalidation'
   | 'fanout'
   | 'notification'
+  | 'outbox_candidate_read'
+  | 'outbox_claim'
+  | 'outbox_record_read'
+  | 'outbox_enrichment'
+  | 'outbox_intake'
+  | 'outbox_complete'
+  | 'outbox_backlog_read'
   | 'persist_total';
 
 export type MongoCommand =

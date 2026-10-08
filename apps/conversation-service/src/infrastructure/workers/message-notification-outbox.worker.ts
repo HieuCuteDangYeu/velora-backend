@@ -91,14 +91,18 @@ export class MessageNotificationOutboxWorker
 
   private async drainBatch(): Promise<boolean> {
     const now = new Date();
-    const candidates = await this.prisma.message.findMany({
-      // Mongo's BSON ordering considers null < Date. Exclude it explicitly;
-      // otherwise completed intents can fill the batch and starve pending ones.
-      where: { notificationNextAttemptAt: { not: null, lte: now } },
-      orderBy: [{ notificationNextAttemptAt: 'asc' }, { id: 'asc' }],
-      take: BATCH_SIZE,
-      select: { id: true },
-    });
+    const candidates = await this.metrics.measurePhase(
+      'outbox_candidate_read',
+      () =>
+        this.prisma.message.findMany({
+          // Mongo's BSON ordering considers null < Date. Exclude it explicitly;
+          // otherwise completed intents can fill the batch and starve pending ones.
+          where: { notificationNextAttemptAt: { not: null, lte: now } },
+          orderBy: [{ notificationNextAttemptAt: 'asc' }, { id: 'asc' }],
+          take: BATCH_SIZE,
+          select: { id: true },
+        }),
+    );
     let cursor = 0;
     let allCompleted = true;
     await Promise.all(
@@ -110,9 +114,13 @@ export class MessageNotificationOutboxWorker
       }),
     );
     if (!this.stopped && Date.now() >= this.nextBacklogSampleAt) {
-      const pending = await this.prisma.message.count({
-        where: { notificationNextAttemptAt: { not: null } },
-      });
+      const pending = await this.metrics.measurePhase(
+        'outbox_backlog_read',
+        () =>
+          this.prisma.message.count({
+            where: { notificationNextAttemptAt: { not: null } },
+          }),
+      );
       this.metrics.setNotificationOutboxPending(pending);
       this.nextBacklogSampleAt = Date.now() + 10_000;
     }
@@ -123,29 +131,33 @@ export class MessageNotificationOutboxWorker
     const claimId = randomUUID();
     let attempts = 1;
     try {
-      const claimed = await this.updateIntent(
-        id,
-        {
-          notificationNextAttemptAt: {
-            $type: 'date',
-            $lte: { $date: new Date().toISOString() },
-          },
-        },
-        {
-          $set: {
-            notificationClaimId: claimId,
+      const claimed = await this.metrics.measurePhase('outbox_claim', () =>
+        this.updateIntent(
+          id,
+          {
             notificationNextAttemptAt: {
-              $date: new Date(Date.now() + LEASE_MS).toISOString(),
+              $type: 'date',
+              $lte: { $date: new Date().toISOString() },
             },
           },
-          $inc: { notificationAttemptCount: 1 },
-        },
+          {
+            $set: {
+              notificationClaimId: claimId,
+              notificationNextAttemptAt: {
+                $date: new Date(Date.now() + LEASE_MS).toISOString(),
+              },
+            },
+            $inc: { notificationAttemptCount: 1 },
+          },
+        ),
       );
       if (claimed !== 1) return false;
-      const record = await this.prisma.message.findUnique({
-        where: { id },
-        include: { conversation: true },
-      });
+      const record = await this.metrics.measurePhase('outbox_record_read', () =>
+        this.prisma.message.findUnique({
+          where: { id },
+          include: { conversation: true },
+        }),
+      );
       // Another worker may have acquired an expired lease during a slow read.
       if (!record || record.notificationClaimId !== claimId) return false;
       attempts = record.notificationAttemptCount;
@@ -176,13 +188,17 @@ export class MessageNotificationOutboxWorker
       // Enrichment does not change the original recipient snapshot. Removed
       // members are excluded; newly joined members never receive older intents.
       conversation.participantIds = [record.senderId, ...recipientIds];
-      await this.chats.populateConversationParticipants(conversation);
+      await this.metrics.measurePhase('outbox_enrichment', () =>
+        this.chats.populateConversationParticipants(conversation),
+      );
       if (this.stopped) return false;
-      await this.notifications.notifyNewMessage(
-        conversation,
-        message,
-        record.senderId,
-        this.shutdown.signal,
+      await this.metrics.measurePhase('outbox_intake', () =>
+        this.notifications.notifyNewMessage(
+          conversation,
+          message,
+          record.senderId,
+          this.shutdown.signal,
+        ),
       );
       return await this.complete(id, claimId, 'queued');
     } catch {
@@ -220,16 +236,18 @@ export class MessageNotificationOutboxWorker
     claimId: string,
     outcome: 'queued' | 'cancelled',
   ): Promise<boolean> {
-    const completed = await this.updateIntent(
-      id,
-      { notificationClaimId: claimId },
-      {
-        $set: {
-          notificationRecipientIds: [],
-          notificationNextAttemptAt: null,
-          notificationClaimId: null,
+    const completed = await this.metrics.measurePhase('outbox_complete', () =>
+      this.updateIntent(
+        id,
+        { notificationClaimId: claimId },
+        {
+          $set: {
+            notificationRecipientIds: [],
+            notificationNextAttemptAt: null,
+            notificationClaimId: null,
+          },
         },
-      },
+      ),
     );
     this.metrics.recordNotificationOutbox(
       completed === 1 ? outcome : 'lease_lost',

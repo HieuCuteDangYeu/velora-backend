@@ -360,6 +360,111 @@ describe('Message notification outbox', () => {
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
   });
 
+  it('drains a full batch without waiting for another timer tick', async () => {
+    const h = makeHarness(
+      Array.from({ length: 25 }, (_, index) => makeRecord(index + 1)),
+    );
+    await h.createWorker().runOnce();
+    expect(h.message.findMany).toHaveBeenCalledTimes(2);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(25);
+    expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+      true,
+    );
+    expect(h.message.count).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps each drain at five batches and lets the next poll finish the backlog', async () => {
+    const h = makeHarness(
+      Array.from({ length: 125 }, (_, index) => makeRecord(index + 1)),
+    );
+    const worker = h.createWorker();
+    await worker.runOnce();
+    expect(h.message.findMany).toHaveBeenCalledTimes(5);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(100);
+    expect(
+      h.records.filter((r) => r.notificationNextAttemptAt !== null),
+    ).toHaveLength(25);
+    await worker.runOnce();
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(125);
+    expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+      true,
+    );
+  });
+
+  it('waits for all four pipelines before fetching the next batch', async () => {
+    const h = makeHarness(
+      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+    );
+    const gate = deferred();
+    let active = 0;
+    let peak = 0;
+    h.notifications.notifyNewMessage.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await gate.promise;
+      active--;
+    });
+    const worker = h.createWorker();
+    const drain = worker.runOnce();
+    expect(worker.runOnce()).toBe(drain);
+    await flush();
+    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(active).toBe(4);
+    gate.resolve();
+    await drain;
+    expect(peak).toBe(4);
+    expect(h.message.findMany).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not fetch another batch after a delivery failure', async () => {
+    const h = makeHarness(
+      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+    );
+    h.notifications.notifyNewMessage.mockRejectedValueOnce(
+      new Error('Intake unavailable'),
+    );
+    await h.createWorker().runOnce();
+    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(20);
+    expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
+      NOW.getTime(),
+    );
+    expect(h.records[20].notificationAttemptCount).toBe(0);
+  });
+
+  it('does not spin on a full batch already claimed by another worker', async () => {
+    const h = makeHarness(
+      Array.from({ length: 20 }, (_, index) => makeRecord(index + 1)),
+    );
+    h.message.findMany.mockResolvedValue(h.records.map((r) => ({ id: r.id })));
+    h.records.forEach((r) => {
+      r.notificationNextAttemptAt = new Date(NOW.getTime() + 60_000);
+    });
+    await h.createWorker().runOnce();
+    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch a new batch during shutdown', async () => {
+    const h = makeHarness(
+      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+    );
+    h.notifications.notifyNewMessage.mockImplementation(
+      (_conversation, _message, _sender, signal: AbortSignal) =>
+        new Promise<void>((_resolve, reject) =>
+          signal.addEventListener('abort', () => reject(new Error('Stopped'))),
+        ),
+    );
+    const worker = h.createWorker();
+    const drain = worker.runOnce();
+    await flush();
+    await worker.onModuleDestroy();
+    await drain;
+    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(4);
+    expect(h.records[20].notificationAttemptCount).toBe(0);
+  });
+
   it('does not backfill historical messages without a due date', async () => {
     const historical = makeRecord();
     historical.notificationNextAttemptAt = null;

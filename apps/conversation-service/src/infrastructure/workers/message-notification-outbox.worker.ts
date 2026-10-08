@@ -17,6 +17,7 @@ import { ConversationMapper } from '../repositories/conversation.mapper';
 
 const POLL_MS = 1_000;
 const BATCH_SIZE = 20;
+const MAX_BATCHES_PER_POLL = 5;
 // Overlap four bounded claim/read/intake pipelines, without changing DB pools.
 // Notification intake still shares that service's existing database work gate.
 const CONCURRENCY = 4;
@@ -56,12 +57,12 @@ export class MessageNotificationOutboxWorker
     await this.running;
   }
 
-  // One batch per instance at a time. Each candidate is claimed immediately
+  // One bounded drain per instance at a time. Each candidate is claimed immediately
   // before processing, so waiting in this batch does not consume its lease.
   runOnce(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (this.running) return this.running;
-    this.running = this.drainBatch()
+    this.running = this.drainPending()
       .catch(() => {
         if (!this.stopped) {
           this.metrics.recordNotificationOutbox('poll_error');
@@ -76,7 +77,19 @@ export class MessageNotificationOutboxWorker
     return this.running;
   }
 
-  private async drainBatch(): Promise<void> {
+  private async drainPending(): Promise<void> {
+    for (
+      let batch = 0;
+      batch < MAX_BATCHES_PER_POLL && !this.stopped;
+      batch++
+    ) {
+      // Continue only after a full, successful batch. Partial batches wait for
+      // the next poll; contention or failures must not become a tight retry loop.
+      if (!(await this.drainBatch())) break;
+    }
+  }
+
+  private async drainBatch(): Promise<boolean> {
     const now = new Date();
     const candidates = await this.prisma.message.findMany({
       // Mongo's BSON ordering considers null < Date. Exclude it explicitly;
@@ -87,11 +100,12 @@ export class MessageNotificationOutboxWorker
       select: { id: true },
     });
     let cursor = 0;
+    let allCompleted = true;
     await Promise.all(
       Array.from({ length: CONCURRENCY }, async () => {
         while (!this.stopped && cursor < candidates.length) {
           const candidate = candidates[cursor++];
-          await this.deliver(candidate.id);
+          if (!(await this.deliver(candidate.id))) allCompleted = false;
         }
       }),
     );
@@ -102,9 +116,10 @@ export class MessageNotificationOutboxWorker
       this.metrics.setNotificationOutboxPending(pending);
       this.nextBacklogSampleAt = Date.now() + 10_000;
     }
+    return !this.stopped && candidates.length === BATCH_SIZE && allCompleted;
   }
 
-  private async deliver(id: string): Promise<void> {
+  private async deliver(id: string): Promise<boolean> {
     const claimId = randomUUID();
     let attempts = 1;
     try {
@@ -126,13 +141,13 @@ export class MessageNotificationOutboxWorker
           $inc: { notificationAttemptCount: 1 },
         },
       );
-      if (claimed !== 1) return;
+      if (claimed !== 1) return false;
       const record = await this.prisma.message.findUnique({
         where: { id },
         include: { conversation: true },
       });
       // Another worker may have acquired an expired lease during a slow read.
-      if (!record || record.notificationClaimId !== claimId) return;
+      if (!record || record.notificationClaimId !== claimId) return false;
       attempts = record.notificationAttemptCount;
       const recipientIds = record.notificationRecipientIds.filter(
         (userId) =>
@@ -144,8 +159,7 @@ export class MessageNotificationOutboxWorker
         !record.conversation ||
         recipientIds.length === 0
       ) {
-        await this.complete(id, claimId, 'cancelled');
-        return;
+        return await this.complete(id, claimId, 'cancelled');
       }
       const message = ChatMapper.toDomain(record);
       if (message.signalType === 0) {
@@ -163,16 +177,16 @@ export class MessageNotificationOutboxWorker
       // members are excluded; newly joined members never receive older intents.
       conversation.participantIds = [record.senderId, ...recipientIds];
       await this.chats.populateConversationParticipants(conversation);
-      if (this.stopped) return;
+      if (this.stopped) return false;
       await this.notifications.notifyNewMessage(
         conversation,
         message,
         record.senderId,
         this.shutdown.signal,
       );
-      await this.complete(id, claimId, 'queued');
+      return await this.complete(id, claimId, 'queued');
     } catch {
-      if (this.stopped) return; // Restart reclaims the expired lease.
+      if (this.stopped) return false; // Restart reclaims the expired lease.
       const backoffMs = Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 8));
       try {
         const rescheduled = await this.updateIntent(
@@ -197,6 +211,7 @@ export class MessageNotificationOutboxWorker
         // lease date makes it eligible again after restart/database recovery.
         this.metrics.recordNotificationOutbox('poll_error');
       }
+      return false;
     }
   }
 
@@ -204,7 +219,7 @@ export class MessageNotificationOutboxWorker
     id: string,
     claimId: string,
     outcome: 'queued' | 'cancelled',
-  ): Promise<void> {
+  ): Promise<boolean> {
     const completed = await this.updateIntent(
       id,
       { notificationClaimId: claimId },
@@ -219,6 +234,7 @@ export class MessageNotificationOutboxWorker
     this.metrics.recordNotificationOutbox(
       completed === 1 ? outcome : 'lease_lost',
     );
+    return completed === 1;
   }
 
   // Prisma updateMany reads matching IDs before its write. These single-document

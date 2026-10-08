@@ -28,6 +28,11 @@ describe('Conversation Mongo command observations', () => {
       duration: 50,
     });
     observe({ query: 'db.conversations.aggregate([])', duration: 75 });
+    observe({
+      query: 'db.messages.find({ private: "content" })',
+      duration: 43,
+    });
+    observe({ query: 'db.conversations.find({})', duration: 99 });
     observe({ query: 'db.conversations.updateMany({})', duration: 100 });
     observe({
       query:
@@ -42,6 +47,7 @@ describe('Conversation Mongo command observations', () => {
       ['message_insert', 0.15],
       ['message_read', 0.05],
       ['conversation_read', 0.075],
+      ['message_read', 0.043],
       ['conversation_update', 0.1],
       ['conversation_update', 0.08],
     ]);

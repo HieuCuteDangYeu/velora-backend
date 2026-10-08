@@ -2,6 +2,34 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { z } from 'zod';
 
 const objectId = z.string().regex(/^[a-f0-9]{24}$/i);
+const candidateSchema = z
+  .object({ _id: z.object({ $oid: objectId }) })
+  .transform(({ _id }) => ({ id: _id.$oid }));
+
+// Use a normal range predicate on the existing due-date/ID index. Prisma's
+// findMany translates nullable comparisons to $expr, fetching completed rows
+// even when no intents are due. The date type also excludes null/missing fields.
+export async function findDueNotificationIntents(
+  prisma: Pick<PrismaService, 'message'>,
+  now: Date,
+  limit: number,
+): Promise<{ id: string }[]> {
+  const result = await prisma.message.findRaw({
+    filter: {
+      notificationNextAttemptAt: {
+        $type: 'date',
+        $lte: { $date: now.toISOString() },
+      },
+    },
+    options: {
+      sort: { notificationNextAttemptAt: 1, _id: 1 },
+      limit,
+      projection: { _id: 1 },
+    },
+  });
+  return z.array(candidateSchema).max(limit).parse(result);
+}
+
 const intentSchema = z.object({
   id: objectId,
   conversationId: objectId,

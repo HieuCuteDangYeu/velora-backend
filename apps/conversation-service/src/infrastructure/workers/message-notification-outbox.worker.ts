@@ -14,7 +14,10 @@ import { ConversationPrometheusMetricsService } from '../metrics/conversation-pr
 import { PrismaService } from '../prisma/prisma.service';
 import { Message } from '../../domain/entities/message.entity';
 import { Conversation } from '../../domain/entities/conversation.entity';
-import { readNotificationIntent } from '../repositories/notification-intent.reader';
+import {
+  findDueNotificationIntents,
+  readNotificationIntent,
+} from '../repositories/notification-intent.reader';
 
 const POLL_MS = 1_000;
 const BATCH_SIZE = 20;
@@ -94,15 +97,7 @@ export class MessageNotificationOutboxWorker
     const now = new Date();
     const candidates = await this.metrics.measurePhase(
       'outbox_candidate_read',
-      () =>
-        this.prisma.message.findMany({
-          // Mongo's BSON ordering considers null < Date. Exclude it explicitly;
-          // otherwise completed intents can fill the batch and starve pending ones.
-          where: { notificationNextAttemptAt: { not: null, lte: now } },
-          orderBy: [{ notificationNextAttemptAt: 'asc' }, { id: 'asc' }],
-          take: BATCH_SIZE,
-          select: { id: true },
-        }),
+      () => findDueNotificationIntents(this.prisma, now, BATCH_SIZE),
     );
     let cursor = 0;
     let allCompleted = true;

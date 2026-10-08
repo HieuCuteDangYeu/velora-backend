@@ -41,20 +41,30 @@ const makeHarness = (records = [makeRecord()]) => {
     updatedAt: NOW,
   };
   const message = {
-    findMany: jest.fn(
+    findRaw: jest.fn(
       ({
-        where,
-        take,
+        filter,
+        options,
       }: {
-        where: { notificationNextAttemptAt: { lte: Date } };
-        take: number;
+        filter: { notificationNextAttemptAt: { $lte: { $date: string } } };
+        options: { limit: number };
       }) => {
-        const due = records.filter(
-          (r) =>
-            r.notificationNextAttemptAt &&
-            r.notificationNextAttemptAt <= where.notificationNextAttemptAt.lte,
+        const now = new Date(filter.notificationNextAttemptAt.$lte.$date);
+        const due = records
+          .filter(
+            (r) =>
+              r.notificationNextAttemptAt instanceof Date &&
+              r.notificationNextAttemptAt <= now,
+          )
+          .sort(
+            (a, b) =>
+              a.notificationNextAttemptAt!.getTime() -
+                b.notificationNextAttemptAt!.getTime() ||
+              a.id.localeCompare(b.id),
+          );
+        return Promise.resolve(
+          due.slice(0, options.limit).map(({ id }) => ({ _id: { $oid: id } })),
         );
-        return Promise.resolve(due.slice(0, take).map(({ id }) => ({ id })));
       },
     ),
     aggregateRaw: jest.fn(
@@ -464,7 +474,7 @@ describe('Message notification outbox', () => {
     gates[4].resolve();
     gates[5].resolve();
     await batch;
-    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
     );
@@ -496,7 +506,7 @@ describe('Message notification outbox', () => {
       Array.from({ length: 25 }, (_, index) => makeRecord(index + 1)),
     );
     await h.createWorker().runOnce();
-    expect(h.message.findMany).toHaveBeenCalledTimes(2);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(2);
     expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(25);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
@@ -510,7 +520,7 @@ describe('Message notification outbox', () => {
     );
     const worker = h.createWorker();
     await worker.runOnce();
-    expect(h.message.findMany).toHaveBeenCalledTimes(5);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(5);
     expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(100);
     expect(
       h.records.filter((r) => r.notificationNextAttemptAt !== null),
@@ -539,12 +549,12 @@ describe('Message notification outbox', () => {
     const drain = worker.runOnce();
     expect(worker.runOnce()).toBe(drain);
     await flush();
-    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(active).toBe(4);
     gate.resolve();
     await drain;
     expect(peak).toBe(4);
-    expect(h.message.findMany).toHaveBeenCalledTimes(2);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(2);
   });
 
   it('does not fetch another batch after a delivery failure', async () => {
@@ -555,7 +565,7 @@ describe('Message notification outbox', () => {
       new Error('Intake unavailable'),
     );
     await h.createWorker().runOnce();
-    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(20);
     expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
       NOW.getTime(),
@@ -567,12 +577,14 @@ describe('Message notification outbox', () => {
     const h = makeHarness(
       Array.from({ length: 20 }, (_, index) => makeRecord(index + 1)),
     );
-    h.message.findMany.mockResolvedValue(h.records.map((r) => ({ id: r.id })));
+    h.message.findRaw.mockResolvedValue(
+      h.records.map((r) => ({ _id: { $oid: r.id } })),
+    );
     h.records.forEach((r) => {
       r.notificationNextAttemptAt = new Date(NOW.getTime() + 60_000);
     });
     await h.createWorker().runOnce();
-    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
   });
 
@@ -591,7 +603,7 @@ describe('Message notification outbox', () => {
     await flush();
     await worker.onModuleDestroy();
     await drain;
-    expect(h.message.findMany).toHaveBeenCalledTimes(1);
+    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(4);
     expect(h.records[20].notificationAttemptCount).toBe(0);
   });
@@ -603,12 +615,34 @@ describe('Message notification outbox', () => {
     await h.createWorker().runOnce();
     expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
     expect(h.runCommand).not.toHaveBeenCalled();
-    expect(h.message.findMany).toHaveBeenCalledWith(
+    expect(h.message.findRaw).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          notificationNextAttemptAt: { not: null, lte: expect.any(Date) },
+        filter: {
+          notificationNextAttemptAt: {
+            $type: 'date',
+            $lte: { $date: NOW.toISOString() },
+          },
+        },
+        options: {
+          sort: { notificationNextAttemptAt: 1, _id: 1 },
+          limit: 20,
+          projection: { _id: 1 },
         },
       }),
+    );
+  });
+
+  it('fails the poll before claiming anything when a raw candidate ID is invalid', async () => {
+    const h = makeHarness();
+    h.message.findRaw.mockResolvedValueOnce([
+      { _id: { $oid: h.records[0].id } },
+      { _id: { $oid: 'invalid-object-id' } },
+    ]);
+    await h.createWorker().runOnce();
+    expect(h.runCommand).not.toHaveBeenCalled();
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    expect(h.metrics.recordNotificationOutbox).toHaveBeenCalledWith(
+      'poll_error',
     );
   });
 
@@ -693,7 +727,9 @@ describe('Message notification outbox', () => {
       const h = makeHarness();
       h.records[0].notificationNextAttemptAt =
         state === 'null' ? null : new Date(NOW.getTime() + 60_000);
-      h.message.findMany.mockResolvedValueOnce([{ id: h.records[0].id }]);
+      h.message.findRaw.mockResolvedValueOnce([
+        { _id: { $oid: h.records[0].id } },
+      ]);
       await h.createWorker().runOnce();
       expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
       expect(h.records[0].notificationClaimId).toBeNull();

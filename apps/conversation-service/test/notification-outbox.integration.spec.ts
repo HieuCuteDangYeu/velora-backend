@@ -2,7 +2,10 @@ import { PrismaClient } from '@prisma/conversation-client';
 import { randomUUID } from 'node:crypto';
 import { Message } from '../src/domain/entities/message.entity';
 import { PrismaChatRepository } from '../src/infrastructure/repositories/prisma-chat.repository';
-import { readNotificationIntent } from '../src/infrastructure/repositories/notification-intent.reader';
+import {
+  findDueNotificationIntents,
+  readNotificationIntent,
+} from '../src/infrastructure/repositories/notification-intent.reader';
 import { MessageNotificationOutboxWorker } from '../src/infrastructure/workers/message-notification-outbox.worker';
 
 const waitFor = async (ready: Promise<void>) => {
@@ -116,6 +119,15 @@ integration(
       expect(replay.message.id).toBe(original.id);
       expect(await prisma.message.count()).toBe(1);
 
+      queries.length = 0;
+      expect(await findDueNotificationIntents(prisma, new Date(), 20)).toEqual([
+        { id: original.id },
+      ]);
+      expect(queries).toEqual(['db.messages.find']);
+      expect(await findDueNotificationIntents(prisma, new Date(0), 20)).toEqual(
+        [],
+      );
+
       // Verify the real BSON projection and indexed join, not a mocked pipeline.
       const probeClaim = randomUUID();
       await prisma.message.update({
@@ -216,12 +228,9 @@ integration(
       expect(done.notificationNextAttemptAt).toBeNull();
       expect(done.notificationAttemptCount).toBe(1);
       expect(done.notificationRecipientIds).toEqual([]);
-      expect(
-        await prisma.message.findMany({
-          where: { notificationNextAttemptAt: { not: null, lte: new Date() } },
-          select: { id: true },
-        }),
-      ).toEqual([]);
+      expect(await findDueNotificationIntents(prisma, new Date(), 20)).toEqual(
+        [],
+      );
       await worker().runOnce();
       expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
 

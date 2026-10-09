@@ -161,4 +161,9 @@ export abstract class ICallMediaEngine {
   ): Promise<ClosedParticipantMediaResult>;
   abstract closeRoom(callId: string): Promise<void>;
   abstract getWorkerLoad(): Promise<MediaWorkerLoad[]>;
+  /**
+   * Notifies when rooms are lost because their media worker process died.
+   * The rooms are already gone from the engine when the listener runs.
+   */
+  abstract onRoomsLost(listener: (callIds: string[]) => void): void;
 }

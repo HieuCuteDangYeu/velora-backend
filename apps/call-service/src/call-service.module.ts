@@ -18,6 +18,7 @@ import { ExpireDueCallsUseCase } from './application/use-cases/expire-due-calls.
 import { PublishCallAnswerOutboxUseCase } from './application/use-cases/publish-call-answer-outbox.use-case';
 import { PublishCallTerminalOutboxUseCase } from './application/use-cases/publish-call-terminal-outbox.use-case';
 import { RecoverActiveCallsAfterMediaRestartUseCase } from './application/use-cases/recover-active-calls-after-media-restart.use-case';
+import { TerminateCallsAfterMediaLossUseCase } from './application/use-cases/terminate-calls-after-media-loss.use-case';
 import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
 import { RestartIceUseCase } from './application/use-cases/restart-ice.use-case';
 import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
@@ -102,6 +103,7 @@ import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal
     PublishCallAnswerOutboxUseCase,
     PublishCallTerminalOutboxUseCase,
     RecoverActiveCallsAfterMediaRestartUseCase,
+    TerminateCallsAfterMediaLossUseCase,
     ResumeConsumerUseCase,
     RestartIceUseCase,
     ChangeCallTypeUseCase,

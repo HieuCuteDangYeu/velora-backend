@@ -1330,6 +1330,18 @@ class FakeCallMediaEngine {
     return Promise.resolve();
   }
 
+  private readonly roomsLostListeners = new Set<(callIds: string[]) => void>();
+
+  onRoomsLost(listener: (callIds: string[]) => void): void {
+    this.roomsLostListeners.add(listener);
+  }
+
+  /** Simulates the mediasoup worker process dying under these calls. */
+  loseWorker(callIds: string[]): void {
+    for (const callId of callIds) this.rooms.delete(callId);
+    this.roomsLostListeners.forEach((listener) => listener(callIds));
+  }
+
   getRoomState(callId: string): RoomState | undefined {
     return this.rooms.get(callId);
   }
@@ -3795,6 +3807,41 @@ describe('Call Service P0 flow (e2e)', () => {
         status: 'error',
       }),
     );
+  });
+
+  it('ends an active call for both participants when its media worker dies', async () => {
+    const { caller, callee, callId } = await establishActiveCall();
+
+    const callerEnded = onceEvent<{ callId: string; reason: string }>(
+      caller,
+      'call_ended',
+    );
+    const calleeEnded = onceEvent<{ callId: string; reason: string }>(
+      callee,
+      'call_ended',
+    );
+
+    mediaEngine.loseWorker([callId]);
+
+    await expect(callerEnded).resolves.toEqual({
+      callId,
+      reason: 'media_unavailable',
+    });
+    await expect(calleeEnded).resolves.toEqual({
+      callId,
+      reason: 'media_unavailable',
+    });
+    const session = JSON.parse(
+      (await redis.get(`call:${callId}:session`))!,
+    ) as { status: string; terminalReason: string };
+    expect(session).toEqual(
+      expect.objectContaining({
+        status: 'ended',
+        terminalReason: 'media_unavailable',
+      }),
+    );
+    // Neither participant stays marked as busy for a new call.
+    expect(await redis.hgetall('call:sessions:active-by-user')).toEqual({});
   });
 
   it('ends an active call after the reconnect grace window expires', async () => {

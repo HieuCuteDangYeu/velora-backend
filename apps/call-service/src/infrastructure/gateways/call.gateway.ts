@@ -36,6 +36,7 @@ import { ConsumeUseCase } from '../../application/use-cases/consume.use-case';
 import { CreateTransportUseCase } from '../../application/use-cases/create-transport.use-case';
 import { ExpireDueCallsUseCase } from '../../application/use-cases/expire-due-calls.use-case';
 import { RecoverActiveCallsAfterMediaRestartUseCase } from '../../application/use-cases/recover-active-calls-after-media-restart.use-case';
+import { TerminateCallsAfterMediaLossUseCase } from '../../application/use-cases/terminate-calls-after-media-loss.use-case';
 import { InitiateCallUseCase } from '../../application/use-cases/initiate-call.use-case';
 import {
   CallExpiredError,
@@ -397,11 +398,15 @@ export class CallGateway
     private readonly metrics: CallPrometheusMetricsService,
     @Inject('CONVERSATION_SERVICE_RMQ')
     private readonly conversationClient: ClientProxy,
+    private readonly terminateCallsAfterMediaLossUseCase: TerminateCallsAfterMediaLossUseCase,
   ) {}
 
   async onModuleInit(): Promise<void> {
     await this.runtimeLease.acquire();
     this.runtimeLease.assertHeld();
+    this.mediaEngine.onRoomsLost((callIds) => {
+      void this.handleLostMediaRooms(callIds);
+    });
     // A process-local timeout gives prompt feedback, while the Redis-backed
     // sweep makes expiration survive deploys and gateway restarts.
     this.expirySweepTimer = setInterval(() => {
@@ -2692,6 +2697,26 @@ export class CallGateway
       );
     } finally {
       this.expirySweepInFlight = false;
+    }
+  }
+
+  /**
+   * The mediasoup worker carrying these calls died. End them for everyone now:
+   * the sessions would otherwise stay `active` with no media to recover.
+   */
+  private async handleLostMediaRooms(callIds: string[]): Promise<void> {
+    try {
+      this.runtimeLease.assertHeld();
+      const ended =
+        await this.terminateCallsAfterMediaLossUseCase.execute(callIds);
+      if (!this.server) return;
+      for (const session of ended) {
+        this.emitCallEnded(session, 'media_unavailable');
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to end calls after media worker loss errorCode=${safeCallErrorCode(error)}`,
+      );
     }
   }
 

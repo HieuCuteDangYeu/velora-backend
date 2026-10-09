@@ -1076,6 +1076,72 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  describe('media worker loss', () => {
+    const setup = (execute: jest.Mock) => {
+      const onRoomsLost = jest.fn();
+      const gateway = createGateway({
+        mediaEngine: {
+          listActiveProducers: jest.fn().mockResolvedValue([]),
+          onRoomsLost,
+        } as never,
+        terminateCallsAfterMediaLossUseCase: { execute },
+      });
+      const roomEmitter = { emit: jest.fn() };
+      gateway.server = {
+        to: jest.fn().mockReturnValue(roomEmitter),
+      } as never;
+      return { gateway, onRoomsLost, roomEmitter };
+    };
+
+    it('ends the calls whose media worker died and tells their participants', async () => {
+      const execute = jest.fn().mockResolvedValue([activeSession]);
+      const { gateway, onRoomsLost, roomEmitter } = setup(execute);
+      try {
+        await gateway.onModuleInit();
+        const listener = onRoomsLost.mock.calls[0][0] as (
+          callIds: string[],
+        ) => void;
+
+        listener(['call-1']);
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(execute).toHaveBeenCalledWith(['call-1']);
+        expect(roomEmitter.emit).toHaveBeenCalledWith('call_ended', {
+          callId: 'call-1',
+          reason: 'media_unavailable',
+        });
+      } finally {
+        gateway.onModuleDestroy();
+      }
+    });
+
+    it('stays quiet for calls that were already finished and survives a failing lookup', async () => {
+      const execute = jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(new Error('Redis unavailable'));
+      const { gateway, onRoomsLost, roomEmitter } = setup(execute);
+      try {
+        await gateway.onModuleInit();
+        const listener = onRoomsLost.mock.calls[0][0] as (
+          callIds: string[],
+        ) => void;
+
+        listener(['call-1']);
+        listener(['call-2']);
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(execute).toHaveBeenCalledTimes(2);
+        expect(roomEmitter.emit).not.toHaveBeenCalledWith(
+          'call_ended',
+          expect.anything(),
+        );
+      } finally {
+        gateway.onModuleDestroy();
+      }
+    });
+  });
+
   describe('durable stale-reconnect sweep', () => {
     const staleParticipant = (deadline: string, isConnected = false) =>
       new CallParticipant({
@@ -3362,6 +3428,7 @@ function createGateway(overrides?: {
     recordCallEvent: jest.Mock;
   };
   conversationClient?: { send: jest.Mock };
+  terminateCallsAfterMediaLossUseCase?: { execute: jest.Mock };
 }) {
   return new CallGateway(
     (overrides?.initiateCallUseCase ?? { execute: jest.fn() }) as never,
@@ -3382,9 +3449,12 @@ function createGateway(overrides?: {
     (overrides?.resumeConsumerUseCase ?? { execute: jest.fn() }) as never,
     (overrides?.restartIceUseCase ?? { execute: jest.fn() }) as never,
     {} as never,
-    (overrides?.mediaEngine ?? {
-      listActiveProducers: jest.fn().mockResolvedValue([]),
-    }) as never,
+    {
+      onRoomsLost: jest.fn(),
+      ...(overrides?.mediaEngine ?? {
+        listActiveProducers: jest.fn().mockResolvedValue([]),
+      }),
+    } as never,
     {
       expireGroupInvitations: jest.fn().mockResolvedValue(null),
       ...(overrides?.sessionRepository ?? {
@@ -3411,6 +3481,9 @@ function createGateway(overrides?: {
       recordCallEvent: jest.fn(),
     }) as never,
     (overrides?.conversationClient ?? { send: jest.fn() }) as never,
+    (overrides?.terminateCallsAfterMediaLossUseCase ?? {
+      execute: jest.fn().mockResolvedValue([]),
+    }) as never,
   );
 }
 

@@ -62,6 +62,10 @@ type RoomRuntimeState = {
   >;
 };
 
+// Gives the OS time to release the WebRtcServer UDP port and avoids a hot
+// respawn loop if the worker keeps crashing at start-up.
+const WORKER_RESPAWN_DELAY_MS = 1000;
+
 @Injectable()
 export class MediasoupCallMediaEngine
   implements ICallMediaEngine, OnModuleInit, OnModuleDestroy
@@ -90,6 +94,9 @@ export class MediasoupCallMediaEngine
     mediasoup.types.WebRtcServer
   >();
   private workerCursor = 0;
+  private workerBootstrap?: Promise<void>;
+  private shuttingDown = false;
+  private readonly roomsLostListeners = new Set<(callIds: string[]) => void>();
   private readonly workerCount = Math.max(
     1,
     Number(process.env.MEDIASOUP_WORKERS || 1),
@@ -125,9 +132,14 @@ export class MediasoupCallMediaEngine
   }
 
   onModuleDestroy(): Promise<void> {
+    this.shuttingDown = true;
     this.webRtcServers.forEach((webRtcServer) => webRtcServer.close());
     this.workers.forEach((worker) => worker.close());
     return Promise.resolve();
+  }
+
+  onRoomsLost(listener: (callIds: string[]) => void): void {
+    this.roomsLostListeners.add(listener);
   }
 
   async createRoom(callId: string): Promise<void> {
@@ -199,6 +211,15 @@ export class MediasoupCallMediaEngine
         );
       }
       throw error;
+    }
+
+    if (!this.workers.includes(worker)) {
+      // The worker died while the room was being persisted; its router is
+      // already closed, so registering the room would leave a dead ghost.
+      await this.stateRepository
+        .removeRoomIfRouterId(callId, router.id)
+        .catch(() => undefined);
+      throw new Error('Media worker is unavailable');
     }
 
     this.rooms.set(callId, {
@@ -999,10 +1020,17 @@ export class MediasoupCallMediaEngine
     );
   }
 
-  private async bootstrapWorkers(count: number): Promise<void> {
-    if (this.workers.length > 0) return;
+  private bootstrapWorkers(count: number): Promise<void> {
+    // Single-flight: concurrent callers (first room creation, respawn) must not
+    // both bind the WebRtcServer port.
+    this.workerBootstrap ??= this.fillWorkers(count).finally(() => {
+      this.workerBootstrap = undefined;
+    });
+    return this.workerBootstrap;
+  }
 
-    for (let index = 0; index < count; index += 1) {
+  private async fillWorkers(count: number): Promise<void> {
+    while (this.workers.length < count) {
       const worker = await mediasoup.createWorker({
         rtcMinPort: Number(process.env.MEDIASOUP_RTC_MIN_PORT || 40000),
         rtcMaxPort: Number(process.env.MEDIASOUP_RTC_MAX_PORT || 49999),
@@ -1010,33 +1038,85 @@ export class MediasoupCallMediaEngine
         logTags: ['info', 'ice', 'dtls', 'rtp', 'srtp', 'rtcp'],
       });
 
-      worker.on('died', () => {
-        this.logger.error(`Mediasoup worker died pid=${worker.pid}`);
-        this.webRtcServers.get(worker)?.close();
-        this.webRtcServers.delete(worker);
-        this.workers.splice(this.workers.indexOf(worker), 1);
-      });
+      worker.on('died', () => this.handleWorkerDied(worker));
 
       if (this.webRtcServerPort) {
-        const webRtcServer = await worker.createWebRtcServer({
-          listenInfos: [
-            {
-              protocol: 'udp',
-              ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-              announcedAddress: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
-              port: this.webRtcServerPort,
-            },
-          ],
-        });
-        this.webRtcServers.set(worker, webRtcServer);
+        try {
+          const webRtcServer = await worker.createWebRtcServer({
+            listenInfos: [
+              {
+                protocol: 'udp',
+                ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
+                announcedAddress:
+                  process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+                port: this.webRtcServerPort,
+              },
+            ],
+          });
+          this.webRtcServers.set(worker, webRtcServer);
+        } catch (error) {
+          worker.close();
+          throw error;
+        }
       }
 
       this.workers.push(worker);
     }
   }
 
+  private handleWorkerDied(worker: mediasoup.types.Worker): void {
+    this.logger.error(`Mediasoup worker died pid=${worker.pid}`);
+    try {
+      this.webRtcServers.get(worker)?.close();
+    } catch {
+      // The server belonged to the dead process; nothing is left to release.
+    }
+    this.webRtcServers.delete(worker);
+    const index = this.workers.indexOf(worker);
+    if (index >= 0) this.workers.splice(index, 1);
+    if (this.shuttingDown) return;
+
+    // Every router on the dead worker is gone. Forget those rooms so no later
+    // request reuses a dead router, then let the application end the calls.
+    const lostCallIds = [...this.rooms.values()]
+      .filter((room) => room.worker === worker)
+      .map((room) => room.callId);
+    for (const callId of lostCallIds) this.rooms.delete(callId);
+    if (lostCallIds.length > 0) {
+      this.logger.error(
+        `Mediasoup worker death dropped ${lostCallIds.length} call room(s)`,
+      );
+      for (const listener of this.roomsLostListeners) {
+        try {
+          listener(lostCallIds);
+        } catch (error) {
+          this.logger.warn(
+            `Rooms-lost listener failed errorCode=${safeCallErrorCode(error)}`,
+          );
+        }
+      }
+    }
+
+    void this.respawnWorkers();
+  }
+
+  private async respawnWorkers(): Promise<void> {
+    await new Promise((resolve) =>
+      setTimeout(resolve, WORKER_RESPAWN_DELAY_MS),
+    );
+    if (this.shuttingDown) return;
+    try {
+      await this.bootstrapWorkers(this.workerCount);
+    } catch (error) {
+      // createRoom retries lazily through getNextWorker.
+      this.logger.error(
+        `Mediasoup worker respawn failed errorCode=${safeCallErrorCode(error)}`,
+      );
+    }
+  }
+
   private async getNextWorker(): Promise<mediasoup.types.Worker> {
-    if (this.workers.length === 0) {
+    if (this.workers.length < this.workerCount) {
       await this.bootstrapWorkers(this.workerCount);
     }
 

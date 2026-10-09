@@ -1076,3 +1076,98 @@ describe('MediasoupCallMediaEngine worker load', () => {
     await expect(engine.getWorkerLoad()).resolves.toEqual([]);
   });
 });
+
+describe('MediasoupCallMediaEngine worker death', () => {
+  type EngineInternals = {
+    workers: unknown[];
+    rooms: Map<string, { callId: string; worker: unknown }>;
+    webRtcServers: Map<unknown, { close: jest.Mock }>;
+    handleWorkerDied(worker: unknown): void;
+    bootstrapWorkers: jest.Mock;
+  };
+
+  const setup = () => {
+    jest.useFakeTimers();
+    const engine = new MediasoupCallMediaEngine({} as never);
+    const internals = engine as unknown as EngineInternals;
+    const dead = { pid: 1, close: jest.fn() };
+    const survivor = { pid: 2, close: jest.fn() };
+    internals.workers.push(dead, survivor);
+    internals.rooms.set('on-dead-1', { callId: 'on-dead-1', worker: dead });
+    internals.rooms.set('on-dead-2', { callId: 'on-dead-2', worker: dead });
+    internals.rooms.set('on-survivor', {
+      callId: 'on-survivor',
+      worker: survivor,
+    });
+    internals.bootstrapWorkers = jest.fn().mockResolvedValue(undefined);
+    return { engine, internals, dead, survivor };
+  };
+
+  afterEach(() => jest.useRealTimers());
+
+  it('forgets the dead worker rooms, keeps the others, and reports what was lost', () => {
+    const { engine, internals, dead, survivor } = setup();
+    const server = { close: jest.fn() };
+    internals.webRtcServers.set(dead, server);
+    const listener = jest.fn();
+    engine.onRoomsLost(listener);
+
+    internals.handleWorkerDied(dead);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(['on-dead-1', 'on-dead-2']);
+    expect([...internals.rooms.keys()]).toEqual(['on-survivor']);
+    expect(internals.workers).toEqual([survivor]);
+    expect(server.close).toHaveBeenCalled();
+    expect(internals.webRtcServers.has(dead)).toBe(false);
+  });
+
+  it('does not notify when the dead worker carried no rooms', () => {
+    const { engine, internals } = setup();
+    const idle = { pid: 3 };
+    internals.workers.push(idle);
+    const listener = jest.fn();
+    engine.onRoomsLost(listener);
+
+    internals.handleWorkerDied(idle);
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('keeps notifying other listeners when one listener throws', () => {
+    const { engine, internals, dead } = setup();
+    const failing = jest.fn(() => {
+      throw new Error('listener bug');
+    });
+    const healthy = jest.fn();
+    engine.onRoomsLost(failing);
+    engine.onRoomsLost(healthy);
+
+    internals.handleWorkerDied(dead);
+
+    expect(healthy).toHaveBeenCalledWith(['on-dead-1', 'on-dead-2']);
+  });
+
+  it('respawns the worker after a short delay and not before', async () => {
+    const { internals, dead } = setup();
+
+    internals.handleWorkerDied(dead);
+    expect(internals.bootstrapWorkers).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+    expect(internals.bootstrapWorkers).toHaveBeenCalledTimes(1);
+  });
+
+  it('neither drops rooms nor respawns while the service is shutting down', async () => {
+    const { engine, internals, dead } = setup();
+    const listener = jest.fn();
+    engine.onRoomsLost(listener);
+
+    await engine.onModuleDestroy();
+    internals.handleWorkerDied(dead);
+    await jest.advanceTimersByTimeAsync(2000);
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(internals.bootstrapWorkers).not.toHaveBeenCalled();
+  });
+});

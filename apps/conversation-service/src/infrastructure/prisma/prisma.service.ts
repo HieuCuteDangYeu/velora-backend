@@ -28,7 +28,7 @@ export class PrismaService
       );
       const command = match
         ? MONGO_COMMANDS[`${match[1]}.${match[2]}`]
-        : /^db\.runCommand\(\s*\{\s*"?update"?\s*:\s*"conversations"/.test(
+        : /^db\.runCommand\(\s*\{\s*"?(?:update|findAndModify)"?\s*:\s*"conversations"/.test(
               event.query,
             )
           ? 'conversation_update'

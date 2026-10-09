@@ -10,7 +10,7 @@ import { SendMessageUseCase } from './application/use-cases/send-message.use-cas
 const createMessage = () =>
   new Message({
     id: 'message-1',
-    conversationId: 'conversation-1',
+    conversationId: '507f1f77bcf86cd799439012',
     senderId: 'sender-1',
     clientMessageId: 'client-message-1',
     content: 'hello',
@@ -22,7 +22,7 @@ const createMessage = () =>
 
 const createStoredMessage = () => ({
   id: 'message-1',
-  conversationId: 'conversation-1',
+  conversationId: '507f1f77bcf86cd799439012',
   senderId: 'sender-1',
   clientMessageId: 'client-message-1',
   content: 'encrypted:hello',
@@ -41,7 +41,7 @@ const createStoredMessage = () => ({
 });
 
 const createStoredConversation = () => ({
-  id: 'conversation-1',
+  id: '507f1f77bcf86cd799439012',
   creatorId: 'sender-1',
   participantIds: ['sender-1'],
   name: null,
@@ -59,9 +59,32 @@ const prismaError = (code: string) =>
     code,
     clientVersion: '5.22.0',
   });
+type PreviewCommand = {
+  query: { _id: { $oid: string }; participantIds: string };
+  update: { $set: Record<string, unknown> };
+};
+const rawPreviewReceipt = (
+  record: ReturnType<typeof createStoredConversation>,
+  command: PreviewCommand,
+) => ({
+  ok: 1,
+  lastErrorObject: { n: 1, updatedExisting: true },
+  value: {
+    _id: command.query._id,
+    creator_id: record.creatorId,
+    participantIds: record.participantIds,
+    isGroup: record.isGroup,
+    name: record.name,
+    picture: record.picture,
+    memberJoinedAt: record.memberJoinedAt,
+    createdAt: { $date: record.createdAt.toISOString() },
+    ...command.update.$set,
+  },
+});
+
 const transactionHarness = ($transaction: jest.Mock) => {
   const models = {
-    $runCommandRaw: jest.fn().mockResolvedValue({ ok: 1, n: 1 }),
+    $runCommandRaw: jest.fn(),
     conversation: {
       findUnique: jest.fn().mockResolvedValue(createStoredConversation()),
     },
@@ -70,6 +93,25 @@ const transactionHarness = ($transaction: jest.Mock) => {
       findFirst: jest.fn().mockResolvedValue(createStoredMessage()),
     },
   };
+  models.$runCommandRaw.mockImplementation(async (command: PreviewCommand) => {
+    const readFixture =
+      models.conversation.findUnique.getMockImplementation() as
+        | (() => Promise<ReturnType<typeof createStoredConversation> | null>)
+        | undefined;
+    if (!readFixture) throw new Error('Missing conversation fixture');
+    const record = await readFixture();
+    if (
+      !record ||
+      !record.participantIds.includes(command.query.participantIds)
+    ) {
+      return {
+        ok: 1,
+        lastErrorObject: { n: 0, updatedExisting: false },
+        value: null,
+      };
+    }
+    return rawPreviewReceipt(record, command);
+  });
   const prisma = {
     ...models,
     rootRunCommandRaw: jest.fn(() => {
@@ -212,31 +254,29 @@ describe('message transaction conflicts', () => {
     const result = await repository.createMessageIdempotently(createMessage());
     expect(result.conversation).toEqual(
       expect.objectContaining({
-        id: 'conversation-1',
+        id: '507f1f77bcf86cd799439012',
         participantIds: ['sender-1'],
         lastMessage: 'hello',
       }),
     );
-    expect(prisma.conversation.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.conversation.findUnique).not.toHaveBeenCalled();
     expect(prisma.$runCommandRaw).toHaveBeenCalledWith({
-      update: 'conversations',
-      updates: [
-        {
-          q: { _id: { $oid: 'conversation-1' } },
-          u: {
-            $set: {
-              lastMessage: 'hello',
-              lastMessageAt: { $date: expect.any(String) },
-              updatedAt: { $date: expect.any(String) },
-            },
-          },
-          multi: false,
-          upsert: false,
+      findAndModify: 'conversations',
+      query: {
+        _id: { $oid: '507f1f77bcf86cd799439012' },
+        participantIds: 'sender-1',
+      },
+      update: {
+        $set: {
+          lastMessage: 'hello',
+          lastMessageAt: { $date: expect.any(String) },
+          updatedAt: { $date: expect.any(String) },
         },
-      ],
-      ordered: true,
+      },
+      new: true,
+      upsert: false,
     });
-    const dates = prisma.$runCommandRaw.mock.calls[0][0].updates[0].u.$set as {
+    const dates = prisma.$runCommandRaw.mock.calls[0][0].update.$set as {
       lastMessageAt: { $date: string };
       updatedAt: { $date: string };
     };
@@ -258,7 +298,7 @@ describe('message transaction conflicts', () => {
     ],
     ['missing conversation', null, NotFoundException],
   ])(
-    'rejects %s at persistence before any mutation',
+    'rejects %s before message insert with a membership-filtered preview command',
     async (_case, record, error) => {
       const transaction = jest.fn();
       const { repository, prisma, redis } = transactionHarness(transaction);
@@ -267,7 +307,7 @@ describe('message transaction conflicts', () => {
         repository.createMessageIdempotently(createMessage()),
       ).rejects.toBeInstanceOf(error);
       expect(prisma.message.createMany).not.toHaveBeenCalled();
-      expect(prisma.$runCommandRaw).not.toHaveBeenCalled();
+      expect(prisma.$runCommandRaw).toHaveBeenCalledTimes(1);
       expect(prisma.$transaction).toHaveBeenCalledTimes(1);
       expect(transaction).not.toHaveBeenCalled();
       expect(redis.del).not.toHaveBeenCalled();
@@ -277,11 +317,16 @@ describe('message transaction conflicts', () => {
   it('aborts the transaction when preview update finds no conversation', async () => {
     const commit = jest.fn();
     const { repository, prisma, redis } = transactionHarness(commit);
-    prisma.$runCommandRaw.mockResolvedValue({ ok: 1, n: 0 });
+    prisma.$runCommandRaw.mockResolvedValue({
+      ok: 1,
+      lastErrorObject: { n: 0, updatedExisting: false },
+      value: null,
+    });
+    prisma.conversation.findUnique.mockResolvedValue(null);
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toBeInstanceOf(NotFoundException);
-    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.message.createMany).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
@@ -301,20 +346,20 @@ describe('message transaction conflicts', () => {
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toMatchObject({ status: 500 });
-    expect(prisma.message.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.message.createMany).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(prisma.rootRunCommandRaw).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
 
-  it('aborts an unexpected empty insert before preview or post-commit work', async () => {
+  it('aborts an unexpected empty insert and rolls the prior preview back', async () => {
     const commit = jest.fn();
     const { repository, prisma, redis } = transactionHarness(commit);
     prisma.message.createMany.mockResolvedValue({ count: 0 });
     await expect(
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toMatchObject({ status: 500 });
-    expect(prisma.$runCommandRaw).not.toHaveBeenCalled();
+    expect(prisma.$runCommandRaw).toHaveBeenCalledTimes(1);
     expect(commit).not.toHaveBeenCalled();
     expect(redis.del).not.toHaveBeenCalled();
   });
@@ -329,11 +374,13 @@ describe('message transaction conflicts', () => {
       markEntered = resolve;
     });
     const { repository, prisma } = transactionHarness(jest.fn());
-    prisma.$runCommandRaw.mockImplementationOnce(async () => {
-      markEntered();
-      await blocked;
-      return { ok: 1, n: 1 };
-    });
+    prisma.$runCommandRaw.mockImplementationOnce(
+      async (command: PreviewCommand) => {
+        markEntered();
+        await blocked;
+        return rawPreviewReceipt(createStoredConversation(), command);
+      },
+    );
     const first = repository.createMessageIdempotently(createMessage());
     const second = repository.createMessageIdempotently(createMessage());
     const settled = Promise.allSettled([first, second]);
@@ -389,7 +436,7 @@ describe('message transaction conflicts', () => {
     const first = repository.createMessageIdempotently(createMessage());
     const second = repository.createMessageIdempotently(createMessage());
     const otherMessage = createMessage();
-    otherMessage.conversationId = 'conversation-2';
+    otherMessage.conversationId = '507f1f77bcf86cd799439013';
     await repository.createMessageIdempotently(otherMessage);
     expect(transaction).toHaveBeenCalledTimes(2);
     expect(peak).toBe(2);
@@ -550,7 +597,7 @@ describe('message transaction conflicts', () => {
         'private query detail',
       );
       expect(emit).toHaveBeenCalledWith('message_failed', {
-        conversationId: 'conversation-1',
+        conversationId: '507f1f77bcf86cd799439012',
         clientMessageId: 'client-message-1',
       });
     } finally {
@@ -747,7 +794,7 @@ describe('message idempotency', () => {
     expect(prisma.message.createMany).toHaveBeenCalledTimes(2);
     expect(prisma.message.findFirst).toHaveBeenCalledWith({
       where: {
-        conversationId: 'conversation-1',
+        conversationId: '507f1f77bcf86cd799439012',
         senderId: 'sender-1',
         clientMessageId: 'client-message-1',
       },
@@ -782,7 +829,7 @@ describe('message idempotency', () => {
     );
 
     const result = await controller.handleCreateMessage({
-      conversationId: 'conversation-1',
+      conversationId: '507f1f77bcf86cd799439012',
       senderId: 'sender-1',
       clientMessageId: 'client-message-1',
       content: 'hello',
@@ -837,7 +884,7 @@ describe('message idempotency', () => {
 
     await gateway.handleMessage(
       {
-        conversationId: 'conversation-1',
+        conversationId: '507f1f77bcf86cd799439012',
         clientMessageId: 'client-message-1',
         content: 'hello',
         type: 'text',
@@ -884,7 +931,7 @@ describe('message idempotency', () => {
 
     await gateway.handleMessage(
       {
-        conversationId: 'conversation-1',
+        conversationId: '507f1f77bcf86cd799439012',
         content: 'hello',
         type: 'text',
         signalType: 0,
@@ -893,7 +940,7 @@ describe('message idempotency', () => {
     );
 
     expect(senderEmit).toHaveBeenCalledWith('message_failed', {
-      conversationId: 'conversation-1',
+      conversationId: '507f1f77bcf86cd799439012',
       clientMessageId: undefined,
     });
     expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();

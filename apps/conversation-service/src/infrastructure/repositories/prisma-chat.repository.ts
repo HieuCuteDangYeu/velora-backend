@@ -52,6 +52,7 @@ import type { IChatMediaService } from '../../domain/interfaces/chat-media.servi
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
 import { ChatMapper } from './chat.mapper';
 import { ConversationMapper } from './conversation.mapper';
+import { writeAuthorizedPreview } from './authorized-preview.writer';
 
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
@@ -169,22 +170,18 @@ export class PrismaChatRepository implements IChatRepository {
             this.measure('mongo_write', () =>
               this.prisma.$transaction(
                 async (tx) => {
-                  // Read membership and the delivery snapshot after entering the
-                  // room queue. A concurrent membership update conflicts with
-                  // the preview write and forces a fresh transaction retry.
+                  const timestamp = new Date();
+                  // This phase now includes the authorized preview write, not
+                  // just the previous membership read.
                   const conversation = await this.measure('membership', () =>
-                    tx.conversation.findUnique({
-                      where: { id: message.conversationId },
-                    }),
+                    writeAuthorizedPreview(
+                      tx,
+                      message.conversationId,
+                      message.senderId,
+                      previewText,
+                      timestamp,
+                    ),
                   );
-                  if (!conversation) {
-                    throw new NotFoundException('Conversation not found');
-                  }
-                  if (!conversation.participantIds.includes(message.senderId)) {
-                    throw new ForbiddenException(
-                      'You are not allowed to access messages in this conversation',
-                    );
-                  }
 
                   // All initial values are known here. createMany avoids the
                   // read-back issued by create; keep this insert and the preview
@@ -224,7 +221,7 @@ export class PrismaChatRepository implements IChatRepository {
                       : null,
                     conversationId: message.conversationId,
                     reactions: null,
-                    createdAt: new Date(),
+                    createdAt: timestamp,
                     readBy: [],
                     notificationRecipientIds,
                     notificationNextAttemptAt:
@@ -240,53 +237,7 @@ export class PrismaChatRepository implements IChatRepository {
                       'Message insert did not create one record',
                     );
                   }
-                  const timestamp = new Date();
-                  // The ID is already authorized by this transaction's read.
-                  // A single update avoids updateMany's preliminary ID read.
-                  // Stay on tx: a conflicting membership change must abort the
-                  // message, preview and notification intent together.
-                  const updated = await tx.$runCommandRaw({
-                    update: 'conversations',
-                    updates: [
-                      {
-                        q: { _id: { $oid: message.conversationId } },
-                        u: {
-                          $set: {
-                            lastMessage: previewText,
-                            lastMessageAt: { $date: timestamp.toISOString() },
-                            updatedAt: { $date: timestamp.toISOString() },
-                          },
-                        },
-                        multi: false,
-                        upsert: false,
-                      },
-                    ],
-                    ordered: true,
-                  });
-                  // No per-command writeConcern inside a transaction. Commit
-                  // controls durability; ambiguous receipts must abort first.
-                  if (
-                    updated?.ok !== 1 ||
-                    updated.writeErrors !== undefined ||
-                    updated.writeConcernError !== undefined ||
-                    (updated.n !== 0 && updated.n !== 1)
-                  ) {
-                    throw new InternalServerErrorException(
-                      'Conversation preview update was not acknowledged',
-                    );
-                  }
-                  if (updated.n !== 1) {
-                    throw new NotFoundException('Conversation not found');
-                  }
-                  return [
-                    persisted,
-                    {
-                      ...conversation,
-                      lastMessage: previewText,
-                      lastMessageAt: timestamp,
-                      updatedAt: timestamp,
-                    },
-                  ] as const;
+                  return [persisted, conversation] as const;
                 },
                 {
                   maxWait: MESSAGE_TRANSACTION_MAX_WAIT_MS,

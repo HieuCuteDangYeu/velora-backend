@@ -89,22 +89,29 @@ integration(
         {} as never,
         {} as never,
       );
-      const input = (clientMessageId: string) =>
+      const input = (clientMessageId: string, content = 'fixture') =>
         new Message({
           id: '',
           conversationId: conversation.id,
           senderId: 'sender',
           clientMessageId,
-          content: 'fixture',
+          content,
           type: 'text',
           signalType: 0,
           createdAt: new Date(),
         });
       const identity = randomUUID();
+      queries.length = 0;
       const result = await repository.createMessageIdempotently(
         input(identity),
         { enqueueNotification: true },
       );
+      expect(queries).toEqual(['db.runCommand', 'db.messages.insertMany']);
+      const preview = await prisma.conversation.findUniqueOrThrow({
+        where: { id: conversation.id },
+      });
+      expect(preview.lastMessage).toBe('fixture');
+      expect(preview.lastMessageAt).toEqual(result.message.createdAt);
       const original = await prisma.message.findUniqueOrThrow({
         where: { id: result.message.id },
       });
@@ -112,12 +119,17 @@ integration(
       expect(original.content).toBe('encrypted:fixture');
       expect(original.notificationNextAttemptAt).toBeInstanceOf(Date);
       const replay = await repository.createMessageIdempotently(
-        input(identity),
+        input(identity, 'must not replace preview'),
         { enqueueNotification: true },
       );
       expect(replay.created).toBe(false);
       expect(replay.message.id).toBe(original.id);
       expect(await prisma.message.count()).toBe(1);
+      expect(
+        await prisma.conversation.findUniqueOrThrow({
+          where: { id: conversation.id },
+        }),
+      ).toEqual(preview);
 
       queries.length = 0;
       expect(await findDueNotificationIntents(prisma, new Date(), 20)).toEqual([
@@ -172,14 +184,20 @@ integration(
         },
       });
 
-      // Inject a preview failure after the real insert inside the transaction.
+      // Fail the real insert after findAndModify. The preview must roll back
+      // together with the message and its notification intent.
       const transaction = (action: (tx: unknown) => Promise<unknown>) =>
         prisma.$transaction((tx) =>
           action({
-            ...tx,
-            conversation: {
-              ...tx.conversation,
-              updateMany: () => Promise.resolve({ count: 0 }),
+            $runCommandRaw: (
+              command: Parameters<typeof tx.$runCommandRaw>[0],
+            ) => tx.$runCommandRaw(command),
+            conversation: tx.conversation,
+            message: {
+              ...tx.message,
+              createMany: () => {
+                throw new Error('Injected message insert failure');
+              },
             },
           }),
         );
@@ -191,11 +209,48 @@ integration(
         {} as never,
       );
       await expect(
-        brokenRepository.createMessageIdempotently(input(randomUUID()), {
-          enqueueNotification: true,
+        brokenRepository.createMessageIdempotently(
+          input(randomUUID(), 'must roll back'),
+          { enqueueNotification: true },
+        ),
+      ).rejects.toThrow('Injected message insert failure');
+      expect(await prisma.message.count()).toBe(1);
+      expect(
+        await prisma.conversation.findUniqueOrThrow({
+          where: { id: conversation.id },
         }),
+      ).toEqual(preview);
+
+      // Matching membership in the write must reject a removed sender, and
+      // preserve 403 vs 404 without inserting or upserting anything.
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { participantIds: ['member'] },
+      });
+      await expect(
+        repository.createMessageIdempotently(input(randomUUID())),
+      ).rejects.toThrow('You are not allowed');
+      await expect(
+        repository.createMessageIdempotently(
+          new Message({
+            ...input(randomUUID()),
+            conversationId: '000000000000000000000001',
+          }),
+        ),
       ).rejects.toThrow('Conversation not found');
       expect(await prisma.message.count()).toBe(1);
+      expect(await prisma.conversation.count()).toBe(1);
+      expect(
+        (
+          await prisma.conversation.findUniqueOrThrow({
+            where: { id: conversation.id },
+          })
+        ).lastMessage,
+      ).toBe('fixture');
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { participantIds: ['sender', 'member'] },
+      });
 
       const notifications = {
         notifyNewMessage: jest.fn().mockResolvedValue(undefined),

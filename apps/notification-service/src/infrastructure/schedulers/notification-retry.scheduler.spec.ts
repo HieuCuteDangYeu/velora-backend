@@ -8,6 +8,8 @@ describe('NotificationRetryScheduler', () => {
     recordRetrySchedulerCompletion: jest.fn(),
     recordRetryJobs: jest.fn(),
     setDatabaseAvailability: jest.fn(),
+    recordBacklog: jest.fn(),
+    setBacklogSampleAvailability: jest.fn(),
   });
 
   let log: jest.SpiedFunction<Logger['log']>;
@@ -37,6 +39,12 @@ describe('NotificationRetryScheduler', () => {
     const scheduler = new NotificationRetryScheduler(
       retryNotificationJobs as never,
       metrics as never,
+      {
+        readBacklog: jest.fn().mockResolvedValue({
+          counts: { pending: 0, failed: 0, processing: 0 },
+          oldestCreatedAt: null,
+        }),
+      } as never,
     );
 
     await scheduler.handleRetries();
@@ -72,6 +80,12 @@ describe('NotificationRetryScheduler', () => {
     const scheduler = new NotificationRetryScheduler(
       retryNotificationJobs as never,
       metrics as never,
+      {
+        readBacklog: jest.fn().mockResolvedValue({
+          counts: { pending: 0, failed: 0, processing: 0 },
+          oldestCreatedAt: null,
+        }),
+      } as never,
     );
 
     const firstRun = scheduler.handleRetries();
@@ -95,6 +109,12 @@ describe('NotificationRetryScheduler', () => {
     const scheduler = new NotificationRetryScheduler(
       retry as never,
       metrics as never,
+      {
+        readBacklog: jest.fn().mockResolvedValue({
+          counts: { pending: 0, failed: 0, processing: 0 },
+          oldestCreatedAt: null,
+        }),
+      } as never,
     );
     await scheduler.handleRetries();
     expect(retry.execute).toHaveBeenCalledTimes(5);
@@ -112,6 +132,12 @@ describe('NotificationRetryScheduler', () => {
     const scheduler = new NotificationRetryScheduler(
       retry as never,
       metrics as never,
+      {
+        readBacklog: jest.fn().mockResolvedValue({
+          counts: { pending: 0, failed: 0, processing: 0 },
+          oldestCreatedAt: null,
+        }),
+      } as never,
     );
     await scheduler.handleRetries();
     expect(retry.execute).toHaveBeenCalledTimes(1);
@@ -126,6 +152,12 @@ describe('NotificationRetryScheduler', () => {
     const scheduler = new NotificationRetryScheduler(
       retryNotificationJobs as never,
       metrics as never,
+      {
+        readBacklog: jest.fn().mockResolvedValue({
+          counts: { pending: 0, failed: 0, processing: 0 },
+          oldestCreatedAt: null,
+        }),
+      } as never,
     );
 
     await expect(scheduler.handleRetries()).resolves.toBeUndefined();
@@ -133,5 +165,75 @@ describe('NotificationRetryScheduler', () => {
     expect(error).toHaveBeenCalledWith(
       'Notification retry scheduler failed: unknown',
     );
+  });
+  it('samples after draining, no more than every ten seconds, and isolates failed samples', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(10_000);
+    const retry = {
+      execute: jest.fn().mockResolvedValue({ attemptedCount: 0, failures: [] }),
+    };
+    const snapshot = {
+      counts: { pending: 3, processing: 0, failed: 0 },
+      oldestCreatedAt: new Date(5_000),
+    };
+    const jobs = {
+      readBacklog: jest
+        .fn()
+        .mockResolvedValueOnce(snapshot)
+        .mockRejectedValueOnce(new Error('DB unavailable'))
+        .mockResolvedValueOnce(snapshot),
+    };
+    const metrics = createMetrics();
+    const scheduler = new NotificationRetryScheduler(
+      retry as never,
+      metrics as never,
+      jobs as never,
+    );
+    await scheduler.handleRetries();
+    expect(jobs.readBacklog.mock.invocationCallOrder[0]).toBeGreaterThan(
+      retry.execute.mock.invocationCallOrder[0],
+    );
+    expect(metrics.recordBacklog).toHaveBeenCalledWith(snapshot);
+    now.mockReturnValue(19_999);
+    await scheduler.handleRetries();
+    expect(jobs.readBacklog).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(20_000);
+    await scheduler.handleRetries();
+    expect(metrics.setBacklogSampleAvailability).toHaveBeenCalledWith(false);
+    expect(metrics.recordBacklog).toHaveBeenCalledTimes(1);
+    expect(metrics.recordRetrySchedulerRun).not.toHaveBeenCalledWith('error');
+    now.mockReturnValue(20_001);
+    await scheduler.handleRetries();
+    expect(jobs.readBacklog).toHaveBeenCalledTimes(2);
+    now.mockReturnValue(30_000);
+    await scheduler.handleRetries();
+    expect(metrics.recordBacklog).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the poll non-overlapping until its backlog snapshot settles', async () => {
+    let release!: () => void;
+    const retry = {
+      execute: jest.fn().mockResolvedValue({ attemptedCount: 0, failures: [] }),
+    };
+    const jobs = {
+      readBacklog: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    };
+    const metrics = createMetrics();
+    const scheduler = new NotificationRetryScheduler(
+      retry as never,
+      metrics as never,
+      jobs as never,
+    );
+    const poll = scheduler.handleRetries();
+    await Promise.resolve();
+    await scheduler.handleRetries();
+    expect(retry.execute).toHaveBeenCalledTimes(1);
+    expect(metrics.recordRetrySchedulerRun).toHaveBeenCalledWith('overlap');
+    release();
+    await poll;
   });
 });

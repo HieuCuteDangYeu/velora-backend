@@ -1,10 +1,12 @@
 import {
   Injectable,
+  Inject,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 
+import { INotificationJobRepository } from '../../domain/interfaces/notification-job.repository.interface';
 import { RetryNotificationJobsUseCase } from '../../application/use-cases/retry-notification-jobs.use-case';
 import { NotificationPrometheusMetricsService } from '../metrics/notification-prometheus-metrics.service';
 
@@ -21,10 +23,13 @@ export class NotificationRetryScheduler
   private interval?: NodeJS.Timeout;
   private isRunning = false;
   private databaseUnavailable = false;
+  private lastBacklogSampleAt = -Infinity;
 
   constructor(
     private readonly retryNotificationJobs: RetryNotificationJobsUseCase,
     private readonly metrics: NotificationPrometheusMetricsService,
+    @Inject('INotificationJobRepository')
+    private readonly jobs: INotificationJobRepository,
   ) {}
 
   onModuleInit() {
@@ -76,6 +81,8 @@ export class NotificationRetryScheduler
         result.failures.length,
       );
 
+      await this.sampleBacklog();
+
       if (result.attemptedCount === 0) {
         return;
       }
@@ -106,6 +113,21 @@ export class NotificationRetryScheduler
       );
     } finally {
       this.isRunning = false;
+    }
+  }
+
+  private async sampleBacklog() {
+    const now = Date.now();
+    if (now - this.lastBacklogSampleAt < 10_000) return;
+    // Attempt timestamp also bounds retries after a failed sample. Sampling is
+    // inside the non-overlapping poll, after delivery has yielded its DB slots.
+    this.lastBacklogSampleAt = now;
+    try {
+      this.metrics.recordBacklog(await this.jobs.readBacklog());
+    } catch {
+      // Retain the last good gauges. Observability failure must not turn a
+      // completed delivery poll into a failed one or emit private DB errors.
+      this.metrics.setBacklogSampleAvailability(false);
     }
   }
 

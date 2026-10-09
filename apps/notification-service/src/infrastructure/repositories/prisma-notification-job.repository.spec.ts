@@ -16,6 +16,65 @@ type FindManyInput = {
 };
 
 describe('PrismaNotificationJobRepository', () => {
+  it('samples unfinished jobs in one indexed-status query through its owned client', async () => {
+    const old = new Date('2026-10-09T00:00:00Z');
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        status: 'pending',
+        count: BigInt(3),
+        oldest: new Date('2026-10-09T01:00:00Z'),
+      },
+      { status: 'processing', count: BigInt(1), oldest: old },
+    ]);
+    const repository = new PrismaNotificationJobRepository({
+      $queryRaw: queryRaw,
+    } as never);
+    await expect(repository.readBacklog()).resolves.toEqual({
+      counts: { pending: 3, failed: 0, processing: 1 },
+      oldestCreatedAt: old,
+    });
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const [strings, now] = queryRaw.mock.calls[0];
+    const sql = (strings as TemplateStringsArray).join('?');
+    expect(sql).toContain("status IN ('pending', 'failed', 'processing')");
+    expect(sql).toContain('expires_at IS NULL OR expires_at >');
+    expect(sql).toContain('GROUP BY status');
+    expect(sql).not.toContain('next_attempt_at');
+    expect(sql).not.toContain('updated_at');
+    expect(now).toBeInstanceOf(Date);
+  });
+
+  it('reports zero counts and no oldest job for a successful empty snapshot', async () => {
+    const repository = new PrismaNotificationJobRepository({
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    } as never);
+    await expect(repository.readBacklog()).resolves.toEqual({
+      counts: { pending: 0, failed: 0, processing: 0 },
+      oldestCreatedAt: null,
+    });
+  });
+
+  it.each([
+    { status: 'sent', count: BigInt(1), oldest: new Date() },
+    { status: 'pending', count: BigInt(-1), oldest: new Date() },
+    {
+      status: 'pending',
+      count: BigInt('9007199254740992'),
+      oldest: new Date(),
+    },
+    { status: 'pending', count: BigInt(1), oldest: new Date(NaN) },
+  ])(
+    'rejects malformed snapshot data without returning a false zero',
+    async (row) => {
+      const repository = new PrismaNotificationJobRepository({
+        $queryRaw: jest.fn().mockResolvedValue([row]),
+      } as never);
+      await expect(repository.readBacklog()).rejects.toThrow(
+        'Invalid notification backlog snapshot',
+      );
+    },
+  );
+
   it('reuses one durable lifecycle job for a redelivered event', async () => {
     const create = jest.fn();
     const upsert = jest.fn().mockResolvedValue({

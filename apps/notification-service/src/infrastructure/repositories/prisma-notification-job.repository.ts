@@ -11,7 +11,11 @@ import {
   NotificationJobStatus,
   NotificationJobType,
 } from '../../domain/entities/notification-job.entity';
-import { INotificationJobRepository } from '../../domain/interfaces/notification-job.repository.interface';
+import {
+  INotificationJobRepository,
+  NotificationBacklogSnapshot,
+  NotificationBacklogStatus,
+} from '../../domain/interfaces/notification-job.repository.interface';
 import { PrismaService } from '../prisma/prisma.service';
 
 const PROCESSING_LEASE_MS = 5 * 60_000;
@@ -159,6 +163,43 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
     });
 
     return this.toDomain(record);
+  }
+
+  async readBacklog(): Promise<NotificationBacklogSnapshot> {
+    // One bounded result through the existing Prisma client and database gate.
+    // The status index excludes terminal history; no new pool or transaction.
+    const rows = await this.prisma.$queryRaw<
+      Array<{ status: string; count: bigint; oldest: Date }>
+    >`
+      SELECT status, COUNT(*) AS count, MIN(created_at) AS oldest
+      FROM notification_jobs
+      WHERE status IN ('pending', 'failed', 'processing')
+        AND (expires_at IS NULL OR expires_at > ${new Date()})
+      GROUP BY status
+    `;
+    const snapshot: NotificationBacklogSnapshot = {
+      counts: { pending: 0, failed: 0, processing: 0 },
+      oldestCreatedAt: null,
+    };
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const count = Number(row.count);
+      if (
+        !['pending', 'failed', 'processing'].includes(row.status) ||
+        seen.has(row.status) ||
+        !Number.isSafeInteger(count) ||
+        count < 1 ||
+        !(row.oldest instanceof Date) ||
+        !Number.isFinite(row.oldest.getTime())
+      )
+        throw new Error('Invalid notification backlog snapshot');
+      seen.add(row.status);
+      snapshot.counts[row.status as NotificationBacklogStatus] = count;
+      if (!snapshot.oldestCreatedAt || row.oldest < snapshot.oldestCreatedAt) {
+        snapshot.oldestCreatedAt = row.oldest;
+      }
+    }
+    return snapshot;
   }
 
   async findRetryable(limit: number): Promise<NotificationJob[]> {

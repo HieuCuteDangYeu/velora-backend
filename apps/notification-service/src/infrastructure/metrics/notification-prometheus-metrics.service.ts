@@ -1,4 +1,5 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { NotificationBacklogSnapshot } from '../../domain/interfaces/notification-job.repository.interface';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 
 export type ApnsRequestOutcome =
@@ -39,6 +40,17 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
   private retryJobsAttempted = 0;
   private retryJobsFailed = 0;
   private databaseUp = 1;
+  private backlog?: NotificationBacklogSnapshot;
+  private backlogSampleUp = 0;
+  private lastBacklogSampleSeconds = 0;
+  private databaseActive = 0;
+  private databaseWaiting = 0;
+  private databaseWaitCount = 0;
+  private databaseWaitSum = 0;
+  private readonly databaseWaitBounds = [
+    0.001, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10,
+  ];
+  private readonly databaseWaitBuckets = this.databaseWaitBounds.map(() => 0);
   private lastSchedulerCompletionTimestampSeconds = Date.now() / 1_000;
 
   constructor() {
@@ -82,6 +94,30 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
 
   setDatabaseAvailability(available: boolean) {
     this.databaseUp = available ? 1 : 0;
+  }
+
+  recordBacklog(snapshot: NotificationBacklogSnapshot) {
+    this.backlog = snapshot;
+    this.backlogSampleUp = 1;
+    this.lastBacklogSampleSeconds = Date.now() / 1_000;
+  }
+
+  setBacklogSampleAvailability(available: boolean) {
+    this.backlogSampleUp = available ? 1 : 0;
+  }
+
+  recordDatabaseQueue(active: number, waiting: number) {
+    this.databaseActive = active;
+    this.databaseWaiting = waiting;
+  }
+
+  recordDatabaseWait(seconds: number) {
+    if (!Number.isFinite(seconds) || seconds < 0) return;
+    this.databaseWaitCount++;
+    this.databaseWaitSum += seconds;
+    this.databaseWaitBounds.forEach((bound, index) => {
+      if (seconds <= bound) this.databaseWaitBuckets[index]++;
+    });
   }
 
   metrics(): string {
@@ -211,6 +247,89 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
     );
     lines.push(`velora_notification_database_up${labels} ${this.databaseUp}`);
 
+    this.metricHeader(
+      lines,
+      'velora_notification_backlog_sample_up',
+      'Whether the last unfinished-job snapshot succeeded; retained gauges may be stale on failure.',
+      'gauge',
+    );
+    lines.push(
+      `velora_notification_backlog_sample_up${labels} ${this.backlogSampleUp}`,
+    );
+    this.metricHeader(
+      lines,
+      'velora_notification_backlog_last_sample_timestamp_seconds',
+      'Unix timestamp of the last successful unfinished-job snapshot.',
+      'gauge',
+    );
+    lines.push(
+      `velora_notification_backlog_last_sample_timestamp_seconds${labels} ${this.lastBacklogSampleSeconds}`,
+    );
+    // No artificial empty backlog before the first successful query.
+    if (this.backlog) {
+      this.metricHeader(
+        lines,
+        'velora_notification_jobs_outstanding',
+        'Unexpired unfinished jobs by status, including active leases and future backoff, not just due jobs.',
+        'gauge',
+      );
+      for (const status of ['pending', 'processing', 'failed'] as const) {
+        lines.push(
+          `velora_notification_jobs_outstanding${this.labels({ service: this.serviceName, status })} ${this.backlog.counts[status]}`,
+        );
+      }
+      this.metricHeader(
+        lines,
+        'velora_notification_oldest_outstanding_age_seconds',
+        'Age since creation of the oldest job in the last successful unfinished-job snapshot; zero for an empty snapshot.',
+        'gauge',
+      );
+      const age = this.backlog.oldestCreatedAt
+        ? Math.max(
+            0,
+            (Date.now() - this.backlog.oldestCreatedAt.getTime()) / 1_000,
+          )
+        : 0;
+      lines.push(
+        `velora_notification_oldest_outstanding_age_seconds${labels} ${age}`,
+      );
+    }
+    this.metricHeader(
+      lines,
+      'velora_notification_database_gate_active',
+      'Prisma operations admitted by the existing gate, not the number of PostgreSQL connections.',
+      'gauge',
+    );
+    lines.push(
+      `velora_notification_database_gate_active${labels} ${this.databaseActive}`,
+    );
+    this.metricHeader(
+      lines,
+      'velora_notification_database_gate_waiting',
+      'Prisma operations waiting outside the connection pool in the existing gate.',
+      'gauge',
+    );
+    lines.push(
+      `velora_notification_database_gate_waiting${labels} ${this.databaseWaiting}`,
+    );
+    const wait = 'velora_notification_database_gate_wait_seconds';
+    this.metricHeader(
+      lines,
+      wait,
+      'Time before admission by the application database gate, including zero-wait admissions; not SQL execution or internal pool wait.',
+      'histogram',
+    );
+    this.databaseWaitBounds.forEach((bound, index) => {
+      lines.push(
+        `${wait}_bucket${this.labels({ service: this.serviceName, le: String(bound) })} ${this.databaseWaitBuckets[index]}`,
+      );
+    });
+    lines.push(
+      `${wait}_bucket${this.labels({ service: this.serviceName, le: '+Inf' })} ${this.databaseWaitCount}`,
+    );
+    lines.push(`${wait}_count${labels} ${this.databaseWaitCount}`);
+    lines.push(`${wait}_sum${labels} ${this.databaseWaitSum}`);
+
     this.eventLoopDelay.reset();
     return `${lines.join('\n')}\n`;
   }
@@ -219,7 +338,7 @@ export class NotificationPrometheusMetricsService implements OnModuleDestroy {
     lines: string[],
     name: string,
     help: string,
-    type: 'counter' | 'gauge',
+    type: 'counter' | 'gauge' | 'histogram',
   ) {
     lines.push(`# HELP ${name} ${help}`);
     lines.push(`# TYPE ${name} ${type}`);

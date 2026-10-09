@@ -24,14 +24,20 @@ describe('Notification database connection budget', () => {
   });
 
   it('keeps the existing URL when no override is configured', () => {
-    new PrismaService();
+    new PrismaService({
+      recordDatabaseQueue: jest.fn(),
+      recordDatabaseWait: jest.fn(),
+    } as never);
     expect(construct).toHaveBeenCalledWith({
       datasources: { db: { url: process.env.NOTIFICATION_DATABASE_URL } },
     });
   });
   it('overrides only the pool limit and preserves SSL and deadlines', () => {
     process.env.NOTIFICATION_DATABASE_CONNECTION_LIMIT = '2';
-    new PrismaService();
+    new PrismaService({
+      recordDatabaseQueue: jest.fn(),
+      recordDatabaseWait: jest.fn(),
+    } as never);
     const options = construct.mock.calls[0][0] as {
       datasources: { db: { url: string } };
     };
@@ -43,14 +49,21 @@ describe('Notification database connection budget', () => {
   it('rejects a missing database URL when a limit is configured', () => {
     delete process.env.NOTIFICATION_DATABASE_URL;
     process.env.NOTIFICATION_DATABASE_CONNECTION_LIMIT = '1';
-    expect(() => new PrismaService()).toThrow(
-      'NOTIFICATION_DATABASE_URL is required',
-    );
+    expect(
+      () =>
+        new PrismaService({
+          recordDatabaseQueue: jest.fn(),
+          recordDatabaseWait: jest.fn(),
+        } as never),
+    ).toThrow('NOTIFICATION_DATABASE_URL is required');
     expect(construct).not.toHaveBeenCalled();
   });
 
   it('gates operations at a smaller URL pool limit without starting another client', async () => {
-    new PrismaService();
+    new PrismaService({
+      recordDatabaseQueue: jest.fn(),
+      recordDatabaseWait: jest.fn(),
+    } as never);
     type Next = (params: unknown) => Promise<unknown>;
     const gate = middleware.mock.calls[0][0] as (
       params: unknown,
@@ -78,7 +91,13 @@ describe('Notification database connection budget', () => {
     'rejects invalid limit %s before initializing Prisma',
     (limit) => {
       process.env.NOTIFICATION_DATABASE_CONNECTION_LIMIT = limit;
-      expect(() => new PrismaService()).toThrow('positive integer');
+      expect(
+        () =>
+          new PrismaService({
+            recordDatabaseQueue: jest.fn(),
+            recordDatabaseWait: jest.fn(),
+          } as never),
+      ).toThrow('positive integer');
       expect(construct).not.toHaveBeenCalled();
     },
   );

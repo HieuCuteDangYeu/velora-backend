@@ -61,4 +61,27 @@ describe('DatabaseWorkQueue', () => {
       'after drain',
     );
   });
+  it('observes queue admission without changing FIFO even if the observer throws', async () => {
+    const state = jest.fn();
+    const admitted = jest.fn().mockImplementation(() => {
+      throw new Error('metrics failed');
+    });
+    const queue = new DatabaseWorkQueue(1, 1, { state, admitted });
+    let finish!: () => void;
+    const first = queue.run(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const second = queue.run(() => Promise.resolve('queued'));
+    expect(state).toHaveBeenCalledWith(1, 1);
+    finish();
+    await first;
+    await expect(second).resolves.toBe('queued');
+    expect(admitted).toHaveBeenCalledTimes(2);
+    expect(state).toHaveBeenLastCalledWith(0, 0);
+    for (const [seconds] of admitted.mock.calls)
+      expect(seconds).toBeGreaterThanOrEqual(0);
+  });
 });

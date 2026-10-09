@@ -449,11 +449,11 @@ describe('Message notification outbox', () => {
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
   });
 
-  it('does not overlap polls and bounds intake to four concurrent requests', async () => {
+  it('does not overlap polls and bounds intake to six concurrent requests', async () => {
     const h = makeHarness(
-      Array.from({ length: 6 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: 8 }, (_, index) => makeRecord(index + 1)),
     );
-    const gates = Array.from({ length: 6 }, deferred);
+    const gates = Array.from({ length: 8 }, deferred);
     let started = 0;
     h.notifications.notifyNewMessage.mockImplementation(
       () => gates[started++].promise,
@@ -462,17 +462,12 @@ describe('Message notification outbox', () => {
     const batch = worker.runOnce();
     expect(worker.runOnce()).toBe(batch);
     await flush();
-    expect(started).toBe(4);
+    expect(started).toBe(6);
     gates[0].resolve();
     gates[1].resolve();
     await flush();
-    expect(started).toBe(6);
-    gates[2].resolve();
-    gates[3].resolve();
-    await flush();
-    expect(started).toBe(6);
-    gates[4].resolve();
-    gates[5].resolve();
+    expect(started).toBe(8);
+    gates.slice(2).forEach((gate) => gate.resolve());
     await batch;
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
@@ -532,7 +527,7 @@ describe('Message notification outbox', () => {
     );
   });
 
-  it('waits for all four pipelines before fetching the next batch', async () => {
+  it('waits for all six pipelines before fetching the next batch', async () => {
     const h = makeHarness(
       Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
     );
@@ -550,10 +545,10 @@ describe('Message notification outbox', () => {
     expect(worker.runOnce()).toBe(drain);
     await flush();
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(active).toBe(4);
+    expect(active).toBe(6);
     gate.resolve();
     await drain;
-    expect(peak).toBe(4);
+    expect(peak).toBe(6);
     expect(h.message.findRaw).toHaveBeenCalledTimes(2);
   });
 
@@ -604,7 +599,7 @@ describe('Message notification outbox', () => {
     await worker.onModuleDestroy();
     await drain;
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(4);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(6);
     expect(h.records[20].notificationAttemptCount).toBe(0);
   });
 

@@ -42,7 +42,7 @@ describe('TerminateCallsAfterMediaLossUseCase', () => {
       'host-a',
       'media_unavailable',
       now,
-      'leave',
+      'media_lost',
     );
     expect(repository.transitionToTerminal).toHaveBeenNthCalledWith(
       2,
@@ -50,7 +50,7 @@ describe('TerminateCallsAfterMediaLossUseCase', () => {
       'host-b',
       'media_unavailable',
       now,
-      'leave',
+      'media_lost',
     );
   });
 

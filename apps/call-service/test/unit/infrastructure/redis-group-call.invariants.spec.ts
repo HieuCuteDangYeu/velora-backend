@@ -333,6 +333,23 @@ describeWithRedis('Redis group-call invariants under random lifecycles', () => {
           now += Math.floor(random() * 45_000);
           await repository.expireGroupInvitations(callId, new Date(now));
           trace.push(`time +${now - EPOCH}ms, expire ${callId}`);
+        } else if (roll < 0.97) {
+          const before = await repository.findByCallId(callId);
+          const result = await repository.transitionToTerminal(
+            callId,
+            before?.initiatorId ?? 'host',
+            'media_unavailable',
+            at,
+            'media_lost',
+          );
+          trace.push(`media lost ${callId} -> ${result.outcome}`);
+          if (
+            before?.status === 'active' &&
+            result.outcome !== 'transitioned'
+          ) {
+            trace.push('!! media loss left an active call running');
+            return trace;
+          }
         } else {
           const ended = await repository.terminateActiveCallsForMediaRestart(
             at,

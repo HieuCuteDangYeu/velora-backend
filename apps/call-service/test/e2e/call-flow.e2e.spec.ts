@@ -2903,6 +2903,265 @@ describe('Call Service P0 flow (e2e)', () => {
     }
   }, 20_000);
 
+  it('keeps a group call alive through the starter dropping, returning, being re-invited, and ends it with the last member', async () => {
+    const secondGuestUser: AuthUser = {
+      id: 'second-guest-user',
+      email: 'second-guest@example.com',
+      roles: ['USER'],
+    };
+    const directory = mkdtempSync('/tmp/velora-nohost-e2e-');
+    const redisSocket = join(directory, 'redis.sock');
+    const redisServer: ChildProcess = spawn(
+      'redis-server',
+      [
+        '--port',
+        '0',
+        '--unixsocket',
+        redisSocket,
+        '--save',
+        '',
+        '--appendonly',
+        'no',
+      ],
+      { stdio: 'ignore' },
+    );
+    let groupRedis: Redis | undefined;
+    let groupModule: TestingModule | undefined;
+    let groupApp: INestApplication | undefined;
+    const groupSockets: Socket[] = [];
+    const groupMedia = new FakeCallMediaEngine();
+    const groupConversationClient = new FakeConversationClient({
+      'conv-nohost': {
+        id: 'conv-nohost',
+        name: 'Team',
+        picture: null,
+        participantIds: [callerUser.id, calleeUser.id, secondGuestUser.id],
+        isGroup: true,
+      },
+    });
+    const previousNoAnswerTimeoutMs = process.env.CALL_NO_ANSWER_TIMEOUT_MS;
+    const previousReconnectGraceMs = process.env.CALL_RECONNECT_GRACE_MS;
+
+    try {
+      for (
+        let attempt = 0;
+        attempt < 100 && !existsSync(redisSocket);
+        attempt++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!existsSync(redisSocket))
+        throw new Error('Temporary Redis did not start');
+      groupRedis = new Redis({ path: redisSocket, lazyConnect: true });
+      await groupRedis.connect();
+      process.env.CALL_NO_ANSWER_TIMEOUT_MS = '15000';
+      process.env.CALL_RECONNECT_GRACE_MS = '300';
+
+      groupModule = await Test.createTestingModule({
+        imports: [CallServiceModule],
+      })
+        .overrideProvider('REDIS_CLIENT')
+        .useValue(groupRedis)
+        .overrideProvider('AUTH_SERVICE_RMQ')
+        .useValue(
+          new FakeAuthClient({
+            'caller-token': callerUser,
+            'callee-token': calleeUser,
+            'second-guest-token': secondGuestUser,
+          }),
+        )
+        .overrideProvider('CONVERSATION_SERVICE_RMQ')
+        .useValue(groupConversationClient)
+        .overrideProvider('ICallEventPublisher')
+        .useValue(new FakeCallEventPublisher())
+        .overrideProvider('ICallMediaEngine')
+        .useValue(groupMedia)
+        .compile();
+      groupApp = groupModule.createNestApplication();
+      await groupApp.listen(0);
+      const address = (
+        groupApp.getHttpServer() as { address(): AddressInfo }
+      ).address();
+      const connectGroupClient = async (token: string) => {
+        const socket = io(`http://127.0.0.1:${address.port}/call`, {
+          autoConnect: false,
+          transports: ['websocket'],
+          reconnection: false,
+          auth: { token, groupLifecycleVersion: 3 },
+        });
+        groupSockets.push(socket);
+        const connected = waitForConnect(socket);
+        socket.connect();
+        await connected;
+        return socket;
+      };
+      const readSession = async (id: string) =>
+        JSON.parse((await groupRedis!.get(`call:${id}:session`))!) as {
+          status: string;
+          terminalReason?: string;
+          participantIds: string[];
+          groupConfirmedAnswerActionIds: Record<string, string>;
+        };
+      const busy = (userId: string) =>
+        groupRedis!.hget('call:sessions:active-by-user', userId);
+
+      const [host, guest, second] = await Promise.all([
+        connectGroupClient('caller-token'),
+        connectGroupClient('callee-token'),
+        connectGroupClient('second-guest-token'),
+      ]);
+      const hostJoined = onceEvent<{ callId: string }>(host, 'call_joined');
+      const invites = Promise.all([
+        onceEvent(guest, 'incoming_call'),
+        onceEvent(second, 'incoming_call'),
+      ]);
+      host.emit('initiate_call', {
+        conversationId: 'conv-nohost',
+        callType: 'VOICE',
+      });
+      const [{ callId }] = await Promise.all([hostJoined, invites]);
+
+      for (const [socket, actionId] of [
+        [guest, 'guest-action'],
+        [second, 'second-action'],
+      ] as const) {
+        const accepted = onceEvent<{ outcome: string }>(
+          socket,
+          'incoming_call_acceptance',
+        );
+        socket.emit('accept_incoming_call', { callId, actionId });
+        await expect(accepted).resolves.toEqual(
+          expect.objectContaining({ outcome: 'accepted' }),
+        );
+      }
+
+      // 1. The starter drops off the network: only they leave, the call goes on.
+      const peerLeft = onceEvent<{ userId: string; reason: string }>(
+        guest,
+        'peer_left',
+      );
+      const noEnd = waitForOptionalEvent(guest, 'call_ended', 900);
+      host.disconnect();
+      await expect(peerLeft).resolves.toEqual(
+        expect.objectContaining({
+          userId: callerUser.id,
+          reason: 'disconnected',
+        }),
+      );
+      await expect(noEnd).resolves.toBeNull();
+      expect((await readSession(callId)).status).toBe('active');
+      expect((await readSession(callId)).participantIds).toEqual([
+        calleeUser.id,
+        secondGuestUser.id,
+      ]);
+      expect(await busy(callerUser.id)).toBeNull();
+
+      // 2. Someone invites them back; they can decline like any member.
+      const hostBack = await connectGroupClient('caller-token');
+      const reInvite = onceEvent<{ invitationId?: string }>(
+        hostBack,
+        'incoming_call',
+      );
+      guest.emit('invite_group_member', {
+        callId,
+        userId: callerUser.id,
+        requestId: 're-invite-starter',
+      });
+      const { invitationId } = await reInvite;
+      expect(invitationId).toBeDefined();
+      const declined = onceEvent<{ userId: string }>(hostBack, 'call_rejected');
+      const rejectError = waitForOptionalEvent(hostBack, 'exception', 600);
+      hostBack.emit('reject_call', { callId, invitationId });
+      await expect(declined).resolves.toEqual(
+        expect.objectContaining({ userId: callerUser.id }),
+      );
+      await expect(rejectError).resolves.toBeNull();
+
+      // 3. They change their mind and come back through the banner (late
+      //    join). Everyone is told, and they are a normal member from then on.
+      const lateJoined = onceEvent<{ role: string }>(hostBack, 'call_joined');
+      const newPeer = onceEvent<{ userId: string }>(guest, 'new_peer');
+      hostBack.emit('join_group_call', {
+        callId,
+        actionId: 'starter-late-action',
+      });
+      await expect(lateJoined).resolves.toEqual(
+        expect.objectContaining({ role: 'guest' }),
+      );
+      await expect(newPeer).resolves.toEqual(
+        expect.objectContaining({ userId: callerUser.id }),
+      );
+      expect(
+        (await readSession(callId)).groupConfirmedAnswerActionIds[
+          callerUser.id
+        ],
+      ).toBe('starter-late-action');
+      expect(await busy(callerUser.id)).toBe(callId);
+
+      const leftAck = onceEvent(hostBack, 'call_left');
+      const guestSawLeave = onceEvent<{ userId: string }>(guest, 'peer_left');
+      hostBack.emit('leave_call', { callId, reason: 'left' });
+      await leftAck;
+      await expect(guestSawLeave).resolves.toEqual(
+        expect.objectContaining({ userId: callerUser.id }),
+      );
+      expect((await readSession(callId)).status).toBe('active');
+
+      // 4. The call lives until the very last member leaves.
+      const secondLeft = onceEvent(guest, 'peer_left');
+      second.emit('leave_call', { callId, reason: 'left' });
+      await secondLeft;
+      expect((await readSession(callId)).status).toBe('active');
+      expect(groupMedia.getRoomState(callId)).toBeDefined();
+
+      const lastEnded = onceEvent<{ reason: string }>(hostBack, 'call_ended');
+      guest.emit('leave_call', { callId, reason: 'left' });
+      await expect(lastEnded).resolves.toEqual(
+        expect.objectContaining({ reason: 'left' }),
+      );
+      expect(await readSession(callId)).toEqual(
+        expect.objectContaining({ status: 'ended', terminalReason: 'left' }),
+      );
+      expect(groupMedia.getRoomState(callId)).toBeUndefined();
+      for (const user of [callerUser.id, calleeUser.id, secondGuestUser.id]) {
+        expect(await busy(user)).toBeNull();
+      }
+
+      // 5. A fresh call can start in the same conversation, and a sole member
+      //    losing their connection ends it instead of leaving a zombie room.
+      const soloJoined = onceEvent<{ callId: string }>(hostBack, 'call_joined');
+      const soloInvite = onceEvent(guest, 'incoming_call');
+      hostBack.emit('initiate_call', {
+        conversationId: 'conv-nohost',
+        callType: 'VOICE',
+      });
+      const [{ callId: soloCallId }] = await Promise.all([
+        soloJoined,
+        soloInvite,
+      ]);
+      expect(soloCallId).not.toBe(callId);
+      const soloEnded = onceEvent<{ reason: string }>(guest, 'call_ended');
+      hostBack.disconnect();
+      await expect(soloEnded).resolves.toEqual(
+        expect.objectContaining({ reason: 'disconnected' }),
+      );
+      expect((await readSession(soloCallId)).status).toBe('ended');
+      expect(await busy(callerUser.id)).toBeNull();
+    } finally {
+      groupSockets.forEach((socket) => socket.disconnect());
+      if (groupApp) await groupApp.close();
+      else if (groupModule) await groupModule.close();
+      if (groupRedis?.status === 'ready') await groupRedis.quit();
+      if (redisServer.exitCode === null && redisServer.signalCode === null) {
+        redisServer.kill();
+        await once(redisServer, 'exit');
+      }
+      process.env.CALL_NO_ANSWER_TIMEOUT_MS = previousNoAnswerTimeoutMs;
+      process.env.CALL_RECONNECT_GRACE_MS = previousReconnectGraceMs;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('atomically tombstones an expired call when an accept reaches the deadline', async () => {
     const caller = await connectClient('caller-token');
     const callee = await connectClient('callee-token');

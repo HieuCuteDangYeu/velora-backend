@@ -170,7 +170,11 @@ export class JoinCallUseCase {
       session,
       rtpCapabilities,
       peerUserId,
-      shouldEmitNewPeer: transition.joinedNow && role === 'guest',
+      // In a group call the starter can re-enter after leaving; the others must
+      // be told, exactly as for any other member joining.
+      shouldEmitNewPeer:
+        transition.joinedNow &&
+        (role === 'guest' || session.isGroupCall === true),
     };
   }
 }

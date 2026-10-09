@@ -227,7 +227,12 @@ export abstract class ICallSessionRepository {
     userId: string,
     requestedReason: string | undefined,
     now: Date,
-    mode: 'leave' | 'reject' | 'accept_failure' | 'membership_removed',
+    mode:
+      | 'leave'
+      | 'reject'
+      | 'accept_failure'
+      | 'membership_removed'
+      | 'media_lost',
     expectedAnswerActionId?: string,
   ): Promise<CallTerminalTransition>;
   /**

@@ -268,7 +268,7 @@ local invitation = (session.groupInvitations or {})[userId]
 if invitation and invitation.invitationId ~= (ARGV[5] ~= '' and ARGV[5] or session.callId) then
   return {'terminal', raw}
 end
-if not session.isGroupCall or userId == session.initiatorId then
+if not session.isGroupCall then
   return {'forbidden', raw}
 end
 local invited = false
@@ -730,7 +730,7 @@ else
       if id == userId then invited = true break end
     end
     if not invited then return {'forbidden', raw, '', '0'} end
-  elseif not isParticipant then
+  elseif not isParticipant and mode ~= 'media_lost' then
     if session.isGroupCall and wasActive then
       for _, id in ipairs(session.declinedUserIds or {}) do
         if id == userId then return {'already_terminal', raw, 'left', '0'} end
@@ -747,7 +747,9 @@ else
   for _, participantId in ipairs(session.participantIds or {}) do
     if participantId ~= userId then othersInCall = othersInCall + 1 end
   end
-  if session.isGroupCall and othersInCall > 0 then
+  -- 'media_lost' (server only) ends the whole call whoever is still in it: the
+  -- media worker carrying the room died, so nobody can be left behind in it.
+  if session.isGroupCall and othersInCall > 0 and mode ~= 'media_lost' then
     if mode == 'membership_removed' then
       local outboxType = redis.call('TYPE', KEYS[10]).ok
       if outboxType ~= 'none' and outboxType ~= 'zset' then
@@ -1525,7 +1527,12 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     userId: string,
     requestedReason: string | undefined,
     now: Date,
-    mode: 'leave' | 'reject' | 'accept_failure' | 'membership_removed',
+    mode:
+      | 'leave'
+      | 'reject'
+      | 'accept_failure'
+      | 'membership_removed'
+      | 'media_lost',
     expectedAnswerActionId?: string,
   ): Promise<CallTerminalTransition> {
     const [outcome, raw, reason, wasActive] = await this.runTransition(

@@ -1207,6 +1207,96 @@ describeWithRedis('Redis group-call transitions', () => {
       expect(withoutLateJoin.outcome).toBe('declined');
     });
 
+    it('lets a starter who left decline a fresh invitation, but not while they are in the call', async () => {
+      await repository.createActiveGroupSession(group('no-host-decline'));
+      await joinAndConfirm('no-host-decline', 'guest');
+
+      // Still in the call: the same "active calls cannot be rejected" answer a guest gets.
+      expect(
+        (
+          await repository.rejectGroupInvitation(
+            'no-host-decline',
+            'host',
+            new Date(),
+            'rejected',
+          )
+        ).outcome,
+      ).toBe('active');
+
+      await repository.transitionToTerminal(
+        'no-host-decline',
+        'host',
+        'left',
+        new Date(),
+        'leave',
+      );
+      const now = new Date();
+      const invite = await repository.inviteGroupMember(
+        'no-host-decline',
+        'guest',
+        'host',
+        'request-host',
+        'invite-host',
+        now,
+        new Date(now.getTime() + 30_000),
+      );
+      expect(invite.outcome).toBe('sent');
+
+      const declined = await repository.rejectGroupInvitation(
+        'no-host-decline',
+        'host',
+        now,
+        'rejected',
+        'invite-host',
+      );
+      expect(declined.outcome).toBe('rejected');
+      expect(declined.session?.declinedUserIds).toContain('host');
+      expect(declined.session?.groupInvitations.host.status).toBe('declined');
+      expect(declined.session?.status).toBe('active');
+    });
+
+    it('ends the whole call on media loss even with others in it or after the starter left', async () => {
+      await repository.createActiveGroupSession(group('media-lost-others'));
+      await joinAndConfirm('media-lost-others', 'guest');
+      const ended = await repository.transitionToTerminal(
+        'media-lost-others',
+        'host',
+        'media_unavailable',
+        new Date(),
+        'media_lost',
+      );
+      expect(ended.outcome).toBe('transitioned');
+      expect(ended.session?.status).toBe('ended');
+      expect(ended.session?.terminalReason).toBe('media_unavailable');
+      for (const userId of ['host', 'guest']) {
+        expect(
+          await redis.hget('call:sessions:active-by-user', userId),
+        ).toBeNull();
+      }
+
+      await repository.createActiveGroupSession(group('media-lost-gone'));
+      await joinAndConfirm('media-lost-gone', 'guest');
+      await repository.transitionToTerminal(
+        'media-lost-gone',
+        'host',
+        'left',
+        new Date(),
+        'leave',
+      );
+      const gone = await repository.transitionToTerminal(
+        'media-lost-gone',
+        'host',
+        'media_unavailable',
+        new Date(),
+        'media_lost',
+      );
+      expect(gone.outcome).toBe('transitioned');
+      expect(gone.session?.status).toBe('ended');
+      expect(
+        await redis.hget('call:sessions:active-by-user', 'guest'),
+      ).toBeNull();
+    });
+
     it('ends the call when the last participant is removed from the group', async () => {
       await repository.createActiveGroupSession(group('no-host-removed'));
       await joinAndConfirm('no-host-removed', 'guest');

@@ -37,7 +37,9 @@ export class TerminateCallsAfterMediaLossUseCase {
           session.initiatorId,
           'media_unavailable',
           now,
-          'leave',
+          // Ends the whole call even if others are still in it or the
+          // initiator already left; a plain leave would only remove them.
+          'media_lost',
         );
         if (transition.outcome === 'transitioned' && transition.session) {
           ended.push(transition.session);

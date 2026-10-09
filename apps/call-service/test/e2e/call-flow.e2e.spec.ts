@@ -1651,7 +1651,7 @@ describe('Call Service P0 flow (e2e)', () => {
     );
   });
 
-  it('runs a real-Redis group call through two accepts, guest leave, and host end', async () => {
+  it('runs a real-Redis group call through two accepts, the starter leaving, and the last member ending it', async () => {
     const secondGuestUser: AuthUser = {
       id: 'second-guest-user',
       email: 'second-guest@example.com',
@@ -2388,18 +2388,39 @@ describe('Call Service P0 flow (e2e)', () => {
         2,
       );
 
-      const callEnded = onceEvent<{ callId: string }>(
+      // The starter has no special authority: leaving removes only them and
+      // the call continues for the member who is still in it.
+      const starterLeft = onceEvent<{ callId: string; userId: string }>(
         secondGuest,
-        'call_ended',
+        'peer_left',
       );
       host.emit('leave_call', { callId, reason: 'answer-action-secret' });
-      await expect(callEnded).resolves.toEqual(
-        expect.objectContaining({ callId, reason: 'ended' }),
+      await expect(starterLeft).resolves.toEqual(
+        expect.objectContaining({ callId, userId: callerUser.id }),
       );
       expect(
         JSON.parse((await groupRedis.get(`call:${callId}:session`))!),
       ).toEqual(
-        expect.objectContaining({ status: 'ended', terminalReason: 'ended' }),
+        expect.objectContaining({
+          status: 'active',
+          participantIds: [secondGuestUser.id],
+        }),
+      );
+      expect(groupMedia.getRoomState(callId)).toBeDefined();
+
+      // Only the last member out ends the call.
+      const callEnded = onceEvent<{ callId: string; reason: string }>(
+        host,
+        'call_ended',
+      );
+      secondGuest.emit('leave_call', { callId, reason: 'left' });
+      await expect(callEnded).resolves.toEqual(
+        expect.objectContaining({ callId, reason: 'left' }),
+      );
+      expect(
+        JSON.parse((await groupRedis.get(`call:${callId}:session`))!),
+      ).toEqual(
+        expect.objectContaining({ status: 'ended', terminalReason: 'left' }),
       );
       expect(await groupRedis.hgetall(`call:${callId}:participants`)).toEqual(
         {},
@@ -2533,6 +2554,12 @@ describe('Call Service P0 flow (e2e)', () => {
         lateGuest,
         'call_ended',
       );
+      // No one has special authority to end the call: it ends when the last
+      // member in it leaves, and the still-ringing invitee is told then.
+      secondGuest.emit('leave_call', {
+        callId: selectedCallId,
+        reason: 'left',
+      });
       host.emit('leave_call', { callId: selectedCallId, reason: 'ended' });
       await expect(selectedEnded).resolves.toEqual(
         expect.objectContaining({ callId: selectedCallId }),
@@ -2773,36 +2800,48 @@ describe('Call Service P0 flow (e2e)', () => {
         await groupRedis.zcard('call:sessions:group-invitation-events'),
       ).toBe(0);
 
-      // A host losing membership keeps the existing host-end semantics, not a silent transfer.
+      // A starter who loses membership is simply removed like any member; the
+      // call continues for whoever is still in the group.
       groupConversations['conv-group'].participantIds = [secondGuestUser.id];
-      const removedHostEnded = onceEvent<{ reason: string }>(
-        secondGuest,
+      const removedStarterNotified = onceEvent<{ reason: string }>(
+        host,
         'call_ended',
       );
       await sweepMembership();
-      await expect(removedHostEnded).resolves.toEqual(
+      await expect(removedStarterNotified).resolves.toEqual(
         expect.objectContaining({
           callId: membershipCallId,
           reason: 'membership_removed',
         }),
       );
-      expect(
-        JSON.parse((await groupRedis.get(`call:${membershipCallId}:session`))!)
-          .status,
-      ).toBe('ended');
+      const afterRemoval = JSON.parse(
+        (await groupRedis.get(`call:${membershipCallId}:session`))!,
+      );
+      expect(afterRemoval.status).toBe('active');
+      expect(afterRemoval.participantIds).toEqual([secondGuestUser.id]);
+      expect(groupMedia.getRoomState(membershipCallId)).toBeDefined();
+
+      // The last remaining member leaving is what ends it.
+      secondGuest.emit('leave_call', {
+        callId: membershipCallId,
+        reason: 'left',
+      });
+      await waitForCondition(
+        async () =>
+          JSON.parse(
+            (await groupRedis.get(`call:${membershipCallId}:session`))!,
+          ).status === 'ended',
+      );
       expect(groupMedia.getRoomState(membershipCallId)).toBeUndefined();
       await groupApp.get(PublishCallTerminalOutboxUseCase).execute();
-      const hostMembershipTerminalEvents = groupPublisher.events.filter(
+      const lastLeaveTerminalEvents = groupPublisher.events.filter(
         ({ event, payload }) =>
           event === 'call.ended' && payload.callId === membershipCallId,
       );
-      expect(hostMembershipTerminalEvents.length).toBeGreaterThanOrEqual(2);
-      for (const { payload } of hostMembershipTerminalEvents) {
+      expect(lastLeaveTerminalEvents.length).toBeGreaterThanOrEqual(1);
+      for (const { payload } of lastLeaveTerminalEvents) {
         expect(payload).toEqual(
-          expect.objectContaining({
-            isGroupCall: true,
-            reason: 'membership_removed',
-          }),
+          expect.objectContaining({ isGroupCall: true, reason: 'left' }),
         );
       }
       // Deletion is authoritative absence, unlike the retryable RPC outage above.
@@ -4173,6 +4212,18 @@ describe('Call Service P0 flow (e2e)', () => {
       isConnected?: boolean;
       reconnectDeadlineAt?: string;
     };
+  }
+
+  async function waitForCondition(
+    check: () => Promise<boolean>,
+    timeoutMs = 3000,
+  ) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await check()) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error('Condition was not met in time');
   }
 
   async function waitForStoredParticipant(

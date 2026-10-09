@@ -90,8 +90,7 @@ export class LeaveCallUseCase {
         session.isGroupCall &&
         session.status === 'active' &&
         !session.participantIds.includes(userId) &&
-        session.declinedUserIds.includes(userId) &&
-        userId !== session.initiatorId)
+        session.declinedUserIds.includes(userId))
     ) {
       let closedProducers: LeaveCallResult['closedProducers'] = [];
       try {

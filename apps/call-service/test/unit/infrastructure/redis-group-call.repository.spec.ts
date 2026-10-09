@@ -1020,25 +1020,40 @@ describeWithRedis('Redis group-call transitions', () => {
       ).outcome,
     ).toBe('declined');
 
-    expect(
-      (
-        await repository.transitionToTerminal(
-          'room-leave',
-          'host',
-          'ended',
-          new Date(),
-          'leave',
-        )
-      ).outcome,
-    ).toBe('transitioned');
+    // The starter has no special authority: leaving only removes them, the
+    // room stays up for the member who is still in it.
+    const hostLeave = await repository.transitionToTerminal(
+      'room-leave',
+      'host',
+      'left',
+      new Date(),
+      'leave',
+    );
+    expect(hostLeave.outcome).toBe('participant_left');
+    expect(hostLeave.session?.status).toBe('active');
+    expect(hostLeave.session?.participantIds).toEqual(['other']);
     expect(await redis.hget('call:sessions:active-by-user', 'host')).toBeNull();
+    expect(await redis.hget('call:sessions:active-by-user', 'other')).toBe(
+      'room-leave',
+    );
+
+    // Only the last member out ends the call.
+    const lastLeave = await repository.transitionToTerminal(
+      'room-leave',
+      'other',
+      'left',
+      new Date(),
+      'leave',
+    );
+    expect(lastLeave.outcome).toBe('transitioned');
+    expect(lastLeave.session?.status).toBe('ended');
     expect(await state.getParticipants('room-leave')).toEqual([]);
     expect(
       await redis.hget('call:sessions:active-by-user', 'other'),
     ).toBeNull();
   });
 
-  it('releases every active index when host end races guest leave', async () => {
+  it('ends the room exactly once and releases every active index when the last two members leave concurrently', async () => {
     await repository.createActiveGroupSession(group('room-terminal-race'));
     expect(
       (
@@ -1059,26 +1074,21 @@ describeWithRedis('Redis group-call transitions', () => {
       ),
     ).toBe(true);
 
-    const [hostEnd, guestLeave] = await Promise.all([
-      repository.transitionToTerminal(
-        'room-terminal-race',
-        'host',
-        'ended',
-        new Date(),
-        'leave',
-      ),
-      repository.transitionToTerminal(
-        'room-terminal-race',
-        'guest',
-        'left',
-        new Date(),
-        'leave',
-      ),
-    ]);
-    expect(hostEnd.outcome).toBe('transitioned');
-    expect(['participant_left', 'already_terminal']).toContain(
-      guestLeave.outcome,
-    );
+    const outcomes = (
+      await Promise.all(
+        ['host', 'guest'].map((userId) =>
+          repository.transitionToTerminal(
+            'room-terminal-race',
+            userId,
+            'left',
+            new Date(),
+            'leave',
+          ),
+        ),
+      )
+    ).map((result) => result.outcome);
+
+    expect([...outcomes].sort()).toEqual(['participant_left', 'transitioned']);
     expect((await repository.findByCallId('room-terminal-race'))?.status).toBe(
       'ended',
     );
@@ -1087,6 +1097,143 @@ describeWithRedis('Redis group-call transitions', () => {
         await redis.hget('call:sessions:active-by-user', userId),
       ).toBeNull();
     }
+  });
+
+  describe('a group call has no host', () => {
+    const joinAndConfirm = async (callId: string, userId: string) => {
+      const answer = `${userId}-answer`;
+      const joined = await repository.joinParticipant(
+        callId,
+        userId,
+        new Date(),
+        answer,
+      );
+      expect(joined.outcome).toBe('joined');
+      expect(
+        await repository.confirmGroupInvitationJoin(
+          callId,
+          userId,
+          answer,
+          new Date(),
+        ),
+      ).toBe(true);
+    };
+
+    it('lets the starter leave without ending the call for the others', async () => {
+      await repository.createActiveGroupSession(group('no-host-leave'));
+      await joinAndConfirm('no-host-leave', 'guest');
+
+      const left = await repository.transitionToTerminal(
+        'no-host-leave',
+        'host',
+        'disconnected',
+        new Date(),
+        'leave',
+      );
+
+      expect(left.outcome).toBe('participant_left');
+      expect(left.session?.status).toBe('active');
+      expect(left.session?.participantIds).toEqual(['guest']);
+      expect(
+        await redis.hget('call:sessions:active-by-user', 'host'),
+      ).toBeNull();
+    });
+
+    it('lets a starter who left join late and confirm like any other member', async () => {
+      await repository.createActiveGroupSession(group('no-host-rejoin'));
+      await joinAndConfirm('no-host-rejoin', 'guest');
+      await repository.transitionToTerminal(
+        'no-host-rejoin',
+        'host',
+        'left',
+        new Date(),
+        'leave',
+      );
+
+      const late = await repository.joinParticipant(
+        'no-host-rejoin',
+        'host',
+        new Date(),
+        'host-late',
+        true,
+        'late-invitation',
+      );
+      expect(late.outcome).toBe('joined');
+      expect(late.joinedNow).toBe(true);
+      expect(
+        await repository.confirmGroupInvitationJoin(
+          'no-host-rejoin',
+          'host',
+          'host-late',
+          new Date(),
+        ),
+      ).toBe(true);
+
+      const session = await repository.findByCallId('no-host-rejoin');
+      expect(session?.participantIds.sort()).toEqual(['guest', 'host']);
+      expect(session?.groupConfirmedAnswerActionIds.host).toBe('host-late');
+      expect(session?.declinedUserIds).not.toContain('host');
+      expect(await redis.hget('call:sessions:active-by-user', 'host')).toBe(
+        'no-host-rejoin',
+      );
+    });
+
+    it('treats a starter who left like any member who left, but keeps reconnect working while the seat is occupied', async () => {
+      await repository.createActiveGroupSession(group('no-host-proof'));
+      await joinAndConfirm('no-host-proof', 'guest');
+
+      // Reconnecting the original seat keeps working without an action id.
+      const reconnect = await repository.joinParticipant(
+        'no-host-proof',
+        'host',
+        new Date(),
+      );
+      expect(reconnect.outcome).toBe('joined');
+      expect(reconnect.joinedNow).toBe(false);
+
+      await repository.transitionToTerminal(
+        'no-host-proof',
+        'host',
+        'left',
+        new Date(),
+        'leave',
+      );
+      // Same outcome a guest who left gets without the late-join flow.
+      const withoutLateJoin = await repository.joinParticipant(
+        'no-host-proof',
+        'host',
+        new Date(),
+      );
+      expect(withoutLateJoin.outcome).toBe('declined');
+    });
+
+    it('ends the call when the last participant is removed from the group', async () => {
+      await repository.createActiveGroupSession(group('no-host-removed'));
+      await joinAndConfirm('no-host-removed', 'guest');
+
+      const first = await repository.transitionToTerminal(
+        'no-host-removed',
+        'guest',
+        'membership_removed',
+        new Date(),
+        'membership_removed',
+      );
+      expect(first.outcome).toBe('participant_left');
+
+      const last = await repository.transitionToTerminal(
+        'no-host-removed',
+        'host',
+        'membership_removed',
+        new Date(),
+        'membership_removed',
+      );
+      expect(last.outcome).toBe('transitioned');
+      expect(last.session?.status).toBe('ended');
+      expect(last.session?.terminalReason).toBe('membership_removed');
+      expect(
+        await redis.hget('call:sessions:active-by-user', 'host'),
+      ).toBeNull();
+    });
   });
 
   it('does not change the session when participant state is corrupt at guest leave', async () => {

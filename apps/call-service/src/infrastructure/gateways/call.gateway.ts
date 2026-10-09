@@ -893,7 +893,12 @@ export class CallGateway
     if (!session?.isGroupCall || session.status !== 'active') {
       throw new ForbiddenException('Group call is no longer active');
     }
-    if (session.initiatorId === userId) {
+    // A creator who is still in the call rejoins through the reconnect path; one
+    // who left joins late like any other member.
+    if (
+      session.initiatorId === userId &&
+      session.participantIds.includes(userId)
+    ) {
       throw new ForbiddenException('Host must rejoin the existing call');
     }
     return this.withGroupParticipantQueue(payload.callId, userId, () =>
@@ -2840,8 +2845,7 @@ export class CallGateway
                   !current?.isGroupCall ||
                   current.status !== 'active' ||
                   current.participantIds.includes(userId) ||
-                  !current.declinedUserIds.includes(userId) ||
-                  userId === current.initiatorId
+                  !current.declinedUserIds.includes(userId)
                 )
                   return;
                 const result = await this.leaveCallUseCase.execute(
@@ -2877,12 +2881,15 @@ export class CallGateway
         let conversation:
           | Awaited<ReturnType<typeof getCurrentGroupConversation>>
           | undefined;
+        // The call has no host, so the roster is requested on behalf of someone
+        // who is still in it rather than the (possibly departed) creator.
+        const rosterActorId = session.participantIds[0] ?? session.initiatorId;
         try {
           // The existing authorized detail RPC already returns the full current roster.
           conversation = await getCurrentGroupConversation(
             this.conversationClient,
             session.conversationId,
-            session.initiatorId,
+            rosterActorId,
           );
           const members = new Set(conversation.participantIds);
           removedUserIds = [
@@ -2899,8 +2906,16 @@ export class CallGateway
             );
             continue;
           }
-          // A missing host ends the room under the existing host-end contract.
-          removedUserIds = [session.initiatorId];
+          // Either the group is gone or the member the roster was requested
+          // for was removed. Every candidate is re-validated individually
+          // below, so only members who really left the group are revoked.
+          removedUserIds = [
+            ...new Set([
+              ...session.participantIds,
+              ...session.invitedUserIds,
+              ...session.declinedUserIds,
+            ]),
+          ];
         }
         await Promise.all(
           removedUserIds.map((userId) =>

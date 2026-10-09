@@ -117,10 +117,13 @@ for _, participantId in ipairs(session.participantIds or {}) do
     break
   end
 end
+-- The creator's original seat is exempt from invitation/action-id checks, but a
+-- creator who left and re-enters is an ordinary member in every way.
+local guestLike = userId ~= session.initiatorId or not isAlreadyParticipant
 local invitationExpiresAt = invitation and invitation.expiresAt or session.expiresAt
 local recovering = isAlreadyParticipant and actionId ~= '' and
    (session.groupConfirmedAnswerActionIds or {})[userId] == actionId
-if session.isGroupCall and not allowLateJoin and userId ~= session.initiatorId and
+if session.isGroupCall and not allowLateJoin and guestLike and
    invitation and invitation.invitationId ~= (ARGV[7] ~= '' and ARGV[7] or session.callId) and
    not (ARGV[7] == '' and recovering) then
   return {'invitation_expired', raw, '0'}
@@ -132,7 +135,7 @@ if session.isGroupCall and not isAlreadyParticipant and #session.participantIds 
   return {'full', raw, '0'}
 end
 if session.isGroupCall then
-  if userId ~= session.initiatorId then
+  if guestLike then
     local winningActionId = (session.groupAnswerActionIds or {})[userId]
     if actionId ~= '' and winningActionId and winningActionId ~= actionId then
       return {'answered_elsewhere', raw, '0'}
@@ -149,7 +152,7 @@ end
 
 local joinedNow = not isAlreadyParticipant
 local supersededInvitationId = nil
-if allowLateJoin and joinedNow and userId ~= session.initiatorId then
+if allowLateJoin and joinedNow and guestLike then
   if invitation and invitation.status == 'ringing' and ARGV[7] ~= '' and invitation.invitationId ~= ARGV[7] then
     local outboxType = redis.call('TYPE', KEYS[7]).ok
     if outboxType ~= 'none' and outboxType ~= 'zset' then return redis.error_reply('Invalid group invitation outbox type') end
@@ -170,7 +173,7 @@ if joinedNow then
     session.declinedUserIds = remainingDeclined
   end
 end
-if session.isGroupCall and userId ~= session.initiatorId and actionId ~= '' then
+if session.isGroupCall and guestLike and actionId ~= '' then
   session.groupAnswerActionIds = session.groupAnswerActionIds or {}
   session.groupAnswerActionIds[userId] = actionId
   if invitation and not recovering then invitation.status = 'joining' end
@@ -728,7 +731,7 @@ else
     end
     if not invited then return {'forbidden', raw, '', '0'} end
   elseif not isParticipant then
-    if session.isGroupCall and wasActive and userId ~= session.initiatorId then
+    if session.isGroupCall and wasActive then
       for _, id in ipairs(session.declinedUserIds or {}) do
         if id == userId then return {'already_terminal', raw, 'left', '0'} end
       end
@@ -738,7 +741,13 @@ else
   if isTerminal then
     return {'already_terminal', raw, session.terminalReason or '', '0'}
   end
-  if session.isGroupCall and userId ~= session.initiatorId then
+  -- A group call has no host: leaving only removes this member. The call ends
+  -- when the last participant goes.
+  local othersInCall = 0
+  for _, participantId in ipairs(session.participantIds or {}) do
+    if participantId ~= userId then othersInCall = othersInCall + 1 end
+  end
+  if session.isGroupCall and othersInCall > 0 then
     if mode == 'membership_removed' then
       local outboxType = redis.call('TYPE', KEYS[10]).ok
       if outboxType ~= 'none' and outboxType ~= 'zset' then

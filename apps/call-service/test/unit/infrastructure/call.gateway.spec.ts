@@ -1076,6 +1076,132 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  describe('group call without a host', () => {
+    const groupSession = (overrides: Partial<CallSession>) =>
+      new CallSession({
+        ...activeSession,
+        isGroupCall: true,
+        invitedUserIds: ['user-a', 'user-b', 'user-c'],
+        ...overrides,
+      });
+
+    it('lets a starter who already left join late, but sends one who is still in to the reconnect path', async () => {
+      const joinCallUseCase = {
+        execute: jest.fn().mockResolvedValue({
+          role: 'host',
+          session: groupSession({ participantIds: ['user-b', 'user-a'] }),
+          rtpCapabilities: { codecs: [] },
+          shouldEmitNewPeer: false,
+        }),
+      };
+      const left = groupSession({
+        participantIds: ['user-b'],
+        declinedUserIds: ['user-a'],
+      });
+      const gateway = createGateway({
+        joinCallUseCase,
+        mediaEngine: { listActiveProducers: jest.fn().mockResolvedValue([]) },
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(left),
+          confirmGroupInvitationJoin: jest.fn().mockResolvedValue(true),
+        },
+      });
+      const starter = createSocket({
+        id: 'socket-a',
+        userId: 'user-a',
+        emit: jest.fn(),
+        join: jest.fn().mockResolvedValue(undefined),
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      });
+      gateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+
+      await gateway.handleJoinGroupCall(
+        { callId: 'call-1', actionId: 'late-action' },
+        starter,
+      );
+      expect(joinCallUseCase.execute).toHaveBeenCalledWith(
+        'call-1',
+        'user-a',
+        'socket-a',
+        'late-action',
+        true,
+        undefined,
+      );
+
+      const stillIn = createGateway({
+        joinCallUseCase,
+        sessionRepository: {
+          findByCallId: jest
+            .fn()
+            .mockResolvedValue(
+              groupSession({ participantIds: ['user-a', 'user-b'] }),
+            ),
+        },
+      });
+      joinCallUseCase.execute.mockClear();
+      await expect(
+        stillIn.handleJoinGroupCall(
+          { callId: 'call-1', actionId: 'late-action' },
+          starter,
+        ),
+      ).rejects.toThrow('Host must rejoin the existing call');
+      expect(joinCallUseCase.execute).not.toHaveBeenCalled();
+    });
+
+    it('checks group membership on behalf of someone still in the call and recovers a departed starter', async () => {
+      const session = groupSession({
+        participantIds: ['user-b'],
+        declinedUserIds: ['user-a'],
+      });
+      const send = jest.fn().mockReturnValue(
+        of({
+          id: session.conversationId,
+          isGroup: true,
+          participantIds: ['user-a', 'user-b', 'user-c'],
+        }),
+      );
+      const leaveCallUseCase = {
+        execute: jest.fn().mockResolvedValue({
+          session,
+          endedReason: 'left',
+          shouldEmitPeerLeft: false,
+          didTransition: false,
+        }),
+      };
+      const gateway = createGateway({
+        leaveCallUseCase,
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(session),
+          scanActiveGroupCalls: jest
+            .fn()
+            .mockResolvedValue({ cursor: '0', sessions: [session] }),
+        },
+        conversationClient: { send },
+      });
+      gateway.server = {
+        to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      } as never;
+      try {
+        await gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(send).toHaveBeenCalledWith('get_conversation_detail', {
+          id: session.conversationId,
+          userId: 'user-b',
+        });
+        // The creator's earlier departure is recovered like any member's.
+        expect(leaveCallUseCase.execute).toHaveBeenCalledWith(
+          'call-1',
+          'user-a',
+        );
+      } finally {
+        gateway.onModuleDestroy();
+      }
+    });
+  });
+
   describe('media worker loss', () => {
     const setup = (execute: jest.Mock) => {
       const onRoomsLost = jest.fn();

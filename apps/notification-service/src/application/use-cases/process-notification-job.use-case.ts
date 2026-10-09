@@ -58,7 +58,9 @@ export class ProcessNotificationJobUseCase {
 
   async execute(job: NotificationJob) {
     const processingJob =
-      await this.notificationJobRepository.claimForProcessing(job.id);
+      await this.notificationJobRepository.claimForProcessing(job.id, {
+        skipNewMessageWithoutFcmToken: true,
+      });
 
     if (!processingJob) {
       return {
@@ -90,6 +92,20 @@ export class ProcessNotificationJobUseCase {
   }
 
   private async processNewMessageJob(processingJob: NotificationJob) {
+    // No-token eligibility was checked durably at claim time. A token registered
+    // later applies to later jobs; no negative token cache is kept here.
+    if (processingJob.status === 'skipped') {
+      return {
+        jobId: processingJob.id,
+        status: 'skipped',
+        sendResult: {
+          totalTokens: 0,
+          sentCount: 0,
+          failedCount: 0,
+          results: [],
+        } satisfies SendNotificationResult,
+      };
+    }
     const tokens = await this.pushTokenRepository.findActiveByUserId(
       processingJob.recipientUserId,
       {

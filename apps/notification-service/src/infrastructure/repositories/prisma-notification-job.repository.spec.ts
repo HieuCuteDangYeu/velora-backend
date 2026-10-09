@@ -127,23 +127,46 @@ describe('PrismaNotificationJobRepository', () => {
     const before = Date.now();
     await expect(repository.claimForProcessing('job-1')).resolves.toBeNull();
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
-    const [strings, now, id, dueAt, leaseExpiry] = queryRaw.mock.calls[0] as [
-      TemplateStringsArray,
-      Date,
-      string,
-      Date,
-      Date,
-    ];
+    const [strings, skipNoToken, id, dueAt, leaseExpiry, now] = queryRaw.mock
+      .calls[0] as [TemplateStringsArray, boolean, string, Date, Date, Date];
     const sql = strings.join('?');
-    expect(sql).toContain('attempt_count = attempt_count + 1');
-    expect(sql).toContain("status = 'pending'");
-    expect(sql).toContain("status = 'failed' AND next_attempt_at <=");
-    expect(sql).toContain("status = 'processing' AND updated_at <=");
-    expect(sql).toContain('RETURNING id, type');
+    expect(sql).toContain('attempt_count = j.attempt_count + 1');
+    expect(sql).toContain("j.status = 'pending'");
+    expect(sql).toContain("j.status = 'failed' AND j.next_attempt_at <=");
+    expect(sql).toContain("j.status = 'processing' AND j.updated_at <=");
+    expect(sql).toContain('FOR UPDATE OF j');
+    expect(sql).toContain('RETURNING j.id, j.type');
+    expect(skipNoToken).toBe(false);
     expect(id).toBe('job-1');
     expect(now).toEqual(dueAt);
     expect(leaseExpiry.getTime()).toBeGreaterThanOrEqual(before - 300_100);
     expect(leaseExpiry.getTime()).toBeLessThanOrEqual(Date.now() - 299_900);
+  });
+
+  it('checks active FCM registrations only when the application requests a no-token skip', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaNotificationJobRepository({
+      $queryRaw: queryRaw,
+    } as never);
+    await repository.claimForProcessing("job-'); DROP TABLE push_tokens; --", {
+      skipNewMessageWithoutFcmToken: true,
+    });
+    const [strings, skipNoToken, id] = queryRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      boolean,
+      string,
+    ];
+    const sql = strings.join('?');
+    expect(skipNoToken).toBe(true);
+    expect(id).toBe("job-'); DROP TABLE push_tokens; --");
+    expect(sql).not.toContain(id);
+    expect(sql).toContain("j.type = 'NEW_MESSAGE'");
+    expect(sql).toContain('t.user_id = j.recipient_user_id');
+    expect(sql).toContain("t.is_active = true AND t.provider = 'fcm'");
+    expect(sql).not.toContain('t.platform');
+    expect(sql).toContain("THEN 'skipped' ELSE 'processing'");
+    expect(sql).toContain("THEN 'No active FCM tokens for recipient user'");
+    expect(queryRaw).toHaveBeenCalledTimes(1);
   });
 
   it('returns the claimed snapshot without a second read', async () => {

@@ -117,6 +117,34 @@ describe('notification delivery use cases', () => {
     };
   };
 
+  it('returns a durable no-token skip without another token read or terminal write', async () => {
+    const h = createUseCases();
+    h.notificationJobRepository.claimForProcessing.mockResolvedValue({
+      ...baseJob,
+      status: 'skipped',
+      attemptCount: 1,
+    });
+    await expect(
+      h.processNotificationJob.execute(baseJob as never),
+    ).resolves.toEqual({
+      jobId: baseJob.id,
+      status: 'skipped',
+      sendResult: { totalTokens: 0, sentCount: 0, failedCount: 0, results: [] },
+    });
+    expect(h.notificationJobRepository.claimForProcessing).toHaveBeenCalledWith(
+      baseJob.id,
+      {
+        skipNewMessageWithoutFcmToken: true,
+      },
+    );
+    expect(h.pushTokenRepository.findActiveByUserId).not.toHaveBeenCalled();
+    expect(h.notificationJobRepository.markSkipped).not.toHaveBeenCalled();
+    expect(h.notificationJobRepository.markSent).not.toHaveBeenCalled();
+    expect(h.notificationJobRepository.markFailed).not.toHaveBeenCalled();
+    expect(h.fcmPushGateway.send).not.toHaveBeenCalled();
+    expect(h.apnsVoipGateway.send).not.toHaveBeenCalled();
+  });
+
   it('schedules the next attempt when every send fails before the max retry count', async () => {
     const {
       processNotificationJob,

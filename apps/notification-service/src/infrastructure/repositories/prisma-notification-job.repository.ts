@@ -92,29 +92,50 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
     return this.toDomain(record);
   }
 
-  async claimForProcessing(id: string): Promise<NotificationJob | null> {
+  async claimForProcessing(
+    id: string,
+    options?: { skipNewMessageWithoutFcmToken: boolean },
+  ): Promise<NotificationJob | null> {
     const now = new Date();
     const processingLeaseExpiredAt = new Date(
       now.getTime() - PROCESSING_LEASE_MS,
     );
-    // Return the claimed snapshot in the same atomic statement. Avoid another
-    // round trip; preserve the existing eligibility and five-minute lease.
+    // Lock and recheck eligibility before deciding the terminal no-token result.
+    // This uses the existing user_id/is_active index, not a token cache or new
+    // connection. Incoming calls and state updates always take the normal lease.
     const records = await this.prisma.$queryRaw<PrismaNotificationJob[]>`
-      UPDATE notification_jobs
-      SET status = 'processing', attempt_count = attempt_count + 1,
-          updated_at = ${now}
-      WHERE id = ${id} AND (
-        status = 'pending'
-        OR (status = 'failed' AND next_attempt_at <= ${now})
-        OR (status = 'processing' AND updated_at <= ${processingLeaseExpiredAt})
+      WITH candidate AS MATERIALIZED (
+        SELECT j.id,
+          ${options?.skipNewMessageWithoutFcmToken === true}
+          AND j.type = 'NEW_MESSAGE'
+          AND NOT EXISTS (
+            SELECT 1 FROM push_tokens t
+            WHERE t.user_id = j.recipient_user_id
+              AND t.is_active = true AND t.provider = 'fcm'
+          ) AS no_fcm_token
+        FROM notification_jobs j
+        WHERE j.id = ${id} AND (
+          j.status = 'pending'
+          OR (j.status = 'failed' AND j.next_attempt_at <= ${now})
+          OR (j.status = 'processing' AND j.updated_at <= ${processingLeaseExpiredAt})
+        )
+        FOR UPDATE OF j
       )
-      RETURNING id, type, recipient_user_id AS "recipientUserId",
-        actor_user_id AS "actorUserId", conversation_id AS "conversationId",
-        message_id AS "messageId", call_id AS "callId", title, body,
-        data_json AS "dataJson", expires_at AS "expiresAt", status,
-        idempotency_key AS "idempotencyKey", attempt_count AS "attemptCount",
-        next_attempt_at AS "nextAttemptAt", last_error AS "lastError",
-        created_at AS "createdAt", updated_at AS "updatedAt", sent_at AS "sentAt"
+      UPDATE notification_jobs j
+      SET status = CASE WHEN c.no_fcm_token THEN 'skipped' ELSE 'processing' END,
+          attempt_count = j.attempt_count + 1, updated_at = ${now},
+          last_error = CASE WHEN c.no_fcm_token
+            THEN 'No active FCM tokens for recipient user' ELSE j.last_error END,
+          next_attempt_at = CASE WHEN c.no_fcm_token THEN NULL ELSE j.next_attempt_at END,
+          sent_at = CASE WHEN c.no_fcm_token THEN NULL ELSE j.sent_at END
+      FROM candidate c WHERE j.id = c.id
+      RETURNING j.id, j.type, j.recipient_user_id AS "recipientUserId",
+        j.actor_user_id AS "actorUserId", j.conversation_id AS "conversationId",
+        j.message_id AS "messageId", j.call_id AS "callId", j.title, j.body,
+        j.data_json AS "dataJson", j.expires_at AS "expiresAt", j.status,
+        j.idempotency_key AS "idempotencyKey", j.attempt_count AS "attemptCount",
+        j.next_attempt_at AS "nextAttemptAt", j.last_error AS "lastError",
+        j.created_at AS "createdAt", j.updated_at AS "updatedAt", j.sent_at AS "sentAt"
     `;
     return records.length === 0 ? null : this.toDomain(records[0]);
   }

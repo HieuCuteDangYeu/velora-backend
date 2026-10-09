@@ -13,6 +13,12 @@ const CALL_EVENTS = [
 ] as const;
 type CallEvent = (typeof CALL_EVENTS)[number];
 
+export interface MediaWorkerMetricSample {
+  worker: string;
+  cpuSeconds: number;
+  rooms: number;
+}
+
 @Injectable()
 export class CallPrometheusMetricsService implements OnModuleDestroy {
   static readonly CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
@@ -64,7 +70,10 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
     this.callEvents.set(event, (this.callEvents.get(event) ?? 0) + 1);
   }
 
-  metrics(activeSocketConnections: number): string {
+  metrics(
+    activeSocketConnections: number,
+    mediaWorkers: readonly MediaWorkerMetricSample[] = [],
+  ): string {
     const lines: string[] = [];
     const labels = this.labels({ service: this.serviceName });
     const cpu = process.cpuUsage();
@@ -189,6 +198,44 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
     for (const [event, count] of this.callEvents) {
       lines.push(
         `velora_call_lifecycle_events_total${this.labels({ service: this.serviceName, event })} ${count}`,
+      );
+    }
+
+    this.metricHeader(
+      lines,
+      'velora_call_mediasoup_workers',
+      'Live mediasoup workers; each one is a single-threaded SFU process.',
+      'gauge',
+    );
+    lines.push(`velora_call_mediasoup_workers${labels} ${mediaWorkers.length}`);
+
+    this.metricHeader(
+      lines,
+      'velora_call_mediasoup_worker_cpu_seconds_total',
+      'User plus system CPU seconds consumed by a mediasoup worker process. rate() of 1 means the worker saturates its one core.',
+      'counter',
+    );
+    for (const sample of mediaWorkers) {
+      lines.push(
+        `velora_call_mediasoup_worker_cpu_seconds_total${this.labels({
+          service: this.serviceName,
+          worker: sample.worker,
+        })} ${sample.cpuSeconds}`,
+      );
+    }
+
+    this.metricHeader(
+      lines,
+      'velora_call_mediasoup_worker_rooms',
+      'Calls (mediasoup routers) currently placed on a worker.',
+      'gauge',
+    );
+    for (const sample of mediaWorkers) {
+      lines.push(
+        `velora_call_mediasoup_worker_rooms${this.labels({
+          service: this.serviceName,
+          worker: sample.worker,
+        })} ${sample.rooms}`,
       );
     }
 

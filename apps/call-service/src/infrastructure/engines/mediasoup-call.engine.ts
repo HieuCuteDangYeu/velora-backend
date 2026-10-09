@@ -13,6 +13,7 @@ import type {
   CreateRecvTransportResult,
   CreateSendTransportResult,
   ICallMediaEngine,
+  MediaWorkerLoad,
   ProducedMediaResult,
   RestartIceResult,
   RouterRtpCapabilitiesResult,
@@ -981,6 +982,21 @@ export class MediasoupCallMediaEngine
     // Terminal use cases may start their Redis cleanup while room creation is
     // still pending. Clear once more after that creation and media teardown.
     await this.stateRepository.clearCallState(callId);
+  }
+
+  async getWorkerLoad(): Promise<MediaWorkerLoad[]> {
+    const rooms = [...this.rooms.values()];
+    return Promise.all(
+      this.workers.map(async (worker, index) => {
+        // ru_utime/ru_stime are milliseconds (checked against ps).
+        const usage = await worker.getResourceUsage();
+        return {
+          worker: String(index),
+          cpuSeconds: (usage.ru_utime + usage.ru_stime) / 1000,
+          rooms: rooms.filter((room) => room.worker === worker).length,
+        };
+      }),
+    );
   }
 
   private async bootstrapWorkers(count: number): Promise<void> {

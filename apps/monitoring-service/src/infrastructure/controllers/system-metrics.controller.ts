@@ -74,6 +74,12 @@ const RANGE_QUERIES = {
   call_event_loop_p99:
     'max(velora_nodejs_event_loop_lag_p99_seconds{service="call-service"})',
   call_sockets: 'sum(velora_call_socket_connections{service="call-service"})',
+  // One mediasoup worker is single-threaded, so 1 means a worker has saturated
+  // its core. Report the busiest worker, not the average.
+  call_media_worker_cpu:
+    'max(rate(velora_call_mediasoup_worker_cpu_seconds_total{service="call-service"}[1m]))',
+  call_media_rooms:
+    'sum(velora_call_mediasoup_worker_rooms{service="call-service"})',
   notification_cpu: processCpuUsageQuery('notification-service'),
   notification_memory:
     'sum(velora_process_resident_memory_bytes{service="notification-service"})',
@@ -456,6 +462,8 @@ export class SystemMetricsController {
         callResidentMemoryBytes,
         callEventLoopP99Seconds,
         callSocketConnections,
+        callMediaWorkerCpuRatio,
+        callMediaRooms,
         notificationUp,
         notificationCpuUsageRatio,
         notificationResidentMemoryBytes,
@@ -604,6 +612,8 @@ export class SystemMetricsController {
         this.prometheus.scalar(RANGE_QUERIES.call_memory),
         this.prometheus.scalar(RANGE_QUERIES.call_event_loop_p99),
         this.prometheus.scalar(RANGE_QUERIES.call_sockets),
+        this.prometheus.scalar(RANGE_QUERIES.call_media_worker_cpu),
+        this.prometheus.scalar(RANGE_QUERIES.call_media_rooms),
         this.prometheus.scalar('max(up{job="notification-service"})'),
         this.prometheus.scalar(RANGE_QUERIES.notification_cpu),
         this.prometheus.scalar(RANGE_QUERIES.notification_memory),
@@ -797,6 +807,8 @@ export class SystemMetricsController {
           cpuUsageRatio: callCpuUsageRatio,
           eventLoopP99Seconds: callEventLoopP99Seconds,
           socketConnections: callSocketConnections,
+          mediaWorkerCpuRatio: callMediaWorkerCpuRatio,
+          mediaRooms: callMediaRooms,
         },
         notification: {
           up: targetStatus(notificationUp),

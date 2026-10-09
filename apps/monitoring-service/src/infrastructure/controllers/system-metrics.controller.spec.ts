@@ -199,11 +199,38 @@ describe('SystemMetricsController live queries and overview sharing', () => {
       ([query]) => query as string,
     );
     const rates = queries.filter((query) => query.includes('rate('));
-    expect(queries).toHaveLength(130);
+    expect(queries).toHaveLength(132);
     expect(rates.length).toBeGreaterThan(50);
     expect(
       rates.every((query) => query.includes('[1m]') && !query.includes('[5m]')),
     ).toBe(true);
+  });
+
+  it('reports the busiest mediasoup worker core share and room count for the call service', async () => {
+    const { controller, prometheus } = createController();
+    prometheus.scalar.mockImplementation((query: string) =>
+      Promise.resolve(
+        query.includes('velora_call_mediasoup_worker_cpu_seconds_total')
+          ? 0.62
+          : query.includes('velora_call_mediasoup_worker_rooms')
+            ? 41
+            : 0,
+      ),
+    );
+
+    const result = await controller.overview();
+
+    expect(result.call).toMatchObject({
+      mediaWorkerCpuRatio: 0.62,
+      mediaRooms: 41,
+    });
+    const workerCpuQuery = prometheus.scalar.mock.calls
+      .map(([query]) => query as string)
+      .find((query) =>
+        query.includes('velora_call_mediasoup_worker_cpu_seconds_total'),
+      );
+    expect(workerCpuQuery).toContain('max(rate(');
+    expect(workerCpuQuery).toContain('[1m]');
   });
 
   it('aggregates phase samples by label while tolerating an empty p95 vector', async () => {
@@ -244,16 +271,16 @@ describe('SystemMetricsController live queries and overview sharing', () => {
     const first = controller.overview();
     now += 6000;
     const second = controller.overview();
-    expect(prometheus.scalar).toHaveBeenCalledTimes(130);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(132);
     resolveSample(1);
     const [a, b] = await Promise.all([first, second]);
     expect(a).toEqual(b);
     now += 4999;
     expect(await controller.overview()).toEqual(a);
-    expect(prometheus.scalar).toHaveBeenCalledTimes(130);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(132);
     now += 1;
     await controller.overview();
-    expect(prometheus.scalar).toHaveBeenCalledTimes(260);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(264);
     expect(metrics.recordRpc).toHaveBeenCalledTimes(4);
   });
 
@@ -266,7 +293,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
     await expect(controller.overview()).resolves.toMatchObject({
       source: 'prometheus',
     });
-    expect(prometheus.scalar).toHaveBeenCalledTimes(260);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(264);
   });
 
   it('does not serve an expired success after a refresh failure', async () => {
@@ -282,7 +309,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
     await expect(controller.overview()).resolves.toMatchObject({
       source: 'prometheus',
     });
-    expect(prometheus.scalar).toHaveBeenCalledTimes(390);
+    expect(prometheus.scalar).toHaveBeenCalledTimes(396);
   });
 
   it.each([undefined, 10])(

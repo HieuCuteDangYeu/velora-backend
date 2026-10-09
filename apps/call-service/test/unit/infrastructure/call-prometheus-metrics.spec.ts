@@ -66,3 +66,47 @@ describe('CallPrometheusMetricsService call recovery metrics', () => {
     metrics.onModuleDestroy();
   });
 });
+
+describe('CallPrometheusMetricsService mediasoup worker metrics', () => {
+  it('exports per-worker CPU seconds, rooms and the live worker count', () => {
+    const metrics = new CallPrometheusMetricsService();
+
+    const output = metrics.metrics(0, [
+      { worker: '0', cpuSeconds: 12.5, rooms: 7 },
+      { worker: '1', cpuSeconds: 3, rooms: 0 },
+    ]);
+
+    expect(output).toContain(
+      'velora_call_mediasoup_workers{service="call-service"} 2',
+    );
+    expect(output).toContain(
+      'velora_call_mediasoup_worker_cpu_seconds_total{service="call-service",worker="0"} 12.5',
+    );
+    expect(output).toContain(
+      'velora_call_mediasoup_worker_cpu_seconds_total{service="call-service",worker="1"} 3',
+    );
+    expect(output).toContain(
+      'velora_call_mediasoup_worker_rooms{service="call-service",worker="0"} 7',
+    );
+    expect(output).toContain(
+      '# TYPE velora_call_mediasoup_worker_cpu_seconds_total counter',
+    );
+
+    metrics.onModuleDestroy();
+  });
+
+  it('still exposes a zero worker count when there is no worker sample', () => {
+    const metrics = new CallPrometheusMetricsService();
+
+    const output = metrics.metrics(0);
+
+    expect(output).toContain(
+      'velora_call_mediasoup_workers{service="call-service"} 0',
+    );
+    expect(output).not.toContain(
+      'velora_call_mediasoup_worker_cpu_seconds_total{',
+    );
+
+    metrics.onModuleDestroy();
+  });
+});

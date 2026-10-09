@@ -25,6 +25,8 @@ export const MONITORING_METRICS = [
   'call_memory',
   'call_event_loop_p99',
   'call_sockets',
+  'call_media_worker_cpu',
+  'call_media_rooms',
   'notification_cpu',
   'notification_memory',
   'notification_event_loop_p99',

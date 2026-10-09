@@ -1040,3 +1040,39 @@ describe('MediasoupCallMediaEngine fixed-port WebRtcServer', () => {
     );
   });
 });
+
+describe('MediasoupCallMediaEngine worker load', () => {
+  it('reports cumulative worker CPU seconds and the rooms placed on each worker', async () => {
+    const engine = new MediasoupCallMediaEngine({} as never);
+    const busy = {
+      pid: 1,
+      getResourceUsage: jest
+        .fn()
+        .mockResolvedValue({ ru_utime: 1500, ru_stime: 500 }),
+    };
+    const idle = {
+      pid: 2,
+      getResourceUsage: jest
+        .fn()
+        .mockResolvedValue({ ru_utime: 20, ru_stime: 5 }),
+    };
+    const internals = engine as unknown as {
+      workers: unknown[];
+      rooms: Map<string, { worker: unknown }>;
+    };
+    internals.workers.push(busy, idle);
+    internals.rooms.set('call-a', { worker: busy });
+    internals.rooms.set('call-b', { worker: busy });
+    internals.rooms.set('call-c', { worker: idle });
+
+    await expect(engine.getWorkerLoad()).resolves.toEqual([
+      { worker: '0', cpuSeconds: 2, rooms: 2 },
+      { worker: '1', cpuSeconds: 0.025, rooms: 1 },
+    ]);
+  });
+
+  it('reports nothing when no worker is alive', async () => {
+    const engine = new MediasoupCallMediaEngine({} as never);
+    await expect(engine.getWorkerLoad()).resolves.toEqual([]);
+  });
+});

@@ -72,6 +72,15 @@ export interface RestartIceResult {
   iceParameters: Record<string, unknown>;
 }
 
+export interface MediaWorkerLoad {
+  /** Stable-for-the-process label; a worker owns exactly one CPU thread. */
+  worker: string;
+  /** Cumulative user+system CPU seconds consumed by the worker process. */
+  cpuSeconds: number;
+  /** Calls (routers) currently placed on this worker. */
+  rooms: number;
+}
+
 export abstract class ICallMediaEngine {
   abstract createRoom(callId: string): Promise<void>;
   abstract getRouterRtpCapabilities(
@@ -151,4 +160,5 @@ export abstract class ICallMediaEngine {
     userId: string,
   ): Promise<ClosedParticipantMediaResult>;
   abstract closeRoom(callId: string): Promise<void>;
+  abstract getWorkerLoad(): Promise<MediaWorkerLoad[]>;
 }

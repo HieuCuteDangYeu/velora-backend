@@ -121,6 +121,24 @@ export class PrismaChatRepository implements IChatRepository {
       : Promise.resolve().then(action);
   }
 
+  private async retryConversationRead<T>(
+    read: () => PromiseLike<T>,
+  ): Promise<T> {
+    try {
+      return await read();
+    } catch (error: unknown) {
+      // Only a read may repeat after the observed connector I/O timeout.
+      if (
+        !(error instanceof Prisma.PrismaClientUnknownRequestError) ||
+        !/I\/O error:[\s\S]*\(os error 110\)/i.test(error.message)
+      ) {
+        throw error;
+      }
+      this.logger.warn('Conversation read I/O timeout; retrying once');
+      return await read();
+    }
+  }
+
   // --- 1. CREATE MESSAGE ---
   async createMessage(message: Message): Promise<Message> {
     return (await this.createMessageIdempotently(message)).message;
@@ -588,9 +606,9 @@ export class PrismaChatRepository implements IChatRepository {
   async findConversation(id: string): Promise<Conversation | null> {
     // 1. Lấy dữ liệu thô từ MongoDB
     const foundConv = await this.measure('conversation_read', () =>
-      this.prisma.conversation.findUnique({
-        where: { id },
-      }),
+      this.retryConversationRead(() =>
+        this.prisma.conversation.findUnique({ where: { id } }),
+      ),
     );
 
     if (!foundConv) return null;
@@ -1464,10 +1482,12 @@ export class PrismaChatRepository implements IChatRepository {
 
   async assertConversationParticipant(conversationId: string, userId: string) {
     const conversation = await this.measure('membership', () =>
-      this.prisma.conversation.findUnique({
-        where: { id: conversationId },
-        select: { participantIds: true },
-      }),
+      this.retryConversationRead(() =>
+        this.prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: { participantIds: true },
+        }),
+      ),
     );
 
     if (!conversation) {

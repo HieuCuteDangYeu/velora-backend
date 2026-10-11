@@ -1,5 +1,8 @@
 import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@prisma/conversation-client';
+import {
+  Prisma,
+  type Message as PrismaMessage,
+} from '@prisma/conversation-client';
 import { Message } from './domain/entities/message.entity';
 import { Conversation } from './domain/entities/conversation.entity';
 import { ConversationMicroserviceController } from './infrastructure/controllers/conversation.controller';
@@ -60,7 +63,7 @@ const prismaError = (code: string) =>
     clientVersion: '5.22.0',
   });
 type PreviewCommand = {
-  query: { _id: { $oid: string }; participantIds: string };
+  query: { _id: { $oid: string }; participantIds: string | { $all: string[] } };
   update: { $set: Record<string, unknown> };
 };
 const rawPreviewReceipt = (
@@ -89,7 +92,9 @@ const transactionHarness = ($transaction: jest.Mock) => {
       findUnique: jest.fn().mockResolvedValue(createStoredConversation()),
     },
     message: {
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest.fn((input: { data: PrismaMessage[] }) =>
+        Promise.resolve({ count: input.data.length }),
+      ),
       findFirst: jest.fn().mockResolvedValue(createStoredMessage()),
     },
   };
@@ -100,9 +105,13 @@ const transactionHarness = ($transaction: jest.Mock) => {
         | undefined;
     if (!readFixture) throw new Error('Missing conversation fixture');
     const record = await readFixture();
+    const senders =
+      typeof command.query.participantIds === 'string'
+        ? [command.query.participantIds]
+        : command.query.participantIds.$all;
     if (
       !record ||
-      !record.participantIds.includes(command.query.participantIds)
+      senders.some((sender) => !record.participantIds.includes(sender))
     ) {
       return {
         ok: 1,
@@ -476,8 +485,10 @@ describe('message transaction conflicts', () => {
       return [createStoredMessage(), createStoredConversation()];
     });
     const { repository, prisma } = transactionHarness(transaction);
-    const writes = Array.from({ length: 101 }, () =>
-      repository.createMessageIdempotently(createMessage()),
+    const writes = Array.from({ length: 101 }, (_, index) =>
+      repository.createMessageIdempotently(
+        new Message({ ...createMessage(), clientMessageId: `queued-${index}` }),
+      ),
     );
     const settled = Promise.allSettled(writes);
     await expect(writes[100]).rejects.toMatchObject({ status: 429 });
@@ -485,7 +496,7 @@ describe('message transaction conflicts', () => {
     release();
     const results = await settled;
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(100);
-    expect(transaction).toHaveBeenCalledTimes(100);
+    expect(transaction).toHaveBeenCalledTimes(11);
     expect((repository as any).messageTransactions.size).toBe(0);
   });
 
@@ -564,6 +575,263 @@ describe('message transaction conflicts', () => {
       repository.createMessageIdempotently(createMessage()),
     ).rejects.toBe(failure);
     expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('drains existing backlog in batches of ten with per-sender notification audiences', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const commit = jest.fn().mockImplementationOnce(async () => {
+      entered();
+      await blocked;
+    });
+    const { repository, prisma, redis } = transactionHarness(commit);
+    prisma.conversation.findUnique.mockResolvedValue({
+      ...createStoredConversation(),
+      isGroup: true,
+      participantIds: ['sender-1', 'sender-2', 'observer'],
+    });
+    const send = (index: number) =>
+      repository.createMessageIdempotently(
+        new Message({
+          ...createMessage(),
+          clientMessageId: `batch-${index}`,
+          content: `text-${index}`,
+          senderId: index % 2 ? 'sender-2' : 'sender-1',
+        }),
+        { enqueueNotification: index !== 9 },
+      );
+    const first = send(0);
+    await ready;
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const rest = Array.from({ length: 12 }, (_, index) => send(index + 1));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    release();
+    const results = await Promise.all([first, ...rest]);
+    expect(
+      prisma.message.createMany.mock.calls.map(([args]) => args.data.length),
+    ).toEqual([1, 10, 2]);
+    expect(results.every((result) => result.created)).toBe(true);
+    const inserts = prisma.message.createMany.mock.calls.flatMap(
+      ([args]) => args.data,
+    );
+    expect(inserts.map((value) => value.clientMessageId)).toEqual(
+      Array.from({ length: 13 }, (_, index) => `batch-${index}`),
+    );
+    for (const value of inserts) {
+      expect(value.notificationRecipientIds).toEqual(
+        value.clientMessageId === 'batch-9'
+          ? []
+          : ['sender-1', 'sender-2', 'observer'].filter(
+              (id) => id !== value.senderId,
+            ),
+      );
+      expect(value.content).toBe(
+        `encrypted:text-${value.clientMessageId.split('-')[1]}`,
+      );
+    }
+    expect(prisma.$runCommandRaw.mock.calls[1][0].query.participantIds).toEqual(
+      { $all: ['sender-2', 'sender-1'] },
+    );
+    expect(prisma.$runCommandRaw.mock.calls[2][0].update.$set.lastMessage).toBe(
+      'text-12',
+    );
+    expect(results[12].message.createdAt).toEqual(
+      results[11].message.createdAt,
+    );
+    expect(results[12].message.id > results[11].message.id).toBe(true);
+    expect(redis.del).toHaveBeenCalledTimes(13);
+    expect((repository as any).messageTransactions.size).toBe(0);
+  });
+
+  it('isolates a removed sender without dropping other queued messages', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { repository, prisma } = transactionHarness(
+      jest.fn().mockImplementationOnce(async () => {
+        entered();
+        await blocked;
+      }),
+    );
+    prisma.conversation.findUnique.mockResolvedValue({
+      ...createStoredConversation(),
+      isGroup: true,
+      participantIds: ['sender-1', 'sender-2'],
+    });
+    const first = repository.createMessageIdempotently(createMessage());
+    await ready;
+    const queued = ['sender-1', 'removed', 'sender-2'].map((senderId, index) =>
+      repository.createMessageIdempotently(
+        new Message({
+          ...createMessage(),
+          senderId,
+          clientMessageId: `membership-${index}`,
+        }),
+        { enqueueNotification: true },
+      ),
+    );
+    const settled = Promise.allSettled(queued);
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    await first;
+    const outcomes = await settled;
+    expect(outcomes.map((result) => result.status)).toEqual([
+      'fulfilled',
+      'rejected',
+      'fulfilled',
+    ]);
+    expect(outcomes[1]).toMatchObject({
+      reason: expect.any(ForbiddenException),
+    });
+    expect(prisma.message.createMany.mock.calls).toHaveLength(3);
+    expect(
+      prisma.message.createMany.mock.calls
+        .flatMap(([args]) => args.data)
+        .some((value) => value.senderId === 'removed'),
+    ).toBe(false);
+    expect((repository as any).messageTransactions.size).toBe(0);
+  });
+
+  it('rolls back duplicate batches and reconciles only the duplicate identity', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const { repository, prisma, redis } = transactionHarness(
+      jest.fn().mockImplementationOnce(async () => {
+        entered();
+        await blocked;
+      }),
+    );
+    const first = repository.createMessageIdempotently(createMessage());
+    await ready;
+    prisma.message.createMany.mockImplementation(({ data }) => {
+      if (data.length > 1 || data[0].clientMessageId === 'duplicate')
+        throw prismaError('P2002');
+      return Promise.resolve({ count: data.length });
+    });
+    const queued = ['fresh-1', 'duplicate', 'fresh-2'].map((clientMessageId) =>
+      repository.createMessageIdempotently(
+        new Message({ ...createMessage(), clientMessageId }),
+      ),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    const results = await Promise.all([first, ...queued]);
+    expect(results.map((result) => result.created)).toEqual([
+      true,
+      true,
+      false,
+      true,
+    ]);
+    expect(results[2].message.id).toBe('message-1');
+    expect(prisma.message.findFirst).toHaveBeenCalledWith({
+      where: {
+        conversationId: createMessage().conversationId,
+        senderId: 'sender-1',
+        clientMessageId: 'duplicate',
+      },
+    });
+    expect(redis.del).toHaveBeenCalledTimes(3);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(5);
+  });
+
+  it('does not replay a batch with an ambiguous database outcome and releases its queue', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const failure = prismaError('P1001');
+    const commit = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        entered();
+        await blocked;
+      })
+      .mockRejectedValueOnce(failure);
+    const { repository, prisma, redis } = transactionHarness(commit);
+    const first = repository.createMessageIdempotently(createMessage());
+    await ready;
+    const queued = ['a', 'b'].map((clientMessageId) =>
+      repository.createMessageIdempotently(
+        new Message({ ...createMessage(), clientMessageId }),
+      ),
+    );
+    const settled = Promise.allSettled(queued);
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    await first;
+    expect(await settled).toEqual([
+      { status: 'rejected', reason: failure },
+      { status: 'rejected', reason: failure },
+    ]);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(redis.del).toHaveBeenCalledTimes(1);
+    expect((repository as any).messageTransactions.size).toBe(0);
+    await repository.createMessageIdempotently(createMessage());
+    expect(prisma.$transaction).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a complete conflicted batch with stable IDs and no repeated post-commit work', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const commit = jest
+      .fn()
+      .mockImplementationOnce(async () => {
+        entered();
+        await blocked;
+      })
+      .mockRejectedValueOnce(prismaError('P2034'));
+    const { repository, prisma, redis } = transactionHarness(commit);
+    const first = repository.createMessageIdempotently(createMessage());
+    await ready;
+    const queued = ['a', 'b'].map((clientMessageId) =>
+      repository.createMessageIdempotently(
+        new Message({ ...createMessage(), clientMessageId }),
+      ),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    await Promise.all([first, ...queued]);
+    const inserts = prisma.message.createMany.mock.calls.map(
+      ([args]) => args.data,
+    );
+    expect(inserts.map((data) => data.length)).toEqual([1, 2, 2]);
+    expect(inserts[1].map((value) => value.id)).toEqual(
+      inserts[2].map((value) => value.id),
+    );
+    expect(redis.del).toHaveBeenCalledTimes(3);
   });
 
   it('logs only a safe error code and phase when the socket send fails', async () => {

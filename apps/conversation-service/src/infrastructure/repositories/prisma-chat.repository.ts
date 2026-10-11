@@ -61,8 +61,30 @@ const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
 const MAX_PENDING_MESSAGE_TRANSACTIONS = 100;
+const MAX_MESSAGE_TRANSACTION_BATCH = 10;
 const MESSAGE_TRANSACTION_MAX_WAIT_MS = 2_000;
 const MESSAGE_TRANSACTION_TIMEOUT_MS = 5_000;
+
+type PreparedMessageWrite = {
+  data: Omit<
+    PrismaMessage,
+    'createdAt' | 'notificationRecipientIds' | 'notificationNextAttemptAt'
+  >;
+  preview: string;
+  enqueueNotification: boolean;
+};
+type PersistedMessageWrite = readonly [PrismaMessage, PrismaConversation];
+type QueuedMessageWrite = {
+  write: PreparedMessageWrite;
+  start: () => void;
+  resolve: (result: PersistedMessageWrite) => void;
+  reject: (error: unknown) => void;
+};
+type MessageWriteQueue = {
+  pending: number;
+  running: boolean;
+  waiting: QueuedMessageWrite[];
+};
 
 type AnchorBoundary = {
   createdAt: Date;
@@ -72,10 +94,7 @@ type AnchorBoundary = {
 @Injectable()
 export class PrismaChatRepository implements IChatRepository {
   private readonly logger = new Logger(PrismaChatRepository.name);
-  private readonly messageTransactions = new Map<
-    string,
-    { tail: Promise<void>; pending: number }
-  >();
+  private readonly messageTransactions = new Map<string, MessageWriteQueue>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -116,7 +135,6 @@ export class PrismaChatRepository implements IChatRepository {
     // a client key before reaching this method.
     const clientMessageId =
       message.clientMessageId?.trim() || `server:${randomUUID()}`;
-    const messageId = new Types.ObjectId().toHexString();
 
     // Reply hydration reads another message before the transaction. Authorize
     // that read first; every send is checked again inside the write transaction.
@@ -166,87 +184,36 @@ export class PrismaChatRepository implements IChatRepository {
     try {
       [savedMsg, savedConversation] = await this.enqueueMessageTransaction(
         message.conversationId,
-        () =>
-          this.retryMessageTransaction(() =>
-            this.measure('mongo_write', () =>
-              this.prisma.$transaction(
-                async (tx) => {
-                  const timestamp = new Date();
-                  // This phase now includes the authorized preview write, not
-                  // just the previous membership read.
-                  const conversation = await this.measure('membership', () =>
-                    writeAuthorizedPreview(
-                      tx,
-                      message.conversationId,
-                      message.senderId,
-                      previewText,
-                      timestamp,
-                    ),
-                  );
-
-                  // All initial values are known here. createMany avoids the
-                  // read-back issued by create; keep this insert and the preview
-                  // update in the same authorized, retryable transaction.
-                  // Snapshot the authorized audience in the same write. Internal
-                  // bot/system producers retain their existing no-push behavior.
-                  const recipientIds = options?.enqueueNotification
-                    ? [...new Set(conversation.participantIds)].filter(
-                        (id) => Boolean(id) && id !== message.senderId,
-                      )
-                    : [];
-                  const notificationRecipientIds =
-                    conversation.isGroup ||
-                    (conversation.participantIds.length === 2 &&
-                      recipientIds.length === 1)
-                      ? recipientIds
-                      : [];
-                  const persisted: PrismaMessage = {
-                    id: messageId,
-                    type: message.type ?? 'text',
-                    clientMessageId,
-                    signalType: message.signalType ?? 1,
-                    content: contentToSave,
-                    media: message.media
-                      ? (message.media as unknown as Prisma.JsonValue)
-                      : null,
-                    metadata: message.metadata
-                      ? (message.metadata as unknown as Prisma.JsonValue)
-                      : null,
-                    registrationId: message.registrationId ?? null,
-                    senderId: message.senderId,
-                    isRecalled: false,
-                    recalledAt: null,
-                    replyToId: message.replyToId ?? null,
-                    replyPreview: replyPreview
-                      ? (replyPreview as unknown as Prisma.JsonValue)
-                      : null,
-                    conversationId: message.conversationId,
-                    reactions: null,
-                    createdAt: timestamp,
-                    readBy: [],
-                    notificationRecipientIds,
-                    notificationNextAttemptAt:
-                      notificationRecipientIds.length > 0 ? new Date() : null,
-                    notificationClaimId: null,
-                    notificationAttemptCount: 0,
-                  };
-                  const inserted = await tx.message.createMany({
-                    data: [persisted],
-                  });
-                  if (inserted.count !== 1) {
-                    throw new InternalServerErrorException(
-                      'Message insert did not create one record',
-                    );
-                  }
-                  return [persisted, conversation] as const;
-                },
-                {
-                  maxWait: MESSAGE_TRANSACTION_MAX_WAIT_MS,
-                  timeout: MESSAGE_TRANSACTION_TIMEOUT_MS,
-                },
-              ),
-            ),
-          ),
+        {
+          preview: previewText,
+          enqueueNotification: options?.enqueueNotification === true,
+          data: {
+            id: new Types.ObjectId().toHexString(),
+            type: message.type ?? 'text',
+            clientMessageId,
+            signalType: message.signalType ?? 1,
+            content: contentToSave,
+            media: message.media
+              ? (message.media as unknown as Prisma.JsonValue)
+              : null,
+            metadata: message.metadata
+              ? (message.metadata as unknown as Prisma.JsonValue)
+              : null,
+            registrationId: message.registrationId ?? null,
+            senderId: message.senderId,
+            isRecalled: false,
+            recalledAt: null,
+            replyToId: message.replyToId ?? null,
+            replyPreview: replyPreview
+              ? (replyPreview as unknown as Prisma.JsonValue)
+              : null,
+            conversationId: message.conversationId,
+            reactions: null,
+            readBy: [],
+            notificationClaimId: null,
+            notificationAttemptCount: 0,
+          },
+        },
       );
     } catch (error: unknown) {
       // The compound unique index is the source of truth. A retry may race
@@ -1300,45 +1267,146 @@ export class PrismaChatRepository implements IChatRepository {
     }
   }
 
-  private async enqueueMessageTransaction<T>(
+  private enqueueMessageTransaction(
     conversationId: string,
-    operation: () => Promise<T>,
-  ): Promise<T> {
-    // Every send writes the same conversation document. Serializing only the
-    // transaction avoids local write-conflict storms; retries still handle
-    // contention with other instances or other conversation mutations.
+    write: PreparedMessageWrite,
+  ): Promise<PersistedMessageWrite> {
     const queue = this.messageTransactions.get(conversationId) ?? {
-      tail: Promise.resolve(),
       pending: 0,
+      running: false,
+      waiting: [],
     };
     if (queue.pending >= MAX_PENDING_MESSAGE_TRANSACTIONS) {
-      throw new HttpException(
-        'Conversation write queue is full',
-        HttpStatus.TOO_MANY_REQUESTS,
+      return Promise.reject(
+        new HttpException(
+          'Conversation write queue is full',
+          HttpStatus.TOO_MANY_REQUESTS,
+        ),
       );
     }
     this.messageTransactions.set(conversationId, queue);
     queue.pending += 1;
     stressMessageTiming.mark('queued');
     const queuedAt = process.hrtime.bigint();
-    const result = queue.tail.then(() => {
-      stressMessageTiming.mark('transactionStarted');
-      this.metrics?.recordPhase(
-        'queue_wait',
-        Number(process.hrtime.bigint() - queuedAt) / 1e9,
-      );
-      return operation();
+    const markStarted = stressMessageTiming.captureMark('transactionStarted');
+    const result = new Promise<PersistedMessageWrite>((resolve, reject) => {
+      queue.waiting.push({
+        write,
+        resolve,
+        reject,
+        start: () => {
+          markStarted();
+          this.metrics?.recordPhase(
+            'queue_wait',
+            Number(process.hrtime.bigint() - queuedAt) / 1e9,
+          );
+        },
+      });
     });
-    queue.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    try {
-      return await result;
-    } finally {
-      queue.pending -= 1;
-      if (queue.pending === 0) this.messageTransactions.delete(conversationId);
+    // No batching timer: the first send starts now; only existing backlog shares a transaction.
+    if (!queue.running)
+      void this.drainMessageTransactions(conversationId, queue);
+    return result;
+  }
+
+  private async drainMessageTransactions(
+    conversationId: string,
+    queue: MessageWriteQueue,
+  ): Promise<void> {
+    queue.running = true;
+    while (queue.waiting.length > 0) {
+      // Equal timestamps sort by ObjectId in history; do not batch across a backwards ID boundary.
+      let count = 1;
+      while (
+        count < Math.min(MAX_MESSAGE_TRANSACTION_BATCH, queue.waiting.length) &&
+        queue.waiting[count - 1].write.data.id <
+          queue.waiting[count].write.data.id
+      )
+        count++;
+      const entries = queue.waiting.splice(0, count);
+      try {
+        for (const entry of entries) entry.start();
+        const results = await this.persistMessageBatch(
+          entries.map((entry) => entry.write),
+        );
+        entries.forEach((entry, index) => entry.resolve(results[index]));
+      } catch (error: unknown) {
+        // Only definitive rollback may fall back. Unknown commit outcomes must not replay writes.
+        if (
+          entries.length > 1 &&
+          (this.isClientMessageIdConflict(error) ||
+            error instanceof ForbiddenException)
+        ) {
+          for (const entry of entries) {
+            try {
+              entry.resolve((await this.persistMessageBatch([entry.write]))[0]);
+            } catch (individualError) {
+              entry.reject(individualError);
+            }
+          }
+        } else {
+          for (const entry of entries) entry.reject(error);
+        }
+      } finally {
+        queue.pending -= entries.length;
+      }
     }
+    queue.running = false;
+    this.messageTransactions.delete(conversationId);
+  }
+
+  private persistMessageBatch(
+    writes: PreparedMessageWrite[],
+  ): Promise<PersistedMessageWrite[]> {
+    return this.retryMessageTransaction(() =>
+      this.measure('mongo_write', () =>
+        this.prisma.$transaction(
+          async (tx) => {
+            const timestamp = new Date();
+            const last = writes[writes.length - 1];
+            const conversation = await this.measure('membership', () =>
+              writeAuthorizedPreview(
+                tx,
+                last.data.conversationId,
+                writes.map((write) => write.data.senderId),
+                last.preview,
+                timestamp,
+              ),
+            );
+            const messages = writes.map((write): PrismaMessage => {
+              const recipients = write.enqueueNotification
+                ? [...new Set(conversation.participantIds)].filter(
+                    (id) => Boolean(id) && id !== write.data.senderId,
+                  )
+                : [];
+              const notificationRecipientIds =
+                conversation.isGroup ||
+                (conversation.participantIds.length === 2 &&
+                  recipients.length === 1)
+                  ? recipients
+                  : [];
+              return {
+                ...write.data,
+                createdAt: timestamp,
+                notificationRecipientIds,
+                notificationNextAttemptAt:
+                  notificationRecipientIds.length > 0 ? timestamp : null,
+              };
+            });
+            const inserted = await tx.message.createMany({ data: messages });
+            if (inserted.count !== messages.length)
+              throw new InternalServerErrorException(
+                'Message insert did not create all records',
+              );
+            return messages.map((message) => [message, conversation] as const);
+          },
+          {
+            maxWait: MESSAGE_TRANSACTION_MAX_WAIT_MS,
+            timeout: MESSAGE_TRANSACTION_TIMEOUT_MS,
+          },
+        ),
+      ),
+    );
   }
 
   private async retryMessageTransaction<T>(

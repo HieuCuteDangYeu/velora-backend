@@ -55,6 +55,39 @@ describe('Authorized preview receipt', () => {
     );
   });
 
+  it('matches every distinct batch sender inside the write and validates the returned audience', async () => {
+    const tx = harness(receipt());
+    await writeAuthorizedPreview(
+      tx as never,
+      id,
+      ['sender', 'member', 'sender'],
+      'hello',
+      at,
+    );
+    expect(tx.$runCommandRaw.mock.calls[0][0].query.participantIds).toEqual({
+      $all: ['sender', 'member'],
+    });
+    const invalid = receipt();
+    invalid.value.participantIds = ['sender'];
+    await expect(
+      writeAuthorizedPreview(
+        harness(invalid) as never,
+        id,
+        ['sender', 'member'],
+        'hello',
+        at,
+      ),
+    ).rejects.toMatchObject({ status: 500 });
+  });
+
+  it('rejects an empty authorization set before running a write', async () => {
+    const tx = harness(receipt());
+    await expect(
+      writeAuthorizedPreview(tx as never, id, [], 'hello', at),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(tx.$runCommandRaw).not.toHaveBeenCalled();
+  });
+
   it('decodes canonical BSON dates', async () => {
     const r = receipt();
     r.value.updatedAt = {

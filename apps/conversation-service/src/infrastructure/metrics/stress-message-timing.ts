@@ -70,10 +70,16 @@ export class StressMessageTiming {
   }
 
   mark(stage: Stage): void {
+    this.captureMark(stage)();
+  }
+
+  captureMark(stage: Stage): () => void {
     const trace = this.context.getStore();
-    if (!trace || trace.reported || trace.stages[stage] !== undefined) return;
-    trace.stages[stage] =
-      Number(process.hrtime.bigint() - trace.startedAt) / 1e6;
+    return () => {
+      if (!trace || trace.reported || trace.stages[stage] !== undefined) return;
+      trace.stages[stage] =
+        Number(process.hrtime.bigint() - trace.startedAt) / 1e6;
+    };
   }
 
   report(outcome: 'ack_submitted' | 'failed'): void {

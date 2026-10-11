@@ -37,13 +37,21 @@ const snapshot = z.object({
 export async function writeAuthorizedPreview(
   tx: Pick<Prisma.TransactionClient, '$runCommandRaw' | 'conversation'>,
   conversationId: string,
-  senderId: string,
+  senderId: string | string[],
   preview: string,
   timestamp: Date,
 ): Promise<Conversation> {
+  const senders = [
+    ...new Set(typeof senderId === 'string' ? [senderId] : senderId),
+  ];
+  if (senders.length === 0)
+    throw new InternalServerErrorException('Missing authorized sender');
   const result = await tx.$runCommandRaw({
     findAndModify: 'conversations',
-    query: { _id: { $oid: conversationId }, participantIds: senderId },
+    query: {
+      _id: { $oid: conversationId },
+      participantIds: senders.length === 1 ? senders[0] : { $all: senders },
+    },
     update: {
       $set: {
         lastMessage: preview,
@@ -84,7 +92,7 @@ export async function writeAuthorizedPreview(
       where: { id: conversationId },
     });
     if (!existing) throw new NotFoundException('Conversation not found');
-    if (!existing.participantIds.includes(senderId)) {
+    if (senders.some((id) => !existing.participantIds.includes(id))) {
       throw new ForbiddenException(
         'You are not allowed to access messages in this conversation',
       );
@@ -98,7 +106,7 @@ export async function writeAuthorizedPreview(
     lastErrorObject.n !== 1 ||
     !lastErrorObject.updatedExisting ||
     value._id.$oid.toLowerCase() !== conversationId.toLowerCase() ||
-    !value.participantIds.includes(senderId) ||
+    senders.some((id) => !value.participantIds.includes(id)) ||
     value.lastMessage !== preview ||
     value.lastMessageAt.getTime() !== timestamp.getTime() ||
     value.updatedAt.getTime() !== timestamp.getTime()

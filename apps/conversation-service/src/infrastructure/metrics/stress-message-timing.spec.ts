@@ -146,6 +146,43 @@ describe('Bounded stress timing', () => {
     expect(records).toHaveLength(2);
   });
 
+  it('marks each caller captured by a shared batch without borrowing another context', async () => {
+    const timing = new StressMessageTiming();
+    const marks: (() => void)[] = [];
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ids = [id, id.replace(/11111111$/, '22222222')];
+    const calls = ids.map((clientId) =>
+      timing.run(
+        namespace,
+        clientId,
+        process.hrtime.bigint(),
+        receivedAt,
+        async () => {
+          timing.mark('queued');
+          marks.push(timing.captureMark('transactionStarted'));
+          await barrier;
+          timing.mark('transactionResolved');
+          timing.report('ack_submitted');
+        },
+      ),
+    );
+    const untraced = timing.captureMark('ackSubmitted');
+    marks.forEach((mark) => mark());
+    untraced();
+    release();
+    await Promise.all(calls);
+    expect(records.map((record) => record.clientMessageId)).toEqual(ids);
+    for (const record of records)
+      expect(record.elapsedMs).toEqual({
+        queued: expect.any(Number),
+        transactionStarted: expect.any(Number),
+        transactionResolved: expect.any(Number),
+      });
+  });
+
   it('caps accepted traces and preserves errors and logger failures', async () => {
     await Promise.resolve();
     const timing = new StressMessageTiming(1);

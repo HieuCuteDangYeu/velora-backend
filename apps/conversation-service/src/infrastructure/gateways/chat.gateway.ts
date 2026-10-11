@@ -30,6 +30,10 @@ import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { ChatMapper } from '../repositories/chat.mapper';
+import {
+  stressFixtureNamespace,
+  stressMessageTiming,
+} from '../metrics/stress-message-timing';
 
 interface PresencePayload {
   userId?: string;
@@ -236,6 +240,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const startedAt = process.hrtime.bigint();
+    const receivedAt = new Date().toISOString();
     const senderId = await this.resolveUserId(client);
     if (!senderId) {
       this.recordSendMessageOutcome(startedAt, 'rejected');
@@ -251,6 +256,22 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
 
+    return stressMessageTiming.run(
+      client.data['stressFixtureNamespace'],
+      payload.clientMessageId,
+      startedAt,
+      receivedAt,
+      () =>
+        this.persistAndDispatchMessage(payload, client, senderId, startedAt),
+    );
+  }
+
+  private async persistAndDispatchMessage(
+    payload: CreateMessageDto,
+    client: Socket,
+    senderId: string,
+    startedAt: bigint,
+  ) {
     // The persistence repository checks current membership before any mutation.
     // Do not repeat that Mongo read here; room joins still check membership separately.
     let phase = 'persist';
@@ -260,6 +281,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         'persist_total',
         () => this.sendMessageUseCase.execute(payload, senderId),
       );
+      stressMessageTiming.mark('persistFinished');
       const savedMessage = result.message;
       const savedMessageDto = ChatMapper.toDto(savedMessage);
 
@@ -270,10 +292,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Always reconcile the sending socket. For an idempotent retry this is
       // the only event: all fan-out must happen exactly once.
       client.emit('message_synced', savedMessageDto);
+      stressMessageTiming.mark('ackSubmitted');
       acknowledged = true;
       phase = 'dispatch';
 
       if (!result.created) {
+        stressMessageTiming.report('ack_submitted');
         this.recordSendMessageOutcome(startedAt, 'success');
         return;
       }
@@ -283,6 +307,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           .to(this.conversationRooms(payload.conversationId))
           .emit('new_message', savedMessageDto),
       );
+
+      stressMessageTiming.mark('recipientsSubmitted');
+      stressMessageTiming.report('ack_submitted');
 
       // Update conversation sidebar for all participants (lastMessage, ordering)
       const conversation = result.conversation
@@ -356,6 +383,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       this.recordSendMessageOutcome(startedAt, 'success');
     } catch (error: unknown) {
+      stressMessageTiming.report(acknowledged ? 'ack_submitted' : 'failed');
       const candidate =
         error && typeof error === 'object' && 'code' in error
           ? error.code
@@ -763,6 +791,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       if (user?.id) {
         socketData['userId'] = user.id;
+        socketData['stressFixtureNamespace'] = stressFixtureNamespace(
+          user.email,
+        );
         return user.id;
       }
 

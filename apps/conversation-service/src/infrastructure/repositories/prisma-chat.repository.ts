@@ -45,6 +45,7 @@ import {
   type ChatPhase,
 } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { stressMessageTiming } from '../metrics/stress-message-timing';
 
 // Mappers
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
@@ -275,6 +276,8 @@ export class PrismaChatRepository implements IChatRepository {
         created: false,
       };
     }
+
+    stressMessageTiming.mark('transactionResolved');
 
     // BƯỚC 3: Map về Domain Model
     let domainMsg = ChatMapper.toDomain(savedMsg);
@@ -1316,8 +1319,10 @@ export class PrismaChatRepository implements IChatRepository {
     }
     this.messageTransactions.set(conversationId, queue);
     queue.pending += 1;
+    stressMessageTiming.mark('queued');
     const queuedAt = process.hrtime.bigint();
     const result = queue.tail.then(() => {
+      stressMessageTiming.mark('transactionStarted');
       this.metrics?.recordPhase(
         'queue_wait',
         Number(process.hrtime.bigint() - queuedAt) / 1e9,

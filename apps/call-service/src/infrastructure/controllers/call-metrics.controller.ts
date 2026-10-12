@@ -25,8 +25,7 @@ export class CallMetricsController {
     );
     response.setHeader('Cache-Control', 'no-store');
 
-    const activeSocketConnections =
-      this.callGateway.server?.engine?.clientsCount ?? 0;
+    const activeSocketConnections = this.callGateway.server?.sockets.size ?? 0;
 
     // Worker load is best effort: a failing worker must not blind the scrape.
     const mediaWorkers = await this.mediaEngine

@@ -200,18 +200,25 @@ describeWithRedis(
         ['--port', String(redisPort), '--save', '', '--appendonly', 'no'],
         { stdio: 'ignore' },
       );
-      await waitFor(
-        () =>
-          new Promise<boolean>((resolve) => {
-            const probe = spawnSync('redis-cli', [
-              '-p',
-              String(redisPort),
-              'ping',
-            ]);
-            resolve(probe.stdout?.toString().includes('PONG') ?? false);
-          }),
-        5000,
-      );
+      // Wait with the client library itself, so only redis-server is required.
+      const probe = new Redis(redisPort, '127.0.0.1', {
+        lazyConnect: true,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null,
+      });
+      try {
+        await waitFor(async () => {
+          try {
+            if (probe.status !== 'ready') await probe.connect();
+            return (await probe.ping()) === 'PONG';
+          } catch {
+            probe.disconnect();
+            return false;
+          }
+        }, 5000);
+      } finally {
+        probe.disconnect();
+      }
       await startInstance();
       await startInstance();
     }, 30_000);

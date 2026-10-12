@@ -494,8 +494,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
-    if (!userId || !this.isSocketInConversation(client, conversationId)) {
-      return;
+    if (!userId || typeof conversationId !== 'string') return;
+
+    // socket.io-client flushes events buffered while disconnected before the
+    // app re-sends join_conversation, so a pending typing_stop can reach a
+    // fresh socket that is not in the room yet. Dropping it would leave the
+    // indicator stuck for everyone else, so only this rare case falls back to
+    // the membership read. typing_start stays room-only: the next keystroke
+    // after the join repeats it.
+    if (!this.isSocketInConversation(client, conversationId)) {
+      try {
+        await this.chatRepository.assertConversationParticipant(
+          conversationId,
+          userId,
+        );
+      } catch {
+        return;
+      }
     }
 
     client.to(this.conversationRooms(conversationId)).emit('user_typing', {

@@ -495,7 +495,7 @@ describe('ChatGateway realtime membership helpers', () => {
     }
   });
 
-  it('ignores typing from a socket that has not joined (or was evicted from) the conversation', async () => {
+  it('ignores typing_start from a socket outside the conversation room without reading Mongo', async () => {
     const clientTo = jest.fn();
     const outsider = {
       id: 'socket-outsider',
@@ -505,13 +505,56 @@ describe('ChatGateway realtime membership helpers', () => {
     } as unknown as Socket;
 
     await gateway.handleTypingStart(CONVERSATION_ID, outsider);
-    await gateway.handleTypingStop(CONVERSATION_ID, outsider);
     await gateway.handleTypingStart(
+      { conversationId: CONVERSATION_ID } as unknown as string,
+      outsider,
+    );
+    await gateway.handleTypingStop(
       { conversationId: CONVERSATION_ID } as unknown as string,
       outsider,
     );
 
     expect(clientTo).not.toHaveBeenCalled();
     expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
+  });
+
+  it('still delivers a typing_stop that a reconnecting member sends before re-joining the room', async () => {
+    // socket.io-client flushes buffered emits before the app re-joins rooms.
+    const clientEmit = jest.fn();
+    const freshSocket = {
+      id: 'socket-reconnected',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-reconnected']),
+      to: jest.fn().mockReturnValue({ emit: clientEmit }),
+    } as unknown as Socket;
+
+    await gateway.handleTypingStop(CONVERSATION_ID, freshSocket);
+
+    expect(chatRepository.assertConversationParticipant).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      MEMBER_ID,
+    );
+    expect(clientEmit).toHaveBeenCalledWith('user_typing', {
+      conversationId: CONVERSATION_ID,
+      userId: MEMBER_ID,
+      isTyping: false,
+    });
+  });
+
+  it('drops a typing_stop from a non-member who is not in the room', async () => {
+    chatRepository.assertConversationParticipant.mockRejectedValueOnce(
+      new ForbiddenException('not a participant'),
+    );
+    const clientTo = jest.fn();
+    const outsider = {
+      id: 'socket-outsider',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-outsider']),
+      to: clientTo,
+    } as unknown as Socket;
+
+    await gateway.handleTypingStop(CONVERSATION_ID, outsider);
+
+    expect(clientTo).not.toHaveBeenCalled();
   });
 });

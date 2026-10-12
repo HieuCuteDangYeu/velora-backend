@@ -139,4 +139,47 @@ describe('PrometheusMetricsService RAG and Reel telemetry', () => {
     expect(output).toContain('velora_reel_index_items_total{kind="chunk"} 0');
     expect(output).toContain('velora_reel_index_zero_chunk_total{} 1');
   });
+
+  it('places long RAG requests in finite buckets through ten minutes', () => {
+    const event = (eventId: string, latencyMs: number): RagTelemetryEvent => ({
+      eventId,
+      outcome: 'SUCCEEDED',
+      reelQuestionType: 'NONE',
+      latencyMs,
+      retrievedChunks: 0,
+      contextSufficient: true,
+      verifierPassed: true,
+      fallbackUsed: false,
+      retryCount: 0,
+      retrievalRetryCount: 0,
+      citationRetryCount: 0,
+      finalFailureSource: 'NONE',
+      tokenUsage: [],
+      occurredAt: '2026-09-22T10:00:00.000Z',
+    });
+
+    metrics.recordRagTelemetry(
+      event('44444444-4444-4444-8444-444444444444', 96_000),
+    );
+    metrics.recordRagTelemetry(
+      event('55555555-5555-4555-8555-555555555555', 145_000),
+    );
+
+    const output = metrics.metrics();
+    expect(output).toContain(
+      'velora_rag_request_duration_seconds_bucket{service="ai-service",outcome="SUCCEEDED",le="30"} 0',
+    );
+    expect(output).toContain(
+      'velora_rag_request_duration_seconds_bucket{service="ai-service",outcome="SUCCEEDED",le="120"} 1',
+    );
+    expect(output).toContain(
+      'velora_rag_request_duration_seconds_bucket{service="ai-service",outcome="SUCCEEDED",le="180"} 2',
+    );
+    expect(output).toContain(
+      'velora_rag_request_duration_seconds_bucket{service="ai-service",outcome="SUCCEEDED",le="600"} 2',
+    );
+    expect(output).toContain(
+      'velora_rag_request_duration_seconds_bucket{service="ai-service",outcome="SUCCEEDED",le="+Inf"} 2',
+    );
+  });
 });

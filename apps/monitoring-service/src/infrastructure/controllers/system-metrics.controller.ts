@@ -29,6 +29,13 @@ const HOST_CPU_COUNT_QUERY =
 const processCpuUsageQuery = (service: string) =>
   `(sum(rate(velora_process_cpu_user_seconds_total{service="${service}"}[1m])) + sum(rate(velora_process_cpu_system_seconds_total{service="${service}"}[1m]))) / clamp_min(${HOST_CPU_COUNT_QUERY}, 1)`;
 
+const observedRatioQuery = (numerator: string, denominator: string) =>
+  `((${numerator}) or on() vector(0)) / clamp_min(${denominator}, 0.000001) and on() (${denominator} > 0)`;
+
+const REEL_QUEUE_PATTERN = 'reel_(media|index)_(short|long)_jobs';
+const REEL_QUEUE_READY_QUERY = `sum by (queue, vhost) (rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"${REEL_QUEUE_PATTERN}"})`;
+const REEL_QUEUE_CONSUMERS_QUERY = `sum by (queue, vhost) (rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue=~"${REEL_QUEUE_PATTERN}"})`;
+
 const RANGE_QUERIES = {
   memory:
     'max(velora_process_resident_memory_bytes{service="monitoring-service"})',
@@ -160,8 +167,10 @@ const RANGE_QUERIES = {
     'sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-auth-user",queue="user_queue"})',
   rag_request_rate:
     'sum(rate(velora_rag_requests_total{service="ai-service"}[1m]))',
-  rag_failure_rate:
-    '(sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[1m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[1m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[1m])) > 0)',
+  rag_failure_rate: observedRatioQuery(
+    'sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[1m]))',
+    'sum(rate(velora_rag_requests_total{service="ai-service"}[1m]))',
+  ),
   rag_p95_latency:
     'histogram_quantile(0.95, sum by (le) (rate(velora_rag_request_duration_seconds_bucket{service="ai-service"}[1m])))',
   rag_avg_retrieved_chunks:
@@ -172,8 +181,10 @@ const RANGE_QUERIES = {
     '(sum(rate(velora_rag_verifier_failures_total{service="ai-service"}[1m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[1m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[1m])) > 0)',
   rag_fallback_rate:
     '(sum(rate(velora_rag_fallbacks_total{service="ai-service"}[1m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[1m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[1m])) > 0)',
-  rag_retries_per_request:
-    '(sum(rate(velora_rag_retries_total{service="ai-service"}[1m])) / clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[1m])), 0.000001)) and on() (sum(rate(velora_rag_requests_total{service="ai-service"}[1m])) > 0)',
+  rag_retries_per_request: observedRatioQuery(
+    'sum(rate(velora_rag_retries_total{service="ai-service"}[1m]))',
+    'sum(rate(velora_rag_requests_total{service="ai-service"}[1m]))',
+  ),
   rag_input_token_rate:
     'sum(rate(velora_rag_input_tokens_total{service="ai-service"}[1m]))',
   rag_output_token_rate:
@@ -204,10 +215,14 @@ const RANGE_QUERIES = {
     'max(velora_reel_pipeline_ready_latency_p95_seconds{service="content-service"})',
   reel_media_throughput:
     'sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[1m]))',
-  reel_media_failure_rate:
-    '(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE",outcome="FAILED"}[1m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m])) > 0)',
-  reel_media_retry_rate:
-    '(sum(rate(velora_reel_worker_retries_total{pipeline="MEDIA"}[1m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m])) > 0)',
+  reel_media_failure_rate: observedRatioQuery(
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE",outcome="FAILED"}[1m]))',
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m]))',
+  ),
+  reel_media_retry_rate: observedRatioQuery(
+    'sum(rate(velora_reel_worker_retries_total{pipeline="MEDIA"}[1m]))',
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m]))',
+  ),
   reel_media_p95_latency:
     'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="MEDIA",stage="TOTAL_PIPELINE"}[1m])))',
   reel_media_queue_wait_p95:
@@ -216,10 +231,14 @@ const RANGE_QUERIES = {
     'sum(rate(velora_reel_worker_exhausted_retries_total{pipeline="MEDIA"}[1m]))',
   reel_index_throughput:
     'sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[1m]))',
-  reel_index_failure_rate:
-    '(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="FAILED"}[1m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m])) > 0)',
-  reel_index_retry_rate:
-    '(sum(rate(velora_reel_worker_retries_total{pipeline="INDEX"}[1m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m])) > 0)',
+  reel_index_failure_rate: observedRatioQuery(
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="FAILED"}[1m]))',
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m]))',
+  ),
+  reel_index_retry_rate: observedRatioQuery(
+    'sum(rate(velora_reel_worker_retries_total{pipeline="INDEX"}[1m]))',
+    'sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m]))',
+  ),
   reel_index_p95_latency:
     'histogram_quantile(0.95, sum by (le) (rate(velora_reel_worker_stage_duration_seconds_bucket{pipeline="INDEX",stage="TOTAL_PIPELINE"}[1m])))',
   reel_index_queue_wait_p95:
@@ -232,35 +251,80 @@ const RANGE_QUERIES = {
     '(sum(rate(velora_reel_index_zero_chunk_total[1m])) / clamp_min(sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[1m])), 0.000001)) and on() (sum(rate(velora_reel_worker_stage_runs_total{pipeline="INDEX",stage="TOTAL_PIPELINE",outcome="SUCCEEDED"}[1m])) > 0)',
   reel_rabbitmq_up: 'max(up{job="rabbitmq-reels"})',
   reel_media_queue_ready:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_media_(short|long)_jobs"})',
   reel_media_queue_unacked:
-    'sum(rabbitmq_detailed_queue_messages_unacked{queue=~"reel_media_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_messages_unacked{job="rabbitmq-reels",queue=~"reel_media_(short|long)_jobs"})',
   reel_media_consumers:
-    'sum(rabbitmq_detailed_queue_consumers{queue=~"reel_media_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue=~"reel_media_(short|long)_jobs"})',
   reel_media_retry_queue_depth:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_media_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
   reel_media_dlq_depth:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_dlq"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_media_(short|long)_dlq"})',
   reel_media_publish_rate:
-    'sum(rate(rabbitmq_detailed_queue_messages_published_total{queue=~"reel_media_.*"}[1m]))',
+    'sum(rate(rabbitmq_detailed_queue_messages_published_total{job="rabbitmq-reels",queue=~"reel_media_.*"}[1m]))',
   reel_media_delivery_rate:
-    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{queue=~"reel_media_.*"}[1m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{queue=~"reel_media_.*"}[1m]))',
+    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{job="rabbitmq-reels",queue=~"reel_media_.*"}[1m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{job="rabbitmq-reels",queue=~"reel_media_.*"}[1m]))',
   reel_index_queue_ready:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_index_(short|long)_jobs"})',
   reel_index_queue_unacked:
-    'sum(rabbitmq_detailed_queue_messages_unacked{queue=~"reel_index_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_messages_unacked{job="rabbitmq-reels",queue=~"reel_index_(short|long)_jobs"})',
   reel_index_consumers:
-    'sum(rabbitmq_detailed_queue_consumers{queue=~"reel_index_(short|long)_jobs"})',
+    'sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue=~"reel_index_(short|long)_jobs"})',
   reel_index_retry_queue_depth:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_index_(short_retry_30s|short_retry_5m|long_retry_60s|long_retry_10m)"})',
   reel_index_dlq_depth:
-    'sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_dlq"})',
+    'sum(rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue=~"reel_index_(short|long)_dlq"})',
   reel_index_publish_rate:
-    'sum(rate(rabbitmq_detailed_queue_messages_published_total{queue=~"reel_index_.*"}[1m]))',
+    'sum(rate(rabbitmq_detailed_queue_messages_published_total{job="rabbitmq-reels",queue=~"reel_index_.*"}[1m]))',
   reel_index_delivery_rate:
-    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{queue=~"reel_index_.*"}[1m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{queue=~"reel_index_.*"}[1m]))',
+    'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{job="rabbitmq-reels",queue=~"reel_index_.*"}[1m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{job="rabbitmq-reels",queue=~"reel_index_.*"}[1m]))',
 } as const satisfies Record<MonitoringMetric, string>;
 type ScalarMetric = number | null;
+
+type PrometheusVectorSample = Awaited<
+  ReturnType<PrometheusQueryService['vector']>
+>[number];
+
+type ReelQueueOverview = {
+  queue: string;
+  vhost: string;
+  ready: number | null;
+  consumers: number | null;
+};
+
+const mergeReelQueueSamples = (
+  readySamples: readonly PrometheusVectorSample[],
+  consumerSamples: readonly PrometheusVectorSample[],
+): ReelQueueOverview[] => {
+  const queues = new Map<string, ReelQueueOverview>();
+  const addSamples = (
+    samples: readonly PrometheusVectorSample[],
+    field: 'ready' | 'consumers',
+  ) => {
+    for (const sample of samples) {
+      const queue = sample.metric.queue?.trim();
+      if (!queue) continue;
+      const vhost = sample.metric.vhost?.trim() || 'unknown';
+      const key = `${queue}\u0000${vhost}`;
+      const current = queues.get(key) ?? {
+        queue,
+        vhost,
+        ready: null,
+        consumers: null,
+      };
+      queues.set(key, { ...current, [field]: sample.value });
+    }
+  };
+
+  addSamples(readySamples, 'ready');
+  addSamples(consumerSamples, 'consumers');
+
+  return [...queues.values()].sort(
+    (left, right) =>
+      left.queue.localeCompare(right.queue) ||
+      left.vhost.localeCompare(right.vhost),
+  );
+};
 
 type TimeseriesPayload = {
   metric?: unknown;
@@ -563,6 +627,8 @@ export class SystemMetricsController {
         chatPhaseP95,
         chatPhaseRates,
         chatPhaseErrors,
+        reelQueueReadySamples,
+        reelQueueConsumerSamples,
       ] = await Promise.all([
         this.prometheus.scalar('max(up{job="monitoring-service"})'),
         this.prometheus.scalar(RANGE_QUERIES.memory),
@@ -723,7 +789,14 @@ export class SystemMetricsController {
         this.prometheus.vector(
           'sum by (phase) (rate(velora_conversation_send_phase_duration_seconds_count{status="error"}[1m]))',
         ),
+        this.prometheus.vector(REEL_QUEUE_READY_QUERY),
+        this.prometheus.vector(REEL_QUEUE_CONSUMERS_QUERY),
       ]);
+
+      const reelQueues = mergeReelQueueSamples(
+        reelQueueReadySamples,
+        reelQueueConsumerSamples,
+      );
 
       const hostMemoryUsedBytes = subtractMetric(
         hostMemoryTotalBytes,
@@ -899,6 +972,9 @@ export class SystemMetricsController {
             queueReady: reelMediaQueueReady,
             queueUnacked: reelMediaQueueUnacked,
             consumers: reelMediaConsumers,
+            queues: reelQueues.filter((queue) =>
+              queue.queue.startsWith('reel_media_'),
+            ),
             retryQueueDepth: reelMediaRetryQueueDepth,
             dlqDepth: reelMediaDlqDepth,
             publishRate: reelMediaPublishRate,
@@ -916,6 +992,9 @@ export class SystemMetricsController {
             queueReady: reelIndexQueueReady,
             queueUnacked: reelIndexQueueUnacked,
             consumers: reelIndexConsumers,
+            queues: reelQueues.filter((queue) =>
+              queue.queue.startsWith('reel_index_'),
+            ),
             retryQueueDepth: reelIndexRetryQueueDepth,
             dlqDepth: reelIndexDlqDepth,
             publishRate: reelIndexPublishRate,

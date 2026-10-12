@@ -247,7 +247,10 @@ groups:
       - alert: VeloraRagHighFailureRate
         expr: |
           (
-            sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[5m]))
+            (
+              sum(rate(velora_rag_requests_total{service="ai-service",outcome="FAILED"}[5m]))
+              or on() vector(0)
+            )
             /
             clamp_min(sum(rate(velora_rag_requests_total{service="ai-service"}[5m])), 0.000001)
           ) > 0.10
@@ -323,29 +326,49 @@ groups:
 
       - alert: VeloraReelMediaBacklogWithoutConsumers
         expr: |
-          sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_jobs"}) > 0
-          and on()
-          sum(rabbitmq_detailed_queue_consumers{queue=~"reel_media_(short|long)_jobs"}) == 0
+          sum by (queue, vhost) (
+            rabbitmq_detailed_queue_messages_ready{
+              job="rabbitmq-reels",
+              queue=~"reel_media_(short|long)_jobs"
+            }
+          ) > 0
+          and on(queue, vhost)
+          sum by (queue, vhost) (
+            rabbitmq_detailed_queue_consumers{
+              job="rabbitmq-reels",
+              queue=~"reel_media_(short|long)_jobs"
+            }
+          ) == 0
         for: 2m
         labels:
           severity: critical
           service: media-processing-service
         annotations:
-          summary: Reel media jobs are queued with no consumers
-          description: Primary Reel media queues contain ready work but have no consumers for two minutes.
+          summary: Reel media queue has backlog with no consumers
+          description: 'Queue {{ $labels.queue }} in vhost {{ $labels.vhost }} contains ready work but has no consumers for two minutes.'
 
       - alert: VeloraReelIndexBacklogWithoutConsumers
         expr: |
-          sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_index_(short|long)_jobs"}) > 0
-          and on()
-          sum(rabbitmq_detailed_queue_consumers{queue=~"reel_index_(short|long)_jobs"}) == 0
+          sum by (queue, vhost) (
+            rabbitmq_detailed_queue_messages_ready{
+              job="rabbitmq-reels",
+              queue=~"reel_index_(short|long)_jobs"
+            }
+          ) > 0
+          and on(queue, vhost)
+          sum by (queue, vhost) (
+            rabbitmq_detailed_queue_consumers{
+              job="rabbitmq-reels",
+              queue=~"reel_index_(short|long)_jobs"
+            }
+          ) == 0
         for: 2m
         labels:
           severity: critical
           service: reel-indexing-service
         annotations:
-          summary: Reel index jobs are queued with no consumers
-          description: Primary Reel index queues contain ready work but have no consumers for two minutes.
+          summary: Reel index queue has backlog with no consumers
+          description: 'Queue {{ $labels.queue }} in vhost {{ $labels.vhost }} contains ready work but has no consumers for two minutes.'
 
       - alert: VeloraReelMediaDlqNotEmpty
         expr: sum(rabbitmq_detailed_queue_messages_ready{queue=~"reel_media_(short|long)_dlq"}) > 0
@@ -379,7 +402,11 @@ groups:
       - alert: VeloraReelWorkerHighFailureRate
         expr: |
           (
-            sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE",outcome="FAILED"}[5m]))
+            (
+              sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE",outcome="FAILED"}[5m]))
+              or on(pipeline)
+              (sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE"}[5m])) * 0)
+            )
             /
             clamp_min(sum by (pipeline) (rate(velora_reel_worker_stage_runs_total{stage="TOTAL_PIPELINE"}[5m])), 0.000001)
           ) > 0.20

@@ -248,12 +248,92 @@ describe('SystemMetricsController live queries and overview sharing', () => {
         p95Seconds: null,
       },
     ]);
-    expect(prometheus.vector).toHaveBeenCalledTimes(3);
+    expect(prometheus.vector).toHaveBeenCalledTimes(5);
     expect(
-      prometheus.vector.mock.calls.every(([query]) =>
-        (query as string).includes('[1m]'),
-      ),
+      prometheus.vector.mock.calls
+        .slice(0, 3)
+        .every(([query]) => (query as string).includes('[1m]')),
     ).toBe(true);
+  });
+
+  it('preserves queue identity and unknown per-lane fields in the overview', async () => {
+    const { controller, prometheus } = createController();
+    prometheus.vector
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          metric: { queue: 'reel_media_short_jobs', vhost: '/' },
+          timestamp: 1,
+          value: 3,
+        },
+        {
+          metric: { queue: 'reel_index_long_jobs', vhost: '/' },
+          timestamp: 1,
+          value: 4,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          metric: { queue: 'reel_media_long_jobs', vhost: '/' },
+          timestamp: 1,
+          value: 2,
+        },
+        {
+          metric: { queue: 'reel_index_long_jobs', vhost: '/' },
+          timestamp: 1,
+          value: 0,
+        },
+      ]);
+
+    const result = await controller.overview();
+
+    expect(result.reels.media.queues).toEqual([
+      {
+        queue: 'reel_media_long_jobs',
+        vhost: '/',
+        ready: null,
+        consumers: 2,
+      },
+      {
+        queue: 'reel_media_short_jobs',
+        vhost: '/',
+        ready: 3,
+        consumers: null,
+      },
+    ]);
+    expect(result.reels.index.queues).toEqual([
+      {
+        queue: 'reel_index_long_jobs',
+        vhost: '/',
+        ready: 4,
+        consumers: 0,
+      },
+    ]);
+    expect(
+      prometheus.vector.mock.calls.slice(-2).map(([query]) => query as string),
+    ).toEqual([
+      expect.stringContaining('job="rabbitmq-reels"'),
+      expect.stringContaining('job="rabbitmq-reels"'),
+    ]);
+  });
+
+  it('uses explicit zero fallbacks only behind observed traffic guards', async () => {
+    const { controller, prometheus } = createController();
+    await controller.overview();
+
+    for (const query of prometheus.scalar.mock.calls
+      .map(([value]) => value as string)
+      .filter(
+        (query) =>
+          query.includes('outcome="FAILED"') ||
+          query.includes('velora_rag_retries_total') ||
+          query.includes('velora_reel_worker_retries_total'),
+      )) {
+      expect(query).toContain('or on() vector(0)');
+      expect(query).toContain('and on()');
+    }
   });
 
   it('coalesces in-flight overviews and expires successful results after five seconds', async () => {

@@ -203,13 +203,15 @@ export class LangfuseTracingService {
       const usageDetails: Record<string, number> = {};
       const usage = call.usage;
       if (usage?.inputTokens !== undefined)
-        usageDetails.inputTokens = usage.inputTokens;
+        usageDetails.input = usage.inputTokens;
       if (usage?.outputTokens !== undefined)
-        usageDetails.outputTokens = usage.outputTokens;
-      if (usage?.totalTokens !== undefined)
-        usageDetails.totalTokens = usage.totalTokens;
-      if (usage?.reasoningTokens !== undefined)
-        usageDetails.reasoningTokens = usage.reasoningTokens;
+        usageDetails.output = usage.outputTokens;
+      const totalTokens =
+        usage?.totalTokens ??
+        (usage?.inputTokens !== undefined && usage?.outputTokens !== undefined
+          ? usage.inputTokens + usage.outputTokens
+          : undefined);
+      if (totalTokens !== undefined) usageDetails.total = totalTokens;
 
       const generation = startObservation(
         `llm.${role}`,
@@ -235,6 +237,9 @@ export class LangfuseTracingService {
               : {}),
             ...(call.schemaVersion
               ? { schemaVersion: call.schemaVersion }
+              : {}),
+            ...(usage?.reasoningTokens !== undefined
+              ? { reasoningTokens: usage.reasoningTokens }
               : {}),
           },
         },

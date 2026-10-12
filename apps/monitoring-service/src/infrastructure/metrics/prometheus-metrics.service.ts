@@ -23,7 +23,9 @@ export class PrometheusMetricsService implements OnModuleDestroy {
   private readonly rpcRequestCounts = new Map<string, number>();
   private readonly rpcDurations = new Map<string, HistogramState>();
   private readonly telemetryEventCounts = new Map<string, number>();
-  private readonly ragDurationBuckets = [0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30];
+  private readonly ragDurationBuckets = [
+    0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 180, 300, 600,
+  ];
   private readonly ragTokenBuckets = [
     256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536,
   ];

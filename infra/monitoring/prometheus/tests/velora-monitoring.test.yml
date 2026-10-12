@@ -225,6 +225,34 @@ tests:
               summary: RAG failure rate is above 10 percent
               description: More than 10 percent of RAG requests have failed for five minutes with at least ten requests in the rolling window.
 
+  - name: RAG successful-only traffic does not report a failure
+    interval: 15s
+    input_series:
+      - series: 'velora_rag_requests_total{service="ai-service",outcome="SUCCEEDED"}'
+        values: '0+4x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraRagHighFailureRate
+        exp_alerts: []
+
+  - name: RAG failure series appearing after successes is measured
+    interval: 15s
+    input_series:
+      - series: 'velora_rag_requests_total{service="ai-service",outcome="FAILED"}'
+        values: '0+0x20 0+1x60'
+      - series: 'velora_rag_requests_total{service="ai-service",outcome="SUCCEEDED"}'
+        values: '0+4x80'
+    alert_rule_test:
+      - eval_time: 14m30s
+        alertname: VeloraRagHighFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: ai-service
+            exp_annotations:
+              summary: RAG failure rate is above 10 percent
+              description: More than 10 percent of RAG requests have failed for five minutes with at least ten requests in the rolling window.
+
   - name: Reel monitoring snapshot outage becomes critical
     interval: 15s
     input_series:
@@ -294,9 +322,9 @@ tests:
   - name: Reel media backlog without consumers becomes critical
     interval: 15s
     input_series:
-      - series: 'rabbitmq_detailed_queue_messages_ready{queue="reel_media_short_jobs"}'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
         values: '2+0x9'
-      - series: 'rabbitmq_detailed_queue_consumers{queue="reel_media_short_jobs"}'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
         values: '0+0x9'
     alert_rule_test:
       - eval_time: 2m
@@ -305,9 +333,179 @@ tests:
           - exp_labels:
               severity: critical
               service: media-processing-service
+              queue: reel_media_short_jobs
+              vhost: /
             exp_annotations:
-              summary: Reel media jobs are queued with no consumers
-              description: Primary Reel media queues contain ready work but have no consumers for two minutes.
+              summary: Reel media queue has backlog with no consumers
+              description: Queue reel_media_short_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel media long backlog is independent from healthy short lane
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '0+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '3+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMediaBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: media-processing-service
+              queue: reel_media_short_jobs
+              vhost: /
+            exp_annotations:
+              summary: Reel media queue has backlog with no consumers
+              description: Queue reel_media_short_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel media short backlog is independent from healthy long lane
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '3+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '1+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMediaBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: media-processing-service
+              queue: reel_media_long_jobs
+              vhost: /
+            exp_annotations:
+              summary: Reel media queue has backlog with no consumers
+              description: Queue reel_media_long_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel media healthy lanes do not alert
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '1+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_media_long_jobs",vhost="/"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMediaBacklogWithoutConsumers
+        exp_alerts: []
+
+  - name: Reel media missing consumer telemetry stays unknown
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_media_short_jobs",vhost="/"}'
+        values: '2+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelMediaBacklogWithoutConsumers
+        exp_alerts: []
+
+  - name: Reel index backlog without consumers becomes critical
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelIndexBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: reel-indexing-service
+              queue: reel_index_short_jobs
+              vhost: /
+            exp_annotations:
+              summary: Reel index queue has backlog with no consumers
+              description: Queue reel_index_short_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel index long backlog is independent from healthy short lane
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '0+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '3+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelIndexBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: reel-indexing-service
+              queue: reel_index_short_jobs
+              vhost: /
+            exp_annotations:
+              summary: Reel index queue has backlog with no consumers
+              description: Queue reel_index_short_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel index short backlog is independent from healthy long lane
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '3+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '1+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '0+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelIndexBacklogWithoutConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: reel-indexing-service
+              queue: reel_index_long_jobs
+              vhost: /
+            exp_annotations:
+              summary: Reel index queue has backlog with no consumers
+              description: Queue reel_index_long_jobs in vhost / contains ready work but has no consumers for two minutes.
+
+  - name: Reel index healthy lanes do not alert
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '1+0x9'
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '2+0x9'
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-reels",queue="reel_index_long_jobs",vhost="/"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelIndexBacklogWithoutConsumers
+        exp_alerts: []
+
+  - name: Reel index missing consumer telemetry stays unknown
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages_ready{job="rabbitmq-reels",queue="reel_index_short_jobs",vhost="/"}'
+        values: '2+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraReelIndexBacklogWithoutConsumers
+        exp_alerts: []
 
   - name: Reel index dead letter work becomes critical
     interval: 15s
@@ -347,6 +545,35 @@ tests:
     input_series:
       - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="FAILED",retry_number="0"}'
         values: '0+1x40'
+      - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="SUCCEEDED",retry_number="0"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraReelWorkerHighFailureRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-pipeline
+              pipeline: INDEX
+            exp_annotations:
+              summary: Reel worker failure rate is elevated
+              description: Reel INDEX processing has stayed above a 20 percent failure rate for five minutes with at least five recent jobs.
+
+  - name: Reel worker successful-only traffic does not report a failure
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="SUCCEEDED",retry_number="0"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraReelWorkerHighFailureRate
+        exp_alerts: []
+
+  - name: Reel worker failure counter reset still reports observed failures
+    interval: 15s
+    input_series:
+      - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="FAILED",retry_number="0"}'
+        values: '0+1x10 0+1x30'
       - series: 'velora_reel_worker_stage_runs_total{pipeline="INDEX",lane="SHORT",stage="TOTAL_PIPELINE",outcome="SUCCEEDED",retry_number="0"}'
         values: '0+3x40'
     alert_rule_test:

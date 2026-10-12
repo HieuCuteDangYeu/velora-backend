@@ -477,17 +477,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
-    if (!userId) return;
-
-    try {
-      await this.chatRepository.assertConversationParticipant(
-        conversationId,
-        userId,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Rejected typing_start for socket ${client.id}: ${(error as Error).message}`,
-      );
+    if (!userId || !this.isSocketInConversation(client, conversationId)) {
       return;
     }
 
@@ -504,17 +494,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
-    if (!userId) return;
-
-    try {
-      await this.chatRepository.assertConversationParticipant(
-        conversationId,
-        userId,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Rejected typing_stop for socket ${client.id}: ${(error as Error).message}`,
-      );
+    if (!userId || !this.isSocketInConversation(client, conversationId)) {
       return;
     }
 
@@ -577,6 +557,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Stage 1 keeps the legacy raw room and adds the namespaced room. Once all
   // conversation-service instances have this code, a later rollout can switch
   // readers/emitters to namespaced-only and finally remove the raw room.
+  // Typing fires on every keystroke, so it must not cost a Mongo read. A socket
+  // only joins a conversation room after join_conversation verified membership,
+  // and removed members are evicted from it, so the room authorizes the event.
+  private isSocketInConversation(
+    client: Socket,
+    conversationId: unknown,
+  ): conversationId is string {
+    return (
+      typeof conversationId === 'string' &&
+      this.conversationRooms(conversationId).some((room) =>
+        client.rooms?.has(room),
+      )
+    );
+  }
+
   private userRooms(userId: string): string[] {
     return [userId, `user:${userId}`];
   }

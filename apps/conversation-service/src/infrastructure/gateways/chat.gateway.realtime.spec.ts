@@ -454,16 +454,64 @@ describe('ChatGateway realtime membership helpers', () => {
     const client = {
       id: 'socket-typing',
       data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-typing', ...conversationRooms]),
       to: clientTo,
     } as unknown as Socket;
 
     await gateway.handleTypingStart(CONVERSATION_ID, client);
+    await gateway.handleTypingStop(CONVERSATION_ID, client);
 
     expect(clientTo).toHaveBeenCalledWith(conversationRooms);
-    expect(clientEmit).toHaveBeenCalledWith('user_typing', {
+    expect(clientEmit).toHaveBeenNthCalledWith(1, 'user_typing', {
       conversationId: CONVERSATION_ID,
       userId: MEMBER_ID,
       isTyping: true,
     });
+    expect(clientEmit).toHaveBeenNthCalledWith(2, 'user_typing', {
+      conversationId: CONVERSATION_ID,
+      userId: MEMBER_ID,
+      isTyping: false,
+    });
+    // Typing fires per keystroke; it must never cost a database read.
+    expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
+  });
+
+  it('accepts typing from a socket in either room form during the room migration', async () => {
+    for (const room of conversationRooms) {
+      const clientEmit = jest.fn();
+      const client = {
+        id: 'socket-one-form',
+        data: { userId: MEMBER_ID },
+        rooms: new Set([room]),
+        to: jest.fn().mockReturnValue({ emit: clientEmit }),
+      } as unknown as Socket;
+
+      await gateway.handleTypingStart(CONVERSATION_ID, client);
+
+      expect(clientEmit).toHaveBeenCalledWith(
+        'user_typing',
+        expect.objectContaining({ isTyping: true }),
+      );
+    }
+  });
+
+  it('ignores typing from a socket that has not joined (or was evicted from) the conversation', async () => {
+    const clientTo = jest.fn();
+    const outsider = {
+      id: 'socket-outsider',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-outsider', 'conversation:another-conversation']),
+      to: clientTo,
+    } as unknown as Socket;
+
+    await gateway.handleTypingStart(CONVERSATION_ID, outsider);
+    await gateway.handleTypingStop(CONVERSATION_ID, outsider);
+    await gateway.handleTypingStart(
+      { conversationId: CONVERSATION_ID } as unknown as string,
+      outsider,
+    );
+
+    expect(clientTo).not.toHaveBeenCalled();
+    expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
   });
 });

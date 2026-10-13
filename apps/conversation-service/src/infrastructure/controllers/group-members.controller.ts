@@ -1,8 +1,9 @@
 import { Controller, Logger } from '@nestjs/common';
-import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
+import { MessagePattern, Payload } from '@nestjs/microservices';
 import { GetGroupMembersUseCase } from '../../application/use-cases/get-group-members.use-case';
 import { ManageGroupRoleUseCase } from '../../application/use-cases/manage-group-role.use-case';
 import { ChatGateway } from '../gateways/chat.gateway';
+import { toRpcException } from '../rpc/to-rpc-exception';
 
 @Controller()
 export class GroupMembersMicroserviceController {
@@ -28,7 +29,7 @@ export class GroupMembersMicroserviceController {
       this.logger.error(
         `❌ [GetGroupMemberProjection] Error: ${resolved.message}`,
       );
-      throw new RpcException(resolved.message);
+      throw toRpcException(error);
     }
   }
 
@@ -53,7 +54,7 @@ export class GroupMembersMicroserviceController {
       this.logger.error(
         `❌ [UpdateGroupMemberRole] Error: ${resolved.message}`,
       );
-      throw new RpcException(resolved.message);
+      throw toRpcException(error);
     }
   }
 }

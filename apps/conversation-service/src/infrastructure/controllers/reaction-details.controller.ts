@@ -7,10 +7,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
+import { MessagePattern, Payload } from '@nestjs/microservices';
 import type { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
 import { PrismaService } from '../prisma/prisma.service';
+import { toRpcException } from '../rpc/to-rpc-exception';
 
 type StoredReaction = {
   emoji: string;
@@ -98,7 +99,7 @@ export class ReactionDetailsMicroserviceController {
     } catch (error: unknown) {
       const resolved = error as Error;
       this.logger.error(`❌ [ReactionDetails] Error: ${resolved.message}`);
-      throw new RpcException(resolved.message);
+      throw toRpcException(error);
     }
   }
 

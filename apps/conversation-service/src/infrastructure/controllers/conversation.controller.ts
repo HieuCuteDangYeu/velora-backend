@@ -7,12 +7,7 @@ import type {
   FailedVideoProcessingPayload,
 } from '@common/media/dtos/video-processing-result.dto';
 import { Controller, Inject, Logger } from '@nestjs/common';
-import {
-  EventPattern,
-  MessagePattern,
-  Payload,
-  RpcException,
-} from '@nestjs/microservices';
+import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { CreateConversationUseCase } from '../../application/use-cases/create-conversastion.use-case';
 import { GetAnchorNewerMessagesUseCase } from '../../application/use-cases/get-anchor-newer-messages.use-case';
 import { GetAnchorOlderMessagesUseCase } from '../../application/use-cases/get-anchor-older-messages.use-case';
@@ -28,6 +23,7 @@ import { ChatGateway } from '../gateways/chat.gateway';
 import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import { GetUserConversationsUseCase } from './../../application/use-cases/get-user-conversations.use-case';
+import { toRpcException } from '../rpc/to-rpc-exception';
 
 @Controller()
 export class ConversationMicroserviceController {
@@ -100,7 +96,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [CreateConversation] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -124,7 +120,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [GetMessages] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -159,7 +155,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [GetMessagesAround] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -189,7 +185,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [GetAnchorOlderMessages] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -219,7 +215,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [GetAnchorNewerMessages] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -230,7 +226,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [GetConversation] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -252,7 +248,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [UpdateGroupConversation] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -273,7 +269,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error('❌ [TransferGroupOwnership] Error: ' + error.message);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -305,7 +301,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [AddConversationMember] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -336,7 +332,7 @@ export class ConversationMicroserviceController {
       this.logger.error(
         `❌ [RemoveConversationMember] Error: ${error.message}`,
       );
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -359,7 +355,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [LeaveGroupConversation] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -460,7 +456,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [CreateMessage] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -480,7 +476,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [MarkConversationSeen] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -497,7 +493,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(error.message);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -522,7 +518,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [AddReaction] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -546,7 +542,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [RemoveReaction] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 
@@ -593,7 +589,7 @@ export class ConversationMicroserviceController {
     } catch (err: unknown) {
       const error = err as Error;
       this.logger.error(`❌ [RecallMessage] Error: ${error.message}`);
-      throw new RpcException(error.message);
+      throw toRpcException(error);
     }
   }
 

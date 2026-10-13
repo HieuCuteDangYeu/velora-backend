@@ -61,6 +61,7 @@ const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_REACTION_EMOJI_LENGTH = 32;
+const RECALL_REPLY_UPDATE_BATCH = 500;
 const RECALL_CLEANUP_MARKER_TTL_SECONDS = 7 * 24 * 60 * 60;
 const RECALL_MEDIA_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
 
@@ -1109,27 +1110,59 @@ export class PrismaChatRepository implements IChatRepository {
           },
         });
 
-        const updatedReplyMessageIds: string[] = [];
+        // Replies whose stored preview is valid get the recalled text-only
+        // preview. One command rewrites them all: the old per-reply updates
+        // were a round trip each, so a message with 40 replies took 7.7s
+        // against Atlas, longer than the 5s the transaction used to allow.
+        const updatedReplyMessageIds = replyMessages
+          .filter(
+            (replyMessage) =>
+              this.mergeReplyPreviewContent(
+                replyMessage.replyPreview,
+                RECALLED_PREVIEW_CONTENT,
+              ) !== undefined,
+          )
+          .map((replyMessage) => replyMessage.id);
 
-        for (const replyMessage of replyMessages) {
-          const nextReplyPreview = this.mergeReplyPreviewContent(
-            replyMessage.replyPreview,
-            RECALLED_PREVIEW_CONTENT,
-          );
-
-          if (!nextReplyPreview) {
-            continue;
-          }
-
-          await tx.message.update({
-            where: { id: replyMessage.id },
-            data: {
-              replyPreview:
-                nextReplyPreview as unknown as Prisma.InputJsonValue,
-            },
+        for (
+          let offset = 0;
+          offset < updatedReplyMessageIds.length;
+          offset += RECALL_REPLY_UPDATE_BATCH
+        ) {
+          await tx.$runCommandRaw({
+            update: 'messages',
+            updates: [
+              {
+                q: {
+                  _id: {
+                    $in: updatedReplyMessageIds
+                      .slice(offset, offset + RECALL_REPLY_UPDATE_BATCH)
+                      .map((id) => ({ $oid: id })),
+                  },
+                },
+                // Same result as buildTextOnlyReplyPreview, keeping each
+                // reply's own senderName. A $set of an object onto an existing
+                // object MERGES in a pipeline (thumbnail and size fields would
+                // survive), so the old preview is removed before the new one
+                // is built.
+                u: [
+                  { $set: { recallSenderName: '$replyPreview.senderName' } },
+                  { $unset: 'replyPreview' },
+                  {
+                    $set: {
+                      replyPreview: {
+                        senderName: '$recallSenderName',
+                        content: { $literal: RECALLED_PREVIEW_CONTENT },
+                        type: 'text',
+                      },
+                    },
+                  },
+                  { $unset: 'recallSenderName' },
+                ],
+                multi: true,
+              },
+            ],
           });
-
-          updatedReplyMessageIds.push(replyMessage.id);
         }
 
         if (latestMessage?.id === messageId) {

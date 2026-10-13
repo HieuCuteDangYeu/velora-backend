@@ -52,6 +52,7 @@ import { stressMessageTiming } from '../metrics/stress-message-timing';
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
 import type { IChatMediaService } from '../../domain/interfaces/chat-media.service.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
+import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from './chat.mapper';
 import { ConversationMapper } from './conversation.mapper';
 import { writeAuthorizedPreview } from './authorized-preview.writer';
@@ -192,7 +193,7 @@ export class PrismaChatRepository implements IChatRepository {
     let previewText = '';
     if (message.type === 'text') {
       if (message.signalType === 0) {
-        previewText = message.content; // Normal: Server thấy text
+        previewText = truncatePreview(message.content) ?? ''; // Normal: Server thấy text
       } else {
         previewText = '🔒 Tin nhắn được bảo mật'; // Signal: Server mù
       }

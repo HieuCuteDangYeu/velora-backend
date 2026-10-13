@@ -25,6 +25,7 @@ import { TriggerBotReplyUseCase } from '../../application/use-cases/trigger-bot-
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IChatMediaService } from '../../domain/interfaces/chat-media.service.interface';
 import { ChatGateway } from '../gateways/chat.gateway';
+import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import { GetUserConversationsUseCase } from './../../application/use-cases/get-user-conversations.use-case';
 
@@ -392,8 +393,9 @@ export class ConversationMicroserviceController {
           )
         : await this.chatRepository.findConversation(dto.conversationId);
       if (conversation) {
-        conversation.lastMessage =
-          savedMessage.content ?? savedMessage.type ?? null;
+        conversation.lastMessage = truncatePreview(
+          savedMessage.content ?? savedMessage.type ?? null,
+        );
         conversation.lastMessageAt = savedMessage.createdAt;
         this.chatGateway.emitToConversation(
           dto.conversationId,
@@ -421,8 +423,9 @@ export class ConversationMicroserviceController {
               savedMessage.conversationId,
             );
             if (conversation) {
-              conversation.lastMessage =
-                result.botReply.content ?? result.botReply.type ?? null;
+              conversation.lastMessage = truncatePreview(
+                result.botReply.content ?? result.botReply.type ?? null,
+              );
               conversation.lastMessageAt = result.botReply.createdAt;
               this.chatGateway.emitToConversation(
                 savedMessage.conversationId,

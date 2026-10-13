@@ -29,6 +29,7 @@ import {
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
+import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import {
   stressFixtureNamespace,
@@ -318,8 +319,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           )
         : await this.chatRepository.findConversation(payload.conversationId);
       if (conversation) {
-        conversation.lastMessage =
-          savedMessage.content ?? savedMessage.type ?? null;
+        conversation.lastMessage = truncatePreview(
+          savedMessage.content ?? savedMessage.type ?? null,
+        );
         conversation.lastMessageAt = savedMessage.createdAt;
         this.emitToConversation(
           payload.conversationId,
@@ -352,8 +354,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
               savedMessage.conversationId,
             );
             if (botConversation) {
-              botConversation.lastMessage =
-                botResult.botReply.content ?? botResult.botReply.type ?? null;
+              botConversation.lastMessage = truncatePreview(
+                botResult.botReply.content ?? botResult.botReply.type ?? null,
+              );
               botConversation.lastMessageAt = botResult.botReply.createdAt;
               this.emitToConversation(
                 savedMessage.conversationId,

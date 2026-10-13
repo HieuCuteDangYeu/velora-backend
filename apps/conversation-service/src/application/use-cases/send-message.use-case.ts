@@ -2,6 +2,10 @@ import { CreateMessageDto } from '@common/conversation/dtos/create-message.dto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Message } from '../../domain/entities/message.entity';
 import {
+  assertValidMessagePayload,
+  resolveAllowedMediaOrigins,
+} from '../validators/message-payload.validator';
+import {
   type CreateMessageResult,
   IChatRepository,
 } from '../../domain/interfaces/chat.repository.interface';
@@ -9,6 +13,7 @@ import {
 @Injectable()
 export class SendMessageUseCase {
   private readonly logger = new Logger(SendMessageUseCase.name);
+  private readonly allowedMediaOrigins = resolveAllowedMediaOrigins();
 
   constructor(
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
@@ -18,6 +23,8 @@ export class SendMessageUseCase {
     dto: CreateMessageDto,
     senderId: string,
   ): Promise<CreateMessageResult> {
+    assertValidMessagePayload(dto, this.allowedMediaOrigins);
+
     const newMessage = new Message({
       id: '',
       conversationId: dto.conversationId,

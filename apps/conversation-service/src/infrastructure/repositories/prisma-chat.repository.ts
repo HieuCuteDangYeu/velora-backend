@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -58,6 +59,8 @@ import { writeAuthorizedPreview } from './authorized-preview.writer';
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_REACTION_EMOJI_LENGTH = 32;
+const REACTION_UPDATE_ATTEMPTS = 3;
 // Newest messages inspected per conversation when computing unread counts.
 export const UNREAD_COUNT_WINDOW = 100;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
@@ -808,12 +811,19 @@ export class PrismaChatRepository implements IChatRepository {
     userId: string,
     emoji: string,
   ): Promise<Message> {
-    if (!emoji.trim()) {
+    const normalizedEmoji = emoji?.trim() ?? '';
+    if (!normalizedEmoji) {
       throw new BadRequestException('Emoji is required');
     }
+    if (normalizedEmoji.length > MAX_REACTION_EMOJI_LENGTH) {
+      throw new BadRequestException('Emoji is too long');
+    }
+    this.assertReactionUserId(userId);
+    this.assertMessageObjectId(messageId);
 
     const existingMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
+      select: { conversationId: true },
     });
 
     if (!existingMessage) {
@@ -825,21 +835,94 @@ export class PrismaChatRepository implements IChatRepository {
       userId,
     );
 
-    const reactions = this.normalizeReactions(existingMessage.reactions);
-    const nextReactions: MessageReactionMap = {
-      ...(reactions || {}),
-      [userId]: {
-        emoji,
-        createdAt: new Date().toISOString(),
-      },
+    const reaction = {
+      emoji: normalizedEmoji,
+      createdAt: new Date().toISOString(),
     };
 
-    const updatedMessage = await this.prisma.message.update({
+    // Every attempt is a single-document atomic update, so two members
+    // reacting at the same moment cannot overwrite each other's reaction (the
+    // previous read-modify-write of the whole map silently lost one of them).
+    // Recalled messages are excluded in the same filter, so a reaction cannot
+    // be added after the recall wipes the map.
+    let saved = false;
+    for (
+      let attempt = 0;
+      attempt < REACTION_UPDATE_ATTEMPTS && !saved;
+      attempt += 1
+    ) {
+      saved =
+        (await this.runMessageUpdate(
+          {
+            _id: { $oid: messageId },
+            isRecalled: false,
+            reactions: { $type: 'object' },
+          },
+          { $set: { [`reactions.${userId}`]: reaction } },
+        )) === 1 ||
+        (await this.runMessageUpdate(
+          { _id: { $oid: messageId }, isRecalled: false, reactions: null },
+          { $set: { reactions: { [userId]: reaction } } },
+        )) === 1;
+
+      if (!saved) {
+        const current = await this.prisma.message.findUnique({
+          where: { id: messageId },
+          select: { isRecalled: true },
+        });
+        if (!current) {
+          throw new NotFoundException('Message not found');
+        }
+        if (current.isRecalled) {
+          throw new BadRequestException('Message has been recalled');
+        }
+        // The map changed shape between the two updates; try again.
+      }
+    }
+
+    if (!saved) {
+      throw new ConflictException('Reaction could not be saved, please retry');
+    }
+
+    return this.readReactionUpdateMessage(messageId);
+  }
+
+  async removeReaction(messageId: string, userId: string): Promise<Message> {
+    this.assertReactionUserId(userId);
+    this.assertMessageObjectId(messageId);
+
+    const existingMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
-      data: {
-        reactions: nextReactions as unknown as Prisma.InputJsonValue,
-      },
+      select: { conversationId: true },
     });
+
+    if (!existingMessage) {
+      throw new NotFoundException('Message not found');
+    }
+
+    await this.assertConversationParticipant(
+      existingMessage.conversationId,
+      userId,
+    );
+
+    // Removing a missing key is a no-op, so this is idempotent. An emptied
+    // map is read back as "no reactions" by normalizeReactions.
+    await this.runMessageUpdate(
+      { _id: { $oid: messageId }, reactions: { $type: 'object' } },
+      { $unset: { [`reactions.${userId}`]: '' } },
+    );
+
+    return this.readReactionUpdateMessage(messageId);
+  }
+
+  private async readReactionUpdateMessage(messageId: string): Promise<Message> {
+    const updatedMessage = await this.prisma.message.findUnique({
+      where: { id: messageId },
+    });
+
+    if (!updatedMessage) {
+      throw new NotFoundException('Message not found');
+    }
 
     await this.clearConversationCache(updatedMessage.conversationId);
     return this.hydrateReactionUpdateMessage(
@@ -847,44 +930,36 @@ export class PrismaChatRepository implements IChatRepository {
     );
   }
 
-  async removeReaction(messageId: string, userId: string): Promise<Message> {
-    const existingMessage = await this.prisma.message.findUnique({
-      where: { id: messageId },
-    });
+  // Runs one update against the messages collection and returns how many
+  // documents matched. Raw because Prisma cannot set a single key of a Json
+  // field atomically.
+  private async runMessageUpdate(
+    filter: Prisma.InputJsonObject,
+    update: Prisma.InputJsonObject,
+  ): Promise<number> {
+    const result = (await this.prisma.$runCommandRaw({
+      update: 'messages',
+      updates: [{ q: filter, u: update }],
+    })) as { n?: unknown; writeErrors?: unknown[] };
 
-    if (!existingMessage) {
-      throw new NotFoundException('Message not found');
+    if (Array.isArray(result.writeErrors) && result.writeErrors.length > 0) {
+      throw new InternalServerErrorException('Message update failed');
     }
 
-    await this.assertConversationParticipant(
-      existingMessage.conversationId,
-      userId,
-    );
+    return typeof result.n === 'number' ? result.n : 0;
+  }
 
-    const reactions = this.normalizeReactions(existingMessage.reactions);
-    if (!reactions || !reactions[userId]) {
-      return this.hydrateReactionUpdateMessage(
-        ChatMapper.toDomain(existingMessage),
-      );
+  // The user id becomes part of a dotted update path ("reactions.<id>").
+  private assertReactionUserId(userId: string): void {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId)) {
+      throw new BadRequestException('Invalid user ID');
     }
+  }
 
-    const remainingReactions = { ...reactions };
-    delete remainingReactions[userId];
-
-    const updatedMessage = await this.prisma.message.update({
-      where: { id: messageId },
-      data: {
-        reactions:
-          Object.keys(remainingReactions).length > 0
-            ? (remainingReactions as unknown as Prisma.InputJsonValue)
-            : null,
-      },
-    });
-
-    await this.clearConversationCache(updatedMessage.conversationId);
-    return this.hydrateReactionUpdateMessage(
-      ChatMapper.toDomain(updatedMessage),
-    );
+  private assertMessageObjectId(messageId: string): void {
+    if (!this.isValidMessageObjectId(messageId)) {
+      throw new BadRequestException('Invalid message ID');
+    }
   }
 
   async recallMessage(

@@ -505,6 +505,7 @@ describe('recalled message privacy', () => {
     const redis = {
       del: jest.fn(),
       hdel: jest.fn(),
+      set: jest.fn(),
     };
     const encryptionRepository = {
       decrypt: jest.fn((value: string) => value),

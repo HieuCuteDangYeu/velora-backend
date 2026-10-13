@@ -60,6 +60,14 @@ const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_REACTION_EMOJI_LENGTH = 32;
+const RECALL_CLEANUP_MARKER_TTL_SECONDS = 7 * 24 * 60 * 60;
+const RECALL_MEDIA_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
+
+type RecalledMediaCleanup = {
+  messageId: string;
+  userId: string;
+  fileKeys: string[];
+};
 const REACTION_UPDATE_ATTEMPTS = 3;
 // Newest messages inspected per conversation when computing unread counts.
 export const UNREAD_COUNT_WINDOW = 100;
@@ -1011,85 +1019,32 @@ export class PrismaChatRepository implements IChatRepository {
       existingMessage.senderId,
     );
 
-    // Chat attachments are publicly addressed in R2. Remove the source objects
-    // before confirming the recall, otherwise clearing the database reference
-    // alone would leave the original URL accessible.
-    await this.chatMediaService.deleteRecalledChatMedia({
-      userId: existingMessage.senderId,
-      fileKeys: recalledMediaKeys,
-    });
+    // Chat attachments are publicly addressed in R2, so the objects must go
+    // too. They are removed only AFTER the recall commits: deleting first
+    // meant a failed or timed-out transaction (a message with many replies
+    // updates them one by one) left a message pointing at a deleted file,
+    // unrecoverably. The marker records what still has to be deleted if this
+    // process dies, or every attempt fails, between commit and cleanup.
+    const cleanupMarker = await this.markRecalledMediaForCleanup(
+      messageId,
+      existingMessage.senderId,
+      recalledMediaKeys,
+    );
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const replyMessages = await tx.message.findMany({
-        where: {
-          conversationId,
-          replyToId: messageId,
-        },
-        select: {
-          id: true,
-          replyPreview: true,
-        },
-      });
+    let result: Awaited<ReturnType<typeof this.runRecallTransaction>>;
+    try {
+      result = await this.runRecallTransaction(
+        messageId,
+        conversationId,
+        existingMessage.signalType,
+        recalledAt,
+      );
+    } catch (error) {
+      await this.clearRecalledMediaMarker(cleanupMarker);
+      throw error;
+    }
 
-      const latestMessage = await tx.message.findFirst({
-        where: { conversationId },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
-      });
-
-      const updatedMessage = await tx.message.update({
-        where: { id: messageId },
-        data: {
-          isRecalled: true,
-          recalledAt,
-          content:
-            existingMessage.signalType === 0
-              ? this.encryptionRepository.encrypt(RECALLED_MESSAGE_CONTENT)
-              : RECALLED_MESSAGE_CONTENT,
-          media: null,
-          metadata: null,
-          registrationId: null,
-          replyPreview: null,
-          reactions: null,
-        },
-      });
-
-      const updatedReplyMessageIds: string[] = [];
-
-      for (const replyMessage of replyMessages) {
-        const nextReplyPreview = this.mergeReplyPreviewContent(
-          replyMessage.replyPreview,
-          RECALLED_PREVIEW_CONTENT,
-        );
-
-        if (!nextReplyPreview) {
-          continue;
-        }
-
-        await tx.message.update({
-          where: { id: replyMessage.id },
-          data: {
-            replyPreview: nextReplyPreview as unknown as Prisma.InputJsonValue,
-          },
-        });
-
-        updatedReplyMessageIds.push(replyMessage.id);
-      }
-
-      if (latestMessage?.id === messageId) {
-        await tx.conversation.update({
-          where: { id: conversationId },
-          data: {
-            lastMessage: RECALLED_LAST_MESSAGE,
-          },
-        });
-      }
-
-      return {
-        updatedMessage,
-        updatedReplyMessageIds,
-      };
-    });
+    await this.deleteRecalledMedia(cleanupMarker);
 
     if (recalledMedia?.fileKey) {
       await this.redis.hdel(
@@ -1107,6 +1062,169 @@ export class PrismaChatRepository implements IChatRepository {
       updatedReplyMessageIds: result.updatedReplyMessageIds,
       previewContent: RECALLED_PREVIEW_CONTENT,
     };
+  }
+
+  private runRecallTransaction(
+    messageId: string,
+    conversationId: string,
+    signalType: number,
+    recalledAt: Date,
+  ) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const replyMessages = await tx.message.findMany({
+          where: {
+            conversationId,
+            replyToId: messageId,
+          },
+          select: {
+            id: true,
+            replyPreview: true,
+          },
+        });
+
+        const latestMessage = await tx.message.findFirst({
+          where: { conversationId },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true },
+        });
+
+        const updatedMessage = await tx.message.update({
+          where: { id: messageId },
+          data: {
+            isRecalled: true,
+            recalledAt,
+            content:
+              signalType === 0
+                ? this.encryptionRepository.encrypt(RECALLED_MESSAGE_CONTENT)
+                : RECALLED_MESSAGE_CONTENT,
+            media: null,
+            metadata: null,
+            registrationId: null,
+            replyPreview: null,
+            reactions: null,
+          },
+        });
+
+        const updatedReplyMessageIds: string[] = [];
+
+        for (const replyMessage of replyMessages) {
+          const nextReplyPreview = this.mergeReplyPreviewContent(
+            replyMessage.replyPreview,
+            RECALLED_PREVIEW_CONTENT,
+          );
+
+          if (!nextReplyPreview) {
+            continue;
+          }
+
+          await tx.message.update({
+            where: { id: replyMessage.id },
+            data: {
+              replyPreview:
+                nextReplyPreview as unknown as Prisma.InputJsonValue,
+            },
+          });
+
+          updatedReplyMessageIds.push(replyMessage.id);
+        }
+
+        if (latestMessage?.id === messageId) {
+          await tx.conversation.update({
+            where: { id: conversationId },
+            data: {
+              lastMessage: RECALLED_LAST_MESSAGE,
+            },
+          });
+        }
+
+        return {
+          updatedMessage,
+          updatedReplyMessageIds,
+        };
+      },
+      // Replies are rewritten one by one inside the transaction; the default
+      // 5s timeout is too short for a message with many of them.
+      { maxWait: 2_000, timeout: 15_000 },
+    );
+  }
+
+  private recallCleanupKey(messageId: string): string {
+    return `chat:media:recall-cleanup:${messageId}`;
+  }
+
+  private async markRecalledMediaForCleanup(
+    messageId: string,
+    userId: string,
+    fileKeys: string[],
+  ): Promise<RecalledMediaCleanup | null> {
+    if (fileKeys.length === 0) {
+      return null;
+    }
+
+    const cleanup = { messageId, userId, fileKeys };
+    try {
+      await this.redis.set(
+        this.recallCleanupKey(messageId),
+        JSON.stringify(cleanup),
+        'EX',
+        RECALL_CLEANUP_MARKER_TTL_SECONDS,
+      );
+    } catch (error) {
+      // Recall must not depend on this bookkeeping.
+      this.logger.error(error);
+    }
+
+    return cleanup;
+  }
+
+  private async clearRecalledMediaMarker(
+    cleanup: RecalledMediaCleanup | null,
+  ): Promise<void> {
+    if (!cleanup) {
+      return;
+    }
+
+    try {
+      await this.redis.del(this.recallCleanupKey(cleanup.messageId));
+    } catch (error) {
+      this.logger.error(error);
+    }
+  }
+
+  // First attempt inline so the common case is deterministic; failures are
+  // retried in the background and never fail the (already committed) recall.
+  private async deleteRecalledMedia(
+    cleanup: RecalledMediaCleanup | null,
+    attempt = 0,
+  ): Promise<void> {
+    if (!cleanup) {
+      return;
+    }
+
+    try {
+      await this.chatMediaService.deleteRecalledChatMedia({
+        userId: cleanup.userId,
+        fileKeys: cleanup.fileKeys,
+      });
+      await this.clearRecalledMediaMarker(cleanup);
+    } catch (error) {
+      const delayMs = RECALL_MEDIA_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        this.logger.error(
+          `Recalled media of message ${cleanup.messageId} could not be deleted; it stays listed under ${this.recallCleanupKey(cleanup.messageId)}`,
+        );
+        return;
+      }
+
+      this.logger.warn(
+        `Recalled media cleanup for message ${cleanup.messageId} failed, retrying in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      const timer = setTimeout(() => {
+        void this.deleteRecalledMedia(cleanup, attempt + 1);
+      }, delayMs);
+      timer.unref?.();
+    }
   }
 
   async markMessagesAsSeen(

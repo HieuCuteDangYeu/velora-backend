@@ -58,6 +58,8 @@ import { writeAuthorizedPreview } from './authorized-preview.writer';
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
+// Newest messages inspected per conversation when computing unread counts.
+export const UNREAD_COUNT_WINDOW = 100;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
 const MAX_PENDING_MESSAGE_TRANSACTIONS = 100;
@@ -666,6 +668,31 @@ export class PrismaChatRepository implements IChatRepository {
     return domainConv;
   }
 
+  /**
+   * Unread messages among the newest UNREAD_COUNT_WINDOW of a conversation.
+   * A message-level `readBy: { none }` count scans the whole conversation (a
+   * fully read one is the worst case), so its cost grew with chat history.
+   * This reads a bounded, index-ordered window instead: exact up to the
+   * window size, which clients already show as "99+".
+   */
+  private async countRecentUnread(
+    conversationId: string,
+    userId: string,
+  ): Promise<number> {
+    const recentMessages = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: UNREAD_COUNT_WINDOW,
+      select: { senderId: true, readBy: true },
+    });
+
+    return recentMessages.filter(
+      (message) =>
+        message.senderId !== userId &&
+        !message.readBy.some((receipt) => receipt.userId === userId),
+    ).length;
+  }
+
   async findConversationsByUserId(
     userId: string,
     limit: number = 15,
@@ -686,15 +713,10 @@ export class PrismaChatRepository implements IChatRepository {
 
     await Promise.all(
       conversations.map(async (conversation) => {
-        const unreadCount = await this.prisma.message.count({
-          where: {
-            conversationId: conversation.id,
-            senderId: { not: userId },
-            readBy: { none: { userId } },
-          },
-        });
-
-        unreadCountsByConversationId.set(conversation.id, unreadCount);
+        unreadCountsByConversationId.set(
+          conversation.id,
+          await this.countRecentUnread(conversation.id, userId),
+        );
       }),
     );
 

@@ -3,7 +3,10 @@ import { MessageSchema } from '@common/conversation/dtos/message.dto';
 
 import { Message } from '../../domain/entities/message.entity';
 import { ChatMapper } from './chat.mapper';
-import { PrismaChatRepository } from './prisma-chat.repository';
+import {
+  PrismaChatRepository,
+  UNREAD_COUNT_WINDOW,
+} from './prisma-chat.repository';
 
 import type { MessageReplyPreview } from '../../domain/entities/message.entity';
 
@@ -576,6 +579,101 @@ describe('MessageDto reply previews', () => {
       mediaWidth: 1080,
       mediaHeight: 1920,
       type: 'video',
+    });
+  });
+});
+
+describe('PrismaChatRepository unread counts', () => {
+  type ConversationListHarness = {
+    findConversationsByUserId: (
+      userId: string,
+    ) => Promise<Array<{ id: string; unreadCount?: number }>>;
+  };
+
+  const createListHarness = (
+    messagesByConversation: Record<
+      string,
+      Array<{ senderId: string; readBy: Array<{ userId: string }> }>
+    >,
+  ) => {
+    const conversations = Object.keys(messagesByConversation).map((id) => ({
+      id,
+      creatorId: 'me',
+      participantIds: ['me', 'other'],
+      name: null,
+      picture: null,
+      memberJoinedAt: null,
+      lastMessage: null,
+      lastMessageAt: null,
+      isGroup: false,
+      updatedAt: new Date(),
+      createdAt: new Date(),
+    }));
+    const prisma = {
+      conversation: { findMany: jest.fn().mockResolvedValue(conversations) },
+      message: {
+        count: jest.fn(),
+        findMany: jest.fn(
+          ({
+            where,
+            take,
+          }: {
+            where: { conversationId: string };
+            take: number;
+          }) =>
+            Promise.resolve(
+              messagesByConversation[where.conversationId].slice(0, take),
+            ),
+        ),
+      },
+    };
+    const repository = new PrismaChatRepository(
+      prisma as never,
+      {} as never,
+      { decrypt: jest.fn(), encrypt: jest.fn() },
+      { findUsersByIds: jest.fn().mockResolvedValue([]) } as never,
+    ) as unknown as ConversationListHarness;
+
+    return { prisma, repository };
+  };
+
+  it('counts only others unread messages and never runs a whole-conversation count', async () => {
+    const { prisma, repository } = createListHarness({
+      mixed: [
+        { senderId: 'other', readBy: [] },
+        { senderId: 'other', readBy: [{ userId: 'someone-else' }] },
+        { senderId: 'other', readBy: [{ userId: 'me' }] },
+        { senderId: 'me', readBy: [] },
+      ],
+      allRead: [{ senderId: 'other', readBy: [{ userId: 'me' }] }],
+      empty: [],
+    });
+
+    const result = await repository.findConversationsByUserId('me');
+
+    expect(
+      Object.fromEntries(result.map((c) => [c.id, c.unreadCount])),
+    ).toEqual({ mixed: 2, allRead: 0, empty: 0 });
+    expect(prisma.message.count).not.toHaveBeenCalled();
+  });
+
+  it('reads only the newest window, newest first, selecting just what it needs', async () => {
+    const unread = {
+      senderId: 'other',
+      readBy: [] as Array<{ userId: string }>,
+    };
+    const { prisma, repository } = createListHarness({
+      busy: Array.from({ length: UNREAD_COUNT_WINDOW + 50 }, () => unread),
+    });
+
+    const [conversation] = await repository.findConversationsByUserId('me');
+
+    expect(conversation.unreadCount).toBe(UNREAD_COUNT_WINDOW);
+    expect(prisma.message.findMany).toHaveBeenCalledWith({
+      where: { conversationId: 'busy' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: UNREAD_COUNT_WINDOW,
+      select: { senderId: true, readBy: true },
     });
   });
 });

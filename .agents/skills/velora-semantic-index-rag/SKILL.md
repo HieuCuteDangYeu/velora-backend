@@ -15,11 +15,15 @@ Use this skill for Reel indexing, semantic search/reindexing, RAG routing/retrie
 - Persist and validate a semantic candidate before activation. Before commit, recheck that the indexing attempt is still current.
 - Candidate activation and Content completion form a guarded commit protocol: if Content rejects/fails completion, roll back activation and discard the candidate. Serve only active semantic rows.
 - Keep attempt IDs and index versions as concurrency/provenance fences; stale attempts must not replace the currently accepted index.
+- Playback completion precedes evidence preparation: the existing media worker's EXISTING_HLS phase supplies audio/visual manifests before the indexing outbox handoff. Keep manifest identity/checksum validation and checkpoint reuse; do not assume SOURCE_VIDEO already prepared every AI artifact.
+- Index/evidence failure preserves `mediaStatus=COMPLETED` and validated HLS. Semantic readiness and playback readiness are separate contracts.
 - AI and Reel Indexing application layers have an explicit test-enforced clean-architecture boundary. Do not import infrastructure or `ConfigService` into their application source. Do not generalize this exact enforcement to unrelated services without current tests/code evidence.
 
 ## Repository evidence
 
 - `apps/content-service/src/application/use-cases/resolve-reel-context-access.use-case.ts`
+- `apps/content-service/src/infrastructure/repositories/content.repository.ts` (`completeMediaProcessing`, `completeExistingHlsEvidence`, indexing claim/completion)
+- `apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts`
 - `apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts`
 - `apps/reel-indexing-service/src/application/use-cases/commit-semantic-candidate.use-case.ts`
 - `apps/reel-indexing-service/src/infrastructure/repositories/prisma-semantic-index.repository.ts`

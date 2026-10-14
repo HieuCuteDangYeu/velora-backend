@@ -61,6 +61,14 @@ Use Orca's Skills page / discovered skills / Find Skills surface when available 
 
 Repository-local skills should contain only durable, non-obvious project-specific invariants.
 
+For Velora backend/mobile work, retain durable publishing, playback and diagram lessons in the existing related skills when requested; do not add a task-specific readiness report as a substitute. Keep run logs and temporary verification receipts outside the tracked source unless the user wants them committed.
+
+## Publishing from another checkout
+
+When shipping the paired repositories from an isolated checkout, recheck the actual target refs (`origin/master` for backend, `origin/main` for mobile) and preserve the caller's unrelated dirty work. Complete intended documentation/skill edits before integration instead of changing only the release copy. A cherry-picked commit has a different identity: reconcile the caller branch through an authorized operation or explicitly report its divergence and local/published SHAs. A successful remote push does not imply the caller can fast-forward cleanly.
+
+If a user-started merge is already active, preserve its staged upstream changes and unrelated unstaged files. Resolve only authorized conflicted paths; do not abort/reset/stash the merge merely to simplify publication.
+
 ## Never
 
 - revive `agent-harness orchestrate`

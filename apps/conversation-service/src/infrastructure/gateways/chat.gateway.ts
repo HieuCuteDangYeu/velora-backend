@@ -29,6 +29,7 @@ import {
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
+import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import {
   stressFixtureNamespace,
@@ -318,8 +319,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
           )
         : await this.chatRepository.findConversation(payload.conversationId);
       if (conversation) {
-        conversation.lastMessage =
-          savedMessage.content ?? savedMessage.type ?? null;
+        conversation.lastMessage = truncatePreview(
+          savedMessage.content ?? savedMessage.type ?? null,
+        );
         conversation.lastMessageAt = savedMessage.createdAt;
         this.emitToConversation(
           payload.conversationId,
@@ -352,8 +354,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
               savedMessage.conversationId,
             );
             if (botConversation) {
-              botConversation.lastMessage =
-                botResult.botReply.content ?? botResult.botReply.type ?? null;
+              botConversation.lastMessage = truncatePreview(
+                botResult.botReply.content ?? botResult.botReply.type ?? null,
+              );
               botConversation.lastMessageAt = botResult.botReply.createdAt;
               this.emitToConversation(
                 savedMessage.conversationId,
@@ -477,17 +480,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
-    if (!userId) return;
-
-    try {
-      await this.chatRepository.assertConversationParticipant(
-        conversationId,
-        userId,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Rejected typing_start for socket ${client.id}: ${(error as Error).message}`,
-      );
+    if (!userId || !this.isSocketInConversation(client, conversationId)) {
       return;
     }
 
@@ -504,18 +497,23 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     const userId = await this.resolveUserId(client);
-    if (!userId) return;
+    if (!userId || typeof conversationId !== 'string') return;
 
-    try {
-      await this.chatRepository.assertConversationParticipant(
-        conversationId,
-        userId,
-      );
-    } catch (error) {
-      this.logger.warn(
-        `Rejected typing_stop for socket ${client.id}: ${(error as Error).message}`,
-      );
-      return;
+    // socket.io-client flushes events buffered while disconnected before the
+    // app re-sends join_conversation, so a pending typing_stop can reach a
+    // fresh socket that is not in the room yet. Dropping it would leave the
+    // indicator stuck for everyone else, so only this rare case falls back to
+    // the membership read. typing_start stays room-only: the next keystroke
+    // after the join repeats it.
+    if (!this.isSocketInConversation(client, conversationId)) {
+      try {
+        await this.chatRepository.assertConversationParticipant(
+          conversationId,
+          userId,
+        );
+      } catch {
+        return;
+      }
     }
 
     client.to(this.conversationRooms(conversationId)).emit('user_typing', {
@@ -577,6 +575,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Stage 1 keeps the legacy raw room and adds the namespaced room. Once all
   // conversation-service instances have this code, a later rollout can switch
   // readers/emitters to namespaced-only and finally remove the raw room.
+  // Typing fires on every keystroke, so it must not cost a Mongo read. A socket
+  // only joins a conversation room after join_conversation verified membership,
+  // and removed members are evicted from it, so the room authorizes the event.
+  private isSocketInConversation(
+    client: Socket,
+    conversationId: unknown,
+  ): conversationId is string {
+    return (
+      typeof conversationId === 'string' &&
+      this.conversationRooms(conversationId).some((room) =>
+        client.rooms?.has(room),
+      )
+    );
+  }
+
   private userRooms(userId: string): string[] {
     return [userId, `user:${userId}`];
   }

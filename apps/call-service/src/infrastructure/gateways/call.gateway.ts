@@ -24,7 +24,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { catchError, lastValueFrom, of, timeout } from 'rxjs';
-import { Server, Socket } from 'socket.io';
+import { Namespace, Socket } from 'socket.io';
 import { AcceptIncomingCallUseCase } from '../../application/use-cases/accept-incoming-call.use-case';
 import {
   assertCurrentGroupMember,
@@ -298,7 +298,7 @@ export class CallGateway
     OnApplicationBootstrap,
     OnModuleDestroy
 {
-  @WebSocketServer() server!: Server;
+  @WebSocketServer() server!: Namespace;
 
   private readonly logger = new Logger(CallGateway.name);
   private readonly reconnectGraceMs = Number(

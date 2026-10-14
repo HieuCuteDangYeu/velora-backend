@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -51,6 +52,7 @@ import { stressMessageTiming } from '../metrics/stress-message-timing';
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
 import type { IChatMediaService } from '../../domain/interfaces/chat-media.service.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
+import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from './chat.mapper';
 import { ConversationMapper } from './conversation.mapper';
 import { writeAuthorizedPreview } from './authorized-preview.writer';
@@ -58,6 +60,19 @@ import { writeAuthorizedPreview } from './authorized-preview.writer';
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
 const RECALL_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_REACTION_EMOJI_LENGTH = 32;
+const RECALL_REPLY_UPDATE_BATCH = 500;
+const RECALL_CLEANUP_MARKER_TTL_SECONDS = 7 * 24 * 60 * 60;
+const RECALL_MEDIA_RETRY_DELAYS_MS = [5_000, 30_000, 120_000];
+
+type RecalledMediaCleanup = {
+  messageId: string;
+  userId: string;
+  fileKeys: string[];
+};
+const REACTION_UPDATE_ATTEMPTS = 3;
+// Newest messages inspected per conversation when computing unread counts.
+export const UNREAD_COUNT_WINDOW = 100;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
 const MAX_PENDING_MESSAGE_TRANSACTIONS = 100;
@@ -179,7 +194,7 @@ export class PrismaChatRepository implements IChatRepository {
     let previewText = '';
     if (message.type === 'text') {
       if (message.signalType === 0) {
-        previewText = message.content; // Normal: Server thấy text
+        previewText = truncatePreview(message.content) ?? ''; // Normal: Server thấy text
       } else {
         previewText = '🔒 Tin nhắn được bảo mật'; // Signal: Server mù
       }
@@ -597,7 +612,9 @@ export class PrismaChatRepository implements IChatRepository {
         updatedAt: conversation.updatedAt,
         isGroup: conversation.isGroup,
         lastMessage: conversation.lastMessage || null,
-        lastMessageAt: conversation.lastMessageAt || null,
+        // A conversation without messages sorts by creation time. A null
+        // lastMessageAt sorts last in the descending conversation list.
+        lastMessageAt: conversation.lastMessageAt ?? conversation.createdAt,
       },
     });
     return ConversationMapper.toDomain(savedConv);
@@ -666,6 +683,31 @@ export class PrismaChatRepository implements IChatRepository {
     return domainConv;
   }
 
+  /**
+   * Unread messages among the newest UNREAD_COUNT_WINDOW of a conversation.
+   * A message-level `readBy: { none }` count scans the whole conversation (a
+   * fully read one is the worst case), so its cost grew with chat history.
+   * This reads a bounded, index-ordered window instead: exact up to the
+   * window size, which clients already show as "99+".
+   */
+  private async countRecentUnread(
+    conversationId: string,
+    userId: string,
+  ): Promise<number> {
+    const recentMessages = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: UNREAD_COUNT_WINDOW,
+      select: { senderId: true, readBy: true },
+    });
+
+    return recentMessages.filter(
+      (message) =>
+        message.senderId !== userId &&
+        !message.readBy.some((receipt) => receipt.userId === userId),
+    ).length;
+  }
+
   async findConversationsByUserId(
     userId: string,
     limit: number = 15,
@@ -686,15 +728,10 @@ export class PrismaChatRepository implements IChatRepository {
 
     await Promise.all(
       conversations.map(async (conversation) => {
-        const unreadCount = await this.prisma.message.count({
-          where: {
-            conversationId: conversation.id,
-            senderId: { not: userId },
-            readBy: { none: { userId } },
-          },
-        });
-
-        unreadCountsByConversationId.set(conversation.id, unreadCount);
+        unreadCountsByConversationId.set(
+          conversation.id,
+          await this.countRecentUnread(conversation.id, userId),
+        );
       }),
     );
 
@@ -786,12 +823,19 @@ export class PrismaChatRepository implements IChatRepository {
     userId: string,
     emoji: string,
   ): Promise<Message> {
-    if (!emoji.trim()) {
+    const normalizedEmoji = emoji?.trim() ?? '';
+    if (!normalizedEmoji) {
       throw new BadRequestException('Emoji is required');
     }
+    if (normalizedEmoji.length > MAX_REACTION_EMOJI_LENGTH) {
+      throw new BadRequestException('Emoji is too long');
+    }
+    this.assertReactionUserId(userId);
+    this.assertMessageObjectId(messageId);
 
     const existingMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
+      select: { conversationId: true },
     });
 
     if (!existingMessage) {
@@ -803,21 +847,94 @@ export class PrismaChatRepository implements IChatRepository {
       userId,
     );
 
-    const reactions = this.normalizeReactions(existingMessage.reactions);
-    const nextReactions: MessageReactionMap = {
-      ...(reactions || {}),
-      [userId]: {
-        emoji,
-        createdAt: new Date().toISOString(),
-      },
+    const reaction = {
+      emoji: normalizedEmoji,
+      createdAt: new Date().toISOString(),
     };
 
-    const updatedMessage = await this.prisma.message.update({
+    // Every attempt is a single-document atomic update, so two members
+    // reacting at the same moment cannot overwrite each other's reaction (the
+    // previous read-modify-write of the whole map silently lost one of them).
+    // Recalled messages are excluded in the same filter, so a reaction cannot
+    // be added after the recall wipes the map.
+    let saved = false;
+    for (
+      let attempt = 0;
+      attempt < REACTION_UPDATE_ATTEMPTS && !saved;
+      attempt += 1
+    ) {
+      saved =
+        (await this.runMessageUpdate(
+          {
+            _id: { $oid: messageId },
+            isRecalled: false,
+            reactions: { $type: 'object' },
+          },
+          { $set: { [`reactions.${userId}`]: reaction } },
+        )) === 1 ||
+        (await this.runMessageUpdate(
+          { _id: { $oid: messageId }, isRecalled: false, reactions: null },
+          { $set: { reactions: { [userId]: reaction } } },
+        )) === 1;
+
+      if (!saved) {
+        const current = await this.prisma.message.findUnique({
+          where: { id: messageId },
+          select: { isRecalled: true },
+        });
+        if (!current) {
+          throw new NotFoundException('Message not found');
+        }
+        if (current.isRecalled) {
+          throw new BadRequestException('Message has been recalled');
+        }
+        // The map changed shape between the two updates; try again.
+      }
+    }
+
+    if (!saved) {
+      throw new ConflictException('Reaction could not be saved, please retry');
+    }
+
+    return this.readReactionUpdateMessage(messageId);
+  }
+
+  async removeReaction(messageId: string, userId: string): Promise<Message> {
+    this.assertReactionUserId(userId);
+    this.assertMessageObjectId(messageId);
+
+    const existingMessage = await this.prisma.message.findUnique({
       where: { id: messageId },
-      data: {
-        reactions: nextReactions as unknown as Prisma.InputJsonValue,
-      },
+      select: { conversationId: true },
     });
+
+    if (!existingMessage) {
+      throw new NotFoundException('Message not found');
+    }
+
+    await this.assertConversationParticipant(
+      existingMessage.conversationId,
+      userId,
+    );
+
+    // Removing a missing key is a no-op, so this is idempotent. An emptied
+    // map is read back as "no reactions" by normalizeReactions.
+    await this.runMessageUpdate(
+      { _id: { $oid: messageId }, reactions: { $type: 'object' } },
+      { $unset: { [`reactions.${userId}`]: '' } },
+    );
+
+    return this.readReactionUpdateMessage(messageId);
+  }
+
+  private async readReactionUpdateMessage(messageId: string): Promise<Message> {
+    const updatedMessage = await this.prisma.message.findUnique({
+      where: { id: messageId },
+    });
+
+    if (!updatedMessage) {
+      throw new NotFoundException('Message not found');
+    }
 
     await this.clearConversationCache(updatedMessage.conversationId);
     return this.hydrateReactionUpdateMessage(
@@ -825,44 +942,36 @@ export class PrismaChatRepository implements IChatRepository {
     );
   }
 
-  async removeReaction(messageId: string, userId: string): Promise<Message> {
-    const existingMessage = await this.prisma.message.findUnique({
-      where: { id: messageId },
-    });
+  // Runs one update against the messages collection and returns how many
+  // documents matched. Raw because Prisma cannot set a single key of a Json
+  // field atomically.
+  private async runMessageUpdate(
+    filter: Prisma.InputJsonObject,
+    update: Prisma.InputJsonObject,
+  ): Promise<number> {
+    const result = (await this.prisma.$runCommandRaw({
+      update: 'messages',
+      updates: [{ q: filter, u: update }],
+    })) as { n?: unknown; writeErrors?: unknown[] };
 
-    if (!existingMessage) {
-      throw new NotFoundException('Message not found');
+    if (Array.isArray(result.writeErrors) && result.writeErrors.length > 0) {
+      throw new InternalServerErrorException('Message update failed');
     }
 
-    await this.assertConversationParticipant(
-      existingMessage.conversationId,
-      userId,
-    );
+    return typeof result.n === 'number' ? result.n : 0;
+  }
 
-    const reactions = this.normalizeReactions(existingMessage.reactions);
-    if (!reactions || !reactions[userId]) {
-      return this.hydrateReactionUpdateMessage(
-        ChatMapper.toDomain(existingMessage),
-      );
+  // The user id becomes part of a dotted update path ("reactions.<id>").
+  private assertReactionUserId(userId: string): void {
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(userId)) {
+      throw new BadRequestException('Invalid user ID');
     }
+  }
 
-    const remainingReactions = { ...reactions };
-    delete remainingReactions[userId];
-
-    const updatedMessage = await this.prisma.message.update({
-      where: { id: messageId },
-      data: {
-        reactions:
-          Object.keys(remainingReactions).length > 0
-            ? (remainingReactions as unknown as Prisma.InputJsonValue)
-            : null,
-      },
-    });
-
-    await this.clearConversationCache(updatedMessage.conversationId);
-    return this.hydrateReactionUpdateMessage(
-      ChatMapper.toDomain(updatedMessage),
-    );
+  private assertMessageObjectId(messageId: string): void {
+    if (!this.isValidMessageObjectId(messageId)) {
+      throw new BadRequestException('Invalid message ID');
+    }
   }
 
   async recallMessage(
@@ -914,85 +1023,32 @@ export class PrismaChatRepository implements IChatRepository {
       existingMessage.senderId,
     );
 
-    // Chat attachments are publicly addressed in R2. Remove the source objects
-    // before confirming the recall, otherwise clearing the database reference
-    // alone would leave the original URL accessible.
-    await this.chatMediaService.deleteRecalledChatMedia({
-      userId: existingMessage.senderId,
-      fileKeys: recalledMediaKeys,
-    });
+    // Chat attachments are publicly addressed in R2, so the objects must go
+    // too. They are removed only AFTER the recall commits: deleting first
+    // meant a failed or timed-out transaction (a message with many replies
+    // updates them one by one) left a message pointing at a deleted file,
+    // unrecoverably. The marker records what still has to be deleted if this
+    // process dies, or every attempt fails, between commit and cleanup.
+    const cleanupMarker = await this.markRecalledMediaForCleanup(
+      messageId,
+      existingMessage.senderId,
+      recalledMediaKeys,
+    );
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const replyMessages = await tx.message.findMany({
-        where: {
-          conversationId,
-          replyToId: messageId,
-        },
-        select: {
-          id: true,
-          replyPreview: true,
-        },
-      });
+    let result: Awaited<ReturnType<typeof this.runRecallTransaction>>;
+    try {
+      result = await this.runRecallTransaction(
+        messageId,
+        conversationId,
+        existingMessage.signalType,
+        recalledAt,
+      );
+    } catch (error) {
+      await this.clearRecalledMediaMarker(cleanupMarker);
+      throw error;
+    }
 
-      const latestMessage = await tx.message.findFirst({
-        where: { conversationId },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true },
-      });
-
-      const updatedMessage = await tx.message.update({
-        where: { id: messageId },
-        data: {
-          isRecalled: true,
-          recalledAt,
-          content:
-            existingMessage.signalType === 0
-              ? this.encryptionRepository.encrypt(RECALLED_MESSAGE_CONTENT)
-              : RECALLED_MESSAGE_CONTENT,
-          media: null,
-          metadata: null,
-          registrationId: null,
-          replyPreview: null,
-          reactions: null,
-        },
-      });
-
-      const updatedReplyMessageIds: string[] = [];
-
-      for (const replyMessage of replyMessages) {
-        const nextReplyPreview = this.mergeReplyPreviewContent(
-          replyMessage.replyPreview,
-          RECALLED_PREVIEW_CONTENT,
-        );
-
-        if (!nextReplyPreview) {
-          continue;
-        }
-
-        await tx.message.update({
-          where: { id: replyMessage.id },
-          data: {
-            replyPreview: nextReplyPreview as unknown as Prisma.InputJsonValue,
-          },
-        });
-
-        updatedReplyMessageIds.push(replyMessage.id);
-      }
-
-      if (latestMessage?.id === messageId) {
-        await tx.conversation.update({
-          where: { id: conversationId },
-          data: {
-            lastMessage: RECALLED_LAST_MESSAGE,
-          },
-        });
-      }
-
-      return {
-        updatedMessage,
-        updatedReplyMessageIds,
-      };
-    });
+    await this.deleteRecalledMedia(cleanupMarker);
 
     if (recalledMedia?.fileKey) {
       await this.redis.hdel(
@@ -1010,6 +1066,201 @@ export class PrismaChatRepository implements IChatRepository {
       updatedReplyMessageIds: result.updatedReplyMessageIds,
       previewContent: RECALLED_PREVIEW_CONTENT,
     };
+  }
+
+  private runRecallTransaction(
+    messageId: string,
+    conversationId: string,
+    signalType: number,
+    recalledAt: Date,
+  ) {
+    return this.prisma.$transaction(
+      async (tx) => {
+        const replyMessages = await tx.message.findMany({
+          where: {
+            conversationId,
+            replyToId: messageId,
+          },
+          select: {
+            id: true,
+            replyPreview: true,
+          },
+        });
+
+        const latestMessage = await tx.message.findFirst({
+          where: { conversationId },
+          orderBy: { createdAt: 'desc' },
+          select: { id: true },
+        });
+
+        const updatedMessage = await tx.message.update({
+          where: { id: messageId },
+          data: {
+            isRecalled: true,
+            recalledAt,
+            content:
+              signalType === 0
+                ? this.encryptionRepository.encrypt(RECALLED_MESSAGE_CONTENT)
+                : RECALLED_MESSAGE_CONTENT,
+            media: null,
+            metadata: null,
+            registrationId: null,
+            replyPreview: null,
+            reactions: null,
+          },
+        });
+
+        // Replies whose stored preview is valid get the recalled text-only
+        // preview. One command rewrites them all: the old per-reply updates
+        // were a round trip each, so a message with 40 replies took 7.7s
+        // against Atlas, longer than the 5s the transaction used to allow.
+        const updatedReplyMessageIds = replyMessages
+          .filter(
+            (replyMessage) =>
+              this.mergeReplyPreviewContent(
+                replyMessage.replyPreview,
+                RECALLED_PREVIEW_CONTENT,
+              ) !== undefined,
+          )
+          .map((replyMessage) => replyMessage.id);
+
+        for (
+          let offset = 0;
+          offset < updatedReplyMessageIds.length;
+          offset += RECALL_REPLY_UPDATE_BATCH
+        ) {
+          await tx.$runCommandRaw({
+            update: 'messages',
+            updates: [
+              {
+                q: {
+                  _id: {
+                    $in: updatedReplyMessageIds
+                      .slice(offset, offset + RECALL_REPLY_UPDATE_BATCH)
+                      .map((id) => ({ $oid: id })),
+                  },
+                },
+                // Same result as buildTextOnlyReplyPreview, keeping each
+                // reply's own senderName. A $set of an object onto an existing
+                // object MERGES in a pipeline (thumbnail and size fields would
+                // survive), so the old preview is removed before the new one
+                // is built.
+                u: [
+                  { $set: { recallSenderName: '$replyPreview.senderName' } },
+                  { $unset: 'replyPreview' },
+                  {
+                    $set: {
+                      replyPreview: {
+                        senderName: '$recallSenderName',
+                        content: { $literal: RECALLED_PREVIEW_CONTENT },
+                        type: 'text',
+                      },
+                    },
+                  },
+                  { $unset: 'recallSenderName' },
+                ],
+                multi: true,
+              },
+            ],
+          });
+        }
+
+        if (latestMessage?.id === messageId) {
+          await tx.conversation.update({
+            where: { id: conversationId },
+            data: {
+              lastMessage: RECALLED_LAST_MESSAGE,
+            },
+          });
+        }
+
+        return {
+          updatedMessage,
+          updatedReplyMessageIds,
+        };
+      },
+      // Replies are rewritten one by one inside the transaction; the default
+      // 5s timeout is too short for a message with many of them.
+      { maxWait: 2_000, timeout: 15_000 },
+    );
+  }
+
+  private recallCleanupKey(messageId: string): string {
+    return `chat:media:recall-cleanup:${messageId}`;
+  }
+
+  private async markRecalledMediaForCleanup(
+    messageId: string,
+    userId: string,
+    fileKeys: string[],
+  ): Promise<RecalledMediaCleanup | null> {
+    if (fileKeys.length === 0) {
+      return null;
+    }
+
+    const cleanup = { messageId, userId, fileKeys };
+    try {
+      await this.redis.set(
+        this.recallCleanupKey(messageId),
+        JSON.stringify(cleanup),
+        'EX',
+        RECALL_CLEANUP_MARKER_TTL_SECONDS,
+      );
+    } catch (error) {
+      // Recall must not depend on this bookkeeping.
+      this.logger.error(error);
+    }
+
+    return cleanup;
+  }
+
+  private async clearRecalledMediaMarker(
+    cleanup: RecalledMediaCleanup | null,
+  ): Promise<void> {
+    if (!cleanup) {
+      return;
+    }
+
+    try {
+      await this.redis.del(this.recallCleanupKey(cleanup.messageId));
+    } catch (error) {
+      this.logger.error(error);
+    }
+  }
+
+  // First attempt inline so the common case is deterministic; failures are
+  // retried in the background and never fail the (already committed) recall.
+  private async deleteRecalledMedia(
+    cleanup: RecalledMediaCleanup | null,
+    attempt = 0,
+  ): Promise<void> {
+    if (!cleanup) {
+      return;
+    }
+
+    try {
+      await this.chatMediaService.deleteRecalledChatMedia({
+        userId: cleanup.userId,
+        fileKeys: cleanup.fileKeys,
+      });
+      await this.clearRecalledMediaMarker(cleanup);
+    } catch (error) {
+      const delayMs = RECALL_MEDIA_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) {
+        this.logger.error(
+          `Recalled media of message ${cleanup.messageId} could not be deleted; it stays listed under ${this.recallCleanupKey(cleanup.messageId)}`,
+        );
+        return;
+      }
+
+      this.logger.warn(
+        `Recalled media cleanup for message ${cleanup.messageId} failed, retrying in ${delayMs}ms: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      const timer = setTimeout(() => {
+        void this.deleteRecalledMedia(cleanup, attempt + 1);
+      }, delayMs);
+      timer.unref?.();
+    }
   }
 
   async markMessagesAsSeen(

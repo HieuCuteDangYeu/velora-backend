@@ -454,16 +454,107 @@ describe('ChatGateway realtime membership helpers', () => {
     const client = {
       id: 'socket-typing',
       data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-typing', ...conversationRooms]),
       to: clientTo,
     } as unknown as Socket;
 
     await gateway.handleTypingStart(CONVERSATION_ID, client);
+    await gateway.handleTypingStop(CONVERSATION_ID, client);
 
     expect(clientTo).toHaveBeenCalledWith(conversationRooms);
-    expect(clientEmit).toHaveBeenCalledWith('user_typing', {
+    expect(clientEmit).toHaveBeenNthCalledWith(1, 'user_typing', {
       conversationId: CONVERSATION_ID,
       userId: MEMBER_ID,
       isTyping: true,
     });
+    expect(clientEmit).toHaveBeenNthCalledWith(2, 'user_typing', {
+      conversationId: CONVERSATION_ID,
+      userId: MEMBER_ID,
+      isTyping: false,
+    });
+    // Typing fires per keystroke; it must never cost a database read.
+    expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
+  });
+
+  it('accepts typing from a socket in either room form during the room migration', async () => {
+    for (const room of conversationRooms) {
+      const clientEmit = jest.fn();
+      const client = {
+        id: 'socket-one-form',
+        data: { userId: MEMBER_ID },
+        rooms: new Set([room]),
+        to: jest.fn().mockReturnValue({ emit: clientEmit }),
+      } as unknown as Socket;
+
+      await gateway.handleTypingStart(CONVERSATION_ID, client);
+
+      expect(clientEmit).toHaveBeenCalledWith(
+        'user_typing',
+        expect.objectContaining({ isTyping: true }),
+      );
+    }
+  });
+
+  it('ignores typing_start from a socket outside the conversation room without reading Mongo', async () => {
+    const clientTo = jest.fn();
+    const outsider = {
+      id: 'socket-outsider',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-outsider', 'conversation:another-conversation']),
+      to: clientTo,
+    } as unknown as Socket;
+
+    await gateway.handleTypingStart(CONVERSATION_ID, outsider);
+    await gateway.handleTypingStart(
+      { conversationId: CONVERSATION_ID } as unknown as string,
+      outsider,
+    );
+    await gateway.handleTypingStop(
+      { conversationId: CONVERSATION_ID } as unknown as string,
+      outsider,
+    );
+
+    expect(clientTo).not.toHaveBeenCalled();
+    expect(chatRepository.assertConversationParticipant).not.toHaveBeenCalled();
+  });
+
+  it('still delivers a typing_stop that a reconnecting member sends before re-joining the room', async () => {
+    // socket.io-client flushes buffered emits before the app re-joins rooms.
+    const clientEmit = jest.fn();
+    const freshSocket = {
+      id: 'socket-reconnected',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-reconnected']),
+      to: jest.fn().mockReturnValue({ emit: clientEmit }),
+    } as unknown as Socket;
+
+    await gateway.handleTypingStop(CONVERSATION_ID, freshSocket);
+
+    expect(chatRepository.assertConversationParticipant).toHaveBeenCalledWith(
+      CONVERSATION_ID,
+      MEMBER_ID,
+    );
+    expect(clientEmit).toHaveBeenCalledWith('user_typing', {
+      conversationId: CONVERSATION_ID,
+      userId: MEMBER_ID,
+      isTyping: false,
+    });
+  });
+
+  it('drops a typing_stop from a non-member who is not in the room', async () => {
+    chatRepository.assertConversationParticipant.mockRejectedValueOnce(
+      new ForbiddenException('not a participant'),
+    );
+    const clientTo = jest.fn();
+    const outsider = {
+      id: 'socket-outsider',
+      data: { userId: MEMBER_ID },
+      rooms: new Set(['socket-outsider']),
+      to: clientTo,
+    } as unknown as Socket;
+
+    await gateway.handleTypingStop(CONVERSATION_ID, outsider);
+
+    expect(clientTo).not.toHaveBeenCalled();
   });
 });

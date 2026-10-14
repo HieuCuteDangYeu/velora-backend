@@ -116,7 +116,9 @@ export class PrismaConversationChatRepository
           updatedAt: conversation.updatedAt,
           isGroup: conversation.isGroup,
           lastMessage: conversation.lastMessage || null,
-          lastMessageAt: conversation.lastMessageAt || null,
+          // A conversation without messages sorts by creation time. A null
+          // lastMessageAt sorts last in the descending conversation list.
+          lastMessageAt: conversation.lastMessageAt ?? conversation.createdAt,
         },
       },
     );

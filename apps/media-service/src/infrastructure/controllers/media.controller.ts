@@ -1,5 +1,6 @@
 import { FinalizeUploadDto } from '@common/media/dtos/finalize-upload.dto';
 import { GetPresignedUrlDto } from '@common/media/dtos/get-presigned-url.dto';
+import { isRpcError } from '@common/constants/rpc-error.types';
 import { Controller, ForbiddenException } from '@nestjs/common';
 import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { FinalizeChatUploadUseCase } from '../../application/use-cases/finalize-chat-upload.use-case';
@@ -23,11 +24,14 @@ export class MediaController {
         data.userId,
         data.fileType,
         data.purpose,
+        data.publishIntentId,
       );
     } catch (error) {
+      if (isRpcError(error)) throw new RpcException(error);
       if (
         error instanceof Error &&
-        error.message.includes('Invalid file type')
+        (error.message.includes('Invalid file type') ||
+          error.message.includes('publishIntentId'))
       ) {
         throw new RpcException({
           statusCode: 400,

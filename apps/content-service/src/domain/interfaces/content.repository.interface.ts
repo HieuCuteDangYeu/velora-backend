@@ -109,7 +109,10 @@ export interface ReelSeriesListRecord {
   coverThumbnailKey?: string;
 }
 
-export interface ReelSeriesMetadataRecord extends Omit<ReelSeriesListRecord, 'firstReelId' | 'coverThumbnailKey' | 'episodeCount'> {}
+export type ReelSeriesMetadataRecord = Omit<
+  ReelSeriesListRecord,
+  'firstReelId' | 'coverThumbnailKey' | 'episodeCount'
+>;
 
 export interface ReelSeriesEpisodeCursor {
   episodeNumber: number;
@@ -245,22 +248,52 @@ export interface FriendsReelsQuery {
 export interface IContentRepository {
   getReelMonitoringSnapshot(): Promise<ReelMonitoringSnapshot>;
 
+  reserveReelUploadLease(input: {
+    userId: string;
+    publishIntentId: string;
+    mediaKey: string;
+    fileType: string;
+    expiresAt: Date;
+  }): Promise<void>;
+
+  listExpiredReelUploadLeases(
+    now: Date,
+  ): Promise<Array<{ id: string; mediaKey: string; expiresAt: Date }>>;
+
+  cleanupExpiredReelUploadLease(id: string, now: Date): Promise<boolean>;
+
+  completeReelUploadLeaseCleanup(id: string, now: Date): Promise<boolean>;
+
+  isReelMediaOutputPrefixProtected(
+    prefix: string,
+    mediaAttemptId: string,
+  ): Promise<boolean>;
+
   createReelWithMediaJob(
     reel: Partial<Reel>,
     outboxEvent: ReelMediaOutboxEventInput,
   ): Promise<Reel>;
+
+  findByPublishIntentId(
+    userId: string,
+    publishIntentId: string,
+  ): Promise<Reel | null>;
 
   queueReelProcessingAttemptWithMediaJob(
     reelId: string,
     mediaAttemptId: string,
     indexAttemptId: string,
     outboxEvent: ReelMediaOutboxEventInput,
+    preserveMediaReady?: boolean,
   ): Promise<Reel>;
 
   claimProcessingAttempt(input: {
     reelId: string;
     processingAttemptId: string;
     allowReclaim?: boolean;
+    evidenceOnly?: boolean;
+    userId?: string;
+    hlsMasterKey?: string;
   }): Promise<boolean>;
 
   completeMediaProcessing(input: {
@@ -326,6 +359,7 @@ export interface IContentRepository {
     processingErrorCode?: string,
     processingErrorDetail?: string,
     mediaMetadata?: ReelProcessingMediaMetadata,
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS',
   ): Promise<Reel>;
 
   findById(id: string): Promise<Reel | null>;
@@ -334,14 +368,18 @@ export interface IContentRepository {
 
   findReelSeriesById(id: string): Promise<ReelSeries | null>;
 
-  findReelSeriesMetadataById(id: string): Promise<ReelSeriesMetadataRecord | null>;
+  findReelSeriesMetadataById(
+    id: string,
+  ): Promise<ReelSeriesMetadataRecord | null>;
 
   listReelSeries(query: ReelSeriesListQuery): Promise<{
     items: ReelSeriesListRecord[];
     nextCursor: ReelCursor | null;
   }>;
 
-  listReelSeriesEpisodes(query: ReelSeriesEpisodesQuery): Promise<ReelSeriesEpisodesRecord>;
+  listReelSeriesEpisodes(
+    query: ReelSeriesEpisodesQuery,
+  ): Promise<ReelSeriesEpisodesRecord>;
 
   listReelSeriesCandidates(query: ReelSeriesCandidateQuery): Promise<{
     items: Reel[];

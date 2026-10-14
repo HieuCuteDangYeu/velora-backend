@@ -47,6 +47,9 @@ export class ContentServiceAdapter implements IContentService {
     reelId: string;
     processingAttemptId: string;
     allowReclaim?: boolean;
+    evidenceOnly?: boolean;
+    userId?: string;
+    hlsMasterKey?: string;
   }): Promise<boolean> {
     try {
       return await firstValueFrom(
@@ -111,6 +114,7 @@ export class ContentServiceAdapter implements IContentService {
     errorDetail?: string;
     mediaMetadata?: ReelProcessingMediaMetadata;
     metricsContext?: ReelPipelineMetricContext;
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
   }): Promise<void> {
     const timer = data.metricsContext
       ? this.processingMetrics.startStage(
@@ -145,6 +149,7 @@ export class ContentServiceAdapter implements IContentService {
     stage: 'RETRY_SCHEDULED';
     message: string;
     progress: number;
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
   }): Promise<void> {
     try {
       await firstValueFrom(
@@ -193,10 +198,10 @@ export class ContentServiceAdapter implements IContentService {
     try {
       const response = await firstValueFrom(
         this.messageBroker
-          .send<{ persisted: true; applied: boolean }>(
-            'content.persist_reel_hls_evidence_completed',
-            data,
-          )
+          .send<{
+            persisted: true;
+            applied: boolean;
+          }>('content.persist_reel_hls_evidence_completed', data)
           .pipe(timeout(30_000)),
       );
       return response.applied;

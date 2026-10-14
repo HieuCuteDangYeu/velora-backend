@@ -31,6 +31,7 @@ export class UpdateReelStatusUseCase {
     processingErrorCode?: string,
     processingErrorDetail?: string,
     mediaMetadata?: ReelProcessingMediaMetadata,
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS',
   ) {
     let sanitizedTranscript = transcript;
     let sanitizedTranscriptVtt = transcriptVtt?.trim() || undefined;
@@ -105,6 +106,7 @@ export class UpdateReelStatusUseCase {
       processingErrorCode,
       processingErrorDetail,
       mediaMetadata,
+      sourceMode,
     );
   }
 

@@ -2,6 +2,11 @@ import { TranscriptSegment } from '@common/ai/interfaces/transcription-result.in
 import type { ReelMonitoringSnapshot } from '@common/content/dtos/reel-monitoring-snapshot.dto';
 import type { CompleteReelIndexCommand } from '@common/processing/interfaces/complete-reel-index.interface';
 import {
+  REEL_MEDIA_JOB_EVENT_TYPE,
+  REEL_MEDIA_JOB_SCHEMA_VERSION,
+  type ReelMediaJob,
+} from '@common/processing/interfaces/reel-media-job.interface';
+import {
   REEL_INDEX_JOB_EVENT_TYPE,
   REEL_INDEX_JOB_SCHEMA_VERSION,
   type ReelIndexJob,
@@ -12,10 +17,17 @@ import { ReelShareLink } from '@content/domain/entities/reel-share-link.entity';
 import { ReelShare } from '@content/domain/entities/reel-share.entity';
 import type { IRecommendationFeedCacheRepository } from '@content/domain/interfaces/recommendation-feed-cache.repository.interface';
 import { mapReelLegacyStatus } from '@content/domain/reel-status-compatibility.mapper';
+import {
+  ReelUploadLeaseUnavailableError,
+  ReelUploadLeaseExpiredError,
+} from '@content/domain/errors/content.error';
+import type { IStorageService } from '@content/domain/interfaces/storage.service.interface';
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, PrismaClient } from '@prisma/content-client';
 import { randomUUID } from 'crypto';
+
+const MEDIA_ATTEMPT_LEASE_MS = 6 * 60 * 60 * 1000;
 import { Reel } from '../../domain/entities/reel.entity';
 import {
   FriendsReelsQuery,
@@ -58,6 +70,8 @@ export class ContentRepository
     private readonly reelFeedRepository: ReelFeedRepository,
     @Inject('IRecommendationFeedCacheRepository')
     private readonly recommendationFeedCacheRepository: IRecommendationFeedCacheRepository,
+    @Inject('IStorageService')
+    private readonly storageService: IStorageService,
   ) {
     super();
   }
@@ -196,6 +210,184 @@ export class ContentRepository
     };
   }
 
+  async reserveReelUploadLease(input: {
+    userId: string;
+    publishIntentId: string;
+    mediaKey: string;
+    fileType: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    await this.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.mediaKey}))`;
+      const currentLease = await transaction.reelUploadLease.findUnique({
+        where: {
+          userId_publishIntentId_fileType: {
+            userId: input.userId,
+            publishIntentId: input.publishIntentId,
+            fileType: input.fileType,
+          },
+        },
+        select: {
+          adoptedAt: true,
+          cleanupClaimedAt: true,
+          cleanupCompletedAt: true,
+        },
+      });
+      if (currentLease?.cleanupCompletedAt)
+        throw new ReelUploadLeaseExpiredError();
+      if (currentLease?.cleanupClaimedAt && !currentLease.cleanupCompletedAt) {
+        throw new Error(
+          'The Reel upload is currently being cleaned up; retry renewal.',
+        );
+      }
+
+      if (currentLease?.adoptedAt) return;
+      await transaction.reelUploadLease.upsert({
+        where: {
+          userId_publishIntentId_fileType: {
+            userId: input.userId,
+            publishIntentId: input.publishIntentId,
+            fileType: input.fileType,
+          },
+        },
+        create: input,
+        update: {
+          mediaKey: input.mediaKey,
+          expiresAt: input.expiresAt,
+          cancelledAt: null,
+          adoptedAt: null,
+          cleanupClaimedAt: null,
+          cleanupCompletedAt: null,
+        },
+      });
+    });
+  }
+
+  async listExpiredReelUploadLeases(now: Date) {
+    return this.reelUploadLease.findMany({
+      where: {
+        expiresAt: { lt: now },
+        OR: [
+          { adoptedAt: null, cancelledAt: null },
+          { cancelledAt: { not: null }, cleanupCompletedAt: null },
+        ],
+      },
+      select: { id: true, mediaKey: true, expiresAt: true },
+      orderBy: { expiresAt: 'asc' },
+      take: 100,
+    });
+  }
+
+  async cleanupExpiredReelUploadLease(id: string, now: Date): Promise<boolean> {
+    return this.$transaction(async (transaction) => {
+      const candidate = await transaction.reelUploadLease.findUnique({
+        where: { id },
+      });
+      if (!candidate) return false;
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${candidate.mediaKey}))`;
+      const lease = await transaction.reelUploadLease.findUnique({
+        where: { id },
+      });
+      if (
+        !lease ||
+        lease.expiresAt >= now ||
+        (lease.adoptedAt && !lease.cancelledAt)
+      ) {
+        return false;
+      }
+
+      const adoptedReel = await transaction.reel.findFirst({
+        where: { mediaKey: lease.mediaKey },
+        select: { id: true },
+      });
+      if (adoptedReel) return false;
+
+      if (!lease.cleanupClaimedAt || lease.cleanupCompletedAt) {
+        const claimed = await transaction.reelUploadLease.updateMany({
+          where: { id, expiresAt: { lt: now } },
+          data: { cancelledAt: now, cleanupClaimedAt: now },
+        });
+        if (claimed.count === 0) return false;
+      }
+      return true;
+    });
+  }
+
+  async completeReelUploadLeaseCleanup(
+    id: string,
+    now: Date,
+  ): Promise<boolean> {
+    return this.$transaction(
+      async (transaction) => {
+        const candidate = await transaction.reelUploadLease.findUnique({
+          where: { id },
+        });
+        if (!candidate) return false;
+        await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${candidate.mediaKey}))`;
+        const lease = await transaction.reelUploadLease.findUnique({
+          where: { id },
+        });
+        if (!lease?.cleanupClaimedAt || lease.cleanupCompletedAt) return false;
+        if (
+          await transaction.reel.findFirst({
+            where: { mediaKey: lease.mediaKey },
+          })
+        )
+          return false;
+        await this.storageService.deleteObjects([lease.mediaKey]);
+        const completed = await transaction.reelUploadLease.updateMany({
+          where: {
+            id,
+            cleanupClaimedAt: { not: null },
+            cleanupCompletedAt: null,
+          },
+          data: { cleanupCompletedAt: now },
+        });
+        return completed.count > 0;
+      },
+      { timeout: 60_000 },
+    );
+  }
+
+  async isReelMediaOutputPrefixProtected(
+    prefix: string,
+    mediaAttemptId: string,
+  ): Promise<boolean> {
+    const attemptLease = await this.reelMediaAttemptLease.findFirst({
+      where: {
+        attemptId: mediaAttemptId,
+        expiresAt: { gt: new Date() },
+        completedAt: null,
+      },
+      select: { attemptId: true },
+    });
+    if (attemptLease) return true;
+
+    const reel = await this.reel.findFirst({
+      where: {
+        OR: [
+          { mediaAttemptId },
+          { hlsMasterKey: { startsWith: `${prefix}/` } },
+          { thumbnailKey: { startsWith: `${prefix}/` } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (reel) return true;
+
+    const pendingEvents = await this.outboxEvent.findMany({
+      where: {
+        publishedAt: null,
+        eventType: REEL_MEDIA_JOB_EVENT_TYPE,
+      },
+      select: { payload: true },
+    });
+    return pendingEvents.some((event) => {
+      const payload = event.payload as { mediaAttemptId?: unknown };
+      return payload.mediaAttemptId === mediaAttemptId;
+    });
+  }
+
   private toMediaMetadataData(
     metadata: ReelProcessingMediaMetadata,
   ): Record<string, unknown> {
@@ -232,10 +424,24 @@ export class ContentRepository
     outboxEvent: ReelMediaOutboxEventInput,
   ): Promise<Reel> {
     const savedRecord = await this.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reel.mediaKey!}))`;
+      const cleanupClaim = await transaction.reelUploadLease.findFirst({
+        where: {
+          mediaKey: reel.mediaKey!,
+          cleanupClaimedAt: { not: null },
+          cleanupCompletedAt: null,
+        },
+      });
+      if (cleanupClaim) throw new ReelUploadLeaseUnavailableError();
+      // HEAD before the transaction may predate a completed storage cleanup.
+      if (!(await this.storageService.checkFileExists(reel.mediaKey!)))
+        throw new ReelUploadLeaseUnavailableError();
       const record = await transaction.reel.create({
         data: {
           id: reel.id,
           userId: reel.userId!,
+          publishIntentId: reel.publishIntentId!,
+          publishRequestFingerprint: reel.publishRequestFingerprint,
           mediaKey: reel.mediaKey!,
           title: reel.title,
           description: reel.description,
@@ -275,6 +481,47 @@ export class ContentRepository
         },
       });
 
+      if (reel.publishIntentId) {
+        const lease = await transaction.reelUploadLease.findFirst({
+          where: {
+            userId: reel.userId!,
+            publishIntentId: reel.publishIntentId,
+            mediaKey: reel.mediaKey!,
+          },
+        });
+        if (lease) {
+          const adopted = await transaction.reelUploadLease.updateMany({
+            where: {
+              id: lease.id,
+              mediaKey: reel.mediaKey!,
+              adoptedAt: null,
+              cancelledAt: null,
+              cleanupClaimedAt: null,
+            },
+            data: { adoptedAt: new Date() },
+          });
+          if (adopted.count === 0) {
+            throw new ReelUploadLeaseUnavailableError();
+          }
+        }
+      }
+
+      if (reel.mediaAttemptId) {
+        await transaction.reelMediaAttemptLease.upsert({
+          where: { attemptId: reel.mediaAttemptId },
+          create: {
+            attemptId: reel.mediaAttemptId,
+            reelId: record.id,
+            expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS),
+          },
+          update: {
+            reelId: record.id,
+            expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS),
+            completedAt: null,
+          },
+        });
+      }
+
       await transaction.outboxEvent.create({
         data: {
           id: outboxEvent.id,
@@ -293,30 +540,71 @@ export class ContentRepository
     return toReelDomain(savedRecord);
   }
 
+  async findByPublishIntentId(
+    userId: string,
+    publishIntentId: string,
+  ): Promise<Reel | null> {
+    const record = await this.reel.findUnique({
+      where: {
+        userId_publishIntentId: {
+          userId,
+          publishIntentId,
+        },
+      },
+      include: {
+        series: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+      },
+    });
+
+    return record ? toReelDomain(record) : null;
+  }
+
   async queueReelProcessingAttemptWithMediaJob(
     reelId: string,
     mediaAttemptId: string,
     indexAttemptId: string,
     outboxEvent: ReelMediaOutboxEventInput,
+    preserveMediaReady = false,
   ): Promise<Reel> {
     const record = await this.$transaction(async (transaction) => {
       const queuedRecord = await transaction.reel.update({
         where: { id: reelId },
         data: {
-          status: 'PENDING',
-          mediaStatus: 'PENDING',
-          indexStatus: 'NOT_REQUESTED',
-          processingStage: 'QUEUED',
-          processingMessage: 'Queued for processing',
-          processingProgress: 0,
+          status: preserveMediaReady ? 'COMPLETED' : 'PENDING',
+          mediaStatus: preserveMediaReady ? 'COMPLETED' : 'PENDING',
+          indexStatus: preserveMediaReady ? 'PENDING' : 'NOT_REQUESTED',
+          processingStage: preserveMediaReady ? 'MEDIA_READY' : 'QUEUED',
+          processingMessage: preserveMediaReady
+            ? 'Video is ready; evidence generation queued'
+            : 'Queued for processing',
+          processingProgress: preserveMediaReady ? 90 : 0,
           processingAttemptId: mediaAttemptId,
           mediaAttemptId,
           indexAttemptId,
-          processingStartedAt: null,
+          processingStartedAt: preserveMediaReady ? undefined : null,
           processingFailedAt: null,
-          processingCompletedAt: null,
+          processingCompletedAt: preserveMediaReady ? undefined : null,
           processingErrorCode: null,
           processingErrorDetail: null,
+        },
+      });
+
+      await transaction.reelMediaAttemptLease.upsert({
+        where: { attemptId: mediaAttemptId },
+        create: {
+          attemptId: mediaAttemptId,
+          reelId,
+          expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS),
+        },
+        update: {
+          reelId,
+          expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS),
+          completedAt: null,
         },
       });
 
@@ -343,31 +631,82 @@ export class ContentRepository
     reelId: string;
     processingAttemptId: string;
     allowReclaim?: boolean;
+    evidenceOnly?: boolean;
+    userId?: string;
+    hlsMasterKey?: string;
   }): Promise<boolean> {
+    const where: Prisma.ReelWhereInput = input.evidenceOnly
+      ? {
+          id: input.reelId,
+          mediaAttemptId: input.processingAttemptId,
+          mediaStatus: 'COMPLETED' as const,
+          indexStatus: 'PENDING' as const,
+          processingStage: input.allowReclaim
+            ? {
+                in: [
+                  'MEDIA_READY',
+                  'EVIDENCE_PROCESSING',
+                  'LOADING_EXISTING_HLS',
+                  'BUILDING_AUDIO_MANIFEST',
+                  'BUILDING_VISUAL_MANIFEST',
+                  'RETRY_SCHEDULED',
+                ],
+              }
+            : { in: ['MEDIA_READY', 'RETRY_SCHEDULED'] },
+        }
+      : {
+          id: input.reelId,
+          mediaAttemptId: input.processingAttemptId,
+          mediaStatus: input.allowReclaim
+            ? { in: ['PENDING', 'PROCESSING'] }
+            : 'PENDING',
+        };
+    const data = input.evidenceOnly
+      ? {
+          status: 'COMPLETED' as const,
+          mediaStatus: 'COMPLETED' as const,
+          processingStage: 'EVIDENCE_PROCESSING',
+          processingMessage: 'Preparing transcript and visual evidence',
+          processingProgress: 92,
+          processingStartedAt: new Date(),
+          processingFailedAt: null,
+          processingErrorCode: null,
+          processingErrorDetail: null,
+        }
+      : {
+          status: 'PROCESSING' as const,
+          mediaStatus: 'PROCESSING' as const,
+          processingStage: 'PROCESSING',
+          processingMessage: 'Video is being processed',
+          processingProgress: 10,
+          processingStartedAt: new Date(),
+          processingFailedAt: null,
+          processingCompletedAt: null,
+          processingErrorCode: null,
+          processingErrorDetail: null,
+        };
     const result = await this.reel.updateMany({
       where: {
-        id: input.reelId,
-        mediaAttemptId: input.processingAttemptId,
-        mediaStatus: input.allowReclaim
-          ? { in: ['PENDING', 'PROCESSING'] }
-          : 'PENDING',
+        ...where,
+        ...(input.userId ? { userId: input.userId } : {}),
+        ...(input.evidenceOnly && input.hlsMasterKey
+          ? { hlsMasterKey: input.hlsMasterKey }
+          : {}),
       },
-      data: {
-        status: 'PROCESSING',
-        mediaStatus: 'PROCESSING',
-        processingStage: 'PROCESSING',
-        processingMessage: 'Video is being processed',
-        processingProgress: 10,
-        processingStartedAt: new Date(),
-        processingFailedAt: null,
-        processingCompletedAt: null,
-        processingErrorCode: null,
-        processingErrorDetail: null,
-      },
+      data,
     });
 
     const claimed = result.count > 0;
     if (claimed) {
+      await this.reelMediaAttemptLease.updateMany({
+        where: {
+          attemptId: input.processingAttemptId,
+          completedAt: null,
+        },
+        data: {
+          expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS),
+        },
+      });
       await this.recommendationFeedCacheRepository.invalidateReels([
         input.reelId,
       ]);
@@ -396,7 +735,7 @@ export class ContentRepository
           thumbnailKey: input.mediaOutput.thumbnailKey,
           hlsMasterKey: input.mediaOutput.hlsMasterKey,
           transcriptionAudioManifestKey:
-            input.mediaOutput.transcriptionAudioManifestKey,
+            input.mediaOutput.transcriptionAudioManifestKey ?? null,
           visualFrameManifestKey:
             input.mediaOutput.visualFrameManifestKey ?? null,
           mediaOutput: input.mediaOutput as unknown as Prisma.InputJsonValue,
@@ -422,32 +761,23 @@ export class ContentRepository
       }
 
       const jobId = randomUUID();
-      const indexJob: ReelIndexJob = {
+      const evidenceJob: ReelMediaJob = {
         jobId,
         reelId: reel.id,
         userId: reel.userId,
         mediaAttemptId: input.mediaAttemptId,
-        indexAttemptId: reel.indexAttemptId,
-        indexVersion:
-          this.configService.get<string>('INDEX_VERSION')?.trim() ||
-          'reel-index-v2',
         mediaKey: reel.mediaKey,
-        transcriptionAudioManifestKey:
-          input.mediaOutput.transcriptionAudioManifestKey,
-        visualFrameManifestKey:
-          input.mediaOutput.visualFrameManifestKey ?? undefined,
-        sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
-        outputDurationMs:
-          input.mediaMetadata.outputDurationMs ??
-          input.mediaMetadata.sourceDurationMs!,
-        sourceHasAudio: input.mediaOutput.sourceHasAudio,
-        sourceOrientation: input.mediaMetadata.sourceOrientation!,
-        sourceLengthClass: input.mediaOutput.sourceLengthClass,
+        expectedLengthClass: input.mediaOutput.sourceLengthClass,
+        sourceMode: 'EXISTING_HLS',
+        hlsMasterKey: input.mediaOutput.hlsMasterKey,
+        existingSourceOrientation: input.mediaMetadata.sourceOrientation,
+        existingSourceLengthClass: input.mediaOutput.sourceLengthClass,
+        preservedSourceDurationMs: input.mediaMetadata.sourceDurationMs,
         title: reel.title ?? undefined,
         description: reel.description ?? undefined,
         tags: reel.tags,
         createdAt: completedAt.toISOString(),
-        schemaVersion: REEL_INDEX_JOB_SCHEMA_VERSION,
+        schemaVersion: REEL_MEDIA_JOB_SCHEMA_VERSION,
       };
 
       await transaction.outboxEvent.create({
@@ -455,8 +785,8 @@ export class ContentRepository
           id: jobId,
           aggregateType: 'REEL',
           aggregateId: reel.id,
-          eventType: REEL_INDEX_JOB_EVENT_TYPE,
-          payload: indexJob as unknown as Prisma.InputJsonValue,
+          eventType: REEL_MEDIA_JOB_EVENT_TYPE,
+          payload: evidenceJob as unknown as Prisma.InputJsonValue,
           createdAt: completedAt,
           nextAttemptAt: completedAt,
         },
@@ -478,28 +808,67 @@ export class ContentRepository
   ): Promise<boolean> {
     const completed = await this.$transaction(async (transaction) => {
       const completedAt = new Date();
+      const current = await transaction.reel.findUnique({
+        where: { id: input.reelId },
+      });
+      if (!current) return false;
+
+      const mediaMetadataData = this.toMediaMetadataData(input.mediaMetadata);
+      for (const key of [
+        'sourceDurationMs',
+        'outputDurationMs',
+        'sourceWidth',
+        'sourceHeight',
+        'sourceFps',
+        'sourceBitrateKbps',
+        'sourceHasAudio',
+        'sourceRotation',
+        'sourceOrientation',
+        'sourceLengthClass',
+        'sourceAspectRatio',
+        'sourceEffectiveWidth',
+        'sourceEffectiveHeight',
+        'encodedVariantCount',
+        'encodedMaxHeight',
+        'encodedFps',
+      ] as const) {
+        if (current[key] !== null && current[key] !== undefined) {
+          delete mediaMetadataData[key];
+        }
+      }
+
       const result = await transaction.reel.updateMany({
         where: {
           id: input.reelId,
           mediaAttemptId: input.mediaAttemptId,
-          mediaStatus: 'PROCESSING',
+          mediaStatus: 'COMPLETED',
+          indexStatus: 'PENDING',
+          processingStage: {
+            in: [
+              'EVIDENCE_PROCESSING',
+              'LOADING_EXISTING_HLS',
+              'BUILDING_AUDIO_MANIFEST',
+              'BUILDING_VISUAL_MANIFEST',
+              'RETRY_SCHEDULED',
+            ],
+          },
           hlsMasterKey: { not: null },
         },
         data: {
           status: 'COMPLETED',
           mediaStatus: 'COMPLETED',
           indexStatus: 'PENDING',
-          transcriptionAudioManifestKey:
-            input.transcriptionAudioManifestKey,
+          transcriptionAudioManifestKey: input.transcriptionAudioManifestKey,
           visualFrameManifestKey: input.visualFrameManifestKey,
-          processingStage: 'MEDIA_READY',
-          processingMessage: 'Transcript and visual evidence ready; indexing queued',
+          processingStage: 'INDEX_QUEUED',
+          processingMessage:
+            'Transcript and visual evidence ready; indexing queued',
           processingProgress: 90,
           processingCompletedAt: completedAt,
           processingFailedAt: null,
           processingErrorCode: null,
           processingErrorDetail: null,
-          ...this.toMediaMetadataData(input.mediaMetadata),
+          ...mediaMetadataData,
         },
       });
       if (result.count === 0) return false;
@@ -522,16 +891,20 @@ export class ContentRepository
           this.configService.get<string>('INDEX_VERSION')?.trim() ||
           'reel-index-v2',
         mediaKey: reel.mediaKey,
-        transcriptionAudioManifestKey:
-          input.transcriptionAudioManifestKey,
+        transcriptionAudioManifestKey: input.transcriptionAudioManifestKey,
         visualFrameManifestKey: input.visualFrameManifestKey,
-        sourceDurationMs: input.mediaMetadata.sourceDurationMs!,
+        sourceDurationMs:
+          reel.sourceDurationMs ?? input.mediaMetadata.sourceDurationMs!,
         outputDurationMs:
+          reel.outputDurationMs ??
           input.mediaMetadata.outputDurationMs ??
           input.mediaMetadata.sourceDurationMs!,
-        sourceHasAudio: input.mediaMetadata.sourceHasAudio,
-        sourceOrientation: input.mediaMetadata.sourceOrientation!,
-        sourceLengthClass: input.mediaMetadata.sourceLengthClass!,
+        sourceHasAudio:
+          reel.sourceHasAudio ?? input.mediaMetadata.sourceHasAudio,
+        sourceOrientation:
+          reel.sourceOrientation ?? input.mediaMetadata.sourceOrientation!,
+        sourceLengthClass:
+          reel.sourceLengthClass ?? input.mediaMetadata.sourceLengthClass!,
         title: reel.title ?? undefined,
         description: reel.description ?? undefined,
         tags: reel.tags,
@@ -593,6 +966,17 @@ export class ContentRepository
 
     const updated = result.count > 0;
     if (updated) {
+      const reelForLease = await this.reel.findUnique({
+        where: { id: input.reelId },
+        select: { mediaAttemptId: true },
+      });
+      await this.reelMediaAttemptLease.updateMany({
+        where: {
+          attemptId: reelForLease?.mediaAttemptId ?? '',
+          completedAt: null,
+        },
+        data: { expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS) },
+      });
       await this.recommendationFeedCacheRepository.invalidateReels([
         input.reelId,
       ]);
@@ -648,6 +1032,19 @@ export class ContentRepository
     });
     const claimed = result.count > 0;
     if (claimed) {
+      const reelForLease = await this.reel.findUnique({
+        where: { id: input.reelId },
+        select: { mediaAttemptId: true },
+      });
+      if (reelForLease?.mediaAttemptId) {
+        await this.reelMediaAttemptLease.updateMany({
+          where: {
+            attemptId: reelForLease.mediaAttemptId,
+            completedAt: null,
+          },
+          data: { expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS) },
+        });
+      }
       await this.recommendationFeedCacheRepository.invalidateReels([
         input.reelId,
       ]);
@@ -679,6 +1076,19 @@ export class ContentRepository
     });
     const updated = result.count > 0;
     if (updated) {
+      const reelForLease = await this.reel.findUnique({
+        where: { id: input.reelId },
+        select: { mediaAttemptId: true },
+      });
+      if (reelForLease?.mediaAttemptId) {
+        await this.reelMediaAttemptLease.updateMany({
+          where: {
+            attemptId: reelForLease.mediaAttemptId,
+            completedAt: null,
+          },
+          data: { expiresAt: new Date(Date.now() + MEDIA_ATTEMPT_LEASE_MS) },
+        });
+      }
       await this.recommendationFeedCacheRepository.invalidateReels([
         input.reelId,
       ]);
@@ -746,6 +1156,16 @@ export class ContentRepository
       `);
       if (result === 0) return false;
 
+      if (current.mediaAttemptId) {
+        await transaction.reelMediaAttemptLease.updateMany({
+          where: {
+            attemptId: current.mediaAttemptId,
+            completedAt: null,
+          },
+          data: { completedAt: new Date() },
+        });
+      }
+
       return true;
     });
 
@@ -782,6 +1202,19 @@ export class ContentRepository
     });
     const failed = result.count > 0;
     if (failed) {
+      const reel = await this.reel.findUnique({
+        where: { id: input.reelId },
+        select: { mediaAttemptId: true },
+      });
+      if (reel?.mediaAttemptId) {
+        await this.reelMediaAttemptLease.updateMany({
+          where: {
+            attemptId: reel.mediaAttemptId,
+            completedAt: null,
+          },
+          data: { completedAt: new Date() },
+        });
+      }
       await this.recommendationFeedCacheRepository.invalidateReels([
         input.reelId,
       ]);
@@ -889,6 +1322,7 @@ export class ContentRepository
     processingErrorCode?: string,
     processingErrorDetail?: string,
     mediaMetadata?: ReelProcessingMediaMetadata,
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS',
   ): Promise<Reel> {
     const updatedRecord = await this.$transaction(async (tx) => {
       const now = new Date();
@@ -901,6 +1335,30 @@ export class ContentRepository
       if (
         expectedProcessingAttemptId?.trim() &&
         currentRecord.mediaAttemptId !== expectedProcessingAttemptId
+      ) {
+        return currentRecord;
+      }
+
+      const advancedMediaStages = new Set([
+        'MEDIA_READY',
+        'EVIDENCE_PROCESSING',
+        'LOADING_EXISTING_HLS',
+        'BUILDING_AUDIO_MANIFEST',
+        'BUILDING_VISUAL_MANIFEST',
+        'INDEX_QUEUED',
+        'READY',
+      ]);
+      if (
+        currentRecord.mediaStatus === 'COMPLETED' &&
+        sourceMode === 'SOURCE_VIDEO' &&
+        advancedMediaStages.has(currentRecord.processingStage ?? '')
+      ) {
+        return currentRecord;
+      }
+      if (
+        currentRecord.mediaStatus === 'COMPLETED' &&
+        sourceMode === 'EXISTING_HLS' &&
+        ['INDEX_QUEUED', 'READY'].includes(currentRecord.processingStage ?? '')
       ) {
         return currentRecord;
       }
@@ -933,9 +1391,15 @@ export class ContentRepository
       }
 
       if (status === 'PROCESSING') {
-        if (isPostMediaUpdate && processingStage === 'AI_ENRICHMENT') {
+        if (isPostMediaUpdate) {
           data['status'] = 'COMPLETED';
-          data['indexStatus'] = 'PROCESSING';
+          data['mediaStatus'] = 'COMPLETED';
+          data['indexStatus'] =
+            processingStage === 'AI_ENRICHMENT' ? 'PROCESSING' : 'PENDING';
+          data['processingStartedAt'] = now;
+          data['processingFailedAt'] = null;
+          data['processingErrorCode'] = null;
+          data['processingErrorDetail'] = null;
         } else {
           data['status'] = 'PROCESSING';
           data['mediaStatus'] =
@@ -949,8 +1413,14 @@ export class ContentRepository
       }
 
       if (status === 'PENDING') {
-        data['status'] = 'PENDING';
-        data['mediaStatus'] = 'PENDING';
+        if (isPostMediaUpdate) {
+          data['status'] = 'COMPLETED';
+          data['mediaStatus'] = 'COMPLETED';
+          data['indexStatus'] = 'PENDING';
+        } else {
+          data['status'] = 'PENDING';
+          data['mediaStatus'] = 'PENDING';
+        }
       }
 
       if (status === 'COMPLETED') {
@@ -1265,11 +1735,27 @@ export class ContentRepository
       async (transaction) => {
         const reel = await transaction.reel.findFirst({
           where: { id, userId },
-          select: { id: true, seriesId: true },
+          select: { id: true, seriesId: true, mediaKey: true },
         });
         if (!reel) return false;
 
+        await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reel.mediaKey}))`;
+
         await transaction.reel.delete({ where: { id } });
+
+        const survivor = await transaction.reel.findFirst({
+          where: { mediaKey: reel.mediaKey },
+          select: { id: true },
+        });
+        if (!survivor) {
+          await transaction.reelUploadLease.updateMany({
+            where: { mediaKey: reel.mediaKey, cleanupClaimedAt: null },
+            data: {
+              cancelledAt: new Date(),
+              expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            },
+          });
+        }
 
         if (reel.seriesId) {
           const remaining = await transaction.reel.findMany({

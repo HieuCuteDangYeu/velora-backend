@@ -17,6 +17,7 @@ import { Prisma } from '@prisma/content-client';
 const REEL_SELECT = {
   id: true,
   userId: true,
+  publishIntentId: true,
   mediaKey: true,
   hlsMasterKey: true,
   title: true,
@@ -1308,6 +1309,7 @@ export class RecommendationRepository implements IRecommendationRepository {
     return {
       id: record.id,
       userId: record.userId,
+      publishIntentId: record.publishIntentId,
       mediaKey: record.mediaKey,
       hlsMasterKey: record.hlsMasterKey ?? undefined,
       title: record.title ?? undefined,

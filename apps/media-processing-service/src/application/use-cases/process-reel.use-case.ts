@@ -1,4 +1,7 @@
-import type { ReelSourceLengthClass, ReelSourceOrientation } from '@common/content/interfaces/reel-state.interface';
+import type {
+  ReelSourceLengthClass,
+  ReelSourceOrientation,
+} from '@common/content/interfaces/reel-state.interface';
 import type { ReelMediaLengthClass } from '@common/processing/interfaces/reel-media-job.interface';
 import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type { ReelPipelineMetricContext } from '@common/processing/interfaces/reel-pipeline-metric.interface';
@@ -109,6 +112,11 @@ export class ProcessReelUseCase {
           reelId,
           processingAttemptId,
           allowReclaim: data.allowReclaim,
+          evidenceOnly: data.sourceMode === 'EXISTING_HLS',
+          userId: data.userId,
+          ...(data.sourceMode === 'EXISTING_HLS'
+            ? { hlsMasterKey: data.hlsMasterKey }
+            : {}),
         });
         claimTimer.succeed({ claimed });
       } catch (error: unknown) {
@@ -137,7 +145,7 @@ export class ProcessReelUseCase {
       try {
         const isExistingHls = data.sourceMode === 'EXISTING_HLS';
         let mediaMetadata: ReelProcessingMediaMetadata;
-        let transcriptionAudioManifestKey: string;
+        let transcriptionAudioManifestKey = '';
         let mediaResult:
           | Awaited<ReturnType<PrepareReelMediaUseCase['execute']>>
           | undefined;
@@ -148,23 +156,25 @@ export class ProcessReelUseCase {
           }
           currentProgress = 15;
           failedStage = 'PREPARING_EXISTING_HLS_EVIDENCE';
-          failedMessage = 'Existing HLS media could not be prepared for indexing';
-          const hlsResult = await this.prepareExistingHlsEvidenceUseCase.execute({
-            reelId,
-            mediaAttemptId: processingAttemptId,
-            hlsMasterKey: data.hlsMasterKey,
-            inputPath: workspace.inputPath,
-            audioOutputDir: workspace.audioOutputDir,
-            metricsContext,
-            fallbackOrientation: data.existingSourceOrientation,
-            fallbackLengthClass:
-              data.existingSourceLengthClass ??
-              (data.expectedLengthClass === 'SHORT' ||
-              data.expectedLengthClass === 'LONG'
-                ? data.expectedLengthClass
-                : undefined),
-            preservedSourceDurationMs: data.preservedSourceDurationMs,
-          });
+          failedMessage =
+            'Existing HLS media could not be prepared for indexing';
+          const hlsResult =
+            await this.prepareExistingHlsEvidenceUseCase.execute({
+              reelId,
+              mediaAttemptId: processingAttemptId,
+              hlsMasterKey: data.hlsMasterKey,
+              inputPath: workspace.inputPath,
+              audioOutputDir: workspace.audioOutputDir,
+              metricsContext,
+              fallbackOrientation: data.existingSourceOrientation,
+              fallbackLengthClass:
+                data.existingSourceLengthClass ??
+                (data.expectedLengthClass === 'SHORT' ||
+                data.expectedLengthClass === 'LONG'
+                  ? data.expectedLengthClass
+                  : undefined),
+              preservedSourceDurationMs: data.preservedSourceDurationMs,
+            });
           mediaMetadata = hlsResult.mediaMetadata;
           transcriptionAudioManifestKey =
             hlsResult.transcriptionAudioManifestKey;
@@ -182,8 +192,35 @@ export class ProcessReelUseCase {
             edit: data.edit,
           });
           mediaMetadata = mediaResult.mediaMetadata;
-          transcriptionAudioManifestKey =
-            mediaResult.mediaOutput.transcriptionAudioManifestKey;
+        }
+
+        if (!isExistingHls) {
+          currentProgress = 100;
+          const applied = await this.contentService.persistMediaCompleted({
+            reelId,
+            processingAttemptId,
+            mediaMetadata,
+            mediaOutput: mediaResult!.mediaOutput,
+          });
+
+          if (!applied) {
+            totalPipelineTimer.succeed({ staleMediaAttempt: true });
+            return { status: 'DUPLICATE_OR_STALE' };
+          }
+
+          totalPipelineTimer.succeed({
+            rabbitMqPayloadBytesEstimate:
+              this.processingMetrics.estimatePayloadBytes({
+                mediaMetadata,
+                mediaOutput: mediaResult!.mediaOutput,
+              }),
+            mediaOnlyWorker: true,
+            reusedHls: false,
+          });
+          this.logger.log(
+            `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; evidence queued`,
+          );
+          return { status: 'COMPLETED' };
         }
 
         currentProgress = 96;
@@ -207,47 +244,26 @@ export class ProcessReelUseCase {
             mediaAttemptId: processingAttemptId,
             inputPath: workspace.inputPath,
             outputDir: path.join(workspace.workDir, 'visual-frames'),
-            storagePrefix: isExistingHls
-              ? path.posix.dirname(data.hlsMasterKey!)
-              : mediaKey.replace(/\.[^.]+$/, ''),
+            storagePrefix: path.posix.dirname(data.hlsMasterKey!),
             metadata: {
-              durationMs: mediaMetadata.outputDurationMs ??
+              durationMs:
+                mediaMetadata.outputDurationMs ??
                 mediaMetadata.sourceDurationMs,
             },
-            crop: mediaResult?.crop,
-            trim: mediaResult?.trim,
           },
         );
         visualTimer.succeed({
           visualFrameCount: visualResult.manifest.artifacts.length,
           visualFrameBytes: visualResult.totalFrameBytes,
         });
-        const mediaOutput = mediaResult
-          ? {
-              ...mediaResult.mediaOutput,
-              visualFrameManifestKey: visualResult.manifestKey,
-              checksums: {
-                ...mediaResult.mediaOutput.checksums,
-                visualFrameManifestSha256: visualResult.manifestChecksum,
-              },
-            }
-          : undefined;
-
         currentProgress = 100;
-        const applied = isExistingHls
-          ? await this.contentService.persistExistingHlsEvidence({
-              reelId,
-              processingAttemptId,
-              transcriptionAudioManifestKey,
-              visualFrameManifestKey: visualResult.manifestKey,
-              mediaMetadata,
-            })
-          : await this.contentService.persistMediaCompleted({
-              reelId,
-              processingAttemptId,
-              mediaMetadata,
-              mediaOutput: mediaOutput!,
-            });
+        const applied = await this.contentService.persistExistingHlsEvidence({
+          reelId,
+          processingAttemptId,
+          transcriptionAudioManifestKey,
+          visualFrameManifestKey: visualResult.manifestKey,
+          mediaMetadata,
+        });
 
         if (!applied) {
           totalPipelineTimer.succeed({ staleMediaAttempt: true });
@@ -260,10 +276,9 @@ export class ProcessReelUseCase {
               mediaMetadata,
               transcriptionAudioManifestKey,
               visualFrameManifestKey: visualResult.manifestKey,
-              ...(mediaOutput ? { mediaOutput } : {}),
             }),
-          mediaOnlyWorker: !isExistingHls,
-          reusedHls: isExistingHls,
+          mediaOnlyWorker: false,
+          reusedHls: true,
           visualFrameCount: visualResult.manifest.artifacts.length,
         });
         this.logger.log(
@@ -297,6 +312,7 @@ export class ProcessReelUseCase {
             stage: 'RETRY_SCHEDULED',
             message: 'Temporary media-processing failure; retry scheduled',
             progress: currentProgress,
+            sourceMode: data.sourceMode,
           });
 
           return {
@@ -317,6 +333,7 @@ export class ProcessReelUseCase {
           errorDetail: failureDetail,
           mediaMetadata: failureMediaMetadata,
           metricsContext,
+          sourceMode: data.sourceMode,
         });
 
         return {

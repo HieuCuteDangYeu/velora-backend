@@ -44,6 +44,7 @@ export class MediaController {
           userId: request.user!.id,
           fileType: body.fileType,
           purpose: body.purpose,
+          publishIntentId: body.publishIntentId,
         })
         .pipe(
           catchError((error) => {

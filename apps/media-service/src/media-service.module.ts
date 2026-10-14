@@ -1,6 +1,7 @@
 import { FinalizeChatUploadUseCase } from '@media/application/use-cases/finalize-chat-upload.use-case';
 import { DeleteRecalledChatMediaUseCase } from '@media/application/use-cases/delete-recalled-chat-media.use-case';
 import { MediaProcessingAdapter } from '@media/infrastructure/adapters/media-processing.adapter';
+import { ContentUploadLeaseAdapter } from '@media/infrastructure/adapters/content-upload-lease.adapter';
 import { GetPresignedUrlUseCase } from '@media/application/use-cases/get-presigned-url.use-case';
 import { MediaController } from '@media/infrastructure/controllers/media.controller';
 import { S3Service } from '@media/infrastructure/services/s3.service';
@@ -15,6 +16,21 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       envFilePath: '.env',
     }),
     ClientsModule.registerAsync([
+      {
+        name: 'CONTENT_SERVICE_RMQ',
+        useFactory: (configService: ConfigService) => ({
+          transport: Transport.RMQ,
+          options: {
+            urls: [
+              configService.get<string>('RABBITMQ_URL') ||
+                'amqp://localhost:5672',
+            ],
+            queue: 'content_queue',
+            queueOptions: { durable: true },
+          },
+        }),
+        inject: [ConfigService],
+      },
       {
         name: 'MEDIA_PROCESSING_RMQ',
         useFactory: (configService: ConfigService) => {
@@ -48,6 +64,11 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     DeleteRecalledChatMediaUseCase,
     GetPresignedUrlUseCase,
     S3Service,
+    ContentUploadLeaseAdapter,
+    {
+      provide: 'IReelUploadLeaseService',
+      useExisting: ContentUploadLeaseAdapter,
+    },
     {
       provide: 'IVideoProcessingQueue',
       useClass: MediaProcessingAdapter,

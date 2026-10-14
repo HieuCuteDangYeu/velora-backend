@@ -21,7 +21,6 @@ import { UpdateReelDto } from '@common/content/dtos/update-reel.dto';
 import { ReelProfileContextResponse } from '@common/content/interfaces/reel-context-response.interface';
 import {
   PaginatedReelSeriesList,
-  PaginatedReelSeries,
   ReelSeriesEpisodesPage,
   ReelSeriesListSummary,
   ReelSeriesMetadataResponse,
@@ -198,7 +197,11 @@ export class ContentController {
         episodeCount: series.episodeCount,
         ...(series.firstReelId ? { firstReelId: series.firstReelId } : {}),
         ...(series.coverThumbnailKey
-          ? { coverThumbnailUrl: this.buildThumbnailUrl(series.coverThumbnailKey) }
+          ? {
+              coverThumbnailUrl: this.buildThumbnailUrl(
+                series.coverThumbnailKey,
+              ),
+            }
           : {}),
       })),
       nextCursor: result.nextCursor,
@@ -652,8 +655,8 @@ export class ContentController {
           : `${this.cdnDomain}/${status.thumbnailKey}`
         : undefined,
       streamUrl:
-        status.hlsMasterKey || status.mediaKey
-          ? this.buildStreamUrl(status.hlsMasterKey ?? status.mediaKey!)
+        status.mediaStatus === 'COMPLETED' && status.hlsMasterKey
+          ? this.buildStreamUrl(status.hlsMasterKey)
           : undefined,
     };
   }
@@ -790,7 +793,10 @@ export class ContentController {
     reel: Reel,
     opts: { includeTranscript?: boolean } = {},
   ): ReelListItem | ReelDetail {
-    const streamUrl = this.buildStreamUrl(reel.hlsMasterKey ?? reel.mediaKey);
+    const streamUrl =
+      reel.mediaStatus === 'COMPLETED' && reel.hlsMasterKey
+        ? this.buildStreamUrl(reel.hlsMasterKey)
+        : '';
     const thumbnailUrl = reel.thumbnailKey
       ? reel.thumbnailKey.startsWith('http://') ||
         reel.thumbnailKey.startsWith('https://')
@@ -805,6 +811,7 @@ export class ContentController {
     const result: ReelListItem = {
       id: reel.id,
       userId: reel.userId,
+      publishIntentId: reel.publishIntentId,
       mediaKey: reel.mediaKey,
       hlsMasterKey: reel.hlsMasterKey,
       title: reel.title,
@@ -907,7 +914,8 @@ export class ContentController {
   }
 
   private buildThumbnailUrl(thumbnailKey: string): string {
-    return thumbnailKey.startsWith('http://') || thumbnailKey.startsWith('https://')
+    return thumbnailKey.startsWith('http://') ||
+      thumbnailKey.startsWith('https://')
       ? thumbnailKey
       : `${this.cdnDomain}/${thumbnailKey.replace(/^\/+/, '')}`;
   }

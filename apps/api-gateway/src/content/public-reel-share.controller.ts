@@ -79,9 +79,10 @@ export class PublicReelShareController {
             ? result.reel.thumbnailKey
             : `${this.cdnDomain}/${result.reel.thumbnailKey}`
           : undefined,
-        streamUrl: this.buildStreamUrl(
-          result.reel.hlsMasterKey ?? result.reel.mediaKey,
-        ),
+        streamUrl:
+          result.reel.mediaStatus === 'COMPLETED' && result.reel.hlsMasterKey
+            ? this.buildStreamUrl(result.reel.hlsMasterKey)
+            : '',
         createdAt: result.reel.createdAt,
       },
     };

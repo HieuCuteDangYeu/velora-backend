@@ -1,3 +1,7 @@
+import {
+  isUserOwnedReelMediaKey,
+  normalizeReelMediaKey,
+} from '@common/content/reel-media-key';
 import { REEL_MEDIA_JOB_EVENT_TYPE } from '@common/processing/interfaces/reel-media-job.interface';
 import {
   InvalidMediaFileError,
@@ -42,11 +46,12 @@ export class ReprocessReelUseCase {
       throw new ReelAlreadyProcessingError();
     }
 
-    if (!reel.mediaKey?.trim()) {
+    const mediaKey = reel.mediaKey ? normalizeReelMediaKey(reel.mediaKey) : '';
+    if (!mediaKey || !isUserOwnedReelMediaKey(mediaKey, reel.userId)) {
       throw new InvalidMediaFileError();
     }
 
-    const fileExists = await this.storageService.checkFileExists(reel.mediaKey);
+    const fileExists = await this.storageService.checkFileExists(mediaKey);
 
     if (!fileExists) {
       throw new InvalidMediaFileError();
@@ -57,7 +62,7 @@ export class ReprocessReelUseCase {
     const mediaJob = this.buildReelMediaJobUseCase.execute({
       reelId: reel.id,
       userId: reel.userId,
-      mediaKey: reel.mediaKey,
+      mediaKey,
       mediaAttemptId,
       clientObservedDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
       title: reel.title,

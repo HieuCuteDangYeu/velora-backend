@@ -43,15 +43,19 @@ export class S3Service {
     userId: string,
     contentType: string,
     folder: string = 'avatars',
+    publishIntentId?: string,
   ) {
     try {
-      const fileExtension = contentType.split('/')[1];
-      const key = `${folder}/${userId}/${randomUUID()}.${fileExtension}`;
+      const key =
+        folder === 'reels' && publishIntentId
+          ? this.buildReelUploadKey(userId, contentType, publishIntentId)
+          : this.buildRandomUploadKey(userId, contentType, folder);
 
       const command = new PutObjectCommand({
         Bucket: this.bucketName,
         Key: key,
         ContentType: contentType,
+        ...(folder === 'reels' && publishIntentId ? { IfNoneMatch: '*' } : {}),
       });
 
       const uploadUrl = await getSignedUrl(this.s3Client, command, {
@@ -66,6 +70,26 @@ export class S3Service {
       console.error('S3 Presign Error:', error);
       throw new InternalServerErrorException('Failed to generate upload URL');
     }
+  }
+
+  buildReelUploadKey(
+    userId: string,
+    contentType: string,
+    publishIntentId: string,
+  ): string {
+    return `reels/${userId}/${publishIntentId}.${this.fileExtension(contentType)}`;
+  }
+
+  private buildRandomUploadKey(
+    userId: string,
+    contentType: string,
+    folder: string,
+  ): string {
+    return `${folder}/${userId}/${randomUUID()}.${this.fileExtension(contentType)}`;
+  }
+
+  private fileExtension(contentType: string): string {
+    return contentType.split('/')[1];
   }
 
   getPublicUrl(key: string) {

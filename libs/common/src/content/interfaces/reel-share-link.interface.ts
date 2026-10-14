@@ -1,3 +1,5 @@
+import type { ReelMediaStatus } from './reel-state.interface';
+
 export interface ReelShareLinkResponse {
   id: string;
   reelId: string;
@@ -23,6 +25,7 @@ export interface ContentResolvedReelShareLinkResponse {
     description?: string;
     tags: string[];
     status: string;
+    mediaStatus?: ReelMediaStatus;
     visibility: string;
     thumbnailKey?: string;
     createdAt: string;

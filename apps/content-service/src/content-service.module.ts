@@ -24,6 +24,7 @@ import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases
 import { RefreshGlobalRecommendationSlateUseCase } from '@content/application/use-cases/refresh-global-recommendation-slate.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
+import { ReserveReelUploadLeaseUseCase } from '@content/application/use-cases/reserve-reel-upload-lease.use-case';
 import { CreateReelSeriesUseCase } from '@content/application/use-cases/create-reel-series.use-case';
 import { ListOwnedReelSeriesUseCase } from '@content/application/use-cases/list-owned-reel-series.use-case';
 import { GetReelSeriesEpisodesUseCase } from '@content/application/use-cases/get-reel-series-episodes.use-case';
@@ -59,6 +60,7 @@ import { ContentController } from '@content/infrastructure/controllers/content.c
 import { IndexingAttemptGuardController } from '@content/infrastructure/controllers/indexing-attempt-guard.controller';
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
 import { RecommendationGlobalSlateRefreshService } from '@content/infrastructure/jobs/recommendation-global-slate-refresh.service';
+import { ReelMediaCleanupService } from '@content/infrastructure/jobs/reel-media-cleanup.service';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
 import { OutboxRepository } from '@content/infrastructure/repositories/outbox.repository';
@@ -143,6 +145,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     ReelIndexJobPublisherAdapter,
     OutboxDispatcherService,
     RecommendationGlobalSlateRefreshService,
+    ReelMediaCleanupService,
 
     CreateReelUseCase,
     BuildReelMediaJobUseCase,
@@ -171,6 +174,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     CompleteReelIndexingUseCase,
     FailReelIndexingUseCase,
     ReportReelIndexingProgressUseCase,
+    ReserveReelUploadLeaseUseCase,
     CompleteReelMediaProcessingUseCase,
     CompleteExistingHlsEvidenceUseCase,
     UpdateReelMediaStatusUseCase,

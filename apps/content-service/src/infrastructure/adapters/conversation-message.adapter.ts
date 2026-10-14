@@ -2,6 +2,7 @@ import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { resolveReelPlaybackPresentation } from '@common/content/playback-presentation';
 import { PublicUserProfile } from '@common/user/interfaces/public-user-profile.types';
 import type { Reel } from '@content/domain/entities/reel.entity';
+import { ReelNotReadyError } from '@content/domain/errors/content.error';
 import type {
   CreatedConversationMessage,
   IConversationMessageService,
@@ -71,6 +72,8 @@ export class ConversationMessageAdapter implements IConversationMessageService {
     senderId: string;
     reel: Reel;
   }): Promise<CreatedConversationMessage> {
+    if (input.reel.mediaStatus !== 'COMPLETED' || !input.reel.hlsMasterKey)
+      throw new ReelNotReadyError();
     const reelOwner = await this.loadReelOwnerProfile(input.reel.userId);
 
     const response = await firstValueFrom(
@@ -83,8 +86,8 @@ export class ConversationMessageAdapter implements IConversationMessageService {
         signalType: 0,
         content: input.reel.title?.trim() || 'Shared a reel',
         media: {
-          fileKey: input.reel.mediaKey,
-          fileUrl: this.buildStreamUrl(input.reel.mediaKey),
+          fileKey: input.reel.hlsMasterKey,
+          fileUrl: this.buildStreamUrl(input.reel.hlsMasterKey),
           thumbnailKey: input.reel.thumbnailKey,
           thumbnailUrl: input.reel.thumbnailKey
             ? `${this.cdnDomain}/${input.reel.thumbnailKey}`
@@ -149,11 +152,7 @@ export class ConversationMessageAdapter implements IConversationMessageService {
       return mediaKey;
     }
 
-    const extIndex = mediaKey.lastIndexOf('.');
-    const folderPath =
-      extIndex !== -1 ? mediaKey.substring(0, extIndex) : mediaKey;
-
-    return `${this.cdnDomain}/${folderPath}/master.m3u8`;
+    return `${this.cdnDomain}/${mediaKey.replace(/^\/+/, '')}`;
   }
 
   private async loadReelOwnerProfile(

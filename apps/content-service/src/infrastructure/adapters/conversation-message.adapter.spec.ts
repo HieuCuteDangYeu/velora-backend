@@ -39,6 +39,9 @@ describe('ConversationMessageAdapter', () => {
         id: 'reel-1',
         userId: 'owner-1',
         mediaKey: 'reels/reel-1/source.mp4',
+        hlsMasterKey: 'reels/reel-1/source/attempt-1/master.m3u8',
+        mediaStatus: 'COMPLETED',
+        indexStatus: 'PROCESSING',
         title: 'Landscape reel',
         tags: [],
         sourceEffectiveWidth: 1920,
@@ -53,6 +56,9 @@ describe('ConversationMessageAdapter', () => {
       'create_message',
       expect.objectContaining({
         media: expect.objectContaining({
+          fileKey: 'reels/reel-1/source/attempt-1/master.m3u8',
+          fileUrl:
+            'https://cdn.velora.test/reels/reel-1/source/attempt-1/master.m3u8',
           reelId: 'reel-1',
           width: 1920,
           height: 1080,
@@ -62,5 +68,25 @@ describe('ConversationMessageAdapter', () => {
         }),
       }),
     );
+  });
+
+  it('never emits a playable message for pending media', async () => {
+    const send = jest.fn();
+    const adapter = new ConversationMessageAdapter(
+      { send } as never,
+      {} as never,
+      { getOrThrow: () => 'https://cdn.velora.test' } as never,
+    );
+    await expect(
+      adapter.createReelMessage({
+        conversationId: 'conversation-1',
+        senderId: 'owner-1',
+        reel: {
+          mediaStatus: 'PENDING',
+          mediaKey: 'reels/owner-1/source.mp4',
+        } as Reel,
+      }),
+    ).rejects.toThrow('not ready');
+    expect(send).not.toHaveBeenCalled();
   });
 });

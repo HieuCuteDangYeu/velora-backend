@@ -1,7 +1,36 @@
 export class InvalidMediaFileError extends Error {
-  constructor(message = 'The uploaded reel video file does not exist in storage.') {
+  constructor(
+    message = 'The uploaded reel video file does not exist in storage.',
+  ) {
     super(message);
     this.name = 'InvalidMediaFileError';
+  }
+}
+
+export class ReelPublishIntentConflictError extends Error {
+  constructor(
+    message = 'This publish intent was already used with a different reel payload.',
+  ) {
+    super(message);
+    this.name = 'ReelPublishIntentConflictError';
+  }
+}
+
+export class ReelUploadLeaseUnavailableError extends Error {
+  constructor(
+    message = 'The Reel upload lease is no longer active; upload it again.',
+  ) {
+    super(message);
+    this.name = 'ReelUploadLeaseUnavailableError';
+  }
+}
+
+export class ReelUploadLeaseExpiredError extends Error {
+  constructor() {
+    super(
+      'This abandoned Reel upload expired. Cancel the saved publish and publish again.',
+    );
+    this.name = 'ReelUploadLeaseExpiredError';
   }
 }
 

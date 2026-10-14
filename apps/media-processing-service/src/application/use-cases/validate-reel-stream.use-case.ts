@@ -55,16 +55,38 @@ export class ValidateReelStreamUseCase {
       );
     }
 
-    const firstValidVariant = await this.findFirstValidVariant(
-      data.reelId,
-      variantReferences,
-    );
+    for (const variantReference of variantReferences) {
+      const variantText = await this.readPlaylistReference(variantReference);
+      if (!variantText) {
+        throw this.validationError(
+          data.reelId,
+          `variant playlist is missing or unreadable: ${variantReference.key}`,
+        );
+      }
 
-    if (!firstValidVariant) {
-      throw this.validationError(
-        data.reelId,
-        'no variant playlist contains a valid media segment',
+      const segmentReferences = this.parseMediaSegmentReferences(
+        variantReference.key,
+        variantText,
       );
+      if (segmentReferences.length === 0) {
+        throw this.validationError(
+          data.reelId,
+          `variant playlist has no media segments: ${variantReference.key}`,
+        );
+      }
+
+      const uriReferences = this.parseUriAttributeReferences(
+        variantReference.key,
+        variantText,
+      );
+      for (const reference of [...segmentReferences, ...uriReferences]) {
+        if (!(await this.referenceExists(reference))) {
+          throw this.validationError(
+            data.reelId,
+            `required HLS object is missing: ${reference.key}`,
+          );
+        }
+      }
     }
 
     const thumbnailExists = await this.mediaStorageService.objectExists(
@@ -79,69 +101,8 @@ export class ValidateReelStreamUseCase {
     }
 
     this.logger.log(
-      `[Reel ${data.reelId}] Stream validation passed: master=${masterKey}, variant=${firstValidVariant.variantKey}, segment=${firstValidVariant.segmentKey}, thumbnail=${data.thumbnailKey}`,
+      `[Reel ${data.reelId}] Stream validation passed: master=${masterKey}, variants=${variantReferences.length}, thumbnail=${data.thumbnailKey}`,
     );
-  }
-
-  private async findFirstValidVariant(
-    reelId: string,
-    variantReferences: PlaylistReference[],
-  ): Promise<{ variantKey: string; segmentKey: string } | null> {
-    for (const variantReference of variantReferences) {
-      const variantText = await this.readOptionalPlaylist(variantReference.key);
-
-      if (!variantText) {
-        this.logger.warn(
-          `[Reel ${reelId}] Variant playlist missing or unreadable: ${variantReference.key}`,
-        );
-        continue;
-      }
-
-      const segmentReferences = this.parseMediaSegmentReferences(
-        variantReference.key,
-        variantText,
-      );
-
-      if (segmentReferences.length === 0) {
-        this.logger.warn(
-          `[Reel ${reelId}] Variant playlist has no media segments: ${variantReference.key}`,
-        );
-        continue;
-      }
-
-      const firstSegment = segmentReferences[0];
-
-      let firstSegmentExists = false;
-      if (/^https?:\/\//i.test(firstSegment.line)) {
-        try {
-          const res = await fetch(firstSegment.line, {
-            method: 'GET',
-            headers: { Range: 'bytes=0-0' },
-          });
-          firstSegmentExists = res.ok || res.status === 206;
-        } catch {
-          firstSegmentExists = false;
-        }
-      } else {
-        firstSegmentExists = await this.mediaStorageService.objectExists(
-          firstSegment.key,
-        );
-      }
-
-      if (!firstSegmentExists) {
-        this.logger.warn(
-          `[Reel ${reelId}] First media segment is missing: ${firstSegment.key}`,
-        );
-        continue;
-      }
-
-      return {
-        variantKey: variantReference.key,
-        segmentKey: firstSegment.key,
-      };
-    }
-
-    return null;
   }
 
   private async readRequiredPlaylist(
@@ -149,7 +110,7 @@ export class ValidateReelStreamUseCase {
     key: string,
     reason: string,
   ): Promise<string> {
-    const text = await this.readOptionalPlaylist(key);
+    const text = await this.readOptionalPlaylist({ line: key, key });
 
     if (!text) {
       throw this.validationError(reelId, `${reason}: ${key}`);
@@ -158,21 +119,60 @@ export class ValidateReelStreamUseCase {
     return text;
   }
 
-  private async readOptionalPlaylist(key: string): Promise<string | null> {
+  private async readOptionalPlaylist(
+    reference: PlaylistReference,
+  ): Promise<string | null> {
     try {
-      const exists = await this.mediaStorageService.objectExists(key);
+      if (
+        /^https?:\/\//i.test(reference.line) ||
+        /^https?:\/\//i.test(reference.key)
+      ) {
+        const response = await fetch(reference.key);
+        if (!response.ok) return null;
+        const text = await response.text();
+        return text.trim().length > 0 ? text : null;
+      }
+
+      const exists = await this.mediaStorageService.objectExists(reference.key);
 
       if (!exists) {
         return null;
       }
 
-      const text = await this.mediaStorageService.getObjectText(key);
+      const text = await this.mediaStorageService.getObjectText(reference.key);
       const trimmed = text.trim();
 
       return trimmed.length > 0 ? trimmed : null;
     } catch {
       return null;
     }
+  }
+
+  private async readPlaylistReference(
+    reference: PlaylistReference,
+  ): Promise<string | null> {
+    return this.readOptionalPlaylist(reference);
+  }
+
+  private async referenceExists(
+    reference: PlaylistReference,
+  ): Promise<boolean> {
+    if (
+      /^https?:\/\//i.test(reference.line) ||
+      /^https?:\/\//i.test(reference.key)
+    ) {
+      try {
+        const response = await fetch(reference.key, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0' },
+        });
+        return response.ok || response.status === 206;
+      } catch {
+        return false;
+      }
+    }
+
+    return this.mediaStorageService.objectExists(reference.key);
   }
 
   private parseVariantPlaylistReferences(
@@ -183,6 +183,15 @@ export class ValidateReelStreamUseCase {
     const references: PlaylistReference[] = [];
 
     for (const line of lines) {
+      for (const uri of this.parseUriAttributeValues(line)) {
+        if (uri.toLowerCase().includes('.m3u8')) {
+          references.push({
+            line: uri,
+            key: this.resolvePlaylistReference(masterKey, uri),
+          });
+        }
+      }
+
       if (line.startsWith('#')) {
         continue;
       }
@@ -197,7 +206,7 @@ export class ValidateReelStreamUseCase {
       });
     }
 
-    return references;
+    return this.uniqueReferences(references);
   }
 
   private parseMediaSegmentReferences(
@@ -225,6 +234,40 @@ export class ValidateReelStreamUseCase {
     return references;
   }
 
+  private parseUriAttributeReferences(
+    playlistKey: string,
+    playlistText: string,
+  ): PlaylistReference[] {
+    return playlistText.split(/\r?\n/u).flatMap((line) =>
+      this.parseUriAttributeValues(line).map((uri) => ({
+        line: uri,
+        key: this.resolvePlaylistReference(playlistKey, uri),
+      })),
+    );
+  }
+
+  private parseUriAttributeValues(line: string): string[] {
+    const values: string[] = [];
+    const pattern = /URI="([^"]+)"/giu;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(line)) !== null) {
+      values.push(match[1]);
+    }
+    return values;
+  }
+
+  private uniqueReferences(
+    references: PlaylistReference[],
+  ): PlaylistReference[] {
+    const seen = new Set<string>();
+    return references.filter((reference) => {
+      const identity = `${reference.line}\u0000${reference.key}`;
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    });
+  }
+
   private getMeaningfulPlaylistLines(playlistText: string): string[] {
     return playlistText
       .split('\n')
@@ -236,11 +279,14 @@ export class ValidateReelStreamUseCase {
     const cleanReference = reference.trim();
 
     if (/^https?:\/\//i.test(cleanReference)) {
+      return cleanReference;
+    }
+
+    if (/^https?:\/\//i.test(baseKey)) {
       try {
-        const url = new URL(cleanReference);
-        return url.pathname.replace(/^\/+/, '');
+        return new URL(cleanReference, baseKey).toString();
       } catch {
-        return cleanReference.replace(/^\/+/, '');
+        return cleanReference;
       }
     }
 

@@ -8,6 +8,8 @@ import { mapReelLegacyStatus } from '@content/domain/reel-status-compatibility.m
 export const REEL_LIST_SELECT = {
   id: true,
   userId: true,
+  publishIntentId: true,
+  publishRequestFingerprint: true,
   mediaKey: true,
   title: true,
   description: true,
@@ -68,6 +70,9 @@ export function toReelDomain(record: Record<string, unknown>): Reel {
 
   reel.id = record['id'] as string;
   reel.userId = record['userId'] as string;
+  reel.publishIntentId = record['publishIntentId'] as string;
+  reel.publishRequestFingerprint =
+    (record['publishRequestFingerprint'] as string | null) ?? undefined;
   reel.mediaKey = record['mediaKey'] as string;
   reel.title = (record['title'] as string | null) ?? undefined;
   reel.description = (record['description'] as string | null) ?? undefined;
@@ -97,6 +102,13 @@ export function toReelDomain(record: Record<string, unknown>): Reel {
     (record['transcriptSegments'] as TranscriptSegment[] | null) ?? undefined;
   reel.thumbnailKey = (record['thumbnailKey'] as string | null) ?? undefined;
   reel.hlsMasterKey = (record['hlsMasterKey'] as string | null) ?? undefined;
+  // Legacy imports stored the already published playlist itself as mediaKey.
+  if (
+    !reel.hlsMasterKey &&
+    reel.mediaStatus === 'COMPLETED' &&
+    reel.mediaKey?.split(/[?#]/)[0].toLowerCase().endsWith('.m3u8')
+  )
+    reel.hlsMasterKey = reel.mediaKey;
   reel.transcriptionAudioManifestKey =
     (record['transcriptionAudioManifestKey'] as string | null) ?? undefined;
   reel.visualFrameManifestKey =

@@ -37,7 +37,7 @@ export class ShareReelUseCase {
       throw new ReelNotFoundError();
     }
 
-    if (reel.status !== 'COMPLETED') {
+    if (reel.mediaStatus !== 'COMPLETED' || !reel.hlsMasterKey) {
       throw new ReelNotReadyError();
     }
 

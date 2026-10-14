@@ -34,6 +34,7 @@ import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-r
 import { EnrichReelFromExistingHlsUseCase } from '@content/application/use-cases/enrich-reel-from-existing-hls.use-case';
 import { ReindexReelUseCase } from '@content/application/use-cases/reindex-reel.use-case';
 import { ReportReelIndexingProgressUseCase } from '@content/application/use-cases/report-reel-indexing-progress.use-case';
+import { ReserveReelUploadLeaseUseCase } from '@content/application/use-cases/reserve-reel-upload-lease.use-case';
 import { CreateReelSeriesUseCase } from '@content/application/use-cases/create-reel-series.use-case';
 import { ListOwnedReelSeriesUseCase } from '@content/application/use-cases/list-owned-reel-series.use-case';
 import { GetReelSeriesEpisodesUseCase } from '@content/application/use-cases/get-reel-series-episodes.use-case';
@@ -60,6 +61,9 @@ import { Reel } from '@content/domain/entities/reel.entity';
 import {
   InvalidMediaFileError,
   ReelAlreadyProcessingError,
+  ReelPublishIntentConflictError,
+  ReelUploadLeaseUnavailableError,
+  ReelUploadLeaseExpiredError,
   ReelNotFoundError,
   ReelReprocessForbiddenError,
   ReelSeriesConflictError,
@@ -129,12 +133,14 @@ export class ContentController {
     private readonly addReelsToSeriesUseCase: AddReelsToSeriesUseCase,
     private readonly removeReelFromSeriesUseCase: RemoveReelFromSeriesUseCase,
     private readonly reorderReelSeriesUseCase: ReorderReelSeriesUseCase,
+    private readonly reserveReelUploadLeaseUseCase: ReserveReelUploadLeaseUseCase,
   ) {}
 
   private toSerializable(reel: Reel): Record<string, unknown> {
     return {
       id: reel.id,
       userId: reel.userId,
+      publishIntentId: reel.publishIntentId,
       mediaKey: reel.mediaKey,
       title: reel.title,
       description: reel.description,
@@ -329,6 +335,20 @@ export class ContentController {
           error: 'Bad Request',
         });
       }
+      if (error instanceof ReelPublishIntentConflictError) {
+        throw new RpcException({
+          statusCode: 409,
+          message: error.message,
+          error: 'Conflict',
+        });
+      }
+      if (error instanceof ReelUploadLeaseUnavailableError) {
+        throw new RpcException({
+          statusCode: 409,
+          message: error.message,
+          error: 'Conflict',
+        });
+      }
 
       throw new RpcException({
         statusCode: 500,
@@ -337,6 +357,32 @@ export class ContentController {
             ? error.message
             : 'An unexpected error occurred while creating the reel',
         error: 'Internal Server Error',
+      });
+    }
+  }
+
+  @MessagePattern('content.reserve_reel_upload')
+  async reserveReelUploadLease(
+    @Payload()
+    data: {
+      userId: string;
+      publishIntentId: string;
+      mediaKey: string;
+      fileType: string;
+      expiresAt: string;
+    },
+  ) {
+    try {
+      await this.reserveReelUploadLeaseUseCase.execute({
+        ...data,
+        expiresAt: new Date(data.expiresAt),
+      });
+      return { reserved: true };
+    } catch (error: unknown) {
+      throw new RpcException({
+        statusCode: error instanceof ReelUploadLeaseExpiredError ? 410 : 400,
+        message:
+          error instanceof Error ? error.message : 'Invalid Reel upload lease.',
       });
     }
   }
@@ -637,6 +683,7 @@ export class ContentController {
       progress?: number;
       mediaMetadata?: ReelProcessingMediaMetadata;
       metricsContext?: ReelPipelineMetricContext;
+      sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
     },
   ) {
     const persistenceStartedAt = Date.now();
@@ -660,6 +707,7 @@ export class ContentController {
         undefined,
         undefined,
         data.mediaMetadata,
+        data.sourceMode,
       );
       this.logPersistenceMetric(
         metricsContext,
@@ -696,6 +744,8 @@ export class ContentController {
           data.processingAttemptId,
           'PROCESSING_COMPLETED_HANDLER_FAILED',
           error.message,
+          undefined,
+          data.sourceMode,
         );
       } catch (fallbackErr: unknown) {
         const fallbackError = fallbackErr as Error;
@@ -726,6 +776,7 @@ export class ContentController {
       progress?: number;
       mediaMetadata?: ReelProcessingMediaMetadata;
       metricsContext?: ReelPipelineMetricContext;
+      sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
     },
   ) {
     const persistenceStartedAt = Date.now();
@@ -749,6 +800,7 @@ export class ContentController {
         undefined,
         undefined,
         data.mediaMetadata,
+        data.sourceMode,
       );
       this.logPersistenceMetric(
         metricsContext,
@@ -843,6 +895,7 @@ export class ContentController {
       errorDetail?: string;
       mediaMetadata?: ReelProcessingMediaMetadata;
       metricsContext?: ReelPipelineMetricContext;
+      sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
     },
   ) {
     const persistenceStartedAt = Date.now();
@@ -866,6 +919,7 @@ export class ContentController {
         data.errorCode,
         data.errorDetail,
         data.mediaMetadata,
+        data.sourceMode,
       );
       this.logPersistenceMetric(
         metricsContext,
@@ -901,6 +955,7 @@ export class ContentController {
       errorDetail?: string;
       mediaMetadata?: ReelProcessingMediaMetadata;
       metricsContext?: ReelPipelineMetricContext;
+      sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
     },
   ) {
     const persistenceStartedAt = Date.now();
@@ -924,6 +979,7 @@ export class ContentController {
         data.errorCode,
         data.errorDetail,
         data.mediaMetadata,
+        data.sourceMode,
       );
       this.logPersistenceMetric(
         metricsContext,
@@ -953,6 +1009,7 @@ export class ContentController {
       message: string;
       progress: number;
       processingAttemptId: string;
+      sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
     },
   ) {
     await this.updateReelStatusUseCase.execute(
@@ -969,6 +1026,10 @@ export class ContentController {
       undefined,
       undefined,
       data.processingAttemptId,
+      undefined,
+      undefined,
+      undefined,
+      data.sourceMode,
     );
 
     return { persisted: true };
@@ -1109,6 +1170,9 @@ export class ContentController {
       reelId: string;
       processingAttemptId: string;
       allowReclaim?: boolean;
+      evidenceOnly?: boolean;
+      userId?: string;
+      hlsMasterKey?: string;
     },
   ) {
     if (
@@ -1116,7 +1180,11 @@ export class ContentController {
       typeof data.reelId !== 'string' ||
       data.reelId.trim().length === 0 ||
       typeof data.processingAttemptId !== 'string' ||
-      data.processingAttemptId.trim().length === 0
+      data.processingAttemptId.trim().length === 0 ||
+      (data.userId !== undefined &&
+        (typeof data.userId !== 'string' || !data.userId.trim())) ||
+      (data.hlsMasterKey !== undefined &&
+        (typeof data.hlsMasterKey !== 'string' || !data.hlsMasterKey.trim()))
     ) {
       return false;
     }
@@ -1125,6 +1193,9 @@ export class ContentController {
       reelId: data.reelId,
       processingAttemptId: data.processingAttemptId,
       allowReclaim: data.allowReclaim === true,
+      evidenceOnly: data.evidenceOnly === true,
+      userId: data.userId,
+      hlsMasterKey: data.hlsMasterKey,
     });
   }
 

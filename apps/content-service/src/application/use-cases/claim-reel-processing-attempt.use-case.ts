@@ -14,6 +14,9 @@ export class ClaimReelProcessingAttemptUseCase {
     reelId: string;
     processingAttemptId: string;
     allowReclaim?: boolean;
+    evidenceOnly?: boolean;
+    userId?: string;
+    hlsMasterKey?: string;
   }): Promise<boolean> {
     const reelId = data.reelId.trim();
     const processingAttemptId = data.processingAttemptId.trim();
@@ -26,6 +29,9 @@ export class ClaimReelProcessingAttemptUseCase {
       reelId,
       processingAttemptId,
       allowReclaim: data.allowReclaim,
+      evidenceOnly: data.evidenceOnly,
+      userId: data.userId,
+      hlsMasterKey: data.hlsMasterKey,
     });
 
     if (!claimed) {

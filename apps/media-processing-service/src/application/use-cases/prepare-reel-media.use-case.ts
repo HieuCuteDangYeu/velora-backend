@@ -21,7 +21,6 @@ import type {
 import * as path from 'node:path';
 import type { ITikTokCdnService } from '../../domain/interfaces/tiktok-cdn.service.interface';
 import { formatProcessingError } from '../utils/format-processing-error';
-import { BuildTranscriptionAudioManifestUseCase } from './build-transcription-audio-manifest.use-case';
 import {
   ClassifyReelMediaUseCase,
   ReelMediaClassification,
@@ -95,7 +94,6 @@ export class PrepareReelMediaUseCase {
     private readonly validateReelSourceMediaUseCase: ValidateReelSourceMediaUseCase,
     private readonly selectReelEncodingProfileUseCase: SelectReelEncodingProfileUseCase,
     private readonly classifyReelMediaUseCase: ClassifyReelMediaUseCase,
-    private readonly buildTranscriptionAudioManifestUseCase: BuildTranscriptionAudioManifestUseCase,
     @Inject('ITikTokCdnService')
     private readonly tiktokCdnService: ITikTokCdnService,
   ) {}
@@ -284,13 +282,13 @@ export class PrepareReelMediaUseCase {
         ...this.toEncodedMetadata(transcodeResult),
       };
 
-      const storagePrefix = data.mediaKey.replace(/\.[^.]+$/, '');
+      const storagePrefix = `${data.mediaKey.replace(/\.[^.]+$/, '')}/${data.processingAttemptId}`;
       const hlsMasterKey = `${storagePrefix}/master.m3u8`;
 
       currentProgress = 60;
       currentStage = 'UPLOADING_STREAM';
       currentErrorCode = 'STREAM_UPLOAD_FAILED';
-      await this.mediaStorageService.deleteObjectsByPrefix(storagePrefix);
+      // Attempt-scoped outputs are immutable; cleanup must prove no Reel adopted the prefix.
       await this.emitProgress(
         data,
         currentStage,
@@ -385,38 +383,6 @@ export class PrepareReelMediaUseCase {
         thumbnailTimestampSeconds,
       });
 
-      currentProgress = 82;
-      currentStage = 'BUILDING_AUDIO_MANIFEST';
-      currentErrorCode = 'AUDIO_ARTIFACT_FAILED';
-      await this.emitProgress(
-        data,
-        currentStage,
-        'Preparing transcription audio',
-        currentProgress,
-      );
-      const audioTimer = this.processingMetrics.startStage(
-        data.metricsContext,
-        'AUDIO_ARTIFACTS',
-      );
-      const audioResult =
-        await this.buildTranscriptionAudioManifestUseCase.execute({
-          reelId: data.reelId,
-          mediaAttemptId: data.processingAttemptId,
-          inputPath: data.inputPath,
-          outputDir: data.audioOutputDir,
-          storagePrefix,
-          metadata: sourceMetadata,
-          trim: data.edit?.trim ? processingTrim : undefined,
-        });
-      audioTimer.succeed({
-        audioArtifactCount: audioResult.manifest.artifacts.length,
-        audioArtifactBytes: audioResult.totalAudioBytes,
-        audioManifestPayloadBytes: Buffer.byteLength(
-          JSON.stringify(audioResult.manifest),
-          'utf8',
-        ),
-      });
-
       currentProgress = 90;
       currentStage = 'VALIDATING_STREAM';
       currentErrorCode = 'STREAM_VALIDATION_FAILED';
@@ -449,7 +415,6 @@ export class PrepareReelMediaUseCase {
       const mediaOutput: ReelMediaOutput = {
         hlsMasterKey,
         thumbnailKey,
-        transcriptionAudioManifestKey: audioResult.manifestKey,
         sourceHasAudio: sourceMetadata.hasAudio === true,
         sourceLengthClass: processingClassification.mediaClass,
         variants: transcodeResult.variants,
@@ -459,7 +424,6 @@ export class PrepareReelMediaUseCase {
           sourceSha256: sourceChecksum,
           hlsMasterSha256: hlsMasterChecksum,
           thumbnailSha256: thumbnailChecksum,
-          transcriptionAudioManifestSha256: audioResult.manifestChecksum,
         },
       };
 
@@ -467,7 +431,6 @@ export class PrepareReelMediaUseCase {
         ...this.toSourceMetricDetails(sourceMetadata, classification),
         encodedVariantCount: transcodeResult.variantCount,
         actualVariantDimensions: transcodeResult.variants,
-        audioArtifactCount: audioResult.manifest.artifacts.length,
       });
 
       return {

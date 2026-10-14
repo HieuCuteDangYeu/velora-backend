@@ -34,6 +34,9 @@ export interface IContentService {
     reelId: string;
     processingAttemptId: string;
     allowReclaim?: boolean;
+    evidenceOnly?: boolean;
+    userId?: string;
+    hlsMasterKey?: string;
   }): Promise<boolean>;
 
   emitProcessingStarted(data: {
@@ -61,6 +64,7 @@ export interface IContentService {
     stage: 'RETRY_SCHEDULED';
     message: string;
     progress: number;
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
   }): Promise<void>;
 
   persistMediaCompleted(data: {
@@ -89,5 +93,6 @@ export interface IContentService {
     errorDetail?: string;
     mediaMetadata?: ReelProcessingMediaMetadata;
     metricsContext?: ReelPipelineMetricContext;
+    sourceMode?: 'SOURCE_VIDEO' | 'EXISTING_HLS';
   }): Promise<void>;
 }

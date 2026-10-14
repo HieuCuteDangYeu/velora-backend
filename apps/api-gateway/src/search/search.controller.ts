@@ -158,7 +158,10 @@ export class SearchController {
   }
 
   private enrichReel(reel: SearchableReel): Omit<ReelFeedListItem, 'author'> {
-    const streamUrl = this.buildStreamUrl(reel.hlsMasterKey ?? reel.mediaKey);
+    const streamUrl =
+      reel.mediaStatus === 'COMPLETED' && reel.hlsMasterKey
+        ? this.buildStreamUrl(reel.hlsMasterKey)
+        : '';
     const thumbnailUrl = reel.thumbnailKey
       ? reel.thumbnailKey.startsWith('http://') ||
         reel.thumbnailKey.startsWith('https://')

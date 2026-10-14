@@ -26,6 +26,8 @@ export class CompleteReelMediaProcessingUseCase {
       !input.mediaAttemptId.trim() ||
       !input.mediaOutput.thumbnailKey.trim() ||
       !input.mediaOutput.hlsMasterKey.trim() ||
+      typeof input.mediaOutput.sourceHasAudio !== 'boolean' ||
+      !input.mediaOutput.sourceLengthClass ||
       !input.mediaMetadata.sourceDurationMs ||
       !input.mediaMetadata.sourceOrientation
     ) {

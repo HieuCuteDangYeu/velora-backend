@@ -32,14 +32,14 @@ describe('Reel media edit flow', () => {
   it('persists the edit and writes the same edit into the atomic outbox payload', async () => {
     const createReelWithMediaJob = jest.fn().mockResolvedValue({});
     const useCase = new CreateReelUseCase(
-      { createReelWithMediaJob } as never,
+      { createReelWithMediaJob, findByPublishIntentId: jest.fn() } as never,
       { checkFileExists: jest.fn().mockResolvedValue(true) } as never,
       { trigger: jest.fn() },
       buildJob(),
     );
 
     await useCase.execute('user-1', {
-      mediaKey: 'uploads/source.mp4',
+      mediaKey: 'reels/user-1/source.mp4',
       visibility: 'private',
       edit,
     });
@@ -58,7 +58,7 @@ describe('Reel media edit flow', () => {
         findById: jest.fn().mockResolvedValue({
           id: 'reel-1',
           userId: 'user-1',
-          mediaKey: 'uploads/source.mp4',
+          mediaKey: 'reels/user-1/source.mp4',
           status: 'FAILED',
           mediaEdit: edit,
           tags: [],

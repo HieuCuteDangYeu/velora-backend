@@ -24,6 +24,7 @@ export interface ReelAuthorSummary {
 export interface ReelListItem {
   id: string;
   userId: string;
+  publishIntentId?: string;
   mediaKey: string;
   hlsMasterKey?: string;
   title?: string;

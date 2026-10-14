@@ -8,6 +8,8 @@ describe('CompleteReelMediaProcessingUseCase', () => {
     mediaOutput: {
       thumbnailKey: 'reels/reel-1/thumbnail.jpg',
       hlsMasterKey: 'reels/reel-1/master.m3u8',
+      sourceHasAudio: true,
+      sourceLengthClass: 'SHORT',
     },
   } as any;
 

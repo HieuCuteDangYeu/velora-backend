@@ -38,7 +38,7 @@ export class ResolveReelShareLinkUseCase {
       throw new ReelShareLinkExpiredError();
     }
 
-    if (result.reel.status !== 'COMPLETED') {
+    if (result.reel.mediaStatus !== 'COMPLETED' || !result.reel.hlsMasterKey) {
       throw new ReelNotReadyError();
     }
 

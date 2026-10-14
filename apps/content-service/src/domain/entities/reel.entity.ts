@@ -15,6 +15,8 @@ import type { ReelSeriesSummary } from '@common/content/interfaces/reel-series.i
 export class Reel {
   id: string;
   userId: string;
+  publishIntentId: string;
+  publishRequestFingerprint?: string;
   mediaKey: string;
   title?: string;
   description?: string;

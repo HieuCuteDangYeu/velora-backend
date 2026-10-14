@@ -1,5 +1,9 @@
 import type { ProcessVideoThumbnailPayload } from '@common/media/dtos/process-video-thumbnail.dto';
 import {
+  isLegacyReelHlsKey,
+  isUserOwnedReelMediaKey,
+} from '@common/content/reel-media-key';
+import {
   isReelMediaJob,
   REEL_MEDIA_JOB_PATTERN,
 } from '@common/processing/interfaces/reel-media-job.interface';
@@ -36,6 +40,21 @@ export class MediaProcessingController {
     }
 
     const job = payload;
+    const legacyHls =
+      job.sourceMode === 'EXISTING_HLS' &&
+      isLegacyReelHlsKey(job.hlsMasterKey ?? '', job.reelId);
+    if (
+      (!legacyHls && !isUserOwnedReelMediaKey(job.mediaKey, job.userId)) ||
+      (job.hlsMasterKey !== undefined &&
+        !legacyHls &&
+        !isUserOwnedReelMediaKey(job.hlsMasterKey, job.userId))
+    ) {
+      this.logger.error(
+        `Rejecting Reel media job with media key outside user ownership: reelId=${job.reelId}`,
+      );
+      channel.nack(message, false, false);
+      return;
+    }
     const retryNumber = this.getRetryNumber(context);
     const nextRetryNumber =
       retryNumber < 2 ? ((retryNumber + 1) as 1 | 2) : undefined;
@@ -44,7 +63,7 @@ export class MediaProcessingController {
     try {
       const result = await this.processReelUseCase.execute({
         reelId: job.reelId,
-        mediaKey: job.mediaKey,
+        mediaKey: legacyHls ? job.hlsMasterKey! : job.mediaKey,
         userId: job.userId,
         processingAttemptId: job.mediaAttemptId,
         queuedAt: this.getQueuedAt(message, job.createdAt),
@@ -100,6 +119,13 @@ export class MediaProcessingController {
     const { channel, message } = this.getDelivery(context);
 
     try {
+      if (!isUserOwnedReelMediaKey(data.mediaKey, data.userId)) {
+        this.logger.error(
+          `Rejecting legacy Reel job with media key outside user ownership: reelId=${data.reelId}`,
+        );
+        channel.nack(message, false, false);
+        return;
+      }
       await this.processReelUseCase.execute({
         ...data,
         allowReclaim: message.fields.redelivered,

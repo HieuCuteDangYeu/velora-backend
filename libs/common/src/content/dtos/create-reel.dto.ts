@@ -4,6 +4,7 @@ import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
 export const CreateReelSchema = z.object({
+  publishIntentId: z.string().uuid().optional(),
   mediaKey: z.string().trim().min(1),
   title: z.string().trim().max(220).optional(),
   description: z.string().trim().max(2000).optional(),

@@ -1,3 +1,8 @@
+import {
+  isLegacyReelHlsKey,
+  isUserOwnedReelMediaKey,
+  normalizeReelMediaKey,
+} from '@common/content/reel-media-key';
 import { REEL_MEDIA_JOB_EVENT_TYPE } from '@common/processing/interfaces/reel-media-job.interface';
 import {
   InvalidMediaFileError,
@@ -37,14 +42,22 @@ export class EnrichReelFromExistingHlsUseCase {
     if (this.isActiveAndNotStale(reel)) {
       throw new ReelAlreadyProcessingError();
     }
-    if (reel.mediaStatus !== 'COMPLETED' && reel.mediaStatus !== 'FAILED') {
+    if (reel.mediaStatus !== 'COMPLETED') {
       throw new InvalidMediaFileError(
-        'Only completed or failed Reels can be enriched from existing HLS',
+        'Media must be validated and completed before HLS evidence enrichment; reprocess failed media first.',
       );
     }
 
-    const hlsMasterKey = reel.hlsMasterKey?.trim();
-    if (!hlsMasterKey || !(await this.storageService.checkFileExists(hlsMasterKey))) {
+    const mediaKey = reel.mediaKey ? normalizeReelMediaKey(reel.mediaKey) : '';
+    const hlsMasterKey = reel.hlsMasterKey
+      ? normalizeReelMediaKey(reel.hlsMasterKey)
+      : '';
+    const legacyHls = isLegacyReelHlsKey(hlsMasterKey, reel.id);
+    if (
+      (!legacyHls && !isUserOwnedReelMediaKey(mediaKey, reel.userId)) ||
+      (!legacyHls && !isUserOwnedReelMediaKey(hlsMasterKey, reel.userId)) ||
+      !(await this.storageService.checkFileExists(hlsMasterKey))
+    ) {
       throw new InvalidMediaFileError(
         'The Reel does not have an available HLS master playlist',
       );
@@ -59,7 +72,7 @@ export class EnrichReelFromExistingHlsUseCase {
     const baseJob = this.buildReelMediaJobUseCase.execute({
       reelId: reel.id,
       userId: reel.userId,
-      mediaKey: reel.mediaKey,
+      mediaKey: legacyHls ? hlsMasterKey : mediaKey,
       mediaAttemptId,
       clientObservedDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
       title: reel.title,
@@ -91,6 +104,7 @@ export class EnrichReelFromExistingHlsUseCase {
         payload: mediaJob,
         createdAt: new Date(mediaJob.createdAt),
       },
+      true,
     );
     this.outboxDispatchTrigger.trigger();
 

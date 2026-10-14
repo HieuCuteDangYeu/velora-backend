@@ -10,6 +10,24 @@ const validCrop = {
 };
 
 describe('CreateReelSchema edit validation', () => {
+  it('accepts a stable client publish intent UUID', () => {
+    expect(
+      CreateReelSchema.safeParse({
+        publishIntentId: '11111111-1111-4111-8111-111111111111',
+        mediaKey: 'reels/user-1/source.mp4',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('rejects a non-UUID publish intent', () => {
+    expect(
+      CreateReelSchema.safeParse({
+        publishIntentId: 'not-a-uuid',
+        mediaKey: 'reels/user-1/source.mp4',
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts legacy requests without edit metadata', () => {
     expect(
       CreateReelSchema.safeParse({ mediaKey: 'uploads/source.mp4' }).success,

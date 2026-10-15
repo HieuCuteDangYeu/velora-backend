@@ -1,5 +1,9 @@
 import { Conversation } from '../../domain/entities/conversation.entity';
-import { MessageNotificationOutboxWorker } from './message-notification-outbox.worker';
+import {
+  MessageNotificationOutboxWorker,
+  OUTBOX_BATCH_SIZE,
+  OUTBOX_CONCURRENCY,
+} from './message-notification-outbox.worker';
 
 const NOW = new Date('2026-10-07T00:00:00.000Z');
 const makeRecord = (index = 1) => ({
@@ -449,11 +453,12 @@ describe('Message notification outbox', () => {
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
   });
 
-  it('does not overlap polls and bounds intake to four concurrent requests', async () => {
+  it('does not overlap polls and bounds intake to the configured concurrent requests', async () => {
+    const total = OUTBOX_CONCURRENCY + 2;
     const h = makeHarness(
-      Array.from({ length: 6 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: total }, (_, index) => makeRecord(index + 1)),
     );
-    const gates = Array.from({ length: 6 }, deferred);
+    const gates = Array.from({ length: total }, deferred);
     let started = 0;
     h.notifications.notifyNewMessage.mockImplementation(
       () => gates[started++].promise,
@@ -462,17 +467,12 @@ describe('Message notification outbox', () => {
     const batch = worker.runOnce();
     expect(worker.runOnce()).toBe(batch);
     await flush();
-    expect(started).toBe(4);
+    expect(started).toBe(OUTBOX_CONCURRENCY);
     gates[0].resolve();
     gates[1].resolve();
     await flush();
-    expect(started).toBe(6);
-    gates[2].resolve();
-    gates[3].resolve();
-    await flush();
-    expect(started).toBe(6);
-    gates[4].resolve();
-    gates[5].resolve();
+    expect(started).toBe(total);
+    for (const gate of gates.slice(2)) gate.resolve();
     await batch;
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
@@ -502,39 +502,38 @@ describe('Message notification outbox', () => {
   });
 
   it('drains a full batch without waiting for another timer tick', async () => {
+    const total = OUTBOX_BATCH_SIZE + 5;
     const h = makeHarness(
-      Array.from({ length: 25 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: total }, (_, index) => makeRecord(index + 1)),
     );
     await h.createWorker().runOnce();
     expect(h.message.findRaw).toHaveBeenCalledTimes(2);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(25);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(total);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
     );
     expect(h.message.count).toHaveBeenCalledTimes(1);
   });
 
-  it('caps each drain at five batches and lets the next poll finish the backlog', async () => {
+  it('keeps draining a long backlog in one run while every batch is full', async () => {
+    const total = OUTBOX_BATCH_SIZE * 6 + 5;
     const h = makeHarness(
-      Array.from({ length: 125 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: total }, (_, index) => makeRecord(index + 1)),
     );
-    const worker = h.createWorker();
-    await worker.runOnce();
-    expect(h.message.findRaw).toHaveBeenCalledTimes(5);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(100);
-    expect(
-      h.records.filter((r) => r.notificationNextAttemptAt !== null),
-    ).toHaveLength(25);
-    await worker.runOnce();
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(125);
+    await h.createWorker().runOnce();
+    // Six full batches and a partial one: no five-batch cap, no second poll needed.
+    expect(h.message.findRaw).toHaveBeenCalledTimes(7);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(total);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
     );
   });
 
-  it('waits for all four pipelines before fetching the next batch', async () => {
+  it('waits for all pipelines before fetching the next batch', async () => {
     const h = makeHarness(
-      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: OUTBOX_BATCH_SIZE + 1 }, (_, index) =>
+        makeRecord(index + 1),
+      ),
     );
     const gate = deferred();
     let active = 0;
@@ -550,32 +549,38 @@ describe('Message notification outbox', () => {
     expect(worker.runOnce()).toBe(drain);
     await flush();
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(active).toBe(4);
+    expect(active).toBe(OUTBOX_CONCURRENCY);
     gate.resolve();
     await drain;
-    expect(peak).toBe(4);
+    expect(peak).toBe(OUTBOX_CONCURRENCY);
     expect(h.message.findRaw).toHaveBeenCalledTimes(2);
   });
 
   it('does not fetch another batch after a delivery failure', async () => {
     const h = makeHarness(
-      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: OUTBOX_BATCH_SIZE + 1 }, (_, index) =>
+        makeRecord(index + 1),
+      ),
     );
     h.notifications.notifyNewMessage.mockRejectedValueOnce(
       new Error('Intake unavailable'),
     );
     await h.createWorker().runOnce();
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(20);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(
+      OUTBOX_BATCH_SIZE,
+    );
     expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
       NOW.getTime(),
     );
-    expect(h.records[20].notificationAttemptCount).toBe(0);
+    expect(h.records[OUTBOX_BATCH_SIZE].notificationAttemptCount).toBe(0);
   });
 
   it('does not spin on a full batch already claimed by another worker', async () => {
     const h = makeHarness(
-      Array.from({ length: 20 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: OUTBOX_BATCH_SIZE }, (_, index) =>
+        makeRecord(index + 1),
+      ),
     );
     h.message.findRaw.mockResolvedValue(
       h.records.map((r) => ({ _id: { $oid: r.id } })),
@@ -590,7 +595,9 @@ describe('Message notification outbox', () => {
 
   it('does not fetch a new batch during shutdown', async () => {
     const h = makeHarness(
-      Array.from({ length: 21 }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: OUTBOX_BATCH_SIZE + 1 }, (_, index) =>
+        makeRecord(index + 1),
+      ),
     );
     h.notifications.notifyNewMessage.mockImplementation(
       (_conversation, _message, _sender, signal: AbortSignal) =>
@@ -604,8 +611,10 @@ describe('Message notification outbox', () => {
     await worker.onModuleDestroy();
     await drain;
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(4);
-    expect(h.records[20].notificationAttemptCount).toBe(0);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(
+      OUTBOX_CONCURRENCY,
+    );
+    expect(h.records[OUTBOX_BATCH_SIZE].notificationAttemptCount).toBe(0);
   });
 
   it('does not backfill historical messages without a due date', async () => {
@@ -625,7 +634,7 @@ describe('Message notification outbox', () => {
         },
         options: {
           sort: { notificationNextAttemptAt: 1, _id: 1 },
-          limit: 20,
+          limit: OUTBOX_BATCH_SIZE,
           projection: { _id: 1 },
         },
       }),

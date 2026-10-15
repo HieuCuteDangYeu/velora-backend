@@ -20,11 +20,14 @@ import {
 } from '../repositories/notification-intent.reader';
 
 const POLL_MS = 1_000;
-const BATCH_SIZE = 20;
-const MAX_BATCHES_PER_POLL = 5;
-// Overlap four bounded claim/read/intake pipelines, without changing DB pools.
-// Notification intake still shares that service's existing database work gate.
-const CONCURRENCY = 4;
+// Five intents per pipeline, so every pipeline stays busy for the whole batch.
+export const OUTBOX_BATCH_SIZE = 60;
+// Overlap twelve bounded claim/read/intake pipelines, without changing DB pools.
+// Intake is latency-bound: at four pipelines the notification service's own database
+// gate (4 slots) was the limit; with that database local the gate no longer queues.
+export const OUTBOX_CONCURRENCY = 12;
+const BATCH_SIZE = OUTBOX_BATCH_SIZE;
+const CONCURRENCY = OUTBOX_CONCURRENCY;
 const LEASE_MS = 30_000;
 
 @Injectable()
@@ -61,7 +64,7 @@ export class MessageNotificationOutboxWorker
     await this.running;
   }
 
-  // One bounded drain per instance at a time. Each candidate is claimed immediately
+  // One drain per instance at a time. Each candidate is claimed immediately
   // before processing, so waiting in this batch does not consume its lease.
   runOnce(): Promise<void> {
     if (this.stopped) return Promise.resolve();
@@ -82,13 +85,11 @@ export class MessageNotificationOutboxWorker
   }
 
   private async drainPending(): Promise<void> {
-    for (
-      let batch = 0;
-      batch < MAX_BATCHES_PER_POLL && !this.stopped;
-      batch++
-    ) {
-      // Continue only after a full, successful batch. Partial batches wait for
-      // the next poll; contention or failures must not become a tight retry loop.
+    // Keep draining without waiting for the next timer tick for as long as batches
+    // come back full and fully delivered. Partial batches wait for the next poll;
+    // contention or failures must not become a tight retry loop. Each batch awaits
+    // database and network work, so a long backlog never blocks the event loop.
+    while (!this.stopped) {
       if (!(await this.drainBatch())) break;
     }
   }

@@ -550,6 +550,32 @@ services:
     networks:
       - microservices-net
 
+  # Self-hosted Redis for caches, presence and the Socket.IO adapter. AOF keeps
+  # presence:last-seen across restarts; maxmemory mirrors the former cloud plan.
+  redis:
+    image: redis:8.6
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes --appendfsync everysec --save "" --maxmemory 256mb --maxmemory-policy volatile-lru
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - '127.0.0.1:6379:6379'
+    expose:
+      - '6379'
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - microservices-net
+
 networks:
   microservices-net:
     driver: bridge
@@ -557,6 +583,7 @@ networks:
 volumes:
   mongo_data:
   mongo_config:
+  redis_data:
   rabbitmq_data:
   prometheus_data:
   grafana_data:

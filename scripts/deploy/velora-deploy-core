@@ -130,6 +130,7 @@ readonly -a REMOVED_COMPOSE_SERVICES=(
 # Compose changes to these services require deliberate operator handling.
 readonly -a BLOCKED_COMPOSE_SERVICES=(
   rabbitmq
+  mongo
   rag-embedding
   rag-reranker
   rag-vision
@@ -1566,7 +1567,7 @@ wait_for_running_services() {
 wait_for_docker_health() {
   local service container_id health attempt
 
-  for service in rabbitmq rag-embedding rag-reranker monitoring-service; do
+  for service in rabbitmq mongo rag-embedding rag-reranker monitoring-service; do
     container_id="$(docker compose ps -q "$service" | head -n 1)"
     [[ -n "$container_id" ]] || continue
 

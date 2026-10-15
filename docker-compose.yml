@@ -511,11 +511,52 @@ services:
     networks:
       - microservices-net
 
+  # Single-node replica set: Prisma needs one for $transaction on MongoDB. The
+  # keyfile is generated once into mongo_config; auth is enabled by the keyfile.
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    entrypoint:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s /data/configdb/keyfile ]; then
+          openssl rand -base64 756 > /data/configdb/keyfile
+        fi
+        chown mongodb:mongodb /data/configdb/keyfile
+        chmod 400 /data/configdb/keyfile
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /data/configdb/keyfile --bind_ip_all --wiredTigerCacheSizeGB 0.5
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+      - mongo_config:/data/configdb
+    ports:
+      - '127.0.0.1:27017:27017'
+    expose:
+      - '27017'
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }); }\" >/dev/null && mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"quit(db.hello().isWritablePrimary ? 0 : 1)\"",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    networks:
+      - microservices-net
+
 networks:
   microservices-net:
     driver: bridge
 
 volumes:
+  mongo_data:
+  mongo_config:
   rabbitmq_data:
   prometheus_data:
   grafana_data:

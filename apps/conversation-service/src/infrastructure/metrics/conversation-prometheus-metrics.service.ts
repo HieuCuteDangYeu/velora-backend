@@ -62,6 +62,9 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
   private readonly phaseDurations = new Map<string, HistogramState>();
   private readonly mongoDurations = new Map<MongoCommand, HistogramState>();
   private messagesCreated = 0;
+  // Messages created per 100 ms bucket (last second), so background work can yield to live traffic.
+  private readonly recentTicks = new Array<number>(10).fill(-1);
+  private readonly recentCounts = new Array<number>(10).fill(0);
   private outboxPending: number | undefined;
   private readonly outboxCounts = new Map<OutboxOutcome, number>();
 
@@ -165,8 +168,26 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     this.sendMessageDurations.set(status, state);
   }
 
-  recordMessageCreated(): void {
+  recordMessageCreated(now = Date.now()): void {
     this.messagesCreated += 1;
+    const tick = Math.floor(now / 100);
+    const slot = tick % 10;
+    if (this.recentTicks[slot] !== tick) {
+      this.recentTicks[slot] = tick;
+      this.recentCounts[slot] = 0;
+    }
+    this.recentCounts[slot] += 1;
+  }
+
+  /** Messages created in the last second (100 ms resolution). */
+  messagesCreatedPerSecond(now = Date.now()): number {
+    const tick = Math.floor(now / 100);
+    let total = 0;
+    for (let slot = 0; slot < 10; slot++) {
+      const age = tick - this.recentTicks[slot];
+      if (age >= 0 && age < 10) total += this.recentCounts[slot];
+    }
+    return total;
   }
 
   metrics(activeSocketConnections: number): string {

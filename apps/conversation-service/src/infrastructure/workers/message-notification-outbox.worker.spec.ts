@@ -2,6 +2,8 @@ import { Conversation } from '../../domain/entities/conversation.entity';
 import {
   MessageNotificationOutboxWorker,
   OUTBOX_BATCH_SIZE,
+  OUTBOX_BUSY_CONCURRENCY,
+  OUTBOX_BUSY_MESSAGES_PER_SECOND,
   OUTBOX_CONCURRENCY,
 } from './message-notification-outbox.worker';
 
@@ -163,6 +165,7 @@ const makeHarness = (records = [makeRecord()]) => {
   };
   const metrics = {
     measurePhase: jest.fn((_phase: string, action: () => unknown) => action()),
+    messagesCreatedPerSecond: jest.fn(() => 0),
     recordNotificationOutbox: jest.fn(),
     setNotificationOutboxPending: jest.fn(),
   };
@@ -499,6 +502,50 @@ describe('Message notification outbox', () => {
     jest.advanceTimersByTime(31_000);
     await h.createWorker().runOnce();
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
+  });
+
+  it.each([
+    [
+      'yields to live traffic at the busy threshold',
+      OUTBOX_BUSY_MESSAGES_PER_SECOND,
+      OUTBOX_BUSY_CONCURRENCY,
+    ],
+    [
+      'yields during a much heavier burst',
+      OUTBOX_BUSY_MESSAGES_PER_SECOND * 20,
+      OUTBOX_BUSY_CONCURRENCY,
+    ],
+    [
+      'runs at full speed just below the threshold',
+      OUTBOX_BUSY_MESSAGES_PER_SECOND - 1,
+      OUTBOX_CONCURRENCY,
+    ],
+    ['runs at full speed when traffic is idle', 0, OUTBOX_CONCURRENCY],
+  ])('the drain %s', async (_name, rate, expectedLanes) => {
+    const h = makeHarness(
+      Array.from({ length: OUTBOX_BATCH_SIZE }, (_, index) =>
+        makeRecord(index + 1),
+      ),
+    );
+    h.metrics.messagesCreatedPerSecond.mockReturnValue(rate);
+    const gate = deferred();
+    let active = 0;
+    let peak = 0;
+    h.notifications.notifyNewMessage.mockImplementation(async () => {
+      active++;
+      peak = Math.max(peak, active);
+      await gate.promise;
+      active--;
+    });
+    const drain = h.createWorker().runOnce();
+    await flush();
+    expect(active).toBe(expectedLanes);
+    gate.resolve();
+    await drain;
+    expect(peak).toBe(expectedLanes);
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(
+      OUTBOX_BATCH_SIZE,
+    );
   });
 
   it('drains a full batch without waiting for another timer tick', async () => {

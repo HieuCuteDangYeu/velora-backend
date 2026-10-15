@@ -52,3 +52,50 @@ describe('Chat phase measurements', () => {
     },
   );
 });
+
+describe('Recent message rate', () => {
+  const withMetrics = (
+    test: (metrics: ConversationPrometheusMetricsService) => void,
+  ) => {
+    const metrics = new ConversationPrometheusMetricsService();
+    try {
+      test(metrics);
+    } finally {
+      metrics.onModuleDestroy();
+    }
+  };
+
+  it('counts messages created in the last second at 100 ms resolution', () =>
+    withMetrics((metrics) => {
+      const t = 1_700_000_000_000;
+      for (let i = 0; i < 30; i++) metrics.recordMessageCreated(t + i * 10);
+      expect(metrics.messagesCreatedPerSecond(t + 300)).toBe(30);
+      expect(metrics.messagesCreatedPerSecond(t + 900)).toBe(30);
+      // The first buckets age out one by one after a second.
+      expect(metrics.messagesCreatedPerSecond(t + 1_050)).toBeLessThan(30);
+      expect(metrics.messagesCreatedPerSecond(t + 1_400)).toBe(0);
+    }));
+
+  it('is zero before any message and keeps counting across more than a second', () =>
+    withMetrics((metrics) => {
+      expect(metrics.messagesCreatedPerSecond()).toBe(0);
+      const t = 1_700_000_100_000;
+      for (let second = 0; second < 5; second++) {
+        for (let i = 0; i < 100; i++) {
+          metrics.recordMessageCreated(t + second * 1_000 + i * 10);
+        }
+      }
+      expect(metrics.messagesCreatedPerSecond(t + 4_999)).toBe(100);
+    }));
+
+  it('keeps the lifetime counter independent of the sliding window', () =>
+    withMetrics((metrics) => {
+      const t = 1_700_000_200_000;
+      metrics.recordMessageCreated(t);
+      metrics.recordMessageCreated(t + 5_000);
+      expect(metrics.messagesCreatedPerSecond(t + 5_000)).toBe(1);
+      expect(metrics.metrics(0)).toContain(
+        'velora_conversation_messages_created_total{service="conversation-service"} 2',
+      );
+    }));
+});

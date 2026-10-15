@@ -26,6 +26,11 @@ export const OUTBOX_BATCH_SIZE = 60;
 // Intake is latency-bound: at four pipelines the notification service's own database
 // gate (4 slots) was the limit; with that database local the gate no longer queues.
 export const OUTBOX_CONCURRENCY = 12;
+// While live traffic is heavy the drain yields: its Mongo writes (claim, read, complete, each
+// majority-acknowledged) compete with message inserts, and at 1000 messages/s twelve pipelines
+// roughly doubled the sender ACK time. Once traffic drops the full speed resumes.
+export const OUTBOX_BUSY_CONCURRENCY = 2;
+export const OUTBOX_BUSY_MESSAGES_PER_SECOND = 50;
 const BATCH_SIZE = OUTBOX_BATCH_SIZE;
 const CONCURRENCY = OUTBOX_CONCURRENCY;
 const LEASE_MS = 30_000;
@@ -102,8 +107,12 @@ export class MessageNotificationOutboxWorker
     );
     let cursor = 0;
     let allCompleted = true;
+    const lanes =
+      this.metrics.messagesCreatedPerSecond() >= OUTBOX_BUSY_MESSAGES_PER_SECOND
+        ? OUTBOX_BUSY_CONCURRENCY
+        : CONCURRENCY;
     await Promise.all(
-      Array.from({ length: CONCURRENCY }, async () => {
+      Array.from({ length: lanes }, async () => {
         while (!this.stopped && cursor < candidates.length) {
           const candidate = candidates[cursor++];
           if (!(await this.deliver(candidate.id))) allCompleted = false;

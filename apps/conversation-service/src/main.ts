@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
-import { RedisIoAdapter } from 'apps/conversation-service/src/infrastructure/gateways/redis-io.apdater';
+import { configureSocketAdapter } from 'apps/conversation-service/src/infrastructure/gateways/socket-adapter.config';
 import { ConversationServiceModule } from './conversation-service.module';
 
 async function bootstrap() {
@@ -28,9 +28,8 @@ async function bootstrap() {
   });
 
   // 3. Setup Redis Adapter cho Socket.IO (QUAN TRỌNG)
-  const redisIoAdapter = new RedisIoAdapter(app, configService);
-  await redisIoAdapter.connectToRedis();
-  app.useWebSocketAdapter(redisIoAdapter);
+  // Bật mặc định; chỉ tắt khi SOCKET_IO_REDIS_ADAPTER=false và chạy đúng một instance.
+  await configureSocketAdapter(app, configService);
 
   // 4. Cấu hình CORS (Để Frontend gọi được)
   app.enableCors({

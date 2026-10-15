@@ -31,6 +31,19 @@ const snapshot = z.object({
   lastMessageAt: bsonDate,
 });
 
+// Built once: zod schema construction is expensive and this runs for every message.
+const receiptSchema = z.object({
+  ok: z.literal(1),
+  lastErrorObject: z.object({
+    n: z.union([z.literal(0), z.literal(1)]),
+    updatedExisting: z.boolean(),
+    upserted: z.never().optional(),
+  }),
+  value: snapshot.nullable(),
+  writeErrors: z.never().optional(),
+  writeConcernError: z.never().optional(),
+});
+
 // Must run on the transaction client: a failed/duplicate message insert must
 // roll this preview back. Matching membership acquires the same document write
 // conflict protection as the previous read + preview update, in one command.
@@ -62,19 +75,7 @@ export async function writeAuthorizedPreview(
     new: true,
     upsert: false,
   });
-  const receipt = z
-    .object({
-      ok: z.literal(1),
-      lastErrorObject: z.object({
-        n: z.union([z.literal(0), z.literal(1)]),
-        updatedExisting: z.boolean(),
-        upserted: z.never().optional(),
-      }),
-      value: snapshot.nullable(),
-      writeErrors: z.never().optional(),
-      writeConcernError: z.never().optional(),
-    })
-    .safeParse(result);
+  const receipt = receiptSchema.safeParse(result);
   if (!receipt.success) {
     throw new InternalServerErrorException(
       'Conversation preview was not acknowledged',

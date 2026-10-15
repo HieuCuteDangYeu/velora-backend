@@ -61,12 +61,12 @@ compare_compose_models() {
   fi
 
   # Keep the existing safety invariant for volumes, with deliberate migration
-  # exceptions for Loki/Alloy, the reranker cutover and the MongoDB/Redis additions.
+  # exceptions for Loki/Alloy, the reranker cutover and the MongoDB/Redis/PostgreSQL additions.
   if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
-    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data))
-      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data))
+    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data))
+      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data))
   ' >/dev/null; then
-    fail "top-level Compose volumes changed outside the approved reranker/MongoDB/Redis migrations"
+    fail "top-level Compose volumes changed outside the approved reranker/MongoDB/Redis/PostgreSQL migrations"
   fi
 
   while IFS= read -r service; do
@@ -89,10 +89,10 @@ compare_compose_models() {
       continue
     fi
 
-    # Adding the self-hosted MongoDB or Redis is approved exactly once each. They
+    # Adding the self-hosted MongoDB, Redis or PostgreSQL is approved exactly once each. They
     # are created by `compose up --no-deps <service>` (never force-recreated); any
     # later change to a definition falls through to the protected-service block.
-    if [[ "$service" == "mongo" || "$service" == "redis" ]] \
+    if [[ "$service" == "mongo" || "$service" == "redis" || "$service" == "postgres" ]] \
       && ! jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
       && jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
       log "Compose service '$service' addition is an approved self-hosted data-store migration."
@@ -181,7 +181,7 @@ plan_from_changed_files() {
         [[ "$RABBITMQ_PROMETHEUS_MIGRATION" == true ]] \
           || fail "RabbitMQ plugin configuration changed outside the approved Prometheus exporter migration"
         ;;
-      infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh|scripts/ops/backup-mongo.sh)
+      infra/monitoring/docker-compose.monitoring.yml|scripts/ops/check-monitoring-stack.sh|scripts/ops/backup-mongo.sh|scripts/ops/backup-postgres.sh)
         # The former overlay is removed by this migration. Root Compose model
         # differences and explicit monitoring config handlers cover runtime work.
         ;;
@@ -326,6 +326,11 @@ reconcile_infrastructure() {
         # Never force-recreate the database: only create or converge it.
         log "==> Ensuring self-hosted MongoDB is running..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --no-deps mongo
+        ;;
+      postgres)
+        # Never force-recreate the database: only create or converge it.
+        log "==> Ensuring self-hosted PostgreSQL is running..."
+        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --no-deps postgres
         ;;
       redis)
         # Never force-recreate the cache/presence store: only create or converge it.

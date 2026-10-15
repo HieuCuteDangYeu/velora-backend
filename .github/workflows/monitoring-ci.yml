@@ -96,6 +96,7 @@ jobs:
           bash scripts/deploy/test-turn-env-approval.sh
           bash scripts/deploy/test-mongo-compose-addition.sh
           bash scripts/deploy/test-redis-compose-addition.sh
+          bash scripts/deploy/test-postgres-compose-addition.sh
           bash -n scripts/ops/check-monitoring-stack.sh
 
           bash -c 'set -Eeuo pipefail; source scripts/deploy/velora-deploy-core; declare -F main >/dev/null'

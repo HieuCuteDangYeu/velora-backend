@@ -3,11 +3,14 @@ import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
 import { configureSocketAdapter } from 'apps/conversation-service/src/infrastructure/gateways/socket-adapter.config';
 import { ConversationServiceModule } from './conversation-service.module';
+import { resolveLogLevels } from './log-levels';
 
 async function bootstrap() {
   // 1. Thay đổi: Dùng create() thay vì createMicroservice()
   // Để tạo ra HTTP Server cho Socket.IO handshake
-  const app = await NestFactory.create(ConversationServiceModule);
+  const app = await NestFactory.create(ConversationServiceModule, {
+    logger: resolveLogLevels(process.env['LOG_LEVEL']),
+  });
   app.enableShutdownHooks();
 
   const configService = app.get(ConfigService);

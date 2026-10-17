@@ -60,7 +60,7 @@ export class VerifyTokenUseCase {
       }
     }
 
-    const user = await this.userService.findById(payload.sub);
+    const user = await this.userService.findByIdForAuth(payload.sub);
 
     if (!user) {
       throw new InvalidTokenError();

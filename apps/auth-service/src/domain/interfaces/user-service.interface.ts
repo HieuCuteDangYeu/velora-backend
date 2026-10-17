@@ -13,6 +13,8 @@ export interface IUserService {
   validateUser(dto: LoginDto): Promise<ValidateUserResponse | null>;
   verifyUser(id: string): Promise<void>;
   findById(id: string): Promise<ValidateUserResponse | null>;
+  findByIdForAuth(id: string): Promise<ValidateUserResponse | null>;
+  invalidateCachedUser(id: string): Promise<void>;
   findByEmail(email: string): Promise<ValidateUserResponse | null>;
   createSocialUser(dto: CreateSocialUserDto): Promise<ValidateUserResponse>;
   rollbackUser(id: string): void;

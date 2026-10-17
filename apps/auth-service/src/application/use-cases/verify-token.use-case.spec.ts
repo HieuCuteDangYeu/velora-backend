@@ -12,7 +12,9 @@ describe('Token verification failure classification', () => {
   });
   const fixture = () => {
     const jwt = { verifyAsync: jest.fn().mockResolvedValue({ sub: 'user-1' }) };
-    const users = { findById: jest.fn().mockResolvedValue({ id: 'user-1' }) };
+    const users = {
+      findByIdForAuth: jest.fn().mockResolvedValue({ id: 'user-1' }),
+    };
     const roles = {
       getUserRoles: jest.fn().mockResolvedValue(['ADMIN']),
       setUserRoles: jest.fn(),
@@ -55,7 +57,7 @@ describe('Token verification failure classification', () => {
       ).rejects.toMatchObject({
         error: { statusCode: 401, message: 'Invalid or expired token' },
       });
-      expect(f.users.findById).not.toHaveBeenCalled();
+      expect(f.users.findByIdForAuth).not.toHaveBeenCalled();
       expect(f.metrics.recordRequest).toHaveBeenCalledWith(
         'verify_token',
         'rejected',
@@ -65,7 +67,7 @@ describe('Token verification failure classification', () => {
   );
   it('rejects a verified token whose user no longer exists', async () => {
     const f = fixture();
-    f.users.findById.mockResolvedValue(null);
+    f.users.findByIdForAuth.mockResolvedValue(null);
     await expect(f.verify.execute('token')).rejects.toBeInstanceOf(
       InvalidTokenError,
     );
@@ -75,7 +77,7 @@ describe('Token verification failure classification', () => {
     async (step) => {
       const f = fixture();
       const error = new Error('private database credentials');
-      if (step === 'user') f.users.findById.mockRejectedValue(error);
+      if (step === 'user') f.users.findByIdForAuth.mockRejectedValue(error);
       if (step === 'roles') {
         f.roles.getUserRoles.mockResolvedValue(null);
         f.repository.getUserRole.mockRejectedValue(error);

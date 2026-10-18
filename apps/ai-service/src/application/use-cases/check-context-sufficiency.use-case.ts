@@ -60,12 +60,14 @@ export class CheckContextSufficiencyUseCase {
     }
 
     if (state.rerankedChunks.length === 0) {
+      const missingReelIds = this.getMissingRequiredReelIds(state);
       return {
         sufficient: false,
         confidence: 1,
         availableEvidence: [],
         missingEvidence: this.getRequiredEvidence(state),
         supportedEvidenceIds: [],
+        ...(missingReelIds.length > 0 ? { missingReelIds } : {}),
         reason: 'No retrieved reel evidence is available.',
         userFacingReason:
           'No relevant shared reel evidence is available in this conversation.',
@@ -94,6 +96,27 @@ export class CheckContextSufficiencyUseCase {
         userFacingReason: this.userFacingMissingEvidence(
           deterministicallyMissing,
         ),
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_REQUIRED_MODALITY',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
+    const missingReelIds = this.getMissingRequiredReelIds(state);
+    if (missingReelIds.length > 0) {
+      return {
+        sufficient: false,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        missingReelIds,
+        supportedEvidenceIds: [],
+        reason: `Required comparison Reel evidence is missing: ${missingReelIds.join(', ')}.`,
+        userFacingReason:
+          'I found evidence from only part of the requested Reel comparison, so I cannot compare them reliably.',
         recommendedAction: 'REFUSE_NO_CONTEXT',
         diagnostics: {
           providerStatus: 'NOT_CALLED',
@@ -138,6 +161,9 @@ export class CheckContextSufficiencyUseCase {
           state,
           availableEvidence,
         ),
+        ...(this.getMissingRequiredReelIds(state).length > 0
+          ? { missingReelIds: this.getMissingRequiredReelIds(state) }
+          : {}),
         supportedEvidenceIds: [],
         reason: 'Required semantic context sufficiency check was unavailable.',
         userFacingReason:
@@ -303,6 +329,7 @@ Rules:
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
       focusText: state.userMessage,
+      preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
     });
     return `
 Route decision:
@@ -375,13 +402,15 @@ ${JSON.stringify(
       raw.recommendedAction === 'REWRITE_AND_RETRY'
         ? raw.recommendedAction
         : 'ANSWER';
+    const missingReelIds = this.getMissingRequiredReelIds(state);
     const sufficient =
       typeof raw.sufficient === 'boolean'
-        ? raw.sufficient
-        : rawRecommendedAction === 'ANSWER';
+        ? raw.sufficient && missingReelIds.length === 0
+        : rawRecommendedAction === 'ANSWER' && missingReelIds.length === 0;
     const recommendedAction = sufficient
       ? 'ANSWER'
-      : rawRecommendedAction === 'REWRITE_AND_RETRY'
+      : rawRecommendedAction === 'REWRITE_AND_RETRY' &&
+          missingReelIds.length === 0
         ? 'REWRITE_AND_RETRY'
         : 'REFUSE_NO_CONTEXT';
     const availableEvidence = this.getAvailableEvidence(state);
@@ -410,6 +439,7 @@ ${JSON.stringify(
           : 0.5,
       availableEvidence,
       missingEvidence,
+      ...(missingReelIds.length > 0 ? { missingReelIds } : {}),
       supportedEvidenceIds,
       reason:
         typeof raw.reason === 'string' && raw.reason.trim()
@@ -451,6 +481,15 @@ ${JSON.stringify(
       (required) =>
         required !== 'NONE' && !availableEvidence.includes(required),
     );
+  }
+
+  private getMissingRequiredReelIds(state: RagChatWorkflowState): string[] {
+    if (state.retrievalPlan?.requiresReelCoverage !== true) return [];
+    const expected = [
+      ...new Set(state.retrievedChunks.map((chunk) => chunk.reelId)),
+    ];
+    const selected = new Set(state.rerankedChunks.map((chunk) => chunk.reelId));
+    return expected.filter((reelId) => !selected.has(reelId));
   }
 
   private getAvailableEvidence(

@@ -4,6 +4,33 @@ import {
 } from './rag-answer-contract';
 
 describe('validateRagAnswerContract', () => {
+  it.each(['at least 7', '7 or 8 years'])(
+    'rejects incomplete requested duration %s',
+    (answer) => {
+      expect(
+        validateRagAnswerContract({
+          question: 'How long has he been waiting outside the community gate?',
+          evidence: [
+            'He has been waiting outside the community gate for at least 7 or 8 years.',
+          ],
+          answer,
+          evidenceRequired: true,
+        }),
+      ).toBe('Answer model omitted a supported duration unit, range, or bound');
+    },
+  );
+  it('accepts equivalent number words while retaining duration units and uncertainty', () => {
+    expect(
+      validateRagAnswerContract({
+        question: 'How long has he been waiting outside the community gate?',
+        evidence: [
+          'He has been waiting outside the community gate for at least 7 or 8 years.',
+        ],
+        answer: 'At least seven or eight years.',
+        evidenceRequired: true,
+      }),
+    ).toBeUndefined();
+  });
   it('ranks the requested directional quantity above an unrelated quantity', () => {
     const question =
       'How low does the speaker say the number of bands can go while still being okay?';

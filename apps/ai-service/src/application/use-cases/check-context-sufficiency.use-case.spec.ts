@@ -49,6 +49,88 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('refuses a comparison when reranking drops one retrieved Reel', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const comparisonState = {
+      userMessage: 'Compare both shared Reels.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      retrievalPlan: { requiresReelCoverage: true },
+      retrievedChunks: [
+        { reelId: 'reel-1', evidenceType: 'TRANSCRIPT', chunkText: 'one' },
+        { reelId: 'reel-2', evidenceType: 'TRANSCRIPT', chunkText: 'two' },
+      ],
+      rerankedChunks: [
+        {
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'one',
+          chunkText: 'one',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(comparisonState)).resolves.toMatchObject({
+      sufficient: false,
+      missingReelIds: ['reel-2'],
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('requires both transcript and visual evidence for a multimodal route', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: true,
+        confidence: 1,
+        supportedEvidenceIds: ['e0', 'e1'],
+        reason: 'Both modalities directly support the request.',
+        recommendedAction: 'ANSWER',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const multimodalState = {
+      userMessage:
+        'What did the speaker say while the blue device was visible?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+      rerankedChunks: [
+        {
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The device is ready.',
+          chunkText: 'The device is ready.',
+          tags: [],
+        },
+        {
+          evidenceType: 'VISUAL',
+          evidenceText: 'A blue device is visible.',
+          chunkText: 'A blue device is visible.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+    await expect(useCase.execute(multimodalState)).resolves.toMatchObject({
+      sufficient: true,
+      availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+    });
+  });
+
   it('refuses a required user-memory request when the memory tool is empty', async () => {
     const service = { generateObject: jest.fn() };
     const useCase = new CheckContextSufficiencyUseCase(

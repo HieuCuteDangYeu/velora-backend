@@ -56,7 +56,22 @@ export class AiServiceAdapter implements IIndexingAiService {
     return await firstValueFrom(
       this.client
         .send<VisualFrameAnalysis>('ai.analyze_visual_frame', request)
-        .pipe(timeout(120_000)),
+        .pipe(
+          timeout(120_000),
+          catchError((error: unknown) => {
+            if (isRpcError(error)) {
+              const message = Array.isArray(error.message)
+                ? error.message.join(', ')
+                : error.message;
+              return throwError(() => new Error(message));
+            }
+            return throwError(() =>
+              error instanceof Error
+                ? error
+                : new Error('Visual frame analysis failed'),
+            );
+          }),
+        ),
     );
   }
 

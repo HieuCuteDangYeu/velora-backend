@@ -207,10 +207,12 @@ export function truncateEvidenceText(
   if (text.length <= maxChars) return text;
   const budget = Math.max(0, Math.floor(maxChars));
   if (!budget) return '';
+  const focusTokens: string[] =
+    focusText?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   const focus = new Set(
-    (focusText?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+    focusTokens.filter(
       (word) =>
-        word.length > 3 &&
+        (word.length > 3 || /^\d+$/.test(word)) &&
         ![
           'what',
           'which',
@@ -242,6 +244,34 @@ export function truncateEvidenceText(
         anchor = match.index ?? 0;
       }
     }
+  }
+  // Prefer complete request-matched clauses. In particular, do not end a
+  // duration/range at "7 or" merely because its first number fits the prefix.
+  let spanStart = 0;
+  let bestSpan: { start: number; end: number; score: number } | undefined;
+  for (const stop of text.matchAll(/[.!?](?=\s|$)/g)) {
+    const spanEnd = (stop.index ?? 0) + 1;
+    const words = new Set(
+      text
+        .slice(spanStart, spanEnd)
+        .toLowerCase()
+        .match(/[\p{L}\p{N}]+/gu) ?? [],
+    );
+    const score = [...words].reduce(
+      (sum, word) => sum + (focus.has(word) ? 3 : 0),
+      0,
+    );
+    if (score > 0 && (!bestSpan || score > bestSpan.score))
+      bestSpan = { start: spanStart, end: spanEnd, score };
+    spanStart = spanEnd;
+  }
+  if (!opening && bestSpan && bestSpan.end - bestSpan.start <= budget) {
+    let start = bestSpan.end <= budget ? 0 : Math.max(0, bestSpan.end - budget);
+    if (start > 0 && text[start - 1] !== ' ')
+      start = text.indexOf(' ', start) + 1;
+    const end = Math.min(text.length, start + budget);
+    const boundary = end < text.length ? text.lastIndexOf(' ', end) : end;
+    return text.slice(start, boundary > start ? boundary : end).trim();
   }
   // Keep the prefix when it already contains the focus. Moving a near-full
   // window to a later sentence unnecessarily drops earlier source clauses.
@@ -335,7 +365,11 @@ export function boundTextItems<T>(
 export function boundEvidence(
   candidates: ReelContextSearchResult[],
   bounds: RagPromptBounds,
-  options: { preserveTail?: boolean; focusText?: string } = {},
+  options: {
+    preserveTail?: boolean;
+    focusText?: string;
+    preserveReelCoverage?: boolean;
+  } = {},
 ): ReelContextSearchResult[] {
   const truncate = options.focusText?.trim()
     ? (value: string, maxChars: number) =>
@@ -343,12 +377,16 @@ export function boundEvidence(
     : options.preserveTail
       ? truncateEvidenceText
       : truncatePromptText;
+  const filtered = candidates.filter(
+    (candidate) =>
+      candidate.evidenceType === 'METADATA' ||
+      Boolean(candidate.evidenceText?.trim() || candidate.chunkText?.trim()),
+  );
+  const ordered = options.preserveReelCoverage
+    ? prioritizeReelCoverage(filtered)
+    : filtered;
   const bounded = boundTextItems(
-    candidates.filter(
-      (candidate) =>
-        candidate.evidenceType === 'METADATA' ||
-        Boolean(candidate.evidenceText?.trim() || candidate.chunkText?.trim()),
-    ),
+    ordered,
     (candidate) =>
       candidate.evidenceText?.trim() ||
       (candidate.evidenceType === 'METADATA'
@@ -380,6 +418,34 @@ export function boundEvidence(
       .slice(0, bounds.maxEvidenceTags)
       .map((tag) => truncatePromptText(tag, bounds.maxEvidenceTagChars)),
   }));
+}
+
+export function preserveReelCoverage(
+  candidates: ReelContextSearchResult[],
+  maxItems: number,
+): ReelContextSearchResult[] {
+  const ordered = prioritizeReelCoverage(candidates);
+  const reelCount = new Set(candidates.map((candidate) => candidate.reelId))
+    .size;
+  return ordered.slice(0, Math.max(maxItems, reelCount));
+}
+
+function prioritizeReelCoverage(
+  candidates: ReelContextSearchResult[],
+): ReelContextSearchResult[] {
+  const firstByReel = new Map<string, ReelContextSearchResult>();
+  for (const candidate of candidates) {
+    if (!firstByReel.has(candidate.reelId)) {
+      firstByReel.set(candidate.reelId, candidate);
+    }
+  }
+  if (firstByReel.size <= 1) return candidates;
+  const first = [...firstByReel.values()];
+  const firstIds = new Set(first.map((candidate) => candidate.chunkId));
+  return [
+    ...first,
+    ...candidates.filter((candidate) => !firstIds.has(candidate.chunkId)),
+  ];
 }
 
 /**

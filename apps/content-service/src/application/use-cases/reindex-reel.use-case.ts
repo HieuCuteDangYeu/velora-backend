@@ -13,10 +13,12 @@ export class ReindexReelUseCase {
 
   async execute(
     reelId: string,
+    options?: { requireVisualAnalysis?: boolean },
   ): Promise<{ queued: boolean; indexAttemptId?: string }> {
     if (!reelId?.trim()) return { queued: false };
     const indexAttemptId = await this.repository.queueReelIndexingAttempt(
       reelId.trim(),
+      options,
     );
 
     if (!indexAttemptId) {

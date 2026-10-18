@@ -340,7 +340,10 @@ export interface IContentRepository {
     errorDetail: string;
   }): Promise<boolean>;
 
-  queueReelIndexingAttempt(reelId: string): Promise<string | null>;
+  queueReelIndexingAttempt(
+    reelId: string,
+    options?: { requireVisualAnalysis?: boolean },
+  ): Promise<string | null>;
 
   updateReelStatus(
     id: string,

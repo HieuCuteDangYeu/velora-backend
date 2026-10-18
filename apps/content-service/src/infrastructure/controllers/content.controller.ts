@@ -1333,8 +1333,15 @@ export class ContentController {
   }
 
   @MessagePattern('content.reindex_reel')
-  async reindexReel(@Payload() data: { reelId: string }) {
-    return await this.reindexReelUseCase.execute(data?.reelId);
+  async reindexReel(
+    @Payload() data: { reelId: string; requireVisualAnalysis?: boolean },
+  ) {
+    return await this.reindexReelUseCase.execute(
+      data?.reelId,
+      data?.requireVisualAnalysis === undefined
+        ? undefined
+        : { requireVisualAnalysis: data.requireVisualAnalysis },
+    );
   }
 
   @MessagePattern('content.resolve_reel_context_access')

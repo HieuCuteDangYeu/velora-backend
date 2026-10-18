@@ -94,8 +94,18 @@ export class SemanticIndexController {
     ) {
       throw new Error('Reindex embedding identity does not match this worker');
     }
+    const options =
+      input?.requireVisualAnalysis === undefined
+        ? undefined
+        : { requireVisualAnalysis: input.requireVisualAnalysis };
+    const queued = options
+      ? await this.content.reindexReel(
+          this.requiredReelId(input?.reelId),
+          options,
+        )
+      : await this.content.reindexReel(this.requiredReelId(input?.reelId));
     return {
-      ...(await this.content.reindexReel(this.requiredReelId(input?.reelId))),
+      ...queued,
       embeddingIdentity: actual,
     };
   }

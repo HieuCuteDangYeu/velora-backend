@@ -346,7 +346,10 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     target: SemanticTable,
     input: SemanticIndexSearchRequest,
   ): Promise<SemanticIndexSearchResult[]> {
-    if (target === 'ReelChunk' && input.sourceOrder === 'ASC') {
+    if (
+      (target === 'ReelChunk' || target === 'ReelVisualScene') &&
+      input.sourceOrder === 'ASC'
+    ) {
       if (!this.cleanStrings(input.filters?.reelIds).length) return [];
       const where = this.filters(
         input.filters ?? {},
@@ -354,13 +357,35 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         input.requiredIndexVersion,
       );
       const limit = this.boundedInt(input.limit, 1, 1, 20);
+      const point = input.sourceTimestampSec;
+      if (point !== undefined && (!Number.isFinite(point) || point < 0))
+        return [];
+      const endPoint = input.sourceTimestampEndSec;
+      if (
+        endPoint !== undefined &&
+        (!Number.isFinite(endPoint) || endPoint < 0 || endPoint < (point ?? 0))
+      )
+        return [];
+      const timeFilter =
+        point === undefined
+          ? Prisma.empty
+          : endPoint !== undefined
+            ? Prisma.sql`AND t."startTime" <= ${endPoint} AND t."endTime" >= ${point}`
+            : Prisma.sql`AND (t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}))`;
+      const timeOrder =
+        endPoint !== undefined && point !== undefined
+          ? Prisma.sql`ORDER BY CASE WHEN t."startTime" <= ${point} AND t."endTime" >= ${endPoint} THEN 0 ELSE 1 END, t."endTime" DESC NULLS LAST, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
+          : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
+      const chronologicalTable = Prisma.raw(`"${target}"`);
+      const chronologicalType =
+        target === 'ReelVisualScene' ? 'VISUAL' : 'TRANSCRIPT';
       const rows = await this.prisma.$queryRaw<SearchRow[]>(Prisma.sql`
         SELECT t."id", t."indexVersion", t."reelId", t."parentId", t."ordinal", t."userId",
-          t."retrievalText" AS "text", t."retrievalText", t."evidenceText", 'TRANSCRIPT'::text AS "evidenceType", t."tags",
+          t."retrievalText" AS "text", t."retrievalText", t."evidenceText", ${chronologicalType}::text AS "evidenceType", t."tags",
           t."startTime", t."endTime", t."sourceDurationMs", t."sourceOrientation", t."sourceLengthClass",
           0::double precision AS "rrfScore", NULL::double precision AS "vectorDistance", NULL::bigint AS "vectorRank", NULL::bigint AS "keywordRank", NULL::bigint AS "metadataRank"
-        FROM "ReelChunk" t WHERE t."isActive" = true ${where}
-        ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC LIMIT ${limit}
+        FROM ${chronologicalTable} t WHERE t."isActive" = true ${where} ${timeFilter}
+        ${timeOrder} LIMIT ${limit}
       `);
       return rows.map((row) => this.toSearchResult(row));
     }

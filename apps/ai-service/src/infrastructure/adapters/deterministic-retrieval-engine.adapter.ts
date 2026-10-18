@@ -1,4 +1,7 @@
-import { sourceRetrievalPlan } from '@ai/domain/services/rag-source-retrieval-plan';
+import {
+  requiresReelCoverage,
+  sourceRetrievalPlan,
+} from '@ai/domain/services/rag-source-retrieval-plan';
 import type {
   IContentService,
   TranscriptMatch,
@@ -43,6 +46,7 @@ interface RawRetrievalPlan {
   searchLimit?: unknown;
   rerankLimit?: unknown;
   shouldRerank?: unknown;
+  requiresReelCoverage?: unknown;
   reason?: unknown;
 }
 
@@ -59,6 +63,9 @@ interface RetrievalExecutionInput {
   includeTranscript: boolean;
   includeVisual: boolean;
   requiredEvidence: RagRequiredEvidence[];
+  sourceOrder?: 'ASC';
+  sourceTimestampSec?: number;
+  sourceTimestampEndSec?: number;
   diagnostics?: RagRetrievalExecutionDiagnostics;
 }
 
@@ -180,14 +187,112 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     }
     if (
       input.plan.sourceOrder === 'ASC' &&
+      includeVisual &&
+      includeTranscript &&
+      accessibleReelIds.length === 1
+    ) {
+      const document = await this.semanticIndexService.getReelDocument(
+        accessibleReelIds[0],
+      );
+      if (!document) return [];
+      const [chunks, scenes] = await Promise.all([
+        this.semanticIndexService.searchChunks({
+          filters: { reelIds: accessibleReelIds },
+          sourceOrder: 'ASC',
+          sourceTimestampSec: input.plan.sourceTimestampSec,
+          sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+          requiredIndexVersion: document.indexVersion,
+          limit:
+            input.plan.sourceTimestampEndSec !== undefined
+              ? Math.max(2, Math.ceil(input.plan.searchLimit / 2))
+              : Math.max(1, Math.ceil(input.plan.searchLimit / 2)),
+        }),
+        this.semanticIndexService.searchVisualScenes({
+          filters: { reelIds: accessibleReelIds },
+          sourceOrder: 'ASC',
+          sourceTimestampSec: input.plan.sourceTimestampSec,
+          sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+          requiredIndexVersion: document.indexVersion,
+          limit:
+            input.plan.sourceTimestampEndSec !== undefined
+              ? Math.max(2, Math.ceil(input.plan.searchLimit / 2))
+              : Math.max(1, Math.ceil(input.plan.searchLimit / 2)),
+        }),
+      ]);
+      const hydrated = await this.hydrateAndExpand(
+        [...chunks, ...scenes],
+        accessibleReelIds,
+      );
+      if (diagnostics) diagnostics.retrievedCount = hydrated.length;
+      return hydrated;
+    }
+    if (
+      input.plan.sourceOrder === 'ASC' &&
+      includeVisual &&
+      !includeTranscript &&
+      accessibleReelIds.length === 1
+    ) {
+      const document = await this.semanticIndexService.getReelDocument(
+        accessibleReelIds[0],
+      );
+      if (!document) return [];
+      const scenes = await this.semanticIndexService.searchVisualScenes({
+        filters: { reelIds: accessibleReelIds },
+        sourceOrder: 'ASC',
+        sourceTimestampSec: input.plan.sourceTimestampSec,
+        sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+        requiredIndexVersion: document.indexVersion,
+        limit:
+          input.plan.sourceTimestampEndSec !== undefined
+            ? Math.max(2, input.plan.searchLimit)
+            : 1,
+      });
+      const results: TranscriptMatch[] = [];
+      for (const scene of scenes) {
+        if (
+          !accessibleReelIds.includes(scene.reelId) ||
+          scene.evidenceType !== 'VISUAL'
+        )
+          continue;
+        const point = input.plan.sourceTimestampSec;
+        if (scene.indexVersion && scene.indexVersion !== document.indexVersion)
+          continue;
+        if (
+          point !== undefined &&
+          !(
+            scene.startTime === point ||
+            (typeof scene.startTime === 'number' &&
+              typeof scene.endTime === 'number' &&
+              scene.startTime <= point &&
+              scene.endTime > point)
+          )
+        )
+          continue;
+        results.push(this.toTranscriptMatch(scene, document));
+      }
+      if (diagnostics) diagnostics.retrievedCount = results.length;
+      return results;
+    }
+    if (
+      input.plan.sourceOrder === 'ASC' &&
       accessibleReelIds.length === 1 &&
       includeTranscript &&
       !includeVisual
     ) {
+      const document = await this.semanticIndexService.getReelDocument(
+        accessibleReelIds[0],
+      );
+      if (!document) return [];
       const candidates = await this.semanticIndexService.searchChunks({
         filters: { reelIds: accessibleReelIds },
         sourceOrder: 'ASC',
-        limit: 1,
+        sourceTimestampSec: input.plan.sourceTimestampSec,
+        sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+        requiredIndexVersion: document.indexVersion,
+        limit:
+          input.plan.sourceTimestampEndSec !== undefined
+            ? Math.max(2, input.plan.searchLimit)
+            : 1,
       });
       const hydrated = await this.hydrateAndExpand(
         candidates,
@@ -241,6 +346,9 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           includeTranscript,
           includeVisual,
           requiredEvidence: input.route.requiredEvidence,
+          sourceOrder: input.plan.sourceOrder,
+          sourceTimestampSec: input.plan.sourceTimestampSec,
+          sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
           diagnostics,
         },
         queryDiagnostics,
@@ -259,6 +367,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   async rerank(input: {
     plan: RagRetrievalPlan;
     retrievedChunks: TranscriptMatch[];
+    requiredEvidence?: RagRequiredEvidence[];
     diagnostics?: RagRetrievalExecutionDiagnostics;
   }): Promise<TranscriptMatch[]> {
     if (input.diagnostics) {
@@ -320,7 +429,15 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           assembled.push(this.toTranscriptMatch(neighbor, document));
         }
       }
-      const result = this.dedupeByChunkId(assembled);
+      const result = this.ensureRequiredEvidenceCoverage(
+        this.ensureRequiredReelCoverage(
+          this.dedupeByChunkId(assembled),
+          input.retrievedChunks,
+          input.plan.requiresReelCoverage === true,
+        ),
+        input.retrievedChunks,
+        input.requiredEvidence ?? [],
+      );
       if (input.diagnostics) input.diagnostics.rerankedCount = result.length;
       return result;
     } catch (error: unknown) {
@@ -458,17 +575,42 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     let candidates: SemanticIndexSearchResult[];
     try {
       const search = this.buildSearchRequest(input);
+      const multiReel = input.accessibleReelIds.length > 1;
+      const scopedReelIds = multiReel
+        ? input.accessibleReelIds.slice(0, 8)
+        : input.accessibleReelIds;
+      const perReelLimit = multiReel
+        ? Math.max(1, Math.ceil(input.limit / scopedReelIds.length))
+        : input.limit;
       const [chunks, visualScenes] = await Promise.all([
         input.includeTranscript
-          ? this.semanticIndexService.searchChunks({
-              ...search,
-              filters: { reelIds: input.accessibleReelIds },
-              limit: input.limit,
-              candidateLimit: Math.min(Math.max(input.limit * 8, 50), 200),
-            })
+          ? Promise.all(
+              scopedReelIds.map((reelId) =>
+                this.semanticIndexService.searchChunks({
+                  ...search,
+                  filters: { reelIds: [reelId] },
+                  limit: perReelLimit,
+                  candidateLimit: Math.min(Math.max(perReelLimit * 8, 50), 200),
+                }),
+              ),
+            ).then((results) => results.flat())
           : Promise.resolve([] as SemanticIndexSearchResult[]),
         input.includeVisual
-          ? this.retrieveVisualScenes(input)
+          ? multiReel
+            ? Promise.all(
+                scopedReelIds.map((reelId) =>
+                  this.semanticIndexService.searchVisualScenes({
+                    ...search,
+                    filters: { reelIds: [reelId] },
+                    limit: perReelLimit,
+                    candidateLimit: Math.min(
+                      Math.max(perReelLimit * 8, 50),
+                      200,
+                    ),
+                  }),
+                ),
+              ).then((results) => results.flat())
+            : this.retrieveVisualScenes(input)
           : Promise.resolve([] as SemanticIndexSearchResult[]),
       ]);
       candidates = [...chunks, ...visualScenes];
@@ -542,15 +684,29 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     | 'queryEmbeddingModel'
     | 'queryEmbeddingVersion'
     | 'queryTags'
+    | 'sourceOrder'
+    | 'sourceTimestampSec'
+    | 'sourceTimestampEndSec'
   > {
+    const sourceConstraints = {
+      ...(input.sourceOrder ? { sourceOrder: input.sourceOrder } : {}),
+      ...(input.sourceTimestampSec !== undefined
+        ? { sourceTimestampSec: input.sourceTimestampSec }
+        : {}),
+      ...(input.sourceTimestampEndSec !== undefined
+        ? { sourceTimestampEndSec: input.sourceTimestampEndSec }
+        : {}),
+    };
     if (input.mode === 'REEL_VECTOR') {
       return {
+        ...sourceConstraints,
         queryEmbedding: input.queryEmbedding,
         queryEmbeddingModel: input.queryEmbeddingModel,
         queryEmbeddingVersion: input.queryEmbeddingVersion,
       };
     }
     return {
+      ...sourceConstraints,
       queryText: input.queryText,
       queryEmbedding: input.queryEmbedding,
       queryEmbeddingModel: input.queryEmbeddingModel,
@@ -789,6 +945,24 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         },
       };
     }
+    if (input.route.requiredEvidence.includes('AUDIO')) {
+      return {
+        mode: 'NONE',
+        query: message,
+        queries: [],
+        searchLimit: 0,
+        rerankLimit: 0,
+        shouldRerank: false,
+        requiresReelCoverage: false,
+        reason:
+          'Non-speech audio evidence is not available in the semantic index.',
+        diagnostics: {
+          modelRole: 'RETRIEVAL_PLANNER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'NOT_REQUIRED',
+        },
+      };
+    }
     const sourcePlan = sourceRetrievalPlan(message, input.route);
     if (sourcePlan) return sourcePlan;
     const semanticCalls: RagStructuredCallFailureDiagnostic[] = [];
@@ -864,8 +1038,9 @@ Rules:
 9. REEL_VECTOR means semantic vector search only. Use it when lexical wording is likely noisy or paraphrased.
 10. REEL_HYBRID means semantic vector + full-text search, with explicit #hashtags also eligible for tag matching. Prefer it for normal factual reel questions.
 11. The execution layer selects transcript and/or sampled visual-scene evidence from the router's required-evidence decision. Do not try to change that evidence policy.
-12. Return exactly these eight fields: mode, query, rewrittenQuery, queries, searchLimit, rerankLimit, shouldRerank, reason.
-13. mode must be NONE, REEL_VECTOR, or REEL_HYBRID. query and rewrittenQuery are strings; use an empty rewrittenQuery when no rewrite is needed. queries is an array of one to three query strings. searchLimit is an integer from 1 to 20, rerankLimit is an integer from 1 to 10, shouldRerank is a boolean, and reason is a concise string.
+12. Return exactly these nine fields: mode, query, rewrittenQuery, queries, searchLimit, rerankLimit, shouldRerank, requiresReelCoverage, reason.
+13. Set requiresReelCoverage=true when the user asks for a comparison, contrast, difference, or a fact about both/each of multiple shared Reels. Set it false for a single-Reel request. This only controls evidence allocation; it does not choose which Reels the user may access.
+14. mode must be NONE, REEL_VECTOR, or REEL_HYBRID. query and rewrittenQuery are strings; use an empty rewrittenQuery when no rewrite is needed. queries is an array of one to three query strings. searchLimit is an integer from 1 to 20, rerankLimit is an integer from 1 to 10, shouldRerank and requiresReelCoverage are booleans, and reason is a concise string.
 `.trim();
   }
 
@@ -894,6 +1069,7 @@ ${route.requiredEvidence.join(', ')}
         'searchLimit',
         'rerankLimit',
         'shouldRerank',
+        'requiresReelCoverage',
         'reason',
       ],
       properties: {
@@ -912,6 +1088,7 @@ ${route.requiredEvidence.join(', ')}
         searchLimit: { type: 'number', minimum: 1, maximum: 20 },
         rerankLimit: { type: 'number', minimum: 1, maximum: 10 },
         shouldRerank: { type: 'boolean' },
+        requiresReelCoverage: { type: 'boolean' },
         reason: { type: 'string', minLength: 1, maxLength: 240 },
       },
     };
@@ -943,6 +1120,10 @@ ${route.requiredEvidence.join(', ')}
       rerankLimit: this.normalizeLimit(raw.rerankLimit, 5, 1, 10),
       shouldRerank:
         typeof raw.shouldRerank === 'boolean' ? raw.shouldRerank : true,
+      requiresReelCoverage:
+        typeof raw.requiresReelCoverage === 'boolean'
+          ? raw.requiresReelCoverage
+          : requiresReelCoverage(fallbackQuery),
       reason:
         typeof raw.reason === 'string' && raw.reason.trim()
           ? raw.reason.trim()
@@ -979,6 +1160,47 @@ ${route.requiredEvidence.join(', ')}
       }
     }
     return [...map.values()];
+  }
+
+  private ensureRequiredEvidenceCoverage(
+    selected: TranscriptMatch[],
+    retrieved: TranscriptMatch[],
+    requiredEvidence: RagRequiredEvidence[],
+  ): TranscriptMatch[] {
+    const result = [...selected];
+    for (const evidenceType of requiredEvidence) {
+      if (!['TRANSCRIPT', 'VISUAL', 'METADATA'].includes(evidenceType)) {
+        continue;
+      }
+      if (result.some((item) => item.evidenceType === evidenceType)) continue;
+      const fallback = retrieved.find(
+        (item) => item.evidenceType === evidenceType,
+      );
+      if (
+        fallback &&
+        !result.some((item) => item.chunkId === fallback.chunkId)
+      ) {
+        result.push(fallback);
+      }
+    }
+    return result;
+  }
+
+  private ensureRequiredReelCoverage(
+    selected: TranscriptMatch[],
+    retrieved: TranscriptMatch[],
+    required: boolean,
+  ): TranscriptMatch[] {
+    if (!required) return selected;
+    const reelIds = [...new Set(retrieved.map((item) => item.reelId))];
+    if (reelIds.length <= 1) return selected;
+    const result = [...selected];
+    for (const reelId of reelIds) {
+      if (result.some((item) => item.reelId === reelId)) continue;
+      const fallback = retrieved.find((item) => item.reelId === reelId);
+      if (fallback) result.push(fallback);
+    }
+    return result;
   }
 
   private normalizeLimit(

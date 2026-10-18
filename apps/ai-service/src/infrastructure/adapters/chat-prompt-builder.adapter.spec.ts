@@ -2,6 +2,42 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { ChatPromptBuilderAdapter } from './chat-prompt-builder.adapter';
 
 describe('ChatPromptBuilderAdapter', () => {
+  it('does not put foreign user memory or a foreign summary into a provider prompt', () => {
+    const prompt = new ChatPromptBuilderAdapter().build({
+      userId: 'alice',
+      conversationId: 'current',
+      userMessage: 'What do I prefer?',
+      memorySelection: {
+        includeUserMemory: true,
+        includeConversationSummary: true,
+        includeRecentHistory: false,
+        includeRetrievedChunks: false,
+      },
+      userMemories: {
+        memories: [
+          {
+            userId: 'alice',
+            type: 'PREFERENCE',
+            content: 'TypeScript',
+            confidence: 1,
+          },
+          {
+            userId: 'bob',
+            type: 'PREFERENCE',
+            content: 'PRIVATE_CANARY',
+            confidence: 1,
+          },
+        ],
+      },
+      conversationMemory: {
+        conversationId: 'foreign',
+        summary: 'FOREIGN_SUMMARY_CANARY',
+      },
+    } as unknown as RagChatWorkflowState);
+    expect(prompt).toContain('TypeScript');
+    expect(prompt).not.toContain('PRIVATE_CANARY');
+    expect(prompt).not.toContain('FOREIGN_SUMMARY_CANARY');
+  });
   it('instructs factual reel drafts and revisions to use direct evidence wording', () => {
     const prompt = new ChatPromptBuilderAdapter().build({
       userId: 'user-1',
@@ -43,6 +79,9 @@ describe('ChatPromptBuilderAdapter', () => {
       'State that supported fact, not a plausible reformulation based only on the question.',
     );
     expect(prompt).toContain('Do not repeat an unsupported draft.');
+    expect(prompt).toContain(
+      'never turn missing OCR into "no readable text", "no text", or "Readable text: none".',
+    );
   });
 
   it('keeps same-reel transcript continuation evidence ahead of unrelated results', () => {
@@ -152,9 +191,13 @@ describe('ChatPromptBuilderAdapter', () => {
           eventType: 'TEXT',
         })),
       },
-      conversationMemory: { summary: 'summary '.repeat(1_000) },
+      conversationMemory: {
+        conversationId: 'conversation-1',
+        summary: 'summary '.repeat(1_000),
+      },
       userMemories: {
         memories: Array.from({ length: 8 }, (_, index) => ({
+          userId: 'user-1',
           type: 'PREFERENCE',
           confidence: 0.9,
           content: `memory-${index} ${'long memory '.repeat(500)}`,

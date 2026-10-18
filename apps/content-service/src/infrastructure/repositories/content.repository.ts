@@ -1222,7 +1222,10 @@ export class ContentRepository
     return failed;
   }
 
-  async queueReelIndexingAttempt(reelId: string): Promise<string | null> {
+  async queueReelIndexingAttempt(
+    reelId: string,
+    options?: { requireVisualAnalysis?: boolean },
+  ): Promise<string | null> {
     const indexAttemptId = await this.$transaction(async (transaction) => {
       const reel = await transaction.reel.findFirst({
         where: { id: reelId, mediaStatus: 'COMPLETED' },
@@ -1274,6 +1277,9 @@ export class ContentRepository
         transcriptionAudioManifestKey:
           reel.transcriptionAudioManifestKey ?? undefined,
         visualFrameManifestKey: reel.visualFrameManifestKey ?? undefined,
+        ...(options?.requireVisualAnalysis === undefined
+          ? {}
+          : { requireVisualAnalysis: options.requireVisualAnalysis }),
         sourceDurationMs: reel.sourceDurationMs,
         outputDurationMs: reel.outputDurationMs ?? reel.sourceDurationMs,
         sourceHasAudio: reel.sourceHasAudio ?? undefined,

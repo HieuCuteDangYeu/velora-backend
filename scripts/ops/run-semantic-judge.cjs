@@ -15,6 +15,7 @@ const {
   DEFAULT_GROQ_MODEL,
   judgeFingerprint,
 } = require('./rag-semantic-judge.cjs');
+const { DIMENSIONS, isApplicable } = require('./rag-evaluation-applicability.cjs');
 
 function parseArgs(argv) {
   const args = {};
@@ -124,6 +125,8 @@ async function publishSemanticScores({
       ];
 
       for (const m of metrics) {
+        const item = evaluation.datasetItem;
+        if (item && !isApplicable(item, m.name === 'factual_correctness' ? 'factualCorrectness' : m.name === 'response_relevancy' ? 'responseRelevancy' : m.name === 'context_completeness' ? 'contextCompleteness' : 'faithfulness')) continue;
         if (typeof m.score !== 'number') continue;
 
         client.score.create({
@@ -196,6 +199,9 @@ async function main() {
   const outputPath =
     args.output ||
     path.join(path.dirname(statePath), `${runId}.semantic-v2.json`);
+  const casesOutputPath =
+    args['cases-output'] ||
+    path.join(path.dirname(outputPath), 'semantic-cases.jsonl');
   const ledgerDir =
     args.ledger ||
     path.join(
@@ -303,7 +309,9 @@ async function main() {
 
     // Filter completed benchmark cases to evaluate
     const candidateCaseIds = Object.entries(state.cases)
-      .filter(([, caseEntry]) => caseEntry.status === 'COMPLETED')
+      .filter(([, caseEntry]) =>
+        caseEntry.status === 'COMPLETED' || caseEntry.status === 'FAILED',
+      )
       .map(([id]) => id)
       .slice(0, limit);
 
@@ -344,7 +352,7 @@ async function main() {
           const question = item.input?.question;
           const referenceAnswer = item.expectedOutput?.acceptedAnswers?.length
             ? item.expectedOutput.acceptedAnswers
-            : item.expectedOutput?.answer;
+            : item.expectedOutput?.answer ?? item.expectedOutput?.referenceAnswer;
           const generatedAnswer = caseEntry.output?.answer;
           const context = caseEntry.output?.generationEvidence;
           if (caseEntry.output?.executionHealth?.status !== 'AVAILABLE') {
@@ -380,6 +388,13 @@ async function main() {
 
             semanticData.cases[caseId] = {
               ...evaluation,
+              datasetItem: item,
+              applicability: Object.fromEntries(
+                DIMENSIONS.map((dimension) => [
+                  dimension,
+                  isApplicable(item, dimension),
+                ]),
+              ),
               traceId: caseEntry.output?.traceId,
             };
             processedCount += 1;
@@ -414,21 +429,17 @@ async function main() {
 
     // Compute final statistics
     const validEvaluations = Object.values(semanticData.cases).filter(
-      (ev) => ev && !ev.error && ev.faithfulness,
+      (ev) => ev && !ev.error,
     );
-
-    const faithfulnessScores = validEvaluations.map(
-      (ev) => ev.faithfulness.score,
-    );
-    const factualCorrectnessScores = validEvaluations.map(
-      (ev) => ev.factualCorrectness.score,
-    );
-    const responseRelevancyScores = validEvaluations.map(
-      (ev) => ev.responseRelevancy.score,
-    );
-    const contextCompletenessScores = validEvaluations.map(
-      (ev) => ev.contextCompleteness.score,
-    );
+    const applicableScores = (dimension) =>
+      validEvaluations
+        .filter((ev) => ev.applicability?.[dimension] !== false)
+        .map((ev) => ev[dimension]?.score)
+        .filter((score) => typeof score === 'number');
+    const faithfulnessScores = applicableScores('faithfulness');
+    const factualCorrectnessScores = applicableScores('factualCorrectness');
+    const responseRelevancyScores = applicableScores('responseRelevancy');
+    const contextCompletenessScores = applicableScores('contextCompleteness');
 
     const metrics = {
       faithfulness: availableStats(faithfulnessScores),
@@ -454,6 +465,14 @@ async function main() {
     semanticData.completedAt = new Date().toISOString();
 
     saveJsonAtomic(outputPath, semanticData);
+    const casesLines = Object.entries(semanticData.cases).map(([caseId, evaluation]) =>
+      JSON.stringify({ caseId, ...evaluation }),
+    );
+    fs.writeFileSync(`${casesOutputPath}.tmp`, `${casesLines.join('\n')}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    fs.renameSync(`${casesOutputPath}.tmp`, casesOutputPath);
 
     console.log('\n======================================================');
     console.log('             SEMANTIC RAG EVALUATION REPORT           ');

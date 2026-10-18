@@ -19,6 +19,8 @@ export const RagTelemetryEventSchema = z
       'NONE',
       'TRANSCRIPT_CONTENT',
       'VISUAL_CONTENT',
+      'AUDIO_CONTENT',
+      'MULTIMODAL_CONTENT',
       'GENERAL_REEL_SUMMARY',
       'REEL_METADATA',
       'AMBIGUOUS_REEL_REFERENCE',

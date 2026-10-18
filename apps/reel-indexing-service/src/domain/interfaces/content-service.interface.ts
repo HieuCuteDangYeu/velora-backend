@@ -28,7 +28,10 @@ export interface IIndexingContentService {
     errorDetail: string;
   }): Promise<void>;
 
-  reindexReel(reelId: string): Promise<{
+  reindexReel(
+    reelId: string,
+    options?: { requireVisualAnalysis?: boolean },
+  ): Promise<{
     queued: boolean;
     indexAttemptId?: string;
   }>;

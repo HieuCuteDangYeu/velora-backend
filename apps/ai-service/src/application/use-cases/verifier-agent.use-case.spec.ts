@@ -78,6 +78,48 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('verifies a scoped conversation fact using memory evidence IDs', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            { claim: 'Design review.', evidenceIds: ['m0'] },
+          ],
+        }),
+      ),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const input = {
+      ...state({ answer: 'Design review.' }),
+      userId: 'alice',
+      conversationId: 'current',
+      userMessage: 'Which milestone did we agree on?',
+      route: {
+        intent: 'CONVERSATION_MEMORY_QUESTION',
+        needsVerification: true,
+        requiredEvidence: ['CONVERSATION_MEMORY'],
+      },
+      conversationMemory: {
+        conversationId: 'current',
+        summary: 'We agreed on design review.',
+      },
+    } as unknown as RagChatWorkflowState;
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      passed: true,
+      supportedClaimMappings: [{ evidenceIds: ['m0'] }],
+    });
+    const prompt = JSON.parse(
+      (service.generateObject.mock.calls[0][0] as GenerateStructuredObjectInput)
+        .userPrompt,
+    );
+    expect(prompt.evidence).toContainEqual(
+      expect.objectContaining({
+        evidenceId: 'm0',
+        evidenceType: 'CONVERSATION_MEMORY',
+      }),
+    );
+  });
+
   it('accepts a supported semantic decision from the primary verifier', async () => {
     const service = { generateObject: jest.fn().mockResolvedValue(result()) };
     const useCase = new VerifierAgentUseCase(service as never, config);

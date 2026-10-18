@@ -69,10 +69,10 @@ describe('CloudflareVisionAdapter', () => {
       'caption (a non-empty factual string)',
     );
     expect(JSON.stringify(body['messages'])).toContain(
-      'ocrText (a string, empty when no text is clearly readable)',
+      'ocrText (a string containing only clearly readable text and empty when it cannot be read)',
     );
     expect(JSON.stringify(body['messages'])).toContain(
-      'objects (an array of short strings)',
+      'objects (an array of short grounded strings)',
     );
     expect(request.headers).toMatchObject({ 'cf-aig-skip-cache': 'true' });
     expect(request.signal).toBeInstanceOf(AbortSignal);

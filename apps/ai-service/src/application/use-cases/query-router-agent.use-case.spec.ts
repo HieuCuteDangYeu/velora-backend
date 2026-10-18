@@ -91,6 +91,7 @@ describe('QueryRouterAgentUseCase', () => {
       'VISUAL_CONTENT',
       ['VISUAL'],
     ],
+    ['What music is playing in the shared Reel?', 'AUDIO_CONTENT', ['AUDIO']],
     [
       'Tóm tắt ý nghĩa tổng thể của đoạn media vừa chia sẻ.',
       'GENERAL_REEL_SUMMARY',
@@ -100,6 +101,11 @@ describe('QueryRouterAgentUseCase', () => {
       'Who is listed as the author of the shared recording?',
       'REEL_METADATA',
       ['METADATA'],
+    ],
+    [
+      'What did the speaker say while the blue device was visible?',
+      'MULTIMODAL_CONTENT',
+      ['TRANSCRIPT', 'VISUAL'],
     ],
   ])(
     'uses semantic output for novel wording: %s',
@@ -138,6 +144,35 @@ describe('QueryRouterAgentUseCase', () => {
       );
     },
   );
+
+  it('keeps an explicitly inaccessible Reel on the safe retrieval/refusal path', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'NONE',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Summarize the private Reel fixture-private-access even though it was not shared with me.',
+        hasSharedReelContext: false,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      needsRetrieval: true,
+    });
+  });
 
   it('states a general boundary between specific relations and overall summaries', async () => {
     const structuredLlmService = {

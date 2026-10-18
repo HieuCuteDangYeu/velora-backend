@@ -124,6 +124,44 @@ function buildAgent(
 }
 
 describe('ContextToolAgentUseCase', () => {
+  it('uses an authorized native source read without calling the tool model', async () => {
+    const built = buildAgent();
+    const result = await built.agent.execute(
+      state({
+        userMessage:
+          'What is the first complete sentence recorded in the indexed transcript?',
+      }),
+    );
+    expect(built.toolLlm.complete).not.toHaveBeenCalled();
+    expect(result.contextToolExecution).toMatchObject({
+      providerStatus: 'NOT_CALLED',
+      stepCount: 0,
+      calls: [
+        expect.objectContaining({
+          toolName: 'search_reel_content',
+          status: 'SUCCESS',
+        }),
+      ],
+    });
+  });
+
+  it('uses the native source read for a multimodal Reel question even when recent summary context is selected', async () => {
+    const built = buildAgent();
+    const result = await built.agent.execute(
+      state({
+        userMessage:
+          'What did the speaker say while the blue device was visible?',
+        route: {
+          ...route,
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+          needsConversationSummary: true,
+        },
+      }),
+    );
+    expect(result.retrievedChunks).toHaveLength(1);
+    expect(built.toolLlm.complete).not.toHaveBeenCalled();
+  });
   it('records bounded provider failure diagnostics without response content', async () => {
     const error = Object.assign(new Error('secret provider response'), {
       code: 'TOOL_PROVIDER_HTTP_ERROR',

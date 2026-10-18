@@ -70,16 +70,25 @@ export class ContentServiceAdapter implements IIndexingContentService {
     );
   }
 
-  async reindexReel(reelId: string): Promise<{
+  async reindexReel(
+    reelId: string,
+    options?: { requireVisualAnalysis?: boolean },
+  ): Promise<{
     queued: boolean;
     indexAttemptId?: string;
   }> {
+    const payload = {
+      reelId,
+      ...(options?.requireVisualAnalysis === undefined
+        ? {}
+        : { requireVisualAnalysis: options.requireVisualAnalysis }),
+    };
     return await firstValueFrom(
       this.client
         .send<{
           queued: boolean;
           indexAttemptId?: string;
-        }>('content.reindex_reel', { reelId })
+        }>('content.reindex_reel', payload)
         .pipe(timeout(30_000)),
     );
   }

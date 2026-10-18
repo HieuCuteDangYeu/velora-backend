@@ -22,6 +22,8 @@ export type RagReelQuestionType =
   | 'NONE'
   | 'TRANSCRIPT_CONTENT'
   | 'VISUAL_CONTENT'
+  | 'AUDIO_CONTENT'
+  | 'MULTIMODAL_CONTENT'
   | 'GENERAL_REEL_SUMMARY'
   | 'REEL_METADATA'
   | 'AMBIGUOUS_REEL_REFERENCE';
@@ -61,7 +63,7 @@ export interface RagContextToolExecutionDiagnostics {
   requiredTools: RagAgentToolName[];
   stepCount: number;
   calls: RagContextToolCallDiagnostics[];
-  providerStatus: 'SUCCESS' | 'ERROR';
+  providerStatus: 'SUCCESS' | 'ERROR' | 'NOT_CALLED';
   failures?: Array<{
     stage: 'TOOL_MODEL' | 'FALLBACK_RETRIEVAL' | 'RERANK';
     errorCode: string;
@@ -155,6 +157,10 @@ export type RagRetrievalMode = 'NONE' | 'REEL_VECTOR' | 'REEL_HYBRID';
 
 export interface RagRetrievalPlan {
   sourceOrder?: 'ASC';
+  sourceTimestampSec?: number;
+  sourceTimestampEndSec?: number;
+  /** Preserve one grounded evidence path per requested comparison Reel. */
+  requiresReelCoverage?: boolean;
   mode: RagRetrievalMode;
   query: string;
   rewrittenQuery?: string;
@@ -175,6 +181,9 @@ export interface RagRetrievalPlan {
 export type RagRetrievalPlanActual = Pick<
   RagRetrievalPlan,
   | 'sourceOrder'
+  | 'sourceTimestampSec'
+  | 'sourceTimestampEndSec'
+  | 'requiresReelCoverage'
   | 'mode'
   | 'query'
   | 'rewrittenQuery'
@@ -279,6 +288,8 @@ export interface RagContextSufficiencyResult {
   missingEvidence: RagRequiredEvidence[];
   /** Prompt-local evidence IDs that directly support answering the exact question. */
   supportedEvidenceIds?: string[];
+  /** Authorized Reel sources expected by a comparison request but absent after selection. */
+  missingReelIds?: string[];
 
   reason: string;
   userFacingReason?: string;
@@ -396,8 +407,13 @@ export interface RagChatWorkflowInput {
 export interface RagGenerationEvidence {
   evidenceId: string;
   sourceId: string;
-  reelId: string;
-  evidenceType: 'TRANSCRIPT' | 'VISUAL' | 'METADATA';
+  reelId?: string;
+  evidenceType:
+    | 'TRANSCRIPT'
+    | 'VISUAL'
+    | 'METADATA'
+    | 'USER_MEMORY'
+    | 'CONVERSATION_MEMORY';
   evidenceText: string;
   indexVersion?: string;
   startTime?: number | null;

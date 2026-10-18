@@ -13,6 +13,7 @@ export function allowsGroundedGeneration(
   route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
 ): boolean {
   if (!context) return true;
+  if ((context.missingReelIds?.length ?? 0) > 0) return false;
   if (context.sufficient && context.recommendedAction === 'ANSWER') return true;
   if (context.recommendedAction === 'REWRITE_AND_RETRY') return false;
   if (

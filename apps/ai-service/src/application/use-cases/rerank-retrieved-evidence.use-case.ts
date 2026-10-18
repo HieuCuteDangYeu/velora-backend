@@ -1,5 +1,6 @@
 import type { TranscriptMatch } from '@ai/domain/interfaces/content-service.interface';
 import type {
+  RagRequiredEvidence,
   RagRetrievalExecutionDiagnostics,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
@@ -16,6 +17,7 @@ export class RerankRetrievedEvidenceUseCase {
   async execute(input: {
     plan: RagRetrievalPlan;
     retrievedChunks: TranscriptMatch[];
+    requiredEvidence?: RagRequiredEvidence[];
     diagnostics?: RagRetrievalExecutionDiagnostics;
   }): Promise<TranscriptMatch[]> {
     if (input.diagnostics) {

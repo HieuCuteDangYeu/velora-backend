@@ -98,13 +98,25 @@ export class BuildRagCitationsUseCase {
         if (citations.length >= this.maxCitations) break;
       }
 
+      const selected = new Set(selectedEvidenceIds);
+      const supported = attribution.claims.filter(
+        (claim) =>
+          claim.supported &&
+          claim.evidenceIds.length > 0 &&
+          claim.evidenceIds.every((id) => selected.has(id)),
+      );
+      const factualClaimCount = Math.max(
+        attribution.factualClaimCount,
+        attribution.claims.length,
+        state.answerClaims?.length ?? 0,
+      );
       const coverage: RagCitationCoverageResult = {
         mode: 'LLM',
-        coverage: attribution.coverage,
-        factualClaimCount: attribution.factualClaimCount,
-        supportedClaimCount: attribution.supportedClaimCount,
+        coverage: factualClaimCount ? supported.length / factualClaimCount : 1,
+        factualClaimCount,
+        supportedClaimCount: supported.length,
         unsupportedClaims: attribution.claims
-          .filter((claim) => !claim.supported)
+          .filter((claim) => !supported.includes(claim))
           .map((claim) => claim.claim)
           .slice(0, 6),
       };
@@ -235,19 +247,44 @@ export class BuildRagCitationsUseCase {
         evidenceId: candidate.sourceEvidenceId,
       }),
     );
+    const mappings = state.verification.supportedClaimMappings ?? [];
+    const selected = new Set(selectedIds);
+    const supportedMappings = mappings.filter(
+      (mapping) =>
+        mapping.evidenceIds.length > 0 &&
+        mapping.evidenceIds.every((id) => selected.has(id)),
+    );
     const factualClaimCount = Math.max(
       1,
-      state.verification.supportedClaimMappings?.length ?? 0,
+      mappings.length,
+      state.answerClaims?.length ?? 0,
     );
+    const supportedClaimCount = supportedMappings.length;
 
     return {
       citations,
       coverage: {
         mode: 'FALLBACK',
-        coverage: 1,
+        coverage: supportedClaimCount / factualClaimCount,
         factualClaimCount,
-        supportedClaimCount: factualClaimCount,
-        unsupportedClaims: [],
+        supportedClaimCount,
+        unsupportedClaims: [
+          ...new Set([
+            ...mappings
+              .filter((mapping) => !supportedMappings.includes(mapping))
+              .map((mapping) => mapping.claim),
+            ...(state.answerClaims ?? [])
+              .filter(
+                (claim) =>
+                  !supportedMappings.some(
+                    (mapping) =>
+                      mapping.claim.trim().toLowerCase() ===
+                      claim.claim.trim().toLowerCase(),
+                  ),
+              )
+              .map((claim) => claim.claim),
+          ]),
+        ].slice(0, 6),
         diagnostics: {
           decisionSource: 'FALLBACK',
           selectedEvidenceIds: selectedIds,
@@ -292,6 +329,11 @@ export class BuildRagCitationsUseCase {
       seen.add(key);
 
       const evidenceType = chunk.evidenceType ?? 'TRANSCRIPT';
+      if (
+        evidenceType === 'USER_MEMORY' ||
+        evidenceType === 'CONVERSATION_MEMORY'
+      )
+        continue;
       const evidence =
         chunk.evidenceText?.trim() ||
         (evidenceType === 'METADATA'

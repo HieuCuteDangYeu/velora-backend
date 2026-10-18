@@ -202,6 +202,89 @@ const emptyRetrievalDiagnostics = (): RagRetrievalExecutionDiagnostics => ({
 });
 
 describe('DeterministicRetrievalEngineAdapter', () => {
+  it('reads an exact zero-time sampled frame without embeddings or a planner call', async () => {
+    const { adapter, semanticIndexService, embeddingService, generateObject } =
+      buildAdapter({});
+    const scene = {
+      ...visualCandidate,
+      indexVersion: 'v1',
+      startTime: 0,
+      endTime: 0,
+    };
+    (semanticIndexService.searchVisualScenes as jest.Mock).mockResolvedValue([
+      scene,
+    ]);
+    const plan = await adapter.plan({
+      message: 'What is visible in the sampled frame at 0 seconds?',
+      route: visualRoute,
+    });
+    const result = await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: visualRoute,
+      plan,
+      accessibleReelIds: ['reel-1'],
+    });
+    expect(result).toHaveLength(1);
+    expect(semanticIndexService.searchVisualScenes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceTimestampSec: 0,
+        sourceOrder: 'ASC',
+        requiredIndexVersion: 'v1',
+        filters: { reelIds: ['reel-1'] },
+      }),
+    );
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('rejects foreign or wrong-time visual evidence returned by the index adapter', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({});
+    (semanticIndexService.searchVisualScenes as jest.Mock).mockResolvedValue([
+      { ...visualCandidate, reelId: 'foreign', startTime: 0, endTime: 0 },
+      { ...visualCandidate, startTime: 10, endTime: 10 },
+    ]);
+    const plan = await adapter.plan({
+      message: 'Describe the frame at 0 seconds.',
+      route: visualRoute,
+    });
+    await expect(
+      adapter.retrieve({
+        userId: 'user',
+        conversationId: 'conversation',
+        route: visualRoute,
+        plan,
+        accessibleReelIds: ['reel-1'],
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('passes both endpoints for an explicit transcript time window', async () => {
+    const { adapter, semanticIndexService, embeddingService, generateObject } =
+      buildAdapter({});
+    const plan = await adapter.plan({
+      message:
+        'Summarize the transcript segment spanning 11.68-56.38 seconds.',
+      route: transcriptRoute,
+    });
+    await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: transcriptRoute,
+      plan,
+      accessibleReelIds: ['reel-1'],
+    });
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 11.68,
+        sourceTimestampEndSec: 56.38,
+        limit: 2,
+      }),
+    );
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+  });
   it('reads opening statements in source order instead of retrieving a semantically similar later window', async () => {
     const { adapter, semanticIndexService, embeddingService, generateObject } =
       buildAdapter({});
@@ -219,10 +302,87 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     expect(semanticIndexService.searchChunks).toHaveBeenCalledWith({
       filters: { reelIds: ['reel-1'] },
       sourceOrder: 'ASC',
+      requiredIndexVersion: 'v1',
       limit: 1,
     });
     expect(embeddingService.generateVector).not.toHaveBeenCalled();
     expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('allocates transcript retrieval budget across multiple authorized Reels', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({});
+    jest
+      .mocked(semanticIndexService.getReelDocument)
+      .mockImplementation(async (reelId) => ({
+        ...reelDocument,
+        reelId,
+      }));
+    jest
+      .mocked(semanticIndexService.searchChunks)
+      .mockImplementation(async (input) => [
+        {
+          ...directCandidate,
+          id: `chunk-${input.filters?.reelIds?.[0] ?? 'unknown'}`,
+          reelId: input.filters?.reelIds?.[0] ?? 'unknown',
+          indexVersion: 'v1',
+        },
+      ]);
+    const result = await adapter.retrieve({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      route: transcriptRoute,
+      plan: { ...plan, searchLimit: 4, shouldRerank: false },
+      accessibleReelIds: ['reel-1', 'reel-2'],
+    });
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: { reelIds: ['reel-1'] }, limit: 2 }),
+    );
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledWith(
+      expect.objectContaining({ filters: { reelIds: ['reel-2'] }, limit: 2 }),
+    );
+    expect(new Set(result.map((item) => item.reelId))).toEqual(
+      new Set(['reel-1', 'reel-2']),
+    );
+  });
+
+  it('retains every required evidence modality after reranking', async () => {
+    const { adapter, rerank } = buildAdapter({});
+    rerank.mockResolvedValue([directCandidate as never]);
+    const result = await adapter.rerank({
+      plan: { ...plan, shouldRerank: true },
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      retrievedChunks: [
+        {
+          ...directCandidate,
+          chunkId: 'transcript',
+          evidenceType: 'TRANSCRIPT',
+        },
+        { ...visualCandidate, chunkId: 'visual', evidenceType: 'VISUAL' },
+      ] as never,
+    });
+    expect(result.map((item) => item.evidenceType)).toEqual(
+      expect.arrayContaining(['TRANSCRIPT', 'VISUAL']),
+    );
+  });
+
+  it('retains one evidence item from every requested comparison Reel after reranking', async () => {
+    const { adapter, rerank } = buildAdapter({});
+    rerank.mockResolvedValue([directCandidate as never]);
+    const result = await adapter.rerank({
+      plan: {
+        ...plan,
+        requiresReelCoverage: true,
+        shouldRerank: true,
+        rerankLimit: 1,
+      },
+      retrievedChunks: [
+        { ...directCandidate, chunkId: 'reel-1-hit', reelId: 'reel-1' },
+        { ...directCandidate, chunkId: 'reel-2-hit', reelId: 'reel-2' },
+      ] as never,
+    });
+    expect(new Set(result.map((item) => item.reelId))).toEqual(
+      new Set(['reel-1', 'reel-2']),
+    );
   });
   it('reads typed metadata without a planner, embedding, or transcript search', async () => {
     const {
@@ -377,13 +537,14 @@ describe('DeterministicRetrievalEngineAdapter', () => {
         timeoutMs: 8_000,
       }),
     );
-    expect(request.systemPrompt).toContain('Return exactly these eight fields');
+    expect(request.systemPrompt).toContain('Return exactly these nine fields');
     expect(request.jsonSchema.properties).toEqual(
       expect.objectContaining({
         query: expect.objectContaining({ maxLength: 500 }),
         queries: expect.objectContaining({ minItems: 1, maxItems: 3 }),
         searchLimit: expect.objectContaining({ minimum: 1, maximum: 20 }),
         rerankLimit: expect.objectContaining({ minimum: 1, maximum: 10 }),
+        requiresReelCoverage: expect.objectContaining({ type: 'boolean' }),
         reason: expect.objectContaining({ maxLength: 240 }),
       }),
     );

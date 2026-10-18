@@ -53,6 +53,7 @@ import { LangfuseTracingService } from '@ai/infrastructure/services/langfuse-tra
 import {
   boundRecentMessages,
   boundPromptText,
+  preserveReelCoverage,
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
@@ -694,17 +695,29 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.logger.warn(
           `[RagGraph] neural reranker failed: ${error instanceof Error ? error.message : String(error)}. Falling back to retrieved chunks.`,
         );
-        rerankedChunks = state.retrievedChunks.slice(
-          0,
-          state.retrievalPlan.rerankLimit ?? 8,
-        );
+        rerankedChunks =
+          state.retrievalPlan.requiresReelCoverage === true
+            ? preserveReelCoverage(
+                state.retrievedChunks,
+                state.retrievalPlan.rerankLimit ?? 8,
+              )
+            : state.retrievedChunks.slice(
+                0,
+                state.retrievalPlan.rerankLimit ?? 8,
+              );
       }
 
       if (rerankedChunks.length === 0 && state.retrievedChunks.length > 0) {
-        rerankedChunks = state.retrievedChunks.slice(
-          0,
-          state.retrievalPlan.rerankLimit ?? 8,
-        );
+        rerankedChunks =
+          state.retrievalPlan.requiresReelCoverage === true
+            ? preserveReelCoverage(
+                state.retrievedChunks,
+                state.retrievalPlan.rerankLimit ?? 8,
+              )
+            : state.retrievedChunks.slice(
+                0,
+                state.retrievalPlan.rerankLimit ?? 8,
+              );
       }
 
       this.logger.log(`[RagGraph] reranked=${rerankedChunks.length}`);
@@ -1669,6 +1682,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         'NONE',
         'TRANSCRIPT_CONTENT',
         'VISUAL_CONTENT',
+        'AUDIO_CONTENT',
+        'MULTIMODAL_CONTENT',
         'GENERAL_REEL_SUMMARY',
         'REEL_METADATA',
         'AMBIGUOUS_REEL_REFERENCE',
@@ -1680,6 +1695,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         'NONE',
         'TRANSCRIPT_CONTENT',
         'VISUAL_CONTENT',
+        'AUDIO_CONTENT',
+        'MULTIMODAL_CONTENT',
         'GENERAL_REEL_SUMMARY',
         'REEL_METADATA',
         'AMBIGUOUS_REEL_REFERENCE',

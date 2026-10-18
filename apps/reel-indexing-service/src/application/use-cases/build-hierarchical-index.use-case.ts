@@ -510,13 +510,17 @@ export class BuildHierarchicalIndexUseCase {
 
   private visualEvidenceText(scene: VisualSceneEvidence): string {
     return [
-      scene.caption.trim() ? this.normalizeEvidence(scene.caption) : undefined,
-      scene.ocrText?.trim() ? this.normalizeEvidence(scene.ocrText) : undefined,
+      scene.caption.trim()
+        ? `Caption: ${this.normalizeEvidence(scene.caption)}`
+        : undefined,
+      scene.ocrText?.trim()
+        ? `Readable on-screen text: ${this.normalizeEvidence(scene.ocrText)}`
+        : undefined,
       scene.objects.length
-        ? scene.objects
+        ? `Visible objects and scoped attributes: ${scene.objects
             .map((value) => this.normalizeEvidence(value))
             .filter(Boolean)
-            .join(' ')
+            .join(' ')}`
         : undefined,
     ]
       .filter((value): value is string => Boolean(value))

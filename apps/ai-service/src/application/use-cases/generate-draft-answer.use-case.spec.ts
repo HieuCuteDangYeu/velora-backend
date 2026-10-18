@@ -3,6 +3,43 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
+  it('answers an explicit first indexed sentence from the beginning rather than choosing a later sentence', async () => {
+    const generateObject = jest.fn();
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'What is the first complete sentence recorded in the indexed transcript?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {},
+      rerankedChunks: [
+        {
+          chunkId: 'c0',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 10,
+          evidenceText: 'The episode begins here! Please, take him.',
+          chunkText: 'The episode begins here! Please, take him.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+    expect(result.answer).toBe('The episode begins here!');
+    expect(result.claims).toEqual([
+      { claim: 'The episode begins here!', evidenceIds: ['e0'] },
+    ]);
+    expect(generateObject).not.toHaveBeenCalled();
+  });
   it('keeps complete canonical metadata values beyond ordinary prompt preview limits', async () => {
     const title = 't'.repeat(220);
     const tags = Array.from({ length: 30 }, (_, i) => `tag-${i}`);
@@ -43,6 +80,88 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(tagResult.generationEvidence?.[0].evidenceText).toBe(
       `Tags: ${tags.join(', ')}`,
     );
+  });
+
+  it('answers an explicit transcript time-window question from the matching source span', async () => {
+    const generateObject = jest.fn();
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const result = await useCase.execute({
+      userMessage: 'What is said in the transcript segment at 11.68 seconds?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: { sourceOrder: 'ASC', sourceTimestampSec: 11.68 },
+      rerankedChunks: [
+        {
+          chunkId: 'c-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 11.68,
+          endTime: 56.38,
+          evidenceText: 'The speaker names the blue device.',
+          chunkText: 'The speaker names the blue device.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+    expect(result.answer).toBe('The speaker names the blue device.');
+    expect(result.generationEvidence?.[0].sourceId).toBe('c-window');
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('chooses the chunk aligned to a requested range before overlapping chunks', async () => {
+    const generateObject = jest.fn();
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 9.52–62.28 seconds of the shared Reel.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {},
+      rerankedChunks: [
+        {
+          chunkId: 'overlap',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 9.06,
+          endTime: 76.25734,
+          evidenceText: 'that he grew up here. Get away from me.',
+          chunkText: 'that he grew up here. Get away from me.',
+          tags: [],
+          distance: null,
+        },
+        {
+          chunkId: 'aligned',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 9.52,
+          endTime: 62.28,
+          evidenceText: 'grew up here. Get away from me.',
+          chunkText: 'grew up here. Get away from me.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+    expect(result.answer).toBe('grew up here.');
+    expect(result.generationEvidence?.[0].sourceId).toBe('aligned');
+    expect(generateObject).not.toHaveBeenCalled();
   });
   it.each([
     'What title is assigned to this Reel?',

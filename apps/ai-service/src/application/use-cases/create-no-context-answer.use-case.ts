@@ -18,6 +18,11 @@ export class CreateNoContextAnswerUseCase {
     }
 
     const missingEvidence = state.contextSufficiency?.missingEvidence ?? [];
+    const missingReelIds = state.contextSufficiency?.missingReelIds ?? [];
+
+    if (missingReelIds.length > 0) {
+      return 'I found evidence from only part of the requested Reel comparison, so I cannot compare them reliably.';
+    }
 
     if (missingEvidence.length > 0) {
       return this.renderMissingEvidenceAnswer(missingEvidence);

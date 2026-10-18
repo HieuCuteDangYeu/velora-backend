@@ -120,6 +120,8 @@ export class QueryRouterAgentUseCase {
     'NONE',
     'TRANSCRIPT_CONTENT',
     'VISUAL_CONTENT',
+    'AUDIO_CONTENT',
+    'MULTIMODAL_CONTENT',
     'GENERAL_REEL_SUMMARY',
     'REEL_METADATA',
     'AMBIGUOUS_REEL_REFERENCE',
@@ -463,6 +465,8 @@ Reel question type meanings:
 - NONE: not a question about a shared reel/video.
 - TRANSCRIPT_CONTENT: asks for specific spoken or textual reel content, including a fact, quantity, cause, relation, comparison, sequence, explanation, claim, quote, or what someone says, explains, discusses, mentions, captions, or teaches. Facts about entities, events, places, roles, dates, relationships, causes, quantities, or processes stated within the media are content facts, not reel metadata. It is not an overall summary request.
 - VISUAL_CONTENT: asks about visual appearance, objects, people, colors, text on screen, layout, or what is seen. This includes a title, name, label, or other text visibly displayed inside the Reel content, including on a phone, app, or computer screen.
+- AUDIO_CONTENT: asks about non-speech audio such as music, sound effects, background noise, tone, or volume. The current evidence pipeline has no non-speech audio evidence, so this route must fail closed rather than substitute transcript text.
+- MULTIMODAL_CONTENT: requires both spoken/textual Reel content and sampled visual evidence for the same answer, such as asking what was said while also asking what was visible, or asking to relate an on-screen action to the spoken explanation. Use requiredEvidence=[TRANSCRIPT,VISUAL].
 - GENERAL_REEL_SUMMARY: asks for the shared reel's overall meaning, summary, topic, main point, takeaway, or what it is about. Do not use it for one specific fact, relation, comparison, cause, quantity, sequence, or other detail.
 - REEL_METADATA: asks about properties of the reel as a media object or publication, such as its title, description, caption, hashtags, tags, uploader, creator attribution of the reel itself, or upload/share metadata. Do not use it for text or names displayed within the video frames.
 - AMBIGUOUS_REEL_REFERENCE: refers to a shared reel/video but the requested information is unclear.
@@ -500,7 +504,7 @@ Invariants:
 - Do not select tools that belong to another intent or invent tool names.
 - Specific factual, quantitative, causal, relational, comparative, or sequence questions about the reel use TRANSCRIPT_CONTENT unless the user explicitly asks about visual appearance, on-screen text/layout, or metadata.
 - Both discovery actions require intent=NORMAL_CHAT, referenceTarget=NONE, reelQuestionType=NONE, requiredEvidence=[NONE]. Internal search is not an external task. For NONE use query="", allowPersonalizedFallback=false and suggestedQueries=[]. For RECOMMEND_REELS use suggestedQueries=[]; for SUGGEST_QUERIES provide suggestions and allowPersonalizedFallback=false.
-- Evidence is minimal for the classified question: TRANSCRIPT_CONTENT=[TRANSCRIPT], VISUAL_CONTENT=[VISUAL], REEL_METADATA=[METADATA], GENERAL_REEL_SUMMARY=[TRANSCRIPT,METADATA]. Non-reel routes use their own memory evidence or [NONE], never reel modalities.
+- Evidence is minimal for the classified question: TRANSCRIPT_CONTENT=[TRANSCRIPT], VISUAL_CONTENT=[VISUAL], MULTIMODAL_CONTENT=[TRANSCRIPT,VISUAL], REEL_METADATA=[METADATA], GENERAL_REEL_SUMMARY=[TRANSCRIPT,METADATA]. Non-reel routes use their own memory evidence or [NONE], never reel modalities.
 - Do not invent context or use keyword/regex routing.
 - Structural event metadata says what happened, not what the current message means. A recent reel share is evidence for resolving an implicit referent, but unrelated chat remains NORMAL_CHAT with referenceTarget=NONE.
 - Treat language as presentation context, not as a change to the taxonomy: equivalent meanings in different languages use the same intent, reference, reel type, evidence, and recommendation enums.
@@ -575,6 +579,8 @@ Classify the current user message.
             'NONE',
             'TRANSCRIPT_CONTENT',
             'VISUAL_CONTENT',
+            'AUDIO_CONTENT',
+            'MULTIMODAL_CONTENT',
             'GENERAL_REEL_SUMMARY',
             'REEL_METADATA',
             'AMBIGUOUS_REEL_REFERENCE',
@@ -644,14 +650,25 @@ Classify the current user message.
 
   private normalize(
     raw: RawRouteDecision,
-    input: { hasSharedReelContext?: boolean },
+    input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
     const intent = this.normalizeIntent(raw.intent);
-    const referenceTarget = this.normalizeReferenceTarget(raw.referenceTarget);
+    const rawReferenceTarget = this.normalizeReferenceTarget(
+      raw.referenceTarget,
+    );
+    const allowUnavailableReelReference =
+      !input.hasSharedReelContext &&
+      intent === 'REEL_VIDEO_QUESTION' &&
+      this.isExplicitUnavailableReelReference(input.message);
+    const referenceTarget =
+      allowUnavailableReelReference && rawReferenceTarget === 'NONE'
+        ? 'SHARED_REEL'
+        : rawReferenceTarget;
     this.validateReferentConsistency(
       intent,
       referenceTarget,
       input.hasSharedReelContext ?? false,
+      allowUnavailableReelReference,
     );
     const reelQuestionType = this.normalizeReelQuestionType(
       raw.reelQuestionType,
@@ -749,6 +766,7 @@ Classify the current user message.
     intent: RagChatIntent,
     referenceTarget: RagReferenceTarget,
     hasSharedReelContext: boolean,
+    allowUnavailableReelReference = false,
   ): void {
     const expected: Record<RagChatIntent, RagReferenceTarget> = {
       NORMAL_CHAT: 'NONE',
@@ -764,7 +782,11 @@ Classify the current user message.
         expectedReferenceTarget: expected[intent],
       });
     }
-    if (referenceTarget === 'SHARED_REEL' && !hasSharedReelContext) {
+    if (
+      referenceTarget === 'SHARED_REEL' &&
+      !hasSharedReelContext &&
+      !allowUnavailableReelReference
+    ) {
       throw new RouterSemanticInconsistencyError(
         'SHARED_REEL_CONTEXT_UNAVAILABLE',
         {
@@ -774,6 +796,15 @@ Classify the current user message.
         },
       );
     }
+  }
+
+  private isExplicitUnavailableReelReference(message?: string): boolean {
+    if (!message) return false;
+    return (
+      /\b(?:private|denied|unshared|not\s+shared|not\s+accessible|without\s+(?:access|permission))\b/i.test(
+        message,
+      ) && /\b(?:reel|video|clip|recording)\b/i.test(message)
+    );
   }
 
   private needsReferentReconciliation(
@@ -977,12 +1008,20 @@ Classify the current user message.
         return ['TRANSCRIPT'];
       }
 
+      if (reelQuestionType === 'MULTIMODAL_CONTENT') {
+        return ['TRANSCRIPT', 'VISUAL'];
+      }
+
       if (reelQuestionType === 'REEL_METADATA') {
         return ['METADATA'];
       }
 
       if (reelQuestionType === 'VISUAL_CONTENT') {
         return ['VISUAL'];
+      }
+
+      if (reelQuestionType === 'AUDIO_CONTENT') {
+        return ['AUDIO'];
       }
 
       return ['TRANSCRIPT', 'METADATA'];

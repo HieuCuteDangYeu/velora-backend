@@ -5,6 +5,13 @@ import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-stor
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
+export function isVisualProviderRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b429\b|daily free allocation|rate[- ]?limit|quota|too many requests/i.test(
+    message,
+  );
+}
+
 @Injectable()
 export class AnalyzeVisualFrameManifestUseCase {
   private readonly logger = new Logger(AnalyzeVisualFrameManifestUseCase.name);
@@ -52,10 +59,12 @@ export class AnalyzeVisualFrameManifestUseCase {
 
     const results = new Array<VisualSceneEvidence>(manifest.artifacts.length);
     const failures: string[] = [];
+    let providerRateLimitFailure: string | undefined;
     await this.mapWithConcurrency(
       manifest.artifacts,
       this.getPositiveInt('INDEX_VISUAL_ANALYSIS_CONCURRENCY', 2, 1, 8),
       async (artifact, index) => {
+        if (providerRateLimitFailure) return;
         try {
           const imageBytes = await this.storage.getVerifiedArtifactBytes({
             key: artifact.key,
@@ -84,6 +93,12 @@ export class AnalyzeVisualFrameManifestUseCase {
           const message =
             error instanceof Error ? error.message : String(error);
           failures.push(`${artifact.timestampMs}ms: ${message}`);
+          if (
+            !providerRateLimitFailure &&
+            isVisualProviderRateLimitError(error)
+          ) {
+            providerRateLimitFailure = message;
+          }
           this.logger.warn(
             `[VisualIndex] frame analysis skipped reelId=${job.reelId} timestampMs=${artifact.timestampMs}: ${message}`,
           );
@@ -91,6 +106,11 @@ export class AnalyzeVisualFrameManifestUseCase {
       },
     );
 
+    if (providerRateLimitFailure && required) {
+      throw new Error(
+        `Visual provider rate limit or quota exhausted; retry this index attempt later: ${providerRateLimitFailure}`,
+      );
+    }
     if (failures.length > 0 && required) {
       throw new Error(
         `Visual analysis failed for ${failures.length}/${manifest.artifacts.length} sampled frames: ${failures.slice(0, 3).join('; ')}`,

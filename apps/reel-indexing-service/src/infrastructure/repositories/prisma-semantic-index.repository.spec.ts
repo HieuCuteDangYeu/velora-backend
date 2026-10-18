@@ -21,6 +21,52 @@ const config = {
 };
 
 describe('PrismaSemanticIndexRepository single-vector search', () => {
+  it('reads a timestamp-scoped active visual scene with Reel and version fences', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await repository.searchVisualScenes({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 0,
+      filters: { reelIds: ['authorized'] },
+      requiredIndexVersion: 'v1',
+      limit: 1,
+    });
+    const sql = query.mock.calls[0][0] as {
+      strings: string[];
+      values: unknown[];
+    };
+    expect(sql.strings.join('')).toContain('ReelVisualScene');
+    expect(sql.strings.join('')).toContain('"startTime" <=');
+    expect(sql.strings.join('')).toContain('"endTime" >');
+    expect(sql.values).toEqual(
+      expect.arrayContaining(['authorized', 'v1', 0, 'VISUAL']),
+    );
+  });
+
+  it('rejects unscoped or invalid timestamp source reads without querying', async () => {
+    const query = jest.fn();
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await expect(
+      repository.searchVisualScenes({
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 0,
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      repository.searchVisualScenes({
+        sourceOrder: 'ASC',
+        sourceTimestampSec: -1,
+        filters: { reelIds: ['authorized'] },
+      }),
+    ).resolves.toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
   it('fails source-order reads closed without an explicit Reel scope', async () => {
     const query = jest.fn();
     const repository = new PrismaSemanticIndexRepository(
@@ -55,6 +101,29 @@ describe('PrismaSemanticIndexRepository single-vector search', () => {
     expect(sql.strings.join('')).toContain('"isActive"');
     expect(sql.values).toContain('authorized');
     expect(sql.values).toContain('v1');
+  });
+
+  it('prioritizes a chunk that covers an explicit source-time range', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await repository.searchChunks({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 8,
+      sourceTimestampEndSec: 63.9,
+      filters: { reelIds: ['authorized'] },
+      requiredIndexVersion: 'v1',
+      limit: 2,
+    });
+    const sql = query.mock.calls[0][0] as {
+      strings: string[];
+      values: unknown[];
+    };
+    expect(sql.strings.join('')).toContain('CASE WHEN t."startTime" <=');
+    expect(sql.strings.join('')).toContain('t."endTime" DESC');
+    expect(sql.values).toEqual(expect.arrayContaining([8, 63.9]));
   });
   const queries: unknown[] = [];
   const transaction = {

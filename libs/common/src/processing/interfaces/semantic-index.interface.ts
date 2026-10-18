@@ -28,8 +28,12 @@ export interface SemanticIndexSearchFilters {
 }
 
 export interface SemanticIndexSearchRequest {
-  /** Read the beginning of a scoped transcript, rather than rank by similarity. */
+  /** Read scoped source evidence chronologically rather than by similarity. */
   sourceOrder?: 'ASC';
+  /** User-provided playback time; applied only to scoped chronological reads. */
+  sourceTimestampSec?: number;
+  /** End of an explicit source-time window; used with sourceTimestampSec. */
+  sourceTimestampEndSec?: number;
   queryText?: string;
   queryEmbedding?: number[];
   queryEmbeddingModel?: string;
@@ -120,4 +124,6 @@ export interface SemanticIndexReindexRequest {
     dimensions: number;
     version: string;
   };
+  /** Require visual-frame analysis before this reindex may be committed. */
+  requireVisualAnalysis?: boolean;
 }

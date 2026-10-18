@@ -48,6 +48,7 @@ describe('TeiRerankerAdapter', () => {
       new ConfigService({
         TEI_RERANKER_BASE_URL: 'http://test',
         AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '8',
+        TEI_RERANKER_MAX_CONCURRENT_REQUESTS: '8',
       }),
     );
     const candidates = Array.from({ length: 8 }, (_, index) => ({
@@ -66,7 +67,7 @@ describe('TeiRerankerAdapter', () => {
       limit: 1,
     });
     expect(result[0].chunkId).toBe('7');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('maps TEI ranking indexes back to original candidates', async () => {
@@ -80,7 +81,10 @@ describe('TeiRerankerAdapter', () => {
       ),
     );
     const adapter = new TeiRerankerAdapter(
-      new ConfigService({ TEI_RERANKER_BASE_URL: 'http://rag-reranker:80' }),
+      new ConfigService({
+        TEI_RERANKER_BASE_URL: 'http://rag-reranker:80',
+        TEI_RERANKER_MAX_CONCURRENT_REQUESTS: '2',
+      }),
       new EvidenceDiversitySelector(new ConfigService()),
     );
 
@@ -108,7 +112,7 @@ describe('TeiRerankerAdapter', () => {
         candidates: [candidate('a'), candidate('b')],
         limit: 1,
       }),
-    ).rejects.toThrow('offline');
+    ).rejects.toMatchObject({ code: 'RERANKER_NETWORK_ERROR' });
   });
 
   it('bounds the request to the configured TEI batch-token budget', async () => {
@@ -122,11 +126,17 @@ describe('TeiRerankerAdapter', () => {
           query: string;
           texts: string[];
         };
-        expect(body.texts).toHaveLength(5);
+        expect(body.texts.length).toBeLessThanOrEqual(3);
         expect(body.query.split(/\s+/u)).toHaveLength(2);
-        expect(
-          body.texts.every((text) => text.split(/\s+/u).length <= 138),
-        ).toBe(true);
+        const totalPairTokens = body.texts.reduce(
+          (sum, text) =>
+            sum +
+            text.split(/\s+/u).length +
+            body.query.split(/\s+/u).length +
+            16,
+          0,
+        );
+        expect(totalPairTokens).toBeLessThanOrEqual(819);
         return Promise.resolve(
           new Response(
             JSON.stringify(
@@ -144,6 +154,7 @@ describe('TeiRerankerAdapter', () => {
         TEI_RERANKER_BASE_URL: 'http://rag-reranker:80',
         TEI_RERANKER_MAX_BATCH_TOKENS: '1024',
         AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT: '20',
+        TEI_RERANKER_MAX_CONCURRENT_REQUESTS: '8',
         AI_RERANKER_MAX_INPUT_TOKENS: '512',
       }),
     );
@@ -157,7 +168,7 @@ describe('TeiRerankerAdapter', () => {
         limit: 5,
       }),
     ).resolves.toHaveLength(5);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
   });
 
   it('retries when TEI returns 429 overloaded and succeeds', async () => {
@@ -185,6 +196,7 @@ describe('TeiRerankerAdapter', () => {
       new ConfigService({
         TEI_RERANKER_BASE_URL: 'http://rag-reranker:80',
         AI_RAG_NEURAL_RERANK_MAX_RETRIES: '2',
+        TEI_RERANKER_MAX_CONCURRENT_REQUESTS: '2',
       }),
       new EvidenceDiversitySelector(new ConfigService()),
     );

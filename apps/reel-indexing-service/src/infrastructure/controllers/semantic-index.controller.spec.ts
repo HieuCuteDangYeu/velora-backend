@@ -48,4 +48,32 @@ describe('SemanticIndexController versioned reindex', () => {
     ).rejects.toThrow('does not match this worker');
     expect(content.reindexReel).not.toHaveBeenCalled();
   });
+
+  it('forwards the visual evidence requirement for a visual reindex', async () => {
+    const content = {
+      reindexReel: jest
+        .fn()
+        .mockResolvedValue({ queued: true, indexAttemptId: 'attempt-3' }),
+    };
+    const controller = new SemanticIndexController(
+      {} as never,
+      content as never,
+      { embeddingIdentity: jest.fn(() => identity) } as never,
+    );
+
+    await expect(
+      controller.reindexReel({
+        reelId: 'reel-1',
+        expectedEmbeddingIdentity: identity,
+        requireVisualAnalysis: true,
+      }),
+    ).resolves.toEqual({
+      queued: true,
+      indexAttemptId: 'attempt-3',
+      embeddingIdentity: identity,
+    });
+    expect(content.reindexReel).toHaveBeenCalledWith('reel-1', {
+      requireVisualAnalysis: true,
+    });
+  });
 });

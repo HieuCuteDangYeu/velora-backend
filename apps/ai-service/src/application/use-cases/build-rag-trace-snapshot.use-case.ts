@@ -132,6 +132,8 @@ export class BuildRagTraceSnapshotUseCase {
                 availableEvidence:
                   input.state.contextSufficiency.availableEvidence,
                 missingEvidence: input.state.contextSufficiency.missingEvidence,
+                missingReelIds:
+                  input.state.contextSufficiency.missingReelIds ?? [],
                 supportedEvidenceIds:
                   input.state.contextSufficiency.supportedEvidenceIds ?? [],
                 semanticCalls:
@@ -297,6 +299,11 @@ export class BuildRagTraceSnapshotUseCase {
   private toPersistedRetrievalPlan(plan: RagRetrievalPlan) {
     return {
       sourceOrder: plan.sourceOrder,
+      sourceTimestampSec: plan.sourceTimestampSec,
+      sourceTimestampEndSec: plan.sourceTimestampEndSec,
+      ...(plan.requiresReelCoverage !== undefined
+        ? { requiresReelCoverage: plan.requiresReelCoverage }
+        : {}),
       mode: plan.mode,
       query: plan.query.slice(0, 500),
       rewrittenQuery: plan.rewrittenQuery?.slice(0, 500),

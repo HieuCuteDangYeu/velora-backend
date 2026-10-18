@@ -1,6 +1,7 @@
 import type { TranscriptMatch } from '@ai/domain/interfaces/content-service.interface';
 import type {
   RagChatRouteDecision,
+  RagRequiredEvidence,
   RagRetrievalExecutionDiagnostics,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
@@ -23,6 +24,7 @@ export interface IRetrievalEngine {
   rerank(input: {
     plan: RagRetrievalPlan;
     retrievedChunks: TranscriptMatch[];
+    requiredEvidence?: RagRequiredEvidence[];
     diagnostics?: RagRetrievalExecutionDiagnostics;
   }): Promise<TranscriptMatch[]>;
 }

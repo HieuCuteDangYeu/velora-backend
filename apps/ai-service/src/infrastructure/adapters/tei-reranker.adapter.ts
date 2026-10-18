@@ -12,6 +12,16 @@ interface TeiScore {
   score?: unknown;
 }
 
+export class TeiRerankerError extends Error {
+  constructor(
+    readonly code: string,
+    readonly httpStatus?: number,
+  ) {
+    super(`TEI reranker ${code}${httpStatus ? ` (${httpStatus})` : ''}`);
+    this.name = 'TeiRerankerError';
+  }
+}
+
 @Injectable()
 export class TeiRerankerAdapter implements IRerankerService {
   constructor(
@@ -35,12 +45,16 @@ export class TeiRerankerAdapter implements IRerankerService {
       this.number('AI_RAG_RERANK_MAX_LIMIT', 8, 1, 20),
     );
     const candidates = this.boundCandidates(input.candidates);
-    const batchSize = Math.max(
-      2,
-      Math.floor(
-        (this.safeBatchTokens() -
-          this.queryTokenBudget(this.safeBatchTokens())) /
-          128,
+    const batchSize = Math.floor(
+      Math.min(
+        this.number('TEI_RERANKER_MAX_CONCURRENT_REQUESTS', 1, 1, 128),
+        Math.max(
+          1,
+          Math.floor(
+            this.safeBatchTokens() /
+              (this.queryTokenBudget(this.safeBatchTokens()) + 128 + 16),
+          ),
+        ),
       ),
     );
     const response: TeiScore[] = [];
@@ -55,7 +69,7 @@ export class TeiRerankerAdapter implements IRerankerService {
           Number.isFinite(Number(item.score)),
       );
       if (!usable.length)
-        throw new Error('TEI reranker returned no usable candidates');
+        throw new TeiRerankerError('RERANKER_INVALID_RESPONSE');
       response.push(
         ...usable.map((item) => ({
           ...item,
@@ -86,7 +100,7 @@ export class TeiRerankerAdapter implements IRerankerService {
       .filter((item): item is ScoredRerankCandidate => Boolean(item));
 
     if (!scored.length) {
-      throw new Error('TEI reranker returned no usable candidates');
+      throw new TeiRerankerError('RERANKER_INVALID_RESPONSE');
     }
     return this.diversitySelector.select(scored, limit);
   }
@@ -125,15 +139,25 @@ export class TeiRerankerAdapter implements IRerankerService {
           if (isTransientOverload && attempt < maxRetries) {
             continue;
           }
-          throw new Error(
-            `TEI reranker failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          throw new TeiRerankerError(
+            isTransientOverload ? 'RERANKER_OVERLOADED' : 'RERANKER_HTTP_ERROR',
+            response.status,
           );
         }
         const responsePayload = JSON.parse(raw) as unknown;
         if (!Array.isArray(responsePayload)) {
-          throw new Error('TEI reranker returned an invalid response');
+          throw new TeiRerankerError('RERANKER_INVALID_RESPONSE');
         }
         return responsePayload as TeiScore[];
+      } catch (error: unknown) {
+        if (error instanceof TeiRerankerError) throw error;
+        throw new TeiRerankerError(
+          controller.signal.aborted
+            ? 'RERANKER_TIMEOUT'
+            : error instanceof SyntaxError
+              ? 'RERANKER_INVALID_RESPONSE'
+              : 'RERANKER_NETWORK_ERROR',
+        );
       } finally {
         clearTimeout(timer);
       }
@@ -161,17 +185,22 @@ export class TeiRerankerAdapter implements IRerankerService {
   private payload(
     queryText: string,
     candidates: ReelContextSearchResult[],
-  ): { query: string; texts: string[]; return_text: false } {
+  ): { query: string; texts: string[]; return_text: false; truncate: true } {
     const safeBatchTokens = this.safeBatchTokens();
     const queryTokens = this.queryTokenBudget(safeBatchTokens);
     const candidateTokens = Math.max(
       64,
       Math.floor(
-        (safeBatchTokens - queryTokens) / Math.max(candidates.length, 1),
+        safeBatchTokens / Math.max(candidates.length, 1) - queryTokens - 16,
       ),
     );
     const maxInputTokens = Math.min(
-      this.number('AI_RERANKER_MAX_INPUT_TOKENS', 512, 64, 512),
+      Math.max(
+        32,
+        this.number('AI_RERANKER_MAX_INPUT_TOKENS', 512, 64, 512) -
+          queryTokens -
+          16,
+      ),
       candidateTokens,
     );
     return {
@@ -180,6 +209,7 @@ export class TeiRerankerAdapter implements IRerankerService {
         this.truncate(this.context(candidate), maxInputTokens),
       ),
       return_text: false,
+      truncate: true,
     };
   }
 

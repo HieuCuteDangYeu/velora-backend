@@ -71,6 +71,39 @@ memory or runtime retrieval hints. Do not reindex, change embeddings, enable
 production hierarchy, or add graph/memory engines without measured residual
 failures. Memory recall now honors the router's decision for Reel questions.
 
+## Broader coverage candidate dataset
+
+`scripts/ops/build-rag-coverage-dataset.cjs` builds 400 main cases (240 development,
+160 held out) and 40 isolated operational cases from an owner-service snapshot.
+The snapshots, source text, fixture definitions and generated rows stay in a
+restricted `.benchmarks/` directory rather than Git. All labels remain
+`GENERATED_CANDIDATE`; approving the dataset design does not certify answer labels.
+
+```sh
+node scripts/ops/build-rag-coverage-dataset.cjs <source-snapshot.json> <new-output-dir>
+node --test scripts/ops/rag-coverage-dataset.test.cjs
+```
+
+`publish-rag-coverage-dataset.cjs` publishes separate immutable candidate datasets
+using the Langfuse CLI, verifies every input/reference/metadata hash by readback,
+and refuses conflicting or ambiguous upserts. It requires an explicitly supplied
+private credential file and installed CLI entry point. The old 50-case regression
+set remains a separate development asset; it is not promoted to held out.
+
+`rag-coverage-worker.cjs` runs the compiled real AI workflow in an isolated Nest
+process with frozen Content/Index/memory ports. It permits model providers but
+disables owner-service RPCs, persistence and publication. Only question, identity
+and actual fixture memory enter runtime input; reference answers remain evaluator
+data. Fixture search uses lexical ranking, so replay retrieval scores do not
+measure live vector retrieval or production authorization enforcement. Use live
+owner-service integration checks separately for those properties.
+
+Before a release benchmark, review image-backed labels and judge calibration,
+report unavailable/degraded denominators, and keep held-out cases out of tuning.
+This English candidate set has no verified production-traffic examples. Source
+families are separated from the latest 50-case tuning set, but some sources were
+seen in the historical 220-case run. It is not a historically pristine holdout.
+
 ## Monitoring store
 
 New RAG monitoring traces live only in Langfuse. Each `rag.workflow` root

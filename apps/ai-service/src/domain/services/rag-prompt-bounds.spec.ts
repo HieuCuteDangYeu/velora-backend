@@ -3,12 +3,31 @@ import {
   boundTextItems,
   boundEvidence,
   DEFAULT_RAG_PROMPT_BOUNDS,
+  preserveReelCoverage,
   selectRagAnswerEvidenceIds,
   truncateEvidenceText,
   truncatePromptText,
 } from './rag-prompt-bounds';
 
 describe('rag prompt bounds', () => {
+  it('retains the complete requested duration range instead of clipping its last endpoint', () => {
+    const source = `Background. ${'ordinary context '.repeat(25)}He has been waiting outside the community gate for at least 7 or 8 years.`;
+    const excerpt = truncateEvidenceText(
+      source,
+      500,
+      'How long has he been waiting outside the community gate?',
+    );
+    expect(excerpt).toContain('at least 7 or 8 years.');
+    expect(excerpt.length).toBeLessThanOrEqual(500);
+    expect(source).toContain(excerpt);
+  });
+
+  it('keeps an answer-focused citation quote around the requested number', () => {
+    const source = `At the 34th minute of the game, ${'background '.repeat(30)}There are 10,000 injured here.`;
+    expect(truncateEvidenceText(source, 240, '10,000')).toContain(
+      '10,000 injured',
+    );
+  });
   it('retains earlier clauses when the focus already fits in the prefix', () => {
     const source = `After the change, I felt tired for days. ${'ordinary context '.repeat(15)}I woke up the next day feeling better. ${'ending '.repeat(15)}`;
     const excerpt = truncateEvidenceText(
@@ -205,5 +224,30 @@ describe('rag prompt bounds', () => {
         ),
       ].sort(),
     ).toEqual(['e0', 'e2']);
+  });
+
+  it('keeps every comparison Reel in fallback evidence selection', () => {
+    const candidates = [
+      {
+        chunkId: 'a-0',
+        reelId: 'reel-a',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'a',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'b-0',
+        reelId: 'reel-b',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'b',
+        tags: [],
+        distance: 0,
+      },
+    ];
+    expect(preserveReelCoverage(candidates, 1).map((item) => item.reelId)).toEqual([
+      'reel-a',
+      'reel-b',
+    ]);
   });
 });

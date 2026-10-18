@@ -196,6 +196,10 @@ export function validateRagAnswerContract(
     return 'Answer model used a quantity unsupported by the requested relation';
   }
 
+  if (!preservesRequestedDuration(input.question, input.evidence, answer)) {
+    return 'Answer model omitted a supported duration unit, range, or bound';
+  }
+
   if (!hasSupportedRequestedValue(input.question, input.evidence, answer)) {
     return 'Answer model introduced an unsupported requested label or name';
   }
@@ -215,6 +219,46 @@ export function validateRagAnswerContract(
   }
 
   return undefined;
+}
+
+function preservesRequestedDuration(
+  question: string,
+  evidence: readonly string[],
+  answer: string,
+): boolean {
+  if (!/\b(?:how long|for how long|duration)\b/i.test(question)) return true;
+  const text = evidence.join(' ');
+  const unitPattern =
+    /\b(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\b/gi;
+  const units = new Set(
+    [...text.matchAll(unitPattern)].map((m) =>
+      m[1].toLowerCase().replace(/s$/, ''),
+    ),
+  );
+  const answerUnits = new Set(
+    [...answer.matchAll(unitPattern)].map((m) =>
+      m[1].toLowerCase().replace(/s$/, ''),
+    ),
+  );
+  if (units.size === 1 && ![...units].some((unit) => answerUnits.has(unit)))
+    return false;
+  const focus = new Set(answerContentTokens(question));
+  for (const range of text.matchAll(
+    /[^.!?]*(\d+)\s*(?:or|to|[-–])\s*(\d+)\s*(seconds?|minutes?|hours?|days?|weeks?|months?|years?)[^.!?]*/gi,
+  )) {
+    const overlap = answerContentTokens(range[0]).filter((token) =>
+      focus.has(token),
+    ).length;
+    if (overlap < 2) continue;
+    const values = quantityTokens(answer);
+    if (!values.has(range[1]) || !values.has(range[2])) return false;
+    if (
+      /\bat least\b/i.test(range[0]) &&
+      !/\b(?:at least|no less than)\b/i.test(answer)
+    )
+      return false;
+  }
+  return true;
 }
 
 function hasSupportedQuantity(
@@ -336,7 +380,9 @@ function isQuestionVocabularyEcho(
 }
 
 function distinctiveTokens(value: string): string[] {
-  return (value.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? []).filter(
+  const tokens: string[] =
+    value.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [];
+  return tokens.filter(
     (token) => {
       const uppercaseLetters = [...token].filter(
         (character) =>

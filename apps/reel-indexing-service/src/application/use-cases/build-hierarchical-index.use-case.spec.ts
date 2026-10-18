@@ -79,4 +79,40 @@ describe('BuildHierarchicalIndexUseCase embedding cache identity', () => {
     expect(bgeDraft.embeddingInputHash).toBe(legacyDraft.embeddingInputHash);
     expect(bgeDraft.cacheKey).not.toBe(legacyDraft.cacheKey);
   });
+
+  it('indexes visual captions, OCR and objects as one typed sampled-frame source', () => {
+    const drafts = buildUseCase({
+      provider: 'cloudflare-workers-ai',
+      model: '@cf/baai/bge-m3',
+      dimensions: 1024,
+      version: 'cf-bge-m3-v1',
+    }).buildDocumentDrafts({
+      job,
+      metadata,
+      sections: [],
+      visualScenes: [
+        {
+          frameKey: 'frame.jpg',
+          frameChecksum: 'checksum',
+          timestampMs: 12_500,
+          reason: 'PERIODIC',
+          caption: 'A blue device is visible.',
+          ocrText: 'VLR-9281',
+          objects: ['device', 'screen'],
+          provider: 'vision',
+          model: 'vision-model',
+          version: 'v1',
+        },
+      ],
+    });
+    expect(drafts).toContainEqual(
+      expect.objectContaining({
+        id: 'reel:reel-1:visual:0',
+        evidenceText: expect.stringContaining('VLR-9281'),
+        retrievalText: expect.stringContaining('blue device'),
+        startTime: 12.5,
+        endTime: 12.5,
+      }),
+    );
+  });
 });

@@ -6,6 +6,57 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { BuildRagCitationsUseCase } from './build-rag-citations.use-case';
 
 describe('BuildRagCitationsUseCase', () => {
+  it('never turns memory grounding into a public Reel citation', async () => {
+    const state = buildState();
+    state.generationEvidence = [
+      {
+        evidenceId: 'm0',
+        sourceId: state.rerankedChunks[0].chunkId,
+        reelId: 'r1',
+        evidenceType: 'USER_MEMORY',
+        evidenceText: 'PRIVATE_MEMORY_CANARY',
+      },
+    ];
+    const attribute = jest.fn();
+    const result = await new BuildRagCitationsUseCase({ attribute }).execute(
+      state,
+    );
+    expect(result.citations).toEqual([]);
+    expect(attribute).not.toHaveBeenCalled();
+  });
+  it('does not report full fallback coverage when the citation cap drops a supporting source', async () => {
+    const state = buildState();
+    state.rerankedChunks = Array.from({ length: 4 }, (_, i) => ({
+      ...state.rerankedChunks[0],
+      chunkId: `source-${i}`,
+      evidenceText: `Fact ${i}.`,
+      chunkText: `Fact ${i}.`,
+    }));
+    state.answer = 'Fact 0. Fact 1. Fact 2. Fact 3.';
+    state.answerClaims = Array.from({ length: 4 }, (_, i) => ({
+      claim: `Fact ${i}.`,
+      evidenceIds: [`e${i}`],
+    }));
+    state.verification = {
+      passed: true,
+      confidence: 1,
+      issues: [],
+      requiresRevision: false,
+      supportedClaimMappings: state.answerClaims,
+      contradictions: [],
+    };
+    const useCase = new BuildRagCitationsUseCase({
+      attribute: jest.fn().mockRejectedValue(new Error('unavailable')),
+    });
+    const result = await useCase.execute(state);
+    expect(result.citations).toHaveLength(3);
+    expect(result.coverage).toMatchObject({
+      coverage: 0.75,
+      supportedClaimCount: 3,
+      factualClaimCount: 4,
+      unsupportedClaims: ['Fact 3.'],
+    });
+  });
   it('preserves prompt-local IDs and original source IDs after generation evidence selection', async () => {
     const state = buildState();
     state.generationEvidence = [

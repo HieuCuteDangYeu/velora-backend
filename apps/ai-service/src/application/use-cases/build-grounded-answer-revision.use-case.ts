@@ -72,6 +72,7 @@ export class BuildGroundedAnswerRevisionUseCase {
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
       focusText: state.userMessage,
+      preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,

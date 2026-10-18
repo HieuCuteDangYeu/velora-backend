@@ -1,4 +1,19 @@
-FROM node:20-alpine AS builder
+FROM node:20-alpine AS base
+
+WORKDIR /usr/src/app
+RUN corepack enable
+RUN corepack prepare pnpm@9.15.0 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+
+# Production dependencies are installed once and copied into the runtime image
+# as its first layer, so keep this stage identical in every node:20-alpine
+# service: the node_modules layer then has the same content in all of them and
+# Docker stores it once. prisma --version downloads the engines that prisma
+# migrate deploy needs at start-up. prunedAt is the only timestamp pnpm writes
+# into node_modules, so it is pinned to keep the layer reproducible.
+# --package-import-method=copy keeps hardlinks to pnpm's store out of the layer.
+FROM base AS deps
 
 ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
 
@@ -7,16 +22,20 @@ RUN sed -i \
   /etc/apk/repositories \
   && apk add --no-cache openssl
 
-WORKDIR /usr/src/app
-RUN corepack enable
-RUN corepack prepare pnpm@9.15.0 --activate
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts --package-import-method=copy \
+  && node_modules/.bin/prisma --version \
+  && sed -i 's/^prunedAt:.*/prunedAt: Thu, 01 Jan 1970 00:00:00 GMT/' node_modules/.modules.yaml
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 
-# Keep package files independent inside the Docker layer. pnpm's default
-# import strategy may hardlink files from its content-addressable store;
-# those hardlinks can be preserved when node_modules is copied into the
-# runtime image and fail to unpack on containerd/overlayfs hosts.
+FROM base AS builder
+
+ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
+
+RUN sed -i \
+  "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR}|g" \
+  /etc/apk/repositories \
+  && apk add --no-cache openssl
+
 RUN pnpm install --frozen-lockfile --ignore-scripts --package-import-method=copy
 
 COPY . .
@@ -28,6 +47,9 @@ RUN pnpm run build conversation-service
 
 FROM node:20-alpine AS production
 
+WORKDIR /usr/src/app
+COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules
+
 ARG ALPINE_MIRROR=https://dl-cdn.alpinelinux.org/alpine
 
 RUN sed -i \
@@ -35,10 +57,8 @@ RUN sed -i \
   /etc/apk/repositories \
   && apk add --no-cache openssl
 
-WORKDIR /usr/src/app
-COPY --from=builder --chown=node:node /usr/src/app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /usr/src/app/node_modules/@prisma/conversation-client ./node_modules/@prisma/conversation-client
 COPY --from=builder --chown=node:node /usr/src/app/dist ./dist
 
 USER node
-
 CMD ["node", "dist/apps/conversation-service/apps/conversation-service/src/main.js"]

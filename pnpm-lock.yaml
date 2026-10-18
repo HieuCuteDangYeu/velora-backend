@@ -98,6 +98,9 @@ importers:
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
+      dotenv:
+        specifier: ^17.2.3
+        version: 17.4.2
       firebase-admin:
         specifier: ^14.1.0
         version: 14.1.0
@@ -125,6 +128,9 @@ importers:
       pnpm:
         specifier: 9.15.0
         version: 9.15.0
+      prisma:
+        specifier: 5.22.0
+        version: 5.22.0
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -189,9 +195,6 @@ importers:
       concurrently:
         specifier: ^9.2.1
         version: 9.2.3
-      dotenv:
-        specifier: ^17.2.3
-        version: 17.4.2
       dotenv-cli:
         specifier: ^11.0.0
         version: 11.0.0
@@ -213,9 +216,6 @@ importers:
       prettier:
         specifier: ^3.4.2
         version: 3.8.4
-      prisma:
-        specifier: 5.22.0
-        version: 5.22.0
       socket.io-client:
         specifier: ^4.8.3
         version: 4.8.3

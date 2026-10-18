@@ -39,7 +39,7 @@ RUN pnpm exec prisma generate --schema=./apps/ai-service/prisma/schema.prisma
 RUN pnpm run build ai-service
 
 
-FROM node:20-bookworm AS production
+FROM node:20-bookworm-slim AS production
 
 WORKDIR /usr/src/app
 COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules

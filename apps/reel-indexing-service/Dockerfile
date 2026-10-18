@@ -36,7 +36,7 @@ COPY . .
 RUN pnpm exec prisma generate --schema=./apps/reel-indexing-service/prisma/schema.prisma
 RUN pnpm run build:reel-indexing
 
-FROM node:20-bookworm AS production
+FROM node:20-bookworm-slim AS production
 
 WORKDIR /usr/src/app
 COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules

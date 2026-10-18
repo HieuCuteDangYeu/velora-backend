@@ -436,6 +436,12 @@ jobs:
       - name: Build all Nest applications
         run: pnpm run build:all
 
+      - name: Check production image dependencies
+        run: |
+          set -euo pipefail
+          node scripts/docker/check-production-images.cjs
+          node --test scripts/docker/check-production-images.test.cjs
+
       - name: Verify API Gateway Swagger DTOs
         run: pnpm exec jest --runInBand libs/common/src/content/dtos/reel-series.dto.spec.ts
 

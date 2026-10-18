@@ -32,7 +32,7 @@ COPY . .
 RUN pnpm run build:media-processing
 
 
-FROM node:20-bullseye AS production
+FROM node:20-bullseye-slim AS production
 
 WORKDIR /usr/src/app
 COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules

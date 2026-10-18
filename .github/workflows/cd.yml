@@ -202,7 +202,12 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           platforms: linux/arm64
-          push: true
+          # Clamp file timestamps to SOURCE_DATE_EPOCH so identical content
+          # produces identical layers: services share the node_modules layer
+          # and a release that does not change dependencies reuses it.
+          outputs: type=image,push=true,rewrite-timestamp=true
+          build-args: |
+            SOURCE_DATE_EPOCH=1767225600
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.prepare-release.outputs.target_sha }}

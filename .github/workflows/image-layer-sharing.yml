@@ -1,0 +1,36 @@
+name: Image layer sharing check
+
+# Manual check that identical dependencies produce identical image layers. It
+# builds two services and a scripts-only package.json change from scratch, so it
+# is not part of the regular pipeline.
+on:
+  workflow_dispatch:
+    inputs:
+      service_a:
+        description: First service to build
+        required: false
+        default: auth-service
+      service_b:
+        description: Second service to build
+        required: false
+        default: user-service
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and compare layers
+        env:
+          SERVICE_A: ${{ inputs.service_a }}
+          SERVICE_B: ${{ inputs.service_b }}
+        run: scripts/docker/verify-layer-sharing.sh "$SERVICE_A" "$SERVICE_B"

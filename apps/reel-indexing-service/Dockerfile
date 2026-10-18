@@ -1,4 +1,4 @@
-FROM node:20-bullseye AS base
+FROM node:20-bookworm AS base
 
 WORKDIR /usr/src/app
 RUN corepack enable
@@ -7,11 +7,10 @@ RUN corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 
 # Production dependencies are installed once and copied into the runtime image
-# as its first layer. Keep this stage identical to the one in
-# media-processing-service so both images share the node_modules layer.
-# prisma --version downloads the engines that prisma migrate deploy needs at
-# start-up. prunedAt is the only timestamp pnpm writes into node_modules, so it
-# is pinned to keep the layer reproducible.
+# as its first layer. Keep this stage identical to the one in ai-service so both
+# images share the node_modules layer. prisma --version downloads the engines
+# that prisma migrate deploy needs at start-up. prunedAt is the only timestamp
+# pnpm writes into node_modules, so it is pinned to keep the layer reproducible.
 # --package-import-method=copy keeps hardlinks to pnpm's store out of the layer.
 FROM base AS deps
 
@@ -37,7 +36,7 @@ COPY . .
 RUN pnpm exec prisma generate --schema=./apps/reel-indexing-service/prisma/schema.prisma
 RUN pnpm run build:reel-indexing
 
-FROM node:20-bullseye AS production
+FROM node:20-bookworm AS production
 
 WORKDIR /usr/src/app
 COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules

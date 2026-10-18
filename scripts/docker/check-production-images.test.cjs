@@ -6,6 +6,7 @@ const test = require('node:test');
 
 const {
   checkDockerfile,
+  checkPrismaClients,
   checkRepository,
   checkRuntimeImports,
   checkSharedDependencyStages,
@@ -134,6 +135,23 @@ test('flags runtime imports of devDependencies', () => {
     };
     assert.deepEqual(checkRuntimeImports(root, pkg), [
       'dotenv is a devDependency but runtime code imports it (libs/common/seed.ts); move it to dependencies',
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('requires each image to ship the prisma clients its code imports', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'image-check-'));
+  try {
+    fs.mkdirSync(path.join(root, 'apps', 'svc', 'src'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'apps', 'svc', 'src', 'prisma.service.ts'),
+      "import { PrismaClient } from '@prisma/svc-client';\n",
+    );
+    assert.deepEqual(checkPrismaClients(root, 'svc', goodDockerfile), [
+      'svc: code imports @prisma/svc-client but the image does not ship it',
+      'svc: image ships @prisma/auth-client but the code never imports it',
     ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

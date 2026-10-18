@@ -203,6 +203,50 @@ function checkRuntimeImports(root, packageJson) {
   );
 }
 
+// A service image ships exactly the generated prisma clients its code imports.
+function checkPrismaClients(root, service, text) {
+  const production = parseStages(text).find(
+    (stage) => stage.name === 'production',
+  );
+  if (!production) return [];
+  const shipped = new Set(
+    production.instructions.flatMap((instruction) =>
+      [
+        ...instruction.matchAll(
+          /\/usr\/src\/app\/node_modules\/(@prisma\/[a-z-]+-client)(?:\s|$)/g,
+        ),
+      ].map((match) => match[1]),
+    ),
+  );
+  const imported = new Set();
+  for (const directory of [path.join('apps', service), 'libs']) {
+    const absolute = path.join(root, directory);
+    if (!fs.existsSync(absolute)) continue;
+    for (const file of walkSources(absolute)) {
+      const source = fs.readFileSync(file, 'utf8');
+      for (const match of source.matchAll(/@prisma\/[a-z-]+-client/g)) {
+        imported.add(match[0]);
+      }
+    }
+  }
+  const errors = [];
+  for (const client of imported) {
+    if (!shipped.has(client)) {
+      errors.push(
+        `${service}: code imports ${client} but the image does not ship it`,
+      );
+    }
+  }
+  for (const client of shipped) {
+    if (!imported.has(client)) {
+      errors.push(
+        `${service}: image ships ${client} but the code never imports it`,
+      );
+    }
+  }
+  return errors;
+}
+
 function checkRepository(root) {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(root, 'package.json'), 'utf8'),
@@ -221,6 +265,9 @@ function checkRepository(root) {
     ...dockerfiles.flatMap(([service, text]) =>
       checkDockerfile(service, text, packageJson),
     ),
+    ...dockerfiles.flatMap(([service, text]) =>
+      checkPrismaClients(root, service, text),
+    ),
     ...checkSharedDependencyStages(dockerfiles),
     ...checkRuntimeImports(root, packageJson),
   ];
@@ -228,6 +275,7 @@ function checkRepository(root) {
 
 module.exports = {
   checkDockerfile,
+  checkPrismaClients,
   checkRepository,
   checkRuntimeImports,
   checkSharedDependencyStages,

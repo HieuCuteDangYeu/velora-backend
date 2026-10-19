@@ -78,7 +78,7 @@ function safeMessageObservation(message) {
 
 function isAccessRefusal(message) {
   const answer = typeof message?.content === 'string' ? message.content : '';
-  return /(?:not shared|wasn't shared|was not shared|don't have access|do not have access|can't provide|cannot provide|unable to|no information about its content|not available)/i.test(answer);
+  return /(?:not shared|wasn't shared|was not shared|don't have access|do not have access|can't provide|cannot provide|unable to|no information about its content|not available|(?:do not|don't|don’t) have enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|not enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|could(?: not|n't|n’t) (?:answer|summarize|provide))/i.test(answer);
 }
 
 function hasExpectedTemporalCitation(citations, expected) {
@@ -244,6 +244,7 @@ async function main() {
     const resumedSharedMessageId = String(args['shared-message-id'] || process.env.RAG_LIVE_BOUNDARY_SHARED_MESSAGE_ID || '').trim();
     let conversationId = resumedConversationId;
     let sharedMessage;
+    let unsharedMessage;
     if (resumedConversationId) {
       if (!resumedSharedMessageId) throw new Error('--shared-message-id is required when resuming a conversation');
       const messages = await request('GET', `/conversations/${resumedConversationId}/messages?limit=50`);
@@ -272,14 +273,21 @@ async function main() {
       );
     }
     result.conversationId = conversationId;
-    const unsharedMessage = await sendQuestion(
-      request,
-      conversationId,
-      botUserId,
-      unsharedQuestion,
-      releaseSha.slice(0, 12),
-      'unshared',
-    );
+    const resumedUnsharedMessageId = String(args['unshared-message-id'] || process.env.RAG_LIVE_BOUNDARY_UNSHARED_MESSAGE_ID || '').trim();
+    if (resumedUnsharedMessageId) {
+      const messages = await request('GET', `/conversations/${conversationId}/messages?limit=50`);
+      unsharedMessage = messageRows(messages).find((message) => message?.id === resumedUnsharedMessageId);
+      if (!unsharedMessage) throw new Error(`unshared message ${resumedUnsharedMessageId} was not found in the resumed conversation`);
+    } else {
+      unsharedMessage = await sendQuestion(
+        request,
+        conversationId,
+        botUserId,
+        unsharedQuestion,
+        releaseSha.slice(0, 12),
+        'unshared',
+      );
+    }
     const probe = evaluateProbe({
       sharedMessage,
       unsharedMessage,

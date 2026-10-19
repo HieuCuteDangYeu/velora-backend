@@ -67,3 +67,19 @@ test('fails when a live response cites the unshared Reel', () => {
   assert.equal(result.assertions.unsharedCitationAbsent, false);
   assert.equal(result.assertions.unsharedConversationHasNoEvidence, false);
 });
+
+test('accepts the production no-context refusal wording', () => {
+  const result = evaluateProbe({
+    sharedMessage,
+    unsharedMessage: {
+      ...unsharedMessage,
+      content: 'I do not have enough verified shared reel evidence to answer that reliably.',
+    },
+    sharedReelId: 'shared-reel',
+    unsharedReelId: 'unshared-reel',
+    expectedEvidenceType: 'TRANSCRIPT',
+  });
+
+  assert.equal(result.status, 'PASS');
+  assert.equal(result.assertions.unsharedRequestRefused, true);
+});

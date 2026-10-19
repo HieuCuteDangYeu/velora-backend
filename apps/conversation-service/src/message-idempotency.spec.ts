@@ -492,6 +492,8 @@ describe('message transaction conflicts', () => {
     );
     const settled = Promise.allSettled(writes);
     await expect(writes[100]).rejects.toMatchObject({ status: 429 });
+    // The first batch starts once the conversation write lock answers.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     release();
     const results = await settled;

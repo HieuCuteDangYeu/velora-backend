@@ -56,6 +56,7 @@ import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from './chat.mapper';
 import { ConversationMapper } from './conversation.mapper';
 import { writeAuthorizedPreview } from './authorized-preview.writer';
+import { ConversationWriteLock } from './conversation-write-lock';
 
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
@@ -110,6 +111,7 @@ type AnchorBoundary = {
 export class PrismaChatRepository implements IChatRepository {
   private readonly logger = new Logger(PrismaChatRepository.name);
   private readonly messageTransactions = new Map<string, MessageWriteQueue>();
+  private conversationWriteLock?: ConversationWriteLock;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -126,6 +128,12 @@ export class PrismaChatRepository implements IChatRepository {
     private readonly chatMediaService: IChatMediaService,
     private readonly metrics?: ConversationPrometheusMetricsService,
   ) {}
+
+  private get writeLock(): ConversationWriteLock {
+    return (this.conversationWriteLock ??= new ConversationWriteLock(
+      this.redis,
+    ));
+  }
 
   private measure<T>(
     phase: ChatPhase,
@@ -1593,6 +1601,11 @@ export class PrismaChatRepository implements IChatRepository {
       )
         count++;
       const entries = queue.waiting.splice(0, count);
+      // Other replicas write to the same conversation document; hold the
+      // cross-replica lock for this batch so their transactions do not abort each other.
+      const lock = await this.measure('write_lock_wait', () =>
+        this.writeLock.acquire(conversationId),
+      );
       try {
         for (const entry of entries) entry.start();
         const results = await this.persistMessageBatch(
@@ -1617,6 +1630,7 @@ export class PrismaChatRepository implements IChatRepository {
           for (const entry of entries) entry.reject(error);
         }
       } finally {
+        await lock.release();
         queue.pending -= entries.length;
       }
     }

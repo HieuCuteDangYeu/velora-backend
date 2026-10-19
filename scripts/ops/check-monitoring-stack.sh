@@ -46,13 +46,21 @@ wait_for_prometheus_target() {
   local attempt response value
 
   for ((attempt = 1; attempt <= TARGET_RETRY_ATTEMPTS; attempt += 1)); do
+    # Every target that is still being scraped must be UP, so a job may have
+    # several replicas. The 20 s window drops a target that is no longer scraped,
+    # for example the old static address after a job switches to DNS discovery:
+    # it would otherwise linger for five minutes with its last value, 0.
     response="$(
       curl --fail --silent --show-error --get \
-        --data-urlencode "query=up{job=\"${job}\"}" \
+        --data-urlencode "query=up{job=\"${job}\"} and on(instance) (count_over_time(up{job=\"${job}\"}[20s]) > 0)" \
         "${PROMETHEUS_URL}/api/v1/query"
     )"
 
-    value="$(jq -r '.data.result[0].value[1] // "missing"' <<<"$response")"
+    value="$(
+      jq -r 'if (.data.result | length) == 0 then "missing"
+        elif ([.data.result[].value[1]] | all(. == "1")) then "1"
+        else "0" end' <<<"$response"
+    )"
     if [ "$value" = "1" ]; then
       echo "      ${display_name} target is UP"
       return 0

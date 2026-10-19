@@ -9,6 +9,18 @@ export type ProcessReelIndexJobResult =
   | { status: 'COMPLETED' | 'DUPLICATE' | 'STALE' }
   | { status: 'RETRY' | 'PERMANENT_FAILURE'; error: string };
 
+/**
+ * Provider quota is a cohort-level condition, so retrying the same Reel in
+ * the bounded RabbitMQ retry lane only burns more requests and produces no
+ * evidence. The scheduled visual cohort will select the failed Reel again
+ * after the provider's daily allocation is available.
+ */
+export function isDeferredProviderQuotaFailure(detail: string): boolean {
+  return /visual provider rate limit or quota exhausted|daily free allocation|workers ai.*\b429\b/i.test(
+    detail,
+  );
+}
+
 @Injectable()
 export class ProcessReelIndexJobUseCase {
   private readonly logger = new Logger(ProcessReelIndexJobUseCase.name);
@@ -55,7 +67,9 @@ export class ProcessReelIndexJobUseCase {
         })
         .catch(() => undefined);
 
-      if (input.allowRetry) return { status: 'RETRY', error: detail };
+      if (input.allowRetry && !isDeferredProviderQuotaFailure(detail)) {
+        return { status: 'RETRY', error: detail };
+      }
 
       await this.content
         .failIndexing({

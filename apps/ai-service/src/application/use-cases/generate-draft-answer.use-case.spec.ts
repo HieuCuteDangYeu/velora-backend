@@ -117,6 +117,58 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(generateObject).not.toHaveBeenCalled();
   });
 
+  it('synthesizes an explanatory answer for a transcript time range', async () => {
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'The speaker names the blue device.',
+      claims: [{ claim: 'The speaker names the blue device.', evidenceIds: ['e0'] }],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the transcript segment spanning 11.68-56.38 seconds of the shared Reel.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 11.68,
+        sourceTimestampEndSec: 56.38,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'c-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 11.68,
+          endTime: 56.38,
+          evidenceText: 'The speaker names the blue device.',
+          chunkText: 'The speaker names the blue device.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('The speaker names the blue device.');
+    expect(result.finalizationMode).toBe('SYNTHESIZED');
+    expect(generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('chooses the chunk aligned to a requested range before overlapping chunks', async () => {
     const generateObject = jest.fn();
     const useCase = new GenerateDraftAnswerUseCase(

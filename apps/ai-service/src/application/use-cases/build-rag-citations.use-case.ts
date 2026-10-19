@@ -48,6 +48,14 @@ export class BuildRagCitationsUseCase {
       return this.notRequired();
     }
 
+    if (
+      state.finalFailureSource === 'NO_CONTEXT' ||
+      (state.contextSufficiency?.recommendedAction === 'REFUSE_NO_CONTEXT' &&
+        this.isEvidenceRefusal(answer))
+    ) {
+      return this.notRequired();
+    }
+
     const candidates = this.buildCandidates(state);
     if (candidates.length === 0) {
       return this.notRequired();
@@ -402,5 +410,11 @@ export class BuildRagCitationsUseCase {
 
     const boundary = clean.lastIndexOf(' ', maxLength);
     return clean.slice(0, boundary > 0 ? boundary : maxLength).trim();
+  }
+
+  private isEvidenceRefusal(answer: string): boolean {
+    return /^I\s*(?:do not|don't|don’t|cannot|can't|can’t|could not|couldn't|couldn’t|am unable to)\b/i.test(
+      answer,
+    );
   }
 }

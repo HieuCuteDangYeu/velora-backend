@@ -19,6 +19,7 @@ const operationalValidationPath = path.resolve(process.env.RAG_FINAL_OPERATIONAL
 const visualContractPath = path.resolve(process.env.RAG_FINAL_VISUAL_CONTRACT || path.join(runDir, 'visual-contract-validation.json'));
 const providerValidationPath = path.resolve(process.env.RAG_FINAL_PROVIDER_VALIDATION || path.join(runDir, 'evaluation-v6-operational', 'provider-integration-validation.json'));
 const calibrationReviewPath = path.resolve(process.env.RAG_FINAL_CALIBRATION_REVIEW || path.join(runDir, 'calibration-review-v6.json'));
+const productionValidationPath = path.resolve(process.env.RAG_FINAL_PRODUCTION_VALIDATION || path.join(runDir, 'production-retrieval-validation.json'));
 const rows = ['development', 'held_out'].flatMap((split) => JSON.parse(fs.readFileSync(path.join(dataDir, `${split}.json`))));
 const rowsById = new Map(rows.map((row) => [row.id, row]));
 const terminalStatuses = new Set(['COMPLETE', 'COMPLETE_WITH_EXECUTION_FAILURES']);
@@ -178,16 +179,18 @@ function analyzeSemantic(phase, details) {
   };
 }
 
-function buildExitGateMatrix(result, phases, operational, visualContract, providerValidation, calibration) {
+function buildExitGateMatrix(result, phases, operational, visualContract, providerValidation, calibration, productionValidation) {
   const primaryComplete = phases.every(({ state }) => terminalStatuses.has(state.status));
   const exactOnce = result.gates.exactOncePrimaryResponses && result.gates.exactOnceSemanticScores;
   const humanGold = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
     calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined);
   const independentReview = calibration?.independentReview === 'PASS';
+  const productionRetrievalPass = result.productionRetrievalProven === true || productionValidation?.status === 'PASS';
   const rerankerPass = providerValidation?.status === 'PASS';
-  const releaseReady = result.productionRetrievalProven === true && humanGold &&
+  const releaseReady = productionRetrievalPass && humanGold &&
     independentReview && visualContract?.imageTruthStatus === 'PASS' && rerankerPass;
   const phaseName = (phase) => phase.phase || phase.summary?.phase;
+  const evidencePath = (file) => path.relative(runDir, file) || path.basename(file);
   return {
     status: releaseReady ? 'RELEASE_PASS' : 'PROVISIONAL_RELEASE_BLOCKED',
     gates: [
@@ -205,9 +208,9 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
       },
       {
         id: 'temporal-retrieval',
-        status: 'VERIFIED_BY_PROVIDER_FREE_REPLAY',
-        evidence: ['apps/reel-indexing-service/src/infrastructure/repositories/prisma-semantic-index.repository.spec.ts', 'apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.spec.ts'],
-        reason: 'Endpoint and full-range selection pass frozen replay; live owner-service range proof remains separate.',
+        status: productionRetrievalPass ? 'VERIFIED_BY_LIVE_OWNER_SERVICE' : 'VERIFIED_BY_PROVIDER_FREE_REPLAY',
+        evidence: ['apps/reel-indexing-service/src/infrastructure/repositories/prisma-semantic-index.repository.spec.ts', 'apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.spec.ts', ...(productionRetrievalPass ? [evidencePath(productionValidationPath)] : [])],
+        reason: productionRetrievalPass ? 'Endpoint and full-range selection pass frozen replay and the release-bound live owner-service probe.' : 'Endpoint and full-range selection pass frozen replay; live owner-service range proof remains separate.',
       },
       {
         id: 'multi-reel-coverage',
@@ -236,7 +239,7 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
       {
         id: 'matched-primary',
         status: primaryComplete && exactOnce ? 'PASS' : 'INCOMPLETE',
-        evidence: phases.map((phase) => `evaluation-v6-${phaseName(phase)}/state.json`),
+        evidence: phases.map((phase) => `${phaseName(phase)}/state.json`),
         reason: primaryComplete && exactOnce ? `Both ${rows.length}-case primary cohorts are terminal with exact case identity coverage.` : 'One or more primary cohorts is incomplete.',
       },
       {
@@ -248,13 +251,13 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
       {
         id: 'semantic-judge-replay',
         status: result.gates.exactOnceSemanticScores ? 'PROVISIONAL_PASS' : 'INCOMPLETE',
-        evidence: phases.map((phase) => `evaluation-v6-${phaseName(phase)}/semantic-cases.jsonl`),
+        evidence: phases.map((phase) => `${phaseName(phase)}/semantic-cases.jsonl`),
         reason: result.gates.exactOnceSemanticScores ? 'All case identities have one semantic record; unavailable provider cases remain explicitly unscored.' : 'Semantic case identity coverage is incomplete.',
       },
       {
         id: 'release-approval',
         status: releaseReady ? 'PASS' : 'BLOCKED',
-        evidence: ['final-benchmark.json', 'calibration-review-v6.json', 'evaluation-v6-operational/provider-integration-validation.json'],
+        evidence: ['final-benchmark.json', evidencePath(calibrationReviewPath), evidencePath(providerValidationPath), ...(productionRetrievalPass ? [evidencePath(productionValidationPath)] : [])],
         reason: releaseReady ? 'All declared release evidence is complete.' : 'Human gold labels, independent review, live retrieval/ACL proof, image-level visual truth, or live TEI reranking admission remain unproven.',
       },
     ],
@@ -281,17 +284,25 @@ function main() {
   const calibration = fs.existsSync(calibrationReviewPath)
     ? JSON.parse(fs.readFileSync(calibrationReviewPath, 'utf8'))
     : undefined;
+  const productionValidation = fs.existsSync(productionValidationPath)
+    ? JSON.parse(fs.readFileSync(productionValidationPath, 'utf8'))
+    : undefined;
+  const humanGold = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
+    calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined);
+  const independentReview = calibration?.independentReview === 'PASS' ? 'PASS' : 'NOT_PROVEN';
+  const productionRetrievalProven = productionValidation?.status === 'PASS';
   const result = {
     status: 'COMPLETE_CANDIDATE_REPLAY',
     casesPerPhase: rows.length,
     datasetSha256: fingerprint(rows),
-    humanGold: false,
-    productionRetrievalProven: false,
-    independentReview: 'NOT_PROVEN',
+    humanGold,
+    productionRetrievalProven,
+    independentReview,
     evaluatorProtocol: 'APPLICABILITY_AWARE_AI_REVIEWED_CANDIDATE_V1',
     provenance,
     operationalFaultCoverage: operational || { status: 'UNVERIFIED', path: operationalValidationPath },
     visualSourceContract: visualContract || { status: 'UNVERIFIED', path: visualContractPath },
+    productionRetrieval: productionValidation || { status: 'UNVERIFIED', path: productionValidationPath },
     phases: phases.map(({ summary }, index) => ({
       phase: phaseNames[index],
       deterministic: summary,
@@ -303,9 +314,9 @@ function main() {
       exactOnceSemanticScores: true,
       applicabilitySeparated: true,
       privacyCanaryLeaks: phases.reduce((sum, phase) => sum + phase.summary.privacyCanaryLeaks, 0),
-      liveProductionRetrieval: 'UNPROVEN',
-      humanGoldLabels: 'UNPROVEN',
-      independentReview: 'UNPROVEN',
+      liveProductionRetrieval: productionRetrievalProven ? 'PASS' : 'UNPROVEN',
+      humanGoldLabels: humanGold ? 'PASS' : 'UNPROVEN',
+      independentReview: independentReview,
       structuredActionsEvaluated: true,
       structuredActionFailures: phases.reduce((sum, phase) => sum + phase.summary.structuredActions.failed, 0),
       operationalFaultCoverage: operational?.status || 'UNVERIFIED',
@@ -314,7 +325,7 @@ function main() {
   };
   writeJson(path.join(runDir, 'matched-deterministic-summary.json'), phases.map(({ summary }) => summary));
   writeJson(path.join(runDir, 'final-benchmark.json'), result);
-  writeJson(path.join(runDir, 'exit-gate-matrix.json'), buildExitGateMatrix(result, phases, operational, visualContract, providerValidation, calibration));
+  writeJson(path.join(runDir, 'exit-gate-matrix.json'), buildExitGateMatrix(result, phases, operational, visualContract, providerValidation, calibration, productionValidation));
   const lines = [
     '# Matched candidate replay benchmark',
     '',
@@ -334,7 +345,13 @@ function main() {
     visualContract?.status === 'PASS'
       ? `The frozen visual-source contract covers ${visualContract.casesWithVisualEvidence} cases and ${visualContract.visualEvidenceItems} visual evidence items with no provenance or timestamp mismatches.`
       : 'Visual source-contract validation is unavailable or incomplete and remains a release blocker.',
-    'Unavailable provider results and non-applicable dimensions remain separate from scored means. This replay does not prove live vector retrieval, production authorization enforcement, human gold labels, or independent review.');
+    productionRetrievalProven
+      ? 'The release-bound live retrieval/ACL probe passed for the deployed owner-service path.'
+      : 'This replay does not prove live vector retrieval or production authorization enforcement.',
+    humanGold && independentReview === 'PASS'
+      ? 'Human calibration labels and independent review are present.'
+      : 'Human gold labels and independent review remain unproven.',
+    'Unavailable provider results and non-applicable dimensions remain separate from scored means.');
   fs.writeFileSync(path.join(runDir, 'final-benchmark.md'), `${lines.join('\n')}\n`, { mode: 0o600 });
   console.log(JSON.stringify({ status: result.status, runDir, casesPerPhase: rows.length }));
 }

@@ -521,6 +521,30 @@ describe('BuildRagCitationsUseCase', () => {
     expect(attributionService.attribute).toHaveBeenCalledTimes(1);
   });
 
+  it('does not attach accessible Reel citations to a no-context refusal', async () => {
+    const attributionService: ICitationAttributionService = {
+      attribute: jest.fn(),
+    };
+    const useCase = new BuildRagCitationsUseCase(attributionService);
+    const state = {
+      ...buildState(),
+      answer: "I don't have enough information to summarize that Reel.",
+      contextSufficiency: {
+        sufficient: false,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: ['TRANSCRIPT'],
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+      },
+    } as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      citations: [],
+      coverage: { mode: 'NOT_REQUIRED', coverage: 1 },
+    });
+    expect(attributionService.attribute).not.toHaveBeenCalled();
+  });
+
   it('falls back to verifier-supported evidence when attribution returns no usable selection', async () => {
     const attributionService: ICitationAttributionService = {
       attribute: jest.fn().mockResolvedValue({

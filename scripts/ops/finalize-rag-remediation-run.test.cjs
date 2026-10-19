@@ -29,4 +29,19 @@ assert.equal(matrix.gates.find((gate) => gate.id === 'matched-primary').status, 
 assert.equal(matrix.gates.find((gate) => gate.id === 'release-approval').status, 'BLOCKED');
 assert.match(matrix.gates.find((gate) => gate.id === 'reliability').reason, /reranker/);
 
+const releaseMatrix = buildExitGateMatrix(
+  { ...result, productionRetrievalProven: true },
+  phases,
+  { status: 'PASS' },
+  { status: 'PASS', imageTruthStatus: 'PASS' },
+  { status: 'PASS' },
+  {
+    cases: [{ reviewedLabel: 'PASS' }],
+    independentReview: 'PASS',
+  },
+  { status: 'PASS' },
+);
+assert.equal(releaseMatrix.gates.find((gate) => gate.id === 'temporal-retrieval').status, 'VERIFIED_BY_LIVE_OWNER_SERVICE');
+assert.equal(releaseMatrix.gates.find((gate) => gate.id === 'release-approval').status, 'PASS');
+
 console.log('RAG exit gate matrix checks passed');

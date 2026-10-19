@@ -129,6 +129,7 @@ export class GenerateDraftAnswerUseCase {
       if (
         source &&
         answer &&
+        (requestedQuote || requestedSource.sourceTimestampEndSec === undefined) &&
         answer.length <= ragAnswerBudget(state.route.reelQuestionType).maxChars
       ) {
         return {

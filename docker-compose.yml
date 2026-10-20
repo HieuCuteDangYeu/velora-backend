@@ -223,6 +223,11 @@ services:
         condition: service_healthy
     networks:
       - microservices-net
+    # Two replicas share the Socket.IO rooms through the Redis adapter, the
+    # message queue as competing consumers and the outbox through leased claims.
+    # One instance saturates a core on socket writes at about 15k writes/s.
+    deploy:
+      replicas: 2
 
   call-service:
     image: ${DOCKERHUB_USERNAME}/call-service:${VELORA_IMAGE_TAG:-latest}

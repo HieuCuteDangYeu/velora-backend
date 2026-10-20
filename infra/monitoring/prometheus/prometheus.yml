@@ -20,9 +20,14 @@ scrape_configs:
 
   - job_name: conversation-service
     metrics_path: /metrics
-    static_configs:
-      - targets:
-          - conversation-service:3005
+    # Every replica is scraped on its own address; a static target would resolve
+    # to one random replica per scrape and mix their counters.
+    dns_sd_configs:
+      - names:
+          - conversation-service
+        type: A
+        port: 3005
+        refresh_interval: 15s
 
   - job_name: call-service
     metrics_path: /metrics

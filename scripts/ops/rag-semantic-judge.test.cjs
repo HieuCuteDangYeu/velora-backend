@@ -240,3 +240,53 @@ test('rejects over-budget judge prompts instead of waiting forever or making a p
     /TPM budget/,
   );
 });
+
+test('uses the explicitly enabled Cloudflare fallback after Groq quota failure', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'judge-cloudflare-fallback-test-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const calls = [];
+  const mockFetch = async (url) => {
+    calls.push(url);
+    if (url.includes('api.groq.com')) {
+      return {
+        ok: false,
+        status: 429,
+        headers: new Headers(),
+        text: async () => 'quota exhausted',
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          response: JSON.stringify({
+            faithfulness: { score: 1, reasoning: 'Supported' },
+            factualCorrectness: { score: 1, reasoning: 'Correct' },
+            responseRelevancy: { score: 1, reasoning: 'Relevant' },
+            contextCompleteness: { score: 1, reasoning: 'Complete' },
+          }),
+        },
+      }),
+    };
+  };
+  const pool = new JudgePoolController({
+    groqApiKeys: ['quota-key'],
+    cloudflareAccountId: 'account',
+    cloudflareApiToken: 'token',
+    allowProviderFallback: true,
+    ledgerBaseDir: dir,
+    tpmLimitPerKey: 50000,
+  });
+  const result = await pool.evaluateCase({
+    caseId: 'CF-CASE',
+    question: 'Q',
+    referenceAnswer: 'A',
+    generatedAnswer: 'A',
+    context: 'C',
+    fetchFn: mockFetch,
+  });
+  assert.equal(result.provider, 'cloudflare');
+  assert.equal(result.faithfulness.score, 1);
+  assert.equal(calls.filter((url) => url.includes('api.cloudflare.com')).length, 4);
+});

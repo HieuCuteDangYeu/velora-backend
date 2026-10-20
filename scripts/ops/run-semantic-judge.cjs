@@ -298,14 +298,21 @@ async function main() {
     }
 
     const tpmLimit = Number.parseInt(args['tpm-limit'] ?? '6500', 10) || 6500;
+    const allowProviderFallback =
+      args['allow-cloudflare-fallback'] === true ||
+      process.env.RAG_SEMANTIC_JUDGE_ALLOW_CLOUDFLARE_FALLBACK === 'true';
     const pool = new JudgePoolController({
       groqApiKeys: groqKeys,
       cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
       cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
+      allowProviderFallback,
       ledgerBaseDir: ledgerDir,
       tpmLimitPerKey: tpmLimit,
       maxRetries: 3,
     });
+    console.log(
+      `[Judge] Cloudflare fallback: ${allowProviderFallback ? 'enabled' : 'disabled'}`,
+    );
 
     // Filter completed benchmark cases to evaluate
     const candidateCaseIds = Object.entries(state.cases)

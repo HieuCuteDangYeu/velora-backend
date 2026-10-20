@@ -182,13 +182,21 @@ function analyzeSemantic(phase, details) {
 function buildExitGateMatrix(result, phases, operational, visualContract, providerValidation, calibration, productionValidation) {
   const primaryComplete = phases.every(({ state }) => terminalStatuses.has(state.status));
   const exactOnce = result.gates.exactOncePrimaryResponses && result.gates.exactOnceSemanticScores;
-  const humanGold = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
+  const labelsComplete = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
     calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined);
+  const humanGold = labelsComplete &&
+    (calibration?.humanApproved === true || !calibration?.reviewMetadata);
   const independentReview = calibration?.independentReview === 'PASS';
+  const agentAuthority = process.env.RAG_FINAL_REVIEW_AUTHORITY === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
+    calibration?.reviewAuthority === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
+    calibration?.reviewMetadata?.reviewerType === 'AGENT_SOURCE_AND_FRAME_REVIEW' &&
+    calibration?.humanApproved === false &&
+    labelsComplete;
+  const reviewComplete = (humanGold && independentReview) || agentAuthority;
   const productionRetrievalPass = result.productionRetrievalProven === true || productionValidation?.status === 'PASS';
   const rerankerPass = providerValidation?.status === 'PASS';
-  const releaseReady = productionRetrievalPass && humanGold &&
-    independentReview && visualContract?.imageTruthStatus === 'PASS' && rerankerPass;
+  const releaseReady = productionRetrievalPass && reviewComplete &&
+    visualContract?.imageTruthStatus === 'PASS' && rerankerPass;
   const phaseName = (phase) => phase.phase || phase.summary?.phase;
   const evidencePath = (file) => path.relative(runDir, file) || path.basename(file);
   return {
@@ -196,9 +204,13 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
     gates: [
       {
         id: 'measurement-applicability',
-        status: result.gates.applicabilitySeparated && humanGold ? 'PASS' : 'PROVISIONAL',
+        status: result.gates.applicabilitySeparated && (humanGold || agentAuthority) ? 'PASS' : 'PROVISIONAL',
         evidence: ['dataset-v6-series-holdout/manifest.json', 'calibration-review-v6.json'],
-        reason: humanGold ? 'Applicability protocol and human calibration labels are complete.' : 'Applicability protocol exists; human gold labels are still pending.',
+        reason: humanGold
+          ? 'Applicability protocol and human calibration labels are complete.'
+          : agentAuthority
+            ? 'Applicability protocol and the explicitly authorized agent source review are complete.'
+            : 'Applicability protocol exists; source review authority is still unproven.',
       },
       {
         id: 'router-contracts',
@@ -220,9 +232,19 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
       },
       {
         id: 'visual-evidence',
-        status: visualContract?.status === 'PASS' ? 'PROVENANCE_PASS_IMAGE_TRUTH_PENDING' : 'BLOCKED',
+        status: visualContract?.status === 'PASS' && visualContract?.imageTruthStatus === 'PASS' && (humanGold || agentAuthority)
+          ? 'PASS'
+          : visualContract?.status === 'PASS'
+            ? 'PROVENANCE_PASS_IMAGE_TRUTH_PENDING'
+            : 'BLOCKED',
         evidence: ['evaluation-v6-operational/visual-contract-validation.json', 'source/remote-active-eight.json'],
-        reason: visualContract?.status === 'PASS' ? 'Fresh visual scenes have valid provenance; image-level human truth review is pending.' : 'Visual source-contract validation is unavailable or incomplete.',
+        reason: visualContract?.status === 'PASS' && visualContract?.imageTruthStatus === 'PASS' && (humanGold || agentAuthority)
+          ? agentAuthority
+            ? 'Fresh visual scenes and exact stored frames passed the explicitly authorized agent review.'
+            : 'Fresh visual scenes and exact stored frames passed human review.'
+          : visualContract?.status === 'PASS'
+            ? 'Fresh visual scenes have valid provenance; image-level review is pending.'
+            : 'Visual source-contract validation is unavailable or incomplete.',
       },
       {
         id: 'memory-action',
@@ -258,7 +280,11 @@ function buildExitGateMatrix(result, phases, operational, visualContract, provid
         id: 'release-approval',
         status: releaseReady ? 'PASS' : 'BLOCKED',
         evidence: ['final-benchmark.json', evidencePath(calibrationReviewPath), evidencePath(providerValidationPath), ...(productionRetrievalPass ? [evidencePath(productionValidationPath)] : [])],
-        reason: releaseReady ? 'All declared release evidence is complete.' : 'Human gold labels, independent review, live retrieval/ACL proof, image-level visual truth, or live TEI reranking admission remain unproven.',
+        reason: releaseReady
+          ? agentAuthority
+            ? 'All declared release evidence is complete under the explicitly authorized agent source-of-truth review policy.'
+            : 'All declared release evidence is complete.'
+          : 'Review authority, independent approval, live retrieval/ACL proof, image-level visual truth, or live TEI reranking admission remain unproven.',
       },
     ],
   };
@@ -288,16 +314,34 @@ function main() {
     ? JSON.parse(fs.readFileSync(productionValidationPath, 'utf8'))
     : undefined;
   const humanGold = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
-    calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined);
-  const independentReview = calibration?.independentReview === 'PASS' ? 'PASS' : 'NOT_PROVEN';
+    calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined) &&
+    (calibration?.humanApproved === true || !calibration?.reviewMetadata);
+  const agentSourceReview = Array.isArray(calibration?.cases) && calibration.cases.length > 0 &&
+    calibration.cases.every((entry) => entry.reviewedLabel !== null && entry.reviewedLabel !== undefined) &&
+    process.env.RAG_FINAL_REVIEW_AUTHORITY === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
+    calibration?.reviewAuthority === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
+    calibration?.reviewMetadata?.reviewerType === 'AGENT_SOURCE_AND_FRAME_REVIEW' &&
+    calibration?.humanApproved === false;
+  const independentReview = agentSourceReview
+    ? 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH'
+    : calibration?.independentReview === 'PASS'
+      ? 'PASS'
+      : 'NOT_PROVEN';
+  const reviewAuthority = agentSourceReview
+    ? 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH'
+    : humanGold && calibration?.independentReview === 'PASS'
+      ? 'HUMAN_INDEPENDENT'
+      : 'UNPROVEN';
   const productionRetrievalProven = productionValidation?.status === 'PASS';
   const result = {
     status: 'COMPLETE_CANDIDATE_REPLAY',
     casesPerPhase: rows.length,
     datasetSha256: fingerprint(rows),
     humanGold,
+    agentSourceReview,
     productionRetrievalProven,
     independentReview,
+    reviewAuthority,
     evaluatorProtocol: 'APPLICABILITY_AWARE_AI_REVIEWED_CANDIDATE_V1',
     provenance,
     operationalFaultCoverage: operational || { status: 'UNVERIFIED', path: operationalValidationPath },
@@ -316,6 +360,7 @@ function main() {
       privacyCanaryLeaks: phases.reduce((sum, phase) => sum + phase.summary.privacyCanaryLeaks, 0),
       liveProductionRetrieval: productionRetrievalProven ? 'PASS' : 'UNPROVEN',
       humanGoldLabels: humanGold ? 'PASS' : 'UNPROVEN',
+      agentSourceReview: agentSourceReview ? 'PASS' : 'UNPROVEN',
       independentReview: independentReview,
       structuredActionsEvaluated: true,
       structuredActionFailures: phases.reduce((sum, phase) => sum + phase.summary.structuredActions.failed, 0),
@@ -348,9 +393,11 @@ function main() {
     productionRetrievalProven
       ? 'The release-bound live retrieval/ACL probe passed for the deployed owner-service path.'
       : 'This replay does not prove live vector retrieval or production authorization enforcement.',
-    humanGold && independentReview === 'PASS'
+    reviewAuthority === 'HUMAN_INDEPENDENT'
       ? 'Human calibration labels and independent review are present.'
-      : 'Human gold labels and independent review remain unproven.',
+      : reviewAuthority === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH'
+        ? 'The explicitly authorized agent source-of-truth review is present; no separate human approval is claimed.'
+        : 'Review authority and independent approval remain unproven.',
     'Unavailable provider results and non-applicable dimensions remain separate from scored means.');
   fs.writeFileSync(path.join(runDir, 'final-benchmark.md'), `${lines.join('\n')}\n`, { mode: 0o600 });
   console.log(JSON.stringify({ status: result.status, runDir, casesPerPhase: rows.length }));

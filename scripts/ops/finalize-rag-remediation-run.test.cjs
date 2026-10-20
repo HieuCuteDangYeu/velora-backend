@@ -44,4 +44,28 @@ const releaseMatrix = buildExitGateMatrix(
 assert.equal(releaseMatrix.gates.find((gate) => gate.id === 'temporal-retrieval').status, 'VERIFIED_BY_LIVE_OWNER_SERVICE');
 assert.equal(releaseMatrix.gates.find((gate) => gate.id === 'release-approval').status, 'PASS');
 
+const previousAuthority = process.env.RAG_FINAL_REVIEW_AUTHORITY;
+process.env.RAG_FINAL_REVIEW_AUTHORITY = 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH';
+const agentMatrix = buildExitGateMatrix(
+  { ...result, productionRetrievalProven: true },
+  phases,
+  { status: 'PASS' },
+  { status: 'PASS', imageTruthStatus: 'PASS' },
+  { status: 'PASS' },
+  {
+    status: 'AGENT_REVIEW_COMPLETE',
+    humanApproved: false,
+    reviewAuthority: 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH',
+    reviewMetadata: { reviewerType: 'AGENT_SOURCE_AND_FRAME_REVIEW' },
+    cases: [{ reviewedLabel: 'PASS' }],
+    independentReview: null,
+  },
+  { status: 'PASS' },
+);
+assert.equal(agentMatrix.gates.find((gate) => gate.id === 'measurement-applicability').status, 'PASS');
+assert.equal(agentMatrix.gates.find((gate) => gate.id === 'visual-evidence').status, 'PASS');
+assert.equal(agentMatrix.gates.find((gate) => gate.id === 'release-approval').status, 'PASS');
+if (previousAuthority === undefined) delete process.env.RAG_FINAL_REVIEW_AUTHORITY;
+else process.env.RAG_FINAL_REVIEW_AUTHORITY = previousAuthority;
+
 console.log('RAG exit gate matrix checks passed');

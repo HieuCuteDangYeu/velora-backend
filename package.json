@@ -97,6 +97,8 @@
     "ops:rag:benchmark": "node scripts/ops/rag-hierarchy-benchmark.cjs",
     "ops:rag:readiness": "node scripts/ops/rag-production-readiness.cjs",
     "ops:rag:live-boundary": "node scripts/ops/validate-rag-live-boundary.cjs",
+    "ops:rag:review:packet": "node scripts/ops/prepare-rag-review-packet.cjs",
+    "ops:rag:review:apply": "node scripts/ops/apply-rag-review-sheet.cjs",
     "ops:local-ai:capacity": "bash scripts/ops/check-local-ai-capacity.sh",
     "ops:local-ai:report": "bash scripts/ops/check-local-ai-capacity.sh --report",
     "ops:reels:prepare": "node scripts/ops/reel-integration-load.cjs --mode=prepare",

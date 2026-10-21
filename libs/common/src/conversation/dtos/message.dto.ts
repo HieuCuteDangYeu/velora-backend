@@ -29,18 +29,37 @@ export const GroupSystemActivitySchema = z.object({
   nextValue: z.string().nullable().optional(),
 });
 
+export const CallLogSchema = z.object({
+  callId: z.string(),
+  callType: z.enum(['VOICE', 'VIDEO']),
+  isGroupCall: z.boolean(),
+  initiatorId: z.string(),
+  outcome: z.enum(['COMPLETED', 'MISSED', 'DECLINED', 'FAILED']),
+  terminalReason: z.string().optional(),
+  durationSec: z.number().int().nonnegative().optional(),
+  participants: z.array(
+    z.object({
+      userId: z.string(),
+      role: z.enum(['CALLER', 'CALLEE']),
+      result: z.enum(['ANSWERED', 'MISSED', 'DECLINED', 'CANCELLED', 'FAILED']),
+    }),
+  ),
+});
+
 export const MessageMetadataSchema = z.object({
   kind: z
     .enum([
       'velora_ai_response',
       'velora_ai_reel_recommendations',
       'group_system_activity',
+      'call_log',
     ])
     .optional(),
   citations: z.array(AiRagCitationSchema).optional(),
   recommendedReels: z.array(AiRecommendedReelSchema).optional(),
   suggestedQueries: z.array(z.string()).optional(),
   groupActivity: GroupSystemActivitySchema.optional(),
+  callLog: CallLogSchema.optional(),
 });
 
 export const MessageSchema = z.object({

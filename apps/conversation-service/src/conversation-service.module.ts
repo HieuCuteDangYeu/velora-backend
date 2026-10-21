@@ -5,6 +5,8 @@ import Redis from 'ioredis';
 // Import UseCases & Infra
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { GroupActivityService } from 'apps/conversation-service/src/application/services/group-activity.service';
+import { CallLogService } from 'apps/conversation-service/src/application/services/call-log.service';
+import { CallLogController } from 'apps/conversation-service/src/infrastructure/controllers/call-log.controller';
 import { GroupMembershipConsistencyService } from 'apps/conversation-service/src/application/services/group-membership-consistency.service';
 import { BuildBotMemoryContextUseCase } from 'apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case';
 import { BuildCompletedTurnMemoryContextUseCase } from 'apps/conversation-service/src/application/use-cases/build-completed-turn-memory-context.use-case';
@@ -111,6 +113,7 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     ]),
   ],
   controllers: [
+    CallLogController,
     ConversationMicroserviceController,
     ConversationMetricsController,
     GroupMembersMicroserviceController,
@@ -134,6 +137,7 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     ManageGroupConversationUseCase,
     ManageGroupRoleUseCase,
     GroupActivityService,
+    CallLogService,
     GroupMembershipConsistencyService,
     GetUserConversationsUseCase,
     ProcessBotReplyUseCase,

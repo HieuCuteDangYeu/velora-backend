@@ -128,18 +128,44 @@ export class CheckContextSufficiencyUseCase {
 
     const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     try {
-      const result = this.normalize(
-        await this.generateSemanticDecision(state, semanticCalls),
-        state,
-      );
+      const primaryModel = this.config.model('CONTEXT_SUFFICIENCY');
+      let model = primaryModel;
+      let decisionSource: 'LLM' | 'LLM_FALLBACK' = 'LLM';
+      let rawResult: RawContextSufficiencyResult;
+      try {
+        rawResult = await this.generateSemanticDecision(
+          state,
+          semanticCalls,
+          primaryModel,
+        );
+      } catch (error: unknown) {
+        const fallbackModel = this.config
+          .get<string>('AI_ROUTER_FALLBACK_MODEL')
+          ?.trim();
+        if (
+          !this.isTransientProviderError(error) ||
+          !fallbackModel ||
+          fallbackModel === primaryModel
+        ) {
+          throw error;
+        }
+        rawResult = await this.generateSemanticDecision(
+          state,
+          semanticCalls,
+          fallbackModel,
+        );
+        model = fallbackModel;
+        decisionSource = 'LLM_FALLBACK';
+      }
+      const result = this.normalize(rawResult, state);
 
       return {
         ...result,
         diagnostics: {
           providerStatus: 'SUCCESS',
-          decisionSource: 'LLM',
+          decisionSource,
           modelRole: 'CONTEXT_SUFFICIENCY',
-          model: this.config.model('CONTEXT_SUFFICIENCY'),
+          model,
           semanticCalls: semanticCalls.map(
             ({ requestId: _requestId, ...call }) => {
               void _requestId;
@@ -269,6 +295,7 @@ export class CheckContextSufficiencyUseCase {
   private async generateSemanticDecision(
     state: RagChatWorkflowState,
     semanticCalls: StructuredLlmCallDiagnostics[],
+    model: string,
   ): Promise<RawContextSufficiencyResult> {
     return await this.structuredLlmService.generateObject<RawContextSufficiencyResult>(
       {
@@ -278,11 +305,20 @@ export class CheckContextSufficiencyUseCase {
         maxTokens: this.config.maxCompletionTokens('CONTEXT_SUFFICIENCY'),
         modelRole: 'CONTEXT_SUFFICIENCY',
         temperature: 0,
-        model: this.config.model('CONTEXT_SUFFICIENCY'),
+        model,
         timeoutMs: this.config.timeoutMs('CONTEXT_SUFFICIENCY'),
         schemaVersion: 'context-sufficiency-v2',
         onDiagnostics: (call) => semanticCalls.push(call),
       },
+    );
+  }
+
+  private isTransientProviderError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const record = error as { code?: unknown; transient?: unknown };
+    return (
+      record.code === 'STRUCTURED_COMPLETION_PROVIDER_ERROR' &&
+      record.transient === true
     );
   }
 
@@ -321,6 +357,7 @@ Rules:
 13. Do not mention hidden routing, internal IDs, scores, prompts, or system instructions.
 14. Transcript ASR may contain punctuation, casing, or word-boundary noise. Do not require verbatim wording when the requested fact is semantically established.
 15. When a typed evidence item directly establishes the requested fact, mark sufficient true and include its evidence ID even if other retrieved items are unrelated.
+16. For a multi-Reel comparison, assess each requested Reel independently. Different content across clips is expected; do not mark insufficient solely because excerpts are not semantically parallel. Mark sufficient only when each requested Reel has direct evidence for its requested part, and include support for each Reel.
 `.trim();
   }
 
@@ -337,6 +374,7 @@ ${JSON.stringify({
   intent: state.route?.intent,
   reelQuestionType: state.route?.reelQuestionType,
   requiredEvidence: state.route?.requiredEvidence ?? [],
+  requiresReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
 })}
 
 User question:

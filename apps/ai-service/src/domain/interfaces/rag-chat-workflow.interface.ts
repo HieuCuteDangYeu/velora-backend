@@ -159,6 +159,10 @@ export interface RagRetrievalPlan {
   sourceOrder?: 'ASC';
   sourceTimestampSec?: number;
   sourceTimestampEndSec?: number;
+  /** Keep visual frame selection independent from a transcript time window. */
+  visualTimestampSec?: number;
+  transcriptTimestampSec?: number;
+  transcriptTimestampEndSec?: number;
   /** Preserve one grounded evidence path per requested comparison Reel. */
   requiresReelCoverage?: boolean;
   mode: RagRetrievalMode;
@@ -183,6 +187,9 @@ export type RagRetrievalPlanActual = Pick<
   | 'sourceOrder'
   | 'sourceTimestampSec'
   | 'sourceTimestampEndSec'
+  | 'visualTimestampSec'
+  | 'transcriptTimestampSec'
+  | 'transcriptTimestampEndSec'
   | 'requiresReelCoverage'
   | 'mode'
   | 'query'
@@ -305,6 +312,7 @@ export interface RagContextSufficiencyDiagnostics {
     | 'DETERMINISTIC_REQUIRED_MODALITY'
     | 'DETERMINISTIC_REQUIRED_TOOL'
     | 'LLM'
+    | 'LLM_FALLBACK'
     | 'FAIL_CLOSED'
     | 'UNKNOWN';
   modelRole?: 'CONTEXT_SUFFICIENCY';
@@ -383,7 +391,9 @@ export interface RagAnswerClaim {
 
 export type RagAnswerGenerationMode =
   | 'SYNTHESIZED'
-  | 'EXTRACTIVE_TRANSCRIPT_FALLBACK';
+  | 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+  | 'EXTRACTIVE_EVIDENCE_FALLBACK'
+  | 'FAILURE_FALLBACK';
 
 export type RagAnswerFallbackReason =
   | 'ANSWER_GENERATION_FAILURE'
@@ -393,6 +403,7 @@ export type RagFinalizationMode =
   | 'SYNTHESIZED'
   | 'SYNTHESIZED_GROUNDED'
   | 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+  | 'EXTRACTIVE_EVIDENCE_FALLBACK'
   | 'FAILURE_FALLBACK';
 
 export type RagCitation = AiRagCitation;

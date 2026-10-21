@@ -9,6 +9,7 @@ const test = require('node:test');
 const {
   JudgePoolController,
   buildJudgePrompt,
+  buildDimensionPrompt,
   callGroqJudge,
   clampScore,
   extractJson,
@@ -53,8 +54,23 @@ test('buildJudgePrompt generates prompt with all 4 RAG dimensions', () => {
   assert.match(prompt, /4\. Context Completeness/);
   assert.match(prompt, /Who is Olivier\?/);
   assert.match(prompt, /The recipient\./);
+  assert.match(prompt, /reference answer only to clarify the intended task outcome/i);
   assert.match(prompt, /Olivier is the recipient\./);
   assert.match(prompt, /Context quote/);
+});
+
+test('response relevancy uses the reference as a task anchor without exact-wording scoring', () => {
+  const prompt = buildDimensionPrompt('responseRelevancy', {
+    question: 'Quote the first complete sentence.',
+    referenceAnswer: 'The first sentence is the accepted quote.',
+    generatedAnswer: 'The first sentence is the accepted quote.',
+  });
+  assert.match(prompt, /accepted reference answer/);
+  assert.match(
+    prompt,
+    /do not reward copied wording or penalize equivalent phrasing/i,
+  );
+  assert.match(prompt, /The first sentence is the accepted quote/);
 });
 
 test('clampScore handles boundary and malformed inputs', () => {
@@ -218,6 +234,100 @@ test('JudgePoolController rotates keys and records results in quota ledger', asy
   assert.equal(calledKeys.length, 8); // No additional provider call
 });
 
+test('JudgePoolController stops retrying a key after its TPD quota is exhausted', async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-tpd-cache-test-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const calledKeys = [];
+  const mockFetch = async (_url, options) => {
+    const key = options.headers.Authorization.replace('Bearer ', '');
+    calledKeys.push(key);
+    if (key === 'key-alpha') {
+      return {
+        ok: false,
+        status: 429,
+        headers: new Headers(),
+        text: async () =>
+          JSON.stringify({ error: { message: 'tokens per day (TPD) exhausted' } }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({
+        choices: [{ message: { content: 'judge output' } }],
+        usage: { total_tokens: 40 },
+      }),
+    };
+  };
+  const pool = new JudgePoolController({
+    groqApiKeys: ['key-alpha', 'key-beta'],
+    ledgerBaseDir: tempDir,
+    tpmLimitPerKey: 50_000,
+    maxRetries: 0,
+  });
+
+  await pool.evaluatePrompt({
+    caseId: 'CASE-TPD-1',
+    prompt: 'Score the answer.',
+    estimatedTokens: 1600,
+    fetchFn: mockFetch,
+  });
+  await pool.evaluatePrompt({
+    caseId: 'CASE-TPD-2',
+    prompt: 'Score another answer.',
+    estimatedTokens: 1600,
+    fetchFn: mockFetch,
+  });
+
+  assert.deepEqual(calledKeys, ['key-alpha', 'key-beta', 'key-beta']);
+});
+
+test('JudgePoolController evaluates only dimensions with sufficient evidence', async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-dimension-test-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  let calls = 0;
+  const pool = new JudgePoolController({
+    groqApiKeys: ['one-key'],
+    ledgerBaseDir: tempDir,
+    tpmLimitPerKey: 50000,
+  });
+  const result = await pool.evaluateCase({
+    caseId: 'CASE-DIMENSION',
+    dimensions: ['responseRelevancy'],
+    question: 'Quote the first complete sentence.',
+    referenceAnswer: 'The accepted quote.',
+    generatedAnswer: 'The accepted quote.',
+    context: undefined,
+    fetchFn: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  responseRelevancy: {
+                    score: 1,
+                    reasoning: 'Answers the request.',
+                  },
+                }),
+              },
+            },
+          ],
+          usage: { total_tokens: 100 },
+        }),
+      };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.responseRelevancy.score, 1);
+  assert.equal(result.faithfulness, undefined);
+});
+
 test('rejects over-budget judge prompts instead of waiting forever or making a provider call', async (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'judge-budget-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -288,5 +398,8 @@ test('uses the explicitly enabled Cloudflare fallback after Groq quota failure',
   });
   assert.equal(result.provider, 'cloudflare');
   assert.equal(result.faithfulness.score, 1);
-  assert.equal(calls.filter((url) => url.includes('api.cloudflare.com')).length, 4);
+  assert.equal(
+    calls.filter((url) => url.includes('api.cloudflare.com')).length,
+    4,
+  );
 });

@@ -117,6 +117,7 @@ export class GroqStructuredCompletionProviderError extends Error {
     readonly transient = false,
     readonly providerCategory: StructuredProviderFailureCategory = 'UNKNOWN_PROVIDER_FAILURE',
     readonly rateLimit?: StructuredRateLimitDiagnostics,
+    readonly keyExhausted = false,
   ) {
     super(
       status
@@ -167,7 +168,8 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
     const timeoutMs = this.resolveTimeout(input.timeoutMs);
     const maxTokens = input.maxTokens ?? 500;
     const deadline = Date.now() + timeoutMs;
-    const maxAttempts = input.modelRole === 'ROUTER' ? 1 : 2;
+    const maxAttempts =
+      input.modelRole === 'ROUTER' && this.keyPool.size === 1 ? 1 : 2;
 
     for (let retry = 0; retry < maxAttempts; retry += 1) {
       const attempt = (input.attempt ?? 1) + retry;
@@ -302,6 +304,13 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   }
 
   private shouldRetry(error: unknown, modelRole?: string): boolean {
+    if (
+      this.keyPool.size > 1 &&
+      error instanceof GroqStructuredCompletionProviderError &&
+      (error.keyExhausted || error.providerCategory === 'RATE_LIMITED')
+    ) {
+      return true;
+    }
     if (modelRole === 'ROUTER') return false;
     if (
       error instanceof GroqKeyPoolExhaustedError &&
@@ -321,6 +330,11 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
   private retryDelayMs(error: unknown, state: CallState): number {
     if (error instanceof GroqKeyPoolExhaustedError) return 2000;
     if (!(error instanceof GroqStructuredCompletionProviderError)) return 0;
+    if (
+      this.keyPool.size > 1 &&
+      (error.keyExhausted || error.providerCategory === 'RATE_LIMITED')
+    )
+      return 0;
     if (error.retryAfterMs !== undefined) return error.retryAfterMs;
     return this.parseDurationMs(state.rateLimit?.resetTokens) ?? 0;
   }
@@ -416,8 +430,9 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         code,
         this.providerMessage(payload),
       );
+      let keyExhausted = false;
       if (response.status === 429) {
-        this.keyPool.reportRateLimited(
+        keyExhausted = this.keyPool.reportRateLimited(
           keyIndex,
           response.headers,
           this.providerMessage(payload),
@@ -434,6 +449,7 @@ export class GroqStructuredLlmAdapter implements IStructuredLlmService {
         this.isTransientStatus(response.status, category, state.rateLimit),
         category,
         state.rateLimit,
+        keyExhausted,
       );
     }
 

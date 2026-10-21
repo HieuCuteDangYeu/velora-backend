@@ -74,6 +74,103 @@ test('primary-stage injection permits a healthy retry while fallback injection r
   assert.throws(() => fallback.fault('route'), { httpStatus: 429 });
   assert.throws(() => fallback.fault('route'), { httpStatus: 429 });
 });
+
+test('source qrels group only same-Reel chunks covering the full requested interval', () => {
+  const { deriveEvidenceGroup } = require('./build-rag-coverage-dataset.cjs');
+  const row = {
+    metadata: { referenceStartSec: 10, referenceEndSec: 20 },
+  };
+  const fixture = {
+    chunks: [
+      {
+        id: 'reel:a:chunk:1',
+        reelId: 'a',
+        startTime: 10,
+        endTime: 20,
+        evidenceText: 'The meeting starts on Monday.',
+      },
+      {
+        id: 'reel:a:chunk:2',
+        reelId: 'a',
+        startTime: 9,
+        endTime: 21,
+        evidenceText: 'The meeting starts on Monday. Bring the blue notebook.',
+      },
+      {
+        id: 'reel:a:chunk:3',
+        reelId: 'a',
+        startTime: 10,
+        endTime: 19,
+        evidenceText: 'The meeting starts on Monday.',
+      },
+      {
+        id: 'reel:b:chunk:1',
+        reelId: 'b',
+        startTime: 9,
+        endTime: 21,
+        evidenceText: 'The meeting starts on Monday. Bring the blue notebook.',
+      },
+    ],
+  };
+
+  assert.deepEqual(
+    deriveEvidenceGroup(row, fixture, 'reel:a:chunk:1'),
+    ['reel:a:chunk:1', 'reel:a:chunk:2'],
+  );
+});
+
+test('agent source review corrects quote gold only for the matching source window', () => {
+  const { applyQuoteReferenceReview } = require('./build-rag-coverage-dataset.cjs');
+  const rows = [
+    {
+      expectedOutput: {
+        referenceAnswer: 'woman.',
+        relevantEvidenceIds: ['reel:r:chunk:1'],
+      },
+      metadata: {
+        answerType: 'QUOTE',
+        referenceStartSec: 11.68,
+        referenceEndSec: 56.38,
+        annotationStatus: 'GENERATED_CANDIDATE',
+        humanApproved: false,
+      },
+    },
+    {
+      expectedOutput: {
+        referenceAnswer: 'Keep this label.',
+        relevantEvidenceIds: ['reel:r:chunk:2'],
+      },
+      metadata: {
+        answerType: 'QUOTE',
+        referenceStartSec: 20,
+        referenceEndSec: 60,
+        annotationStatus: 'GENERATED_CANDIDATE',
+        humanApproved: false,
+      },
+    },
+  ];
+  const review = {
+    reviewAuthority: 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH',
+    reviewedAt: '2026-10-21T00:00:00.000Z',
+    cases: [
+      {
+        evidenceId: 'reel:r:chunk:1',
+        sourceStartSec: 11.68,
+        sourceEndSec: 56.38,
+        reviewedReference: 'Get away from me.',
+        decision: 'CORRECTED',
+        sourceMatch: true,
+      },
+    ],
+  };
+
+  assert.equal(applyQuoteReferenceReview(rows, review), 1);
+  assert.equal(rows[0].expectedOutput.referenceAnswer, 'Get away from me.');
+  assert.equal(rows[0].metadata.annotationStatus, 'AGENT_REVIEWED_CANDIDATE');
+  assert.equal(rows[0].metadata.humanApproved, false);
+  assert.equal(rows[1].expectedOutput.referenceAnswer, 'Keep this label.');
+});
+
 test('frozen 440-case bundle rejects corruption, nonexistent gold IDs and source-family leakage', { skip: !process.env.RAG_COVERAGE_DATASET_DIR }, () => {
   const fs = require('node:fs'), path = require('node:path');
   const { validate } = require('./build-rag-coverage-dataset.cjs');

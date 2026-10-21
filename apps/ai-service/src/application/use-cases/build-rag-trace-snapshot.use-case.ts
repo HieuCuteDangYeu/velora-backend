@@ -195,23 +195,29 @@ export class BuildRagTraceSnapshotUseCase {
       : state.verification?.passed
         ? 'PASS'
         : 'FAIL';
+    const extractiveFallbackUsed =
+      state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK' ||
+      state.answerGenerationMode === 'EXTRACTIVE_EVIDENCE_FALLBACK';
     const finalizationMode: RagFinalizationMode =
       state.finalFailureSource !== 'NONE'
         ? 'FAILURE_FALLBACK'
-        : state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
-          ? 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+        : extractiveFallbackUsed
+          ? state.answerGenerationMode!
           : verifierDecision === 'PASS'
             ? 'SYNTHESIZED_GROUNDED'
             : 'SYNTHESIZED';
     const answerGenerationStatus:
       | 'ANSWER_GENERATION_SUCCESS'
       | 'EXTRACTIVE_FALLBACK_USED'
+      | 'ANSWER_GENERATION_FAILED'
       | 'NOT_EXECUTED' =
       state.answerGenerationMode === 'SYNTHESIZED'
         ? 'ANSWER_GENERATION_SUCCESS'
-        : state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK'
+        : extractiveFallbackUsed
           ? 'EXTRACTIVE_FALLBACK_USED'
-          : 'NOT_EXECUTED';
+          : state.answerGenerationMode === 'FAILURE_FALLBACK'
+            ? 'ANSWER_GENERATION_FAILED'
+            : 'NOT_EXECUTED';
     const groundingVerification:
       | 'GROUNDING_VERIFIED'
       | 'FAILED'
@@ -226,8 +232,7 @@ export class BuildRagTraceSnapshotUseCase {
       answerGenerationStatus,
       groundingVerification,
       synthesizedAnswerPreserved: finalizationMode === 'SYNTHESIZED_GROUNDED',
-      extractiveFallbackUsed:
-        finalizationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      extractiveFallbackUsed,
       finalizationMode,
       ...(state.answerFallbackReason
         ? { fallbackReason: state.answerFallbackReason }
@@ -301,6 +306,9 @@ export class BuildRagTraceSnapshotUseCase {
       sourceOrder: plan.sourceOrder,
       sourceTimestampSec: plan.sourceTimestampSec,
       sourceTimestampEndSec: plan.sourceTimestampEndSec,
+      visualTimestampSec: plan.visualTimestampSec,
+      transcriptTimestampSec: plan.transcriptTimestampSec,
+      transcriptTimestampEndSec: plan.transcriptTimestampEndSec,
       ...(plan.requiresReelCoverage !== undefined
         ? { requiresReelCoverage: plan.requiresReelCoverage }
         : {}),

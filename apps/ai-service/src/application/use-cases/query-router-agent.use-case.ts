@@ -171,6 +171,70 @@ export class QueryRouterAgentUseCase {
         },
       };
     }
+    const accessibleSharedReelCount =
+      boundedInput.sharedReelCount ??
+      boundedInput.referentContext?.accessibleSharedReelCount ??
+      0;
+    if (
+      boundedInput.hasSharedReelContext === true &&
+      accessibleSharedReelCount > 1 &&
+      this.isExplicitUnresolvedReelReference(boundedInput.message)
+    ) {
+      return {
+        intent: 'REEL_VIDEO_QUESTION',
+        referenceTarget: 'SHARED_REEL',
+        needsRetrieval: false,
+        needsUserMemory: false,
+        needsConversationSummary: false,
+        needsVerification: false,
+        reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
+        requiredEvidence: ['NONE'],
+        recommendationAction: {
+          type: 'NONE',
+          reason: 'The user has not identified which shared Reel they mean.',
+        },
+        toolPlan: { allowedTools: [], requiredTools: [] },
+        reason: 'The user explicitly left the shared Reel choice unresolved.',
+        diagnostics: {
+          modelRole: 'ROUTER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'STRUCTURAL',
+        },
+      };
+    }
+
+    if (
+      boundedInput.hasSharedReelContext === false &&
+      accessibleSharedReelCount === 0 &&
+      this.isExplicitUnavailableReelQuestion(boundedInput.message)
+    ) {
+      const unavailableReelRoute = this.normalize(
+        {
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          reelQuestionType: 'GENERAL_REEL_SUMMARY',
+          requiredEvidence: ['TRANSCRIPT', 'METADATA'],
+          recommendationAction: {
+            type: 'NONE',
+            query: '',
+            allowPersonalizedFallback: false,
+            suggestedQueries: [],
+          },
+          tools: ['search_reel_content'],
+          reason:
+            'The user explicitly identified a Reel that is not available in the shared context.',
+        },
+        boundedInput,
+      );
+      return {
+        ...unavailableReelRoute,
+        diagnostics: {
+          modelRole: 'ROUTER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'STRUCTURAL',
+        },
+      };
+    }
 
     const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     const primaryModel = this.config.model('ROUTER');
@@ -807,6 +871,19 @@ Classify the current user message.
     );
   }
 
+  private isExplicitUnavailableReelQuestion(message?: string): boolean {
+    if (!message || !this.isExplicitUnavailableReelReference(message))
+      return false;
+    return (
+      /\b(?:summari[sz]e|describe|quote|transcri(?:be|pt)|analy[sz]e|explain|compare|tell me (?:about|what))\b/i.test(
+        message,
+      ) ||
+      /\bwhat\b.{0,40}\b(?:shown|said|visible|happened|happens|in)\b/i.test(
+        message,
+      )
+    );
+  }
+
   private needsReferentReconciliation(
     route: RagChatRouteDecision,
     input: { referentContext?: RagRouterReferentContext },
@@ -826,6 +903,18 @@ Classify the current user message.
     }
 
     throw new RouterSemanticInconsistencyError('INVALID_INTENT');
+  }
+
+  private isExplicitUnresolvedReelReference(message: string): boolean {
+    const describesMultipleReels =
+      /\b(?:two|multiple|several|both)\b.{0,40}\b(?:shared\s+)?(?:clips?|reels?|videos?|recordings?)\b/i.test(
+        message,
+      );
+    const leavesChoiceUnresolved =
+      /\b(?:not sure|have not identified|haven't identified|have not specified|haven't specified|have not chosen|haven't chosen|have not selected|haven't selected|don't know|do not know|didn't specify|did not specify)\b.{0,40}\bwhich\b/i.test(
+        message,
+      );
+    return describesMultipleReels && leavesChoiceUnresolved;
   }
 
   private normalizeReelQuestionType(

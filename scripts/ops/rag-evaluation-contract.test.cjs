@@ -7,6 +7,7 @@ const {
   attachTrace,
   fingerprint,
   executionHealth,
+  evidenceGroupCoverage,
 } = require('./rag-evaluation-contract.cjs');
 const { analyze } = require('./analyze-rag-benchmark.cjs');
 const {
@@ -37,10 +38,75 @@ test('provider outages are classified independently of a successful fallback ans
   );
   assert.equal(
     executionHealth({
+      route: { providerStatus: 'NOT_CALLED', decisionSource: 'STRUCTURAL' },
+      routeDecision: {
+        needsRetrieval: false,
+        needsVerification: false,
+        reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
+      },
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: { needsRetrieval: true, needsVerification: true },
+      contextSufficiency: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_NO_CONTEXT',
+        sufficient: false,
+      },
+      finalFailureSource: 'NO_CONTEXT',
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: {
+        needsRetrieval: false,
+        needsVerification: true,
+        intent: 'TASK_ACTION_REQUEST',
+        toolPlan: { requiredTools: [] },
+      },
+      contextSufficiency: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'UNKNOWN',
+        sufficient: true,
+      },
+      verification: { providerStatus: 'SUCCESS' },
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: {
+        needsRetrieval: true,
+        needsVerification: true,
+      },
+    }).status,
+    'UNKNOWN',
+  );
+  assert.equal(
+    executionHealth({
       route: { providerStatus: 'SUCCESS' },
       answerCalls: [{ providerStatus: 429 }],
     }).status,
     'DEGRADED',
+  );
+  assert.equal(
+    executionHealth({
+      route: {
+        providerStatus: 'SUCCESS',
+        semanticCalls: [{ providerStatus: 429 }, { providerStatus: 200 }],
+      },
+      routeDecision: { needsRetrieval: false, needsVerification: false },
+      evaluationCapture: { contextCaptured: false },
+      answerCalls: [{ providerStatus: 429 }, { providerStatus: 200 }],
+      finalFailureSource: 'NONE',
+    }).status,
+    'AVAILABLE',
   );
 });
 
@@ -67,6 +133,62 @@ test('ranked relevance metrics deduplicate results and reward early relevant evi
   assert.equal(metrics.retrieval_recall_at_5, 1);
   assert.equal(metrics.retrieval_mrr, 0.5);
   assert.ok(metrics.retrieval_ndcg_at_5 < 1);
+});
+
+test('alternative source IDs count as one evidence group for recall and citations', () => {
+  const groups = [
+    ['reel:r:chunk:13', 'reel:r:chunk:22', 'reel:r:chunk:21'],
+    ['reel:r:visual:5'],
+  ];
+  const metrics = retrievalMetrics(groups, [
+    'reel:r:chunk:22',
+    'reel:r:visual:5',
+  ]);
+  assert.equal(metrics.retrieval_recall_at_5, 1);
+  assert.equal(metrics.retrieval_ndcg_at_5, 1);
+  assert.equal(metrics.retrieval_mrr, 1);
+  assert.deepEqual(evidenceGroupCoverage(groups, new Set([
+    'reel:r:chunk:22',
+    'reel:r:visual:5',
+  ])), { score: 1, covered: 2, required: 2 });
+});
+
+test('multiple retrieved alternatives for one source do not inflate evidence recall', () => {
+  const groups = [['chunk:13', 'chunk:21', 'chunk:22']];
+  const metrics = retrievalMetrics(groups, ['chunk:21', 'chunk:22']);
+  assert.equal(metrics.retrieval_recall_at_5, 1);
+  assert.equal(metrics.retrieval_ndcg_at_5, 1);
+  assert.equal(metrics.retrieval_mrr, 1);
+});
+
+test('strict citation and generation metrics accept a source-backed alternative ID by modality', () => {
+  const scores = Object.fromEntries(
+    strictEvaluations(
+      {},
+      {
+        evidenceIds: ['transcript:canonical', 'visual:canonical'],
+        relevantEvidenceGroups: [
+          ['transcript:canonical', 'transcript:overlap'],
+          ['visual:canonical'],
+        ],
+        expectedEvidenceTypes: ['TRANSCRIPT', 'VISUAL'],
+        modality: 'TRANSCRIPT',
+      },
+      {
+        citations: [
+          { evidenceType: 'TRANSCRIPT', evidenceId: 'transcript:overlap' },
+        ],
+        retrievedEvidenceIds: ['transcript:overlap', 'visual:canonical'],
+        generationEvidence: [
+          { evidenceType: 'TRANSCRIPT', sourceId: 'transcript:overlap' },
+          { evidenceType: 'VISUAL', sourceId: 'visual:canonical' },
+        ],
+      },
+    ).map((score) => [score.name, score.value]),
+  );
+  assert.equal(scores.citation_source_recall, 1);
+  assert.equal(scores.generation_evidence_coverage, 1);
+  assert.equal(scores.retrieval_recall_at_5, 1);
 });
 test('saved output only contains observed evidence and modality', () => {
   const output = outputFromMessage(
@@ -109,7 +231,7 @@ test('missing and invalid judge dimensions are unavailable, never silently zero'
     /unavailable/,
   );
 });
-test('independent judge prompts do not leak reference or answer into irrelevant dimensions', () => {
+test('judge dimensions receive only the reference and evidence needed for their task', () => {
   const input = {
     question: 'QUESTION',
     referenceAnswer: 'GOLD_SECRET',
@@ -117,12 +239,14 @@ test('independent judge prompts do not leak reference or answer into irrelevant 
     context: 'CONTEXT_SECRET',
   };
   const relevance = buildDimensionPrompt('responseRelevancy', input);
-  assert.ok(!relevance.includes('GOLD_SECRET'));
+  assert.ok(relevance.includes('GOLD_SECRET'));
   assert.ok(!relevance.includes('CONTEXT_SECRET'));
   const faithfulness = buildDimensionPrompt('faithfulness', input);
   assert.ok(!faithfulness.includes('GOLD_SECRET'));
+  assert.ok(faithfulness.includes('ANSWER_SECRET'));
   const completeness = buildDimensionPrompt('contextCompleteness', input);
   assert.ok(!completeness.includes('ANSWER_SECRET'));
+  assert.ok(completeness.includes('GOLD_SECRET'));
 });
 test('offline replay does not mutate original state or fabricate unavailable metrics', () => {
   const state = {

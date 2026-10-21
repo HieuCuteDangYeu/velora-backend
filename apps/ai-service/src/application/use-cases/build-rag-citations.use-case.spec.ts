@@ -208,6 +208,107 @@ describe('BuildRagCitationsUseCase', () => {
     expect(assessment.citations[0]).not.toHaveProperty('evidenceId');
   });
 
+  it('cites both supported modalities from an extractive multimodal fallback', async () => {
+    const state = buildState();
+    const transcript = {
+      chunkId: 'reel:r1:chunk:0',
+      reelId: 'r1',
+      title: 'Debugging demo',
+      evidenceType: 'TRANSCRIPT' as const,
+      evidenceText: 'The speaker says hello.',
+      chunkText: 'The speaker says hello.',
+      startTime: 0,
+      endTime: 4,
+      tags: [],
+      distance: 0,
+      score: 1,
+    };
+    const visual = state.rerankedChunks[0];
+    state.userMessage = 'What is visible and what is said?';
+    state.answer =
+      'Visible: Visible text: Cannot find module @nestjs/config.\nSpoken: The speaker says hello.';
+    state.answerClaims = [
+      {
+        claim: 'Visible: Visible text: Cannot find module @nestjs/config.',
+        evidenceIds: ['e1'],
+      },
+      {
+        claim: 'Spoken: The speaker says hello.',
+        evidenceIds: ['e0'],
+      },
+    ];
+    state.route = {
+      ...state.route!,
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    };
+    state.contextSufficiency = {
+      ...state.contextSufficiency!,
+      sufficient: true,
+      availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+      missingEvidence: [],
+      supportedEvidenceIds: ['e0', 'e1'],
+    };
+    state.rerankedChunks = [transcript, visual];
+    state.generationEvidence = [
+      {
+        evidenceId: 'e0',
+        sourceId: transcript.chunkId,
+        reelId: 'r1',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: transcript.evidenceText,
+        startTime: transcript.startTime,
+        endTime: transcript.endTime,
+      },
+      {
+        evidenceId: 'e1',
+        sourceId: visual.chunkId,
+        reelId: 'r1',
+        evidenceType: 'VISUAL',
+        evidenceText: visual.evidenceText,
+        startTime: visual.startTime,
+        endTime: visual.endTime,
+      },
+    ];
+    const attribution = jest.fn().mockResolvedValue({
+      selections: [{ evidenceId: 'e1' }, { evidenceId: 'e0' }],
+      claims: [
+        {
+          claim: state.answerClaims[0].claim,
+          supported: true,
+          evidenceIds: ['e1'],
+        },
+        {
+          claim: state.answerClaims[1].claim,
+          supported: true,
+          evidenceIds: ['e0'],
+        },
+      ],
+      factualClaimCount: 2,
+      supportedClaimCount: 2,
+      coverage: 1,
+    });
+
+    const assessment = await new BuildRagCitationsUseCase({
+      attribute: attribution,
+    }).execute(state);
+
+    expect(assessment.coverage.coverage).toBe(1);
+    expect(
+      assessment.citations.map((citation) => citation.evidenceType),
+    ).toEqual(['VISUAL', 'TRANSCRIPT']);
+    expect(assessment.coverage.diagnostics?.selectedEvidenceMappings).toEqual([
+      expect.objectContaining({
+        selectedEvidenceId: 'e1',
+        evidenceId: visual.chunkId,
+      }),
+      expect.objectContaining({
+        selectedEvidenceId: 'e0',
+        evidenceId: transcript.chunkId,
+      }),
+    ]);
+  });
+
   it('reports unsupported claims instead of inventing citations', async () => {
     const attributionService: ICitationAttributionService = {
       attribute: jest.fn().mockResolvedValue({

@@ -2,7 +2,10 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { fingerprint } = require('./rag-evaluation-contract.cjs');
+const {
+  executionHealth: classifyExecutionHealth,
+  fingerprint,
+} = require('./rag-evaluation-contract.cjs');
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -33,25 +36,13 @@ function executionHealth(response) {
   if (response.error) {
     return {
       status: 'FAILED',
-      failedStages: [response.error.code || response.error.name || 'WORKFLOW_ERROR'],
+      failedStages: [
+        response.error.code || response.error.name || 'WORKFLOW_ERROR',
+      ],
     };
   }
   const diagnostics = response.trace?.workflowMetrics?.diagnostics || {};
-  const statuses = providerStatuses(diagnostics);
-  const degraded =
-    diagnostics.evaluationCapture?.contextCaptured !== true ||
-    (diagnostics.finalFailureSource && diagnostics.finalFailureSource !== 'NONE') ||
-    statuses.some(
-      (status) =>
-        status === 'ERROR' ||
-        status === 'TIMEOUT' ||
-        status === 'NETWORK_ERROR' ||
-        (typeof status === 'number' && status >= 400),
-    );
-  return {
-    status: degraded ? 'DEGRADED' : 'AVAILABLE',
-    failedStages: degraded ? ['PROVIDER_OR_CAPTURE_DEGRADED'] : [],
-  };
+  return classifyExecutionHealth(diagnostics);
 }
 
 function prepare({ datasetDir, runDir, outputPath }) {
@@ -60,12 +51,22 @@ function prepare({ datasetDir, runDir, outputPath }) {
   );
   const state = readJson(path.join(runDir, 'state.json'));
   const responses = readJsonl(path.join(runDir, 'responses.jsonl'));
-  const responseById = new Map(responses.map((response) => [response.caseId, response]));
+  const responseById = new Map(
+    responses.map((response) => [response.caseId, response]),
+  );
   if (responses.length !== rows.length || responseById.size !== rows.length) {
-    throw new Error('Primary responses must contain exactly one record per dataset case');
+    throw new Error(
+      'Primary responses must contain exactly one record per dataset case',
+    );
   }
-  if (Object.values(state.cases || {}).some((entry) => !['COMPLETED', 'FAILED'].includes(entry.status))) {
-    throw new Error('Primary state is not terminal; refusing semantic-state preparation');
+  if (
+    Object.values(state.cases || {}).some(
+      (entry) => !['COMPLETED', 'FAILED'].includes(entry.status),
+    )
+  ) {
+    throw new Error(
+      'Primary state is not terminal; refusing semantic-state preparation',
+    );
   }
 
   const cases = Object.fromEntries(
@@ -82,6 +83,10 @@ function prepare({ datasetDir, runDir, outputPath }) {
           output: {
             ...(response.output || {}),
             generationEvidence: diagnostics.generationEvidence || [],
+            contextCaptureStatus:
+              diagnostics.evaluationCapture?.contextCaptured === true
+                ? 'CAPTURED'
+                : 'NOT_CAPTURED',
             executionHealth: health,
             traceId: diagnostics.langfuseTraceId,
           },
@@ -102,22 +107,30 @@ function prepare({ datasetDir, runDir, outputPath }) {
     cases,
   };
   fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(outputPath, JSON.stringify(result, null, 2), { mode: 0o600 });
+  fs.writeFileSync(outputPath, JSON.stringify(result, null, 2), {
+    mode: 0o600,
+  });
   return result;
 }
 
 if (require.main === module) {
   const [datasetDir, runDir, outputPath] = process.argv.slice(2);
   if (!datasetDir || !runDir || !outputPath) {
-    throw new Error('Usage: prepare-rag-semantic-state <dataset-dir> <run-dir> <state.json>');
+    throw new Error(
+      'Usage: prepare-rag-semantic-state <dataset-dir> <run-dir> <state.json>',
+    );
   }
   const result = prepare({ datasetDir, runDir, outputPath });
   console.log(
     JSON.stringify({
       outputPath,
       cases: Object.keys(result.cases).length,
-      completed: Object.values(result.cases).filter((entry) => entry.status === 'COMPLETED').length,
-      failed: Object.values(result.cases).filter((entry) => entry.status === 'FAILED').length,
+      completed: Object.values(result.cases).filter(
+        (entry) => entry.status === 'COMPLETED',
+      ).length,
+      failed: Object.values(result.cases).filter(
+        (entry) => entry.status === 'FAILED',
+      ).length,
     }),
   );
 }

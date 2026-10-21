@@ -9,6 +9,9 @@ const result = {
     exactOncePrimaryResponses: true,
     exactOnceSemanticScores: true,
     structuredActionFailures: 0,
+    privacyCanaryLeaks: 0,
+    qualityTargets: 'BLOCKED',
+    semanticEvaluatorConsistent: false,
   },
   productionRetrievalProven: false,
 };
@@ -27,10 +30,11 @@ const matrix = buildExitGateMatrix(
 
 assert.equal(matrix.gates.find((gate) => gate.id === 'matched-primary').status, 'PASS');
 assert.equal(matrix.gates.find((gate) => gate.id === 'release-approval').status, 'BLOCKED');
+assert.equal(matrix.gates.find((gate) => gate.id === 'benchmark-quality').status, 'BLOCKED');
 assert.match(matrix.gates.find((gate) => gate.id === 'reliability').reason, /reranker/);
 
 const releaseMatrix = buildExitGateMatrix(
-  { ...result, productionRetrievalProven: true },
+  { ...result, productionRetrievalProven: true, gates: { ...result.gates, qualityTargets: 'PASS', semanticEvaluatorConsistent: true } },
   phases,
   { status: 'PASS' },
   { status: 'PASS', imageTruthStatus: 'PASS' },
@@ -47,7 +51,7 @@ assert.equal(releaseMatrix.gates.find((gate) => gate.id === 'release-approval').
 const previousAuthority = process.env.RAG_FINAL_REVIEW_AUTHORITY;
 process.env.RAG_FINAL_REVIEW_AUTHORITY = 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH';
 const agentMatrix = buildExitGateMatrix(
-  { ...result, productionRetrievalProven: true },
+  { ...result, productionRetrievalProven: true, gates: { ...result.gates, qualityTargets: 'PASS', semanticEvaluatorConsistent: true } },
   phases,
   { status: 'PASS' },
   { status: 'PASS', imageTruthStatus: 'PASS' },

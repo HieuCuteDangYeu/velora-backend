@@ -3,12 +3,405 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
+  it('retries a multimodal answer when its claim mapping omits a required evidence type', async () => {
+    const answer =
+      'Visible: A blue car is parked. Spoken: The speaker says the car is blue.';
+    const generateObject = jest
+      .fn()
+      .mockResolvedValueOnce({
+        answer: 'The speaker says the car is blue.',
+        claims: [
+          { claim: 'The speaker says the car is blue.', evidenceIds: ['e0'] },
+        ],
+      })
+      .mockResolvedValueOnce({
+        answer,
+        claims: [
+          { claim: 'A blue car is parked.', evidenceIds: ['e1'] },
+          { claim: 'The speaker says the car is blue.', evidenceIds: ['e0'] },
+        ],
+      });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'What does the speaker say about the car, and what is visible?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {},
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0', 'e1'],
+        recommendedAction: 'ANSWER',
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'transcript-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The speaker says the car is blue.',
+          chunkText: 'The speaker says the car is blue.',
+          tags: [],
+          distance: null,
+        },
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'A blue car is parked.',
+          chunkText: 'A blue car is parked.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /cover every required evidence type/i,
+    );
+    expect(generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"requiredEvidenceTypes":["TRANSCRIPT","VISUAL"]',
+    );
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /context check marked its listed evidence IDs sufficient/i,
+    );
+    expect(generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"supportedEvidenceIds":["e0","e1"]',
+    );
+    expect(generateObject.mock.calls[1][0].systemPrompt).toMatch(
+      /cover every required evidence type/i,
+    );
+    expect(result.answer).toBe(answer);
+    expect(result.claims.map((claim) => claim.evidenceIds)).toEqual([
+      ['e1'],
+      ['e0'],
+    ]);
+  });
+
+  it('builds a source-grounded multimodal fallback only when both modalities are supported', () => {
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject: jest.fn() } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const fallback = useCase.buildExtractiveFallback(
+      {
+        userMessage: 'Describe what is visible and what is said.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0', 'e1'],
+          missingEvidence: [],
+          availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'transcript-1',
+            reelId: 'reel-1',
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The speaker says hello.',
+            chunkText: 'The speaker says hello.',
+            tags: [],
+          },
+          {
+            chunkId: 'visual-1',
+            reelId: 'reel-1',
+            evidenceType: 'VISUAL',
+            evidenceText: 'A person waves.',
+            chunkText: 'A person waves.',
+            tags: [],
+          },
+        ],
+      } as never,
+      'UNUSABLE_SYNTHESIS',
+    );
+
+    expect(fallback).toMatchObject({
+      answer: 'Visible: A person waves.\nSpoken: The speaker says hello.',
+      claims: [
+        { claim: 'Visible: A person waves.', evidenceIds: ['e1'] },
+        { claim: 'Spoken: The speaker says hello.', evidenceIds: ['e0'] },
+      ],
+      generationEvidence: expect.arrayContaining([
+        expect.objectContaining({
+          evidenceId: 'e0',
+          evidenceType: 'TRANSCRIPT',
+        }),
+        expect.objectContaining({ evidenceId: 'e1', evidenceType: 'VISUAL' }),
+      ]),
+      finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+
+    const insufficient = useCase.buildExtractiveFallback(
+      {
+        userMessage: 'Describe what is visible and what is said.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        },
+        contextSufficiency: {
+          sufficient: false,
+          supportedEvidenceIds: ['e0'],
+          missingEvidence: ['VISUAL'],
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'transcript-1',
+            reelId: 'reel-1',
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'The speaker says hello.',
+            chunkText: 'The speaker says hello.',
+            tags: [],
+          },
+        ],
+      } as never,
+      'UNUSABLE_SYNTHESIS',
+    );
+    expect(insufficient).toBeUndefined();
+  });
+
+  it('rejects a synthesized comparison whose claims omit one source Reel', async () => {
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'Reel one shows a blue car.',
+      claims: [{ claim: 'Reel one shows a blue car.', evidenceIds: ['e0'] }],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    await expect(
+      useCase.execute({
+        userMessage: 'Compare the visual scenes in the two clips.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'VISUAL_CONTENT',
+          requiredEvidence: ['VISUAL'],
+        },
+        retrievalPlan: { requiresReelCoverage: true },
+        contextSufficiency: {
+          sufficient: true,
+          availableEvidence: ['VISUAL'],
+          missingEvidence: [],
+          supportedEvidenceIds: ['e0', 'e1'],
+          recommendedAction: 'ANSWER',
+        },
+        retrievedChunks: [
+          { chunkId: 'visual-1', reelId: 'reel-1' },
+          { chunkId: 'visual-2', reelId: 'reel-2' },
+        ],
+        rerankedChunks: [
+          {
+            chunkId: 'visual-1',
+            reelId: 'reel-1',
+            evidenceType: 'VISUAL',
+            evidenceText: 'A blue car is parked.',
+            chunkText: 'A blue car is parked.',
+            tags: [],
+          },
+          {
+            chunkId: 'visual-2',
+            reelId: 'reel-2',
+            evidenceType: 'VISUAL',
+            evidenceText: 'A red bus is parked.',
+            chunkText: 'A red bus is parked.',
+            tags: [],
+          },
+        ],
+      } as never),
+    ).rejects.toThrow(/omit required Reel evidence/);
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /source-attributed claim for each requested Reel/i,
+    );
+    expect(generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"preserveReelCoverage":true',
+    );
+  });
+
+  it('uses separate authorized evidence when multimodal answer-contract validation fails', async () => {
+    const evidence = [
+      {
+        evidenceId: 'e0',
+        sourceId: 'transcript-1',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT' as const,
+        evidenceText: 'The speaker says hello.',
+      },
+      {
+        evidenceId: 'e1',
+        sourceId: 'visual-1',
+        reelId: 'reel-1',
+        evidenceType: 'VISUAL' as const,
+        evidenceText: 'A person waves.',
+      },
+    ];
+    const service = {
+      generateObject: jest.fn(
+        (input: { onDiagnostics?: (value: never) => void }) => {
+          input.onDiagnostics?.({
+            modelRole: 'ANSWER',
+            providerStatus: 200,
+          } as never);
+          return Promise.resolve({
+            answer: 'The speaker says hello.',
+            claims: [{ claim: 'The speaker says hello.', evidenceIds: ['e0'] }],
+          });
+        },
+      ),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage: 'Describe what is visible and what is said.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0', 'e1'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'transcript-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The speaker says hello.',
+          chunkText: 'The speaker says hello.',
+          tags: [],
+        },
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'A person waves.',
+          chunkText: 'A person waves.',
+          tags: [],
+        },
+      ],
+    } as never);
+
+    expect(result).toMatchObject({
+      answer: 'Visible: A person waves.\nSpoken: The speaker says hello.',
+      claims: [
+        { claim: 'Visible: A person waves.', evidenceIds: ['e1'] },
+        { claim: 'Spoken: The speaker says hello.', evidenceIds: ['e0'] },
+      ],
+      generationEvidence: evidence,
+      finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains evidence on generation errors when a safe fallback is unavailable', async () => {
+    const service = {
+      generateObject: jest.fn(
+        (input: { onDiagnostics?: (value: never) => void }) => {
+          input.onDiagnostics?.({
+            modelRole: 'ANSWER',
+            providerStatus: 200,
+          } as never);
+          return Promise.resolve({
+            answer: 'A person waves.',
+            claims: [],
+          });
+        },
+      ),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    await expect(
+      useCase.execute({
+        userMessage: 'Describe the sampled frame.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'VISUAL_CONTENT',
+          requiredEvidence: ['VISUAL'],
+        },
+        contextSufficiency: {
+          sufficient: true,
+          supportedEvidenceIds: ['e0'],
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'visual-1',
+            reelId: 'reel-1',
+            evidenceType: 'VISUAL',
+            evidenceText: 'A person waves.',
+            chunkText: 'A person waves.',
+            tags: [],
+          },
+        ],
+      } as never),
+    ).rejects.toMatchObject({
+      name: 'DraftAnswerGenerationError',
+      generationEvidence: [
+        expect.objectContaining({
+          evidenceType: 'VISUAL',
+          sourceId: 'visual-1',
+        }),
+      ],
+    });
+  });
+
   it('answers an explicit first indexed sentence from the beginning rather than choosing a later sentence', async () => {
-    const generateObject = jest.fn();
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'The episode begins here!',
+      claims: [{ claim: 'The episode begins here!', evidenceIds: ['e0'] }],
+    });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
-      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
     );
     const result = await useCase.execute({
       userMessage:
@@ -38,7 +431,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(result.claims).toEqual([
       { claim: 'The episode begins here!', evidenceIds: ['e0'] },
     ]);
-    expect(generateObject).not.toHaveBeenCalled();
+    expect(generateObject).toHaveBeenCalledTimes(1);
   });
   it('keeps complete canonical metadata values beyond ordinary prompt preview limits', async () => {
     const title = 't'.repeat(220);
@@ -87,7 +480,11 @@ describe('GenerateDraftAnswerUseCase', () => {
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
-      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
     );
     const result = await useCase.execute({
       userMessage: 'What is said in the transcript segment at 11.68 seconds?',
@@ -117,10 +514,137 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(generateObject).not.toHaveBeenCalled();
   });
 
+  it('extracts an exact quote from the full source before prompt evidence truncation', async () => {
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'The dog came back.',
+      claims: [{ claim: 'The dog came back.', evidenceIds: ['e0'] }],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const fullText =
+      'The dog came back. ' +
+      'Unrelated dialogue. '.repeat(1_000) +
+      'The transcript segment spanning the requested range contains other dialogue.';
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 0-100 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'long-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 100,
+          evidenceText: fullText,
+          chunkText: fullText,
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(generateObject).toHaveBeenCalledTimes(1);
+    expect(result.answer).toBe('The dog came back.');
+    expect(result.generationEvidence?.[0].sourceId).toBe('long-window');
+    const prompt = JSON.parse(
+      generateObject.mock.calls[0][0].userPrompt as string,
+    ) as {
+      authorizedEvidence: Array<{
+        evidenceText?: string;
+        orderedSentenceCandidates?: Array<{ ordinal: number; text: string }>;
+      }>;
+    };
+    const promptEvidence = prompt.authorizedEvidence[0];
+    const candidates = promptEvidence.orderedSentenceCandidates ?? [];
+    expect(promptEvidence).not.toHaveProperty('evidenceText');
+    expect(candidates.slice(0, 2)).toEqual([
+      { ordinal: 1, text: 'The dog came back.' },
+      { ordinal: 2, text: 'Unrelated dialogue.' },
+    ]);
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /scan orderedSentenceCandidates by source time and ordinal/i,
+    );
+  });
+
+  it('uses verifier feedback instead of repeating the initial extractive quote on revision', async () => {
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'Avery thought for a second and said no.',
+      claims: [
+        {
+          claim: 'Avery thought for a second and said no.',
+          evidenceIds: ['e0'],
+        },
+      ],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Use the verifier revision instruction.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 29.46-74.2 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      nextDraftSource: 'VERIFIER_REVISION',
+      verification: {
+        passed: false,
+        confidence: 0.5,
+        issues: ['The initial quote is a fragment.'],
+        requiresRevision: true,
+        revisedInstruction:
+          'Quote the first complete sentence after the opening fragment.',
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'quote-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 29.46,
+          endTime: 74.2,
+          evidenceText:
+            'client. asking about pets. Avery thought for a second and said no.',
+          chunkText:
+            'client. asking about pets. Avery thought for a second and said no.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('Avery thought for a second and said no.');
+    expect(generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('synthesizes an explanatory answer for a transcript time range', async () => {
     const generateObject = jest.fn().mockResolvedValue({
       answer: 'The speaker names the blue device.',
-      claims: [{ claim: 'The speaker names the blue device.', evidenceIds: ['e0'] }],
+      claims: [
+        { claim: 'The speaker names the blue device.', evidenceIds: ['e0'] },
+      ],
     });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
@@ -170,11 +694,18 @@ describe('GenerateDraftAnswerUseCase', () => {
   });
 
   it('chooses the chunk aligned to a requested range before overlapping chunks', async () => {
-    const generateObject = jest.fn();
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: 'Get away from me.',
+      claims: [{ claim: 'Get away from me.', evidenceIds: ['e1'] }],
+    });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
-      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
     );
     const result = await useCase.execute({
       userMessage:
@@ -211,9 +742,10 @@ describe('GenerateDraftAnswerUseCase', () => {
         },
       ],
     } as never);
-    expect(result.answer).toBe('grew up here.');
-    expect(result.generationEvidence?.[0].sourceId).toBe('aligned');
-    expect(generateObject).not.toHaveBeenCalled();
+    expect(result.answer).toBe('Get away from me.');
+    expect(result.claims[0].evidenceIds).toEqual(['e1']);
+    expect(result.generationEvidence?.[1].sourceId).toBe('aligned');
+    expect(generateObject).toHaveBeenCalledTimes(1);
   });
   it.each([
     'What title is assigned to this Reel?',
@@ -255,6 +787,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     },
   );
   const config = {
+    get: jest.fn().mockReturnValue(undefined),
     model: jest.fn(() => 'test/test/answer'),
     timeoutMs: jest.fn(() => 10_000),
     maxCompletionTokens: jest.fn(() => 1_536),
@@ -1218,6 +1751,75 @@ describe('GenerateDraftAnswerUseCase', () => {
       fallbackReason: 'ANSWER_GENERATION_FAILURE',
     });
     expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the configured secondary model after a transient answer-provider failure', async () => {
+    const providerError = Object.assign(new Error('rate limited'), {
+      code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+      transient: true,
+    });
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce({
+          answer: 'A blue car is parked.',
+          claims: [{ claim: 'A blue car is parked.', evidenceIds: ['e0'] }],
+        }),
+    };
+    const fallbackConfig = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/secondary' : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      fallbackConfig,
+    );
+
+    const result = await useCase.execute({
+      userMessage: 'What is visible in the frame?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'VISUAL_CONTENT',
+        requiredEvidence: ['VISUAL'],
+      },
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['VISUAL'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0'],
+        recommendedAction: 'ANSWER',
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'A blue car is parked.',
+          chunkText: 'A blue car is parked.',
+          description: 'A blue car is parked.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+
+    expect(result).toMatchObject({
+      answer: 'A blue car is parked.',
+      claims: [{ evidenceIds: ['e0'] }],
+      finalizationMode: 'SYNTHESIZED',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: 'test/test/answer' }),
+    );
+    expect(service.generateObject).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: 'test/test/secondary' }),
+    );
   });
 
   it('retries when the structured provider rejects the answer maxLength contract', async () => {

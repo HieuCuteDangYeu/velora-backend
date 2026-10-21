@@ -46,6 +46,7 @@ export interface RagWorkflowTraceMetrics {
       answerGenerationStatus:
         | 'ANSWER_GENERATION_SUCCESS'
         | 'EXTRACTIVE_FALLBACK_USED'
+        | 'ANSWER_GENERATION_FAILED'
         | 'NOT_EXECUTED';
       groundingVerification: 'GROUNDING_VERIFIED' | 'FAILED' | 'NOT_EXECUTED';
       synthesizedAnswerPreserved: boolean;

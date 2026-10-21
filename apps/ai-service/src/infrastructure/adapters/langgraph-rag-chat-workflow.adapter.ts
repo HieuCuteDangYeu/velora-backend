@@ -7,6 +7,7 @@ import { CheckContextSufficiencyUseCase } from '@ai/application/use-cases/check-
 import { ContextToolAgentUseCase } from '@ai/application/use-cases/context-tool-agent.use-case';
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
 import {
+  DraftAnswerGenerationError,
   GenerateDraftAnswerUseCase,
   type RagDraftAnswer,
 } from '@ai/application/use-cases/generate-draft-answer.use-case';
@@ -91,7 +92,12 @@ const RagChatStateSchema = new StateSchema({
   answerDiagnostics: z.array(z.any()).default([]),
   generationEvidence: z.array(z.any()).optional(),
   answerGenerationMode: z
-    .enum(['SYNTHESIZED', 'EXTRACTIVE_TRANSCRIPT_FALLBACK'])
+    .enum([
+      'SYNTHESIZED',
+      'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      'EXTRACTIVE_EVIDENCE_FALLBACK',
+      'FAILURE_FALLBACK',
+    ])
     .optional(),
   answerFallbackReason: z
     .enum(['ANSWER_GENERATION_FAILURE', 'UNUSABLE_SYNTHESIS'])
@@ -447,6 +453,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         'memorySelectorNode',
         'contextToolAgentNode',
         'reelRecommendationNode',
+        'noContextAnswerNode',
       ])
       .addEdge('retrievalPlannerNode', 'retrievalNode')
       .addEdge('retrievalNode', 'neuralRerankerNode')
@@ -840,12 +847,23 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.logger.warn(
           `[RagGraph] Draft answer generation failed: ${this.errorMessage(error)}, falling back to no-context answer`,
         );
-        const fallbackAnswer = this.createNoContextAnswerUseCase.execute(state);
+        const answerFailure =
+          error instanceof DraftAnswerGenerationError ? error : undefined;
+        const fallbackAnswer = answerFailure
+          ? this.createNoContextAnswerUseCase.executeAfterAnswerGenerationFailure(
+              state,
+            )
+          : this.createNoContextAnswerUseCase.execute(state);
         return {
           answer: fallbackAnswer,
           answerClaims: [],
-          answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
-          answerFallbackReason: 'UNUSABLE_SYNTHESIS',
+          answerDiagnostics: answerFailure?.diagnostics ?? [],
+          ...(answerFailure?.generationEvidence
+            ? { generationEvidence: answerFailure.generationEvidence }
+            : {}),
+          answerGenerationMode: 'FAILURE_FALLBACK',
+          answerFallbackReason:
+            answerFailure?.fallbackReason ?? 'UNUSABLE_SYNTHESIS',
           citations: [],
           citationCoverage: {
             mode: 'NOT_REQUIRED',
@@ -875,7 +893,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               },
             },
           },
-          finalFailureSource: 'NONE',
+          finalFailureSource: answerFailure?.failureSource ?? 'WORKFLOW',
           draftHistory: [
             ...state.draftHistory,
             {
@@ -898,6 +916,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
 
       return {
         answer,
+        finalFailureSource: 'NONE',
         answerClaims: groundedRevision
           ? [
               {
@@ -1099,7 +1118,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         failedVerification.passed === false &&
         (failedVerification.issues?.length ?? 0) === 0 &&
         (failedVerification.contradictions?.length ?? 0) === 0 &&
-        state.answerGenerationMode === 'EXTRACTIVE_TRANSCRIPT_FALLBACK' &&
+        [
+          'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+          'EXTRACTIVE_EVIDENCE_FALLBACK',
+        ].includes(state.answerGenerationMode ?? '') &&
         (state.answerClaims?.some((claim) =>
           claim.evidenceIds.some((evidenceId) => /^e\d+$/.test(evidenceId)),
         ) ??
@@ -1145,8 +1167,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             confidence: 1,
             issues: [
               verifierUnavailable
-                ? 'Semantic verifier unavailable; recovered with an exact extractive transcript fallback.'
-                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive transcript fallback.',
+                ? 'Semantic verifier unavailable; recovered with an exact extractive evidence fallback.'
+                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive evidence fallback.',
             ],
             answerQualityPassed: true,
             answerQualityIssues: [],
@@ -1183,7 +1205,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             ? await this.langfuseTracing.observe(
                 'fallbackCitation',
                 () => this.buildRagCitationsUseCase.execute(recoveredState),
-                { source: 'EXTRACTIVE_TRANSCRIPT_FALLBACK' },
+                { source: fallback.finalizationMode },
                 'chain',
               )
             : await this.buildRagCitationsUseCase.execute(recoveredState);
@@ -1323,9 +1345,16 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       }
 
       if (action.type === 'SUGGEST_QUERIES') {
+        const suggestedQueries = (action.suggestedQueries ?? [])
+          .map((query) => query.replace(/\s+/g, ' ').trim())
+          .filter(Boolean);
         return {
+          answer: suggestedQueries.length
+            ? 'Here are a few searches you can try:\n' +
+              suggestedQueries.map((query) => '- ' + query).join('\n')
+            : 'What topic would you like me to search for?',
           recommendedReels: [],
-          suggestedQueries: action.suggestedQueries ?? [],
+          suggestedQueries,
         };
       }
 
@@ -1366,16 +1395,27 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           },
         );
 
-        return {
-          recommendedReels,
-          suggestedQueries: [],
-        };
+        const titles = recommendedReels
+          .map((reel) => reel.title?.replace(/\s+/g, ' ').trim())
+          .filter((title): title is string => Boolean(title));
+        const answer = titles.length
+          ? 'Here are accessible Reels that may match:\n' +
+            titles.map((title) => '- ' + title).join('\n')
+          : recommendedReels.length
+            ? 'I found accessible Reels, but they do not have titles to display.'
+            : 'I could not find accessible Reels for this request.';
+
+        return { answer, recommendedReels, suggestedQueries: [] };
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.warn(
           `[RagGraph] recommendation branch failed open: ${message}`,
         );
-        return { recommendedReels: [], suggestedQueries: [] };
+        return {
+          answer: 'I could not retrieve accessible Reels for this request.',
+          recommendedReels: [],
+          suggestedQueries: [],
+        };
       }
     };
   }
@@ -1403,7 +1443,15 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     | 'memorySelectorNode'
     | 'contextToolAgentNode'
     | 'reelRecommendationNode'
+    | 'noContextAnswerNode'
   > => {
+    if (state.route?.recommendationAction.type !== 'NONE') {
+      return ['reelRecommendationNode'];
+    }
+    if (state.route?.reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE') {
+      return ['noContextAnswerNode'];
+    }
+
     const destinations: Array<
       | 'retrievalPlannerNode'
       | 'memorySelectorNode'

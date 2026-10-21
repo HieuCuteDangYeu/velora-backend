@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const EVALUATOR_VERSION = 'velora-rag-evaluation-v2';
+const EVALUATOR_VERSION = 'velora-rag-evaluation-v5';
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -18,31 +18,81 @@ const fingerprint = (value) =>
     .update(JSON.stringify(canonical(value)))
     .digest('hex');
 
+function normalizeEvidenceGroups(expected) {
+  if (!Array.isArray(expected) || expected.length === 0) return [];
+  if (expected.every((item) => typeof item === 'string'))
+    return expected.map((id) => [id]);
+  if (!expected.every(Array.isArray))
+    throw new Error('Expected evidence must be IDs or alternative-ID groups');
+  return expected.map((group) => {
+    if (
+      group.length === 0 ||
+      !group.every((id) => typeof id === 'string' && id.length > 0)
+    )
+      throw new Error('Evidence alternative groups must contain source IDs');
+    return [...new Set(group)];
+  });
+}
+
+function evidenceGroupCoverage(expected, observed) {
+  const groups = normalizeEvidenceGroups(expected);
+  if (groups.length === 0) return null;
+  const observedIds = observed instanceof Set ? observed : new Set(observed);
+  const covered = groups.filter((group) =>
+    group.some((id) => observedIds.has(id)),
+  ).length;
+  return { score: covered / groups.length, covered, required: groups.length };
+}
+
 function retrievalMetrics(expected, ranked) {
-  if (!Array.isArray(ranked) || !expected.length) return null;
-  const relevant = new Set(expected);
+  const groups = normalizeEvidenceGroups(expected);
+  if (!Array.isArray(ranked) || groups.length === 0) return null;
+  const groupById = new Map();
+  groups.forEach((group, index) => {
+    for (const id of group) groupById.set(id, index);
+  });
   const ids = [...new Set(ranked)];
+  const seenGroups = new Set();
+  const hits = ids.map((id) => {
+    const group = groupById.get(id);
+    if (group === undefined || seenGroups.has(group)) return 0;
+    seenGroups.add(group);
+    return 1;
+  });
   const result = {};
   for (const k of [5, 10]) {
-    const hits = ids.slice(0, k).map((id) => (relevant.has(id) ? 1 : 0));
     result[`retrieval_recall_at_${k}`] =
-      hits.reduce((a, b) => a + b, 0) / relevant.size;
-    const dcg = hits.reduce((sum, hit, i) => sum + hit / Math.log2(i + 2), 0);
+      hits.slice(0, k).reduce((a, b) => a + b, 0) / groups.length;
+    const dcg = hits
+      .slice(0, k)
+      .reduce((sum, hit, i) => sum + hit / Math.log2(i + 2), 0);
     const ideal = Array.from(
-      { length: Math.min(relevant.size, k) },
+      { length: Math.min(groups.length, k) },
       (_, i) => 1 / Math.log2(i + 2),
     ).reduce((a, b) => a + b, 0);
     result[`retrieval_ndcg_at_${k}`] = dcg / ideal;
   }
-  const first = ids.findIndex((id) => relevant.has(id));
+  const first = hits.findIndex((hit) => hit === 1);
   result.retrieval_mrr = first < 0 ? 0 : 1 / (first + 1);
   return result;
 }
 
 function strictEvaluations(input, expectedOutput, output) {
   const expectedIds = expectedOutput?.evidenceIds ?? input?.evidenceIds ?? [];
+  const allExpectedGroups = normalizeEvidenceGroups(
+    expectedOutput?.relevantEvidenceGroups ?? expectedIds,
+  );
   const citations = output?.citations ?? [];
   const modality = expectedOutput?.modality ?? input?.modality;
+  const expectedEvidenceTypes = expectedOutput?.expectedEvidenceTypes;
+  const modalityGroups =
+    modality &&
+    Array.isArray(expectedEvidenceTypes) &&
+    expectedEvidenceTypes.length === allExpectedGroups.length
+      ? allExpectedGroups.filter(
+          (_group, index) => expectedEvidenceTypes[index] === modality,
+        )
+      : allExpectedGroups;
   const values = {
     citation_modality_precision: citations.length
       ? citations.filter((c) => c.evidenceType === modality).length /
@@ -59,13 +109,15 @@ function strictEvaluations(input, expectedOutput, output) {
         .filter((c) => c.evidenceType === modality)
         .map((c) => c.evidenceId),
     );
-    if (expectedIds.length)
-      values.citation_source_recall =
-        expectedIds.filter((id) => ids.has(id)).length / expectedIds.length;
+    if (modalityGroups.length)
+      values.citation_source_recall = evidenceGroupCoverage(
+        modalityGroups,
+        ids,
+      ).score;
   }
   Object.assign(
     values,
-    retrievalMetrics(expectedIds, output?.retrievedEvidenceIds),
+    retrievalMetrics(allExpectedGroups, output?.retrievedEvidenceIds),
   );
   if (Array.isArray(output?.generationEvidence)) {
     const supplied = new Set(
@@ -73,10 +125,11 @@ function strictEvaluations(input, expectedOutput, output) {
         .filter((item) => item.evidenceType === modality)
         .map((item) => item.sourceId),
     );
-    if (expectedIds.length)
-      values.generation_evidence_coverage =
-        expectedIds.filter((id) => supplied.has(id)).length /
-        expectedIds.length;
+    if (modalityGroups.length)
+      values.generation_evidence_coverage = evidenceGroupCoverage(
+        modalityGroups,
+        supplied,
+      ).score;
   }
   return Object.entries(values).map(([name, value]) => ({
     name,
@@ -152,20 +205,47 @@ function executionHealth(diagnostics) {
   ) {
     failedStages.push('answer');
   }
-  if (diagnostics?.finalFailureSource === 'PROVIDER_ERROR')
+  if (
+    diagnostics?.finalFailureSource === 'PROVIDER_ERROR' ||
+    diagnostics?.finalFailureSource === 'WORKFLOW'
+  )
     failedStages.push('workflow');
+
+  const route = diagnostics?.route;
+  const routeDecision = diagnostics?.routeDecision;
+  const contextSufficiency = diagnostics?.contextSufficiency;
+  const structuralRoute =
+    route?.providerStatus === 'NOT_CALLED' &&
+    route?.decisionSource === 'STRUCTURAL' &&
+    Boolean(routeDecision);
+  const deterministicRefusal =
+    diagnostics?.finalFailureSource === 'NO_CONTEXT' &&
+    contextSufficiency?.sufficient === false &&
+    ['DETERMINISTIC_NO_CONTEXT', 'DETERMINISTIC_REQUIRED_MODALITY', 'DETERMINISTIC_REQUIRED_TOOL'].includes(
+      contextSufficiency?.decisionSource,
+    );
+  const routeAvailable =
+    route?.providerStatus === 'SUCCESS' || structuralRoute;
+  const requiredTools = routeDecision?.toolPlan?.requiredTools ?? [];
+  const contextAvailable = !routeDecision?.needsRetrieval
+    ? requiredTools.length === 0 ||
+      (diagnostics?.contextToolExecution?.providerStatus === 'SUCCESS' &&
+        (contextSufficiency?.providerStatus === 'SUCCESS' ||
+          deterministicRefusal))
+    : contextSufficiency?.providerStatus === 'SUCCESS' ||
+      deterministicRefusal;
+  const verificationAvailable =
+    !routeDecision?.needsVerification ||
+    diagnostics?.verification?.providerStatus === 'SUCCESS' ||
+    deterministicRefusal ||
+    structuralRoute;
   return {
     status: failedStages.length
       ? 'DEGRADED'
-      : diagnostics?.route?.providerStatus === 'SUCCESS' &&
-          diagnostics?.routeDecision &&
-          (!diagnostics.routeDecision.needsRetrieval ||
-            (diagnostics.contextSufficiency?.providerStatus &&
-              (diagnostics.contextToolExecution?.providerStatus ||
-                diagnostics.retrievalPlan?.providerStatus))) &&
-          (!diagnostics.routeDecision.needsVerification ||
-            (diagnostics.verification?.providerStatus &&
-              diagnostics.citationDiagnostics?.providerStatus))
+      : routeAvailable &&
+          routeDecision &&
+          contextAvailable &&
+          verificationAvailable
         ? 'AVAILABLE'
         : 'UNKNOWN',
     failedStages,
@@ -225,6 +305,8 @@ module.exports = {
   canonical,
   fingerprint,
   retrievalMetrics,
+  normalizeEvidenceGroups,
+  evidenceGroupCoverage,
   strictEvaluations,
   attachTrace,
   executionHealth,

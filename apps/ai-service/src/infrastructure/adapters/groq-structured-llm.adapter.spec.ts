@@ -404,7 +404,7 @@ describe('GroqStructuredLlmAdapter', () => {
     ).toEqual([1, 2]);
   });
 
-  it('does not add an adapter retry to the Router role owned by the Router agent', async () => {
+  it('does not add an adapter retry for Router server errors owned by the Router agent', async () => {
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({ error: { message: 'upstream unavailable' } }),
@@ -423,6 +423,181 @@ describe('GroqStructuredLlmAdapter', () => {
         jsonSchema: schema,
       }),
     ).rejects.toMatchObject({ providerCategory: 'TRANSIENT_PROVIDER_FAILURE' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['ROUTER', 'CITATION_ATTRIBUTION'])(
+    'rotates to another key after a per-key rate limit for %s',
+    async (modelRole) => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockImplementationOnce(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({ error: { message: 'rate limit reached' } }),
+              {
+                status: 429,
+                headers: {
+                  'retry-after': '403',
+                  'x-ratelimit-limit-tokens': '8000',
+                  'x-ratelimit-remaining-tokens': '0',
+                  'x-ratelimit-reset-tokens': '1ms',
+                },
+              },
+            ),
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: { content: JSON.stringify({ answer: 'ok' }) },
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+        );
+
+      await expect(
+        new GroqStructuredLlmAdapter(
+          config({ GROQ_API_KEYS: 'test-key-a,test-key-b' }),
+        ).generateObject({
+          model: 'openai/gpt-oss-20b',
+          modelRole,
+          systemPrompt: 'Return JSON.',
+          userPrompt: 'Hello',
+          jsonSchema: schema,
+        }),
+      ).resolves.toEqual({ answer: 'ok' });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(
+        fetchMock.mock.calls.map(([, init]) =>
+          new Headers(init?.headers).get('authorization'),
+        ),
+      ).toEqual(['Bearer test-key-a', 'Bearer test-key-b']);
+    },
+  );
+
+  it('rotates to another key when a response marks one key exhausted for the day', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: 'daily free allocation exhausted' },
+          }),
+          {
+            status: 429,
+            headers: {
+              'retry-after': '86400',
+              'x-ratelimit-reset-tokens': '24h',
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ answer: 'ok' }) },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    await expect(
+      new GroqStructuredLlmAdapter(
+        config({ GROQ_API_KEYS: 'test-key-a,test-key-b' }),
+      ).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'ROUTER',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+      }),
+    ).resolves.toEqual({ answer: 'ok' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.map(([, init]) =>
+        new Headers(init?.headers).get('authorization'),
+      ),
+    ).toEqual(['Bearer test-key-a', 'Bearer test-key-b']);
+  });
+
+  it('rotates on a headerless Router 429', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ error: { message: 'rate limit reached' } }),
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ answer: 'ok' }) },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+
+    await expect(
+      new GroqStructuredLlmAdapter(
+        config({ GROQ_API_KEYS: 'test-key-a,test-key-b' }),
+      ).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'ROUTER',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+      }),
+    ).resolves.toEqual({ answer: 'ok' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.map(([, init]) =>
+        new Headers(init?.headers).get('authorization'),
+      ),
+    ).toEqual(['Bearer test-key-a', 'Bearer test-key-b']);
+  });
+
+  it('does not rotate keys for account-wide quota exhaustion', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { message: 'billing account quota exhausted' },
+        }),
+        { status: 429 },
+      ),
+    );
+
+    await expect(
+      new GroqStructuredLlmAdapter(
+        config({ GROQ_API_KEYS: 'test-key-a,test-key-b' }),
+      ).generateObject({
+        model: 'openai/gpt-oss-20b',
+        modelRole: 'ROUTER',
+        systemPrompt: 'Return JSON.',
+        userPrompt: 'Hello',
+        jsonSchema: schema,
+      }),
+    ).rejects.toMatchObject({ providerCategory: 'ACCOUNT_LIMITED' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -457,11 +632,12 @@ describe('GroqStructuredLlmAdapter', () => {
 
   it('parses Groq token-window reset durations for bounded retry pacing', () => {
     const adapter = new GroqStructuredLlmAdapter(config());
-    const parseDurationMs = (
-      adapter as unknown as {
-        parseDurationMs(value: string): number | undefined;
-      }
-    ).parseDurationMs.bind(adapter);
+    const parseDurationMs = (value: string): number | undefined =>
+      (
+        adapter as unknown as {
+          parseDurationMs(value: string): number | undefined;
+        }
+      ).parseDurationMs(value);
 
     expect(parseDurationMs('13.02s')).toBe(13_020);
     expect(parseDurationMs('1m26.4s')).toBe(86_400);

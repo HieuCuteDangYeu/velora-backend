@@ -220,15 +220,16 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
   /**
    * Record a 429 rate-limit response. Sets TPM cooldown from headers.
    * If evidence suggests TPD exhaustion, marks the key dead until UTC midnight.
+   * Returns true when the key was marked exhausted for the day.
    */
   reportRateLimited(
     index: number,
     headers?: Headers,
     responseBody?: string,
     model?: string,
-  ): void {
+  ): boolean {
     const state = this.at(index, model);
-    if (!state) return;
+    if (!state) return false;
 
     // Check for TPD exhaustion evidence.
     if (this.isTPDExhaustion(headers, responseBody)) {
@@ -237,7 +238,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         headers?.get?.('x-ratelimit-reset-tokens') ||
         'reset-tokens > 1h';
       this.reportTPDExhausted(index, reason, model);
-      return;
+      return true;
     }
 
     // TPM cooldown: use retry-after or x-ratelimit-reset-tokens.
@@ -247,6 +248,7 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       `Key #${index} rate-limited, cooldown ${cooldownMs}ms ` +
         `(until ${new Date(state.cooldownUntil).toISOString()})`,
     );
+    return false;
   }
 
   /** Mark a key as TPD-exhausted until the next UTC midnight. */

@@ -145,6 +145,76 @@ describe('ContextToolAgentUseCase', () => {
     });
   });
 
+  it('keeps a chronological first-segment plan when a multi-Reel tool query narrows to one title', async () => {
+    const question =
+      'Compare the first indexed transcript segments of "Episode 11" and "Episode 1". Attribute each statement to its own clip.';
+    const built = buildAgent({
+      toolLlm: {
+        complete: jest
+          .fn()
+          .mockResolvedValueOnce({
+            toolCalls: [
+              {
+                id: 'call-1',
+                name: 'search_reel_content',
+                arguments: {
+                  query: 'Episode 11',
+                  mode: 'REEL_VECTOR',
+                  limit: 1,
+                },
+              },
+            ],
+          })
+          .mockResolvedValueOnce({ toolCalls: [] }),
+      },
+    });
+
+    await built.agent.execute(
+      state({
+        userMessage: question,
+        accessibleReelIds: ['reel-11', 'reel-1'],
+      }),
+    );
+
+    expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accessibleReelIds: ['reel-11', 'reel-1'],
+        plan: expect.objectContaining({
+          query: question,
+          queries: [question],
+          sourceOrder: 'ASC',
+          requiresReelCoverage: true,
+          searchLimit: 1,
+          shouldRerank: false,
+        }),
+      }),
+    );
+  });
+
+  it('uses the transcript time window for a general-summary route that requires transcript evidence', async () => {
+    const built = buildAgent();
+    const result = await built.agent.execute(
+      state({
+        userMessage:
+          'Summarize what is said in the indexed transcript segment spanning 8–63.9 seconds.',
+        route: {
+          ...route,
+          reelQuestionType: 'GENERAL_REEL_SUMMARY',
+          requiredEvidence: ['TRANSCRIPT', 'METADATA'],
+        },
+      }),
+    );
+
+    expect(result.retrievalPlan).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 8,
+      sourceTimestampEndSec: 63.9,
+      searchLimit: 2,
+      rerankLimit: 2,
+    });
+    expect(built.toolLlm.complete).not.toHaveBeenCalled();
+  });
+
   it('uses the native source read for a multimodal Reel question even when recent summary context is selected', async () => {
     const built = buildAgent();
     const result = await built.agent.execute(

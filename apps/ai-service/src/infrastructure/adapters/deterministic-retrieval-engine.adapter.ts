@@ -66,8 +66,20 @@ interface RetrievalExecutionInput {
   sourceOrder?: 'ASC';
   sourceTimestampSec?: number;
   sourceTimestampEndSec?: number;
+  visualTimestampSec?: number;
+  transcriptTimestampSec?: number;
+  transcriptTimestampEndSec?: number;
   diagnostics?: RagRetrievalExecutionDiagnostics;
 }
+
+type RetrievalTemporalPlan = Pick<
+  RagRetrievalPlan,
+  | 'sourceTimestampSec'
+  | 'sourceTimestampEndSec'
+  | 'visualTimestampSec'
+  | 'transcriptTimestampSec'
+  | 'transcriptTimestampEndSec'
+>;
 
 @Injectable()
 export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
@@ -189,32 +201,37 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       input.plan.sourceOrder === 'ASC' &&
       includeVisual &&
       includeTranscript &&
+      input.plan.visualTimestampSec !== undefined &&
+      input.plan.transcriptTimestampSec !== undefined &&
       accessibleReelIds.length === 1
     ) {
       const document = await this.semanticIndexService.getReelDocument(
         accessibleReelIds[0],
       );
       if (!document) return [];
+      const transcriptTime = this.temporalSearchConstraints(
+        input.plan,
+        'TRANSCRIPT',
+      );
+      const visualTime = this.temporalSearchConstraints(input.plan, 'VISUAL');
       const [chunks, scenes] = await Promise.all([
         this.semanticIndexService.searchChunks({
           filters: { reelIds: accessibleReelIds },
           sourceOrder: 'ASC',
-          sourceTimestampSec: input.plan.sourceTimestampSec,
-          sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+          ...transcriptTime,
           requiredIndexVersion: document.indexVersion,
           limit:
-            input.plan.sourceTimestampEndSec !== undefined
+            transcriptTime.sourceTimestampEndSec !== undefined
               ? Math.max(2, Math.ceil(input.plan.searchLimit / 2))
               : Math.max(1, Math.ceil(input.plan.searchLimit / 2)),
         }),
         this.semanticIndexService.searchVisualScenes({
           filters: { reelIds: accessibleReelIds },
           sourceOrder: 'ASC',
-          sourceTimestampSec: input.plan.sourceTimestampSec,
-          sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+          ...visualTime,
           requiredIndexVersion: document.indexVersion,
           limit:
-            input.plan.sourceTimestampEndSec !== undefined
+            visualTime.sourceTimestampEndSec !== undefined
               ? Math.max(2, Math.ceil(input.plan.searchLimit / 2))
               : Math.max(1, Math.ceil(input.plan.searchLimit / 2)),
         }),
@@ -236,14 +253,14 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         accessibleReelIds[0],
       );
       if (!document) return [];
+      const visualTime = this.temporalSearchConstraints(input.plan, 'VISUAL');
       const scenes = await this.semanticIndexService.searchVisualScenes({
         filters: { reelIds: accessibleReelIds },
         sourceOrder: 'ASC',
-        sourceTimestampSec: input.plan.sourceTimestampSec,
-        sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+        ...visualTime,
         requiredIndexVersion: document.indexVersion,
         limit:
-          input.plan.sourceTimestampEndSec !== undefined
+          visualTime.sourceTimestampEndSec !== undefined
             ? Math.max(2, input.plan.searchLimit)
             : 1,
       });
@@ -254,7 +271,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           scene.evidenceType !== 'VISUAL'
         )
           continue;
-        const point = input.plan.sourceTimestampSec;
+        const point = visualTime.sourceTimestampSec;
         if (scene.indexVersion && scene.indexVersion !== document.indexVersion)
           continue;
         if (
@@ -275,29 +292,48 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     }
     if (
       input.plan.sourceOrder === 'ASC' &&
-      accessibleReelIds.length === 1 &&
+      accessibleReelIds.length > 0 &&
+      accessibleReelIds.length <= 8 &&
+      (accessibleReelIds.length === 1 ||
+        input.plan.requiresReelCoverage === true) &&
       includeTranscript &&
       !includeVisual
     ) {
-      const document = await this.semanticIndexService.getReelDocument(
-        accessibleReelIds[0],
+      const transcriptTime = this.temporalSearchConstraints(
+        input.plan,
+        'TRANSCRIPT',
       );
-      if (!document) return [];
-      const candidates = await this.semanticIndexService.searchChunks({
-        filters: { reelIds: accessibleReelIds },
-        sourceOrder: 'ASC',
-        sourceTimestampSec: input.plan.sourceTimestampSec,
-        sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
-        requiredIndexVersion: document.indexVersion,
-        limit:
-          input.plan.sourceTimestampEndSec !== undefined
-            ? Math.max(2, input.plan.searchLimit)
-            : 1,
-      });
-      const hydrated = await this.hydrateAndExpand(
-        candidates,
-        accessibleReelIds,
+      const perReelLimit =
+        transcriptTime.sourceTimestampEndSec !== undefined
+          ? Math.max(2, input.plan.searchLimit)
+          : accessibleReelIds.length === 1
+            ? 1
+            : Math.max(
+                1,
+                Math.ceil(input.plan.searchLimit / accessibleReelIds.length),
+              );
+      const resultsByReel = await Promise.all(
+        accessibleReelIds.map(async (reelId) => {
+          const document =
+            await this.semanticIndexService.getReelDocument(reelId);
+          if (!document || document.reelId !== reelId) return [];
+          const candidates = await this.semanticIndexService.searchChunks({
+            filters: { reelIds: [reelId] },
+            sourceOrder: 'ASC',
+            ...transcriptTime,
+            requiredIndexVersion: document.indexVersion,
+            limit: perReelLimit,
+          });
+          return candidates.flatMap((candidate) =>
+            candidate.reelId === reelId &&
+            (!candidate.indexVersion ||
+              candidate.indexVersion === document.indexVersion)
+              ? [this.toTranscriptMatch(candidate, document)]
+              : [],
+          );
+        }),
       );
+      const hydrated = resultsByReel.flat();
       if (diagnostics) diagnostics.retrievedCount = hydrated.length;
       return hydrated;
     }
@@ -349,6 +385,9 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           sourceOrder: input.plan.sourceOrder,
           sourceTimestampSec: input.plan.sourceTimestampSec,
           sourceTimestampEndSec: input.plan.sourceTimestampEndSec,
+          visualTimestampSec: input.plan.visualTimestampSec,
+          transcriptTimestampSec: input.plan.transcriptTimestampSec,
+          transcriptTimestampEndSec: input.plan.transcriptTimestampEndSec,
           diagnostics,
         },
         queryDiagnostics,
@@ -527,7 +566,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   private async retrieveTranscriptHierarchically(
     input: RetrievalExecutionInput,
   ): Promise<SemanticIndexSearchResult[]> {
-    const search = this.buildSearchRequest(input);
+    const search = this.buildSearchRequest(input, 'TRANSCRIPT');
     const reelCandidates = await this.semanticIndexService.searchReels({
       ...search,
       filters: { reelIds: input.accessibleReelIds },
@@ -574,7 +613,6 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   ): Promise<TranscriptMatch[]> {
     let candidates: SemanticIndexSearchResult[];
     try {
-      const search = this.buildSearchRequest(input);
       const multiReel = input.accessibleReelIds.length > 1;
       const scopedReelIds = multiReel
         ? input.accessibleReelIds.slice(0, 8)
@@ -587,7 +625,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           ? Promise.all(
               scopedReelIds.map((reelId) =>
                 this.semanticIndexService.searchChunks({
-                  ...search,
+                  ...this.buildSearchRequest(input, 'TRANSCRIPT'),
                   filters: { reelIds: [reelId] },
                   limit: perReelLimit,
                   candidateLimit: Math.min(Math.max(perReelLimit * 8, 50), 200),
@@ -600,7 +638,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
             ? Promise.all(
                 scopedReelIds.map((reelId) =>
                   this.semanticIndexService.searchVisualScenes({
-                    ...search,
+                    ...this.buildSearchRequest(input, 'VISUAL'),
                     filters: { reelIds: [reelId] },
                     limit: perReelLimit,
                     candidateLimit: Math.min(
@@ -637,7 +675,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     input: RetrievalExecutionInput,
   ): Promise<SemanticIndexSearchResult[]> {
     return await this.semanticIndexService.searchVisualScenes({
-      ...this.buildSearchRequest(input),
+      ...this.buildSearchRequest(input, 'VISUAL'),
       filters: { reelIds: input.accessibleReelIds },
       limit: input.limit,
       candidateLimit: Math.min(Math.max(input.limit * 8, 50), 200),
@@ -677,6 +715,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
 
   private buildSearchRequest(
     input: RetrievalExecutionInput,
+    evidenceType: 'TRANSCRIPT' | 'VISUAL',
   ): Pick<
     SemanticIndexSearchRequest,
     | 'queryText'
@@ -690,12 +729,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   > {
     const sourceConstraints = {
       ...(input.sourceOrder ? { sourceOrder: input.sourceOrder } : {}),
-      ...(input.sourceTimestampSec !== undefined
-        ? { sourceTimestampSec: input.sourceTimestampSec }
-        : {}),
-      ...(input.sourceTimestampEndSec !== undefined
-        ? { sourceTimestampEndSec: input.sourceTimestampEndSec }
-        : {}),
+      ...this.temporalSearchConstraints(input, evidenceType),
     };
     if (input.mode === 'REEL_VECTOR') {
       return {
@@ -712,6 +746,33 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       queryEmbeddingModel: input.queryEmbeddingModel,
       queryEmbeddingVersion: input.queryEmbeddingVersion,
       queryTags: this.extractExplicitQueryTags(input.queryText),
+    };
+  }
+
+  private temporalSearchConstraints(
+    plan: RetrievalTemporalPlan,
+    evidenceType: 'TRANSCRIPT' | 'VISUAL',
+  ): Pick<
+    SemanticIndexSearchRequest,
+    'sourceTimestampSec' | 'sourceTimestampEndSec'
+  > {
+    const hasModalitySpecificTime =
+      plan.visualTimestampSec !== undefined ||
+      plan.transcriptTimestampSec !== undefined ||
+      plan.transcriptTimestampEndSec !== undefined;
+    const sourceTimestampSec = hasModalitySpecificTime
+      ? evidenceType === 'VISUAL'
+        ? plan.visualTimestampSec
+        : plan.transcriptTimestampSec
+      : plan.sourceTimestampSec;
+    const sourceTimestampEndSec = hasModalitySpecificTime
+      ? evidenceType === 'TRANSCRIPT'
+        ? plan.transcriptTimestampEndSec
+        : undefined
+      : plan.sourceTimestampEndSec;
+    return {
+      ...(sourceTimestampSec !== undefined ? { sourceTimestampSec } : {}),
+      ...(sourceTimestampEndSec !== undefined ? { sourceTimestampEndSec } : {}),
     };
   }
 

@@ -16,11 +16,17 @@ export function sourceRetrievalPlan(
   route: RagChatRouteDecision,
 ): RagRetrievalPlan | undefined {
   if (!route.needsRetrieval) return undefined;
+  const transcriptRequired =
+    route.requiredEvidence?.includes('TRANSCRIPT') === true;
+  const firstIndexedTranscriptSegment =
+    transcriptRequired &&
+    /\bfirst\s+(?:indexed\s+)?transcript\s+segments?\b/i.test(message);
   const opening =
-    route.reelQuestionType === 'TRANSCRIPT_CONTENT' &&
-    /\b(?:opening statement|first (?:complete )?(?:statement|sentence)|first thing (?:said|spoken))\b/i.test(
-      message,
-    );
+    transcriptRequired &&
+    (firstIndexedTranscriptSegment ||
+      /\b(?:opening statement|first (?:complete )?(?:statement|sentence)|first thing (?:said|spoken))\b/i.test(
+        message,
+      ));
   const timestamp = message.match(
     /\b(?:frame|scene)\s+at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
   );
@@ -38,9 +44,7 @@ export function sourceRetrievalPlan(
       /\bfirst (?:indexed |sampled )?(?:visual )?(?:frame|scene)\b/i.test(
         message,
       ));
-  const transcriptWindow =
-    (route.reelQuestionType === 'TRANSCRIPT_CONTENT' || multimodal) &&
-    transcriptTimestamp !== null;
+  const transcriptWindow = transcriptRequired && transcriptTimestamp !== null;
   if (
     !opening &&
     !visual &&
@@ -49,23 +53,32 @@ export function sourceRetrievalPlan(
     route.reelQuestionType !== 'REEL_METADATA'
   )
     return undefined;
-  const sourceTimestampSec =
-    visual && timestamp
-      ? Number(timestamp[1])
-      : transcriptWindow && transcriptTimestamp
-        ? Number(transcriptTimestamp[1])
-        : undefined;
-  const sourceTimestampEndSec =
+  const explicitTranscriptTimestampSec =
+    transcriptWindow && transcriptTimestamp
+      ? Number(transcriptTimestamp[1])
+      : undefined;
+  const transcriptTimestampSec =
+    explicitTranscriptTimestampSec ??
+    (multimodal ? visualTimestampSec : undefined);
+  const transcriptTimestampEndSec =
     transcriptWindow && transcriptTimestamp?.[2]
       ? Number(transcriptTimestamp[2])
       : undefined;
+  const sourceTimestampSec = multimodal
+    ? undefined
+    : visual && timestamp
+      ? Number(timestamp[1])
+      : transcriptTimestampSec;
+  const sourceTimestampEndSec = multimodal
+    ? undefined
+    : transcriptTimestampEndSec;
   const sourceReadLimit =
-    sourceTimestampEndSec !== undefined
+    transcriptTimestampEndSec !== undefined
       ? 2
-      : opening || visual || transcriptWindow
-        ? 1
-        : multimodal
-          ? 6
+      : multimodal
+        ? 6
+        : opening || visual || transcriptWindow
+          ? 1
           : 5;
   return {
     mode: 'REEL_HYBRID',
@@ -75,6 +88,11 @@ export function sourceRetrievalPlan(
       : {}),
     ...(sourceTimestampSec !== undefined ? { sourceTimestampSec } : {}),
     ...(sourceTimestampEndSec !== undefined ? { sourceTimestampEndSec } : {}),
+    ...(visualTimestampSec !== undefined ? { visualTimestampSec } : {}),
+    ...(transcriptTimestampSec !== undefined ? { transcriptTimestampSec } : {}),
+    ...(transcriptTimestampEndSec !== undefined
+      ? { transcriptTimestampEndSec }
+      : {}),
     query: message,
     queries: [message],
     searchLimit: sourceReadLimit,

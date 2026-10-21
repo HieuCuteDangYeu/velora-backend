@@ -43,6 +43,13 @@ const visualRoute: RagChatRouteDecision = {
   reason: 'Question asks about visible reel content.',
 };
 
+const multimodalRoute: RagChatRouteDecision = {
+  ...transcriptRoute,
+  reelQuestionType: 'MULTIMODAL_CONTENT',
+  requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+  reason: 'Question requires spoken and visual reel evidence.',
+};
+
 const plan: RagRetrievalPlan = {
   mode: 'REEL_HYBRID',
   query: 'What project name is spoken?',
@@ -263,8 +270,7 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     const { adapter, semanticIndexService, embeddingService, generateObject } =
       buildAdapter({});
     const plan = await adapter.plan({
-      message:
-        'Summarize the transcript segment spanning 11.68-56.38 seconds.',
+      message: 'Summarize the transcript segment spanning 11.68-56.38 seconds.',
       route: transcriptRoute,
     });
     await adapter.retrieve({
@@ -285,6 +291,174 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     expect(embeddingService.generateVector).not.toHaveBeenCalled();
     expect(generateObject).not.toHaveBeenCalled();
   });
+
+  it('applies independent time constraints to transcript and visual searches', async () => {
+    const { adapter, semanticIndexService, embeddingService, generateObject } =
+      buildAdapter({});
+    const retrievalPlan = await adapter.plan({
+      message:
+        'What is said in the transcript segment spanning 11.68-56.38 seconds while the frame at 33.25 seconds is visible?',
+      route: multimodalRoute,
+    });
+    await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: multimodalRoute,
+      plan: retrievalPlan,
+      accessibleReelIds: ['reel-1'],
+    });
+
+    const transcriptSearch = jest.mocked(semanticIndexService.searchChunks).mock
+      .calls[0][0];
+    const visualSearch = jest.mocked(semanticIndexService.searchVisualScenes)
+      .mock.calls[0][0];
+    expect(transcriptSearch).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 11.68,
+      sourceTimestampEndSec: 56.38,
+    });
+    expect(visualSearch).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 33.25,
+    });
+    expect(visualSearch).not.toHaveProperty('sourceTimestampEndSec');
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('keeps modality-specific time constraints separate across multiple Reels', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({
+      NODE_ENV: 'test',
+      RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+      RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+    });
+    await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: multimodalRoute,
+      plan: {
+        ...plan,
+        sourceOrder: 'ASC',
+        visualTimestampSec: 33.25,
+        transcriptTimestampSec: 11.68,
+        transcriptTimestampEndSec: 56.38,
+        query: 'Compare the requested frame and speech.',
+        queries: ['Compare the requested frame and speech.'],
+      },
+      accessibleReelIds: ['reel-1', 'reel-2'],
+    });
+
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledTimes(2);
+    for (const [request] of jest.mocked(semanticIndexService.searchChunks).mock
+      .calls) {
+      expect(request).toMatchObject({
+        sourceTimestampSec: 11.68,
+        sourceTimestampEndSec: 56.38,
+      });
+    }
+    expect(semanticIndexService.searchVisualScenes).toHaveBeenCalledTimes(2);
+    for (const [request] of jest.mocked(semanticIndexService.searchVisualScenes)
+      .mock.calls) {
+      expect(request).toMatchObject({ sourceTimestampSec: 33.25 });
+      expect(request).not.toHaveProperty('sourceTimestampEndSec');
+    }
+  });
+
+  it('retrieves the earliest transcript chunk from each Reel for a first-segment comparison', async () => {
+    const { adapter, semanticIndexService, embeddingService, generateObject } =
+      buildAdapter({
+        NODE_ENV: 'test',
+        RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+        RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+      });
+    const earliestByReel = new Map([
+      ['reel-1', { ...directCandidate, id: 'first-reel-1', reelId: 'reel-1' }],
+      ['reel-2', { ...directCandidate, id: 'first-reel-2', reelId: 'reel-2' }],
+    ]);
+    jest
+      .mocked(semanticIndexService.searchChunks)
+      .mockImplementation((request) => {
+        const reelId = request.filters?.reelIds?.[0];
+        const candidate = reelId ? earliestByReel.get(reelId) : undefined;
+        return Promise.resolve(candidate ? [candidate] : []);
+      });
+    jest
+      .mocked(semanticIndexService.getReelDocument)
+      .mockImplementation((reelId) =>
+        Promise.resolve({
+          ...reelDocument,
+          id: `document-${reelId}`,
+          reelId,
+          title: `Title ${reelId}`,
+        }),
+      );
+
+    const question =
+      'Compare the first indexed transcript segments of "Episode 11" and "Episode 1". Attribute each statement to its own clip.';
+    const retrievalPlan = await adapter.plan({
+      message: question,
+      route: transcriptRoute,
+    });
+    const result = await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: transcriptRoute,
+      plan: retrievalPlan,
+      accessibleReelIds: ['reel-1', 'reel-2'],
+    });
+
+    expect(retrievalPlan).toMatchObject({
+      sourceOrder: 'ASC',
+      requiresReelCoverage: true,
+      searchLimit: 1,
+    });
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledTimes(2);
+    for (const [request] of jest.mocked(semanticIndexService.searchChunks).mock
+      .calls) {
+      expect(request).toMatchObject({
+        sourceOrder: 'ASC',
+        limit: 1,
+        filters: { reelIds: [expect.any(String)] },
+      });
+    }
+    expect(result.map((item) => item.chunkId)).toEqual([
+      'first-reel-1',
+      'first-reel-2',
+    ]);
+    expect(result.map((item) => item.title)).toEqual([
+      'Title reel-1',
+      'Title reel-2',
+    ]);
+    expect(embeddingService.generateVector).not.toHaveBeenCalled();
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('does not read the beginning of every shared Reel for a singular first-sentence question', async () => {
+    const { adapter, embeddingService } = buildAdapter({
+      NODE_ENV: 'test',
+      RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+      RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+    });
+    const retrievalPlan = await adapter.plan({
+      message: 'What is the first complete sentence in the shared transcript?',
+      route: transcriptRoute,
+    });
+
+    expect(retrievalPlan).toMatchObject({
+      sourceOrder: 'ASC',
+      requiresReelCoverage: false,
+    });
+    await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: transcriptRoute,
+      plan: retrievalPlan,
+      accessibleReelIds: ['reel-1', 'reel-2'],
+    });
+
+    expect(embeddingService.generateVector).toHaveBeenCalledTimes(1);
+  });
+
   it('reads opening statements in source order instead of retrieving a semantically similar later window', async () => {
     const { adapter, semanticIndexService, embeddingService, generateObject } =
       buildAdapter({});
@@ -313,20 +487,22 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     const { adapter, semanticIndexService } = buildAdapter({});
     jest
       .mocked(semanticIndexService.getReelDocument)
-      .mockImplementation(async (reelId) => ({
-        ...reelDocument,
-        reelId,
-      }));
-    jest
-      .mocked(semanticIndexService.searchChunks)
-      .mockImplementation(async (input) => [
+      .mockImplementation((reelId) =>
+        Promise.resolve({
+          ...reelDocument,
+          reelId,
+        }),
+      );
+    jest.mocked(semanticIndexService.searchChunks).mockImplementation((input) =>
+      Promise.resolve([
         {
           ...directCandidate,
           id: `chunk-${input.filters?.reelIds?.[0] ?? 'unknown'}`,
           reelId: input.filters?.reelIds?.[0] ?? 'unknown',
           indexVersion: 'v1',
         },
-      ]);
+      ]),
+    );
     const result = await adapter.retrieve({
       userId: 'user-1',
       conversationId: 'conversation-1',

@@ -31,6 +31,42 @@ function executionHealth(response) {
   };
 }
 
+function compiledRuntimeFiles(compiledBase) {
+  const resolvedBase = path.resolve(compiledBase);
+  const runtimeRoot = path.resolve(resolvedBase, '../../..');
+  const relativeBase = path
+    .relative(runtimeRoot, resolvedBase)
+    .split(path.sep)
+    .join('/');
+  if (relativeBase !== 'apps/ai-service/src') {
+    throw new Error('Compiled AI base must end in apps/ai-service/src');
+  }
+
+  const files = [];
+  const visit = (directory) => {
+    for (const entry of fs
+      .readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (entry.isFile() && entry.name.endsWith('.js')) {
+        files.push([
+          path.relative(runtimeRoot, absolute).split(path.sep).join('/'),
+          fs.readFileSync(absolute, 'utf8'),
+        ]);
+      }
+    }
+  };
+  visit(runtimeRoot);
+  if (files.length === 0) throw new Error('Compiled AI runtime has no JavaScript files');
+  return files;
+}
+
+function buildFingerprint(compiledBase) {
+  return fingerprint(compiledRuntimeFiles(compiledBase));
+}
+
 async function main() {
   const [directory, output, compiledBase, runtimeEnv, ledgerPath, mode] = process.argv.slice(2);
   if (!ledgerPath) throw new Error('Usage: run-rag-coverage-evaluation <frozen-dir> <run-dir> <compiled-ai-src> <private-runtime-env> <shared-usage-ledger>');
@@ -39,9 +75,8 @@ async function main() {
     rows.push(...JSON.parse(fs.readFileSync(path.join(directory, split + '.json'))));
     Object.assign(fixtures, JSON.parse(fs.readFileSync(path.join(directory, split + '-fixtures.json'))));
   }
-  const compiledFiles = fs.readdirSync(path.resolve(compiledBase, 'application/use-cases')).filter((f) => f.endsWith('.js')).sort().map((f) => [f, fs.readFileSync(path.resolve(compiledBase, 'application/use-cases', f), 'utf8')]);
-  const buildFingerprint = fingerprint(compiledFiles);
-  const hash = fingerprint(rows), env = { ...process.env, ...dotenv.parse(fs.readFileSync('.env')), ...dotenv.parse(fs.readFileSync(runtimeEnv)), RAG_COMPILED_AI_BASE: path.resolve(compiledBase), RAG_FROZEN_BACKEND_EMBEDDINGS: 'true', RAG_OPERATIONAL_DETERMINISTIC_LLM: mode === 'operational' ? 'true' : process.env.RAG_OPERATIONAL_DETERMINISTIC_LLM, LANGFUSE_RELEASE: 'frozen-replay-' + buildFingerprint.slice(0, 16), RELEASE_SHA: 'frozen-replay-' + buildFingerprint.slice(0, 16) };
+  const runtimeFingerprint = buildFingerprint(compiledBase);
+  const hash = fingerprint(rows), env = { ...process.env, ...dotenv.parse(fs.readFileSync('.env')), ...dotenv.parse(fs.readFileSync(runtimeEnv)), RAG_COMPILED_AI_BASE: path.resolve(compiledBase), RAG_FROZEN_BACKEND_EMBEDDINGS: 'true', RAG_OPERATIONAL_DETERMINISTIC_LLM: mode === 'operational' ? 'true' : process.env.RAG_OPERATIONAL_DETERMINISTIC_LLM, LANGFUSE_RELEASE: 'frozen-replay-' + runtimeFingerprint.slice(0, 16), RELEASE_SHA: 'frozen-replay-' + runtimeFingerprint.slice(0, 16) };
   const keyCount = (env.GROQ_API_KEYS || env.GROQ_API_KEY).split(',').filter(Boolean).length;
   const models = new Set([env.AI_ANSWER_MODEL, env.AI_ROUTER_MODEL, 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'].filter(Boolean));
   fs.mkdirSync(output, { recursive: true, mode: 0o700 });
@@ -50,8 +85,9 @@ async function main() {
   state.snapshotFingerprint ||= hash;
   state.datasetSnapshot ||= rows;
   state.datasetName ||= `rag-coverage-${hash.slice(0, 16)}`;
-  if (state.datasetSha256 !== hash || state.compiledBase !== path.resolve(compiledBase) || (state.buildFingerprint && state.buildFingerprint !== buildFingerprint)) throw new Error('Run provenance changed');
-  state.buildFingerprint = buildFingerprint;
+  if (state.datasetSha256 !== hash || state.compiledBase !== path.resolve(compiledBase) || (state.buildFingerprint && state.buildFingerprint !== runtimeFingerprint)) throw new Error('Run provenance changed');
+  state.buildFingerprint = runtimeFingerprint;
+  state.buildFingerprintVersion = 'compiled-ai-runtime-tree-v1';
   const save = () => { fs.writeFileSync(stateFile + '.tmp', JSON.stringify(state, null, 2), { mode: 0o600 }); fs.renameSync(stateFile + '.tmp', stateFile); };
   if (Object.values(state.cases).some((c) => c.status === 'IN_FLIGHT')) throw new Error('Unresolved primary request; reconcile persisted response before resume');
   save();
@@ -133,3 +169,5 @@ async function main() {
   } finally { child.stdin.end(JSON.stringify({ stop: true }) + '\n'); await exit; log.end(); }
 }
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
+
+module.exports = { compiledRuntimeFiles, buildFingerprint };

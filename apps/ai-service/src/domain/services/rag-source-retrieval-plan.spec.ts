@@ -7,6 +7,7 @@ import type { RagChatRouteDecision } from '../interfaces/rag-chat-workflow.inter
 const visual = {
   needsRetrieval: true,
   reelQuestionType: 'VISUAL_CONTENT',
+  requiredEvidence: ['VISUAL'],
 } as RagChatRouteDecision;
 
 describe('source retrieval constraints', () => {
@@ -40,15 +41,41 @@ describe('source retrieval constraints', () => {
     expect(
       sourceRetrievalPlan(
         'What is the first complete sentence recorded in the indexed transcript?',
-        { ...visual, reelQuestionType: 'TRANSCRIPT_CONTENT' },
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
       ),
     ).toMatchObject({ sourceOrder: 'ASC', shouldRerank: false });
+  });
+  it('reads the first transcript segment chronologically for every Reel in a comparison', () => {
+    expect(
+      sourceRetrievalPlan(
+        'Compare the first indexed transcript segments of "Episode 11" and "Episode 1". Attribute each statement to its own clip.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      requiresReelCoverage: true,
+      searchLimit: 1,
+      rerankLimit: 1,
+      shouldRerank: false,
+    });
   });
   it('anchors an explicitly requested transcript segment to its source time', () => {
     expect(
       sourceRetrievalPlan(
         'What is said in the transcript segment spanning 11.68 seconds of the shared Reel?',
-        { ...visual, reelQuestionType: 'TRANSCRIPT_CONTENT' },
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
       ),
     ).toMatchObject({
       sourceOrder: 'ASC',
@@ -61,12 +88,37 @@ describe('source retrieval constraints', () => {
     expect(
       sourceRetrievalPlan(
         'Summarize the transcript segment spanning 11.68–56.38 seconds of the shared Reel.',
-        { ...visual, reelQuestionType: 'TRANSCRIPT_CONTENT' },
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
       ),
     ).toMatchObject({
       sourceOrder: 'ASC',
       sourceTimestampSec: 11.68,
       sourceTimestampEndSec: 56.38,
+      searchLimit: 2,
+      rerankLimit: 2,
+    });
+  });
+
+  it('honors an explicit transcript time window when the router classifies it as a general summary', () => {
+    expect(
+      sourceRetrievalPlan(
+        'Summarize what is said in the indexed transcript segment spanning 8–63.9 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'GENERAL_REEL_SUMMARY',
+          requiredEvidence: ['TRANSCRIPT', 'METADATA'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      transcriptTimestampSec: 8,
+      transcriptTimestampEndSec: 63.9,
+      sourceTimestampSec: 8,
+      sourceTimestampEndSec: 63.9,
       searchLimit: 2,
       rerankLimit: 2,
     });
@@ -81,13 +133,54 @@ describe('source retrieval constraints', () => {
     expect(
       sourceRetrievalPlan(
         'What did the speaker say while the blue device was visible?',
-        { ...visual, reelQuestionType: 'MULTIMODAL_CONTENT' },
+        {
+          ...visual,
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        },
       ),
     ).toMatchObject({
       mode: 'REEL_HYBRID',
       searchLimit: 6,
       rerankLimit: 6,
       shouldRerank: false,
+    });
+  });
+
+  it('keeps visual timestamps and transcript ranges independent', () => {
+    const plan = sourceRetrievalPlan(
+      'What is said in the transcript segment spanning 11.68-56.38 seconds while the frame at 33.25 seconds is visible?',
+      {
+        ...visual,
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+    );
+    expect(plan).toMatchObject({
+      sourceOrder: 'ASC',
+      visualTimestampSec: 33.25,
+      transcriptTimestampSec: 11.68,
+      transcriptTimestampEndSec: 56.38,
+      searchLimit: 2,
+    });
+    expect(plan).not.toHaveProperty('sourceTimestampSec');
+    expect(plan).not.toHaveProperty('sourceTimestampEndSec');
+  });
+
+  it('uses a sampled-frame time to locate the speech concurrent with that frame', () => {
+    expect(
+      sourceRetrievalPlan(
+        'At the sampled frame at 33.25 seconds, what is the speaker saying?',
+        {
+          ...visual,
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        },
+      ),
+    ).toMatchObject({
+      visualTimestampSec: 33.25,
+      transcriptTimestampSec: 33.25,
+      searchLimit: 6,
     });
   });
 });

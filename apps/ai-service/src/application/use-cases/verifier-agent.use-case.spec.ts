@@ -568,6 +568,7 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({
         jsonSchema: expect.objectContaining({
+          required: expect.not.arrayContaining(['contradictions']),
           properties: expect.objectContaining({
             issues: expect.objectContaining({ maxItems: 8 }),
             answerQualityIssues: expect.objectContaining({ maxItems: 4 }),
@@ -586,6 +587,22 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
       '"answerShape":"EXPLANATION"',
     );
+  });
+
+  it('treats an omitted contradictions list as empty', async () => {
+    const raw = result();
+    delete raw.contradictions;
+    const service = { generateObject: jest.fn().mockResolvedValue(raw) };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+
+    await expect(
+      useCase.execute(
+        state({ evidenceText: 'The zorb is linked to the quasar.' }),
+      ),
+    ).resolves.toMatchObject({
+      passed: true,
+      contradictions: [],
+    });
   });
 
   it('rejects provider mappings to evidence IDs that were not supplied', async () => {

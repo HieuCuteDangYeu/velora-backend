@@ -394,6 +394,16 @@ describe('BuildRagTraceSnapshotUseCase', () => {
         extractiveFallbackUsed: true,
       },
     ],
+    [
+      'EXTRACTIVE_EVIDENCE_FALLBACK',
+      'UNUSABLE_SYNTHESIS',
+      {
+        answerGenerationStatus: 'EXTRACTIVE_FALLBACK_USED',
+        finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+        synthesizedAnswerPreserved: false,
+        extractiveFallbackUsed: true,
+      },
+    ],
   ] as const)(
     'records %s finalization provenance',
     (mode, reason, expected) => {

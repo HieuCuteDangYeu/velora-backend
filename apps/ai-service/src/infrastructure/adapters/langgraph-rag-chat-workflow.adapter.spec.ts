@@ -1,5 +1,6 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { RagCitationAssessment } from '@ai/application/use-cases/build-rag-citations.use-case';
+import { DraftAnswerGenerationError } from '@ai/application/use-cases/generate-draft-answer.use-case';
 import { LangGraphRagChatWorkflowAdapter } from './langgraph-rag-chat-workflow.adapter';
 
 describe('LangGraphRagChatWorkflowAdapter routing', () => {
@@ -46,6 +47,7 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
       recentEventTypes: string[];
     };
     formatRecentHistory: (state: RagChatWorkflowState) => string;
+    routesAfterQueryRouter: (state: RagChatWorkflowState) => string[];
   };
   const state = (overrides: Partial<RagChatWorkflowState> = {}) =>
     ({
@@ -120,6 +122,54 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     expect(destinations).not.toContain('retrievalPlannerNode');
     expect(destinations).not.toContain('memorySelectorNode');
     expect(workflow.buildGraph({})).toBeDefined();
+  });
+
+  it('routes an ambiguous Reel referent directly to clarification without retrieval', () => {
+    expect(
+      routeAfterVerifier.routesAfterQueryRouter(
+        state({
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            referenceTarget: 'SHARED_REEL',
+            needsRetrieval: true,
+            needsUserMemory: false,
+            needsConversationSummary: false,
+            needsVerification: true,
+            reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
+            requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+            recommendationAction: { type: 'NONE', reason: 'none' },
+            reason: 'The requested Reel is unclear.',
+          },
+        }),
+      ),
+    ).toEqual(['noContextAnswerNode']);
+  });
+
+  it('routes structured recommendation actions without free-form answer generation', () => {
+    expect(
+      routeAfterVerifier.routesAfterQueryRouter(
+        state({
+          route: {
+            intent: 'NORMAL_CHAT',
+            referenceTarget: 'NONE',
+            needsRetrieval: false,
+            needsUserMemory: false,
+            needsConversationSummary: false,
+            needsVerification: false,
+            reelQuestionType: 'NONE',
+            requiredEvidence: ['NONE'],
+            recommendationAction: {
+              type: 'RECOMMEND_REELS',
+              query: 'dogs',
+              minRelevantItems: 1,
+              allowPersonalizedFallback: false,
+              reason: 'The user requested dog Reels.',
+            },
+            reason: 'Recommendation request.',
+          },
+        }),
+      ),
+    ).toEqual(['reelRecommendationNode']);
   });
 
   it('routes successful semantic context negatives through answer verification', () => {
@@ -851,6 +901,9 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
     createFinalAnswerNode: (
       nodeTimings: Record<string, number>,
     ) => DiagnosticNode;
+    createReelRecommendationNode: (
+      nodeTimings: Record<string, number>,
+    ) => DiagnosticNode;
   }
 
   const makeWorkflow = (answer = 'answer') =>
@@ -902,6 +955,26 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
       { revision: 0, source: 'INITIAL', answer: 'x'.repeat(1_500) },
     ]);
     expect(result.answerGenerationMode).toBe('SYNTHESIZED');
+  });
+
+  it('clears a prior terminal failure after a revised answer succeeds', async () => {
+    const workflow = makeWorkflow('Recovered answer.');
+    const result = await workflow.createDraftAnswerNode({})({
+      ...base(),
+      finalFailureSource: 'WORKFLOW',
+      nextDraftSource: 'VERIFIER_REVISION',
+      verification: {
+        passed: false,
+        confidence: 0,
+        issues: ['Revise this answer.'],
+        requiresRevision: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      answer: 'Recovered answer.',
+      finalFailureSource: 'NONE',
+    });
   });
 
   it('uses a bounded grounded verifier revision before calling the draft LLM', async () => {
@@ -1076,6 +1149,75 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
     expect(final).toMatchObject({
       answer: 'final',
       finalFailureSource: 'NO_CONTEXT',
+    });
+  });
+
+  it('renders recommendation prose only from returned Reel titles', async () => {
+    const reels = [
+      {
+        id: 'reel-dog-1',
+        userId: 'creator-1',
+        mediaKey: 'media-1',
+        title: 'Dogs at the park',
+        description: 'Feature claims should not be invented from titles.',
+        tags: ['dogs'],
+        status: 'COMPLETED',
+        visibility: 'public',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+    const contentService = {
+      searchPublicReels: jest.fn().mockResolvedValue(reels),
+      getRecommendedReels: jest.fn(),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      contentService as never,
+    ) as unknown as DiagnosticWorkflow;
+    const result = await workflow.createReelRecommendationNode({})({
+      ...base(),
+      route: {
+        intent: 'NORMAL_CHAT',
+        referenceTarget: 'NONE',
+        needsRetrieval: false,
+        needsUserMemory: false,
+        needsConversationSummary: false,
+        needsVerification: false,
+        reelQuestionType: 'NONE',
+        requiredEvidence: ['NONE'],
+        recommendationAction: {
+          type: 'RECOMMEND_REELS',
+          query: 'dogs',
+          minRelevantItems: 1,
+          allowPersonalizedFallback: false,
+          reason: 'The user requested dog Reels.',
+        },
+        reason: 'Recommendation request.',
+      },
+    });
+
+    expect(result.answer).toBe(
+      'Here are accessible Reels that may match:\n- Dogs at the park',
+    );
+    expect(result.answer).not.toContain('sign language');
+    expect(result.recommendedReels).toEqual(reels);
+    expect(contentService.searchPublicReels).toHaveBeenCalledWith({
+      query: 'dogs',
+      viewerId: 'u',
+      limit: 8,
     });
   });
 
@@ -1288,14 +1430,90 @@ describe('LangGraphRagChatWorkflowAdapter failure diagnostics', () => {
     expect(result).toMatchObject({
       answer:
         'I do not have enough shared reel metadata to answer that reliably.',
-      answerGenerationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
+      answerGenerationMode: 'FAILURE_FALLBACK',
       answerFallbackReason: 'UNUSABLE_SYNTHESIS',
       citations: [],
       citationCoverage: { mode: 'NOT_REQUIRED' },
       verification: { passed: true },
-      finalFailureSource: 'NONE',
+      finalFailureSource: 'WORKFLOW',
     });
     expect(createNoContextAnswer.execute).toHaveBeenCalled();
+  });
+
+  it('retains successfully supplied evidence when answer-contract validation fails', async () => {
+    const generationEvidence = [
+      {
+        evidenceId: 'e0',
+        sourceId: 'transcript-1',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT' as const,
+        evidenceText: 'The speaker says hello.',
+      },
+    ];
+    const generateDraftAnswer = {
+      execute: jest
+        .fn()
+        .mockRejectedValue(
+          new DraftAnswerGenerationError(
+            new Error('required evidence coverage failed'),
+            [{ modelRole: 'ANSWER', providerStatus: 200 } as never],
+            'UNUSABLE_SYNTHESIS',
+            generationEvidence,
+          ),
+        ),
+    };
+    const createNoContextAnswer = {
+      executeAfterAnswerGenerationFailure: jest
+        .fn()
+        .mockReturnValue(
+          'I could not form a reliable answer from the available shared Reel evidence.',
+        ),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      generateDraftAnswer as never,
+      undefined as never,
+      undefined as never,
+      createNoContextAnswer as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+    ) as unknown as {
+      createDraftAnswerNode: (
+        timings: Record<string, number>,
+      ) => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+
+    const node = workflow.createDraftAnswerNode({});
+    const result = await node({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      userMessage: 'What is said in the shared Reel?',
+      route: { intent: 'REEL_VIDEO_QUESTION' },
+      retrievedChunks: [],
+      rerankedChunks: [],
+      retryCount: 0,
+      retrievalRetryCount: 0,
+      citationRetryCount: 0,
+      citationAttempts: [],
+      draftHistory: [],
+      draftRevision: 0,
+      nextDraftSource: 'INITIAL',
+    } as unknown as RagChatWorkflowState);
+
+    expect(result.generationEvidence).toEqual(generationEvidence);
+    expect(
+      createNoContextAnswer.executeAfterAnswerGenerationFailure,
+    ).toHaveBeenCalled();
   });
 });
 

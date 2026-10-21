@@ -447,7 +447,6 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         'answerQualityIssues',
         'requiresRevision',
         'revisedInstruction',
-        'contradictions',
         'supportedClaimMappings',
       ],
       properties: {

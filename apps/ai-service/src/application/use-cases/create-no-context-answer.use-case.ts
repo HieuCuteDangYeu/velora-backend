@@ -10,7 +10,20 @@ export class CreateNoContextAnswerUseCase {
     return this.buildAnswer(state);
   }
 
+  executeAfterAnswerGenerationFailure(state: RagChatWorkflowState): string {
+    if (state.contextSufficiency?.sufficient === true) {
+      return state.route?.intent === 'REEL_VIDEO_QUESTION'
+        ? 'I could not form a reliable answer from the available shared Reel evidence.'
+        : 'I could not form a reliable answer from the available context.';
+    }
+    return this.buildAnswer(state);
+  }
+
   private buildAnswer(state: RagChatWorkflowState): string {
+    if (state.route?.reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE') {
+      return 'Which shared Reel or clip do you mean? Please identify the one you want me to use.';
+    }
+
     const userFacingReason = state.contextSufficiency?.userFacingReason?.trim();
 
     if (userFacingReason) {

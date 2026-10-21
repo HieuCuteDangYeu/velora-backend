@@ -21,8 +21,107 @@ const heldOutSeries = new Set(
 );
 const series = (doc) => doc.title.split(' Episode')[0];
 const sentence = (text) => text.trim().match(/^[\s\S]*?[.!?](?:\s|$)/)?.[0].trim() || text.trim();
+const normalizedEvidenceText = (text) =>
+  String(text || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
 
-function build(snapshot) {
+function deriveEvidenceGroup(row, fixture, evidenceId) {
+  const source = (fixture.chunks || []).find((item) => item.id === evidenceId);
+  if (!source || typeof source.startTime !== 'number' || typeof source.endTime !== 'number')
+    return [evidenceId];
+
+  const start =
+    typeof row.metadata.referenceStartSec === 'number'
+      ? row.metadata.referenceStartSec
+      : source.startTime;
+  const end =
+    typeof row.metadata.referenceEndSec === 'number'
+      ? row.metadata.referenceEndSec
+      : source.endTime;
+  const answerType = row.metadata.answerType;
+  const canonicalText = normalizedEvidenceText(
+    answerType === 'QUOTE'
+      ? row.expectedOutput.referenceAnswer
+      : source.evidenceText,
+  );
+  const alternatives = (fixture.chunks || []).filter((candidate) => {
+    if (
+      candidate.reelId !== source.reelId ||
+      typeof candidate.startTime !== 'number' ||
+      typeof candidate.endTime !== 'number' ||
+      candidate.startTime > start + 0.05 ||
+      candidate.endTime < end - 0.05
+    )
+      return false;
+    const candidateText = normalizedEvidenceText(candidate.evidenceText);
+    return (
+      candidate.id === evidenceId ||
+      (canonicalText.length >= 16 && candidateText.includes(canonicalText))
+    );
+  });
+  return [
+    evidenceId,
+    ...alternatives.map((candidate) => candidate.id).filter((id) => id !== evidenceId),
+  ];
+}
+
+function applyQuoteReferenceReview(rows, review) {
+  if (!review) return 0;
+  if (
+    review.reviewAuthority !== 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' ||
+    !Array.isArray(review.cases)
+  )
+    throw new Error('Quote review authority or case list is invalid');
+  const reviewedBySourceWindow = new Map(
+    review.cases
+      .filter(
+        (entry) =>
+          entry.sourceMatch === true &&
+          typeof entry.evidenceId === 'string' &&
+          typeof entry.sourceStartSec === 'number' &&
+          typeof entry.sourceEndSec === 'number' &&
+          typeof entry.reviewedReference === 'string' &&
+          entry.reviewedReference.trim().length > 0,
+      )
+      .map((entry) => [
+        `${entry.evidenceId}|${entry.sourceStartSec}|${entry.sourceEndSec}`,
+        entry,
+      ]),
+  );
+  let applied = 0;
+  for (const row of rows) {
+    if (row.metadata?.answerType !== 'QUOTE') continue;
+    const evidenceId = row.expectedOutput?.relevantEvidenceIds?.[0];
+    const start = row.metadata.referenceStartSec;
+    const end = row.metadata.referenceEndSec;
+    if (
+      typeof evidenceId !== 'string' ||
+      typeof start !== 'number' ||
+      typeof end !== 'number'
+    )
+      continue;
+    const reviewEntry = reviewedBySourceWindow.get(
+      `${evidenceId}|${start}|${end}`,
+    );
+    if (!reviewEntry) continue;
+    row.expectedOutput.referenceAnswer = reviewEntry.reviewedReference.trim();
+    row.metadata.annotationStatus = 'AGENT_REVIEWED_CANDIDATE';
+    row.metadata.quoteReferenceReview = {
+      decision: reviewEntry.decision,
+      reviewedAt: review.reviewedAt,
+      reviewAuthority: review.reviewAuthority,
+      sourceMatch: true,
+    };
+    applied += 1;
+  }
+  return applied;
+}
+
+function build(snapshot, quoteReview) {
   const sourceHash = fingerprint(snapshot);
   const docs = new Map(snapshot.documents.map((d) => [d.reelId, d]));
   const active = (row) => {
@@ -215,7 +314,15 @@ function build(snapshot) {
       scenes: [], fault: { stage, type, variant: k < 20 ? 'PRIMARY' : 'FALLBACK' } },
       { answerType: 'OPERATIONAL_CONTRACT', faultStage: stage, faultType: type });
   }
-  return { rows, fixtures, sourceHash };
+  const agentReviewedQuoteCases = applyQuoteReferenceReview(rows, quoteReview);
+  for (const row of rows) {
+    const evidenceIds = row.expectedOutput?.relevantEvidenceIds || [];
+    if (evidenceIds.length === 0) continue;
+    row.expectedOutput.relevantEvidenceGroups = evidenceIds.map((id) =>
+      deriveEvidenceGroup(row, fixtures[row.input.fixtureRef], id),
+    );
+  }
+  return { rows, fixtures, sourceHash, agentReviewedQuoteCases };
 }
 
 function validate(bundle) {
@@ -225,7 +332,7 @@ function validate(bundle) {
   for (const row of rows) {
     const f = fixtures[row.input.fixtureRef];
     if (!f || fingerprint(f) !== row.metadata.fixtureSha256) throw new Error('Fixture fingerprint mismatch');
-    if (row.metadata.humanApproved || !['GENERATED_CANDIDATE', 'AI_REVIEWED_CANDIDATE'].includes(row.metadata.annotationStatus)) throw new Error('False gold label');
+    if (row.metadata.humanApproved || !['GENERATED_CANDIDATE', 'AI_REVIEWED_CANDIDATE', 'AGENT_REVIEWED_CANDIDATE'].includes(row.metadata.annotationStatus)) throw new Error('False gold label');
     if (Object.keys(row.input).sort().join(',') !== 'fixtureRef,question') throw new Error('Evaluator data in runtime input');
     const q = `${row.metadata.split}:${row.input.question}:${row.metadata.fixtureSha256}`;
     if (questions.has(q)) throw new Error('Duplicate question within split');
@@ -237,10 +344,26 @@ function validate(bundle) {
     }
     const available = new Set([...(f.documents || []), ...(f.chunks || []), ...(f.scenes || [])].map((x) => x.id));
     if (row.expectedOutput.relevantEvidenceIds.some((id) => !available.has(id))) throw new Error('Reference source absent');
+    const alternatives = row.expectedOutput.relevantEvidenceGroups;
+    if (alternatives !== undefined) {
+      if (
+        !Array.isArray(alternatives) ||
+        alternatives.length !== row.expectedOutput.relevantEvidenceIds.length ||
+        alternatives.some(
+          (group, index) =>
+            !Array.isArray(group) ||
+            group.length === 0 ||
+            !group.includes(row.expectedOutput.relevantEvidenceIds[index]) ||
+            group.some((id) => !available.has(id)),
+        )
+      )
+        throw new Error('Reference evidence alternatives are invalid');
+    }
   }
   for (const [bucket, n] of Object.entries(ALLOCATION)) if (rows.filter((r) => r.metadata.bucket === bucket).length !== n) throw new Error('Coverage count mismatch');
   if (rows.filter((r) => r.metadata.split === 'DEVELOPMENT').length !== 240 || rows.filter((r) => r.metadata.split === 'HELD_OUT').length !== 160) throw new Error('Split count mismatch');
   return { cases: 440, development: 240, heldOut: 160, operational: 40, coverage: ALLOCATION,
+    agentReviewedQuoteCases: bundle.agentReviewedQuoteCases || 0,
     sourceHash: bundle.sourceHash, humanGoldCases: 0, sourceFamilyIsolation: true,
     historicallyUnseenHoldout: false, heldOutIndependentReview: 'NOT_PROVEN',
     requiresImageReview: rows.filter((r) => r.metadata.requiresImageReview).length,
@@ -249,9 +372,10 @@ function validate(bundle) {
 }
 
 if (require.main === module) {
-  const [source, output] = process.argv.slice(2);
-  if (!source || !output) throw new Error('Usage: build-rag-coverage-dataset <source-snapshot.json> <new-output-dir>');
-  const bundle = build(JSON.parse(fs.readFileSync(source))), report = validate(bundle);
+  const [source, output, quoteReviewPath] = process.argv.slice(2);
+  if (!source || !output) throw new Error('Usage: build-rag-coverage-dataset <source-snapshot.json> <new-output-dir> [quote-reference-review.json]');
+  const quoteReview = quoteReviewPath ? JSON.parse(fs.readFileSync(quoteReviewPath)) : undefined;
+  const bundle = build(JSON.parse(fs.readFileSync(source)), quoteReview), report = validate(bundle);
   fs.mkdirSync(output, { mode: 0o700 });
   for (const split of ['DEVELOPMENT', 'HELD_OUT', 'OPERATIONAL']) {
     const rows = bundle.rows.filter((r) => r.metadata.split === split);
@@ -261,4 +385,4 @@ if (require.main === module) {
   fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify({ ...report, datasetVersion: VERSION, datasetSha256: fingerprint(bundle.rows), fixtureSha256: fingerprint(bundle.fixtures) }, null, 2), { flag: 'wx', mode: 0o600 });
   console.log(JSON.stringify(report));
 }
-module.exports = { build, validate, VERSION, ALLOCATION };
+module.exports = { build, validate, deriveEvidenceGroup, applyQuoteReferenceReview, VERSION, ALLOCATION };

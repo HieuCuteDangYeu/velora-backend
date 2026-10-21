@@ -4,6 +4,7 @@ import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revi
 describe('BuildGroundedAnswerRevisionUseCase', () => {
   const structuredLlm = { generateObject: jest.fn() };
   const config = {
+    get: jest.fn().mockReturnValue(undefined),
     model: jest.fn().mockReturnValue('test/test/answer-revision'),
     timeoutMs: jest.fn().mockReturnValue(1_000),
     maxCompletionTokens: jest.fn().mockReturnValue(768),
@@ -51,7 +52,10 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       finalFailureSource: 'UNKNOWN',
     }) as unknown as RagChatWorkflowState;
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    config.get.mockReturnValue(undefined);
+  });
 
   it.each([
     {
@@ -238,5 +242,151 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     expect(structuredLlm.generateObject).toHaveBeenCalledWith(
       expect.objectContaining({ modelRole: 'ANSWER_REVISION' }),
     );
+  });
+
+  it('preserves chronological selection for first-sentence revisions', async () => {
+    const input = state({
+      question:
+        'Quote the first complete sentence in the indexed transcript segment spanning 9.52-62.28 seconds.',
+      evidence: ['opening fragment. The first complete sentence is here.'],
+    });
+    input.retrievalPlan = {
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 9.52,
+      sourceTimestampEndSec: 62.28,
+    };
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: 'The first complete sentence is here.',
+      evidenceIds: ['e0'],
+    });
+
+    await useCase.executeWithProvenance(input);
+
+    expect(structuredLlm.generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /scan orderedSentenceCandidates by source time and ordinal/i,
+    );
+    const prompt = JSON.parse(
+      structuredLlm.generateObject.mock.calls[0][0].userPrompt as string,
+    ) as {
+      evidence: Array<{
+        orderedSentenceCandidates?: Array<{ ordinal: number; text: string }>;
+      }>;
+    };
+    expect(prompt.evidence[0].orderedSentenceCandidates?.slice(0, 2)).toEqual([
+      { ordinal: 1, text: 'opening fragment.' },
+      { ordinal: 2, text: 'The first complete sentence is here.' },
+    ]);
+  });
+
+  it('uses the configured fallback model after a transient revision-provider error', async () => {
+    const fallbackModel = 'test/test/fallback';
+    config.get.mockReturnValue(fallbackModel);
+    structuredLlm.generateObject
+      .mockRejectedValueOnce(
+        Object.assign(new Error('rate limited'), {
+          code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+          transient: true,
+        }),
+      )
+      .mockResolvedValueOnce({
+        answer: 'They keep backups in physically different places.',
+        evidenceIds: ['e1'],
+      });
+
+    await expect(
+      useCase.executeWithProvenance(
+        state({
+          question:
+            'What safety measure do they say protects data if a building has a fire?',
+          evidence: [
+            'The building can burn in a fire.',
+            'They will have backup at different physically at different places.',
+          ],
+        }),
+      ),
+    ).resolves.toMatchObject({
+      answer: 'They keep backups in physically different places.',
+      evidenceIds: ['e1'],
+    });
+    expect(
+      structuredLlm.generateObject.mock.calls.map(([request]) => {
+        const model: unknown = request.model;
+        return model;
+      }),
+    ).toEqual(['test/test/answer-revision', fallbackModel]);
+  });
+
+  it('does not use the fallback model for a non-transient schema error', async () => {
+    config.get.mockReturnValue('test/test/fallback');
+    structuredLlm.generateObject.mockRejectedValueOnce(
+      Object.assign(new Error('invalid structured response'), {
+        code: 'STRUCTURED_COMPLETION_SCHEMA_INVALID',
+        transient: false,
+      }),
+    );
+
+    await expect(
+      useCase.executeWithProvenance(
+        state({ question: 'Where?', evidence: ['The object is in the room.'] }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'STRUCTURED_COMPLETION_SCHEMA_INVALID',
+    });
+    expect(structuredLlm.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps transcript and visual evidence in a fallback multimodal revision', async () => {
+    const fallbackModel = 'test/test/fallback';
+    config.get.mockReturnValue(fallbackModel);
+    const input = state({
+      question:
+        'Describe what is visible and summarize what is said in the clip.',
+      evidence: ['The speaker says the project is complete.'],
+    });
+    input.route!.reelQuestionType = 'MULTIMODAL_CONTENT';
+    input.route!.requiredEvidence = ['TRANSCRIPT', 'VISUAL'];
+    input.rerankedChunks[0].evidenceType = 'TRANSCRIPT';
+    input.rerankedChunks.push({
+      ...input.rerankedChunks[0],
+      chunkId: 'visual-1',
+      evidenceType: 'VISUAL',
+      evidenceText: 'A person holds a red folder.',
+      chunkText: 'A person holds a red folder.',
+    });
+    input.contextSufficiency = {
+      sufficient: true,
+      confidence: 0.95,
+      availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+      missingEvidence: [],
+      supportedEvidenceIds: ['e0', 'e1'],
+      reason: 'Both required modalities are available.',
+      recommendedAction: 'ANSWER',
+    };
+    structuredLlm.generateObject
+      .mockRejectedValueOnce(
+        Object.assign(new Error('rate limited'), {
+          code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+          transient: true,
+        }),
+      )
+      .mockResolvedValueOnce({
+        answer:
+          'The transcript says the project is complete. The frame shows a person holding a red folder.',
+        evidenceIds: ['e0', 'e1'],
+      });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      evidenceIds: ['e0', 'e1'],
+      generationEvidence: expect.arrayContaining([
+        expect.objectContaining({ evidenceType: 'TRANSCRIPT' }),
+        expect.objectContaining({ evidenceType: 'VISUAL' }),
+      ]),
+    });
+    expect(
+      structuredLlm.generateObject.mock.calls.map(([request]) => {
+        const model: unknown = request.model;
+        return model;
+      }),
+    ).toEqual(['test/test/answer-revision', fallbackModel]);
   });
 });

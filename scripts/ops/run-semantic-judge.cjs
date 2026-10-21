@@ -15,7 +15,13 @@ const {
   DEFAULT_GROQ_MODEL,
   judgeFingerprint,
 } = require('./rag-semantic-judge.cjs');
-const { DIMENSIONS, isApplicable } = require('./rag-evaluation-applicability.cjs');
+const {
+  DIMENSIONS,
+  isApplicable,
+} = require('./rag-evaluation-applicability.cjs');
+const { dimensionAvailability } = require('./rag-semantic-eligibility.cjs');
+
+const ELIGIBILITY_POLICY = 'dimension-evidence-v3';
 
 function parseArgs(argv) {
   const args = {};
@@ -126,7 +132,20 @@ async function publishSemanticScores({
 
       for (const m of metrics) {
         const item = evaluation.datasetItem;
-        if (item && !isApplicable(item, m.name === 'factual_correctness' ? 'factualCorrectness' : m.name === 'response_relevancy' ? 'responseRelevancy' : m.name === 'context_completeness' ? 'contextCompleteness' : 'faithfulness')) continue;
+        if (
+          item &&
+          !isApplicable(
+            item,
+            m.name === 'factual_correctness'
+              ? 'factualCorrectness'
+              : m.name === 'response_relevancy'
+                ? 'responseRelevancy'
+                : m.name === 'context_completeness'
+                  ? 'contextCompleteness'
+                  : 'faithfulness',
+          )
+        )
+          continue;
         if (typeof m.score !== 'number') continue;
 
         client.score.create({
@@ -198,10 +217,16 @@ async function main() {
     state.datasetName || args.dataset || 'velora/rag-scraped-v1-provisional';
   const outputPath =
     args.output ||
-    path.join(path.dirname(statePath), `${runId}.semantic-v2.json`);
+    path.join(
+      path.dirname(statePath),
+      [runId, EVALUATOR_VERSION].join('.') + '.json',
+    );
   const casesOutputPath =
     args['cases-output'] ||
-    path.join(path.dirname(outputPath), 'semantic-cases.jsonl');
+    path.join(
+      path.dirname(outputPath),
+      'semantic-cases-' + EVALUATOR_VERSION + '.jsonl',
+    );
   const ledgerDir =
     args.ledger ||
     path.join(
@@ -229,7 +254,7 @@ async function main() {
     let semanticData = {
       schemaVersion: EVALUATOR_VERSION,
       evaluatorVersion: EVALUATOR_VERSION,
-      eligibilityPolicy: 'healthy-provider-stages-v1',
+      eligibilityPolicy: ELIGIBILITY_POLICY,
       judgeFingerprint: judgeFingerprint(),
       sourceStateFingerprint: fingerprint(state),
       runId,
@@ -248,7 +273,7 @@ async function main() {
       try {
         semanticData = loadJson(outputPath);
         if (
-          semanticData.eligibilityPolicy !== 'healthy-provider-stages-v1' ||
+          semanticData.eligibilityPolicy !== ELIGIBILITY_POLICY ||
           semanticData.evaluatorVersion !== EVALUATOR_VERSION ||
           semanticData.judgeFingerprint !== judgeFingerprint() ||
           semanticData.sourceStateFingerprint !== fingerprint(state)
@@ -316,8 +341,9 @@ async function main() {
 
     // Filter completed benchmark cases to evaluate
     const candidateCaseIds = Object.entries(state.cases)
-      .filter(([, caseEntry]) =>
-        caseEntry.status === 'COMPLETED' || caseEntry.status === 'FAILED',
+      .filter(
+        ([, caseEntry]) =>
+          caseEntry.status === 'COMPLETED' || caseEntry.status === 'FAILED',
       )
       .map(([id]) => id)
       .slice(0, limit);
@@ -359,42 +385,62 @@ async function main() {
           const question = item.input?.question;
           const referenceAnswer = item.expectedOutput?.acceptedAnswers?.length
             ? item.expectedOutput.acceptedAnswers
-            : item.expectedOutput?.answer ?? item.expectedOutput?.referenceAnswer;
+            : (item.expectedOutput?.answer ??
+              item.expectedOutput?.referenceAnswer);
           const generatedAnswer = caseEntry.output?.answer;
           const context = caseEntry.output?.generationEvidence;
-          if (caseEntry.output?.executionHealth?.status !== 'AVAILABLE') {
-            semanticData.cases[caseId] = {
-              caseId,
-              status: 'UNAVAILABLE',
-              error: 'Provider-stage health is degraded or unproven',
-              executionHealth: caseEntry.output?.executionHealth ?? {
-                status: 'UNKNOWN',
-                failedStages: [],
-              },
-            };
-            saveJsonAtomic(outputPath, semanticData);
-            continue;
+          const availability = dimensionAvailability(item, caseEntry.output);
+          if (caseEntry.error || caseEntry.status === 'FAILED') {
+            for (const dimension of DIMENSIONS) {
+              if (availability[dimension] === 'AVAILABLE')
+                availability[dimension] = 'PRIMARY_EXECUTION_FAILED';
+            }
           }
-          if (!Array.isArray(context)) {
-            semanticData.cases[caseId] = {
-              caseId,
-              status: 'UNAVAILABLE',
-              error: 'Exact generation context was not captured',
-            };
-            continue;
-          }
+          const dimensionsToEvaluate = DIMENSIONS.filter(
+            (dimension) => availability[dimension] === 'AVAILABLE',
+          );
 
           try {
-            const evaluation = await pool.evaluateCase({
-              caseId,
-              question,
-              referenceAnswer,
-              generatedAnswer,
-              context,
-            });
+            const evaluation = dimensionsToEvaluate.length
+              ? await pool.evaluateCase({
+                  caseId,
+                  question,
+                  referenceAnswer,
+                  generatedAnswer,
+                  context,
+                  dimensions: dimensionsToEvaluate,
+                })
+              : {
+                  caseId,
+                  evaluatorVersion: EVALUATOR_VERSION,
+                  provider: null,
+                  model: null,
+                  dimensionModels: [],
+                  usage: { totalTokens: 0 },
+                };
+            for (const dimension of DIMENSIONS) {
+              if (!evaluation[dimension]) {
+                evaluation[dimension] = {
+                  score: null,
+                  unavailableReason: availability[dimension],
+                };
+              }
+            }
+            const applicableDimensions = DIMENSIONS.filter((dimension) =>
+              isApplicable(item, dimension),
+            );
+            const status =
+              applicableDimensions.length === 0
+                ? 'NOT_APPLICABLE'
+                : applicableDimensions.some(
+                      (dimension) => availability[dimension] !== 'AVAILABLE',
+                    )
+                  ? 'PARTIALLY_EVALUATED'
+                  : 'COMPLETED';
 
             semanticData.cases[caseId] = {
               ...evaluation,
+              status,
               datasetItem: item,
               applicability: Object.fromEntries(
                 DIMENSIONS.map((dimension) => [
@@ -402,16 +448,21 @@ async function main() {
                   isApplicable(item, dimension),
                 ]),
               ),
+              dimensionAvailability: availability,
+              executionHealth: caseEntry.output?.executionHealth ?? {
+                status: 'UNKNOWN',
+                failedStages: [],
+              },
               traceId: caseEntry.output?.traceId,
             };
             processedCount += 1;
 
             console.log(
               `[Progress] [${processedCount}/${candidateCaseIds.length}] Case: ${caseId} | ` +
-                `Faith: ${evaluation.faithfulness.score.toFixed(2)} | ` +
-                `Fact: ${evaluation.factualCorrectness.score.toFixed(2)} | ` +
-                `Rel: ${evaluation.responseRelevancy.score.toFixed(2)} | ` +
-                `Comp: ${evaluation.contextCompleteness.score.toFixed(2)} ` +
+                `Faith: ${evaluation.faithfulness?.score?.toFixed(2) ?? 'N/A'} | ` +
+                `Fact: ${evaluation.factualCorrectness?.score?.toFixed(2) ?? 'N/A'} | ` +
+                `Rel: ${evaluation.responseRelevancy?.score?.toFixed(2) ?? 'N/A'} | ` +
+                `Comp: ${evaluation.contextCompleteness?.score?.toFixed(2) ?? 'N/A'} ` +
                 `(${evaluation.provider}:${evaluation.model})`,
             );
 
@@ -425,6 +476,7 @@ async function main() {
               caseId,
               status: 'UNAVAILABLE',
               error: error.message,
+              evaluatorVersion: EVALUATOR_VERSION,
             };
             saveJsonAtomic(outputPath, semanticData);
           }
@@ -448,32 +500,47 @@ async function main() {
     const responseRelevancyScores = applicableScores('responseRelevancy');
     const contextCompletenessScores = applicableScores('contextCompleteness');
 
+    const dimensionMeans = [
+      availableStats(faithfulnessScores).mean,
+      availableStats(factualCorrectnessScores).mean,
+      availableStats(responseRelevancyScores).mean,
+      availableStats(contextCompletenessScores).mean,
+    ].filter((value) => typeof value === 'number');
     const metrics = {
       faithfulness: availableStats(faithfulnessScores),
       factual_correctness: availableStats(factualCorrectnessScores),
       response_relevancy: availableStats(responseRelevancyScores),
       context_completeness: availableStats(contextCompletenessScores),
-      overall_mean: validEvaluations.length
+      overall_mean: dimensionMeans.length
         ? Math.round(
-            ((availableStats(faithfulnessScores).mean +
-              availableStats(factualCorrectnessScores).mean +
-              availableStats(responseRelevancyScores).mean +
-              availableStats(contextCompletenessScores).mean) /
-              4) *
+            (dimensionMeans.reduce((sum, value) => sum + value, 0) /
+              dimensionMeans.length) *
               10000,
           ) / 10000
         : null,
     };
 
-    semanticData.evaluatedCases = validEvaluations.length;
-    semanticData.unavailableCases =
-      candidateCaseIds.length - validEvaluations.length;
+    const allEvaluations = Object.values(semanticData.cases);
+    semanticData.evaluatedCases = validEvaluations.filter((evaluation) =>
+      DIMENSIONS.some(
+        (dimension) => typeof evaluation[dimension]?.score === 'number',
+      ),
+    ).length;
+    semanticData.unavailableCases = allEvaluations.filter(
+      (evaluation) => evaluation.status === 'UNAVAILABLE',
+    ).length;
+    semanticData.partiallyEvaluatedCases = validEvaluations.filter(
+      (evaluation) => evaluation.status === 'PARTIALLY_EVALUATED',
+    ).length;
+    semanticData.notApplicableCases = validEvaluations.filter(
+      (evaluation) => evaluation.status === 'NOT_APPLICABLE',
+    ).length;
     semanticData.metrics = metrics;
     semanticData.completedAt = new Date().toISOString();
 
     saveJsonAtomic(outputPath, semanticData);
-    const casesLines = Object.entries(semanticData.cases).map(([caseId, evaluation]) =>
-      JSON.stringify({ caseId, ...evaluation }),
+    const casesLines = Object.entries(semanticData.cases).map(
+      ([caseId, evaluation]) => JSON.stringify({ caseId, ...evaluation }),
     );
     fs.writeFileSync(`${casesOutputPath}.tmp`, `${casesLines.join('\n')}\n`, {
       encoding: 'utf8',

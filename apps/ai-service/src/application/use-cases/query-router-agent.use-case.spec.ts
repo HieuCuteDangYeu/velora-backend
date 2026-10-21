@@ -174,6 +174,56 @@ describe('QueryRouterAgentUseCase', () => {
     });
   });
 
+  it('routes an explicit unshared-Reel request safely without depending on the router provider', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockRejectedValue(transientRouterError(true)),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Summarize the private Reel fixture-private-access even though it was not shared with me.',
+        hasSharedReelContext: false,
+        sharedReelCount: 0,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      needsRetrieval: true,
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'STRUCTURAL',
+      },
+    });
+    expect(structuredLlmService.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('does not turn general private-video questions into access refusals', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(response()),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message: 'How should a private video be compressed for storage?',
+        hasSharedReelContext: false,
+        sharedReelCount: 0,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'NORMAL_CHAT',
+      referenceTarget: 'NONE',
+    });
+    expect(structuredLlmService.generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('states a general boundary between specific relations and overall summaries', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(
@@ -269,6 +319,33 @@ describe('QueryRouterAgentUseCase', () => {
       reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
       requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
     });
+  });
+
+  it('structurally clarifies an explicitly unresolved choice between shared Reels', async () => {
+    const generateObject = jest.fn();
+    const useCase = new QueryRouterAgentUseCase(
+      { generateObject } as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'What happens in that clip? I mean one of the two shared clips, but I have not identified which.',
+        hasSharedReelContext: true,
+        sharedReelCount: 2,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      needsRetrieval: false,
+      reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
+      requiredEvidence: ['NONE'],
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'STRUCTURAL',
+      },
+    });
+    expect(generateObject).not.toHaveBeenCalled();
   });
 
   it('fails closed on an invalid semantic tuple without relying on fixture wording', async () => {

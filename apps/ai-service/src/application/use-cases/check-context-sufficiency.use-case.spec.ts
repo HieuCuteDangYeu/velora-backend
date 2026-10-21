@@ -4,6 +4,7 @@ import { CheckContextSufficiencyUseCase } from './check-context-sufficiency.use-
 
 describe('CheckContextSufficiencyUseCase', () => {
   const config = {
+    get: jest.fn(),
     model: jest.fn(() => 'test/test/sufficiency'),
     timeoutMs: jest.fn(() => 6_000),
     maxCompletionTokens: jest.fn(() => 512),
@@ -129,6 +130,63 @@ describe('CheckContextSufficiencyUseCase', () => {
       sufficient: true,
       availableEvidence: ['TRANSCRIPT', 'VISUAL'],
     });
+  });
+
+  it('instructs the judge to assess requested Reel comparisons independently', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: true,
+        confidence: 1,
+        supportedEvidenceIds: ['e0', 'e1'],
+        reason: 'Each requested Reel has a relevant transcript segment.',
+        recommendedAction: 'ANSWER',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const comparisonState = {
+      userMessage: 'Compare the first transcript segment from both Reels.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      retrievalPlan: { requiresReelCoverage: true },
+      retrievedChunks: [
+        { reelId: 'reel-1', evidenceType: 'TRANSCRIPT', chunkText: 'one' },
+        { reelId: 'reel-2', evidenceType: 'TRANSCRIPT', chunkText: 'two' },
+      ],
+      rerankedChunks: [
+        {
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The first clip opens with a visitor arriving.',
+          chunkText: 'The first clip opens with a visitor arriving.',
+          tags: [],
+        },
+        {
+          reelId: 'reel-2',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The second clip opens with a police report.',
+          chunkText: 'The second clip opens with a police report.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(comparisonState)).resolves.toMatchObject({
+      sufficient: true,
+      supportedEvidenceIds: ['e0', 'e1'],
+    });
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /assess each requested Reel independently/i,
+    );
+    expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"requiresReelCoverage":true',
+    );
   });
 
   it('refuses a required user-memory request when the memory tool is empty', async () => {
@@ -419,9 +477,15 @@ describe('CheckContextSufficiencyUseCase', () => {
     const service = {
       generateObject: jest.fn().mockRejectedValue(new Error('down')),
     };
+    const fallbackConfig = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/fallback' : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
     const useCase = new CheckContextSufficiencyUseCase(
       service as never,
-      config,
+      fallbackConfig,
     );
 
     await expect(
@@ -433,6 +497,89 @@ describe('CheckContextSufficiencyUseCase', () => {
       supportedEvidenceIds: [],
       diagnostics: { providerStatus: 'ERROR', decisionSource: 'FAIL_CLOSED' },
     });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the configured router fallback after a transient provider error', async () => {
+    const transientError = Object.assign(new Error('rate limited'), {
+      code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+      transient: true,
+    });
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(transientError)
+        .mockResolvedValueOnce({
+          sufficient: true,
+          confidence: 0.9,
+          supportedEvidenceIds: ['e0'],
+          reason: 'The evidence directly supports the answer.',
+          recommendedAction: 'ANSWER',
+        }),
+    };
+    const fallbackConfig = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/fallback' : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      fallbackConfig,
+    );
+
+    await expect(
+      useCase.execute(state({ evidenceText: 'Potential evidence.' })),
+    ).resolves.toMatchObject({
+      sufficient: true,
+      diagnostics: {
+        providerStatus: 'SUCCESS',
+        decisionSource: 'LLM_FALLBACK',
+        model: 'test/test/fallback',
+      },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: 'test/test/sufficiency' }),
+    );
+    expect(service.generateObject).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: 'test/test/fallback' }),
+    );
+  });
+
+  it('fails closed when the configured fallback also fails', async () => {
+    const transientError = Object.assign(new Error('rate limited'), {
+      code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+      transient: true,
+    });
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(transientError)
+        .mockRejectedValueOnce(new Error('fallback unavailable')),
+    };
+    const fallbackConfig = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/fallback' : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      fallbackConfig,
+    );
+
+    await expect(
+      useCase.execute(state({ evidenceText: 'Potential evidence.' })),
+    ).resolves.toMatchObject({
+      sufficient: false,
+      confidence: 0,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+      diagnostics: { providerStatus: 'ERROR', decisionSource: 'FAIL_CLOSED' },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
   });
 
   it('does not require visual evidence when reelQuestionType is TRANSCRIPT_CONTENT even if VISUAL was listed in requiredEvidence', async () => {

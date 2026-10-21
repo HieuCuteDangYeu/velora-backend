@@ -10,20 +10,18 @@ async function bootstrap() {
   const rabbitmqUrl =
     configService.get<string>('RABBITMQ_URL') || 'amqp://localhost:5672';
 
-  // Keep the legacy queue during the compatibility window. Old call-service
-  // images publish there; new images publish directly to notification_queue.
-  for (const queue of ['notification_queue', 'call_queue']) {
-    app.connectMicroservice({
-      transport: Transport.RMQ,
-      options: {
-        urls: [rabbitmqUrl],
-        queue,
-        queueOptions: { durable: true },
-        noAck: false,
-        prefetchCount: 1,
-      },
-    });
-  }
+  // Only notification_queue: call_queue belongs to call-service. A second
+  // consumer there takes a share of the gateway's call RPCs and fails them.
+  app.connectMicroservice({
+    transport: Transport.RMQ,
+    options: {
+      urls: [rabbitmqUrl],
+      queue: 'notification_queue',
+      queueOptions: { durable: true },
+      noAck: false,
+      prefetchCount: 1,
+    },
+  });
 
   await app.startAllMicroservices();
 

@@ -39,4 +39,3 @@ CREATE INDEX "call_record_participants_user_id_result_seen_at_idx" ON "call_reco
 
 -- AddForeignKey
 ALTER TABLE "call_record_participants" ADD CONSTRAINT "call_record_participants_call_id_fkey" FOREIGN KEY ("call_id") REFERENCES "call_records"("call_id") ON DELETE CASCADE ON UPDATE CASCADE;
-

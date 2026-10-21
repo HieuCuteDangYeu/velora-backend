@@ -79,7 +79,8 @@ export class ProcessNotificationJobUseCase {
 
     switch (processingJob.type) {
       case 'NEW_MESSAGE':
-        return this.processNewMessageJob(processingJob);
+      case 'MISSED_CALL':
+        return this.processVisibleNotificationJob(processingJob);
       case 'INCOMING_CALL':
         return this.processIncomingCallJob(processingJob);
       case 'CALL_STATE_UPDATE':
@@ -91,7 +92,8 @@ export class ProcessNotificationJobUseCase {
     }
   }
 
-  private async processNewMessageJob(processingJob: NotificationJob) {
+  /** A plain visible FCM notification: new message or missed call. */
+  private async processVisibleNotificationJob(processingJob: NotificationJob) {
     // No-token eligibility was checked durably at claim time. A token registered
     // later applies to later jobs; no negative token cache is kept here.
     if (processingJob.status === 'skipped') {
@@ -132,7 +134,9 @@ export class ProcessNotificationJobUseCase {
     }
 
     const results = await Promise.all(
-      tokens.map((token) => this.sendNewMessageToToken(processingJob, token)),
+      tokens.map((token) =>
+        this.sendVisibleNotificationToToken(processingJob, token),
+      ),
     );
 
     const sendResult = this.buildSendResult(results);
@@ -323,7 +327,7 @@ export class ProcessNotificationJobUseCase {
     };
   }
 
-  private async sendNewMessageToToken(
+  private async sendVisibleNotificationToToken(
     job: NotificationJob,
     token: PushToken,
   ): Promise<PushTokenSendResult> {
@@ -333,12 +337,13 @@ export class ProcessNotificationJobUseCase {
         title: job.title,
         body: job.body,
         data: {
-          type: 'NEW_MESSAGE',
+          type: job.type,
           notificationJobId: job.id,
           recipientUserId: job.recipientUserId,
           actorUserId: job.actorUserId,
           conversationId: job.conversationId,
           messageId: job.messageId,
+          callId: job.callId,
         },
       });
 
@@ -569,6 +574,7 @@ export class ProcessNotificationJobUseCase {
   private buildNextAttemptAt(job: NotificationJob) {
     switch (job.type) {
       case 'NEW_MESSAGE':
+      case 'MISSED_CALL':
         if (job.attemptCount >= MAX_MESSAGE_NOTIFICATION_ATTEMPTS) {
           return undefined;
         }

@@ -21,6 +21,7 @@ const payload = {
 describe('CallEventsSubscriber', () => {
   let sendIncomingCallNotification: { execute: jest.Mock };
   let sendCallStateUpdate: { execute: jest.Mock };
+  let sendMissedCallNotification: { execute: jest.Mock };
   let subscriber: CallEventsSubscriber;
   let ack: jest.Mock;
   let nack: jest.Mock;
@@ -28,9 +29,11 @@ describe('CallEventsSubscriber', () => {
   beforeEach(() => {
     sendIncomingCallNotification = { execute: jest.fn().mockResolvedValue({}) };
     sendCallStateUpdate = { execute: jest.fn().mockResolvedValue({}) };
+    sendMissedCallNotification = { execute: jest.fn().mockResolvedValue([]) };
     subscriber = new CallEventsSubscriber(
       sendIncomingCallNotification as never,
       sendCallStateUpdate as never,
+      sendMissedCallNotification as never,
     );
     ack = jest.fn();
     nack = jest.fn();
@@ -45,6 +48,74 @@ describe('CallEventsSubscriber', () => {
         content: Buffer.alloc(0),
       }),
     }) as unknown as RmqContext;
+
+  it('sends a missed-call push to the callees named by call-service', async () => {
+    await subscriber.handleCallEnded(
+      {
+        ...payload,
+        reason: 'no_answer',
+        missedUserIds: [payload.targetUserId],
+      },
+      context(),
+    );
+
+    expect(sendMissedCallNotification.execute).toHaveBeenCalledWith({
+      recipientUserIds: [payload.targetUserId],
+      callId: payload.callId,
+      invitationIdByUserId: undefined,
+      conversationId: payload.conversationId,
+      callType: 'VIDEO',
+      isGroupCall: undefined,
+      groupName: undefined,
+      initiatorId: payload.initiatorId,
+      initiatorDisplayName: payload.initiatorDisplayName,
+    });
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it('keys a missed group invitation by its invitation id', async () => {
+    await subscriber.handleCallRejected(
+      {
+        ...payload,
+        isGroupCall: true,
+        groupName: 'Team',
+        invitationId: 'invite-7',
+        reason: 'timeout',
+        missedUserIds: [payload.targetUserId],
+      },
+      context(),
+    );
+
+    expect(sendMissedCallNotification.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isGroupCall: true,
+        groupName: 'Team',
+        invitationIdByUserId: { [payload.targetUserId]: 'invite-7' },
+      }),
+    );
+    expect(ack).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not send a missed-call push without missedUserIds', async () => {
+    await subscriber.handleCallEnded(
+      { ...payload, reason: 'ended' },
+      context(),
+    );
+
+    expect(sendMissedCallNotification.execute).not.toHaveBeenCalled();
+  });
+
+  it('requeues the event when the missed-call job cannot be stored', async () => {
+    sendMissedCallNotification.execute.mockRejectedValue(new Error('db down'));
+
+    await subscriber.handleCallEnded(
+      { ...payload, missedUserIds: [payload.targetUserId] },
+      context(),
+    );
+
+    expect(ack).not.toHaveBeenCalled();
+    expect(nack).toHaveBeenCalledWith(expect.anything(), false, true);
+  });
 
   it('persists an incoming-call notification before acknowledging the event', async () => {
     await subscriber.handleCallInitiated(payload, context());

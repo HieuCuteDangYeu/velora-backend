@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { SendCallStateUpdateUseCase } from '../../application/use-cases/send-call-state-update.use-case';
 import { SendIncomingCallNotificationUseCase } from '../../application/use-cases/send-incoming-call-notification.use-case';
+import { SendMissedCallNotificationUseCase } from '../../application/use-cases/send-missed-call-notification.use-case';
 
 const callLifecyclePayloadSchema = z.object({
   callId: z.string().min(1),
@@ -31,8 +32,11 @@ const callLifecyclePayloadSchema = z.object({
     .regex(/^[a-f0-9]{64}$/)
     .optional(),
   lifecycleRevision: z.number().int().nonnegative().optional(),
+  missedUserIds: z.array(z.string().min(1)).optional(),
   at: z.string().datetime(),
 });
+
+type CallLifecyclePayload = z.infer<typeof callLifecyclePayloadSchema>;
 
 type CallLifecycleEvent =
   | 'call.initiated'
@@ -47,6 +51,7 @@ export class CallEventsSubscriber {
   constructor(
     private readonly sendIncomingCallNotification: SendIncomingCallNotificationUseCase,
     private readonly sendCallStateUpdate: SendCallStateUpdateUseCase,
+    private readonly sendMissedCallNotification: SendMissedCallNotificationUseCase,
   ) {}
 
   @EventPattern('call.initiated')
@@ -145,6 +150,7 @@ export class CallEventsSubscriber {
               }),
             ),
           );
+          await this.notifyMissedCall(parsed.data);
           channel.ack(message);
           return;
         }
@@ -169,6 +175,7 @@ export class CallEventsSubscriber {
           lifecycleRevision: parsed.data.lifecycleRevision,
           at: parsed.data.at,
         });
+        await this.notifyMissedCall(parsed.data);
       }
 
       channel.ack(message);
@@ -178,6 +185,28 @@ export class CallEventsSubscriber {
       );
       channel.nack(message, false, true);
     }
+  }
+
+  private async notifyMissedCall(payload: CallLifecyclePayload) {
+    if (!payload.missedUserIds?.length) return;
+    await this.sendMissedCallNotification.execute({
+      recipientUserIds: payload.missedUserIds,
+      callId: payload.callId,
+      invitationIdByUserId: payload.invitationId
+        ? Object.fromEntries(
+            payload.missedUserIds.map((userId) => [
+              userId,
+              payload.invitationId!,
+            ]),
+          )
+        : payload.groupInvitationIds,
+      conversationId: payload.conversationId,
+      callType: payload.callType,
+      isGroupCall: payload.isGroupCall,
+      groupName: payload.groupName,
+      initiatorId: payload.initiatorId,
+      initiatorDisplayName: payload.initiatorDisplayName,
+    });
   }
 
   private callStateStatus(

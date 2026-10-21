@@ -145,6 +145,53 @@ describe('notification delivery use cases', () => {
     expect(h.apnsVoipGateway.send).not.toHaveBeenCalled();
   });
 
+  it('sends a missed call as a visible FCM notification to every FCM token', async () => {
+    const h = createUseCases();
+    const missedCall = {
+      ...baseJob,
+      type: 'MISSED_CALL',
+      messageId: null,
+      callId: 'call-9',
+      title: 'Quân',
+      body: 'Missed voice call',
+    };
+    h.notificationJobRepository.claimForProcessing.mockResolvedValue({
+      ...missedCall,
+      status: 'processing',
+      attemptCount: 1,
+    });
+    h.pushTokenRepository.findActiveByUserId.mockResolvedValue([
+      { id: 'token-1', token: 'fcm-token', provider: 'fcm', platform: 'ios' },
+    ]);
+
+    await expect(
+      h.processNotificationJob.execute(missedCall as never),
+    ).resolves.toMatchObject({ status: 'sent' });
+
+    expect(h.pushTokenRepository.findActiveByUserId).toHaveBeenCalledWith(
+      'user-1',
+      { provider: 'fcm' },
+    );
+    expect(h.fcmInputs).toEqual([
+      {
+        token: 'fcm-token',
+        title: 'Quân',
+        body: 'Missed voice call',
+        data: {
+          type: 'MISSED_CALL',
+          notificationJobId: 'job-1',
+          recipientUserId: 'user-1',
+          actorUserId: 'user-2',
+          conversationId: 'conversation-1',
+          messageId: null,
+          callId: 'call-9',
+        },
+      },
+    ]);
+    expect(h.apnsVoipGateway.send).not.toHaveBeenCalled();
+    expect(h.notificationJobRepository.markSent).toHaveBeenCalledWith('job-1');
+  });
+
   it('schedules the next attempt when every send fails before the max retry count', async () => {
     const {
       processNotificationJob,

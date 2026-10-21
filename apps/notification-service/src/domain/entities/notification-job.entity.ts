@@ -1,7 +1,8 @@
 export type NotificationJobType =
   | 'NEW_MESSAGE'
   | 'INCOMING_CALL'
-  | 'CALL_STATE_UPDATE';
+  | 'CALL_STATE_UPDATE'
+  | 'MISSED_CALL';
 export type NotificationJobStatus =
   | 'pending'
   | 'processing'

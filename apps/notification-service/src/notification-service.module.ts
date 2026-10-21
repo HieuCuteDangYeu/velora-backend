@@ -8,6 +8,7 @@ import { ProcessNotificationJobUseCase } from './application/use-cases/process-n
 import { RegisterPushTokenUseCase } from './application/use-cases/register-push-token.use-case';
 import { RetryNotificationJobsUseCase } from './application/use-cases/retry-notification-jobs.use-case';
 import { SendCallStateUpdateUseCase } from './application/use-cases/send-call-state-update.use-case';
+import { SendMissedCallNotificationUseCase } from './application/use-cases/send-missed-call-notification.use-case';
 import { SendIncomingCallNotificationUseCase } from './application/use-cases/send-incoming-call-notification.use-case';
 import { SendNewMessageNotificationUseCase } from './application/use-cases/send-new-message-notification.use-case';
 import { SendTestPushUseCase } from './application/use-cases/send-test-push.use-case';
@@ -56,6 +57,7 @@ import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.s
     SendNewMessageNotificationUseCase,
     SendIncomingCallNotificationUseCase,
     SendCallStateUpdateUseCase,
+    SendMissedCallNotificationUseCase,
     RetryNotificationJobsUseCase,
     SendTestPushUseCase,
     NotificationRetryScheduler,

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Daily logical backup of the self-hosted PostgreSQL databases (currently: notification).
+# Daily logical backup of the self-hosted PostgreSQL databases (currently: notification, call).
 # Streams a custom-format dump from the postgres container to BACKUP_DIR and keeps the
 # newest KEEP archives per database. Restore with:
 #   docker exec -i <postgres> pg_restore -U postgres -d <db> --clean --if-exists --no-owner < archive.dump
@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 CONTAINER="${POSTGRES_CONTAINER:-microservices-boilerplate-postgres-1}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/postgres}"
 KEEP="${KEEP:-7}"
-DATABASES="${DATABASES:-notification}"
+DATABASES="${DATABASES:-notification call}"
 
 umask 077
 mkdir -p "$BACKUP_DIR"

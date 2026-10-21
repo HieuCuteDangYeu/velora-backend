@@ -35,6 +35,8 @@ export interface CallLifecyclePayload {
    * order; `at` remains a compatibility fallback for older publishers.
    */
   lifecycleRevision?: number;
+  /** Callees to send a visible "missed call" push to; see call-outcome.ts. */
+  missedUserIds?: string[];
   at: string;
 }
 

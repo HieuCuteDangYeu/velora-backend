@@ -103,6 +103,56 @@ describe('PublishCallTerminalOutboxUseCase', () => {
     );
   });
 
+  it('names the callee of an unanswered call as missed and nobody for a declined one', async () => {
+    const missed = createTerminalSession(
+      'call-missed',
+      'cancelled',
+      'cancelled',
+      'user-a',
+    );
+    const declined = createTerminalSession(
+      'call-declined',
+      'rejected',
+      'rejected',
+      'user-b',
+    );
+    const sessionRepository = {
+      claimPendingTerminalEvents: jest.fn().mockResolvedValue([
+        {
+          session: missed,
+          event: 'call.ended',
+          reason: 'cancelled',
+          userId: 'user-a',
+        },
+        {
+          session: declined,
+          event: 'call.rejected',
+          reason: 'rejected',
+          userId: 'user-b',
+        },
+      ]),
+      markTerminalEventPublished: jest.fn(),
+    };
+    const eventPublisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    const useCase = new PublishCallTerminalOutboxUseCase(
+      sessionRepository as never,
+      eventPublisher,
+      { clearCallState: jest.fn().mockResolvedValue(undefined) } as never,
+      { closeRoom: jest.fn().mockResolvedValue(undefined) } as never,
+    );
+
+    await useCase.execute(endedAt);
+
+    expect(eventPublisher.publish).toHaveBeenNthCalledWith(
+      1,
+      'call.ended',
+      expect.objectContaining({ missedUserIds: ['user-b'] }),
+    );
+    expect(eventPublisher.publish.mock.calls[1][1]).not.toHaveProperty(
+      'missedUserIds',
+    );
+  });
+
   it('preserves group capability routing on terminal outbox retries', async () => {
     const session = new CallSession({
       ...createTerminalSession(

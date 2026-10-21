@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
+import { summarizeCallOutcome } from '../../domain/call-outcome';
 import type { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
@@ -44,6 +45,7 @@ export class PublishCallTerminalOutboxUseCase {
       let published = false;
       try {
         const at = session.endedAt ?? now;
+        const { missedUserIds } = summarizeCallOutcome(session);
         await this.eventPublisher.publish(event, {
           callId: session.callId,
           conversationId: session.conversationId,
@@ -53,6 +55,7 @@ export class PublishCallTerminalOutboxUseCase {
           callType: session.callType,
           ...buildCallLifecycleMetadata(session, at),
           reason,
+          ...(missedUserIds.length > 0 ? { missedUserIds } : {}),
           at: at.toISOString(),
         });
         published = true;

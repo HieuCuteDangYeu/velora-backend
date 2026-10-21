@@ -107,6 +107,50 @@ describe('PublishCallAnswerOutboxUseCase', () => {
     );
   });
 
+  it('marks only expired or busy group invitations as missed', async () => {
+    const session = new CallSession({
+      ...createActiveSession('group-call', 'action-group'),
+      isGroupCall: true,
+      groupName: 'Team',
+    });
+    const event = (userId: string, reason: string) => ({
+      key: `${userId}-${reason}`,
+      event: 'call.rejected' as const,
+      callId: 'group-call',
+      userId,
+      lifecycleRevision: 4,
+      at: answeredAt.toISOString(),
+      reason,
+      invitationId: `invite-${userId}`,
+    });
+    const sessionRepository = {
+      claimPendingAnswerEvents: jest.fn().mockResolvedValue([]),
+      claimPendingGroupInvitationEvents: jest
+        .fn()
+        .mockResolvedValue([
+          event('timed-out', 'timeout'),
+          event('busy', 'busy'),
+          event('declined', 'declined'),
+        ]),
+      findByCallId: jest.fn().mockResolvedValue(session),
+      markGroupInvitationEventPublished: jest.fn(),
+    };
+    const eventPublisher = { publish: jest.fn().mockResolvedValue(undefined) };
+    const useCase = new PublishCallAnswerOutboxUseCase(
+      sessionRepository as never,
+      eventPublisher,
+    );
+
+    await useCase.execute(answeredAt);
+
+    const payloads = eventPublisher.publish.mock.calls.map(
+      ([, payload]) => payload as Record<string, unknown>,
+    );
+    expect(payloads[0]).toMatchObject({ missedUserIds: ['timed-out'] });
+    expect(payloads[1]).toMatchObject({ missedUserIds: ['busy'] });
+    expect(payloads[2]).not.toHaveProperty('missedUserIds');
+  });
+
   it('publishes group outcomes only to the affected account and retries a failed event', async () => {
     const warning = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     const session = new CallSession({

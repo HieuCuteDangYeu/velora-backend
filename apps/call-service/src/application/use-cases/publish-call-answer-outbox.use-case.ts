@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { buildCallLifecycleMetadata } from './call-lifecycle-payload';
+import { isMissedGroupInvitationReason } from '../../domain/call-outcome';
 import type { ICallEventPublisher } from '../../domain/interfaces/call-event.publisher.interface';
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import {
@@ -93,6 +94,10 @@ export class PublishCallAnswerOutboxUseCase {
                 }
               : {}),
             ...(event.reason ? { reason: event.reason } : {}),
+            ...(event.event === 'call.rejected' &&
+            isMissedGroupInvitationReason(event.reason)
+              ? { missedUserIds: [event.userId] }
+              : {}),
             at: event.at,
           });
         }

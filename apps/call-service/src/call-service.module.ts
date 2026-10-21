@@ -17,6 +17,7 @@ import { AcceptIncomingCallUseCase } from './application/use-cases/accept-incomi
 import { ExpireDueCallsUseCase } from './application/use-cases/expire-due-calls.use-case';
 import { PublishCallAnswerOutboxUseCase } from './application/use-cases/publish-call-answer-outbox.use-case';
 import { PublishCallTerminalOutboxUseCase } from './application/use-cases/publish-call-terminal-outbox.use-case';
+import { RecordCallHistoryOutboxUseCase } from './application/use-cases/record-call-history-outbox.use-case';
 import { RecoverActiveCallsAfterMediaRestartUseCase } from './application/use-cases/recover-active-calls-after-media-restart.use-case';
 import { TerminateCallsAfterMediaLossUseCase } from './application/use-cases/terminate-calls-after-media-loss.use-case';
 import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
@@ -25,14 +26,19 @@ import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.
 import { CallGateway } from './infrastructure/gateways/call.gateway';
 import { CallStateController } from './infrastructure/controllers/call-state.controller';
 import { CallMetricsController } from './infrastructure/controllers/call-metrics.controller';
+import { CallHistoryController } from './infrastructure/controllers/call-history.controller';
 import { RedisCallStateRepository } from './infrastructure/repositories/redis-call-state.repository';
 import { RedisCallSessionRepository } from './infrastructure/repositories/redis-call-session.repository';
 import { RabbitCallEventPublisher } from './infrastructure/publishers/rabbit-call-event.publisher';
+import { RabbitCallLogPublisher } from './infrastructure/publishers/rabbit-call-log.publisher';
+import { CallPrismaService } from './infrastructure/prisma/call-prisma.service';
+import { PrismaCallHistoryRepository } from './infrastructure/repositories/prisma-call-history.repository';
 import { MediasoupCallMediaEngine } from './infrastructure/engines/mediasoup-call.engine';
 import { CallPrometheusMetricsService } from './infrastructure/metrics/call-prometheus-metrics.service';
 import { CallServiceRuntimeLease } from './infrastructure/runtime/call-service-runtime-lease.service';
 import { CallAnswerOutboxWorker } from './infrastructure/workers/call-answer-outbox.worker';
 import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal-outbox.worker';
+import { CallHistoryOutboxWorker } from './infrastructure/workers/call-history-outbox.worker';
 
 @Module({
   imports: [
@@ -85,7 +91,11 @@ import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal
       },
     ]),
   ],
-  controllers: [CallStateController, CallMetricsController],
+  controllers: [
+    CallStateController,
+    CallMetricsController,
+    CallHistoryController,
+  ],
   providers: [
     CallGateway,
     CallPrometheusMetricsService,
@@ -102,6 +112,7 @@ import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal
     ExpireDueCallsUseCase,
     PublishCallAnswerOutboxUseCase,
     PublishCallTerminalOutboxUseCase,
+    RecordCallHistoryOutboxUseCase,
     RecoverActiveCallsAfterMediaRestartUseCase,
     TerminateCallsAfterMediaLossUseCase,
     ResumeConsumerUseCase,
@@ -110,10 +121,14 @@ import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal
     RedisCallSessionRepository,
     RedisCallStateRepository,
     RabbitCallEventPublisher,
+    RabbitCallLogPublisher,
+    CallPrismaService,
+    PrismaCallHistoryRepository,
     MediasoupCallMediaEngine,
     CallServiceRuntimeLease,
     CallAnswerOutboxWorker,
     CallTerminalOutboxWorker,
+    CallHistoryOutboxWorker,
     CallTelemetryTokenService,
     {
       provide: 'ICallSessionRepository',
@@ -126,6 +141,14 @@ import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal
     {
       provide: 'ICallEventPublisher',
       useExisting: RabbitCallEventPublisher,
+    },
+    {
+      provide: 'ICallLogPublisher',
+      useExisting: RabbitCallLogPublisher,
+    },
+    {
+      provide: 'ICallHistoryRepository',
+      useExisting: PrismaCallHistoryRepository,
     },
     {
       provide: 'ICallMediaEngine',

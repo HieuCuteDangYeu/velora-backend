@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../../node_modules/@prisma/call-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CALL_DATABASE_URL")
+}
+
+/// One finished call. Written once from the call-service history outbox.
+model CallRecord {
+  callId            String    @id @map("call_id")
+  conversationId    String    @map("conversation_id")
+  isGroupCall       Boolean   @map("is_group_call")
+  callType          String    @map("call_type")
+  groupName         String?   @map("group_name")
+  groupAvatarUrl    String?   @map("group_avatar_url")
+  initiatorId       String    @map("initiator_id")
+  outcome           String
+  terminalReason    String?   @map("terminal_reason")
+  startedAt         DateTime  @map("started_at")
+  answeredAt        DateTime? @map("answered_at")
+  endedAt           DateTime  @map("ended_at")
+  durationSec       Int?      @map("duration_sec")
+  lifecycleRevision Int       @map("lifecycle_revision")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  participants CallRecordParticipant[]
+
+  @@map("call_records")
+}
+
+/// The call as seen by one participant; the per-user history and missed badge.
+model CallRecordParticipant {
+  callId    String    @map("call_id")
+  userId    String    @map("user_id")
+  role      String
+  result    String
+  startedAt DateTime  @map("started_at")
+  seenAt    DateTime? @map("seen_at")
+
+  record CallRecord @relation(fields: [callId], references: [callId], onDelete: Cascade)
+
+  @@id([callId, userId])
+  @@index([userId, startedAt(sort: Desc), callId(sort: Desc)])
+  @@index([userId, result, seenAt])
+  @@map("call_record_participants")
+}

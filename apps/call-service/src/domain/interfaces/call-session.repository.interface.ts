@@ -222,6 +222,15 @@ export abstract class ICallSessionRepository {
     lifecycleRevision: number,
     now: Date,
   ): Promise<void>;
+  /**
+   * Claims finished calls whose terminal event is published but whose history
+   * is not recorded yet. Enqueued by markTerminalEventPublished.
+   */
+  abstract claimPendingHistoryEvents(
+    now: Date,
+    limit: number,
+  ): Promise<CallSession[]>;
+  abstract markHistoryRecorded(callId: string): Promise<void>;
   abstract transitionToTerminal(
     callId: string,
     userId: string,

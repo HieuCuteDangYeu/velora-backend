@@ -23,6 +23,9 @@ const ANSWER_EVENT_OUTBOX_KEY = 'call:sessions:answer-events';
 const GROUP_INVITATION_EVENT_OUTBOX_KEY =
   'call:sessions:group-invitation-events';
 const TERMINAL_EVENT_OUTBOX_KEY = 'call:sessions:terminal-events';
+// Calls whose terminal event is published and whose history is not recorded.
+const HISTORY_EVENT_OUTBOX_KEY = 'call:sessions:history-events';
+const HISTORY_EVENT_LEASE_MS = 30_000;
 const ACTIVE_CALLS_KEY = 'call:sessions:active';
 const ACTIVE_CALLS_BY_USER_KEY = 'call:sessions:active-by-user';
 // ponytail: Conservative source-only cap; replace with E07 measured SFU limit.
@@ -660,7 +663,33 @@ local ttl = redis.call('TTL', KEYS[1])
 if ttl < 1 then ttl = ${SESSION_TTL_SECONDS} end
 redis.call('SET', KEYS[1], cjson.encode(session), 'EX', ttl)
 redis.call('ZREM', KEYS[2], session.callId)
+redis.call('ZADD', KEYS[3], ARGV[3], session.callId)
 return 1
+`;
+
+// The ZSET score is the lease: a claimed call becomes due again only if it is
+// not marked recorded before the lease ends. A missing session (expired TTL)
+// can no longer be recorded and is dropped.
+const CLAIM_PENDING_HISTORY_EVENTS_SCRIPT = `
+local nowMs = ARGV[1]
+local leaseUntilMs = ARGV[2]
+local limit = tonumber(ARGV[3])
+local keyPrefix = ARGV[4]
+local keySuffix = ARGV[5]
+local callIds = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', nowMs, 'LIMIT', 0, limit)
+local results = {}
+
+for _, callId in ipairs(callIds) do
+  local raw = redis.call('GET', keyPrefix .. callId .. keySuffix)
+  if not raw then
+    redis.call('ZREM', KEYS[1], callId)
+  else
+    redis.call('ZADD', KEYS[1], leaseUntilMs, callId)
+    table.insert(results, raw)
+  end
+end
+
+return results
 `;
 
 const TRANSITION_TO_TERMINAL_SCRIPT = `
@@ -1514,12 +1543,42 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
   ): Promise<void> {
     await this.redis.eval(
       MARK_TERMINAL_EVENT_PUBLISHED_SCRIPT,
-      2,
+      3,
       this.key(callId),
       TERMINAL_EVENT_OUTBOX_KEY,
+      HISTORY_EVENT_OUTBOX_KEY,
       String(lifecycleRevision),
       now.toISOString(),
+      String(now.getTime()),
     );
+  }
+
+  async claimPendingHistoryEvents(
+    now: Date,
+    limit: number,
+  ): Promise<CallSession[]> {
+    const result = await this.redis.eval(
+      CLAIM_PENDING_HISTORY_EVENTS_SCRIPT,
+      1,
+      HISTORY_EVENT_OUTBOX_KEY,
+      String(now.getTime()),
+      String(now.getTime() + HISTORY_EVENT_LEASE_MS),
+      String(Math.max(1, limit)),
+      'call:',
+      ':session',
+    );
+    if (!Array.isArray(result)) {
+      throw new Error('Invalid call history outbox result');
+    }
+    return result
+      .map((raw) => this.toSession(String(raw)))
+      .filter((session): session is CallSession =>
+        Boolean(session && this.isTerminal(session)),
+      );
+  }
+
+  async markHistoryRecorded(callId: string): Promise<void> {
+    await this.redis.zrem(HISTORY_EVENT_OUTBOX_KEY, callId);
   }
 
   async transitionToTerminal(

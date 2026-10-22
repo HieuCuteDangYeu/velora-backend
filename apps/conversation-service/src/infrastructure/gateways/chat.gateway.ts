@@ -445,35 +445,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     console.log(`Client ${client.id} joined room ${conversationId}`);
   }
 
-  // --- 4. WEBRTC SIGNALING ---
-  @SubscribeMessage('offer')
-  async handleOffer(
-    @MessageBody() data: Record<string, unknown>,
-    @ConnectedSocket() client: Socket,
-  ) {
-    const senderId = await this.resolveUserId(client);
-    this.relaySignal(client, 'offer', data, senderId);
-  }
-
-  @SubscribeMessage('answer')
-  async handleAnswer(
-    @MessageBody() data: Record<string, unknown>,
-    @ConnectedSocket() client: Socket,
-  ) {
-    const senderId = await this.resolveUserId(client);
-    this.relaySignal(client, 'answer', data, senderId);
-  }
-
-  @SubscribeMessage('ice_candidate')
-  async handleIceCandidate(
-    @MessageBody() data: Record<string, unknown>,
-    @ConnectedSocket() client: Socket,
-  ) {
-    const senderId = await this.resolveUserId(client);
-    this.relaySignal(client, 'ice_candidate', data, senderId);
-  }
-
-  // --- 5. TYPING INDICATOR ---
+  // --- 4. TYPING INDICATOR ---
   @SubscribeMessage('typing_start')
   async handleTypingStart(
     @MessageBody() conversationId: string,
@@ -732,20 +704,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const sockets = await this.server.in(this.userRooms(userId)).fetchSockets();
     return sockets.length > 0;
-  }
-
-  private relaySignal(
-    client: Socket,
-    event: string,
-    data: Record<string, unknown>,
-    senderId: string | null,
-  ): void {
-    const toUserId = String(data['toUserId']);
-    if (toUserId && senderId) {
-      client
-        .to(this.userRooms(toUserId))
-        .emit(event, { ...data, fromUserId: senderId });
-    }
   }
 
   private extractAccessToken(client: Socket): string | null {

@@ -1,4 +1,7 @@
-import { validateMediasoupNetworkConfiguration } from '../../../src/infrastructure/engines/mediasoup-network-configuration';
+import {
+  isPublicIpv4,
+  validateMediasoupNetworkConfiguration,
+} from '../../../src/infrastructure/engines/mediasoup-network-configuration';
 
 describe('Mediasoup network configuration', () => {
   it('allows local development without an announced IP', () => {
@@ -51,4 +54,18 @@ describe('Mediasoup network configuration', () => {
       ).not.toThrow();
     },
   );
+
+  it.each([
+    '10.0.0.1',
+    '100.64.0.1',
+    '192.168.1.9',
+    '2001:4860::1',
+    'stun.example.com',
+  ])('does not treat %s as a public IPv4', (address) => {
+    expect(isPublicIpv4(address)).toBe(false);
+  });
+
+  it('treats a routable IPv4 as public', () => {
+    expect(isPublicIpv4('8.8.8.8')).toBe(true);
+  });
 });

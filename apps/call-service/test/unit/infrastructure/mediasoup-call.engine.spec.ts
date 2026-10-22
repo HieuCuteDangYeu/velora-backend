@@ -1,4 +1,5 @@
 import { MediasoupCallMediaEngine } from '../../../src/infrastructure/engines/mediasoup-call.engine';
+import { MediasoupPublicAddress } from '../../../src/infrastructure/engines/mediasoup-public-address';
 
 type RouterDouble = {
   id: string;
@@ -1169,5 +1170,70 @@ describe('MediasoupCallMediaEngine worker death', () => {
 
     expect(listener).not.toHaveBeenCalled();
     expect(internals.bootstrapWorkers).not.toHaveBeenCalled();
+  });
+});
+
+describe('MediasoupCallMediaEngine public address', () => {
+  it('gives new transports the public address detected after an ISP change', async () => {
+    const oldCandidate = {
+      foundation: 'udpcandidate',
+      priority: 1076302079,
+      ip: '203.0.113.7',
+      address: '203.0.113.7',
+      protocol: 'udp',
+      port: 40000,
+      type: 'host',
+    };
+    const transport = {
+      id: 'transport-public-address',
+      iceParameters: {},
+      iceCandidates: [oldCandidate],
+      dtlsParameters: {},
+      close: jest.fn(),
+      on: jest.fn(),
+      observer: { on: jest.fn() },
+    };
+    const router = {
+      id: 'router-public-address',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    };
+    const { engine } = createEngine(jest.fn().mockResolvedValue(router));
+    const publicAddress = new MediasoupPublicAddress(
+      {
+        NODE_ENV: 'production',
+        MEDIASOUP_ANNOUNCED_IP_MODE: 'stun',
+        MEDIASOUP_ANNOUNCED_IP: '203.0.113.7',
+        MEDIASOUP_PUBLIC_IP_STUN_SERVERS: 'stun.example:3478',
+      },
+      jest
+        .fn()
+        .mockResolvedValueOnce('203.0.113.7')
+        .mockResolvedValue('198.51.100.20'),
+    );
+    await publicAddress.initialize();
+    await publicAddress.check();
+    await publicAddress.check();
+    (engine as unknown as { publicAddress: unknown }).publicAddress =
+      publicAddress;
+
+    await engine.createRoom('call-public-address');
+    const result = await engine.createSendTransport(
+      'call-public-address',
+      'user-a',
+    );
+
+    expect(result.iceCandidates).toEqual([
+      { ...oldCandidate, ip: '198.51.100.20', address: '198.51.100.20' },
+    ]);
+    expect(router.createWebRtcTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listenIps: [expect.objectContaining({ announcedIp: '198.51.100.20' })],
+      }),
+    );
+    expect(engine.getPublicAddressStatus()).toEqual(
+      expect.objectContaining({ detectionEnabled: true, changes: 1 }),
+    );
   });
 });

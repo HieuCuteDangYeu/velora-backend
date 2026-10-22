@@ -239,6 +239,8 @@ services:
       CALL_SINGLE_INSTANCE_GUARD: 'true'
       MEDIASOUP_WEBRTC_SERVER_PORT: '40000'
       MEDIASOUP_WORKERS: '1'
+      # Follow the ISP's public IPv4; MEDIASOUP_ANNOUNCED_IP in .env is the fallback.
+      MEDIASOUP_ANNOUNCED_IP_MODE: ${MEDIASOUP_ANNOUNCED_IP_MODE:-stun}
     env_file:
       - .env
     depends_on:

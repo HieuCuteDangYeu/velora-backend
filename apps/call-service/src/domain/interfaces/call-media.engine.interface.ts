@@ -81,6 +81,18 @@ export interface MediaWorkerLoad {
   rooms: number;
 }
 
+export interface MediaPublicAddressStatus {
+  /** The public IPv4 is detected by STUN instead of read from config. */
+  detectionEnabled: boolean;
+  lastCheckSucceeded: boolean;
+  /** Unix seconds of the last usable STUN answer; 0 when there was none. */
+  lastSuccessTimestampSeconds: number;
+  /** Times new transports moved to a newly detected address. */
+  changes: number;
+  /** The latest STUN answer differs from the address new transports get. */
+  mismatch: boolean;
+}
+
 export abstract class ICallMediaEngine {
   abstract createRoom(callId: string): Promise<void>;
   abstract getRouterRtpCapabilities(
@@ -161,6 +173,7 @@ export abstract class ICallMediaEngine {
   ): Promise<ClosedParticipantMediaResult>;
   abstract closeRoom(callId: string): Promise<void>;
   abstract getWorkerLoad(): Promise<MediaWorkerLoad[]>;
+  abstract getPublicAddressStatus(): MediaPublicAddressStatus;
   /**
    * Notifies when rooms are lost because their media worker process died.
    * The rooms are already gone from the engine when the listener runs.

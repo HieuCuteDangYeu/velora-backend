@@ -125,6 +125,26 @@ groups:
           summary: call-service is unavailable
           description: Prometheus has not been able to scrape call-service for at least one minute.
 
+      - alert: VeloraCallMediaPublicIpMismatch
+        expr: velora_call_media_public_ip_mismatch{service="call-service"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          service: call-service
+        annotations:
+          summary: call media public IP does not match STUN
+          description: For two minutes, STUN has reported a public IPv4 that new calls do not announce, so calls may have no media. Check the homelab network (Wi-Fi, modem) and the call-service logs.
+
+      - alert: VeloraCallMediaPublicIpCheckFailing
+        expr: velora_call_media_public_ip_check_success{service="call-service"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: call-service
+        annotations:
+          summary: call media public IP check is failing
+          description: No STUN server has returned a usable public IPv4 for ten minutes. New calls keep announcing the last known address, which may be out of date.
+
       - alert: VeloraNotificationServiceDown
         expr: up{job="notification-service"} == 0
         for: 1m

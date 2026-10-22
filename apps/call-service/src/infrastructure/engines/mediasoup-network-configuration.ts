@@ -40,6 +40,9 @@ const isPrivateOrUnroutableIpv6 = (address: string) => {
   );
 };
 
+export const isPublicIpv4 = (address: string) =>
+  isIP(address) === 4 && !isPrivateOrUnroutableIpv4(address);
+
 export const validateMediasoupNetworkConfiguration = ({
   environment,
   announcedIp,

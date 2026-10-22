@@ -37,6 +37,10 @@ export class CallMetricsController {
         return [];
       });
 
-    return this.metrics.metrics(activeSocketConnections, mediaWorkers);
+    return this.metrics.metrics(
+      activeSocketConnections,
+      mediaWorkers,
+      this.mediaEngine.getPublicAddressStatus(),
+    );
   }
 }

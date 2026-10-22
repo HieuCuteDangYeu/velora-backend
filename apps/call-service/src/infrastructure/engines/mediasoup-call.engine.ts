@@ -13,6 +13,7 @@ import type {
   CreateRecvTransportResult,
   CreateSendTransportResult,
   ICallMediaEngine,
+  MediaPublicAddressStatus,
   MediaWorkerLoad,
   ProducedMediaResult,
   RestartIceResult,
@@ -23,10 +24,8 @@ import {
   RedisCallStateRepository,
   type StoredTransportState,
 } from '../repositories/redis-call-state.repository';
-import {
-  getAnnouncedIpAddressFamily,
-  validateMediasoupNetworkConfiguration,
-} from './mediasoup-network-configuration';
+import { getAnnouncedIpAddressFamily } from './mediasoup-network-configuration';
+import { MediasoupPublicAddress } from './mediasoup-public-address';
 import { readTurnIceServers } from './turn-configuration';
 
 type MediaType = 'audio' | 'video';
@@ -107,18 +106,15 @@ export class MediasoupCallMediaEngine
     process.env.MEDIASOUP_WEBRTC_SERVER_PORT,
   );
   private readonly iceServers = readTurnIceServers();
+  private readonly publicAddress = new MediasoupPublicAddress();
 
   constructor(private readonly stateRepository: RedisCallStateRepository) {}
 
   async onModuleInit(): Promise<void> {
-    const announcedIp = process.env.MEDIASOUP_ANNOUNCED_IP?.trim();
-    validateMediasoupNetworkConfiguration({
-      environment: process.env.NODE_ENV,
-      announcedIp,
-    });
+    await this.publicAddress.initialize();
     if (process.env.NODE_ENV?.toLowerCase() === 'production') {
       this.logger.log(
-        `Validated public Mediasoup ${getAnnouncedIpAddressFamily(announcedIp)} candidate configuration`,
+        `Validated public Mediasoup ${getAnnouncedIpAddressFamily(this.publicAddress.current())} candidate configuration`,
       );
     }
 
@@ -129,10 +125,12 @@ export class MediasoupCallMediaEngine
     }
 
     await this.bootstrapWorkers(this.workerCount);
+    this.publicAddress.start();
   }
 
   onModuleDestroy(): Promise<void> {
     this.shuttingDown = true;
+    this.publicAddress.stop();
     this.webRtcServers.forEach((webRtcServer) => webRtcServer.close());
     this.workers.forEach((worker) => worker.close());
     return Promise.resolve();
@@ -1005,6 +1003,10 @@ export class MediasoupCallMediaEngine
     await this.stateRepository.clearCallState(callId);
   }
 
+  getPublicAddressStatus(): MediaPublicAddressStatus {
+    return this.publicAddress.status();
+  }
+
   async getWorkerLoad(): Promise<MediaWorkerLoad[]> {
     const rooms = [...this.rooms.values()];
     return Promise.all(
@@ -1047,8 +1049,7 @@ export class MediasoupCallMediaEngine
               {
                 protocol: 'udp',
                 ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-                announcedAddress:
-                  process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+                announcedAddress: this.publicAddress.current(),
                 port: this.webRtcServerPort,
               },
             ],
@@ -1150,7 +1151,7 @@ export class MediasoupCallMediaEngine
             listenIps: [
               {
                 ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
-                announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || undefined,
+                announcedIp: this.publicAddress.current(),
               },
             ],
           }),
@@ -1200,7 +1201,7 @@ export class MediasoupCallMediaEngine
       transportId: transport.id,
       direction,
       iceParameters: transport.iceParameters,
-      iceCandidates: transport.iceCandidates,
+      iceCandidates: this.publicAddress.announce(transport.iceCandidates),
       dtlsParameters: transport.dtlsParameters,
       ...(this.iceServers ? { iceServers: this.iceServers } : {}),
     };

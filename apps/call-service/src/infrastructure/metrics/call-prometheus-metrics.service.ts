@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import type { MediaPublicAddressStatus } from '../../domain/interfaces/call-media.engine.interface';
 
 const CALL_EVENTS = [
   'invite_accepted',
@@ -73,6 +74,7 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
   metrics(
     activeSocketConnections: number,
     mediaWorkers: readonly MediaWorkerMetricSample[] = [],
+    publicAddress?: MediaPublicAddressStatus,
   ): string {
     const lines: string[] = [];
     const labels = this.labels({ service: this.serviceName });
@@ -239,9 +241,70 @@ export class CallPrometheusMetricsService implements OnModuleDestroy {
       );
     }
 
+    this.publicAddressMetrics(lines, labels, publicAddress);
+
     this.eventLoopDelay.reset();
 
     return `${lines.join('\n')}\n`;
+  }
+
+  // The address itself is never a label: it would expose the home IP on
+  // dashboards and add a new series on every ISP change.
+  private publicAddressMetrics(
+    lines: string[],
+    labels: string,
+    status: MediaPublicAddressStatus | undefined,
+  ) {
+    this.metricHeader(
+      lines,
+      'velora_call_media_public_ip_detection_enabled',
+      'Whether the public media IPv4 is detected by STUN (1) or read from MEDIASOUP_ANNOUNCED_IP (0).',
+      'gauge',
+    );
+    lines.push(
+      `velora_call_media_public_ip_detection_enabled${labels} ${status?.detectionEnabled ? 1 : 0}`,
+    );
+    if (!status?.detectionEnabled) return;
+
+    this.metricHeader(
+      lines,
+      'velora_call_media_public_ip_check_success',
+      'Whether the latest STUN check returned a usable public IPv4.',
+      'gauge',
+    );
+    lines.push(
+      `velora_call_media_public_ip_check_success${labels} ${status.lastCheckSucceeded ? 1 : 0}`,
+    );
+
+    this.metricHeader(
+      lines,
+      'velora_call_media_public_ip_last_success_timestamp_seconds',
+      'Unix time of the latest usable STUN answer; 0 when there was none.',
+      'gauge',
+    );
+    lines.push(
+      `velora_call_media_public_ip_last_success_timestamp_seconds${labels} ${status.lastSuccessTimestampSeconds}`,
+    );
+
+    this.metricHeader(
+      lines,
+      'velora_call_media_public_ip_changes_total',
+      'Times new media transports moved to a newly detected public IPv4.',
+      'counter',
+    );
+    lines.push(
+      `velora_call_media_public_ip_changes_total${labels} ${status.changes}`,
+    );
+
+    this.metricHeader(
+      lines,
+      'velora_call_media_public_ip_mismatch',
+      'Whether the latest STUN answer differs from the public IPv4 new media transports announce.',
+      'gauge',
+    );
+    lines.push(
+      `velora_call_media_public_ip_mismatch${labels} ${status.mismatch ? 1 : 0}`,
+    );
   }
 
   private metricHeader(

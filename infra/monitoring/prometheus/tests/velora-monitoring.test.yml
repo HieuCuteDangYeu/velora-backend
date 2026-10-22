@@ -737,3 +737,55 @@ tests:
       - eval_time: 10m
         alertname: VeloraReelWorkerHighFailureRate
         exp_alerts: []
+
+  - name: call media public IP mismatch becomes critical after two minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_call_media_public_ip_mismatch{service="call-service"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraCallMediaPublicIpMismatch
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: call-service
+            exp_annotations:
+              summary: call media public IP does not match STUN
+              description: For two minutes, STUN has reported a public IPv4 that new calls do not announce, so calls may have no media. Check the homelab network (Wi-Fi, modem) and the call-service logs.
+
+  - name: a confirmed call media public IP change does not alert
+    interval: 15s
+    input_series:
+      - series: 'velora_call_media_public_ip_mismatch{service="call-service"}'
+        values: '0 1 1 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraCallMediaPublicIpMismatch
+        exp_alerts: []
+
+  - name: failing call media public IP checks warn after ten minutes
+    interval: 1m
+    input_series:
+      - series: 'velora_call_media_public_ip_check_success{service="call-service"}'
+        values: '0+0x11'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraCallMediaPublicIpCheckFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: call-service
+            exp_annotations:
+              summary: call media public IP check is failing
+              description: No STUN server has returned a usable public IPv4 for ten minutes. New calls keep announcing the last known address, which may be out of date.
+
+  - name: a short call media public IP check outage does not alert
+    interval: 1m
+    input_series:
+      - series: 'velora_call_media_public_ip_check_success{service="call-service"}'
+        values: '1 0 0 0 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraCallMediaPublicIpCheckFailing
+        exp_alerts: []

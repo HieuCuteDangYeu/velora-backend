@@ -10,6 +10,14 @@ describe('CallMetricsController', () => {
     server: { sockets: new Map(['a', 'b', 'c', 'd'].map((id) => [id, {}])) },
   };
 
+  const getPublicAddressStatus = jest.fn().mockReturnValue({
+    detectionEnabled: true,
+    lastCheckSucceeded: false,
+    lastSuccessTimestampSeconds: 0,
+    changes: 0,
+    mismatch: false,
+  });
+
   afterEach(() => response.setHeader.mockClear());
 
   it('reports zero before the namespace is initialized', async () => {
@@ -18,7 +26,10 @@ describe('CallMetricsController', () => {
       const controller = new CallMetricsController(
         metrics,
         {} as never,
-        { getWorkerLoad: jest.fn().mockResolvedValue([]) } as never,
+        {
+          getWorkerLoad: jest.fn().mockResolvedValue([]),
+          getPublicAddressStatus,
+        } as never,
       );
       expect(await controller.getMetrics(response as never)).toContain(
         'velora_call_socket_connections{service="call-service"} 0',
@@ -38,7 +49,10 @@ describe('CallMetricsController', () => {
     const controller = new CallMetricsController(
       metrics,
       { server: namespace } as never,
-      { getWorkerLoad: jest.fn().mockResolvedValue([]) } as never,
+      {
+        getWorkerLoad: jest.fn().mockResolvedValue([]),
+        getPublicAddressStatus,
+      } as never,
     );
     try {
       await new Promise<void>((resolve) =>
@@ -90,6 +104,7 @@ describe('CallMetricsController', () => {
         getWorkerLoad: jest
           .fn()
           .mockResolvedValue([{ worker: '0', cpuSeconds: 9, rooms: 3 }]),
+        getPublicAddressStatus,
       } as never,
     );
 
@@ -114,6 +129,7 @@ describe('CallMetricsController', () => {
       gateway as never,
       {
         getWorkerLoad: jest.fn().mockRejectedValue(new Error('worker died')),
+        getPublicAddressStatus,
       } as never,
     );
 
@@ -124,6 +140,9 @@ describe('CallMetricsController', () => {
     );
     expect(output).toContain(
       'velora_call_mediasoup_workers{service="call-service"} 0',
+    );
+    expect(output).toContain(
+      'velora_call_media_public_ip_check_success{service="call-service"} 0',
     );
     metrics.onModuleDestroy();
   });

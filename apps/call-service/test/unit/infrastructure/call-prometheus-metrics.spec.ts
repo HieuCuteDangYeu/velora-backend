@@ -110,3 +110,52 @@ describe('CallPrometheusMetricsService mediasoup worker metrics', () => {
     metrics.onModuleDestroy();
   });
 });
+
+describe('CallPrometheusMetricsService public media IP metrics', () => {
+  it('only reports that detection is off in static mode', () => {
+    const metrics = new CallPrometheusMetricsService();
+
+    const output = metrics.metrics(0, [], {
+      detectionEnabled: false,
+      lastCheckSucceeded: false,
+      lastSuccessTimestampSeconds: 0,
+      changes: 0,
+      mismatch: false,
+    });
+
+    expect(output).toContain(
+      'velora_call_media_public_ip_detection_enabled{service="call-service"} 0',
+    );
+    expect(output).not.toContain('velora_call_media_public_ip_check_success');
+    expect(output).not.toContain('velora_call_media_public_ip_mismatch');
+
+    metrics.onModuleDestroy();
+  });
+
+  it('reports STUN check health, changes and mismatch without the address', () => {
+    const metrics = new CallPrometheusMetricsService();
+
+    const output = metrics.metrics(0, [], {
+      detectionEnabled: true,
+      lastCheckSucceeded: true,
+      lastSuccessTimestampSeconds: 1_700_000_000,
+      changes: 2,
+      mismatch: true,
+    });
+
+    for (const line of [
+      'velora_call_media_public_ip_detection_enabled{service="call-service"} 1',
+      'velora_call_media_public_ip_check_success{service="call-service"} 1',
+      'velora_call_media_public_ip_last_success_timestamp_seconds{service="call-service"} 1700000000',
+      'velora_call_media_public_ip_changes_total{service="call-service"} 2',
+      'velora_call_media_public_ip_mismatch{service="call-service"} 1',
+    ]) {
+      expect(output).toContain(line);
+    }
+    expect(output).toContain(
+      '# TYPE velora_call_media_public_ip_changes_total counter',
+    );
+
+    metrics.onModuleDestroy();
+  });
+});

@@ -11,8 +11,6 @@ import { SendCallStateUpdateUseCase } from './application/use-cases/send-call-st
 import { SendMissedCallNotificationUseCase } from './application/use-cases/send-missed-call-notification.use-case';
 import { SendIncomingCallNotificationUseCase } from './application/use-cases/send-incoming-call-notification.use-case';
 import { SendNewMessageNotificationUseCase } from './application/use-cases/send-new-message-notification.use-case';
-import { SendTestPushUseCase } from './application/use-cases/send-test-push.use-case';
-import { DevPushController } from './infrastructure/controllers/dev-push.controller';
 import { InternalNotificationsController } from './infrastructure/controllers/internal-notifications.controller';
 import { NotificationHealthController } from './infrastructure/controllers/notification-health.controller';
 import { NotificationMetricsController } from './infrastructure/controllers/notification-metrics.controller';
@@ -38,7 +36,6 @@ import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.s
   controllers: [
     PushTokensController,
     InternalNotificationsController,
-    DevPushController,
     CallEventsSubscriber,
     NotificationHealthController,
     NotificationMetricsController,
@@ -59,7 +56,6 @@ import { CallEventsSubscriber } from './infrastructure/subscribers/call-events.s
     SendCallStateUpdateUseCase,
     SendMissedCallNotificationUseCase,
     RetryNotificationJobsUseCase,
-    SendTestPushUseCase,
     NotificationRetryScheduler,
     {
       provide: 'IPushTokenRepository',

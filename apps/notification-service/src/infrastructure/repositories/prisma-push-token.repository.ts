@@ -144,20 +144,6 @@ export class PrismaPushTokenRepository implements IPushTokenRepository {
     return records.map((record) => this.toDomain(record));
   }
 
-  async findLatestActiveFcm(): Promise<PushToken | null> {
-    const record = await this.prisma.pushToken.findFirst({
-      where: {
-        provider: 'fcm',
-        isActive: true,
-      },
-      orderBy: {
-        updatedAt: 'desc',
-      },
-    });
-
-    return record ? this.toDomain(record) : null;
-  }
-
   deactivateById(id: string): Promise<UpdateCount> {
     return this.prisma.pushToken.updateMany({
       where: {

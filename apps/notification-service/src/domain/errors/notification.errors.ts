@@ -13,10 +13,3 @@ export class FcmPushTokenInvalidatedError extends Error {
     this.name = FcmPushTokenInvalidatedError.name;
   }
 }
-
-export class ActiveFcmPushTokenNotFoundError extends Error {
-  constructor() {
-    super('No active FCM token found');
-    this.name = ActiveFcmPushTokenNotFoundError.name;
-  }
-}

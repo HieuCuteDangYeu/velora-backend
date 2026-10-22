@@ -42,6 +42,5 @@ export abstract class IPushTokenRepository {
     filters?: PushTokenFilters,
   ): Promise<PushToken[]>;
 
-  abstract findLatestActiveFcm(): Promise<PushToken | null>;
   abstract deactivateById(id: string): Promise<UpdateCount>;
 }

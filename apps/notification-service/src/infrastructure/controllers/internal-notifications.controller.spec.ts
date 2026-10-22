@@ -1,6 +1,4 @@
 import { BadRequestException } from '@nestjs/common';
-import type { SendCallStateUpdateUseCase } from '../../application/use-cases/send-call-state-update.use-case';
-import type { SendIncomingCallNotificationUseCase } from '../../application/use-cases/send-incoming-call-notification.use-case';
 import type { SendNewMessageNotificationUseCase } from '../../application/use-cases/send-new-message-notification.use-case';
 import { InternalNotificationsController } from './internal-notifications.controller';
 
@@ -24,8 +22,6 @@ describe('InternalNotificationsController new-message compatibility', () => {
 
     controller = new InternalNotificationsController(
       sendNewMessageNotification as unknown as SendNewMessageNotificationUseCase,
-      null as unknown as SendIncomingCallNotificationUseCase,
-      null as unknown as SendCallStateUpdateUseCase,
     );
   });
 

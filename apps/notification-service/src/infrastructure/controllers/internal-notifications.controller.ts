@@ -11,8 +11,6 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 
-import { SendCallStateUpdateUseCase } from '../../application/use-cases/send-call-state-update.use-case';
-import { SendIncomingCallNotificationUseCase } from '../../application/use-cases/send-incoming-call-notification.use-case';
 import { SendNewMessageNotificationUseCase } from '../../application/use-cases/send-new-message-notification.use-case';
 
 const newMessageNotificationSchema = z
@@ -47,42 +45,10 @@ const newMessageNotificationSchema = z
     ),
   }));
 
-const incomingCallNotificationSchema = z.object({
-  recipientUserId: z.string().uuid(),
-  initiatorId: z.string().min(1),
-  targetUserId: z.string().min(1),
-  conversationId: z.string().min(1),
-  callId: z.string().min(1),
-  callType: z.enum(['VOICE', 'VIDEO']),
-  initiatorDisplayName: z.string().min(1),
-  initiatorAvatarUrl: z.string().min(1).optional(),
-  ringTimeoutMs: z.number().int().positive(),
-  expiresAt: z.string().datetime(),
-});
-
-const callStateUpdateSchema = z.object({
-  recipientUserIds: z.array(z.string().uuid()).min(1),
-  iosRecipientUserIds: z.array(z.string().uuid()).min(1).optional(),
-  conversationId: z.string().min(1),
-  callId: z.string().min(1),
-  status: z.enum(['active', 'rejected', 'ended', 'cancelled']),
-  reason: z.string().min(1).optional(),
-  isGroupCall: z.boolean().optional(),
-  answerActionId: z.string().min(1).optional(),
-  answerActionHash: z
-    .string()
-    .regex(/^[a-f0-9]{64}$/)
-    .optional(),
-  lifecycleRevision: z.number().int().nonnegative().optional(),
-  at: z.string().datetime(),
-});
-
 @Controller('notifications/internal')
 export class InternalNotificationsController {
   constructor(
     private readonly sendNewMessageNotification: SendNewMessageNotificationUseCase,
-    private readonly sendIncomingCallNotification: SendIncomingCallNotificationUseCase,
-    private readonly sendCallStateUpdateUseCase: SendCallStateUpdateUseCase,
   ) {}
 
   @Post('new-message')
@@ -100,38 +66,6 @@ export class InternalNotificationsController {
     }
 
     return this.sendNewMessageNotification.execute(parsed.data);
-  }
-
-  @Post('incoming-call')
-  async sendIncomingCall(
-    @Headers('x-internal-secret') internalSecret: string | undefined,
-    @Body() body: unknown,
-  ) {
-    this.assertInternalSecret(internalSecret);
-
-    const parsed = incomingCallNotificationSchema.safeParse(body);
-
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
-    }
-
-    return this.sendIncomingCallNotification.execute(parsed.data);
-  }
-
-  @Post('call-state-update')
-  async sendCallStateUpdate(
-    @Headers('x-internal-secret') internalSecret: string | undefined,
-    @Body() body: unknown,
-  ) {
-    this.assertInternalSecret(internalSecret);
-
-    const parsed = callStateUpdateSchema.safeParse(body);
-
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.flatten());
-    }
-
-    return this.sendCallStateUpdateUseCase.execute(parsed.data);
   }
 
   private assertInternalSecret(internalSecret: string | undefined) {

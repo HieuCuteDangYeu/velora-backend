@@ -11,7 +11,6 @@ const payload = {
   conversationId: '507f1f77bcf86cd799439011',
   clientMessageId: `${namespace}-${uuid}-load-${uuid}`,
   type: 'text' as const,
-  signalType: 0,
   content: 'private content',
 };
 

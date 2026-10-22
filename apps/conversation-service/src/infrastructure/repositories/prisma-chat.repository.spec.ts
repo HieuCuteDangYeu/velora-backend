@@ -73,7 +73,6 @@ describe('PrismaChatRepository reply previews', () => {
         senderId: 'sender-1',
         content: '[Hinh anh]',
         type: 'image',
-        signalType: 0,
         isRecalled: false,
         media: {
           fileUrl: 'https://cdn.velora.test/chat/image.jpg',
@@ -103,7 +102,6 @@ describe('PrismaChatRepository reply previews', () => {
         senderId: 'sender-1',
         content: '[Video]',
         type: 'video',
-        signalType: 0,
         isRecalled: false,
         media: {
           fileUrl: 'https://cdn.velora.test/chat/video.mp4',
@@ -134,7 +132,6 @@ describe('PrismaChatRepository reply previews', () => {
         senderId: 'sender-1',
         content: '[Video]',
         type: 'video',
-        signalType: 0,
         isRecalled: false,
         media: {
           fileUrl: 'https://cdn.velora.test/chat/video.mp4',
@@ -163,7 +160,6 @@ describe('PrismaChatRepository reply previews', () => {
         senderId: 'sender-1',
         content: '[Hinh anh]',
         type: 'image',
-        signalType: 0,
         isRecalled: true,
         media: {
           fileUrl: 'https://cdn.velora.test/chat/image.jpg',
@@ -190,7 +186,6 @@ describe('PrismaChatRepository reply previews', () => {
         senderId: 'sender-1',
         content: '[Hinh anh]',
         type: 'image',
-        signalType: 0,
         isRecalled: false,
       },
     });
@@ -273,9 +268,7 @@ describe('ChatMapper reply previews', () => {
       clientMessageId: null,
       content: 'Nice video',
       type: 'text',
-      signalType: 0,
       media: null,
-      registrationId: null,
       createdAt: new Date('2026-06-02T00:00:00.000Z'),
       isRecalled: false,
       recalledAt: null,
@@ -309,7 +302,6 @@ describe('ChatMapper reply previews', () => {
       senderId: 'sender-2',
       content: 'Nice video',
       type: 'text',
-      signalType: 0,
       createdAt: new Date('2026-06-02T00:00:00.000Z'),
       replyToId: 'video-message',
       replyPreview: {
@@ -350,7 +342,6 @@ describe('recalled message privacy', () => {
           kind: 'velora_ai_reel_recommendations',
         },
         type: 'image',
-        signalType: 0,
         createdAt: new Date('2026-06-02T00:00:00.000Z'),
         isRecalled: true,
         replyPreview: {
@@ -397,13 +388,11 @@ describe('recalled message privacy', () => {
             clientMessageId: null,
             content: 'encrypted-legacy-secret',
             type: 'text',
-            signalType: 0,
             media: {
               fileKey: 'chat-images/sender-1/private.jpg',
               fileUrl: 'https://cdn.velora.test/private.jpg',
             },
             metadata: null,
-            registrationId: null,
             createdAt: new Date('2026-06-02T00:00:00.000Z'),
             isRecalled: true,
             recalledAt: new Date('2026-06-02T00:01:00.000Z'),
@@ -449,7 +438,6 @@ describe('recalled message privacy', () => {
       clientMessageId: null,
       content: 'encrypted-original-content',
       type: 'image',
-      signalType: 0,
       media: {
         fileKey: `chat-images/${senderId}/private.jpg`,
         fileUrl: 'https://cdn.velora.test/private.jpg',
@@ -457,7 +445,6 @@ describe('recalled message privacy', () => {
         thumbnailUrl: 'https://cdn.velora.test/private-thumb.jpg',
       },
       metadata: { kind: 'velora_ai_reel_recommendations' },
-      registrationId: 1,
       createdAt: new Date(),
       isRecalled: false,
       recalledAt: null,
@@ -476,7 +463,6 @@ describe('recalled message privacy', () => {
         content: 'encrypted-recalled-content',
         media: null,
         metadata: null,
-        registrationId: null,
         isRecalled: true,
         recalledAt: new Date(),
         replyPreview: null,
@@ -536,7 +522,6 @@ describe('recalled message privacy', () => {
       content: 'encrypted:Tin nhắn đã thu hồi',
       media: null,
       metadata: null,
-      registrationId: null,
       replyPreview: null,
       reactions: null,
       isRecalled: true,
@@ -559,7 +544,6 @@ describe('MessageDto reply previews', () => {
         clientMessageId: 'client-message-1',
         content: 'Nice video',
         type: 'text',
-        signalType: 0,
         createdAt: '2026-06-02T00:00:00.000Z',
         replyToId: 'video-message',
         replyPreview: {

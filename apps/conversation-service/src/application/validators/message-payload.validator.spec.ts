@@ -15,7 +15,6 @@ const payload = (overrides: Record<string, unknown> = {}) =>
     conversationId: '507f1f77bcf86cd799439011',
     clientMessageId: 'client-1',
     type: 'text',
-    signalType: 0,
     content: 'hello',
     ...overrides,
   }) as unknown as CreateMessageDto;
@@ -32,9 +31,9 @@ const rejects = (overrides: Record<string, unknown>, message?: string) =>
 describe('assertValidMessagePayload', () => {
   it('accepts an ordinary text message, with and without optional fields', () => {
     accepts();
-    accepts({ type: undefined, signalType: undefined });
-    accepts({ replyToId: '507f1f77bcf86cd799439012', registrationId: 7 });
-    accepts({ replyToId: null, registrationId: null, media: null });
+    accepts({ type: undefined });
+    accepts({ replyToId: '507f1f77bcf86cd799439012' });
+    accepts({ replyToId: null, media: null });
   });
 
   it('bounds the content length', () => {
@@ -50,13 +49,10 @@ describe('assertValidMessagePayload', () => {
 
   it('rejects unknown types and signal types, and malformed identifiers', () => {
     rejects({ type: 'sticker' }, 'Invalid message type');
-    rejects({ signalType: 2 }, 'Invalid signalType');
-    rejects({ signalType: '0' }, 'Invalid signalType');
     rejects({ conversationId: 'not-an-id' }, 'Invalid conversation ID');
     rejects({ replyToId: 'nope' }, 'Invalid reply target');
     rejects({ replyToId: 12 }, 'Invalid reply target');
     rejects({ clientMessageId: 'c'.repeat(201) }, 'Invalid clientMessageId');
-    rejects({ registrationId: 1.5 }, 'Invalid registrationId');
   });
 
   it('rejects a body that is not an object', () => {

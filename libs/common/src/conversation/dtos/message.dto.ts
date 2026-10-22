@@ -71,7 +71,6 @@ export const MessageSchema = z.object({
   media: MessageMediaSchema.optional(),
   metadata: MessageMetadataSchema.optional(),
   type: z.string().default('text'),
-  signalType: z.number().int().optional(),
   createdAt: z.string().datetime(),
   isRecalled: z.boolean().optional(),
   recalledAt: z.string().datetime().optional(),

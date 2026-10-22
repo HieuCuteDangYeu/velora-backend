@@ -25,7 +25,6 @@ const makeMessage = (partial: Partial<Message> = {}) =>
     id: 'message-id',
     conversationId: 'conversation-id',
     senderId: ACTOR_ID,
-    signalType: 1,
     content: 'Hello there',
     type: 'text',
     createdAt: new Date('2026-08-19T00:00:00.000Z'),

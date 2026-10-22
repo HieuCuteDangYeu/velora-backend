@@ -97,7 +97,6 @@ integration(
           clientMessageId,
           content,
           type: 'text',
-          signalType: 0,
           createdAt: new Date(),
         });
       const identity = randomUUID();
@@ -161,7 +160,6 @@ integration(
         conversationId: conversation.id,
         content: original.content,
         senderId: 'sender',
-        signalType: 0,
         type: 'text',
         createdAt: original.createdAt,
         notificationRecipientIds: ['member'],

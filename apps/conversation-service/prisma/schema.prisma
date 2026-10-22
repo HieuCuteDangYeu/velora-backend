@@ -14,18 +14,6 @@ type MessageReadStatus {
   at     DateTime
 }
 
-// Định nghĩa cấu trúc cho Signal Protocol Keys
-type SignedPreKey {
-  keyId     Int
-  publicKey String
-  signature String
-}
-
-type OneTimePreKey {
-  keyId     Int
-  publicKey String
-}
-
 enum ConversationMemberRole {
   OWNER
   ADMIN
@@ -93,26 +81,22 @@ model ConversationMember {
 }
 
 model Message {
-  id              String  @id @default(auto()) @map("_id") @db.ObjectId
-  type            String  @default("text")
+  id              String @id @default(auto()) @map("_id") @db.ObjectId
+  type            String @default("text")
   clientMessageId String
 
-  // 2. SIGNAL TYPE: Dùng cho Mã hóa (Server chỉ chuyển tiếp)
-  // 1: WhisperMessage (Tin bình thường)
-  // 3: PreKeyWhisperMessage (Tin thiết lập phiên X3DH)
-  signalType Int @map("signal_type")
-
+  // Encrypted at rest by the server (AES). Older documents still carry the
+  // retired signal_type/registration_id fields, which Prisma ignores.
   content  String
   media    Json?
   metadata Json?
 
-  registrationId Int? // ID thiết bị người gửi
-  senderId       String
-  isRecalled     Boolean   @default(false)
-  recalledAt     DateTime?
-  replyToId      String?   @db.ObjectId
-  replyPreview   Json?
-  reactions      Json?
+  senderId     String
+  isRecalled   Boolean   @default(false)
+  recalledAt   DateTime?
+  replyToId    String?   @db.ObjectId
+  replyPreview Json?
+  reactions    Json?
 
   conversationId String       @db.ObjectId
   conversation   Conversation @relation(fields: [conversationId], references: [id])
@@ -133,23 +117,4 @@ model Message {
   @@index([replyToId])
   @@index([notificationNextAttemptAt, id], map: "messages_notification_outbox_due")
   @@map("messages")
-}
-
-// MODEL MỚI: Quản lý khóa Signal (Key Store)
-model UserKeyBundle {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  userId         String @unique // Mỗi user 1 bộ key (hoặc tách theo deviceId nếu cần)
-  deviceId       Int
-  registrationId Int
-  identityKey    String
-
-  // Composite Types (Nhúng trực tiếp vào document)
-  signedPreKey   SignedPreKey
-  oneTimePreKeys OneTimePreKey[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("user_key_bundles")
 }

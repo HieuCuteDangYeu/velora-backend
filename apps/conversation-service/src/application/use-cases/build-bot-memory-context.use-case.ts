@@ -29,7 +29,6 @@ export class BuildBotMemoryContextUseCase {
     const recentMessages = messages
       .filter((message) => message.id !== input.currentMessageId)
       .filter((message) => this.isMemoryEligibleMessage(message))
-      .filter((message) => message.signalType === 0)
       .filter((message) => !message.isRecalled)
       .map((message) => {
         const role: AiChatMemoryRole =

@@ -12,13 +12,11 @@ const mediaMessage = (overrides: Record<string, unknown> = {}) => ({
   clientMessageId: 'client-1',
   content: 'encrypted-original-content',
   type: 'image',
-  signalType: 0,
   media: {
     fileKey: `chat-images/${SENDER_ID}/photo.jpg`,
     fileUrl: 'https://cdn.velora.test/photo.jpg',
   },
   metadata: null,
-  registrationId: null,
   createdAt: new Date(),
   isRecalled: false,
   recalledAt: null,

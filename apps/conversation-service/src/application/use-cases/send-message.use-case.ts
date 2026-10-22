@@ -32,7 +32,6 @@ export class SendMessageUseCase {
       clientMessageId: dto.clientMessageId?.trim() || undefined,
       content: dto.content,
       media: dto.media,
-      signalType: dto.signalType,
       type: dto.type,
       createdAt: new Date(),
       replyToId: dto.replyToId,

@@ -476,8 +476,6 @@ export class ConversationController {
         reelDescription?: string;
         reelTags?: string[];
       };
-      signalType?: number;
-      registrationId?: number;
       replyToId?: string;
     },
     @CurrentUser() user: AuthUser,
@@ -499,11 +497,6 @@ export class ConversationController {
       throw new BadRequestException('Invalid message type');
     }
 
-    const signalType = body?.signalType ?? 0;
-    if (![0, 1, 3].includes(signalType)) {
-      throw new BadRequestException('Invalid signalType');
-    }
-
     if (
       body?.replyToId !== undefined &&
       (typeof body.replyToId !== 'string' || body.replyToId.trim().length === 0)
@@ -518,8 +511,6 @@ export class ConversationController {
         content: body.content.trim(),
         media: body.media,
         type,
-        signalType,
-        registrationId: body.registrationId,
         replyToId: body.replyToId,
         senderId: user.id,
       }),
@@ -802,8 +793,6 @@ export class ConversationController {
       this.conversationClient.send<CreateMessageResponse>('create_message', {
         content: body.content,
         type: body.type,
-        signalType: body.signalType,
-        registrationId: body.registrationId,
         conversationId: convResult.id,
         senderId: user.id,
       }),

@@ -28,7 +28,6 @@ const savedMessage = (overrides: Partial<Message> = {}) =>
     conversationId: CONVERSATION_ID,
     senderId: ACTOR_ID,
     clientMessageId: 'system:test',
-    signalType: 0,
     content: 'Alice Admin added Bob Member',
     type: 'text',
     createdAt: new Date('2026-08-20T01:00:00.000Z'),
@@ -104,7 +103,6 @@ describe('GroupActivityService', () => {
     expect(message.conversationId).toBe(CONVERSATION_ID);
     expect(message.senderId).toBe(ACTOR_ID);
     expect(message.type).toBe('text');
-    expect(message.signalType).toBe(0);
     expect(message.content).toBe('Alice Admin added Bob Member');
     expect(message.clientMessageId).toMatch(/^system:MEMBER_ADDED:/);
     expect(message.metadata).toEqual({

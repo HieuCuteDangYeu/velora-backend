@@ -46,7 +46,6 @@ integration(
           clientMessageId: key,
           content: key,
           type: 'text',
-          signalType: 0,
         });
       const encryption = {
         encrypt: (value: string) => `encrypted:${value}`,

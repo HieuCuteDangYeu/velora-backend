@@ -15,10 +15,8 @@ const makeRecord = (index = 1) => ({
   clientMessageId: `client-${index}`,
   content: 'encrypted:hello',
   type: 'text',
-  signalType: 0,
   media: null,
   metadata: null,
-  registrationId: null,
   isRecalled: false,
   recalledAt: null,
   replyToId: null,
@@ -433,13 +431,6 @@ describe('Message notification outbox', () => {
       );
     },
   );
-
-  it('does not decrypt end-to-end encrypted messages', async () => {
-    const h = makeHarness();
-    h.records[0].signalType = 3;
-    await h.createWorker().runOnce();
-    expect(h.encryption.decrypt).not.toHaveBeenCalled();
-  });
 
   it('retains work on a database failure while rescheduling', async () => {
     const h = makeHarness();

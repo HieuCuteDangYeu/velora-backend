@@ -179,25 +179,18 @@ export class PrismaChatRepository implements IChatRepository {
     }
 
     // BƯỚC 1: Chuẩn bị dữ liệu (CPU bound - cực nhanh)
-    let contentToSave = message.content;
     const replyPreview = await this.buildReplyPreview(
       message.replyToId,
       message.conversationId,
     );
 
-    // Logic mã hóa
-    if (message.signalType === 0) {
-      contentToSave = this.encryptionRepository.encrypt(message.content);
-    }
+    // Content is encrypted at rest by the server.
+    const contentToSave = this.encryptionRepository.encrypt(message.content);
 
     // Tính toán Preview Text NGAY LẬP TỨC (để dùng cho transaction)
     let previewText = '';
     if (message.type === 'text') {
-      if (message.signalType === 0) {
-        previewText = truncatePreview(message.content) ?? ''; // Normal: Server thấy text
-      } else {
-        previewText = '🔒 Tin nhắn được bảo mật'; // Signal: Server mù
-      }
+      previewText = truncatePreview(message.content) ?? '';
     } else {
       // Map loại file sang text hiển thị
       const typeMap: Record<string, string> = {
@@ -224,7 +217,6 @@ export class PrismaChatRepository implements IChatRepository {
             id: new Types.ObjectId().toHexString(),
             type: message.type ?? 'text',
             clientMessageId,
-            signalType: message.signalType ?? 1,
             content: contentToSave,
             media: message.media
               ? (message.media as unknown as Prisma.JsonValue)
@@ -232,7 +224,6 @@ export class PrismaChatRepository implements IChatRepository {
             metadata: message.metadata
               ? (message.metadata as unknown as Prisma.JsonValue)
               : null,
-            registrationId: message.registrationId ?? null,
             senderId: message.senderId,
             isRecalled: false,
             recalledAt: null,
@@ -281,10 +272,8 @@ export class PrismaChatRepository implements IChatRepository {
 
     // BƯỚC 3: Map về Domain Model
     let domainMsg = ChatMapper.toDomain(savedMsg);
-    // Nếu là normal mode, trả về content gốc cho người gửi (đỡ phải decrypt lại)
-    if (message.signalType === 0) {
-      domainMsg.content = message.content;
-    }
+    // Trả về content gốc cho người gửi (đỡ phải decrypt lại)
+    domainMsg.content = message.content;
 
     domainMsg = await this.syncPendingMediaTracking(domainMsg);
 
@@ -441,10 +430,7 @@ export class PrismaChatRepository implements IChatRepository {
         return this.redactRecalledMessage(domain);
       }
 
-      // Decrypt logic cho Normal Mode
-      if (domain.signalType === 0) {
-        domain.content = this.encryptionRepository.decrypt(domain.content);
-      }
+      domain.content = this.encryptionRepository.decrypt(domain.content);
       return domain;
     });
 
@@ -1040,7 +1026,6 @@ export class PrismaChatRepository implements IChatRepository {
       result = await this.runRecallTransaction(
         messageId,
         conversationId,
-        existingMessage.signalType,
         recalledAt,
       );
     } catch (error) {
@@ -1071,7 +1056,6 @@ export class PrismaChatRepository implements IChatRepository {
   private runRecallTransaction(
     messageId: string,
     conversationId: string,
-    signalType: number,
     recalledAt: Date,
   ) {
     return this.prisma.$transaction(
@@ -1098,13 +1082,11 @@ export class PrismaChatRepository implements IChatRepository {
           data: {
             isRecalled: true,
             recalledAt,
-            content:
-              signalType === 0
-                ? this.encryptionRepository.encrypt(RECALLED_MESSAGE_CONTENT)
-                : RECALLED_MESSAGE_CONTENT,
+            content: this.encryptionRepository.encrypt(
+              RECALLED_MESSAGE_CONTENT,
+            ),
             media: null,
             metadata: null,
-            registrationId: null,
             replyPreview: null,
             reactions: null,
           },
@@ -1836,11 +1818,9 @@ export class PrismaChatRepository implements IChatRepository {
           senderId: true;
           clientMessageId: true;
           type: true;
-          signalType: true;
           content: true;
           media: true;
           metadata: true;
-          registrationId: true;
           isRecalled: true;
           recalledAt: true;
           replyToId: true;
@@ -1860,9 +1840,7 @@ export class PrismaChatRepository implements IChatRepository {
           return this.redactRecalledMessage(domain);
         }
 
-        if (domain.signalType === 0) {
-          domain.content = this.encryptionRepository.decrypt(domain.content);
-        }
+        domain.content = this.encryptionRepository.decrypt(domain.content);
 
         return this.syncPendingMediaTracking(domain);
       }),
@@ -2077,10 +2055,6 @@ export class PrismaChatRepository implements IChatRepository {
       return this.redactRecalledMessage(message);
     }
 
-    if (message.signalType !== 0) {
-      return message;
-    }
-
     message.content = this.encryptionRepository.decrypt(message.content);
     return message;
   }
@@ -2089,7 +2063,6 @@ export class PrismaChatRepository implements IChatRepository {
     message.content = RECALLED_MESSAGE_CONTENT;
     message.media = undefined;
     message.metadata = undefined;
-    message.registrationId = undefined;
     message.replyPreview = undefined;
     message.reactions = undefined;
     return message;
@@ -2124,7 +2097,6 @@ export class PrismaChatRepository implements IChatRepository {
   private getReplyPreviewContent(message: {
     content: string;
     type: string;
-    signalType: number;
     isRecalled: boolean;
     media?: MessageMedia;
   }) {
@@ -2137,15 +2109,13 @@ export class PrismaChatRepository implements IChatRepository {
         return message.media.reelTitle.trim();
       }
 
-      if (message.signalType === 0) {
-        try {
-          const decrypted = this.encryptionRepository.decrypt(message.content);
-          if (decrypted.trim()) {
-            return decrypted;
-          }
-        } catch {
-          // Fall through to the reel label when legacy content is unreadable.
+      try {
+        const decrypted = this.encryptionRepository.decrypt(message.content);
+        if (decrypted.trim()) {
+          return decrypted;
         }
+      } catch {
+        // Fall through to the reel label when legacy content is unreadable.
       }
 
       return this.getAttachmentPreviewLabel('reel');
@@ -2153,10 +2123,6 @@ export class PrismaChatRepository implements IChatRepository {
 
     if (message.type !== 'text') {
       return this.getAttachmentPreviewLabel(message.type);
-    }
-
-    if (message.signalType !== 0) {
-      return '🔒 Tin nhắn được bảo mật';
     }
 
     try {

@@ -56,7 +56,6 @@ describe('CallLogService', () => {
       conversationId: 'conversation-1',
       senderId: 'caller',
       clientMessageId: 'call:call-1',
-      signalType: 0,
       type: 'text',
       content: 'Voice call · 3:12',
       metadata: {

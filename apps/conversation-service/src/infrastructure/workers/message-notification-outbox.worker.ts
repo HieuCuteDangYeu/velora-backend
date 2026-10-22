@@ -182,20 +182,17 @@ export class MessageNotificationOutboxWorker
         conversationId: record.conversationId,
         senderId: record.senderId,
         type: record.type,
-        signalType: record.signalType,
         content: record.content,
         createdAt: record.createdAt,
         isRecalled: record.isRecalled,
       });
-      if (message.signalType === 0) {
-        message.content = this.encryption.decrypt(message.content);
-        if (
-          record.content &&
-          message.content === record.content &&
-          /^[a-f0-9]{32}:[a-f0-9]{32}:[a-f0-9]+$/i.test(record.content)
-        ) {
-          throw new Error('Notification content could not be decrypted');
-        }
+      message.content = this.encryption.decrypt(message.content);
+      if (
+        record.content &&
+        message.content === record.content &&
+        /^[a-f0-9]{32}:[a-f0-9]{32}:[a-f0-9]+$/i.test(record.content)
+      ) {
+        throw new Error('Notification content could not be decrypted');
       }
       const conversation = new Conversation(record.conversation);
       // Enrichment does not change the original recipient snapshot. Removed

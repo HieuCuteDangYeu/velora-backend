@@ -7,7 +7,6 @@ export const MAX_CLIENT_MESSAGE_ID_LENGTH = 200;
 
 const OBJECT_ID_PATTERN = /^[0-9a-fA-F]{24}$/;
 const MESSAGE_TYPES = ['text', 'image', 'video', 'file', 'call', 'reel'];
-const SIGNAL_TYPES = [0, 1, 3];
 // Attachments uploaded through the chat media pipeline always live on the CDN.
 // Reel shares carry reel playback URLs and local thumbnails, so they are left
 // to their own producer.
@@ -128,13 +127,6 @@ export const assertValidMessagePayload = (
   }
 
   if (
-    dto.signalType !== undefined &&
-    !SIGNAL_TYPES.includes(dto.signalType as number)
-  ) {
-    reject('Invalid signalType');
-  }
-
-  if (
     dto.clientMessageId !== undefined &&
     (typeof dto.clientMessageId !== 'string' ||
       dto.clientMessageId.length > MAX_CLIENT_MESSAGE_ID_LENGTH)
@@ -149,14 +141,6 @@ export const assertValidMessagePayload = (
       !OBJECT_ID_PATTERN.test(dto.replyToId))
   ) {
     reject('Invalid reply target');
-  }
-
-  if (
-    dto.registrationId !== undefined &&
-    dto.registrationId !== null &&
-    !Number.isInteger(dto.registrationId)
-  ) {
-    reject('Invalid registrationId');
   }
 
   assertValidMedia(dto.media, type, allowedMediaOrigins);

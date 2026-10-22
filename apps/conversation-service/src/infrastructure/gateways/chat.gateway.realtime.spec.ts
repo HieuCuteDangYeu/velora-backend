@@ -301,7 +301,6 @@ describe('ChatGateway realtime membership helpers', () => {
       clientMessageId: 'client-message-id',
       senderId: OWNER_ID,
       content: 'question',
-      signalType: 0,
       type: 'text',
       createdAt: new Date('2026-08-19T00:01:00.000Z'),
     });
@@ -344,7 +343,6 @@ describe('ChatGateway realtime membership helpers', () => {
       conversationId: CONVERSATION_ID,
       senderId: OWNER_ID,
       content: 'hello group',
-      signalType: 0,
       type: 'text',
       createdAt: new Date('2026-08-19T00:01:00.000Z'),
     });

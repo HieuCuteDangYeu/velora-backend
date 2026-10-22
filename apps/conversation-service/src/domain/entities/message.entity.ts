@@ -105,11 +105,9 @@ export class Message {
   conversationId!: string;
   senderId!: string;
   clientMessageId?: string;
-  signalType!: number;
   content!: string;
   media?: MessageMedia;
   metadata?: MessageMetadata;
-  registrationId?: number;
   type!: string;
   createdAt!: Date;
   readBy: ReadStatus[] = [];

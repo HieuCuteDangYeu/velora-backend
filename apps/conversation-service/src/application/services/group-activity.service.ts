@@ -87,10 +87,6 @@ export class GroupActivityService {
       conversationId: input.conversationId,
       senderId,
       clientMessageId: `system:${input.type}:${randomUUID()}`,
-      // System activities are authored by the server, so use the repository's
-      // server-managed encryption path. This preserves a readable sidebar
-      // preview while still encrypting message content at rest.
-      signalType: 0,
       content,
       type: 'text',
       metadata: {

@@ -18,7 +18,6 @@ const createMessage = () =>
     clientMessageId: 'client-message-1',
     content: 'hello',
     type: 'text',
-    signalType: 0,
     createdAt: new Date('2026-07-15T00:00:00.000Z'),
     readBy: [],
   });
@@ -30,10 +29,8 @@ const createStoredMessage = () => ({
   clientMessageId: 'client-message-1',
   content: 'encrypted:hello',
   type: 'text',
-  signalType: 0,
   media: null,
   metadata: null,
-  registrationId: null,
   isRecalled: false,
   recalledAt: null,
   replyToId: null,
@@ -226,16 +223,12 @@ describe('message transaction conflicts', () => {
     const { repository, prisma } = transactionHarness(jest.fn());
     const input = createMessage();
     input.type = undefined as never;
-    input.signalType = undefined as never;
-    input.registrationId = 0;
     const result = await repository.createMessageIdempotently(input);
     const insert = prisma.message.createMany.mock.calls[0][0] as {
       data: ReturnType<typeof createStoredMessage>[];
     };
     expect(insert.data[0]).toMatchObject({
       type: 'text',
-      signalType: 1,
-      registrationId: 0,
       media: null,
       metadata: null,
       recalledAt: null,
@@ -248,8 +241,6 @@ describe('message transaction conflicts', () => {
       id: insert.data[0].id,
       createdAt: insert.data[0].createdAt,
       type: 'text',
-      signalType: 1,
-      registrationId: 0,
       readBy: [],
     });
     expect(prisma.message.findFirst).not.toHaveBeenCalled();
@@ -1102,7 +1093,6 @@ describe('message idempotency', () => {
       clientMessageId: 'client-message-1',
       content: 'hello',
       type: 'text',
-      signalType: 0,
     } as never);
 
     expect(result).toMatchObject({
@@ -1156,7 +1146,6 @@ describe('message idempotency', () => {
         clientMessageId: 'client-message-1',
         content: 'hello',
         type: 'text',
-        signalType: 0,
       } as never,
       socket as never,
     );
@@ -1202,7 +1191,6 @@ describe('message idempotency', () => {
         conversationId: '507f1f77bcf86cd799439012',
         content: 'hello',
         type: 'text',
-        signalType: 0,
       } as never,
       socket as never,
     );

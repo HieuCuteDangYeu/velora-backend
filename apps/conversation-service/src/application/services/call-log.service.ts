@@ -36,9 +36,6 @@ export class CallLogService {
       senderId,
       // One row per call: replays of `call.logged` hit the unique index.
       clientMessageId: `call:${event.callId}`,
-      // Server-authored, so the server-managed encryption path is used and the
-      // sidebar shows the readable summary.
-      signalType: 0,
       content: buildCallLogContent(event),
       type: 'text',
       metadata: {

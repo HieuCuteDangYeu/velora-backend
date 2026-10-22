@@ -30,7 +30,6 @@ import { UserServiceAdapter } from 'apps/conversation-service/src/infrastructure
 import { ConversationMetricsController } from 'apps/conversation-service/src/infrastructure/controllers/conversation-metrics.controller';
 import { ConversationMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/conversation.controller';
 import { GroupMembersMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/group-members.controller';
-import { KeyMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/key.controller';
 import { ReactionDetailsMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/reaction-details.controller';
 import { ConversationPrometheusMetricsService } from 'apps/conversation-service/src/infrastructure/metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from 'apps/conversation-service/src/infrastructure/prisma/prisma.service';
@@ -38,7 +37,6 @@ import { AesEncryptionRepository } from 'apps/conversation-service/src/infrastru
 import { PrismaConversationChatRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-conversation-chat.repository';
 import { PrismaConversationMemberRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-conversation-member.repository';
 import { PrismaGroupManagementV2Repository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-group-management-v2.repository';
-import { PrismaKeyBundleRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-key-bundle.repository';
 import { SendMessageUseCase } from './application/use-cases/send-message.use-case';
 import { ChatGateway } from './infrastructure/gateways/chat.gateway';
 import { MessageNotificationOutboxWorker } from './infrastructure/workers/message-notification-outbox.worker';
@@ -118,7 +116,6 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     ConversationMetricsController,
     GroupMembersMicroserviceController,
     ReactionDetailsMicroserviceController,
-    KeyMicroserviceController,
   ],
   providers: [
     PrismaService,
@@ -149,7 +146,6 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     PrismaConversationChatRepository,
     PrismaConversationMemberRepository,
     PrismaGroupManagementV2Repository,
-    PrismaKeyBundleRepository,
     ConversationRealtimePublisherAdapter,
 
     {

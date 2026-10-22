@@ -83,7 +83,6 @@ export class ConversationMessageAdapter implements IConversationMessageService {
         conversationId: input.conversationId,
         senderId: input.senderId,
         type: 'reel',
-        signalType: 0,
         content: input.reel.title?.trim() || 'Shared a reel',
         media: {
           fileKey: input.reel.hlsMasterKey,

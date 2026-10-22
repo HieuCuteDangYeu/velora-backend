@@ -60,7 +60,6 @@ export class ProcessBotReplyUseCase {
           conversationId: userMessage.conversationId,
           senderId: BOT_USER_ID,
           content: result.answer,
-          signalType: 0,
           type: 'text',
           createdAt: new Date(),
           metadata: hasAiMetadata

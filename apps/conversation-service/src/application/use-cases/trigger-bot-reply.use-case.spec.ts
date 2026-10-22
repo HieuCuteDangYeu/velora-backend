@@ -12,7 +12,6 @@ const userMessage = () =>
     conversationId: CONVERSATION_ID,
     senderId: USER_ID,
     content: 'question',
-    signalType: 0,
     type: 'text',
     createdAt: new Date('2026-08-19T00:01:00.000Z'),
   });

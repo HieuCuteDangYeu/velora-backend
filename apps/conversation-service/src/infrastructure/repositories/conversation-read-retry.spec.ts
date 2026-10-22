@@ -135,7 +135,6 @@ describe('conversation read I/O recovery', () => {
           clientMessageId: 'identity',
           content: 'hello',
           type: 'text',
-          signalType: 0,
           createdAt: new Date(),
           readBy: [],
         }),

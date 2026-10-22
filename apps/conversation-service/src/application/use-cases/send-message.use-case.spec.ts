@@ -10,7 +10,6 @@ const dto = (overrides: Record<string, unknown> = {}) =>
     conversationId: CONVERSATION_ID,
     clientMessageId: 'client-1',
     type: 'text',
-    signalType: 0,
     content: 'hello',
     ...overrides,
   }) as unknown as CreateMessageDto;
@@ -44,7 +43,6 @@ describe('SendMessageUseCase payload validation', () => {
       dto({ content: 'x'.repeat(4001) }),
       dto({ type: 'image', media: { fileUrl: 'https://evil.example/p.png' } }),
       dto({ replyToId: 'nope' }),
-      dto({ signalType: 9 }),
     ]) {
       await expect(useCase.execute(bad, 'alice')).rejects.toThrow(
         BadRequestException,

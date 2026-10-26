@@ -78,6 +78,71 @@ describe('VerifierAgentUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "Sure, I'll send an email to your colleague.",
+    "I've sent the email to your colleague.",
+    'Your email has been sent.',
+  ])(
+    'fails closed when a task-action answer claims an unexecuted action',
+    async (answer) => {
+      const service = { generateObject: jest.fn() };
+      const useCase = new VerifierAgentUseCase(service as never, config);
+      const input = {
+        ...state({ answer }),
+        userMessage: 'Send an email to my colleague.',
+        route: {
+          intent: 'TASK_ACTION_REQUEST',
+          needsVerification: true,
+          requiredEvidence: ['NONE'],
+          toolPlan: { allowedTools: [], requiredTools: [] },
+        },
+      } as unknown as RagChatWorkflowState;
+
+      await expect(useCase.execute(input)).resolves.toMatchObject({
+        passed: false,
+        requiresRevision: true,
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'FAIL_CLOSED',
+          finalPassed: false,
+          requiresRevision: true,
+        },
+      });
+      expect(service.generateObject).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    'I can’t send that email from here, so no email has been sent. Here’s a draft:\nSubject: Appointment confirmation\n\nYour appointment is scheduled as discussed.',
+    'I’m unable to send emails, but you can compose a message like: “The reservation is confirmed.” Then send it through your email client.',
+  ])(
+    'semantically verifies an honest task-action limitation with a draft',
+    async (answer) => {
+      const service = {
+        generateObject: jest
+          .fn()
+          .mockResolvedValue(result({ supportedClaimMappings: [] })),
+      };
+      const useCase = new VerifierAgentUseCase(service as never, config);
+      const input = {
+        ...state({ answer }),
+        userMessage: 'Send an email to my colleague.',
+        route: {
+          intent: 'TASK_ACTION_REQUEST',
+          needsVerification: true,
+          requiredEvidence: ['NONE'],
+          toolPlan: { allowedTools: [], requiredTools: [] },
+        },
+      } as unknown as RagChatWorkflowState;
+
+      await expect(useCase.execute(input)).resolves.toMatchObject({
+        passed: true,
+        diagnostics: { providerStatus: 'SUCCESS' },
+      });
+      expect(service.generateObject).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('verifies a scoped conversation fact using memory evidence IDs', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue(
@@ -589,6 +654,73 @@ describe('VerifierAgentUseCase', () => {
     );
   });
 
+  it('repairs an omitted verifier mapping only when the answer is an exact source span', async () => {
+    const { supportedClaimMappings: _unused, ...raw } = result();
+    void _unused;
+    const service = { generateObject: jest.fn().mockResolvedValue(raw) };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const answer = 'The zorb is linked to the quasar.';
+
+    await expect(
+      useCase.execute(
+        state({
+          answer,
+          evidenceText: `Before. ${answer} After.`,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      passed: true,
+      supportedClaimMappings: [{ claim: answer, evidenceIds: ['e0'] }],
+      diagnostics: {
+        providerStatus: 'SUCCESS',
+        decisionSource: 'EXACT_PROVENANCE',
+      },
+    });
+    expect(
+      service.generateObject.mock.calls[0][0].jsonSchema.required,
+    ).not.toContain('supportedClaimMappings');
+  });
+
+  it('fails closed when an omitted verifier mapping has no exact source span', async () => {
+    const { supportedClaimMappings: _unused, ...raw } = result();
+    void _unused;
+    const service = { generateObject: jest.fn().mockResolvedValue(raw) };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+
+    await expect(
+      useCase.execute(
+        state({
+          answer: 'The zorb caused the quasar.',
+          evidenceText: 'The zorb is linked to the quasar.',
+        }),
+      ),
+    ).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      issues: [expect.stringContaining('unknown evidence ID')],
+    });
+  });
+
+  it('keeps the full transcript segment available to the verifier', async () => {
+    const segmentTail = 'The final turn changes the stated condition.';
+    const input = state({
+      evidenceText: `${'The speaker describes the plan. '.repeat(20)}${segmentTail}`,
+    });
+    input.userMessage = 'Summarize the speech transcript segment.';
+    input.retrievalPlan = { sourceOrder: 'ASC' } as NonNullable<
+      RagChatWorkflowState['retrievalPlan']
+    >;
+    const service = { generateObject: jest.fn().mockResolvedValue(result()) };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+
+    await useCase.execute(input);
+
+    const prompt = JSON.parse(
+      String(service.generateObject.mock.calls[0][0].userPrompt),
+    ) as { evidence: Array<{ evidenceText: string }> };
+    expect(prompt.evidence[0].evidenceText).toContain(segmentTail);
+  });
+
   it('treats an omitted contradictions list as empty', async () => {
     const raw = result();
     delete raw.contradictions;
@@ -697,6 +829,132 @@ describe('VerifierAgentUseCase', () => {
       requiresRevision: true,
       diagnostics: { decisionSource: 'LLM_PRIMARY' },
     });
+  });
+
+  it('accepts a first-sentence quote when the answer is an exact authorized transcript sentence', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          passed: false,
+          confidence: 1,
+          issues: ['A short utterance is incomplete.'],
+          answerQualityPassed: false,
+          answerQualityIssues: ['The answer is too short.'],
+          requiresRevision: true,
+          supportedClaimMappings: [],
+        }),
+      ),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, config);
+    const quoteState = {
+      ...state({ answer: 'Ready!', evidenceText: 'Ready! We can start now.' }),
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        needsVerification: true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'chunk-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Ready! We can start now.',
+          chunkText: 'Ready! We can start now.',
+          tags: [],
+        },
+      ],
+      generationEvidence: [
+        {
+          evidenceId: 'e0',
+          sourceId: 'chunk-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Ready! We can start now.',
+        },
+      ],
+      answerClaims: [{ claim: 'Ready!', evidenceIds: ['e0'] }],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(quoteState)).resolves.toMatchObject({
+      passed: true,
+      confidence: 1,
+      answerQualityPassed: true,
+      requiresRevision: false,
+      supportedClaimMappings: [{ claim: 'Ready!', evidenceIds: ['e0'] }],
+      diagnostics: {
+        decisionSource: 'EXACT_PROVENANCE',
+        providerPassed: false,
+        finalPassed: true,
+      },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not use the source-sentence path for a paraphrase', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          passed: false,
+          confidence: 1,
+          issues: ['The answer is not a quote.'],
+          answerQualityPassed: false,
+          requiresRevision: true,
+          supportedClaimMappings: [],
+        }),
+      ),
+    };
+    const noEscalationConfig = {
+      ...config,
+      boolean: jest.fn(() => false),
+    } as unknown as IAiApplicationConfig;
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      noEscalationConfig,
+    );
+    const quoteState = {
+      ...state({
+        answer: 'The speaker is ready.',
+        evidenceText: 'Ready! We can start now.',
+      }),
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        needsVerification: true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'chunk-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Ready! We can start now.',
+          chunkText: 'Ready! We can start now.',
+          tags: [],
+        },
+      ],
+      generationEvidence: [
+        {
+          evidenceId: 'e0',
+          sourceId: 'chunk-1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'Ready! We can start now.',
+        },
+      ],
+      answerClaims: [{ claim: 'The speaker is ready.', evidenceIds: ['e0'] }],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(quoteState)).resolves.toMatchObject({
+      passed: false,
+      requiresRevision: true,
+      diagnostics: { decisionSource: 'LLM_PRIMARY' },
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
   });
 
   it('uses exact contiguous provenance only when the semantic provider fails', async () => {

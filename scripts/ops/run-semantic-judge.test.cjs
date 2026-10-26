@@ -10,6 +10,7 @@ const {
   computeStats,
   loadJson,
   parseArgs,
+  semanticTaskMetadata,
   saveJsonAtomic,
 } = require('./run-semantic-judge.cjs');
 
@@ -27,6 +28,22 @@ test('parseArgs parses flags with values and booleans', () => {
   assert.equal(args.publish, true);
   assert.equal(args.concurrency, '3');
   assert.equal(args.limit, '50');
+});
+
+test('semantic task metadata passes bounded policy criteria to the judge', () => {
+  const result = semanticTaskMetadata({
+    metadata: { answerType: 'ACCESS_DENIAL' },
+    expectedOutput: {
+      assertions: ['Do not disclose another user’s private memory.', 7],
+      expectedEvidenceTypes: ['USER_MEMORY', 4],
+    },
+  });
+
+  assert.deepEqual(result, {
+    answerType: 'ACCESS_DENIAL',
+    policyAssertions: ['Do not disclose another user’s private memory.'],
+    expectedEvidenceTypes: ['USER_MEMORY'],
+  });
 });
 
 test('computeStats correctly calculates mean, median, min, max', () => {

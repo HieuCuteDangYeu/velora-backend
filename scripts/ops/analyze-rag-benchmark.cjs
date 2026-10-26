@@ -6,9 +6,9 @@ const fs = require('node:fs');
 const { toDatasetItem } = require('./import-langfuse-dataset.cjs');
 const {
   deterministicEvaluations,
+  BENCHMARK_EVALUATOR_VERSION,
 } = require('./run-langfuse-live-benchmark.cjs');
 const {
-  EVALUATOR_VERSION,
   fingerprint,
   strictEvaluations,
   attachTrace,
@@ -62,7 +62,7 @@ function analyze(state, items, traces = []) {
     }
   }
   return {
-    schemaVersion: EVALUATOR_VERSION,
+    schemaVersion: BENCHMARK_EVALUATOR_VERSION,
     runId: state.runId,
     datasetFingerprint: fingerprint(items),
     cases,
@@ -153,7 +153,7 @@ function main() {
       ...state,
       datasetSnapshot: items,
       snapshotFingerprint: fingerprint(items),
-      evaluatorVersion: EVALUATOR_VERSION,
+      evaluatorVersion: BENCHMARK_EVALUATOR_VERSION,
       cases: { ...state.cases },
     };
     for (const [caseId, saved] of Object.entries(state.cases)) {

@@ -297,7 +297,7 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       buildAdapter({});
     const retrievalPlan = await adapter.plan({
       message:
-        'What is said in the transcript segment spanning 11.68-56.38 seconds while the frame at 33.25 seconds is visible?',
+        'What is said in the transcript segment spanning 11.68-56.38 seconds while the frame is at 33.25 seconds?',
       route: multimodalRoute,
     });
     await adapter.retrieve({

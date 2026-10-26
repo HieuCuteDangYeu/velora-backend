@@ -167,6 +167,26 @@ describe('source retrieval constraints', () => {
     expect(plan).not.toHaveProperty('sourceTimestampEndSec');
   });
 
+  it('extracts an explicit visual timestamp phrased as "the frame is at"', () => {
+    const plan = sourceRetrievalPlan(
+      'Describe the visible expression, then say what the transcript segment spanning 24.5–82.14 seconds says. The frame is at 80 seconds.',
+      {
+        ...visual,
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+    );
+    expect(plan).toMatchObject({
+      mode: 'REEL_HYBRID',
+      visualTimestampSec: 80,
+      transcriptTimestampSec: 24.5,
+      transcriptTimestampEndSec: 82.14,
+      searchLimit: 2,
+    });
+    expect(plan).not.toHaveProperty('sourceTimestampSec');
+    expect(plan).not.toHaveProperty('sourceTimestampEndSec');
+  });
+
   it('uses a sampled-frame time to locate the speech concurrent with that frame', () => {
     expect(
       sourceRetrievalPlan(

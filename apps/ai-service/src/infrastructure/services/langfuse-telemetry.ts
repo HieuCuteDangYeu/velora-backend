@@ -32,6 +32,7 @@ export function createLangfuseSdk(
         publicKey: env.LANGFUSE_PUBLIC_KEY,
         secretKey: env.LANGFUSE_SECRET_KEY,
         baseUrl: env.LANGFUSE_BASE_URL?.trim() || 'https://cloud.langfuse.com',
+        additionalHeaders: { 'x-langfuse-ingestion-version': '4' },
         environment:
           env.LANGFUSE_TRACING_ENVIRONMENT?.trim() ||
           env.NODE_ENV?.trim() ||

@@ -1258,11 +1258,17 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         }
       }
 
-      return {
-        answer:
-          state.route?.intent === 'REEL_VIDEO_QUESTION'
+      const fallbackAnswer =
+        state.route?.intent === 'TASK_ACTION_REQUEST'
+          ? this.createNoContextAnswerUseCase.executeAfterAnswerGenerationFailure(
+              state,
+            )
+          : state.route?.intent === 'REEL_VIDEO_QUESTION'
             ? 'I do not have enough verified shared reel evidence to answer that reliably.'
-            : 'I could not verify that answer reliably from the available context.',
+            : 'I could not verify that answer reliably from the available context.';
+
+      return {
+        answer: fallbackAnswer,
         citations: [],
         citationCoverage: {
           mode: 'NOT_REQUIRED',

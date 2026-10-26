@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const EVALUATOR_VERSION = 'velora-rag-evaluation-v5';
+const EVALUATOR_VERSION = 'velora-rag-evaluation-v6';
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -85,6 +85,34 @@ function strictEvaluations(input, expectedOutput, output) {
   const citations = output?.citations ?? [];
   const modality = expectedOutput?.modality ?? input?.modality;
   const expectedEvidenceTypes = expectedOutput?.expectedEvidenceTypes;
+  const expectedTypeByEvidenceId = new Map();
+  if (
+    Array.isArray(expectedEvidenceTypes) &&
+    expectedEvidenceTypes.length === allExpectedGroups.length
+  ) {
+    allExpectedGroups.forEach((group, index) => {
+      for (const id of group)
+        expectedTypeByEvidenceId.set(id, expectedEvidenceTypes[index]);
+    });
+  }
+  const expectedModalities = new Set(
+    expectedEvidenceTypes?.length
+      ? expectedEvidenceTypes
+      : modality
+        ? [modality]
+        : [],
+  );
+  const citationHasExpectedModality = (citation) => {
+    if (expectedTypeByEvidenceId.has(citation?.evidenceId))
+      return (
+        expectedTypeByEvidenceId.get(citation.evidenceId) ===
+        citation.evidenceType
+      );
+    return (
+      expectedModalities.size > 0 &&
+      expectedModalities.has(citation?.evidenceType)
+    );
+  };
   const modalityGroups =
     modality &&
     Array.isArray(expectedEvidenceTypes) &&
@@ -95,9 +123,11 @@ function strictEvaluations(input, expectedOutput, output) {
       : allExpectedGroups;
   const values = {
     citation_modality_precision: citations.length
-      ? citations.filter((c) => c.evidenceType === modality).length /
+      ? citations.filter(citationHasExpectedModality).length /
         citations.length
-      : 0,
+      : allExpectedGroups.length === 0
+        ? 1
+        : 0,
   };
   // A Reel-only public citation is not proof that a particular chunk was retrieved.
   if (
@@ -106,7 +136,7 @@ function strictEvaluations(input, expectedOutput, output) {
   ) {
     const ids = new Set(
       citations
-        .filter((c) => c.evidenceType === modality)
+        .filter(citationHasExpectedModality)
         .map((c) => c.evidenceId),
     );
     if (modalityGroups.length)
@@ -122,7 +152,7 @@ function strictEvaluations(input, expectedOutput, output) {
   if (Array.isArray(output?.generationEvidence)) {
     const supplied = new Set(
       output.generationEvidence
-        .filter((item) => item.evidenceType === modality)
+        .filter(citationHasExpectedModality)
         .map((item) => item.sourceId),
     );
     if (modalityGroups.length)
@@ -171,6 +201,8 @@ function attachTrace(output, trace, conversationId) {
     ragTraceId: trace.id ?? trace.traceId,
     traceId: diagnostics.langfuseTraceId,
     productionExecutionId: diagnostics.productionExecutionId,
+    workflowLatencyMs: Number.isFinite(trace.latencyMs) ? trace.latencyMs : null,
+    nodeTimings: trace.nodeTimings ?? {},
     retrievedEvidenceIds: trace.retrievedChunkIds,
     rerankedEvidenceIds: trace.rerankedChunkIds,
     ...(diagnostics.evaluationCapture?.contextCaptured &&
@@ -221,19 +253,19 @@ function executionHealth(diagnostics) {
   const deterministicRefusal =
     diagnostics?.finalFailureSource === 'NO_CONTEXT' &&
     contextSufficiency?.sufficient === false &&
-    ['DETERMINISTIC_NO_CONTEXT', 'DETERMINISTIC_REQUIRED_MODALITY', 'DETERMINISTIC_REQUIRED_TOOL'].includes(
-      contextSufficiency?.decisionSource,
-    );
-  const routeAvailable =
-    route?.providerStatus === 'SUCCESS' || structuralRoute;
+    [
+      'DETERMINISTIC_NO_CONTEXT',
+      'DETERMINISTIC_REQUIRED_MODALITY',
+      'DETERMINISTIC_REQUIRED_TOOL',
+    ].includes(contextSufficiency?.decisionSource);
+  const routeAvailable = route?.providerStatus === 'SUCCESS' || structuralRoute;
   const requiredTools = routeDecision?.toolPlan?.requiredTools ?? [];
   const contextAvailable = !routeDecision?.needsRetrieval
     ? requiredTools.length === 0 ||
       (diagnostics?.contextToolExecution?.providerStatus === 'SUCCESS' &&
         (contextSufficiency?.providerStatus === 'SUCCESS' ||
           deterministicRefusal))
-    : contextSufficiency?.providerStatus === 'SUCCESS' ||
-      deterministicRefusal;
+    : contextSufficiency?.providerStatus === 'SUCCESS' || deterministicRefusal;
   const verificationAvailable =
     !routeDecision?.needsVerification ||
     diagnostics?.verification?.providerStatus === 'SUCCESS' ||

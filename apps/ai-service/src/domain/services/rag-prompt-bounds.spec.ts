@@ -5,11 +5,46 @@ import {
   DEFAULT_RAG_PROMPT_BOUNDS,
   preserveReelCoverage,
   selectRagAnswerEvidenceIds,
+  transcriptSegmentPromptBounds,
+  transcriptSegmentRequestKind,
   truncateEvidenceText,
   truncatePromptText,
 } from './rag-prompt-bounds';
 
 describe('rag prompt bounds', () => {
+  it('expands evidence only for transcript segment summaries and comparisons', () => {
+    const route = { requiredEvidence: ['TRANSCRIPT'] as const };
+    const summary = transcriptSegmentRequestKind(
+      'Summarize the speech transcript segment.',
+      route,
+      undefined,
+    );
+    const comparison = transcriptSegmentRequestKind(
+      'Compare the first indexed transcript segments.',
+      route,
+      { requiresReelCoverage: true },
+    );
+
+    expect(summary).toBe('SUMMARY');
+    expect(comparison).toBe('MULTI_REEL_COMPARISON');
+    expect(
+      transcriptSegmentRequestKind(
+        'Compare the first indexed transcript segments.',
+        route,
+        { requiresReelCoverage: false },
+      ),
+    ).toBeUndefined();
+    expect(
+      transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, summary),
+    ).toMatchObject({
+      maxEvidenceTextChars: 1_000,
+      maxEvidenceTotalChars: 3_000,
+    });
+    expect(
+      transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, undefined),
+    ).toBe(DEFAULT_RAG_PROMPT_BOUNDS);
+  });
+
   it('retains the complete requested duration range instead of clipping its last endpoint', () => {
     const source = `Background. ${'ordinary context '.repeat(25)}He has been waiting outside the community gate for at least 7 or 8 years.`;
     const excerpt = truncateEvidenceText(

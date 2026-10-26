@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import {
   GroqStructuredCompletionProviderError,
+  GroqStructuredCompletionSchemaError,
   GroqStructuredLlmAdapter,
 } from './groq-structured-llm.adapter';
 
@@ -97,6 +98,80 @@ describe('GroqStructuredLlmAdapter', () => {
       expect.objectContaining({ providerStatus: 200, attempt: 1 }),
     );
     expect(diagnostics[0]).not.toHaveProperty('requestId');
+  });
+
+  it('forwards and locally enforces a dynamic sentence-candidate enum', async () => {
+    const sentenceSchema = {
+      type: 'object' as const,
+      additionalProperties: false,
+      required: ['selectedSentenceCandidateId'],
+      properties: {
+        selectedSentenceCandidateId: {
+          type: 'string',
+          enum: ['sentence-1', 'sentence-2'],
+        },
+      },
+    };
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: {
+                content: JSON.stringify({
+                  selectedSentenceCandidateId: 'sentence-2',
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'openai/gpt-oss-120b',
+        modelRole: 'ANSWER',
+        systemPrompt: 'Select a source candidate.',
+        userPrompt: 'Return the selected candidate ID.',
+        jsonSchema: sentenceSchema,
+      }),
+    ).resolves.toEqual({ selectedSentenceCandidateId: 'sentence-2' });
+
+    const request = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(
+      request.response_format.json_schema.schema.properties
+        .selectedSentenceCandidateId.enum,
+    ).toEqual(['sentence-1', 'sentence-2']);
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: {
+                content: JSON.stringify({
+                  selectedSentenceCandidateId: 'unsupported-answer-text',
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    await expect(
+      new GroqStructuredLlmAdapter(config()).generateObject({
+        model: 'openai/gpt-oss-120b',
+        modelRole: 'ANSWER',
+        systemPrompt: 'Select a source candidate.',
+        userPrompt: 'Return the selected candidate ID.',
+        jsonSchema: sentenceSchema,
+      }),
+    ).rejects.toBeInstanceOf(GroqStructuredCompletionSchemaError);
   });
 
   it('uses the citation role strict override without changing the global default', async () => {

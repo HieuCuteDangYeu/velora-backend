@@ -146,6 +146,8 @@ describe('CheckContextSufficiencyUseCase', () => {
       service as never,
       config,
     );
+    const segmentTail = 'The final transcript clause remains available.';
+    const longFirstSegment = `${'The opening transcript describes the setting. '.repeat(15)}${segmentTail}`;
     const comparisonState = {
       userMessage: 'Compare the first transcript segment from both Reels.',
       route: {
@@ -154,7 +156,11 @@ describe('CheckContextSufficiencyUseCase', () => {
         needsRetrieval: true,
         requiredEvidence: ['TRANSCRIPT'],
       },
-      retrievalPlan: { requiresReelCoverage: true },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        searchLimit: 1,
+        requiresReelCoverage: true,
+      },
       retrievedChunks: [
         { reelId: 'reel-1', evidenceType: 'TRANSCRIPT', chunkText: 'one' },
         { reelId: 'reel-2', evidenceType: 'TRANSCRIPT', chunkText: 'two' },
@@ -163,8 +169,8 @@ describe('CheckContextSufficiencyUseCase', () => {
         {
           reelId: 'reel-1',
           evidenceType: 'TRANSCRIPT',
-          evidenceText: 'The first clip opens with a visitor arriving.',
-          chunkText: 'The first clip opens with a visitor arriving.',
+          evidenceText: longFirstSegment,
+          chunkText: longFirstSegment,
           tags: [],
         },
         {
@@ -184,8 +190,20 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject.mock.calls[0][0].systemPrompt).toMatch(
       /assess each requested Reel independently/i,
     );
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /earliest source-ordered transcript item for each Reel/i,
+    );
     expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
       '"requiresReelCoverage":true',
+    );
+    expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"sourceOrder":"ASC"',
+    );
+    expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"searchLimit":1',
+    );
+    expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
+      segmentTail,
     );
   });
 

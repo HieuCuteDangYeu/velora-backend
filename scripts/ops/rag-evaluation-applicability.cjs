@@ -32,6 +32,7 @@ function applicability(item) {
       ...all,
       faithfulness: false,
       factualCorrectness: false,
+      responseRelevancy: false,
       contextCompleteness: false,
       reason:
         'Recommendation/action correctness requires structured action scoring.',

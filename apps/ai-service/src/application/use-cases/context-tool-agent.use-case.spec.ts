@@ -145,6 +145,25 @@ describe('ContextToolAgentUseCase', () => {
     });
   });
 
+  it('does not call the retrieval tool model when no shared Reel is authorized', async () => {
+    const toolLlm = { complete: jest.fn() };
+    const built = buildAgent({ toolLlm });
+    const result = await built.agent.execute(
+      state({ accessibleReelIds: [], hasSharedReelContext: false }),
+    );
+
+    expect(toolLlm.complete).not.toHaveBeenCalled();
+    expect(built.retrievalEngine.retrieve).not.toHaveBeenCalled();
+    expect(result.retrievedChunks).toEqual([]);
+    expect(result.contextToolExecution).toMatchObject({
+      allowedTools: [],
+      requiredTools: [],
+      stepCount: 0,
+      calls: [],
+      providerStatus: 'NOT_CALLED',
+    });
+  });
+
   it('keeps a chronological first-segment plan when a multi-Reel tool query narrows to one title', async () => {
     const question =
       'Compare the first indexed transcript segments of "Episode 11" and "Episode 1". Attribute each statement to its own clip.';

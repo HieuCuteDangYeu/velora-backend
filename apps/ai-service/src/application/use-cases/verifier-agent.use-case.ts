@@ -16,6 +16,8 @@ import {
   boundEvidence,
   boundPromptText,
   readRagPromptBounds,
+  transcriptSegmentPromptBounds,
+  transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
   ragAnswerBudget,
@@ -24,6 +26,10 @@ import {
 } from '@ai/domain/services/rag-answer-contract';
 import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
 import { ragMemoryEvidence } from '@ai/domain/services/rag-memory-evidence';
+import {
+  isTranscriptSentenceSelectionRequest,
+  transcriptSentenceSpans,
+} from '@ai/domain/services/rag-transcript-sentence-selection';
 
 interface RawVerificationResult {
   passed?: unknown;
@@ -65,6 +71,40 @@ export class VerifierAgentUseCase {
           issues: [],
           requiresRevision: false,
           escalated: false,
+          exactProvenance: this.exactProvenance(state),
+        },
+      };
+    }
+
+    if (this.hasUnexecutedTaskActionClaim(state)) {
+      const issue =
+        'The answer claims an external action without evidence that an action tool executed.';
+      const revisedInstruction =
+        'No external action tool was selected or executed. State that the action has not been done; do not claim or promise completion. Offer a useful in-chat alternative, such as an unsent draft or steps.';
+      const issues = [issue];
+      const answerQualityIssues = [issue];
+      return {
+        passed: false,
+        confidence: 1,
+        issues,
+        answerQualityPassed: false,
+        answerQualityIssues,
+        requiresRevision: true,
+        revisedInstruction,
+        supportedClaimMappings: [],
+        contradictions: [],
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'FAIL_CLOSED',
+          finalPassed: false,
+          confidence: 1,
+          issues,
+          answerQualityPassed: false,
+          answerQualityIssues,
+          requiresRevision: true,
+          revisedInstruction,
+          supportedClaimMappings: [],
+          contradictions: [],
           exactProvenance: this.exactProvenance(state),
         },
       };
@@ -120,6 +160,43 @@ export class VerifierAgentUseCase {
     }
 
     try {
+      // Exact source-selected transcript sentences should not be rejected for brevity or punctuation.
+      const exactSentenceSelection =
+        this.exactTranscriptSentenceSelection(state);
+      if (
+        exactSentenceSelection &&
+        (!primary.passed || primary.answerQualityPassed === false)
+      ) {
+        const accepted = this.withDiagnostics(
+          {
+            ...primary,
+            passed: true,
+            confidence: 1,
+            issues: [],
+            answerQualityPassed: true,
+            answerQualityIssues: [],
+            requiresRevision: false,
+            revisedInstruction: undefined,
+            supportedClaimMappings: [exactSentenceSelection],
+            contradictions: [],
+          },
+          {
+            role: 'VERIFIER',
+            source: 'EXACT_PROVENANCE',
+            escalated: false,
+            state,
+          },
+        );
+        return {
+          ...accepted,
+          diagnostics: {
+            ...accepted.diagnostics!,
+            providerPassed: primary.passed,
+            exactProvenance: this.exactProvenance(state),
+          },
+        };
+      }
+
       const escalationReason = this.escalationReason(primary, state);
 
       if (escalationReason && escalationEnabled) {
@@ -150,6 +227,45 @@ export class VerifierAgentUseCase {
         this.semanticCallsFromError(error),
       );
     }
+  }
+
+  private hasUnexecutedTaskActionClaim(state: RagChatWorkflowState): boolean {
+    if (
+      state.route?.intent !== 'TASK_ACTION_REQUEST' ||
+      (state.route.toolPlan?.allowedTools.length ?? 0) > 0
+    ) {
+      return false;
+    }
+
+    const answer = (state.answer ?? '').normalize('NFKC').replace(/[’‘]/g, "'");
+    const draftMarker = answer.search(
+      /(?:^|\n)\s*(?:(?:email|suggested)\s+)?draft\s*:|(?:^|\n)\s*subject\s*:/i,
+    );
+    const actionNarrative = (
+      draftMarker >= 0 ? answer.slice(0, draftMarker) : answer
+    ).replace(/“[^”]*”|‘[^’]*’|"[^"]*"/gu, ' ');
+    const positiveAction =
+      /\b(?:i|we)(?:'ll|'ve|'d|'m)?\s+(?:(?:will|can|could|would|shall|have|has|just|already|am|are|going to)\s+)*(?:send|sent|email(?:ed)?|book(?:ed)?|schedule(?:d)?|cancel(?:ed|led)?|delete(?:d)?|update(?:d)?|change(?:d)?|submit(?:ted)?|transfer(?:red)?|pay|paid|purchase(?:d)?|post(?:ed)?|save(?:d)?|record(?:ed)?|note(?:d)?|confirm(?:ed)?|set)\b/i;
+    const passiveAction =
+      /\b(?:has been|was|were|is|are)\s+(?:sent|emailed|booked|scheduled|cancelled|canceled|deleted|updated|changed|submitted|transferred|paid|purchased|posted|saved|recorded|noted|confirmed|set)\b/i;
+    const completedAction = /^\s*(?:done|completed|successfully completed)\b/i;
+
+    return actionNarrative
+      .split(/(?:[.!?;\n]+|\bbut\b|\bhowever\b)/i)
+      .some((clause) => {
+        if (
+          /\b(?:no|not|never|cannot|can't|won't|wouldn't|didn't|haven't|hasn't|isn't|wasn't)\b/i.test(
+            clause,
+          )
+        ) {
+          return false;
+        }
+        return (
+          positiveAction.test(clause) ||
+          passiveAction.test(clause) ||
+          completedAction.test(clause)
+        );
+      });
   }
 
   private isTransientProviderFailure(error: unknown): boolean {
@@ -246,6 +362,42 @@ export class VerifierAgentUseCase {
       : [];
   }
 
+  private exactTranscriptSentenceSelection(
+    state: RagChatWorkflowState,
+  ): RagSupportedClaimMapping | undefined {
+    if (!isTranscriptSentenceSelectionRequest(state.route, state.userMessage))
+      return undefined;
+    const answer = state.answer?.trim();
+    const claims = state.answerClaims ?? [];
+    const claim = claims[0];
+    if (
+      !answer ||
+      claims.length !== 1 ||
+      claim.claim.trim() !== answer ||
+      claim.evidenceIds.length !== 1
+    )
+      return undefined;
+
+    const evidence = (state.generationEvidence ?? []).find(
+      (candidate) =>
+        candidate.evidenceType === 'TRANSCRIPT' &&
+        candidate.evidenceId === claim.evidenceIds[0] &&
+        (state.rerankedChunks ?? []).some(
+          (chunk) =>
+            chunk.chunkId === candidate.sourceId &&
+            chunk.reelId === candidate.reelId &&
+            (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT',
+        ) &&
+        transcriptSentenceSpans(
+          candidate.evidenceText,
+          state.userMessage,
+        ).includes(answer),
+    );
+    return evidence
+      ? { claim: answer, evidenceIds: [evidence.evidenceId] }
+      : undefined;
+  }
+
   private async verifyWithRole(
     state: RagChatWorkflowState,
     role: 'VERIFIER' | 'VERIFIER_ESCALATION',
@@ -270,7 +422,11 @@ export class VerifierAgentUseCase {
         diagnostics: {
           providerStatus: 'SUCCESS',
           decisionSource:
-            role === 'VERIFIER' ? 'LLM_PRIMARY' : 'LLM_ESCALATION',
+            result.diagnostics?.decisionSource === 'EXACT_PROVENANCE'
+              ? 'EXACT_PROVENANCE'
+              : role === 'VERIFIER'
+                ? 'LLM_PRIMARY'
+                : 'LLM_ESCALATION',
           modelRole: role,
           model: this.config.model(role),
           providerPassed: result.passed,
@@ -337,7 +493,7 @@ export class VerifierAgentUseCase {
     result: RagVerificationResult,
     input: {
       role: 'VERIFIER' | 'VERIFIER_ESCALATION';
-      source: 'LLM_PRIMARY' | 'LLM_ESCALATION';
+      source: 'LLM_PRIMARY' | 'LLM_ESCALATION' | 'EXACT_PROVENANCE';
       escalated: boolean;
       escalationReason?: string;
       state: RagChatWorkflowState;
@@ -347,8 +503,11 @@ export class VerifierAgentUseCase {
     return {
       ...result,
       diagnostics: {
-        providerStatus: 'SUCCESS',
-        decisionSource: input.source,
+        providerStatus: result.diagnostics?.providerStatus ?? 'SUCCESS',
+        decisionSource:
+          result.diagnostics?.decisionSource === 'EXACT_PROVENANCE'
+            ? 'EXACT_PROVENANCE'
+            : input.source,
         modelRole: input.role,
         model: this.config.model(input.role),
         escalated: input.escalated,
@@ -387,7 +546,14 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
-    const bounds = readRagPromptBounds(this.config);
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ),
+    );
     const answerBudget =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
         ? ragAnswerBudget(state.route.reelQuestionType)
@@ -447,7 +613,6 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         'answerQualityIssues',
         'requiresRevision',
         'revisedInstruction',
-        'supportedClaimMappings',
       ],
       properties: {
         passed: { type: 'boolean' },
@@ -495,7 +660,14 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     raw: RawVerificationResult,
     state: RagChatWorkflowState,
   ): RagVerificationResult {
-    const bounds = readRagPromptBounds(this.config);
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ),
+    );
     const boundedEvidence = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
     });
@@ -503,10 +675,28 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       ...boundedEvidence.map((_chunk, index) => `e${index}`),
       ...ragMemoryEvidence(state, this.config).map((item) => item.evidenceId),
     ]);
-    const rawMappings = Array.isArray(raw.supportedClaimMappings)
+    let rawMappings = Array.isArray(raw.supportedClaimMappings)
       ? raw.supportedClaimMappings
       : [];
     let hasUnknownEvidenceId = false;
+    let exactProvenanceFallback = false;
+    const hasAuthorizedEvidence =
+      boundedEvidence.length > 0 ||
+      ragMemoryEvidence(state, this.config).length > 0;
+    if (
+      raw.passed === true &&
+      rawMappings.length === 0 &&
+      state.answer?.trim() &&
+      hasAuthorizedEvidence
+    ) {
+      const exactProvenance = this.exactProvenance(state);
+      if (exactProvenance.supported) {
+        rawMappings = this.exactSupportedClaimMappings(state, exactProvenance);
+        exactProvenanceFallback = rawMappings.length > 0;
+      } else {
+        hasUnknownEvidenceId = true;
+      }
+    }
     const supportedClaimMappings: RagSupportedClaimMapping[] = [];
     for (const mapping of rawMappings) {
       if (!mapping || typeof mapping !== 'object') {
@@ -630,6 +820,21 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       revisedInstruction,
       supportedClaimMappings,
       contradictions,
+      ...(exactProvenanceFallback
+        ? {
+            diagnostics: {
+              providerStatus: 'SUCCESS' as const,
+              decisionSource: 'EXACT_PROVENANCE' as const,
+              finalPassed: passed,
+              confidence,
+              issues,
+              requiresRevision: !passed || !answerQualityPassed,
+              supportedClaimMappings,
+              contradictions,
+              exactProvenance: this.exactProvenance(state),
+            },
+          }
+        : {}),
     };
   }
 

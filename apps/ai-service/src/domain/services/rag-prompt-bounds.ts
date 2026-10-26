@@ -2,6 +2,7 @@ import type { ReelContextSearchResult } from '@common/content/interfaces/reel-co
 import type {
   RagChatRouteDecision,
   RagContextSufficiencyResult,
+  RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 
 export interface RagPromptConfig {
@@ -30,6 +31,8 @@ export interface RagPromptBounds {
   maxEvidenceTags: number;
   maxEvidenceTagChars: number;
 }
+
+export type TranscriptSegmentRequestKind = 'SUMMARY' | 'MULTI_REEL_COMPARISON';
 
 export const DEFAULT_RAG_PROMPT_BOUNDS: RagPromptBounds = {
   maxUserMessageChars: 1_200,
@@ -187,6 +190,43 @@ export function readRagPromptBounds(config?: RagPromptConfig): RagPromptBounds {
     }
   }
   return bounds;
+}
+
+export function transcriptSegmentRequestKind(
+  question: string,
+  route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
+  plan: Pick<RagRetrievalPlan, 'requiresReelCoverage'> | undefined,
+): TranscriptSegmentRequestKind | undefined {
+  if (route?.requiredEvidence?.includes('TRANSCRIPT') !== true)
+    return undefined;
+  if (
+    /\b(?:summarize|summary)\b/i.test(question) &&
+    /\b(?:speech|transcript)\b/i.test(question) &&
+    /\bsegment\b/i.test(question)
+  ) {
+    return 'SUMMARY';
+  }
+  if (
+    plan?.requiresReelCoverage === true &&
+    /\bcompare\b/i.test(question) &&
+    /\b(?:first|opening|initial)\b/i.test(question) &&
+    /\b(?:indexed )?transcript segments?\b/i.test(question)
+  ) {
+    return 'MULTI_REEL_COMPARISON';
+  }
+  return undefined;
+}
+
+export function transcriptSegmentPromptBounds(
+  bounds: RagPromptBounds,
+  requestKind: TranscriptSegmentRequestKind | undefined,
+): RagPromptBounds {
+  if (!requestKind) return bounds;
+  return {
+    ...bounds,
+    maxEvidenceTextChars: Math.max(bounds.maxEvidenceTextChars, 1_000),
+    maxEvidenceTotalChars: Math.max(bounds.maxEvidenceTotalChars, 3_000),
+  };
 }
 
 export function truncatePromptText(value: string, maxChars: number): string {

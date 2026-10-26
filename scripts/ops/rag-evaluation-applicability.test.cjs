@@ -40,8 +40,11 @@ test('refusal and recommendation cases use policy/action evaluators', () => {
     false,
   );
   assert.equal(
-    applicability({ metadata: { bucket: 'RECOMMENDATION' } })
-      .factualCorrectness,
+    applicability({ metadata: { bucket: 'RECOMMENDATION' } }).factualCorrectness,
+    false,
+  );
+  assert.equal(
+    isApplicable({ metadata: { bucket: 'RECOMMENDATION' } }, 'responseRelevancy'),
     false,
   );
 });

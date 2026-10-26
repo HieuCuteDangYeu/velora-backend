@@ -1,0 +1,218 @@
+name: RAG live evaluation
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full SHA currently promoted to homelab-deploy
+        required: true
+        type: string
+      run_id:
+        description: Unique checkpoint-safe benchmark run ID
+        required: true
+        type: string
+      baseline_experiment_id:
+        description: Langfuse evaluator-v7 V8 baseline run for regression comparison
+        required: true
+        default: 3ae1e963-bf95-4078-b501-eb8e18136df6
+        type: string
+      resume_from_run_id:
+        description: Prior GitHub Actions run ID containing this run's checkpoint
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: rag-live-evaluation-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  live-rag-benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: rag-live-evaluation
+    env:
+      RAG_RELEASE_SHA: ${{ inputs.release_sha }}
+      RAG_RUN_ID: ${{ inputs.run_id }}
+      RAG_RESUME_FROM_RUN_ID: ${{ inputs.resume_from_run_id }}
+      RAG_STATE_DIR: ${{ runner.temp }}/rag-live-state
+    steps:
+      - name: Checkout promoted repository state
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Verify run identity, promoted SHA, and credentials
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          VELORA_TEST_EMAIL: ${{ secrets.VELORA_TEST_EMAIL }}
+          VELORA_TEST_PASSWORD: ${{ secrets.VELORA_TEST_PASSWORD }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/master' ]] || {
+            echo 'Start this workflow from master.' >&2
+            exit 1
+          }
+          [[ "$RAG_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'release_sha must be a full 40-character SHA.' >&2
+            exit 1
+          }
+          [[ "$RAG_RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$ ]] || {
+            echo 'run_id contains unsupported characters.' >&2
+            exit 1
+          }
+          git fetch --no-tags origin '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
+          promoted_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
+          if [ "$promoted_sha" != "$RAG_RELEASE_SHA" ]; then
+            echo "Requested SHA $RAG_RELEASE_SHA is not the automatically promoted SHA $promoted_sha." >&2
+            exit 1
+          fi
+          git checkout --detach "$RAG_RELEASE_SHA"
+          for key in BACKEND_URL VELORA_TEST_EMAIL VELORA_TEST_PASSWORD LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASE_URL; do
+            if [ -z "${!key:-}" ]; then
+              echo "Missing Actions secret or variable: $key" >&2
+              exit 1
+            fi
+          done
+          mkdir -p "$RAG_STATE_DIR"
+
+      - name: Set up pnpm and Node.js
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Restore checkpoint from a prior workflow run
+        if: inputs.resume_from_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: rag-live-state-${{ inputs.run_id }}
+          path: ${{ runner.temp }}/rag-live-state
+          run-id: ${{ inputs.resume_from_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Restore checkpoint from this workflow's previous attempt
+        if: inputs.resume_from_run_id == '' && github.run_attempt > 1
+        uses: actions/download-artifact@v4
+        with:
+          name: rag-live-state-${{ inputs.run_id }}
+          path: ${{ runner.temp }}/rag-live-state
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Require checkpoint when resuming
+        if: inputs.resume_from_run_id != '' || github.run_attempt > 1
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$RAG_STATE_DIR/$RAG_RUN_ID.state.json" || {
+            echo 'The requested checkpoint artifact is missing; no RAG request was sent.' >&2
+            exit 1
+          }
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const state = JSON.parse(fs.readFileSync(`${process.env.RAG_STATE_DIR}/${process.env.RAG_RUN_ID}.state.json`, 'utf8'));
+          if (state.runId !== process.env.RAG_RUN_ID || state.serviceReleaseSha !== process.env.RAG_RELEASE_SHA || state.datasetName !== 'velora/rag-v8-source-disjoint-20261026-03') {
+            throw new Error('Checkpoint run ID, promoted SHA, or frozen dataset does not match.');
+          }
+          NODE
+
+      - name: Refuse to repeat an existing Langfuse run
+        if: inputs.resume_from_run_id == '' && github.run_attempt == 1
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: |
+          node - <<'NODE'
+          const { LangfuseClient } = require('@langfuse/client');
+          (async () => {
+            const client = new LangfuseClient({
+              publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+              secretKey: process.env.LANGFUSE_SECRET_KEY,
+              baseUrl: process.env.LANGFUSE_BASE_URL,
+            });
+            try {
+              const matches = [];
+              let cursor;
+              do {
+                const page = await client.api.experiments.list({
+                  fromStartTime: '2026-01-01T00:00:00.000Z',
+                  fields: 'core,metadata',
+                  limit: 100,
+                  ...(cursor ? { cursor } : {}),
+                });
+                matches.push(...(page.data ?? []).filter((run) =>
+                  run.metadata?.benchmarkRunId === process.env.RAG_RUN_ID ||
+                  run.name?.includes(process.env.RAG_RUN_ID),
+                ));
+                cursor = page.meta?.cursor;
+              } while (cursor);
+              if (matches.length) {
+                throw new Error(`Langfuse already has run ${process.env.RAG_RUN_ID}; resume its checkpoint instead.`);
+              }
+            } finally {
+              await client.shutdown();
+            }
+          })().catch((error) => {
+            console.error(error.message);
+            process.exitCode = 1;
+          });
+          NODE
+
+      - name: Run the exact-once V8 live benchmark
+        env:
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+          VELORA_TEST_EMAIL: ${{ secrets.VELORA_TEST_EMAIL }}
+          VELORA_TEST_PASSWORD: ${{ secrets.VELORA_TEST_PASSWORD }}
+          BOT_USER_ID: ${{ vars.BOT_USER_ID }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: >-
+          node scripts/ops/run-langfuse-live-benchmark.cjs
+          --dataset velora/rag-v8-source-disjoint-20261026-03
+          --expected-cases 136
+          --release-sha "$RAG_RELEASE_SHA"
+          --run-id "$RAG_RUN_ID"
+          --state-dir "$RAG_STATE_DIR"
+          --concurrency 1
+
+      - name: Publish and read back the Langfuse experiment
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: >-
+          node scripts/ops/publish-rag-v8-live-experiment.cjs
+          --apply
+          --state-file "$RAG_STATE_DIR/$RAG_RUN_ID.state.json"
+          --output "$RAG_STATE_DIR/$RAG_RUN_ID.langfuse-experiment.json"
+          --baseline-experiment-id "${{ inputs.baseline_experiment_id }}"
+          --min-health-availability 0.95
+          --require-exit-gates
+
+      - name: Upload checkpoint for exact-once resume
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-live-state-${{ inputs.run_id }}
+          path: ${{ runner.temp }}/rag-live-state/
+          retention-days: 1
+          if-no-files-found: ignore

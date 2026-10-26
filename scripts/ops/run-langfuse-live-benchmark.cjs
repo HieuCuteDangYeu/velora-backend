@@ -25,13 +25,16 @@ dns.lookup = function (hostname, options, callback) {
 
 const {
   EVALUATOR_VERSION,
+  attachTrace,
   verifyDataset,
   fingerprint,
   strictEvaluations,
 } = require('./rag-evaluation-contract.cjs');
+const { loadSessionTraces } = require('./langfuse-rag-traces.cjs');
 
 const DATASET_NAME = 'velora/rag-scraped-v1-provisional';
 const TARGET_CASES = 220;
+const BENCHMARK_EVALUATOR_VERSION = 'velora-rag-benchmark-evaluation-v7';
 const BOT_USER_ID =
   process.env.BOT_USER_ID || 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7';
 
@@ -50,6 +53,10 @@ function parseArgs(argv) {
 
 function nowRunId() {
   return `langfuse-live-220-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+}
+
+function isFullReleaseSha(value) {
+  return /^[0-9a-f]{40}$/i.test(String(value ?? '').trim());
 }
 
 function sha256(value) {
@@ -157,6 +164,12 @@ function containmentMatch(expected, actual) {
   return 0;
 }
 
+function isClearAbstention(answer) {
+  return /\b(?:cannot|can't|could not|couldn't|unable to|not enough|insufficient|no relevant|cannot verify|can't verify|not established|not available)\b/i.test(
+    String(answer ?? ''),
+  );
+}
+
 function citationEvidenceIds(citations) {
   if (!Array.isArray(citations)) return [];
   return [
@@ -179,9 +192,9 @@ function citationEvidenceIds(citations) {
 function deterministicEvaluations(input, expectedOutput, output) {
   const expectedAnswer = expectedOutput?.answer ?? '';
   const actualAnswer = output?.answer ?? '';
-  const expectedEvidence = new Set(
-    expectedOutput?.evidenceIds ?? input?.evidenceIds ?? [],
-  );
+  const expectedEvidenceIds =
+    expectedOutput?.evidenceIds ?? input?.evidenceIds ?? [];
+  const expectedEvidence = new Set(expectedEvidenceIds);
   const actualEvidence = citationEvidenceIds(output?.citations);
   const actualEvidenceSet = new Set(actualEvidence);
   const citations = Array.isArray(output?.citations) ? output.citations : [];
@@ -201,7 +214,7 @@ function deterministicEvaluations(input, expectedOutput, output) {
     }
     return false;
   });
-  const expectedReelId = expectedOutput?.reelIds?.[0] ?? input?.reelIds?.[0];
+  const expectedReelIds = expectedOutput?.reelIds ?? input?.reelIds ?? [];
   const citedReels = new Set(
     citations
       .map((citation) => citation?.reelId)
@@ -212,27 +225,41 @@ function deterministicEvaluations(input, expectedOutput, output) {
       .map((citation) => citation?.evidenceType)
       .filter((value) => typeof value === 'string' && value),
   );
+  const isAbstention = expectedOutput?.answerType === 'ABSTENTION';
   return [
-    {
-      name: 'answer_exact_match',
-      value: normalize(expectedAnswer) === normalize(actualAnswer) ? 1 : 0,
-      dataType: 'NUMERIC',
-    },
-    {
-      name: 'answer_containment_match',
-      value: containmentMatch(expectedAnswer, actualAnswer),
-      dataType: 'NUMERIC',
-    },
-    {
-      name: 'answer_token_f1',
-      value: tokenF1(expectedAnswer, actualAnswer),
-      dataType: 'NUMERIC',
-    },
-    {
-      name: 'answer_token_recall',
-      value: tokenRecall(expectedAnswer, actualAnswer),
-      dataType: 'NUMERIC',
-    },
+    ...(isAbstention
+      ? [
+          {
+            name: 'abstention_correct',
+            value: Number(
+              isClearAbstention(actualAnswer) && citations.length === 0,
+            ),
+            dataType: 'NUMERIC',
+          },
+        ]
+      : [
+          {
+            name: 'answer_exact_match',
+            value:
+              normalize(expectedAnswer) === normalize(actualAnswer) ? 1 : 0,
+            dataType: 'NUMERIC',
+          },
+          {
+            name: 'answer_containment_match',
+            value: containmentMatch(expectedAnswer, actualAnswer),
+            dataType: 'NUMERIC',
+          },
+          {
+            name: 'answer_token_f1',
+            value: tokenF1(expectedAnswer, actualAnswer),
+            dataType: 'NUMERIC',
+          },
+          {
+            name: 'answer_token_recall',
+            value: tokenRecall(expectedAnswer, actualAnswer),
+            dataType: 'NUMERIC',
+          },
+        ]),
     {
       name: 'evidence_recall',
       value: expectedEvidence.size
@@ -242,15 +269,38 @@ function deterministicEvaluations(input, expectedOutput, output) {
     },
     {
       name: 'reel_citation_match',
-      value: expectedReelId && citedReels.has(expectedReelId) ? 1 : 0,
+      value:
+        expectedOutput?.answerType === 'ABSTENTION' &&
+        expectedEvidence.size === 0
+          ? citations.length === 0
+            ? 1
+            : 0
+          : expectedReelIds.length > 0 &&
+              expectedReelIds.every((reelId) => citedReels.has(reelId))
+            ? 1
+            : 0,
       dataType: 'NUMERIC',
     },
     {
       name: 'modality_match',
-      value: expectedModality && modalities.has(expectedModality) ? 1 : 0,
+      value:
+        Array.isArray(expectedOutput?.expectedEvidenceTypes) &&
+        expectedOutput.expectedEvidenceTypes.length > 0
+          ? [...new Set(expectedOutput.expectedEvidenceTypes)].every((type) =>
+              modalities.has(type),
+            )
+            ? 1
+            : 0
+          : expectedModality
+            ? modalities.has(expectedModality)
+              ? 1
+              : 0
+            : citations.length === 0
+              ? 1
+              : 0,
       dataType: 'NUMERIC',
     },
-  ];
+  ].filter((score) => !(isAbstention && score.name === 'evidence_recall'));
 }
 
 function aggregateEvaluations(cases) {
@@ -275,7 +325,7 @@ function aggregateEvaluations(cases) {
 }
 
 function benchmarkEvaluations(input, expectedOutput, output) {
-  return [
+  const scores = [
     ...deterministicEvaluations(input, expectedOutput, output).map((score) =>
       score.name === 'evidence_recall'
         ? { ...score, name: 'reel_evidence_proxy_recall' }
@@ -283,6 +333,46 @@ function benchmarkEvaluations(input, expectedOutput, output) {
     ),
     ...strictEvaluations(input, expectedOutput, output),
   ];
+  if (Number.isFinite(output?.workflowLatencyMs))
+    scores.push({
+      name: 'workflow_latency_ms',
+      value: output.workflowLatencyMs,
+      dataType: 'NUMERIC',
+    });
+  scores.push({
+    name: 'execution_health_available',
+    value: Number(output?.executionHealth?.status === 'AVAILABLE'),
+    dataType: 'NUMERIC',
+  });
+  return scores;
+}
+
+function aggregateLatency(cases) {
+  const values = cases
+    .map((item) => item.output?.workflowLatencyMs)
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  const quantile = (ratio) =>
+    values.length ? values[Math.ceil(values.length * ratio) - 1] : null;
+  return {
+    count: values.length,
+    meanMs: values.length
+      ? values.reduce((sum, value) => sum + value, 0) / values.length
+      : null,
+    p50Ms: quantile(0.5),
+    p95Ms: quantile(0.95),
+  };
+}
+
+function executionHealthCounts(cases) {
+  return cases.reduce(
+    (counts, item) => {
+      const status = item.output?.executionHealth?.status || 'UNKNOWN';
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    },
+    { AVAILABLE: 0, DEGRADED: 0, UNKNOWN: 0 },
+  );
 }
 function aggregateBenchmarkEvaluations(cases) {
   const values = new Map();
@@ -379,7 +469,9 @@ function excludeInFlightCase(state, caseId, exclusionReason) {
 function writeJsonAtomically(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+    mode: 0o600,
+  });
   fs.renameSync(temporary, file);
 }
 
@@ -527,6 +619,44 @@ async function waitForBotMessage(
   throw new Error(`bot response timeout for ${conversationId}`);
 }
 
+async function waitForRagTrace(client, conversationId, maxAttempts = 15) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const traces = await loadSessionTraces(client, [conversationId]);
+    if (traces.length > 1)
+      throw new Error(`ambiguous RAG workflow traces for ${conversationId}`);
+    if (traces.length === 1) return traces[0];
+    if (attempt + 1 < maxAttempts)
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error(`RAG workflow trace timeout for ${conversationId}`);
+}
+
+async function attachRagTrace(client, output, conversationId) {
+  return attachTrace(
+    output,
+    await waitForRagTrace(client, conversationId),
+    conversationId,
+  );
+}
+
+function reelIdsForItem(item) {
+  const ids = [...new Set(item.input?.reelIds ?? [])];
+  if (
+    ids.length === 0 ||
+    ids.some((reelId) => typeof reelId !== 'string' || !reelId.trim())
+  )
+    throw new Error(`invalid dataset Reel IDs for ${item.id}`);
+  return ids;
+}
+
+async function shareReels(request, conversationId, reelIds) {
+  for (const reelId of reelIds)
+    await request('POST', `/content/reels/${reelId}/share`, {
+      conversationId,
+      sharedWithUserId: BOT_USER_ID,
+    });
+}
+
 async function ensureReady(request, reelIds) {
   const failures = [];
   for (let index = 0; index < reelIds.length; index += 8) {
@@ -561,6 +691,7 @@ async function runCase({
   state,
   stateFile,
   request,
+  langfuseClient,
   runId,
   autoExcludeTimeouts = false,
 }) {
@@ -591,7 +722,11 @@ async function runCase({
         `in-flight case ${caseId} has no reconciled bot response; refusing resend`,
       );
     }
-    const output = outputFromMessage(assistant, item, current.conversationId);
+    const output = await attachRagTrace(
+      langfuseClient,
+      outputFromMessage(assistant, item, current.conversationId),
+      current.conversationId,
+    );
     state.cases[caseId] = {
       ...current,
       status: 'COMPLETED',
@@ -604,13 +739,9 @@ async function runCase({
   if (current.status !== 'PENDING')
     throw new Error(`unsupported state ${current.status} for ${caseId}`);
 
-  const reelId = item.input?.reelIds?.[0];
+  const reelIds = reelIdsForItem(item);
   const question = item.input?.question;
-  if (
-    typeof reelId !== 'string' ||
-    typeof question !== 'string' ||
-    !question.trim()
-  ) {
+  if (typeof question !== 'string' || !question.trim()) {
     throw new Error(`invalid dataset item ${caseId}`);
   }
   const created = await request('POST', '/conversations', {
@@ -622,10 +753,7 @@ async function runCase({
   const conversationId = created?.id;
   if (!conversationId)
     throw new Error(`conversation create returned no id for ${caseId}`);
-  await request('POST', `/content/reels/${reelId}/share`, {
-    conversationId,
-    sharedWithUserId: BOT_USER_ID,
-  });
+  await shareReels(request, conversationId, reelIds);
   const clientMessageId = `langfuse-${runId}-${caseId}-${crypto.randomUUID()}`;
   state.cases[caseId] = {
     status: 'IN_FLIGHT',
@@ -664,7 +792,11 @@ async function runCase({
     userMessage?.createdAt,
     autoExcludeTimeouts ? 90 : 100,
   );
-  const output = outputFromMessage(assistant, item, conversationId);
+  const output = await attachRagTrace(
+    langfuseClient,
+    outputFromMessage(assistant, item, conversationId),
+    conversationId,
+  );
   state.cases[caseId] = {
     ...state.cases[caseId],
     status: 'COMPLETED',
@@ -678,6 +810,9 @@ async function runCase({
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const datasetName = String(args.dataset || DATASET_NAME);
+  const serviceReleaseSha = String(
+    args['release-sha'] || process.env.RAG_RELEASE_SHA || '',
+  ).trim();
   const expectedCases = Number(
     args['expected-cases'] ??
       (datasetName === DATASET_NAME ? TARGET_CASES : NaN),
@@ -685,6 +820,10 @@ async function main() {
   if (!Number.isInteger(expectedCases) || expectedCases < 1)
     throw new Error(
       'A non-provisional dataset requires an explicit positive --expected-cases',
+    );
+  if (datasetName !== DATASET_NAME && !isFullReleaseSha(serviceReleaseSha))
+    throw new Error(
+      'A full --release-sha is required for a non-provisional dataset',
     );
   dotenv.config({
     path: args['langfuse-env'] || path.resolve(process.cwd(), '.env'),
@@ -717,6 +856,7 @@ async function main() {
       );
       const dataset = await client.dataset.get(
         targetState.datasetName || datasetName,
+        { fetchItemsPageSize: 100 },
       );
       const items = [...dataset.items].sort((left, right) =>
         left.id.localeCompare(right.id),
@@ -754,10 +894,20 @@ async function main() {
           (total, item) => total + (item.attemptCount ?? 0),
           0,
         ),
-        deterministicMetrics: aggregateEvaluations(
+        deterministicMetrics: aggregateBenchmarkEvaluations(
           completedItems.map((item) => ({
             input: item.input,
             expectedOutput: item.expectedOutput,
+            output: targetState.cases[item.id]?.output,
+          })),
+        ),
+        workflowLatency: aggregateLatency(
+          completedItems.map((item) => ({
+            output: targetState.cases[item.id]?.output,
+          })),
+        ),
+        executionHealth: executionHealthCounts(
+          completedItems.map((item) => ({
             output: targetState.cases[item.id]?.output,
           })),
         ),
@@ -779,7 +929,9 @@ async function main() {
     ) {
       throw new Error('BACKEND_URL and benchmark credentials are required');
     }
-    const dataset = await client.dataset.get(datasetName);
+    const dataset = await client.dataset.get(datasetName, {
+      fetchItemsPageSize: 100,
+    });
     const items = [...dataset.items].sort((left, right) =>
       left.id.localeCompare(right.id),
     );
@@ -818,9 +970,13 @@ async function main() {
         );
       if (
         state.datasetName !== datasetName ||
-        state.datasetFingerprint !== datasetFingerprint
+        state.datasetFingerprint !== datasetFingerprint ||
+        (state.serviceReleaseSha &&
+          state.serviceReleaseSha !== serviceReleaseSha)
       )
-        throw new Error('dataset fingerprint mismatch; refusing resume');
+        throw new Error(
+          'dataset or release fingerprint mismatch; refusing resume',
+        );
       if (JSON.stringify(state.itemIds) !== JSON.stringify(itemIds))
         throw new Error('dataset item identity mismatch; refusing resume');
     } else {
@@ -829,6 +985,7 @@ async function main() {
         runId,
         datasetName: datasetName,
         datasetFingerprint,
+        serviceReleaseSha: serviceReleaseSha || null,
         itemIds,
         createdAt: new Date().toISOString(),
         cases: Object.fromEntries(
@@ -839,7 +996,7 @@ async function main() {
     }
     if (!state.datasetSnapshot) {
       state.datasetSnapshot = datasetSnapshot;
-      state.evaluatorVersion = EVALUATOR_VERSION;
+      state.evaluatorVersion = BENCHMARK_EVALUATOR_VERSION;
       state.snapshotFingerprint = fingerprint(datasetSnapshot);
     }
     for (const item of Object.values(state.cases)) {
@@ -910,12 +1067,17 @@ async function main() {
       let halted = false;
       const autoExcludeTimeouts = Boolean(args['auto-exclude-timeouts']);
       const result = await dataset.runExperiment({
-        name: 'Velora live RAG benchmark 220',
+        name: 'Velora live RAG benchmark',
         runName: runId,
-        description:
-          'One fresh bot conversation per generated Reel question; sequential, checkpointed application benchmark.',
+        description: `One fresh bot conversation per dataset question; sequential, checkpointed live backend run for ${dataset.metadata?.datasetVersion || datasetName}.`,
         metadata: {
-          datasetVersion: 'rag-scraped-v1-provisional',
+          datasetVersion: dataset.metadata?.datasetVersion || datasetName,
+          datasetSha256:
+            dataset.metadata?.datasetSha256 ||
+            dataset.metadata?.datasetContentSha256 ||
+            null,
+          serviceReleaseSha,
+          executionMode: 'LIVE_PRODUCTION_BACKEND',
           benchmarkRunId: runId,
           productionRagCallsAuthorized: expectedCases,
         },
@@ -935,6 +1097,7 @@ async function main() {
               state,
               stateFile,
               request,
+              langfuseClient: client,
               runId,
               autoExcludeTimeouts,
             });
@@ -990,9 +1153,10 @@ async function main() {
     );
     const summary = {
       schemaVersion: 'langfuse-live-benchmark-summary-v2',
-      evaluatorVersion: EVALUATOR_VERSION,
+      evaluatorVersion: BENCHMARK_EVALUATOR_VERSION,
       runId,
       datasetName: datasetName,
+      serviceReleaseSha: serviceReleaseSha || null,
       datasetFingerprint,
       datasetRunId: state.datasetRunId ?? null,
       totalCases: items.length,
@@ -1014,6 +1178,16 @@ async function main() {
           input: item.input,
           expectedOutput: item.expectedOutput,
           output: state.cases[item.id].output,
+        })),
+      ),
+      workflowLatency: aggregateLatency(
+        completedItems.map((item) => ({
+          output: state.cases[item.id]?.output,
+        })),
+      ),
+      executionHealth: executionHealthCounts(
+        completedItems.map((item) => ({
+          output: state.cases[item.id]?.output,
         })),
       ),
       stateFile,
@@ -1044,12 +1218,19 @@ module.exports = {
   benchmarkEvaluations,
   outputFromMessage,
   aggregateEvaluations,
+  aggregateLatency,
+  executionHealthCounts,
   citationEvidenceIds,
   containmentMatch,
   deterministicEvaluations,
   normalize,
+  isFullReleaseSha,
+  isClearAbstention,
   excludeInFlightCase,
   prepareInFlightRetry,
+  reelIdsForItem,
+  shareReels,
   tokenF1,
   tokenRecall,
+  BENCHMARK_EVALUATOR_VERSION,
 };

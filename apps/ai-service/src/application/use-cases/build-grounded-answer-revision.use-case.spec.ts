@@ -244,7 +244,31 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     );
   });
 
-  it('preserves chronological selection for first-sentence revisions', async () => {
+  it('keeps the full transcript segment available during a grounded revision', async () => {
+    const segmentTail = 'The final turn changes the stated condition.';
+    const input = state({
+      question: 'Summarize the speech transcript segment.',
+      evidence: [
+        `${'The speaker describes the plan. '.repeat(20)}${segmentTail}`,
+      ],
+    });
+    input.retrievalPlan = { sourceOrder: 'ASC' } as NonNullable<
+      RagChatWorkflowState['retrievalPlan']
+    >;
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: 'The speaker describes the plan and changes a condition.',
+      evidenceIds: ['e0'],
+    });
+
+    await useCase.executeWithProvenance(input);
+
+    const prompt = JSON.parse(
+      String(structuredLlm.generateObject.mock.calls[0][0].userPrompt),
+    ) as { evidence: Array<{ evidenceText: string }> };
+    expect(prompt.evidence[0].evidenceText).toContain(segmentTail);
+  });
+
+  it('delegates first-sentence revisions to the candidate-selection answer path', async () => {
     const input = state({
       question:
         'Quote the first complete sentence in the indexed transcript segment spanning 9.52-62.28 seconds.',
@@ -255,27 +279,8 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       sourceTimestampSec: 9.52,
       sourceTimestampEndSec: 62.28,
     };
-    structuredLlm.generateObject.mockResolvedValueOnce({
-      answer: 'The first complete sentence is here.',
-      evidenceIds: ['e0'],
-    });
-
-    await useCase.executeWithProvenance(input);
-
-    expect(structuredLlm.generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /scan orderedSentenceCandidates by source time and ordinal/i,
-    );
-    const prompt = JSON.parse(
-      structuredLlm.generateObject.mock.calls[0][0].userPrompt as string,
-    ) as {
-      evidence: Array<{
-        orderedSentenceCandidates?: Array<{ ordinal: number; text: string }>;
-      }>;
-    };
-    expect(prompt.evidence[0].orderedSentenceCandidates?.slice(0, 2)).toEqual([
-      { ordinal: 1, text: 'opening fragment.' },
-      { ordinal: 2, text: 'The first complete sentence is here.' },
-    ]);
+    await expect(useCase.executeWithProvenance(input)).resolves.toBeUndefined();
+    expect(structuredLlm.generateObject).not.toHaveBeenCalled();
   });
 
   it('uses the configured fallback model after a transient revision-provider error', async () => {

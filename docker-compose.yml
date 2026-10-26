@@ -414,6 +414,8 @@ services:
       context: .
       dockerfile: ./apps/ai-service/Dockerfile
     restart: always
+    environment:
+      LANGFUSE_RELEASE: ${VELORA_IMAGE_TAG:-${LANGFUSE_RELEASE:-unknown}}
     env_file:
       - .env
     depends_on:

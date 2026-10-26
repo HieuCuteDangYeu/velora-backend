@@ -327,6 +327,23 @@ jobs:
           EOF
           node scripts/ops/validate-rabbitmq-config.cjs --env-file "$temporary_env_file"
 
+          rendered_compose="$(
+            COMPOSE_DISABLE_ENV_FILE=1 \
+              DOCKERHUB_USERNAME=ci-placeholder \
+              VELORA_IMAGE_TAG="$GITHUB_SHA" \
+              LANGFUSE_RELEASE=stale-release-sentinel \
+              RABBITMQ_DEFAULT_USER=ci \
+              RABBITMQ_DEFAULT_PASS=ci \
+              RABBITMQ_DEFAULT_VHOST=/ \
+              RABBITMQ_URL=amqp://ci:ci@rabbitmq:5672/ \
+              docker compose config --no-env-resolution --no-path-resolution --format json
+          )"
+          resolved_rag_release="$(jq -r '.services["ai-service"].environment.LANGFUSE_RELEASE // empty' <<< "$rendered_compose")"
+          if [ "$resolved_rag_release" != "$GITHUB_SHA" ]; then
+            echo "AI service Langfuse release '$resolved_rag_release' does not match image SHA '$GITHUB_SHA'." >&2
+            exit 1
+          fi
+
           COMPOSE_DISABLE_ENV_FILE=1 \
             DOCKERHUB_USERNAME=ci-placeholder \
             RABBITMQ_DEFAULT_USER=ci \
@@ -354,6 +371,39 @@ jobs:
 
       - name: Generate Prisma clients
         run: pnpm run prisma:generate:all
+
+      - name: Run AI RAG regression and Langfuse contract checks
+        run: |
+          set -euo pipefail
+          node --check scripts/ops/run-langfuse-live-benchmark.cjs
+          node --check scripts/ops/publish-rag-v8-live-experiment.cjs
+          node --check scripts/ops/publish-rag-codex-source-calibration.cjs
+          node --check scripts/ops/run-rag-v8-codex-judge.cjs
+          node --test \
+            scripts/ops/run-langfuse-live-benchmark.test.cjs \
+            scripts/ops/rag-evaluation-contract.test.cjs \
+            scripts/ops/rag-evaluation-applicability.test.cjs \
+            scripts/ops/rag-semantic-judge.test.cjs \
+            scripts/ops/run-semantic-judge.test.cjs \
+            scripts/ops/publish-langfuse-scores.test.cjs \
+            scripts/ops/validate-rag-visual-contract.test.cjs
+          node scripts/ops/publish-rag-v8-live-experiment.cjs --self-test
+          node scripts/ops/publish-rag-codex-source-calibration.cjs --self-test
+          node scripts/ops/run-rag-v8-codex-judge.cjs --self-test
+          pnpm exec jest --runInBand \
+            apps/ai-service/src/application/use-cases/build-grounded-answer-revision.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/check-context-sufficiency.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/context-tool-agent.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/create-no-context-answer.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/generate-draft-answer.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/verifier-agent.use-case.spec.ts \
+            apps/ai-service/src/domain/services/rag-prompt-bounds.spec.ts \
+            apps/ai-service/src/domain/services/rag-source-retrieval-plan.spec.ts \
+            apps/ai-service/src/domain/services/rag-transcript-sentence-selection.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/chat-prompt-builder.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/groq-structured-llm.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.spec.ts
 
       - name: Check friend recommendation formatting
         if: needs.detect-changes.outputs.friend_recommendation_required == 'true'

@@ -14,6 +14,8 @@ import {
   boundEvidence,
   boundPromptText,
   readRagPromptBounds,
+  transcriptSegmentPromptBounds,
+  transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
 
 interface RawContextSufficiencyResult {
@@ -299,7 +301,7 @@ export class CheckContextSufficiencyUseCase {
   ): Promise<RawContextSufficiencyResult> {
     return await this.structuredLlmService.generateObject<RawContextSufficiencyResult>(
       {
-        systemPrompt: this.buildSystemPrompt(),
+        systemPrompt: this.buildSystemPrompt(state),
         userPrompt: this.buildUserPrompt(state),
         jsonSchema: this.getJsonSchema(),
         maxTokens: this.config.maxCompletionTokens('CONTEXT_SUFFICIENCY'),
@@ -322,8 +324,8 @@ export class CheckContextSufficiencyUseCase {
     );
   }
 
-  private buildSystemPrompt(): string {
-    return `
+  private buildSystemPrompt(state: RagChatWorkflowState): string {
+    const prompt = `
 You are a context sufficiency checker for reel RAG.
 
 You receive:
@@ -359,10 +361,24 @@ Rules:
 15. When a typed evidence item directly establishes the requested fact, mark sufficient true and include its evidence ID even if other retrieved items are unrelated.
 16. For a multi-Reel comparison, assess each requested Reel independently. Different content across clips is expected; do not mark insufficient solely because excerpts are not semantically parallel. Mark sufficient only when each requested Reel has direct evidence for its requested part, and include support for each Reel.
 `.trim();
+    return transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      state.retrievalPlan,
+    ) === 'MULTI_REEL_COMPARISON'
+      ? `${prompt}\n17. For a request about the first indexed transcript segments, when retrievalPlan.sourceOrder is ASC and retrievalPlan.requiresReelCoverage is true, assess the earliest source-ordered transcript item for each Reel as its first indexed segment. A nonzero startTime does not disqualify it; direct transcript evidence from every requested Reel is still required.`
+      : prompt;
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
-    const bounds = readRagPromptBounds(this.config);
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ),
+    );
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
       focusText: state.userMessage,
@@ -375,6 +391,13 @@ ${JSON.stringify({
   reelQuestionType: state.route?.reelQuestionType,
   requiredEvidence: state.route?.requiredEvidence ?? [],
   requiresReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+  retrievalPlan: state.retrievalPlan
+    ? {
+        sourceOrder: state.retrievalPlan.sourceOrder,
+        searchLimit: state.retrievalPlan.searchLimit,
+        requiresReelCoverage: state.retrievalPlan.requiresReelCoverage === true,
+      }
+    : undefined,
 })}
 
 User question:

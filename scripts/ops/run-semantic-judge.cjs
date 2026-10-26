@@ -52,6 +52,29 @@ function loadJson(filePath) {
   return JSON.parse(fs.readFileSync(resolved, 'utf8'));
 }
 
+function semanticTaskMetadata(item) {
+  return {
+    answerType:
+      typeof item?.metadata?.answerType === 'string'
+        ? item.metadata.answerType.trim().slice(0, 80)
+        : 'UNSPECIFIED',
+    policyAssertions: Array.isArray(item?.expectedOutput?.assertions)
+      ? item.expectedOutput.assertions
+          .filter((assertion) => typeof assertion === 'string')
+          .slice(0, 8)
+          .map((assertion) => assertion.trim().slice(0, 240))
+      : [],
+    expectedEvidenceTypes: Array.isArray(
+      item?.expectedOutput?.expectedEvidenceTypes,
+    )
+      ? item.expectedOutput.expectedEvidenceTypes
+          .filter((type) => typeof type === 'string')
+          .slice(0, 4)
+          .map((type) => type.trim().slice(0, 32))
+      : [],
+  };
+}
+
 function saveJsonAtomic(filePath, data) {
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -409,6 +432,7 @@ async function main() {
                   generatedAnswer,
                   context,
                   dimensions: dimensionsToEvaluate,
+                  ...semanticTaskMetadata(item),
                 })
               : {
                   caseId,
@@ -612,6 +636,7 @@ module.exports = {
   computeStats,
   loadJson,
   parseArgs,
+  semanticTaskMetadata,
   publishSemanticScores,
   saveJsonAtomic,
 };

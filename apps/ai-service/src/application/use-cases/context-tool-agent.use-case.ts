@@ -88,8 +88,21 @@ export class ContextToolAgentUseCase {
     options: ContextToolAgentExecutionOptions = {},
   ): Promise<ContextToolAgentResult> {
     const toolPlan = this.toolPlan(state);
-    const allowedTools = toolPlan.allowedTools;
-    const requiredTools = toolPlan.requiredTools;
+    const sharedReelUnavailable =
+      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+      state.route.referenceTarget === 'SHARED_REEL' &&
+      state.route.needsRetrieval &&
+      (state.accessibleReelIds?.length ?? 0) === 0;
+    const reelTools = new Set<RagAgentToolName>([
+      'search_reel_content',
+      'get_reel_context',
+    ]);
+    const allowedTools = sharedReelUnavailable
+      ? toolPlan.allowedTools.filter((tool) => !reelTools.has(tool))
+      : toolPlan.allowedTools;
+    const requiredTools = sharedReelUnavailable
+      ? toolPlan.requiredTools.filter((tool) => !reelTools.has(tool))
+      : toolPlan.requiredTools;
     const retrievedById = new Map<string, TranscriptMatch>();
     const retrievalExecution = this.hasReelTool(allowedTools)
       ? this.createRetrievalExecutionDiagnostics(state.accessibleReelIds)
@@ -109,7 +122,10 @@ export class ContextToolAgentUseCase {
     let conversationMemory: ConversationMemoryContext | undefined;
     let userMemories: RelevantUserMemoriesContext | undefined;
     let retrievalPlan: RagRetrievalPlan | undefined;
-    let providerStatus: 'SUCCESS' | 'ERROR' | 'NOT_CALLED' = 'SUCCESS';
+    let providerStatus: 'SUCCESS' | 'ERROR' | 'NOT_CALLED' =
+      sharedReelUnavailable && allowedTools.length === 0
+        ? 'NOT_CALLED'
+        : 'SUCCESS';
     const failures: NonNullable<
       RagContextToolExecutionDiagnostics['failures']
     > = [];

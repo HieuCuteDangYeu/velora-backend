@@ -50,6 +50,11 @@ export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
           bounds.maxClaimChars,
         )
       : undefined;
+    const taskActionPolicy =
+      state.route?.intent === 'TASK_ACTION_REQUEST' &&
+      (state.route.toolPlan?.allowedTools.length ?? 0) === 0
+        ? 'No external-action tool is available for this request. Do not claim or imply that the action has been completed or will be performed. Say clearly that no action was taken; when useful, provide an in-chat alternative such as an unsent draft or steps.'
+        : undefined;
 
     return `
 You are Velora AI, an intelligent assistant for the Velora platform.
@@ -102,6 +107,7 @@ Answering rules:
 20. When revising after verification, replace unsupported wording with the closest directly supported wording from the retrieved evidence. Do not repeat an unsupported draft.
 21. For metadata, title, tag, quantity, opening statement, or quote questions, output the exact value, title, tag list, or quote directly without conversational preambles or lead-in phrases (e.g. do not write "The title is...", "The title of the Reel is...", "The opening statement is: ...", "The tags associated with this Reel are...", "According to the transcript...", or "In this Reel...").
 
+${taskActionPolicy ? `TASK ACTION CAPABILITY:\n${taskActionPolicy}\n` : ''}
 ${revisionInstruction ? `VERIFIER REVISION INSTRUCTION:\n${revisionInstruction}\n` : ''}
 
 ROUTE AND EVIDENCE DECISION:

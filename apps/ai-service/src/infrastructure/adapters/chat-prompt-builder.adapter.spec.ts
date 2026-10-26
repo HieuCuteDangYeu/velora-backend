@@ -2,6 +2,24 @@ import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workfl
 import { ChatPromptBuilderAdapter } from './chat-prompt-builder.adapter';
 
 describe('ChatPromptBuilderAdapter', () => {
+  it('sets the no-action boundary for task requests with no action tool', () => {
+    const prompt = new ChatPromptBuilderAdapter().build({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      userMessage: 'Send an email to my colleague.',
+      route: {
+        intent: 'TASK_ACTION_REQUEST',
+        needsVerification: true,
+        requiredEvidence: ['NONE'],
+        toolPlan: { allowedTools: [], requiredTools: [] },
+      },
+    } as unknown as RagChatWorkflowState);
+
+    expect(prompt).toContain('No external-action tool is available');
+    expect(prompt).toContain('no action was taken');
+    expect(prompt).toContain('unsent draft');
+  });
+
   it('does not put foreign user memory or a foreign summary into a provider prompt', () => {
     const prompt = new ChatPromptBuilderAdapter().build({
       userId: 'alice',

@@ -28,7 +28,7 @@ export function sourceRetrievalPlan(
         message,
       ));
   const timestamp = message.match(
-    /\b(?:frame|scene)\s+at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
+    /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
   );
   const transcriptTimestamp = message.match(
     /\b(?:segment|transcript|speech|spoken|said)\b[^\n\r?]*?\b(?:at|around|spanning|from)\s+(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:seconds?|s)\b/i,

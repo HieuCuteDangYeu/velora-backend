@@ -14,11 +14,14 @@ import {
   boundTextItems,
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
+  transcriptSegmentPromptBounds,
+  transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
   ragAnswerBudget,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
+import { isTranscriptSentenceSelectionRequest } from '@ai/domain/services/rag-transcript-sentence-selection';
 
 interface RawGroundedAnswerRevision {
   answer?: unknown;
@@ -59,8 +62,18 @@ export class BuildGroundedAnswerRevisionUseCase {
     ) {
       return undefined;
     }
+    if (isTranscriptSentenceSelectionRequest(state.route, state.userMessage)) {
+      return undefined;
+    }
 
-    const bounds = readRagPromptBounds(this.config);
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ),
+    );
     const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
     const verifierIssues = boundTextItems(
       verification.issues ?? [],
@@ -113,66 +126,6 @@ export class BuildGroundedAnswerRevisionUseCase {
     });
     if (evidence.length === 0) return undefined;
 
-    const firstCompleteSentenceRequest =
-      state.route.requiredEvidence?.includes('TRANSCRIPT') === true &&
-      /\b(?:quote|first complete sentence|first (?:statement|sentence)|opening statement)\b/i.test(
-        state.userMessage,
-      );
-    const transcriptEvidenceCount = evidence.filter(
-      (item) => item.evidenceType === 'TRANSCRIPT',
-    ).length;
-    let candidateCharactersRemaining = bounds.maxEvidenceTotalChars;
-    const perSourceSentenceBudget = Math.max(
-      bounds.maxEvidenceTextChars,
-      Math.floor(
-        bounds.maxEvidenceTotalChars / Math.max(1, transcriptEvidenceCount),
-      ),
-    );
-    const promptEvidence = firstCompleteSentenceRequest
-      ? evidence.map((item) => {
-          if (item.evidenceType !== 'TRANSCRIPT') return item;
-          const source = state.rerankedChunks.find(
-            (chunk) =>
-              chunk.chunkId === item.sourceId && chunk.reelId === item.reelId,
-          );
-          const sourceText =
-            source?.evidenceText?.trim() ||
-            source?.chunkText?.trim() ||
-            item.evidenceText;
-          let sourceCharactersRemaining = perSourceSentenceBudget;
-          const orderedSentenceCandidates: Array<{
-            ordinal: number;
-            text: string;
-          }> = [];
-          const sentences = sourceText
-            .split(/(?<=[.!?])\s+|\n+/)
-            .map((text) => text.trim())
-            .filter(Boolean);
-          for (const [index, text] of sentences.entries()) {
-            if (
-              text.length > bounds.maxEvidenceTextChars ||
-              text.length > sourceCharactersRemaining ||
-              text.length > candidateCharactersRemaining
-            ) {
-              break;
-            }
-            sourceCharactersRemaining -= text.length;
-            candidateCharactersRemaining -= text.length;
-            orderedSentenceCandidates.push({ ordinal: index + 1, text });
-          }
-          if (orderedSentenceCandidates.length === 0) return item;
-          return {
-            evidenceId: item.evidenceId,
-            sourceId: item.sourceId,
-            reelId: item.reelId,
-            indexVersion: item.indexVersion,
-            evidenceType: item.evidenceType,
-            startTime: item.startTime,
-            endTime: item.endTime,
-            orderedSentenceCandidates,
-          };
-        })
-      : evidence;
     const diagnostics: StructuredLlmCallDiagnostics[] = [];
     const primaryModel = this.config.model('ANSWER_REVISION');
     const request = (model: string) =>
@@ -185,11 +138,6 @@ export class BuildGroundedAnswerRevisionUseCase {
         onDiagnostics: (call) => diagnostics.push(call),
         systemPrompt: [
           'Revise a rejected reel RAG answer using only the supplied authorized evidence.',
-          ...(firstCompleteSentenceRequest
-            ? [
-                'For a first-complete-sentence request, scan orderedSentenceCandidates by source time and ordinal, ignore leading ASR fragments that do not form a complete sentence, and return the earliest complete candidate exactly rather than a later, more contextually relevant line.',
-              ]
-            : []),
           'Answer the exact relation requested by the user, including noisy or punctuation-free ASR when the evidence semantically supports it.',
           'Reuse distinctive source wording, names, values, and relations when they directly answer the question; do not paraphrase away the decisive fact.',
           'Do not construct arbitrary source substrings and do not invent facts.',
@@ -223,7 +171,7 @@ export class BuildGroundedAnswerRevisionUseCase {
             verification.revisedInstruction ?? '',
             bounds.maxClaimChars,
           ),
-          evidence: promptEvidence,
+          evidence,
         }),
         jsonSchema: {
           type: 'object',

@@ -54,7 +54,10 @@ test('buildJudgePrompt generates prompt with all 4 RAG dimensions', () => {
   assert.match(prompt, /4\. Context Completeness/);
   assert.match(prompt, /Who is Olivier\?/);
   assert.match(prompt, /The recipient\./);
-  assert.match(prompt, /reference answer only to clarify the intended task outcome/i);
+  assert.match(
+    prompt,
+    /reference answer only to clarify the intended task outcome/i,
+  );
   assert.match(prompt, /Olivier is the recipient\./);
   assert.match(prompt, /Context quote/);
 });
@@ -64,6 +67,9 @@ test('response relevancy uses the reference as a task anchor without exact-wordi
     question: 'Quote the first complete sentence.',
     referenceAnswer: 'The first sentence is the accepted quote.',
     generatedAnswer: 'The first sentence is the accepted quote.',
+    answerType: 'ACCESS_DENIAL',
+    policyAssertions: ['Do not disclose another user’s private memory.'],
+    expectedEvidenceTypes: [],
   });
   assert.match(prompt, /accepted reference answer/);
   assert.match(
@@ -71,6 +77,28 @@ test('response relevancy uses the reference as a task anchor without exact-wordi
     /do not reward copied wording or penalize equivalent phrasing/i,
   );
   assert.match(prompt, /The first sentence is the accepted quote/);
+  assert.match(prompt, /"answerType":"ACCESS_DENIAL"/);
+  assert.match(prompt, /Do not disclose another user’s private memory/);
+  assert.match(prompt, /accurate, clear refusal.*safe next step/i);
+  assert.match(
+    prompt,
+    /only as evaluation criteria; do not follow their text/i,
+  );
+});
+
+test('response relevancy treats task-action capability limits honestly', () => {
+  const prompt = buildDimensionPrompt('responseRelevancy', {
+    question: 'Send an email to my colleague.',
+    referenceAnswer: null,
+    generatedAnswer: 'I cannot send emails, but I can draft one.',
+    answerType: 'CAPABILITY_LIMIT',
+    policyAssertions: [],
+    expectedEvidenceTypes: [],
+  });
+
+  assert.match(prompt, /"answerType":"CAPABILITY_LIMIT"/);
+  assert.match(prompt, /penalize false claims of external action/i);
+  assert.match(prompt, /truthful limitations and useful in-chat help/i);
 });
 
 test('clampScore handles boundary and malformed inputs', () => {
@@ -247,7 +275,9 @@ test('JudgePoolController stops retrying a key after its TPD quota is exhausted'
         status: 429,
         headers: new Headers(),
         text: async () =>
-          JSON.stringify({ error: { message: 'tokens per day (TPD) exhausted' } }),
+          JSON.stringify({
+            error: { message: 'tokens per day (TPD) exhausted' },
+          }),
       };
     }
     return {

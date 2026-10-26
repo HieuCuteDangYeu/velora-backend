@@ -51,6 +51,12 @@ test('provider outages are classified independently of a successful fallback ans
     executionHealth({
       route: { providerStatus: 'SUCCESS' },
       routeDecision: { needsRetrieval: true, needsVerification: true },
+      contextToolExecution: {
+        providerStatus: 'NOT_CALLED',
+        allowedTools: [],
+        requiredTools: [],
+        calls: [],
+      },
       contextSufficiency: {
         providerStatus: 'NOT_CALLED',
         decisionSource: 'DETERMINISTIC_NO_CONTEXT',
@@ -147,10 +153,13 @@ test('alternative source IDs count as one evidence group for recall and citation
   assert.equal(metrics.retrieval_recall_at_5, 1);
   assert.equal(metrics.retrieval_ndcg_at_5, 1);
   assert.equal(metrics.retrieval_mrr, 1);
-  assert.deepEqual(evidenceGroupCoverage(groups, new Set([
-    'reel:r:chunk:22',
-    'reel:r:visual:5',
-  ])), { score: 1, covered: 2, required: 2 });
+  assert.deepEqual(
+    evidenceGroupCoverage(
+      groups,
+      new Set(['reel:r:chunk:22', 'reel:r:visual:5']),
+    ),
+    { score: 1, covered: 2, required: 2 },
+  );
 });
 
 test('multiple retrieved alternatives for one source do not inflate evidence recall', () => {

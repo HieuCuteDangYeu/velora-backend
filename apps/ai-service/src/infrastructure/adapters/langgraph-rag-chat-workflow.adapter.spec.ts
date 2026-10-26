@@ -1,5 +1,6 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { RagCitationAssessment } from '@ai/application/use-cases/build-rag-citations.use-case';
+import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
 import { DraftAnswerGenerationError } from '@ai/application/use-cases/generate-draft-answer.use-case';
 import { LangGraphRagChatWorkflowAdapter } from './langgraph-rag-chat-workflow.adapter';
 
@@ -564,6 +565,55 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).resolves.toMatchObject({ finalFailureSource: 'CITATION' });
   });
 
+  it('uses the task-action limitation after an exhausted task-action verification failure', async () => {
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      new CreateNoContextAnswerUseCase(),
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+    ) as unknown as {
+      createVerificationFailureNode: (
+        nodeTimings: Record<string, number>,
+      ) => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+
+    const terminal = workflow.createVerificationFailureNode({});
+    await expect(
+      terminal(
+        state({
+          userMessage: 'Send an email to my colleague.',
+          route: {
+            intent: 'TASK_ACTION_REQUEST',
+            toolPlan: { allowedTools: [], requiredTools: [] },
+          },
+          contextSufficiency: { sufficient: true } as never,
+          verification: {
+            passed: false,
+            confidence: 0,
+            issues: ['Unexecuted action.'],
+            requiresRevision: true,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      answer: expect.stringMatching(/no email has been sent/i),
+      finalFailureSource: 'VERIFIER',
+    });
+  });
+
   it.each([
     [
       'provider outage',
@@ -1023,6 +1073,69 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
       ],
     });
     expect(groundedRevision.executeWithProvenance).toHaveBeenCalledTimes(1);
+  });
+
+  it('delegates first-complete-sentence revisions to the candidate selector', async () => {
+    const groundedRevision = {
+      executeWithProvenance: jest.fn().mockResolvedValue(undefined),
+    };
+    const draft = {
+      execute: jest.fn().mockResolvedValue({
+        answer: 'Get away from me.',
+        claims: [{ claim: 'Get away from me.', evidenceIds: ['e0'] }],
+        modelRole: 'ANSWER',
+        diagnostics: [],
+        generationEvidence: [],
+        finalizationMode: 'SYNTHESIZED',
+      }),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      draft as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+      groundedRevision as never,
+    ) as unknown as DiagnosticWorkflow;
+
+    const result = await workflow.createDraftAnswerNode({})({
+      ...base(),
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 9.52-62.28 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        requiredEvidence: ['TRANSCRIPT'],
+      } as never,
+      nextDraftSource: 'VERIFIER_REVISION',
+      verification: {
+        passed: false,
+        confidence: 0,
+        issues: ['The previous sentence was incomplete.'],
+        requiresRevision: true,
+      },
+    });
+
+    expect(groundedRevision.executeWithProvenance).toHaveBeenCalledTimes(1);
+    expect(draft.execute).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      answer: 'Get away from me.',
+      draftHistory: [
+        expect.objectContaining({
+          source: 'VERIFIER_REVISION',
+          answer: 'Get away from me.',
+        }),
+      ],
+    });
   });
 
   it('routes citation revisions through the grounded ANSWER_REVISION path', async () => {

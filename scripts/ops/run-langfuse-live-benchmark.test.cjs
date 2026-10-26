@@ -4,6 +4,7 @@ const test = require('node:test');
 const {
   aggregateEvaluations,
   aggregateLatency,
+  assertExpectedDatasetSha256,
   benchmarkEvaluations,
   containmentMatch,
   deterministicEvaluations,
@@ -49,6 +50,24 @@ test('requires a full immutable service SHA for a non-provisional dataset run', 
   );
   assert.equal(isFullReleaseSha('2360fcb'), false);
   assert.equal(isFullReleaseSha(''), false);
+});
+
+test('requires an exact pinned dataset snapshot before sending RAG requests', () => {
+  const datasetSha256 = 'a'.repeat(64);
+  assert.doesNotThrow(() =>
+    assertExpectedDatasetSha256(datasetSha256, datasetSha256),
+  );
+  assert.doesNotThrow(() =>
+    assertExpectedDatasetSha256(datasetSha256, undefined),
+  );
+  assert.throws(
+    () => assertExpectedDatasetSha256(datasetSha256, 'b'.repeat(64)),
+    /no RAG request was sent/,
+  );
+  assert.throws(
+    () => assertExpectedDatasetSha256(datasetSha256, 'invalid'),
+    /no RAG request was sent/,
+  );
 });
 
 test('aggregates workflow latency and degraded/unknown health without treating unknown as healthy', () => {

@@ -63,6 +63,15 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+function assertExpectedDatasetSha256(actual, expected) {
+  if (expected === undefined || expected === null || expected === '') return;
+  const pinned = String(expected).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(pinned) || actual !== pinned)
+    throw new Error(
+      'Frozen dataset SHA-256 does not match the workflow pin; no RAG request was sent',
+    );
+}
+
 function normalize(value) {
   return String(value ?? '')
     .replace(/\s+/g, ' ')
@@ -985,6 +994,10 @@ async function main() {
         })),
       ),
     );
+    assertExpectedDatasetSha256(
+      fingerprint(datasetSnapshot),
+      args['expected-dataset-sha256'],
+    );
     let state;
     if (args.resume || fs.existsSync(stateFile)) {
       state = loadState(stateFile);
@@ -1261,4 +1274,5 @@ module.exports = {
   tokenF1,
   tokenRecall,
   BENCHMARK_EVALUATOR_VERSION,
+  assertExpectedDatasetSha256,
 };

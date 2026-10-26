@@ -21,6 +21,12 @@ const DATASET_NAME_BY_VERSION = {
   'rag-v9-agent-reviewed-20261026-01':
     'velora/rag-v9-agent-reviewed-20261026-01',
 };
+const DATASET_SHA256_BY_VERSION = {
+  'rag-v8-source-disjoint-20261026-03':
+    'f288b62c4fc59c7bb236941ef3f2890bd3f01e3c5e30b2ea8193180249e510b9',
+  'rag-v9-agent-reviewed-20261026-01':
+    '2d24df48188ff529a594fa4d16062cf9bd9fbbcc7683bc4c0bfaa39514509404',
+};
 const defaultStateFile = path.join(
   runDir,
   'live-benchmark-state-v3/rag-v8-live-2360fcb32fd0-20261026-01.state.json',
@@ -250,10 +256,28 @@ async function readBaselineExperiment(
 
 async function validateLangfuseBaseline(args) {
   const datasetName = String(args['dataset-name'] || '').trim();
+  const expectedDatasetSha256 = String(
+    args['expected-dataset-sha256'] || '',
+  ).trim();
   const experimentId = String(args['baseline-experiment-id'] || '').trim();
-  if (!datasetName || !experimentId)
+  const datasetVersion = Object.keys(DATASET_NAME_BY_VERSION).find(
+    (version) => DATASET_NAME_BY_VERSION[version] === datasetName,
+  );
+  if (
+    !datasetName ||
+    !expectedDatasetSha256 ||
+    !experimentId ||
+    !datasetVersion
+  )
     throw new Error(
-      '--validate-baseline requires --dataset-name and --baseline-experiment-id',
+      '--validate-baseline requires a supported dataset, its pinned SHA-256, and a baseline experiment ID',
+    );
+  if (
+    !/^[0-9a-f]{64}$/i.test(expectedDatasetSha256) ||
+    DATASET_SHA256_BY_VERSION[datasetVersion] !== expectedDatasetSha256
+  )
+    throw new Error(
+      '--expected-dataset-sha256 does not match the dataset version pin',
     );
   dotenv.config({ path: path.join(root, '.env') });
   for (const name of [
@@ -290,6 +314,7 @@ async function validateLangfuseBaseline(args) {
       items.length !== 136 ||
       new Set(items.map((item) => item.id)).size !== items.length ||
       !datasetSha256 ||
+      datasetSha256 !== expectedDatasetSha256 ||
       datasetFingerprint !== datasetSha256
     )
       throw new Error(
@@ -443,8 +468,11 @@ function loadLocalRun(stateFile = defaultStateFile) {
   }
   const items = [...cases].sort((a, b) => a.id.localeCompare(b.id));
   const expectedDatasetName = DATASET_NAME_BY_VERSION[manifest.datasetVersion];
+  const expectedDatasetSha256 =
+    DATASET_SHA256_BY_VERSION[manifest.datasetVersion];
   if (
     manifest.datasetSha256 !== fingerprint(cases) ||
+    manifest.datasetSha256 !== expectedDatasetSha256 ||
     new Set(items.map((item) => item.id)).size !== items.length
   )
     throw new Error('Frozen RAG dataset fingerprint or case identity mismatch');

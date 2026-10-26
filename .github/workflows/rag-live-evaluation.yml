@@ -77,7 +77,12 @@ jobs:
             exit 1
           }
           case "$RAG_DATASET_NAME" in
-            velora/rag-v8-source-disjoint-20261026-03|velora/rag-v9-agent-reviewed-20261026-01) ;;
+            velora/rag-v8-source-disjoint-20261026-03)
+              echo 'RAG_EXPECTED_DATASET_SHA256=f288b62c4fc59c7bb236941ef3f2890bd3f01e3c5e30b2ea8193180249e510b9' >> "$GITHUB_ENV"
+              ;;
+            velora/rag-v9-agent-reviewed-20261026-01)
+              echo 'RAG_EXPECTED_DATASET_SHA256=2d24df48188ff529a594fa4d16062cf9bd9fbbcc7683bc4c0bfaa39514509404' >> "$GITHUB_ENV"
+              ;;
             *) echo 'dataset_name is not an approved frozen RAG dataset.' >&2; exit 1 ;;
           esac
           git fetch --no-tags origin '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
@@ -153,6 +158,7 @@ jobs:
           node scripts/ops/publish-rag-v8-live-experiment.cjs
           --validate-baseline
           --dataset-name "$RAG_DATASET_NAME"
+          --expected-dataset-sha256 "$RAG_EXPECTED_DATASET_SHA256"
           --baseline-experiment-id "$RAG_BASELINE_EXPERIMENT_ID"
 
       - name: Refuse to repeat an existing Langfuse run
@@ -213,6 +219,7 @@ jobs:
           --dataset "$RAG_DATASET_NAME"
           --expected-cases 136
           --release-sha "$RAG_RELEASE_SHA"
+          --expected-dataset-sha256 "$RAG_EXPECTED_DATASET_SHA256"
           --run-id "$RAG_RUN_ID"
           --state-dir "$RAG_STATE_DIR"
           --concurrency 1

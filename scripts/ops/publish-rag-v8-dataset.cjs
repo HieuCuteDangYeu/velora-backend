@@ -16,6 +16,12 @@ const supportedDatasetVersions = new Set([
   'rag-v8-source-disjoint-20261026-03',
   'rag-v9-agent-reviewed-20261026-01',
 ]);
+const pinnedDatasetSha256 = {
+  'rag-v8-source-disjoint-20261026-03':
+    'f288b62c4fc59c7bb236941ef3f2890bd3f01e3c5e30b2ea8193180249e510b9',
+  'rag-v9-agent-reviewed-20261026-01':
+    '2d24df48188ff529a594fa4d16062cf9bd9fbbcc7683bc4c0bfaa39514509404',
+};
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -28,6 +34,7 @@ function loadFrozenDataset(datasetDir = defaultDatasetDir) {
     !supportedDatasetVersions.has(manifest.datasetVersion) ||
     manifest.caseCount !== 136 ||
     manifest.datasetSha256 !== fingerprint(items) ||
+    manifest.datasetSha256 !== pinnedDatasetSha256[manifest.datasetVersion] ||
     new Set(items.map((item) => item.id)).size !== items.length ||
     items.some(
       (item) =>

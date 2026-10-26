@@ -562,6 +562,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({
@@ -670,6 +671,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     );
     const boundedEvidence = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     const allowedIds = new Set([
       ...boundedEvidence.map((_chunk, index) => `e${index}`),

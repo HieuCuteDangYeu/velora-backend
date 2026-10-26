@@ -124,6 +124,7 @@ export class GenerateDraftAnswerUseCase {
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,
@@ -733,6 +734,7 @@ export class GenerateDraftAnswerUseCase {
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,

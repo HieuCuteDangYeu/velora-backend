@@ -93,6 +93,44 @@ describe('rag prompt bounds', () => {
       ),
     ).toEqual([]);
   });
+  it('keeps every required modality in the bounded evidence when a type ranks below the item cap', () => {
+    const candidates = [
+      ...Array.from({ length: 4 }, (_, index) => ({
+        chunkId: `transcript-${index}`,
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT' as const,
+        chunkText: `Transcript evidence ${index}`,
+        evidenceText: `Transcript evidence ${index}`,
+        tags: [],
+        distance: 0,
+      })),
+      {
+        chunkId: 'visual-1',
+        reelId: 'reel-1',
+        evidenceType: 'VISUAL' as const,
+        chunkText: 'The person wears a blue coat.',
+        evidenceText: 'The person wears a blue coat.',
+        tags: [],
+        distance: 0,
+      },
+    ];
+
+    const bounded = boundEvidence(
+      candidates,
+      {
+        ...DEFAULT_RAG_PROMPT_BOUNDS,
+        maxEvidenceItems: 2,
+        maxEvidenceTextChars: 100,
+        maxEvidenceTotalChars: 200,
+      },
+      { requiredEvidenceTypes: ['TRANSCRIPT', 'VISUAL'] },
+    );
+
+    expect(bounded.map((item) => item.evidenceType)).toEqual([
+      'TRANSCRIPT',
+      'VISUAL',
+    ]);
+  });
   it('bounds pathological recent history by count and total characters', () => {
     const messages = Array.from({ length: 12 }, (_, index) => ({
       role: 'user',
@@ -327,5 +365,53 @@ describe('rag prompt bounds', () => {
         ),
       ].sort(),
     ).toEqual(['e0', 'e1']);
+  });
+
+  it('keeps all bounded required modalities when sufficiency supports only one', () => {
+    const candidates = [
+      {
+        chunkId: 'transcript-1',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'The speaker says hello.',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'visual-1',
+        reelId: 'reel-1',
+        evidenceType: 'VISUAL',
+        chunkText: 'A person waves.',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'transcript-2',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'The person is in a room.',
+        tags: [],
+        distance: 0,
+      },
+    ];
+
+    expect(
+      [
+        ...selectRagAnswerEvidenceIds(
+          candidates,
+          {
+            sufficient: false,
+            confidence: 0.4,
+            availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+            missingEvidence: ['VISUAL'],
+            supportedEvidenceIds: ['e0'],
+            recommendedAction: 'REFUSE_NO_CONTEXT',
+            reason: 'The evidence checker returned partial modality support.',
+            diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+          },
+          { requiredEvidence: ['TRANSCRIPT', 'VISUAL'] },
+        ),
+      ].sort(),
+    ).toEqual(['e0', 'e1', 'e2']);
   });
 });

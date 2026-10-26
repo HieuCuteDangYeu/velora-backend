@@ -87,6 +87,7 @@ export class BuildGroundedAnswerRevisionUseCase {
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,

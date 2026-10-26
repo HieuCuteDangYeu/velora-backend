@@ -45,7 +45,7 @@ describe('GenerateDraftAnswerUseCase', () => {
         sufficient: true,
         availableEvidence: ['TRANSCRIPT', 'VISUAL'],
         missingEvidence: [],
-        supportedEvidenceIds: ['e0', 'e1'],
+        supportedEvidenceIds: ['e0'],
         recommendedAction: 'ANSWER',
       },
       rerankedChunks: [
@@ -81,7 +81,10 @@ describe('GenerateDraftAnswerUseCase', () => {
       /context check marked its listed evidence IDs sufficient/i,
     );
     expect(generateObject.mock.calls[0][0].userPrompt).toContain(
-      '"supportedEvidenceIds":["e0","e1"]',
+      '"supportedEvidenceIds":["e0"]',
+    );
+    expect(generateObject.mock.calls[0][0].userPrompt).toContain(
+      '"sourceId":"visual-1"',
     );
     expect(generateObject.mock.calls[1][0].systemPrompt).toMatch(
       /cover every required evidence type/i,

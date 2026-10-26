@@ -41,6 +41,7 @@ export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
               bounds,
               state.userMessage,
               state.retrievalPlan?.requiresReelCoverage === true,
+              state.route?.requiredEvidence ?? [],
             )
           : 'Retrieved reel evidence was not selected for this request.';
     const routeContext = this.formatRouteContext(state, bounds);
@@ -203,6 +204,9 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
     bounds: RagPromptBounds,
     focusText: string,
     preserveReelCoverage: boolean,
+    requiredEvidenceTypes: NonNullable<
+      RagChatWorkflowState['route']
+    >['requiredEvidence'],
   ): string {
     if (chunks.length === 0) {
       return 'No relevant shared reel evidence found in this conversation.';
@@ -213,6 +217,7 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
         preserveTail: true,
         focusText,
         preserveReelCoverage,
+        requiredEvidenceTypes,
       }),
     )
       .map((match, index) => {

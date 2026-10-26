@@ -383,6 +383,7 @@ Rules:
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
+      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
     });
     return `
 Route decision:

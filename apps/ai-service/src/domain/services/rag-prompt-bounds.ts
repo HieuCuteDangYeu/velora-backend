@@ -2,6 +2,7 @@ import type { ReelContextSearchResult } from '@common/content/interfaces/reel-co
 import type {
   RagChatRouteDecision,
   RagContextSufficiencyResult,
+  RagRequiredEvidence,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 
@@ -409,6 +410,7 @@ export function boundEvidence(
     preserveTail?: boolean;
     focusText?: string;
     preserveReelCoverage?: boolean;
+    requiredEvidenceTypes?: readonly RagRequiredEvidence[];
   } = {},
 ): ReelContextSearchResult[] {
   const truncate = options.focusText?.trim()
@@ -422,9 +424,14 @@ export function boundEvidence(
       candidate.evidenceType === 'METADATA' ||
       Boolean(candidate.evidenceText?.trim() || candidate.chunkText?.trim()),
   );
-  const ordered = options.preserveReelCoverage
-    ? prioritizeReelCoverage(filtered)
-    : filtered;
+  const requiredEvidenceTypes = (
+    ['TRANSCRIPT', 'VISUAL', 'AUDIO', 'METADATA'] as const
+  ).filter((type) => options.requiredEvidenceTypes?.includes(type));
+  const ordered = prioritizeEvidenceCoverage(
+    filtered,
+    options.preserveReelCoverage === true,
+    requiredEvidenceTypes,
+  );
   const bounded = boundTextItems(
     ordered,
     (candidate) =>
@@ -488,29 +495,72 @@ function prioritizeReelCoverage(
   ];
 }
 
-/** Keep single-Reel prompts focused; multi-Reel prompts retain every source when sufficiency selects none. */
+function prioritizeEvidenceCoverage(
+  candidates: ReelContextSearchResult[],
+  preserveReelCoverage: boolean,
+  requiredEvidenceTypes: readonly (
+    | 'TRANSCRIPT'
+    | 'VISUAL'
+    | 'AUDIO'
+    | 'METADATA'
+  )[],
+): ReelContextSearchResult[] {
+  const ordered = preserveReelCoverage
+    ? prioritizeReelCoverage(candidates)
+    : candidates;
+  if (!preserveReelCoverage && requiredEvidenceTypes.length < 2) return ordered;
+
+  const prioritized: ReelContextSearchResult[] = [];
+  const selected = new Set<ReelContextSearchResult>();
+  if (preserveReelCoverage) {
+    const reels = new Set<string>();
+    for (const candidate of ordered) {
+      if (reels.has(candidate.reelId)) continue;
+      reels.add(candidate.reelId);
+      selected.add(candidate);
+      prioritized.push(candidate);
+    }
+  }
+  for (const evidenceType of requiredEvidenceTypes) {
+    const candidate = ordered.find(
+      (item) => (item.evidenceType ?? 'TRANSCRIPT') === evidenceType,
+    );
+    if (!candidate || selected.has(candidate)) continue;
+    selected.add(candidate);
+    prioritized.push(candidate);
+  }
+  return [...prioritized, ...ordered.filter((item) => !selected.has(item))];
+}
+
+/** Keep single-source prompts focused; preserve bounded multi-Reel or multimodal evidence. */
 export function selectRagAnswerEvidenceIds(
   candidates: ReelContextSearchResult[],
   context: RagContextSufficiencyResult | undefined,
   route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
   preserveReelCoverage = false,
 ): Set<string> {
+  const required = new Set(
+    (route?.requiredEvidence ?? []).filter(
+      (value) =>
+        value === 'TRANSCRIPT' ||
+        value === 'VISUAL' ||
+        value === 'AUDIO' ||
+        value === 'METADATA',
+    ),
+  );
+  const preserveRequiredCoverage = preserveReelCoverage || required.size > 1;
   const supported = new Set(
     (context?.supportedEvidenceIds ?? []).filter(
       (value): value is string => typeof value === 'string',
     ),
   );
-  if (supported.size > 0 && !preserveReelCoverage) return supported;
-
-  const required = new Set(
-    (route?.requiredEvidence ?? []).filter((value) => value !== 'NONE'),
-  );
+  if (supported.size > 0 && !preserveRequiredCoverage) return supported;
   const providerStatus = context?.diagnostics?.providerStatus;
   const all = new Set(candidates.map((_candidate, index) => `e${index}`));
   if (
     !context ||
     context.sufficient ||
-    preserveReelCoverage ||
+    preserveRequiredCoverage ||
     (providerStatus !== 'SUCCESS' && providerStatus !== 'ERROR') ||
     required.size === 0
   ) {

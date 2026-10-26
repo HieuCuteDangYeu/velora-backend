@@ -15,6 +15,12 @@ const {
 const root = path.resolve(__dirname, '../..');
 const runDir = path.join(root, '.benchmarks/rag-remediation-v8-20261026-01');
 const datasetDir = path.join(runDir, 'dataset-v8-source-disjoint-20261026-03');
+const DATASET_NAME_BY_VERSION = {
+  'rag-v8-source-disjoint-20261026-03':
+    'velora/rag-v8-source-disjoint-20261026-03',
+  'rag-v9-agent-reviewed-20261026-01':
+    'velora/rag-v9-agent-reviewed-20261026-01',
+};
 const defaultStateFile = path.join(
   runDir,
   'live-benchmark-state-v3/rag-v8-live-2360fcb32fd0-20261026-01.state.json',
@@ -23,11 +29,14 @@ const defaultOutput = path.join(runDir, 'langfuse-live-experiment.json');
 const LEGACY_COMPARABLE_EVALUATOR_VERSION =
   'velora-rag-benchmark-evaluation-v7';
 
-function isCompatibleBaselineEvaluatorVersion(version) {
-  // V8 only repairs abstention phrasing; all baseline-gate score definitions are unchanged.
+function isCompatibleBaselineEvaluatorVersion(
+  version,
+  hasAcceptedAnswerVariants = false,
+) {
   return (
     version === BENCHMARK_EVALUATOR_VERSION ||
-    version === LEGACY_COMPARABLE_EVALUATOR_VERSION
+    (!hasAcceptedAnswerVariants &&
+      version === LEGACY_COMPARABLE_EVALUATOR_VERSION)
   );
 }
 
@@ -44,7 +53,7 @@ function createEvaluationSdk(env = process.env) {
   const { NodeSDK } = require('@opentelemetry/sdk-node');
   const { TraceIdRatioBasedSampler } = require('@opentelemetry/sdk-trace-base');
   return new NodeSDK({
-    serviceName: 'velora-rag-v8-live-result-replay',
+    serviceName: 'velora-rag-live-result-replay',
     sampler: new TraceIdRatioBasedSampler(1),
     spanProcessors: [
       new LangfuseSpanProcessor({
@@ -196,6 +205,8 @@ async function readBaselineExperiment(
   datasetId,
   datasetSha256,
   fromStartTime,
+  hasAcceptedAnswerVariants = false,
+  expectedCaseIds = [],
 ) {
   const page = await client.api.experiments.list({
     fromStartTime,
@@ -211,19 +222,20 @@ async function readBaselineExperiment(
     run.datasetId !== datasetId ||
     run.itemCount !== 136 ||
     run.metadata?.datasetSha256 !== datasetSha256 ||
-    !isCompatibleBaselineEvaluatorVersion(baselineEvaluatorVersion)
+    !isCompatibleBaselineEvaluatorVersion(
+      baselineEvaluatorVersion,
+      hasAcceptedAnswerVariants,
+    )
   )
     throw new Error(
       'Baseline experiment does not match the frozen 136-case dataset',
     );
   const rows = await readExperimentItems(client, experimentId, fromStartTime);
-  const caseIds = rows.map((item) => item.experimentItemMetadata?.caseId);
-  if (
-    rows.length !== run.itemCount ||
-    caseIds.some((id) => !id) ||
-    new Set(caseIds).size !== run.itemCount
-  )
-    throw new Error('Baseline experiment item readback is incomplete');
+  const releaseIdentity = validateBaselineTraceIdentity(
+    rows,
+    expectedCaseIds,
+    run.metadata?.serviceReleaseSha,
+  );
   return {
     experimentId,
     datasetId: run.datasetId,
@@ -231,7 +243,146 @@ async function readBaselineExperiment(
     evaluatorVersion: baselineEvaluatorVersion,
     runScores: metricScoreMap(run.scores ?? []),
     releaseSha: run.metadata?.serviceReleaseSha,
+    releaseIdentity,
     bucketMetrics: aggregateBucketItemScores(rows),
+  };
+}
+
+async function validateLangfuseBaseline(args) {
+  const datasetName = String(args['dataset-name'] || '').trim();
+  const experimentId = String(args['baseline-experiment-id'] || '').trim();
+  if (!datasetName || !experimentId)
+    throw new Error(
+      '--validate-baseline requires --dataset-name and --baseline-experiment-id',
+    );
+  dotenv.config({ path: path.join(root, '.env') });
+  for (const name of [
+    'LANGFUSE_PUBLIC_KEY',
+    'LANGFUSE_SECRET_KEY',
+    'LANGFUSE_BASE_URL',
+  ])
+    if (!process.env[name])
+      throw new Error(`Missing ${name} for baseline validation`);
+
+  const { LangfuseClient } = require('@langfuse/client');
+  const client = new LangfuseClient({
+    publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+    secretKey: process.env.LANGFUSE_SECRET_KEY,
+    baseUrl: process.env.LANGFUSE_BASE_URL,
+  });
+  try {
+    const dataset = await client.dataset.get(datasetName, {
+      fetchItemsPageSize: 100,
+    });
+    const items = [...(dataset.items ?? [])].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    );
+    const datasetSha256 = dataset.metadata?.datasetSha256;
+    const datasetFingerprint = fingerprint(
+      items.map(({ id, input, expectedOutput, metadata }) => ({
+        id,
+        input,
+        expectedOutput,
+        metadata,
+      })),
+    );
+    if (
+      items.length !== 136 ||
+      new Set(items.map((item) => item.id)).size !== items.length ||
+      !datasetSha256 ||
+      datasetFingerprint !== datasetSha256
+    )
+      throw new Error(
+        'Selected Langfuse dataset is incomplete or hash-invalid',
+      );
+    const hasAcceptedAnswerVariants = items.some(
+      (item) =>
+        Array.isArray(item.expectedOutput?.acceptedAnswers) &&
+        item.expectedOutput.acceptedAnswers.length > 0,
+    );
+    const baseline = await readBaselineExperiment(
+      client,
+      experimentId,
+      dataset.id,
+      datasetSha256,
+      '2026-01-01T00:00:00.000Z',
+      hasAcceptedAnswerVariants,
+      items.map((item) => item.id),
+    );
+    const result = {
+      status: baseline.releaseIdentity?.status === 'PASS' ? 'PASS' : 'BLOCK',
+      datasetName,
+      datasetId: dataset.id,
+      datasetSha256,
+      baselineExperimentId: experimentId,
+      evaluatorVersion: baseline.evaluatorVersion,
+      serviceReleaseSha: baseline.releaseSha,
+      ...baseline.releaseIdentity,
+    };
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (result.status !== 'PASS') process.exitCode = 2;
+    return result;
+  } finally {
+    await client.shutdown();
+  }
+}
+
+function validateBaselineTraceIdentity(rows, expectedCaseIds, releaseSha) {
+  const expected = new Set(expectedCaseIds);
+  const caseIds = new Set();
+  const experimentTraceIds = new Set();
+  const productionTraceIds = new Set();
+  const executionIds = new Set();
+  const traceReleaseValues = new Set();
+  if (!/^[0-9a-f]{40}$/i.test(String(releaseSha ?? '')))
+    throw new Error('Baseline experiment has no full service release SHA');
+  for (const row of rows) {
+    const caseId = row.experimentItemMetadata?.caseId;
+    const output = outputRecord(row.output);
+    if (!expected.has(caseId) || caseIds.has(caseId))
+      throw new Error(
+        `Baseline case identity is missing or duplicated: ${caseId}`,
+      );
+    caseIds.add(caseId);
+    if (!row.traceId || experimentTraceIds.has(row.traceId))
+      throw new Error(
+        `Baseline experiment trace is missing or duplicated: ${caseId}`,
+      );
+    experimentTraceIds.add(row.traceId);
+    if (!Array.isArray(row.scores) || row.scores.length === 0)
+      throw new Error(`Baseline experiment scores are missing: ${caseId}`);
+    if (
+      !output.traceId ||
+      !output.productionExecutionId ||
+      productionTraceIds.has(output.traceId) ||
+      executionIds.has(output.productionExecutionId)
+    )
+      throw new Error(
+        `Baseline production provenance is missing or duplicated: ${caseId}`,
+      );
+    productionTraceIds.add(output.traceId);
+    executionIds.add(output.productionExecutionId);
+    traceReleaseValues.add(output.release || 'MISSING');
+  }
+  const releaseAlignedItems = rows.filter(
+    (row) => outputRecord(row.output).release === releaseSha,
+  ).length;
+  if (
+    rows.length !== expected.size ||
+    caseIds.size !== expected.size ||
+    releaseAlignedItems !== expected.size
+  )
+    throw new Error(
+      `Baseline trace release identity is blocked: ${releaseAlignedItems}/${expected.size} traces match ${releaseSha}`,
+    );
+  return {
+    status: 'PASS',
+    expectedReleaseSha: releaseSha,
+    releaseAlignedItems,
+    traceReleaseValues: [...traceReleaseValues].sort(),
+    uniqueExperimentTraces: experimentTraceIds.size,
+    uniqueProductionTraces: productionTraceIds.size,
+    uniqueProductionExecutions: executionIds.size,
   };
 }
 
@@ -291,21 +442,23 @@ function loadLocalRun(stateFile = defaultStateFile) {
     cases = readJson(path.join(datasetDir, 'cases.json'));
   }
   const items = [...cases].sort((a, b) => a.id.localeCompare(b.id));
+  const expectedDatasetName = DATASET_NAME_BY_VERSION[manifest.datasetVersion];
   if (
     manifest.datasetSha256 !== fingerprint(cases) ||
     new Set(items.map((item) => item.id)).size !== items.length
   )
-    throw new Error('Frozen V8 dataset fingerprint or case identity mismatch');
+    throw new Error('Frozen RAG dataset fingerprint or case identity mismatch');
   const itemIds = items.map((item) => item.id);
   if (
     manifest.datasetSha256 !== fingerprint(cases) ||
-    state.datasetName !== 'velora/rag-v8-source-disjoint-20261026-03' ||
+    !expectedDatasetName ||
+    state.datasetName !== expectedDatasetName ||
     typeof state.datasetFingerprint !== 'string' ||
     JSON.stringify(state.itemIds) !== JSON.stringify(itemIds) ||
     !/^[0-9a-f]{40}$/i.test(state.serviceReleaseSha || '')
   )
     throw new Error(
-      'V8 live run identity does not match its frozen dataset and release',
+      'Live run identity does not match its frozen dataset and release',
     );
   const casesById = new Map(items.map((item) => [item.id, item]));
   const entries = itemIds.map((id) => ({
@@ -334,7 +487,7 @@ function loadLocalRun(stateFile = defaultStateFile) {
     new Set(executionIds).size !== items.length
   )
     throw new Error(
-      'V8 live run is incomplete or lacks unique trace/execution provenance',
+      'Live run is incomplete or lacks unique trace/execution provenance',
     );
   return {
     manifest,
@@ -458,6 +611,9 @@ function benchmarkExitGates(
       ? 'PASS'
       : 'BLOCK';
   const releaseIdentity = readback.releaseIdentityStatus;
+  const baselineReleaseIdentity = baseline
+    ? baseline.releaseIdentity?.status || 'BLOCK'
+    : 'NOT_EVALUATED';
   const executionHealth =
     availableRate >= minHealthAvailability ? 'PASS' : 'BLOCK';
   const candidate = metricScoreMap(runEvaluations);
@@ -487,7 +643,8 @@ function benchmarkExitGates(
       )
     : null;
   const retrievalNonRegression = baseline
-    ? Object.values(deltas).every(
+    ? baselineReleaseIdentity === 'PASS' &&
+      Object.values(deltas).every(
         (row) => row.delta !== null && row.delta >= minQualityDelta,
       )
       ? 'PASS'
@@ -552,6 +709,7 @@ function benchmarkExitGates(
   const gates = [
     traceCoverage,
     releaseIdentity,
+    baselineReleaseIdentity,
     executionHealth,
     retrievalNonRegression,
     combinedQuality,
@@ -568,6 +726,7 @@ function benchmarkExitGates(
     },
     traceCoverage,
     releaseIdentity,
+    baselineReleaseIdentity,
     executionHealth,
     availableRate,
     health,
@@ -603,8 +762,53 @@ async function selfTest() {
     true,
   );
   assert.equal(
+    isCompatibleBaselineEvaluatorVersion(
+      'velora-rag-benchmark-evaluation-v7',
+      true,
+    ),
+    false,
+  );
+  assert.equal(
+    isCompatibleBaselineEvaluatorVersion(BENCHMARK_EVALUATOR_VERSION, true),
+    true,
+  );
+  assert.equal(
     isCompatibleBaselineEvaluatorVersion('velora-rag-benchmark-evaluation-v6'),
     false,
+  );
+  const baselineSha = '2360fcb32fd09da0c106fcb18bb819045c8ac705';
+  const baselineRows = ['case-1', 'case-2'].map((caseId, index) => ({
+    traceId: `experiment-${index}`,
+    experimentItemMetadata: { caseId },
+    output: {
+      traceId: `production-${index}`,
+      productionExecutionId: `execution-${index}`,
+      release: baselineSha,
+    },
+    scores: [{ name: 'mean_retrieval_recall_at_5', value: 1 }],
+  }));
+  assert.equal(
+    validateBaselineTraceIdentity(
+      baselineRows,
+      ['case-1', 'case-2'],
+      baselineSha,
+    ).status,
+    'PASS',
+  );
+  assert.throws(
+    () =>
+      validateBaselineTraceIdentity(
+        [
+          {
+            ...baselineRows[0],
+            output: { ...baselineRows[0].output, release: '5'.repeat(40) },
+          },
+          baselineRows[1],
+        ],
+        ['case-1', 'case-2'],
+        baselineSha,
+      ),
+    /release identity is blocked/,
   );
   const values = runEvaluators();
   assert.equal(values.length, 1);
@@ -775,6 +979,7 @@ async function selfTest() {
   ].map((name) => ({ name: `mean_${name}`, value: 1 }));
   const baseline = {
     experimentId: 'baseline-run',
+    releaseIdentity: { status: 'PASS' },
     runScores: new Map(gateScores.map((score) => [score.name, score.value])),
     bucketMetrics: {
       combined_modality_match: { mean: 1, count: 1 },
@@ -787,6 +992,13 @@ async function selfTest() {
   assert.equal(
     benchmarkExitGates(gateRun, gateReadback, gateScores, baseline).status,
     'PASS',
+  );
+  assert.equal(
+    benchmarkExitGates(gateRun, gateReadback, gateScores, {
+      ...baseline,
+      releaseIdentity: { status: 'BLOCK' },
+    }).status,
+    'BLOCK',
   );
   assert.equal(
     benchmarkExitGates(
@@ -917,6 +1129,7 @@ async function selfTest() {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args['self-test']) return selfTest();
+  if (args['validate-baseline']) return validateLangfuseBaseline(args);
   if (!args.apply)
     throw new Error('Langfuse live experiment writes require --apply');
   const stateFile = path.resolve(
@@ -999,7 +1212,7 @@ async function main() {
     );
     if (dataset.items.length !== run.items.length)
       throw new Error(
-        'Langfuse V8 dataset count does not match the frozen local dataset',
+        'Langfuse dataset count does not match the frozen local dataset',
       );
     const langfuseDatasetFingerprint = sha256(
       JSON.stringify(
@@ -1011,9 +1224,7 @@ async function main() {
       ),
     );
     if (langfuseDatasetFingerprint !== run.state.datasetFingerprint)
-      throw new Error(
-        'Langfuse V8 dataset fingerprint differs from the live run',
-      );
+      throw new Error('Langfuse dataset fingerprint differs from the live run');
     const localById = new Map(run.items.map((item) => [item.id, item]));
     for (const item of dataset.items) {
       const local = localById.get(item.id);
@@ -1030,7 +1241,7 @@ async function main() {
             metadata: local.metadata,
           })
       )
-        throw new Error(`Langfuse V8 dataset readback differs: ${item.id}`);
+        throw new Error(`Langfuse dataset readback differs: ${item.id}`);
     }
     const baseline = baselineExperimentId
       ? await readBaselineExperiment(
@@ -1039,6 +1250,12 @@ async function main() {
           dataset.id,
           run.manifest.datasetSha256,
           '2026-10-26T00:00:00.000Z',
+          run.items.some(
+            (item) =>
+              Array.isArray(item.expectedOutput?.acceptedAnswers) &&
+              item.expectedOutput.acceptedAnswers.length > 0,
+          ),
+          run.items.map((item) => item.id),
         )
       : null;
     if (args['require-exit-gates'] && !baseline)
@@ -1058,7 +1275,7 @@ async function main() {
         startedAt,
       });
       const result = await client.experiment.run({
-        name: 'V8 live RAG production benchmark',
+        name: 'Live RAG production benchmark',
         runName: `${run.state.runId} cached response replay ${BENCHMARK_EVALUATOR_VERSION}`,
         description:
           'Replays persisted production API responses and their linked rag.workflow traces; it makes no new RAG or model calls.',
@@ -1192,6 +1409,8 @@ module.exports = {
   outputRecord,
   readExperimentItems,
   readBaselineExperiment,
+  validateBaselineTraceIdentity,
+  validateLangfuseBaseline,
   aggregateBucketItemScores,
   waitForExperimentReadback,
   runEvaluators,

@@ -151,6 +151,43 @@ test('scores a grounded exact answer deterministically', () => {
   );
 });
 
+test('scores against source-reviewed accepted answer variants', () => {
+  const input = {
+    reelIds: ['reel-1'],
+    evidenceIds: ['reel:reel-1:chunk:0'],
+    modality: 'TRANSCRIPT',
+  };
+  const expectedOutput = {
+    answer: 'The speaker asks their parents to forgive them.',
+    acceptedAnswers: ['Forgive me.'],
+    reelIds: ['reel-1'],
+    evidenceIds: ['reel:reel-1:chunk:0'],
+    modality: 'TRANSCRIPT',
+  };
+  const output = {
+    answer: 'Forgive me.',
+    citations: [
+      {
+        reelId: 'reel-1',
+        evidenceId: 'reel:reel-1:chunk:0',
+        evidenceType: 'TRANSCRIPT',
+      },
+    ],
+  };
+  const scores = Object.fromEntries(
+    deterministicEvaluations(input, expectedOutput, output).map((item) => [
+      item.name,
+      item.value,
+    ]),
+  );
+  assert.equal(scores.answer_exact_match, 1);
+  assert.equal(scores.answer_containment_match, 1);
+  assert.equal(scores.answer_token_f1, 1);
+  assert.equal(scores.answer_token_recall, 1);
+  assert.equal(scores.reel_citation_match, 1);
+  assert.equal(scores.modality_match, 1);
+});
+
 test('token recall, token F1, and aggregate scores remain bounded', () => {
   assert.equal(tokenRecall('one two three', 'one three'), 2 / 3);
   assert.equal(

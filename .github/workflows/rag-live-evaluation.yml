@@ -11,10 +11,15 @@ on:
         description: Unique checkpoint-safe benchmark run ID
         required: true
         type: string
-      baseline_experiment_id:
-        description: Langfuse evaluator-v7 V8 baseline run for regression comparison
+      dataset_name:
+        description: Frozen registered dataset version
         required: true
-        default: 3ae1e963-bf95-4078-b501-eb8e18136df6
+        default: velora/rag-v8-source-disjoint-20261026-03
+        type: string
+      baseline_experiment_id:
+        description: Release-aligned baseline for this dataset and evaluator version
+        required: true
+        default: c9e8e33d-3c0e-4818-ac45-cbc0b4970249
         type: string
       resume_from_run_id:
         description: Prior GitHub Actions run ID containing this run's checkpoint
@@ -38,6 +43,7 @@ jobs:
     env:
       RAG_RELEASE_SHA: ${{ inputs.release_sha }}
       RAG_RUN_ID: ${{ inputs.run_id }}
+      RAG_DATASET_NAME: ${{ inputs.dataset_name }}
       RAG_RESUME_FROM_RUN_ID: ${{ inputs.resume_from_run_id }}
       RAG_STATE_DIR: ${{ github.workspace }}/.rag-live-state
     steps:
@@ -70,6 +76,10 @@ jobs:
             echo 'run_id contains unsupported characters.' >&2
             exit 1
           }
+          case "$RAG_DATASET_NAME" in
+            velora/rag-v8-source-disjoint-20261026-03|velora/rag-v9-agent-reviewed-20261026-01) ;;
+            *) echo 'dataset_name is not an approved frozen RAG dataset.' >&2; exit 1 ;;
+          esac
           git fetch --no-tags origin '+refs/heads/homelab-deploy:refs/remotes/origin/homelab-deploy'
           promoted_sha="$(git rev-parse refs/remotes/origin/homelab-deploy)"
           if [ "$promoted_sha" != "$RAG_RELEASE_SHA" ]; then
@@ -128,10 +138,22 @@ jobs:
           node - <<'NODE'
           const fs = require('node:fs');
           const state = JSON.parse(fs.readFileSync(`${process.env.RAG_STATE_DIR}/${process.env.RAG_RUN_ID}.state.json`, 'utf8'));
-          if (state.runId !== process.env.RAG_RUN_ID || state.serviceReleaseSha !== process.env.RAG_RELEASE_SHA || state.datasetName !== 'velora/rag-v8-source-disjoint-20261026-03') {
+          if (state.runId !== process.env.RAG_RUN_ID || state.serviceReleaseSha !== process.env.RAG_RELEASE_SHA || state.datasetName !== process.env.RAG_DATASET_NAME) {
             throw new Error('Checkpoint run ID, promoted SHA, or frozen dataset does not match.');
           }
           NODE
+
+      - name: Verify the frozen Langfuse dataset and matching baseline
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          RAG_BASELINE_EXPERIMENT_ID: ${{ inputs.baseline_experiment_id }}
+        run: >-
+          node scripts/ops/publish-rag-v8-live-experiment.cjs
+          --validate-baseline
+          --dataset-name "$RAG_DATASET_NAME"
+          --baseline-experiment-id "$RAG_BASELINE_EXPERIMENT_ID"
 
       - name: Refuse to repeat an existing Langfuse run
         if: inputs.resume_from_run_id == '' && github.run_attempt == 1
@@ -139,6 +161,7 @@ jobs:
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          RAG_DATASET_NAME: ${{ inputs.dataset_name }}
         run: |
           node - <<'NODE'
           const { LangfuseClient } = require('@langfuse/client');
@@ -176,7 +199,7 @@ jobs:
           });
           NODE
 
-      - name: Run the exact-once V8 live benchmark
+      - name: Run the exact-once live benchmark
         env:
           BACKEND_URL: ${{ secrets.BACKEND_URL }}
           VELORA_TEST_EMAIL: ${{ secrets.VELORA_TEST_EMAIL }}
@@ -187,7 +210,7 @@ jobs:
           LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
         run: >-
           node scripts/ops/run-langfuse-live-benchmark.cjs
-          --dataset velora/rag-v8-source-disjoint-20261026-03
+          --dataset "$RAG_DATASET_NAME"
           --expected-cases 136
           --release-sha "$RAG_RELEASE_SHA"
           --run-id "$RAG_RUN_ID"

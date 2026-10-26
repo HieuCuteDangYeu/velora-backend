@@ -34,7 +34,7 @@ const { loadSessionTraces } = require('./langfuse-rag-traces.cjs');
 
 const DATASET_NAME = 'velora/rag-scraped-v1-provisional';
 const TARGET_CASES = 220;
-const BENCHMARK_EVALUATOR_VERSION = 'velora-rag-benchmark-evaluation-v8';
+const BENCHMARK_EVALUATOR_VERSION = 'velora-rag-benchmark-evaluation-v9';
 const BOT_USER_ID =
   process.env.BOT_USER_ID || 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7';
 
@@ -68,6 +68,18 @@ function normalize(value) {
     .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
+}
+
+function acceptedAnswerVariants(expectedOutput) {
+  const values = [
+    expectedOutput?.answer,
+    ...(Array.isArray(expectedOutput?.acceptedAnswers)
+      ? expectedOutput.acceptedAnswers
+      : []),
+  ].filter((value) => typeof value === 'string' && value.trim());
+  return values.length
+    ? [...new Set(values.map((value) => value.trim()))]
+    : [String(expectedOutput?.answer ?? '')];
 }
 
 function tokens(value) {
@@ -190,7 +202,7 @@ function citationEvidenceIds(citations) {
 }
 
 function deterministicEvaluations(input, expectedOutput, output) {
-  const expectedAnswer = expectedOutput?.answer ?? '';
+  const expectedAnswers = acceptedAnswerVariants(expectedOutput);
   const actualAnswer = output?.answer ?? '';
   const expectedEvidenceIds =
     expectedOutput?.evidenceIds ?? input?.evidenceIds ?? [];
@@ -240,23 +252,39 @@ function deterministicEvaluations(input, expectedOutput, output) {
       : [
           {
             name: 'answer_exact_match',
-            value:
-              normalize(expectedAnswer) === normalize(actualAnswer) ? 1 : 0,
+            value: Number(
+              expectedAnswers.some(
+                (answer) => normalize(answer) === normalize(actualAnswer),
+              ),
+            ),
             dataType: 'NUMERIC',
           },
           {
             name: 'answer_containment_match',
-            value: containmentMatch(expectedAnswer, actualAnswer),
+            value: Math.max(
+              0,
+              ...expectedAnswers.map((answer) =>
+                containmentMatch(answer, actualAnswer),
+              ),
+            ),
             dataType: 'NUMERIC',
           },
           {
             name: 'answer_token_f1',
-            value: tokenF1(expectedAnswer, actualAnswer),
+            value: Math.max(
+              0,
+              ...expectedAnswers.map((answer) => tokenF1(answer, actualAnswer)),
+            ),
             dataType: 'NUMERIC',
           },
           {
             name: 'answer_token_recall',
-            value: tokenRecall(expectedAnswer, actualAnswer),
+            value: Math.max(
+              0,
+              ...expectedAnswers.map((answer) =>
+                tokenRecall(answer, actualAnswer),
+              ),
+            ),
             dataType: 'NUMERIC',
           },
         ]),

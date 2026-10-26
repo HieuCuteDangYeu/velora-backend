@@ -39,7 +39,7 @@ jobs:
       RAG_RELEASE_SHA: ${{ inputs.release_sha }}
       RAG_RUN_ID: ${{ inputs.run_id }}
       RAG_RESUME_FROM_RUN_ID: ${{ inputs.resume_from_run_id }}
-      RAG_STATE_DIR: ${{ runner.temp }}/rag-live-state
+      RAG_STATE_DIR: ${{ github.workspace }}/.rag-live-state
     steps:
       - name: Checkout promoted repository state
         uses: actions/checkout@v4

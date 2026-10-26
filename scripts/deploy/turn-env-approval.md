@@ -1,4 +1,4 @@
-# Scoped TURN environment approval
+# Scoped production environment approval
 
 The deployment controller keeps its global `.env` hash gate. A scheduled deploy
 never approves drift automatically, and `--force` still reconciles the normal
@@ -34,7 +34,23 @@ No healthy env hash is written during approval or dry-run. It is updated only
 after deployment health checks succeed, provided the approved `.env` is still
 unchanged. Replacing Call Service interrupts active calls; schedule accordingly.
 Other services retain their existing containers and do not consume these TURN
-settings. This is not a generic service-scoped env approval mechanism.
+settings.
+
+For Langfuse sampling, save the last-healthy `.env` from the deployment state's
+`env-backups` directory, change only the canonical
+`LANGFUSE_SAMPLE_RATE=<number>` assignment to a literal between `0` and `1`, then
+run:
+
+```sh
+velora-deploy --approve-langfuse-sampling /absolute/path/to/before-sampling.env --dry-run
+velora-deploy --approve-langfuse-sampling /absolute/path/to/before-sampling.env
+```
+
+This approval accepts only that setting, schedules only `ai-service`, and uses
+the same health check, exact image snapshot, and env rollback guard as TURN
+approval. Keep the backup private. It cannot be combined with `--force`, TURN
+approval, rollback or DB approval. Use it again to restore sampling to `1` after
+the Langfuse quota resets.
 
 If post-deployment health verification fails, automatic image rollback first
 restores the verified baseline `.env` atomically with mode 600. If either file

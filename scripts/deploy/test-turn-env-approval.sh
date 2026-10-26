@@ -32,6 +32,8 @@ reset_fixture() {
   printf '%s\n' "$STORED_ENV_HASH" >"$ENV_HASH_FILE"
   TURN_ENV_BASELINE="$baseline"
   TURN_ENV_APPROVED=false
+  LANGFUSE_SAMPLE_RATE_BASELINE=""
+  LANGFUSE_SAMPLE_RATE_APPROVED=false
   FORCE=false
   DRY_RUN=false
   RETRY_FAILED=false
@@ -45,6 +47,24 @@ reset_fixture() {
   LAST_DEPLOYED_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
   printf '%s\n' "$LAST_DEPLOYED_SHA" >"$STATE_FILE"
   : >"$calls"
+}
+reset_langfuse_fixture() {
+  reset_fixture
+  TURN_ENV_BASELINE=""
+  TURN_ENV_APPROVED=false
+  printf 'LANGFUSE_SAMPLE_RATE=1\n' >>"$baseline"
+  chmod 600 "$baseline"
+  cp "$baseline" "$APP_DIR/.env"
+  STORED_ENV_HASH="$(sha256sum "$baseline" | awk '{print $1}')"
+  CURRENT_ENV_HASH="$(env_hash)"
+  printf '%s\n' "$STORED_ENV_HASH" >"$ENV_HASH_FILE"
+  LANGFUSE_SAMPLE_RATE_BASELINE="$baseline"
+  LANGFUSE_SAMPLE_RATE_APPROVED=false
+  CHANGED_FILES=""
+}
+set_langfuse_rate() {
+  sed "s/^LANGFUSE_SAMPLE_RATE=1$/LANGFUSE_SAMPLE_RATE=$1/" "$baseline" >"$APP_DIR/.env"
+  CURRENT_ENV_HASH="$(env_hash)"
 }
 pass() { checks=$((checks + 1)); }
 reject() {
@@ -204,6 +224,76 @@ approve_turn_env
 printf 'OPERATOR_EDIT=preserve-me\n' >>"$baseline"
 reject restore_turn_env_for_rollback
 
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+STORED_ENV_HASH="$(printf 'wrong baseline\n' | sha256sum | awk '{print $1}')"
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+LANGFUSE_SAMPLE_RATE_BASELINE="$tmp_dir/missing.env"
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+approve_langfuse_sampling_env
+[[ "$LANGFUSE_SAMPLE_RATE_APPROVED" == true && "$TURN_ENV_APPROVED" == false ]]
+[[ "${PULL_SERVICES[*]}" == ai-service && "${RECONCILE_SERVICES[*]}" == ai-service ]]
+[[ "$(cat "$ENV_HASH_FILE")" == "$STORED_ENV_HASH" ]]
+pass
+reset_langfuse_fixture
+set_langfuse_rate 1.01
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate '${LANGFUSE_SAMPLE_RATE}'
+reject approve_langfuse_sampling_env
+for addition in 'LANGFUSE_SAMPLE_RATE=0.05' 'export LANGFUSE_SAMPLE_RATE=0.05' ' LANGFUSE_SAMPLE_RATE=0.05'; do
+  reset_langfuse_fixture
+  set_langfuse_rate 0.05
+  printf '%s\n' "$addition" >>"$APP_DIR/.env"
+  CURRENT_ENV_HASH="$(env_hash)"
+  reject approve_langfuse_sampling_env
+done
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+printf 'UNRELATED=value\n' >>"$APP_DIR/.env"
+CURRENT_ENV_HASH="$(env_hash)"
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+printf 'OTHER=${LANGFUSE_SAMPLE_RATE}\n' >>"$baseline"
+cp "$baseline" "$APP_DIR/.env"
+STORED_ENV_HASH="$(sha256sum "$baseline" | awk '{print $1}')"
+printf '%s\n' "$STORED_ENV_HASH" >"$ENV_HASH_FILE"
+set_langfuse_rate 0.05
+reject approve_langfuse_sampling_env
+
+reset_langfuse_fixture
+LANGFUSE_SAMPLE_RATE_BASELINE=""
+reject parse_args --approve-langfuse-sampling
+reject parse_args --approve-langfuse-sampling relative.env
+reject parse_args --approve-langfuse-sampling "$baseline" --force
+reject parse_args --approve-langfuse-sampling "$baseline" --rollback
+reject parse_args --approve-langfuse-sampling "$baseline" --approve-turn-env "$baseline"
+
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+CHANGED_FILES='apps/call-service/src/infrastructure/engines/turn-configuration.ts'
+plan_from_changed_files
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+PULL_SERVICES=(user-service)
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+INFRA_RECONCILE_SERVICES=(nginx)
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+DB_RISK=true
+reject approve_langfuse_sampling_env
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+CHANGED_FILES='docker-compose.yml'
+reject approve_langfuse_sampling_env
+
 # Exercise the real orchestration path, including same-SHA credential changes.
 for stub in preflight_resources validate_rabbitmq_static_config validate_rabbitmq_live validate_target_files prepare_baseline_compose compute_changed_files classify_db_impact compare_compose_models ensure_manual_db_approval check_blocked_release validate_target_infrastructure public_smoke_warning_only send_deployment_receipt post_success_cleanup remove_removed_compose_services; do
   eval "$stub() { :; }"
@@ -239,6 +329,23 @@ grep -Fxq 'docker:compose up -d --no-deps call-service' "$calls"
 ! grep -Fxq 'remove-deprecated' "$calls"
 [[ "$(cat "$ENV_HASH_FILE")" == "$CURRENT_ENV_HASH" ]]
 [[ "$(cat "$STATE_FILE")" == "$TARGET_SHA" ]]
+pass
+
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+LAST_DEPLOYED_SHA="$TARGET_SHA"
+DRY_RUN=true
+( perform_deployment ) >"$tmp_dir/langfuse-dry-run.log"
+! grep -Eq '^(pull|checkout|docker:)' "$calls"
+[[ "$(cat "$ENV_HASH_FILE")" == "$STORED_ENV_HASH" ]]
+pass
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+LAST_DEPLOYED_SHA="$TARGET_SHA"
+( perform_deployment ) >"$tmp_dir/langfuse-success.log"
+grep -Fxq 'docker:compose up -d --no-deps ai-service' "$calls"
+! grep -Fxq 'docker:compose up -d --no-deps call-service' "$calls"
+[[ "$(cat "$ENV_HASH_FILE")" == "$CURRENT_ENV_HASH" ]]
 pass
 
 reset_fixture
@@ -290,4 +397,18 @@ reject perform_deployment
 grep -Fxq 'rollback-with-old-env' "$calls"
 cmp -s "$baseline" "$APP_DIR/.env"
 
-printf 'TURN env approval: PASS (%s checks)\n' "$checks"
+reset_langfuse_fixture
+set_langfuse_rate 0.05
+LAST_DEPLOYED_SHA="$TARGET_SHA"
+TEST_HEALTH_EXIT=1
+DEPLOYMENT_FAILURE_DETAIL='test Langfuse health failure'
+DEPLOYMENT_FAILURE_ACTION='inspect test'
+rollback_from_snapshot() {
+  cmp -s "$baseline" "$APP_DIR/.env" || return 1
+  printf 'rollback-with-old-env\n' >>"$calls"
+}
+reject perform_deployment
+grep -Fxq 'rollback-with-old-env' "$calls"
+cmp -s "$baseline" "$APP_DIR/.env"
+
+printf 'Scoped env approval: PASS (%s checks)\n' "$checks"

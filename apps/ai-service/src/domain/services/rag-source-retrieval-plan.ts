@@ -5,8 +5,15 @@ import type {
 
 /** Evidence allocation signal; this does not classify the user's intent. */
 export function requiresReelCoverage(message: string): boolean {
-  return /\b(?:compare|comparison|contrast|difference|different|versus|vs\.?|both|each|between)\b/i.test(
-    message,
+  const referencedEpisodes = new Set(
+    [...message.matchAll(/\b(?:episode|reel)\s*#?\s*(\d+)\b/gi)].map(
+      (match) => match[1],
+    ),
+  );
+  return (
+    /\b(?:compare|comparison|contrast|difference|different|versus|vs\.?|both|each|between)\b/i.test(
+      message,
+    ) || referencedEpisodes.size > 1
   );
 }
 
@@ -31,7 +38,7 @@ export function sourceRetrievalPlan(
     /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
   );
   const transcriptTimestamp = message.match(
-    /\b(?:segment|transcript|speech|spoken|said)\b[^\n\r?]*?\b(?:at|around|spanning|from)\s+(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:seconds?|s)\b/i,
+    /\b(?:segment|transcript|speech|spoken|said|dialogue)\b[^\n\r?]*?\b(?:at|around|spanning|from)\s+(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:seconds?|s)\b/i,
   );
   const multimodal = route.reelQuestionType === 'MULTIMODAL_CONTENT';
   const visualTimestampSec =

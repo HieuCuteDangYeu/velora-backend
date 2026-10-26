@@ -34,7 +34,7 @@ const { loadSessionTraces } = require('./langfuse-rag-traces.cjs');
 
 const DATASET_NAME = 'velora/rag-scraped-v1-provisional';
 const TARGET_CASES = 220;
-const BENCHMARK_EVALUATOR_VERSION = 'velora-rag-benchmark-evaluation-v7';
+const BENCHMARK_EVALUATOR_VERSION = 'velora-rag-benchmark-evaluation-v8';
 const BOT_USER_ID =
   process.env.BOT_USER_ID || 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7';
 
@@ -165,7 +165,7 @@ function containmentMatch(expected, actual) {
 }
 
 function isClearAbstention(answer) {
-  return /\b(?:cannot|can't|could not|couldn't|unable to|not enough|insufficient|no relevant|cannot verify|can't verify|not established|not available)\b/i.test(
+  return /\b(?:cannot|can't|could not|couldn't|unable to|not enough|insufficient|no relevant|cannot verify|can't verify|not established|not available|does not contain enough|doesn't contain enough)\b/i.test(
     String(answer ?? ''),
   );
 }

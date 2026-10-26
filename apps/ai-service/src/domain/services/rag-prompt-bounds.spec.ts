@@ -280,9 +280,52 @@ describe('rag prompt bounds', () => {
         distance: 0,
       },
     ];
-    expect(preserveReelCoverage(candidates, 1).map((item) => item.reelId)).toEqual([
-      'reel-a',
-      'reel-b',
-    ]);
+    expect(
+      preserveReelCoverage(candidates, 1).map((item) => item.reelId),
+    ).toEqual(['reel-a', 'reel-b']);
+  });
+
+  it('keeps all requested Reel evidence when semantic sufficiency selects none', () => {
+    const candidates = [
+      {
+        chunkId: 'chunk-a-0',
+        reelId: 'reel-a',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'first source',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'chunk-b-0',
+        reelId: 'reel-b',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'second source',
+        tags: [],
+        distance: 0,
+      },
+    ];
+    const context: NonNullable<
+      Parameters<typeof selectRagAnswerEvidenceIds>[1]
+    > = {
+      sufficient: false,
+      confidence: 0.2,
+      availableEvidence: ['TRANSCRIPT'],
+      missingEvidence: [],
+      supportedEvidenceIds: [],
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+      reason: 'advisory negative',
+      diagnostics: { providerStatus: 'SUCCESS', decisionSource: 'LLM' },
+    };
+
+    expect(
+      [
+        ...selectRagAnswerEvidenceIds(
+          candidates,
+          context,
+          { requiredEvidence: ['TRANSCRIPT'] },
+          true,
+        ),
+      ].sort(),
+    ).toEqual(['e0', 'e1']);
   });
 });

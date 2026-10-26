@@ -422,5 +422,11 @@ test('clear abstention phrases are recognized without rewarding vague answers', 
     isClearAbstention('No relevant shared reel evidence is available.'),
     true,
   );
+  assert.equal(
+    isClearAbstention(
+      'The available shared Reel context does not contain enough audio evidence to identify the requested audio detail.',
+    ),
+    true,
+  );
   assert.equal(isClearAbstention('The sound is a bell.'), false);
 });

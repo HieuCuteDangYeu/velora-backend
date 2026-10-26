@@ -92,6 +92,7 @@ export class BuildGroundedAnswerRevisionUseCase {
       boundedChunks,
       state.contextSufficiency,
       state.route,
+      state.retrievalPlan?.requiresReelCoverage === true,
     );
     const evidence = boundedChunks.flatMap((chunk, index) => {
       if (!answerEvidenceIds.has(`e${index}`)) return [];

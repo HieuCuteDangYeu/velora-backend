@@ -129,6 +129,7 @@ export class GenerateDraftAnswerUseCase {
       boundedChunks,
       state.contextSufficiency,
       state.route,
+      state.retrievalPlan?.requiresReelCoverage === true,
     );
     const answerEvidence = boundedChunks.flatMap((chunk, index) =>
       answerEvidenceIds.has(`e${index}`)
@@ -737,6 +738,7 @@ export class GenerateDraftAnswerUseCase {
       boundedChunks,
       state.contextSufficiency,
       state.route,
+      state.retrievalPlan?.requiresReelCoverage === true,
     );
     const candidates =
       answerEvidenceIds.size > 0

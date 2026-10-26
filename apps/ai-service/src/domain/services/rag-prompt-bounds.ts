@@ -488,22 +488,19 @@ function prioritizeReelCoverage(
   ];
 }
 
-/**
- * Keep answer/revision prompts focused on the highest-ranked required-evidence
- * reel when semantic sufficiency is advisory but did not select evidence IDs.
- * The original prompt-local IDs remain stable for verifier and citation use.
- */
+/** Keep single-Reel prompts focused; multi-Reel prompts retain every source when sufficiency selects none. */
 export function selectRagAnswerEvidenceIds(
   candidates: ReelContextSearchResult[],
   context: RagContextSufficiencyResult | undefined,
   route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
+  preserveReelCoverage = false,
 ): Set<string> {
   const supported = new Set(
     (context?.supportedEvidenceIds ?? []).filter(
       (value): value is string => typeof value === 'string',
     ),
   );
-  if (supported.size > 0) return supported;
+  if (supported.size > 0 && !preserveReelCoverage) return supported;
 
   const required = new Set(
     (route?.requiredEvidence ?? []).filter((value) => value !== 'NONE'),
@@ -513,6 +510,7 @@ export function selectRagAnswerEvidenceIds(
   if (
     !context ||
     context.sufficient ||
+    preserveReelCoverage ||
     (providerStatus !== 'SUCCESS' && providerStatus !== 'ERROR') ||
     required.size === 0
   ) {

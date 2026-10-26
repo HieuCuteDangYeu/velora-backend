@@ -1100,7 +1100,7 @@ Rules:
 10. REEL_HYBRID means semantic vector + full-text search, with explicit #hashtags also eligible for tag matching. Prefer it for normal factual reel questions.
 11. The execution layer selects transcript and/or sampled visual-scene evidence from the router's required-evidence decision. Do not try to change that evidence policy.
 12. Return exactly these nine fields: mode, query, rewrittenQuery, queries, searchLimit, rerankLimit, shouldRerank, requiresReelCoverage, reason.
-13. Set requiresReelCoverage=true when the user asks for a comparison, contrast, difference, or a fact about both/each of multiple shared Reels. Set it false for a single-Reel request. This only controls evidence allocation; it does not choose which Reels the user may access.
+13. Set requiresReelCoverage=true when the user asks for a comparison, contrast, difference, or a fact about both/each of multiple shared Reels. Also set it when the question separately names distinct Episode or Reel numbers as source references, even without comparison wording. Set it false for a single-Reel request. This only controls evidence allocation; it does not choose which Reels the user may access.
 14. mode must be NONE, REEL_VECTOR, or REEL_HYBRID. query and rewrittenQuery are strings; use an empty rewrittenQuery when no rewrite is needed. queries is an array of one to three query strings. searchLimit is an integer from 1 to 20, rerankLimit is an integer from 1 to 10, shouldRerank and requiresReelCoverage are booleans, and reason is a concise string.
 `.trim();
   }
@@ -1182,9 +1182,8 @@ ${route.requiredEvidence.join(', ')}
       shouldRerank:
         typeof raw.shouldRerank === 'boolean' ? raw.shouldRerank : true,
       requiresReelCoverage:
-        typeof raw.requiresReelCoverage === 'boolean'
-          ? raw.requiresReelCoverage
-          : requiresReelCoverage(fallbackQuery),
+        raw.requiresReelCoverage === true ||
+        requiresReelCoverage(fallbackQuery),
       reason:
         typeof raw.reason === 'string' && raw.reason.trim()
           ? raw.reason.trim()

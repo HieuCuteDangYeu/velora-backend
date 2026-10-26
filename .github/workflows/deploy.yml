@@ -397,6 +397,7 @@ jobs:
             apps/ai-service/src/application/use-cases/create-no-context-answer.use-case.spec.ts \
             apps/ai-service/src/application/use-cases/generate-draft-answer.use-case.spec.ts \
             apps/ai-service/src/application/use-cases/verifier-agent.use-case.spec.ts \
+            apps/ai-service/src/application/use-cases/query-router-agent.use-case.spec.ts \
             apps/ai-service/src/domain/services/rag-prompt-bounds.spec.ts \
             apps/ai-service/src/domain/services/rag-source-retrieval-plan.spec.ts \
             apps/ai-service/src/domain/services/rag-transcript-sentence-selection.spec.ts \

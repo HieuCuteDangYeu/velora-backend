@@ -103,6 +103,63 @@ describe('source retrieval constraints', () => {
     });
   });
 
+  it('anchors transcript intervals phrased as indexed dialogue', () => {
+    expect(
+      sourceRetrievalPlan(
+        'What does the prince say about the marriage? Refer to the indexed dialogue at 17.98-83.14 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 17.98,
+      sourceTimestampEndSec: 83.14,
+      searchLimit: 2,
+      rerankLimit: 2,
+    });
+  });
+
+  it('anchors transcript intervals phrased as indexed dialogue', () => {
+    expect(
+      sourceRetrievalPlan(
+        'What does the prince say about the marriage? Refer to the indexed dialogue at 17.98-83.14 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 17.98,
+      sourceTimestampEndSec: 83.14,
+      searchLimit: 2,
+      rerankLimit: 2,
+    });
+  });
+
+  it('anchors transcript ranges described as indexed dialogue', () => {
+    expect(
+      sourceRetrievalPlan(
+        'What does the prince say about the marriage? Refer to the indexed dialogue at 17.98-83.14 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 17.98,
+      sourceTimestampEndSec: 83.14,
+      searchLimit: 2,
+      rerankLimit: 2,
+    });
+  });
+
   it('honors an explicit transcript time window when the router classifies it as a general summary', () => {
     expect(
       sourceRetrievalPlan(
@@ -128,6 +185,54 @@ describe('source retrieval constraints', () => {
     expect(
       requiresReelCoverage('What is the difference between both shared Reels?'),
     ).toBe(true);
+  });
+
+  it('marks distinct episode references for per-Reel evidence allocation', () => {
+    expect(
+      requiresReelCoverage(
+        'How does the narrator describe Episode 1, and what does William say in Episode 2?',
+      ),
+    ).toBe(true);
+    expect(
+      requiresReelCoverage('What does the narrator say in Episode 1?'),
+    ).toBe(false);
+    expect(
+      requiresReelCoverage(
+        'What does the narrator say in Episode 1 and Episode 1?',
+      ),
+    ).toBe(false);
+  });
+
+  it('marks different episode references for per-Reel allocation even without comparison wording', () => {
+    expect(
+      requiresReelCoverage(
+        'How does the narrator describe Episode 1, and what does William say in Episode 2?',
+      ),
+    ).toBe(true);
+    expect(
+      requiresReelCoverage('What does the narrator say in Episode 1?'),
+    ).toBe(false);
+    expect(
+      requiresReelCoverage(
+        'What does the narrator say in Episode 1 and Episode 1?',
+      ),
+    ).toBe(false);
+  });
+
+  it('marks separate numbered episode references for per-Reel evidence allocation', () => {
+    expect(
+      requiresReelCoverage(
+        'How does the narrator describe Episode 1, and what does William say in Episode 2?',
+      ),
+    ).toBe(true);
+    expect(
+      requiresReelCoverage('What does the narrator say in Episode 1?'),
+    ).toBe(false);
+    expect(
+      requiresReelCoverage(
+        'What does the narrator say in Episode 1 and Episode 1?',
+      ),
+    ).toBe(false);
   });
   it('uses a native dual-modality read for multimodal Reel questions', () => {
     expect(

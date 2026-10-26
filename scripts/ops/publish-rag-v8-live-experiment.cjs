@@ -20,6 +20,16 @@ const defaultStateFile = path.join(
   'live-benchmark-state-v3/rag-v8-live-2360fcb32fd0-20261026-01.state.json',
 );
 const defaultOutput = path.join(runDir, 'langfuse-live-experiment.json');
+const LEGACY_COMPARABLE_EVALUATOR_VERSION =
+  'velora-rag-benchmark-evaluation-v7';
+
+function isCompatibleBaselineEvaluatorVersion(version) {
+  // V8 only repairs abstention phrasing; all baseline-gate score definitions are unchanged.
+  return (
+    version === BENCHMARK_EVALUATOR_VERSION ||
+    version === LEGACY_COMPARABLE_EVALUATOR_VERSION
+  );
+}
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -195,12 +205,13 @@ async function readBaselineExperiment(
     limit: 10,
   });
   const run = page.data?.find((item) => item.id === experimentId);
+  const baselineEvaluatorVersion = run?.metadata?.evaluatorVersion;
   if (
     !run ||
     run.datasetId !== datasetId ||
     run.itemCount !== 136 ||
     run.metadata?.datasetSha256 !== datasetSha256 ||
-    run.metadata?.evaluatorVersion !== BENCHMARK_EVALUATOR_VERSION
+    !isCompatibleBaselineEvaluatorVersion(baselineEvaluatorVersion)
   )
     throw new Error(
       'Baseline experiment does not match the frozen 136-case dataset',
@@ -217,6 +228,7 @@ async function readBaselineExperiment(
     experimentId,
     datasetId: run.datasetId,
     itemCount: run.itemCount,
+    evaluatorVersion: baselineEvaluatorVersion,
     runScores: metricScoreMap(run.scores ?? []),
     releaseSha: run.metadata?.serviceReleaseSha,
     bucketMetrics: aggregateBucketItemScores(rows),
@@ -546,6 +558,7 @@ function benchmarkExitGates(
     multiReelQuality,
   ];
   return {
+    evaluatorVersion: BENCHMARK_EVALUATOR_VERSION,
     status: gates.every((gate) => gate === 'PASS') ? 'PASS' : 'BLOCK',
     thresholds: {
       minHealthAvailability,
@@ -576,6 +589,7 @@ function benchmarkExitGates(
     multiReelQuality,
     bucketMetrics: buckets,
     baselineExperimentId: baseline?.experimentId ?? null,
+    baselineEvaluatorVersion: baseline?.evaluatorVersion ?? null,
   };
 }
 
@@ -584,6 +598,14 @@ function runEvaluators() {
 }
 
 async function selfTest() {
+  assert.equal(
+    isCompatibleBaselineEvaluatorVersion('velora-rag-benchmark-evaluation-v7'),
+    true,
+  );
+  assert.equal(
+    isCompatibleBaselineEvaluatorVersion('velora-rag-benchmark-evaluation-v6'),
+    false,
+  );
   const values = runEvaluators();
   assert.equal(values.length, 1);
   const sdk = createEvaluationSdk({
@@ -1176,4 +1198,5 @@ module.exports = {
   aggregateRunEvaluations,
   verifyExperimentItems,
   benchmarkExitGates,
+  isCompatibleBaselineEvaluatorVersion,
 };

@@ -726,6 +726,56 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     );
   });
 
+  it('keeps episode-level source coverage when the planner turns it off', async () => {
+    const { adapter, generateObject } = buildAdapter({
+      AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',
+    });
+    generateObject.mockResolvedValueOnce({
+      mode: 'REEL_HYBRID',
+      query: 'spoken episode facts',
+      rewrittenQuery: '',
+      queries: ['spoken episode facts'],
+      searchLimit: 5,
+      rerankLimit: 5,
+      shouldRerank: true,
+      requiresReelCoverage: false,
+      reason: 'The model omitted requested source coverage.',
+    });
+
+    await expect(
+      adapter.plan({
+        message:
+          'What does the narrator say in Episode 1 and what does William say in Episode 2?',
+        route: transcriptRoute,
+      }),
+    ).resolves.toMatchObject({ requiresReelCoverage: true });
+  });
+
+  it('keeps explicit coverage for distinct episodes when the planner omits it', async () => {
+    const { adapter, generateObject } = buildAdapter({
+      AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',
+    });
+    generateObject.mockResolvedValueOnce({
+      mode: 'REEL_HYBRID',
+      query: 'spoken episode facts',
+      rewrittenQuery: '',
+      queries: ['spoken episode facts'],
+      searchLimit: 5,
+      rerankLimit: 5,
+      shouldRerank: true,
+      requiresReelCoverage: false,
+      reason: 'The model omitted requested source coverage.',
+    });
+
+    await expect(
+      adapter.plan({
+        message:
+          'What does the narrator say in Episode 1 and what does William say in Episode 2?',
+        route: transcriptRoute,
+      }),
+    ).resolves.toMatchObject({ requiresReelCoverage: true });
+  });
+
   it('persists safe planner structured-call diagnostics on success', async () => {
     const { adapter, generateObject } = buildAdapter({
       AI_RETRIEVAL_PLANNER_MODEL: 'test/openai/gpt-oss-20b',

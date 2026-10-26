@@ -145,6 +145,43 @@ describe('QueryRouterAgentUseCase', () => {
     },
   );
 
+  it('defines separate visual and spoken clauses as a multimodal route', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          needsRetrieval: true,
+          needsVerification: true,
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Describe what the woman is doing, then say what the narrator says about her kingdom.',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    });
+
+    const request = structuredLlmService.generateObject.mock.calls[0][0];
+    expect(request.systemPrompt).toContain(
+      'separate clauses like “describe what the woman is doing, then say what the narrator says”',
+    );
+    expect(request.systemPrompt).toContain(
+      'what does the narrator say about the dress?',
+    );
+  });
+
   it('keeps an explicitly inaccessible Reel on the safe retrieval/refusal path', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(

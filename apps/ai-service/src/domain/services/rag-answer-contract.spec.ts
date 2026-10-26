@@ -1,7 +1,37 @@
 import {
+  missingRequiredReelEvidencePairs,
   ragRequestedFactSignalScore,
   validateRagAnswerContract,
 } from './rag-answer-contract';
+
+describe('missingRequiredReelEvidencePairs', () => {
+  it('reports missing per-Reel modalities without treating another Reel as a substitute', () => {
+    expect(
+      missingRequiredReelEvidencePairs(
+        [
+          { reelId: 'reel-1', evidenceType: 'TRANSCRIPT' },
+          { reelId: 'reel-1', evidenceType: 'VISUAL' },
+          { reelId: 'reel-2', evidenceType: 'TRANSCRIPT' },
+          { reelId: 'reel-2', evidenceType: 'VISUAL' },
+          { reelId: 'reel-2', evidenceType: 'VISUAL' },
+        ],
+        ['reel-1', 'reel-2', 'reel-2'],
+        ['TRANSCRIPT', 'VISUAL'],
+      ),
+    ).toEqual([]);
+    expect(
+      missingRequiredReelEvidencePairs(
+        [
+          { reelId: 'reel-1', evidenceType: 'TRANSCRIPT' },
+          { reelId: 'reel-1', evidenceType: 'VISUAL' },
+          { reelId: 'reel-2', evidenceType: 'TRANSCRIPT' },
+        ],
+        ['reel-1', 'reel-2'],
+        ['TRANSCRIPT', 'VISUAL'],
+      ),
+    ).toEqual([{ reelId: 'reel-2', evidenceType: 'VISUAL' }]);
+  });
+});
 
 describe('validateRagAnswerContract', () => {
   it.each(['at least 7', '7 or 8 years'])(

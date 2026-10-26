@@ -88,6 +88,57 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('refuses a multi-Reel multimodal answer when one Reel lacks a required modality', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const state = {
+      userMessage: 'Compare what is visible and said in both shared Reels.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+      retrievalPlan: { requiresReelCoverage: true },
+      retrievedChunks: [
+        { reelId: 'reel-1', evidenceType: 'TRANSCRIPT', chunkText: 'speech 1' },
+        { reelId: 'reel-1', evidenceType: 'VISUAL', chunkText: 'scene 1' },
+        { reelId: 'reel-2', evidenceType: 'TRANSCRIPT', chunkText: 'speech 2' },
+        { reelId: 'reel-2', evidenceType: 'VISUAL', chunkText: 'scene 2' },
+      ],
+      rerankedChunks: [
+        {
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          chunkText: 'speech 1',
+          tags: [],
+        },
+        {
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          chunkText: 'scene 1',
+          tags: [],
+        },
+        {
+          reelId: 'reel-2',
+          evidenceType: 'TRANSCRIPT',
+          chunkText: 'speech 2',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      sufficient: false,
+      missingReelIds: ['reel-2'],
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it('requires both transcript and visual evidence for a multimodal route', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({

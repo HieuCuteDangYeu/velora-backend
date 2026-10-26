@@ -560,6 +560,59 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       new Set(['reel-1', 'reel-2']),
     );
   });
+
+  it('restores every required modality for each comparison Reel after reranking', async () => {
+    const { adapter, rerank } = buildAdapter({});
+    const transcriptOne = {
+      ...directCandidate,
+      chunkId: 'transcript-1',
+      reelId: 'reel-1',
+      evidenceType: 'TRANSCRIPT' as const,
+    };
+    rerank.mockResolvedValue([{ ...transcriptOne, rerankScore: 1 } as never]);
+
+    const result = await adapter.rerank({
+      plan: {
+        ...plan,
+        requiresReelCoverage: true,
+        shouldRerank: true,
+        rerankLimit: 1,
+      },
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      retrievedChunks: [
+        transcriptOne,
+        {
+          ...visualCandidate,
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+        },
+        {
+          ...directCandidate,
+          chunkId: 'transcript-2',
+          reelId: 'reel-2',
+          evidenceType: 'TRANSCRIPT',
+        },
+        {
+          ...visualCandidate,
+          chunkId: 'visual-2',
+          reelId: 'reel-2',
+          evidenceType: 'VISUAL',
+        },
+      ] as never,
+    });
+
+    expect(
+      new Set(result.map((item) => `${item.reelId}:${item.evidenceType}`)),
+    ).toEqual(
+      new Set([
+        'reel-1:TRANSCRIPT',
+        'reel-1:VISUAL',
+        'reel-2:TRANSCRIPT',
+        'reel-2:VISUAL',
+      ]),
+    );
+  });
   it('reads typed metadata without a planner, embedding, or transcript search', async () => {
     const {
       adapter,

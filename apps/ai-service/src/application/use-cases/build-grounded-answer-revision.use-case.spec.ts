@@ -106,6 +106,76 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     });
   });
 
+  it('rejects a revision missing a required Reel/modality pair', async () => {
+    const input = state({
+      question: 'For each clip, what is said and what is visible?',
+      evidence: [],
+    });
+    input.route = {
+      ...input.route!,
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    };
+    input.retrievalPlan = {
+      requiresReelCoverage: true,
+      mode: 'REEL_HYBRID',
+      query: input.userMessage,
+      searchLimit: 4,
+      rerankLimit: 4,
+      shouldRerank: false,
+      reason: 'Both Clips require source and modality coverage.',
+    };
+    input.retrievedChunks = [
+      { reelId: 'reel-1' },
+      { reelId: 'reel-2' },
+    ] as never;
+    input.rerankedChunks = [
+      {
+        chunkId: 't1',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: 'The speaker says hello.',
+        chunkText: 'The speaker says hello.',
+        tags: [],
+      },
+      {
+        chunkId: 'v1',
+        reelId: 'reel-1',
+        evidenceType: 'VISUAL',
+        evidenceText: 'A red door is visible.',
+        chunkText: 'A red door is visible.',
+        tags: [],
+      },
+      {
+        chunkId: 't2',
+        reelId: 'reel-2',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: 'The speaker says goodbye.',
+        chunkText: 'The speaker says goodbye.',
+        tags: [],
+      },
+      {
+        chunkId: 'v2',
+        reelId: 'reel-2',
+        evidenceType: 'VISUAL',
+        evidenceText: 'A blue window is visible.',
+        chunkText: 'A blue window is visible.',
+        tags: [],
+      },
+    ] as never;
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer:
+        'The speaker says hello. A red door is visible. The speaker says goodbye.',
+      evidenceIds: ['e0', 'e1', 'e2'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toBeUndefined();
+    expect(
+      structuredLlm.generateObject.mock.calls[0][0].jsonSchema.properties
+        .evidenceIds.maxItems,
+    ).toBe(4);
+  });
+
   it('trims a supported but over-verbose answer without changing the answer fact', async () => {
     const input = state({
       question: 'Who supervised the project?',

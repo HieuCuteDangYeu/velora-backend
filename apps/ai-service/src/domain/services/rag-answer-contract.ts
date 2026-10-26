@@ -1,4 +1,7 @@
-import type { RagReelQuestionType } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import type {
+  RagReelQuestionType,
+  RagRequiredEvidence,
+} from '@ai/domain/interfaces/rag-chat-workflow.interface';
 
 const QUANTITY_QUESTION_PATTERN =
   /\b(?:how many|how much|how low|how high|how long|how old|number of|what (?:number|percentage|percent|year|date))\b/i;
@@ -107,6 +110,38 @@ export interface RagAnswerContractInput {
   question: string;
   evidence: readonly string[];
   evidenceRequired: boolean;
+}
+
+export interface RagEvidenceCoverageItem {
+  reelId?: string;
+  evidenceType?: string;
+}
+
+export function missingRequiredReelEvidencePairs(
+  evidence: readonly RagEvidenceCoverageItem[],
+  reelIds: readonly string[],
+  requiredEvidenceTypes: readonly RagRequiredEvidence[],
+): Array<{ reelId: string; evidenceType: RagRequiredEvidence }> {
+  const reels = [...new Set(reelIds.filter(Boolean))];
+  const types = [
+    ...new Set(
+      requiredEvidenceTypes.filter(
+        (type) => type !== 'NONE' && type !== 'AUDIO',
+      ),
+    ),
+  ];
+  return reels.flatMap((reelId) =>
+    types
+      .filter(
+        (type) =>
+          !evidence.some(
+            (item) =>
+              item.reelId === reelId &&
+              (item.evidenceType ?? 'TRANSCRIPT') === type,
+          ),
+      )
+      .map((evidenceType) => ({ reelId, evidenceType })),
+  );
 }
 
 export type RagAnswerShape = 'SHORT_FACT' | 'EXPLANATION' | 'SUMMARY';
@@ -382,16 +417,14 @@ function isQuestionVocabularyEcho(
 function distinctiveTokens(value: string): string[] {
   const tokens: string[] =
     value.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu) ?? [];
-  return tokens.filter(
-    (token) => {
-      const uppercaseLetters = [...token].filter(
-        (character) =>
-          character.toLocaleUpperCase() === character &&
-          character.toLocaleLowerCase() !== character,
-      ).length;
-      return uppercaseLetters >= 2 || /\d/.test(token);
-    },
-  );
+  return tokens.filter((token) => {
+    const uppercaseLetters = [...token].filter(
+      (character) =>
+        character.toLocaleUpperCase() === character &&
+        character.toLocaleLowerCase() !== character,
+    ).length;
+    return uppercaseLetters >= 2 || /\d/.test(token);
+  });
 }
 
 export function answerContentTokens(value: string): string[] {

@@ -17,6 +17,7 @@ import {
   transcriptSegmentPromptBounds,
   transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { missingRequiredReelEvidencePairs } from '@ai/domain/services/rag-answer-contract';
 
 interface RawContextSufficiencyResult {
   sufficient?: unknown;
@@ -116,9 +117,9 @@ export class CheckContextSufficiencyUseCase {
         missingEvidence: [],
         missingReelIds,
         supportedEvidenceIds: [],
-        reason: `Required comparison Reel evidence is missing: ${missingReelIds.join(', ')}.`,
+        reason: `Required comparison Reel/modality evidence is missing: ${missingReelIds.join(', ')}.`,
         userFacingReason:
-          'I found evidence from only part of the requested Reel comparison, so I cannot compare them reliably.',
+          'I found evidence for only part of the requested Reel and modality coverage, so I cannot answer completely.',
         recommendedAction: 'REFUSE_NO_CONTEXT',
         diagnostics: {
           providerStatus: 'NOT_CALLED',
@@ -551,7 +552,13 @@ ${JSON.stringify(
       ...new Set(state.retrievedChunks.map((chunk) => chunk.reelId)),
     ];
     const selected = new Set(state.rerankedChunks.map((chunk) => chunk.reelId));
-    return expected.filter((reelId) => !selected.has(reelId));
+    const missingSources = expected.filter((reelId) => !selected.has(reelId));
+    const missingModalities = missingRequiredReelEvidencePairs(
+      state.rerankedChunks,
+      expected,
+      this.getRequiredEvidence(state),
+    ).map((pair) => pair.reelId);
+    return [...new Set([...missingSources, ...missingModalities])];
   }
 
   private getAvailableEvidence(

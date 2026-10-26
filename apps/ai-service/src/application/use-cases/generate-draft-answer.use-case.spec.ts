@@ -248,6 +248,121 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
   });
 
+  it('retries a multi-Reel multimodal answer when one Reel lacks a required modality claim', async () => {
+    const generateObject = jest
+      .fn()
+      .mockResolvedValueOnce({
+        answer:
+          'In Reel one, the speaker says hello and a red door is visible. In Reel two, the speaker says goodbye.',
+        claims: [
+          {
+            claim: 'In Reel one, the speaker says hello.',
+            evidenceIds: ['e0'],
+          },
+          { claim: 'In Reel one, a red door is visible.', evidenceIds: ['e1'] },
+          {
+            claim: 'In Reel two, the speaker says goodbye.',
+            evidenceIds: ['e2'],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        answer:
+          'In Reel one, the speaker says hello and a red door is visible. In Reel two, the speaker says goodbye and a blue window is visible.',
+        claims: [
+          {
+            claim: 'In Reel one, the speaker says hello.',
+            evidenceIds: ['e0'],
+          },
+          { claim: 'In Reel one, a red door is visible.', evidenceIds: ['e1'] },
+          {
+            claim: 'In Reel two, the speaker says goodbye.',
+            evidenceIds: ['e2'],
+          },
+          {
+            claim: 'In Reel two, a blue window is visible.',
+            evidenceIds: ['e3'],
+          },
+        ],
+      });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'For each of both clips, tell me what is said and what is visible.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: { requiresReelCoverage: true },
+      contextSufficiency: {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence: ['TRANSCRIPT', 'VISUAL'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0', 'e1', 'e2', 'e3'],
+        recommendedAction: 'ANSWER',
+      },
+      retrievedChunks: [
+        { chunkId: 't1', reelId: 'reel-1' },
+        { chunkId: 'v1', reelId: 'reel-1' },
+        { chunkId: 't2', reelId: 'reel-2' },
+        { chunkId: 'v2', reelId: 'reel-2' },
+      ],
+      rerankedChunks: [
+        {
+          chunkId: 't1',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'In Reel one, the speaker says hello.',
+          chunkText: 'In Reel one, the speaker says hello.',
+          tags: [],
+        },
+        {
+          chunkId: 'v1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'In Reel one, a red door is visible.',
+          chunkText: 'In Reel one, a red door is visible.',
+          tags: [],
+        },
+        {
+          chunkId: 't2',
+          reelId: 'reel-2',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'In Reel two, the speaker says goodbye.',
+          chunkText: 'In Reel two, the speaker says goodbye.',
+          tags: [],
+        },
+        {
+          chunkId: 'v2',
+          reelId: 'reel-2',
+          evidenceType: 'VISUAL',
+          evidenceText: 'In Reel two, a blue window is visible.',
+          chunkText: 'In Reel two, a blue window is visible.',
+          tags: [],
+        },
+      ],
+    } as never);
+
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /each requested Reel.*every required modality/i,
+    );
+    expect(result.answer).toContain('a blue window is visible');
+    expect(result.generationEvidence).toHaveLength(4);
+  });
+
   it('uses separate authorized evidence when multimodal answer-contract validation fails', async () => {
     const evidence = [
       {

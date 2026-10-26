@@ -424,14 +424,35 @@ export function boundEvidence(
       candidate.evidenceType === 'METADATA' ||
       Boolean(candidate.evidenceText?.trim() || candidate.chunkText?.trim()),
   );
-  const requiredEvidenceTypes = (
-    ['TRANSCRIPT', 'VISUAL', 'AUDIO', 'METADATA'] as const
-  ).filter((type) => options.requiredEvidenceTypes?.includes(type));
+  const requiredEvidenceTypes = [
+    ...new Set(
+      (['TRANSCRIPT', 'VISUAL', 'METADATA'] as const).filter((type) =>
+        options.requiredEvidenceTypes?.includes(type),
+      ),
+    ),
+  ];
   const ordered = prioritizeEvidenceCoverage(
     filtered,
     options.preserveReelCoverage === true,
     requiredEvidenceTypes,
   );
+  const coverageItemCount = countPrioritizedEvidenceCoverage(
+    filtered,
+    options.preserveReelCoverage === true,
+    requiredEvidenceTypes,
+  );
+  const evidenceTextChars = coverageItemCount
+    ? Math.min(
+        bounds.maxEvidenceTextChars,
+        Math.max(
+          80,
+          Math.floor(
+            (bounds.maxEvidenceTotalChars - coverageItemCount + 1) /
+              coverageItemCount,
+          ),
+        ),
+      )
+    : bounds.maxEvidenceTextChars;
   const bounded = boundTextItems(
     ordered,
     (candidate) =>
@@ -445,8 +466,8 @@ export function boundEvidence(
       retrievalText: text,
       chunkText: text,
     }),
-    bounds.maxEvidenceItems,
-    bounds.maxEvidenceTextChars,
+    Math.max(bounds.maxEvidenceItems, coverageItemCount),
+    evidenceTextChars,
     bounds.maxEvidenceTotalChars,
     truncate,
   );
@@ -498,12 +519,7 @@ function prioritizeReelCoverage(
 function prioritizeEvidenceCoverage(
   candidates: ReelContextSearchResult[],
   preserveReelCoverage: boolean,
-  requiredEvidenceTypes: readonly (
-    | 'TRANSCRIPT'
-    | 'VISUAL'
-    | 'AUDIO'
-    | 'METADATA'
-  )[],
+  requiredEvidenceTypes: readonly ('TRANSCRIPT' | 'VISUAL' | 'METADATA')[],
 ): ReelContextSearchResult[] {
   const ordered = preserveReelCoverage
     ? prioritizeReelCoverage(candidates)
@@ -513,23 +529,67 @@ function prioritizeEvidenceCoverage(
   const prioritized: ReelContextSearchResult[] = [];
   const selected = new Set<ReelContextSearchResult>();
   if (preserveReelCoverage) {
-    const reels = new Set<string>();
-    for (const candidate of ordered) {
-      if (reels.has(candidate.reelId)) continue;
-      reels.add(candidate.reelId);
+    const reelIds = [...new Set(ordered.map((candidate) => candidate.reelId))];
+    for (const reelId of reelIds) {
+      const reelCandidates = ordered.filter(
+        (candidate) => candidate.reelId === reelId,
+      );
+      let selectedForReel = false;
+      for (const evidenceType of requiredEvidenceTypes) {
+        const candidate = reelCandidates.find(
+          (item) => (item.evidenceType ?? 'TRANSCRIPT') === evidenceType,
+        );
+        if (!candidate || selected.has(candidate)) continue;
+        selected.add(candidate);
+        prioritized.push(candidate);
+        selectedForReel = true;
+      }
+      if (!selectedForReel && reelCandidates[0]) {
+        selected.add(reelCandidates[0]);
+        prioritized.push(reelCandidates[0]);
+      }
+    }
+  } else {
+    for (const evidenceType of requiredEvidenceTypes) {
+      const candidate = ordered.find(
+        (item) => (item.evidenceType ?? 'TRANSCRIPT') === evidenceType,
+      );
+      if (!candidate || selected.has(candidate)) continue;
       selected.add(candidate);
       prioritized.push(candidate);
     }
   }
-  for (const evidenceType of requiredEvidenceTypes) {
-    const candidate = ordered.find(
-      (item) => (item.evidenceType ?? 'TRANSCRIPT') === evidenceType,
-    );
-    if (!candidate || selected.has(candidate)) continue;
-    selected.add(candidate);
-    prioritized.push(candidate);
-  }
   return [...prioritized, ...ordered.filter((item) => !selected.has(item))];
+}
+
+function countPrioritizedEvidenceCoverage(
+  candidates: ReelContextSearchResult[],
+  preserveReelCoverage: boolean,
+  requiredEvidenceTypes: readonly ('TRANSCRIPT' | 'VISUAL' | 'METADATA')[],
+): number {
+  if (preserveReelCoverage) {
+    const reelIds = new Set(candidates.map((candidate) => candidate.reelId));
+    return [...reelIds].reduce((count, reelId) => {
+      const reelCandidates = candidates.filter(
+        (candidate) => candidate.reelId === reelId,
+      );
+      if (requiredEvidenceTypes.length === 0) {
+        return count + Number(reelCandidates.length > 0);
+      }
+      const matchingTypes = new Set(
+        reelCandidates.map((item) => item.evidenceType ?? 'TRANSCRIPT'),
+      );
+      const supportedRequiredTypes = requiredEvidenceTypes.filter((type) =>
+        matchingTypes.has(type),
+      ).length;
+      return (
+        count + (supportedRequiredTypes || Number(reelCandidates.length > 0))
+      );
+    }, 0);
+  }
+  return requiredEvidenceTypes.filter((type) =>
+    candidates.some((item) => (item.evidenceType ?? 'TRANSCRIPT') === type),
+  ).length;
 }
 
 /** Keep single-source prompts focused; preserve bounded multi-Reel or multimodal evidence. */

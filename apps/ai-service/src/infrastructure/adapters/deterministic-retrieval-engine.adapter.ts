@@ -476,6 +476,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         ),
         input.retrievedChunks,
         input.requiredEvidence ?? [],
+        input.plan.requiresReelCoverage === true,
       );
       if (input.diagnostics) input.diagnostics.rerankedCount = result.length;
       return result;
@@ -1226,12 +1227,38 @@ ${route.requiredEvidence.join(', ')}
     selected: TranscriptMatch[],
     retrieved: TranscriptMatch[],
     requiredEvidence: RagRequiredEvidence[],
+    preserveReelCoverage: boolean,
   ): TranscriptMatch[] {
     const result = [...selected];
-    for (const evidenceType of requiredEvidence) {
-      if (!['TRANSCRIPT', 'VISUAL', 'METADATA'].includes(evidenceType)) {
-        continue;
+    const supportedTypes = requiredEvidence.filter((type) =>
+      ['TRANSCRIPT', 'VISUAL', 'METADATA'].includes(type),
+    );
+    if (preserveReelCoverage) {
+      const reelIds = [...new Set(retrieved.map((item) => item.reelId))];
+      for (const reelId of reelIds) {
+        for (const evidenceType of supportedTypes) {
+          if (
+            result.some(
+              (item) =>
+                item.reelId === reelId && item.evidenceType === evidenceType,
+            )
+          )
+            continue;
+          const fallback = retrieved.find(
+            (item) =>
+              item.reelId === reelId && item.evidenceType === evidenceType,
+          );
+          if (
+            fallback &&
+            !result.some((item) => item.chunkId === fallback.chunkId)
+          ) {
+            result.push(fallback);
+          }
+        }
       }
+      return result;
+    }
+    for (const evidenceType of supportedTypes) {
       if (result.some((item) => item.evidenceType === evidenceType)) continue;
       const fallback = retrieved.find(
         (item) => item.evidenceType === evidenceType,

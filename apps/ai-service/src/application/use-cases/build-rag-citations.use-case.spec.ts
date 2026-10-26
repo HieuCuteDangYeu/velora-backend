@@ -24,6 +24,79 @@ describe('BuildRagCitationsUseCase', () => {
     expect(result.citations).toEqual([]);
     expect(attribute).not.toHaveBeenCalled();
   });
+  it('allocates citations for every required Reel/modality pair', async () => {
+    const state = buildState();
+    const items = [
+      ['t1', 'reel-1', 'TRANSCRIPT', 'The speaker says hello.'],
+      ['v1', 'reel-1', 'VISUAL', 'A red door is visible.'],
+      ['t2', 'reel-2', 'TRANSCRIPT', 'The speaker says goodbye.'],
+      ['v2', 'reel-2', 'VISUAL', 'A blue window is visible.'],
+    ] as const;
+    state.userMessage = 'For each clip, what is said and what is visible?';
+    state.answer = items.map((item) => item[3]).join(' ');
+    state.route = {
+      ...state.route!,
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    };
+    state.retrievalPlan = {
+      requiresReelCoverage: true,
+      mode: 'REEL_HYBRID',
+      query: state.userMessage,
+      searchLimit: 4,
+      rerankLimit: 4,
+      shouldRerank: false,
+      reason: 'Test multi-Reel modality citation coverage.',
+    };
+    state.retrievedChunks = items.map(([chunkId, reelId]) => ({
+      chunkId,
+      reelId,
+    })) as never;
+    state.rerankedChunks = items.map(
+      ([chunkId, reelId, evidenceType, evidenceText]) => ({
+        chunkId,
+        reelId,
+        evidenceType,
+        evidenceText,
+        chunkText: evidenceText,
+        tags: [],
+      }),
+    ) as never;
+    state.generationEvidence = items.map(
+      ([sourceId, reelId, evidenceType, evidenceText], index) => ({
+        evidenceId: `e${index}`,
+        sourceId,
+        reelId,
+        evidenceType,
+        evidenceText,
+      }),
+    );
+    state.answerClaims = items.map((item, index) => ({
+      claim: item[3],
+      evidenceIds: [`e${index}`],
+    }));
+    const attribute = jest.fn().mockResolvedValue({
+      selections: items.map((_, index) => ({ evidenceId: `e${index}` })),
+      claims: items.map((item, index) => ({
+        claim: item[3],
+        supported: true,
+        evidenceIds: [`e${index}`],
+      })),
+      factualClaimCount: 4,
+      supportedClaimCount: 4,
+      coverage: 1,
+    });
+
+    const result = await new BuildRagCitationsUseCase({ attribute }).execute(
+      state,
+    );
+
+    expect(attribute).toHaveBeenCalledWith(
+      expect.objectContaining({ maxCitations: 4 }),
+    );
+    expect(result.citations).toHaveLength(4);
+    expect(result.coverage.coverage).toBe(1);
+  });
   it('does not report full fallback coverage when the citation cap drops a supporting source', async () => {
     const state = buildState();
     state.rerankedChunks = Array.from({ length: 4 }, (_, i) => ({

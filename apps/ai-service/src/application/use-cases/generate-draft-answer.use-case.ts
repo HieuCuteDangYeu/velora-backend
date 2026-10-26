@@ -31,6 +31,7 @@ import {
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
   answerContentTokens,
+  missingRequiredReelEvidencePairs,
   ragAnswerBudget,
   ragRequestedFactSignalScore,
   validateRagAnswerContract,
@@ -506,6 +507,12 @@ export class GenerateDraftAnswerUseCase {
       ...(state.retrievalPlan?.requiresReelCoverage === true
         ? [
             'For this multi-Reel request, provide a source-attributed claim for each requested Reel and do not use evidence from one Reel to support another.',
+          ]
+        : []),
+      ...(state.retrievalPlan?.requiresReelCoverage === true &&
+      state.route?.reelQuestionType === 'MULTIMODAL_CONTENT'
+        ? [
+            'For each requested Reel, support every required modality with evidence from that same Reel. Do not use a transcript from one Reel to satisfy the visual requirement for another.',
           ]
         : []),
       ...(transcriptSegmentSummaryRequest
@@ -1026,26 +1033,24 @@ export class GenerateDraftAnswerUseCase {
         .map((chunk) => chunk.reelId)
         .filter((reelId): reelId is string => Boolean(reelId)),
     );
-    const missingSourceEvidence = [...requiredReelIds].filter(
-      (reelId) =>
-        !authorizedEvidence.some(
-          (item) =>
-            item.reelId === reelId &&
-            requiredTypes.some((type) => type === item.evidenceType),
-        ),
+    const missingSourceEvidence = missingRequiredReelEvidencePairs(
+      authorizedEvidence,
+      [...requiredReelIds],
+      requiredTypes,
     );
     if (missingSourceEvidence.length > 0) {
       throw new DraftAnswerContractError(
-        `Selected evidence omits a required Reel source (${missingSourceEvidence.length} missing)`,
+        `Selected evidence omits required Reel evidence/modality coverage (${missingSourceEvidence.length} source/type pairs missing)`,
       );
     }
-    const citedReelIds = new Set(citedEvidence.map((item) => item.reelId));
-    const missingReels = [...requiredReelIds].filter(
-      (reelId) => !citedReelIds.has(reelId),
+    const missingCitedCoverage = missingRequiredReelEvidencePairs(
+      citedEvidence,
+      [...requiredReelIds],
+      requiredTypes,
     );
-    if (missingReels.length > 0) {
+    if (missingCitedCoverage.length > 0) {
       throw new DraftAnswerContractError(
-        `Answer claims omit required Reel evidence from ${missingReels.length} source(s)`,
+        `Answer claims omit required Reel evidence/modality coverage (${missingCitedCoverage.length} source/type pairs missing)`,
       );
     }
   }

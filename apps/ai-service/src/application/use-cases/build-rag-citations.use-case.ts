@@ -60,6 +60,7 @@ export class BuildRagCitationsUseCase {
     if (candidates.length === 0) {
       return this.notRequired();
     }
+    const maxCitations = this.citationLimit(state);
 
     try {
       const attribution = await this.citationAttributionService.attribute({
@@ -67,13 +68,14 @@ export class BuildRagCitationsUseCase {
         answer,
         proposedClaims: state.answerClaims,
         candidates: candidates.map((candidate) => candidate.attribution),
-        maxCitations: this.maxCitations,
+        maxCitations,
       });
 
       if (attribution.selections.length === 0) {
         const fallback = this.buildVerifierMappingFallback(state, candidates, {
           providerStatus: 'SUCCESS',
           semanticCalls: attribution.diagnostics?.semanticCalls,
+          maxCitations,
         });
         if (fallback) return fallback;
       }
@@ -103,7 +105,7 @@ export class BuildRagCitationsUseCase {
           evidenceId: candidate.sourceEvidenceId,
         });
 
-        if (citations.length >= this.maxCitations) break;
+        if (citations.length >= maxCitations) break;
       }
 
       const selected = new Set(selectedEvidenceIds);
@@ -157,6 +159,7 @@ export class BuildRagCitationsUseCase {
         semanticCalls,
         errorCode: latestCall?.errorCode,
         providerCategory: latestCall?.providerCategory,
+        maxCitations,
       });
       if (fallback) return fallback;
       this.logger.warn(
@@ -210,6 +213,51 @@ export class BuildRagCitationsUseCase {
     };
   }
 
+  private citationLimit(state: RagChatWorkflowState): number {
+    if (state.retrievalPlan?.requiresReelCoverage !== true)
+      return this.maxCitations;
+    const reelCount = new Set(
+      (state.retrievedChunks ?? [])
+        .map((chunk) => chunk.reelId)
+        .filter((reelId): reelId is string => Boolean(reelId)),
+    ).size;
+    const evidenceTypeCount = new Set(
+      (state.route?.requiredEvidence ?? []).filter(
+        (type) => type !== 'NONE' && type !== 'AUDIO',
+      ),
+    ).size;
+    const coverageCount = reelCount * evidenceTypeCount;
+    const generationEvidenceIds = new Set(
+      (state.generationEvidence ?? [])
+        .filter(
+          (item) =>
+            item.evidenceType !== 'USER_MEMORY' &&
+            item.evidenceType !== 'CONVERSATION_MEMORY',
+        )
+        .map((item) => item.evidenceId),
+    );
+    const claimEvidenceIds = new Set([
+      ...(state.answerClaims ?? []).flatMap((claim) => claim.evidenceIds),
+      ...(state.verification?.supportedClaimMappings ?? []).flatMap(
+        (mapping) => mapping.evidenceIds,
+      ),
+    ]);
+    const citedClaimEvidenceCount = generationEvidenceIds.size
+      ? [...claimEvidenceIds].filter((id) => generationEvidenceIds.has(id))
+          .length
+      : claimEvidenceIds.size;
+    const availableEvidenceCount =
+      generationEvidenceIds.size || state.rerankedChunks.length;
+    const requiredCitationCount = Math.max(
+      coverageCount,
+      citedClaimEvidenceCount,
+    );
+    return Math.max(
+      this.maxCitations,
+      Math.min(availableEvidenceCount, requiredCitationCount),
+    );
+  }
+
   private buildVerifierMappingFallback(
     state: RagChatWorkflowState,
     candidates: GroundedCitationCandidate[],
@@ -218,6 +266,7 @@ export class BuildRagCitationsUseCase {
       semanticCalls?: RagCitationDiagnostics['semanticCalls'];
       errorCode?: string;
       providerCategory?: RagCitationDiagnostics['providerCategory'];
+      maxCitations: number;
     },
   ): RagCitationAssessment | undefined {
     if (!state.verification?.passed) return undefined;
@@ -238,7 +287,7 @@ export class BuildRagCitationsUseCase {
     if (selectedEvidenceIds.length === 0) return undefined;
 
     const selectedCandidates = selectedEvidenceIds
-      .slice(0, this.maxCitations)
+      .slice(0, input.maxCitations)
       .map((evidenceId) => byEvidenceId.get(evidenceId))
       .filter(
         (candidate): candidate is GroundedCitationCandidate =>

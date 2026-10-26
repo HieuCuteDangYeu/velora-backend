@@ -131,6 +131,88 @@ describe('rag prompt bounds', () => {
       'VISUAL',
     ]);
   });
+  it('preserves every Reel/modality pair beyond the generic item cap', () => {
+    const candidates = Array.from({ length: 8 }, (_, reelIndex) =>
+      (['TRANSCRIPT', 'VISUAL'] as const).map((evidenceType) => ({
+        chunkId: `${evidenceType.toLowerCase()}-${reelIndex}`,
+        reelId: `reel-${reelIndex}`,
+        evidenceType,
+        chunkText: `${evidenceType} fact for Reel ${reelIndex}. ${'context '.repeat(35)}`,
+        evidenceText: `${evidenceType} fact for Reel ${reelIndex}. ${'context '.repeat(35)}`,
+        tags: [],
+        distance: 0,
+      })),
+    ).flat();
+
+    const bounded = boundEvidence(
+      candidates,
+      {
+        ...DEFAULT_RAG_PROMPT_BOUNDS,
+        maxEvidenceItems: 5,
+        maxEvidenceTextChars: 500,
+        maxEvidenceTotalChars: 2_200,
+      },
+      {
+        preserveReelCoverage: true,
+        requiredEvidenceTypes: ['TRANSCRIPT', 'VISUAL'],
+      },
+    );
+
+    expect(bounded).toHaveLength(16);
+    for (let reelIndex = 0; reelIndex < 8; reelIndex += 1) {
+      expect(
+        new Set(
+          bounded
+            .filter((item) => item.reelId === `reel-${reelIndex}`)
+            .map((item) => item.evidenceType),
+        ),
+      ).toEqual(new Set(['TRANSCRIPT', 'VISUAL']));
+    }
+    expect(
+      bounded.reduce((total, item) => total + item.evidenceText!.length, 0),
+    ).toBeLessThanOrEqual(2_200);
+  });
+  it('keeps each required modality for eight Reels within the shared text budget', () => {
+    const candidates = Array.from({ length: 8 }, (_, reelIndex) =>
+      (['TRANSCRIPT', 'VISUAL'] as const).map((evidenceType) => ({
+        chunkId: `${evidenceType.toLowerCase()}-${reelIndex}`,
+        reelId: `reel-${reelIndex}`,
+        evidenceType,
+        chunkText: `${evidenceType} fact for Reel ${reelIndex}. ${'context '.repeat(35)}`,
+        evidenceText: `${evidenceType} fact for Reel ${reelIndex}. ${'context '.repeat(35)}`,
+        tags: [],
+        distance: 0,
+      })),
+    ).flat();
+
+    const bounded = boundEvidence(
+      candidates,
+      {
+        ...DEFAULT_RAG_PROMPT_BOUNDS,
+        maxEvidenceItems: 5,
+        maxEvidenceTextChars: 500,
+        maxEvidenceTotalChars: 2_200,
+      },
+      {
+        preserveReelCoverage: true,
+        requiredEvidenceTypes: ['TRANSCRIPT', 'VISUAL'],
+      },
+    );
+
+    expect(bounded).toHaveLength(16);
+    for (let reelIndex = 0; reelIndex < 8; reelIndex += 1) {
+      expect(
+        new Set(
+          bounded
+            .filter((item) => item.reelId === `reel-${reelIndex}`)
+            .map((item) => item.evidenceType),
+        ),
+      ).toEqual(new Set(['TRANSCRIPT', 'VISUAL']));
+    }
+    expect(
+      bounded.reduce((total, item) => total + item.evidenceText!.length, 0),
+    ).toBeLessThanOrEqual(2_200);
+  });
   it('bounds pathological recent history by count and total characters', () => {
     const messages = Array.from({ length: 12 }, (_, index) => ({
       role: 'user',

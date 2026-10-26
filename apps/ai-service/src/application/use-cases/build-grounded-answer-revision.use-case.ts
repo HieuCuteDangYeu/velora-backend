@@ -20,6 +20,7 @@ import {
 import {
   ragAnswerBudget,
   validateRagAnswerContract,
+  missingRequiredReelEvidencePairs,
 } from '@ai/domain/services/rag-answer-contract';
 import { isTranscriptSentenceSelectionRequest } from '@ai/domain/services/rag-transcript-sentence-selection';
 
@@ -144,6 +145,7 @@ export class BuildGroundedAnswerRevisionUseCase {
           'Reuse distinctive source wording, names, values, and relations when they directly answer the question; do not paraphrase away the decisive fact.',
           'Do not construct arbitrary source substrings and do not invent facts.',
           'Return the shortest complete revised answer for the supplied answer shape and budget, plus the smallest supporting evidence ID set.',
+          'When multiple Reels and modalities are required, include evidence from every required modality for each Reel; evidence from another Reel cannot substitute.',
           'For metadata, title, tag, quantity, opening statement, or quote questions, provide the exact value directly without conversational preambles (e.g. do not write "The title is...", "The tags are...", etc.).',
           'If the current answer is supported but indirect, repetitive, or over-verbose, delete the unrelated material while preserving the supported fact that answers the question.',
           'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
@@ -184,7 +186,7 @@ export class BuildGroundedAnswerRevisionUseCase {
             evidenceIds: {
               type: 'array',
               minItems: 1,
-              maxItems: 3,
+              maxItems: evidence.length,
               items: { type: 'string', maxLength: 64 },
             },
           },
@@ -223,13 +225,45 @@ export class BuildGroundedAnswerRevisionUseCase {
                 typeof value === 'string' && allowedIds.has(value),
             ),
           ),
-        ].slice(0, 3)
+        ].slice(0, evidence.length)
       : [];
 
     if (!answer || evidenceIds.length === 0) {
       throw new Error(
         'Answer revision returned an empty answer or unknown evidence IDs',
       );
+    }
+
+    const selectedEvidence = evidence.filter((item) =>
+      evidenceIds.includes(item.evidenceId),
+    );
+    const requiredEvidenceTypes = (state.route?.requiredEvidence ?? []).filter(
+      (type) => type !== 'NONE' && type !== 'AUDIO',
+    );
+    if (
+      requiredEvidenceTypes.some(
+        (type) => !selectedEvidence.some((item) => item.evidenceType === type),
+      )
+    ) {
+      return undefined;
+    }
+    if (state.retrievalPlan?.requiresReelCoverage === true) {
+      const requiredReelIds = [
+        ...new Set(
+          state.retrievedChunks
+            .map((chunk) => chunk.reelId)
+            .filter((reelId): reelId is string => Boolean(reelId)),
+        ),
+      ];
+      if (
+        missingRequiredReelEvidencePairs(
+          selectedEvidence,
+          requiredReelIds,
+          requiredEvidenceTypes,
+        ).length > 0
+      ) {
+        return undefined;
+      }
     }
 
     if (

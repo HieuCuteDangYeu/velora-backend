@@ -11,6 +11,7 @@ const {
   executionHealthCounts,
   isFullReleaseSha,
   isClearAbstention,
+  outputFromMessage,
   prepareInFlightRetry,
   reelIdsForItem,
   shareReels,
@@ -186,6 +187,36 @@ test('scores against source-reviewed accepted answer variants', () => {
   assert.equal(scores.answer_token_recall, 1);
   assert.equal(scores.reel_citation_match, 1);
   assert.equal(scores.modality_match, 1);
+});
+
+test('observed response provenance comes only from emitted citations', () => {
+  const noCitationOutput = outputFromMessage(
+    { id: 'assistant-1', content: 'No citation was emitted.' },
+    'conversation-1',
+  );
+  assert.deepEqual(noCitationOutput.evidenceIds, []);
+  assert.deepEqual(noCitationOutput.modalities, []);
+
+  const output = outputFromMessage(
+    {
+      id: 'assistant-2',
+      content: 'A woman wears a purple gown.',
+      metadata: {
+        citations: [
+          {
+            sourceType: 'REEL',
+            reelId: 'reel-1',
+            evidenceType: 'VISUAL',
+            evidenceId: 'reel:reel-1:visual:8',
+          },
+        ],
+      },
+    },
+    'conversation-1',
+  );
+  assert.deepEqual(output.evidenceIds, ['reel:reel-1:visual:8', 'reel:reel-1']);
+  assert.deepEqual(output.modalities, ['VISUAL']);
+  assert.equal(output.conversationId, 'conversation-1');
 });
 
 test('token recall, token F1, and aggregate scores remain bounded', () => {

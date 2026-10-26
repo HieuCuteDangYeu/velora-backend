@@ -591,7 +591,7 @@ function messageRows(payload) {
       : [];
 }
 
-function outputFromMessage(message, item, conversationId) {
+function outputFromMessage(message, conversationId) {
   return {
     status: 'COMPLETED',
     answer: typeof message?.content === 'string' ? message.content : '',
@@ -752,7 +752,7 @@ async function runCase({
     }
     const output = await attachRagTrace(
       langfuseClient,
-      outputFromMessage(assistant, item, current.conversationId),
+      outputFromMessage(assistant, current.conversationId),
       current.conversationId,
     );
     state.cases[caseId] = {
@@ -822,7 +822,7 @@ async function runCase({
   );
   const output = await attachRagTrace(
     langfuseClient,
-    outputFromMessage(assistant, item, conversationId),
+    outputFromMessage(assistant, conversationId),
     conversationId,
   );
   state.cases[caseId] = {

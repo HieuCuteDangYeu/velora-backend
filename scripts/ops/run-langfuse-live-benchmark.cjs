@@ -536,6 +536,56 @@ function saveState(file, state) {
   writeJsonAtomically(file, state);
 }
 
+function assertCompletedTraceReleaseIdentity(state, expectedReleaseSha) {
+  if (!expectedReleaseSha) return;
+  const mismatches = Object.entries(state.cases ?? {})
+    .filter(
+      ([, entry]) =>
+        entry.status === 'COMPLETED' &&
+        entry.output?.release !== expectedReleaseSha,
+    )
+    .map(
+      ([caseId, entry]) => `${caseId}=${entry.output?.release ?? 'MISSING'}`,
+    );
+  if (mismatches.length)
+    throw new Error(
+      `completed trace release mismatch for ${mismatches.slice(0, 3).join(', ')}`,
+    );
+}
+
+function recordCompletedCase({
+  state,
+  stateFile,
+  caseId,
+  current,
+  output,
+  expectedReleaseSha,
+}) {
+  if (expectedReleaseSha && output?.release !== expectedReleaseSha) {
+    state.cases[caseId] = {
+      ...current,
+      traceReleaseMismatch: {
+        expected: expectedReleaseSha,
+        actual: output?.release ?? null,
+      },
+      output,
+    };
+    saveState(stateFile, state);
+    throw new Error(
+      `RAG trace release mismatch for ${caseId}: expected ${expectedReleaseSha}, received ${output?.release ?? 'MISSING'}`,
+    );
+  }
+
+  state.cases[caseId] = {
+    ...current,
+    status: 'COMPLETED',
+    completedAt: new Date().toISOString(),
+    output,
+  };
+  saveState(stateFile, state);
+  return output;
+}
+
 function apiClient(baseUrl, credentials) {
   let cookies = '';
   return async function request(method, pathname, body, maxRetries = 5) {
@@ -730,11 +780,16 @@ async function runCase({
   request,
   langfuseClient,
   runId,
+  expectedReleaseSha,
   autoExcludeTimeouts = false,
 }) {
   const caseId = item.id;
   const current = state.cases[caseId] ?? { status: 'PENDING' };
   if (current.status === 'COMPLETED') return current.output;
+  if (current.traceReleaseMismatch)
+    throw new Error(
+      `case ${caseId} has a recorded trace release mismatch; start a new run after the service release is corrected`,
+    );
   if (current.status === 'IN_FLIGHT') {
     if (!current.conversationId || !current.userMessageId)
       throw new Error(`in-flight case ${caseId} is missing request identity`);
@@ -764,14 +819,14 @@ async function runCase({
       outputFromMessage(assistant, current.conversationId),
       current.conversationId,
     );
-    state.cases[caseId] = {
-      ...current,
-      status: 'COMPLETED',
-      completedAt: new Date().toISOString(),
+    return recordCompletedCase({
+      state,
+      stateFile,
+      caseId,
+      current,
       output,
-    };
-    saveState(stateFile, state);
-    return output;
+      expectedReleaseSha,
+    });
   }
   if (current.status !== 'PENDING')
     throw new Error(`unsupported state ${current.status} for ${caseId}`);
@@ -834,14 +889,14 @@ async function runCase({
     outputFromMessage(assistant, conversationId),
     conversationId,
   );
-  state.cases[caseId] = {
-    ...state.cases[caseId],
-    status: 'COMPLETED',
-    completedAt: new Date().toISOString(),
+  return recordCompletedCase({
+    state,
+    stateFile,
+    caseId,
+    current: state.cases[caseId],
     output,
-  };
-  saveState(stateFile, state);
-  return output;
+    expectedReleaseSha,
+  });
 }
 
 async function main() {
@@ -1020,6 +1075,7 @@ async function main() {
         );
       if (JSON.stringify(state.itemIds) !== JSON.stringify(itemIds))
         throw new Error('dataset item identity mismatch; refusing resume');
+      assertCompletedTraceReleaseIdentity(state, serviceReleaseSha);
     } else {
       state = {
         schemaVersion: 'langfuse-live-benchmark-state-v1',
@@ -1140,6 +1196,7 @@ async function main() {
               request,
               langfuseClient: client,
               runId,
+              expectedReleaseSha: serviceReleaseSha,
               autoExcludeTimeouts,
             });
             const completed = Object.values(state.cases).filter(
@@ -1273,6 +1330,8 @@ module.exports = {
   shareReels,
   tokenF1,
   tokenRecall,
+  assertCompletedTraceReleaseIdentity,
+  recordCompletedCase,
   BENCHMARK_EVALUATOR_VERSION,
   assertExpectedDatasetSha256,
 };

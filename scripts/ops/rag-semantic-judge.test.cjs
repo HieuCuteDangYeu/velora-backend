@@ -101,6 +101,48 @@ test('response relevancy treats task-action capability limits honestly', () => {
   assert.match(prompt, /truthful limitations and useful in-chat help/i);
 });
 
+test('response relevancy uses captured generation evidence for source-specific claims', () => {
+  const prompt = buildDimensionPrompt('responseRelevancy', {
+    question: 'Quote the first complete sentence.',
+    referenceAnswer: 'The first sentence is the accepted quote.',
+    generatedAnswer: 'The first sentence is the accepted quote.',
+    context: [
+      {
+        title: 'Episode 1',
+        evidenceType: 'TRANSCRIPT',
+        startTime: 1,
+        endTime: 3,
+        evidenceText: 'The first sentence is the accepted quote.',
+      },
+    ],
+    answerType: 'TRANSCRIPT_QUOTE',
+    policyAssertions: [],
+    expectedEvidenceTypes: ['TRANSCRIPT'],
+  });
+
+  assert.match(prompt, /"answerType":"TRANSCRIPT_QUOTE"/);
+  assert.match(prompt, /"generationEvidence":"\[Source 1\]/);
+  assert.match(
+    prompt,
+    /Evidence: \\\"The first sentence is the accepted quote/,
+  );
+  assert.match(prompt, /penalize unsupported additions/i);
+});
+
+test('response relevancy does not imply context was captured when it was not', () => {
+  const prompt = buildDimensionPrompt('responseRelevancy', {
+    question: 'Quote the first complete sentence.',
+    generatedAnswer: 'The first sentence is the accepted quote.',
+    answerType: 'TRANSCRIPT_QUOTE',
+  });
+
+  assert.equal(
+    JSON.parse(prompt.split('DATA:\n')[1]).generationEvidence,
+    undefined,
+  );
+  assert.doesNotMatch(prompt, /No context retrieved/);
+});
+
 test('clampScore handles boundary and malformed inputs', () => {
   assert.equal(clampScore(1.0), 1.0);
   assert.equal(clampScore(0.0), 0.0);

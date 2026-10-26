@@ -8,7 +8,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const dotenv = require('dotenv');
-const { fingerprint } = require('./rag-evaluation-contract.cjs');
+const {
+  EVALUATOR_VERSION,
+  fingerprint,
+} = require('./rag-evaluation-contract.cjs');
 const {
   buildDimensionPrompt,
 } = require('./rag-semantic-judge.cjs');
@@ -26,8 +29,9 @@ const evaluationDir = path.join(
 );
 const model = 'gpt-6-luna';
 const dimensionKeys = [...DIMENSIONS];
-const langfuseDatasetName = 'judge-calibration/codex-gpt-6-luna-v1';
-const langfuseScoreVersion = 'codex-groq-applicability-v2-otel';
+const CODEX_EVALUATOR_VERSION = `${EVALUATOR_VERSION}-codex-dimension-prompts`;
+const langfuseDatasetName = 'judge-calibration/codex-gpt-6-luna-v2';
+const langfuseScoreVersion = 'codex-groq-applicability-v3-otel';
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -246,11 +250,18 @@ function buildCalibrationPrompt(dimension, row, response) {
     question: row.input?.question,
     referenceAnswer: referenceAnswer(row.expectedOutput),
     generatedAnswer: response.output?.answer ?? '',
-    context: diagnostics.generationEvidence ?? [],
+    context: generationContextForJudge(diagnostics),
     answerType: row.metadata?.answerType,
     policyAssertions: row.expectedOutput?.assertions,
     expectedEvidenceTypes: row.expectedOutput?.expectedEvidenceTypes,
   });
+}
+
+function generationContextForJudge(diagnostics) {
+  return diagnostics.evaluationCapture?.contextCaptured === true &&
+    Array.isArray(diagnostics.generationEvidence)
+    ? diagnostics.generationEvidence
+    : undefined;
 }
 
 function buildLangfuseItem(item, response, datasetSha256) {
@@ -261,7 +272,7 @@ function buildLangfuseItem(item, response, datasetSha256) {
       question: item.row.input?.question ?? '',
       referenceAnswer: referenceAnswer(item.row.expectedOutput),
       generatedAnswer: response.output?.answer ?? '',
-      generationEvidence: diagnostics.generationEvidence ?? [],
+      generationEvidence: generationContextForJudge(diagnostics) ?? [],
       answerType: item.row.metadata?.answerType ?? null,
       policyAssertions: item.row.expectedOutput?.assertions ?? [],
       expectedEvidenceTypes: item.row.expectedOutput?.expectedEvidenceTypes ?? [],
@@ -273,6 +284,9 @@ function buildLangfuseItem(item, response, datasetSha256) {
       split: item.row.metadata?.split ?? 'UNSPECIFIED',
       sourceDatasetSha256: datasetSha256,
       judgeFingerprint: null,
+      contextCaptured:
+        diagnostics.evaluationCapture?.contextCaptured === true &&
+        Array.isArray(diagnostics.generationEvidence),
       reviewAuthority: 'GROQ_COMPARATOR_NOT_GOLD',
       humanApproved: false,
     },
@@ -642,20 +656,20 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args['self-test']) return selfTest();
   const data = loadCalibrationData();
-  const version = 'codex-gpt-6-luna-judge-v1';
+  const version = 'codex-gpt-6-luna-judge-v2';
   const codexCliVersion = installedCodexVersion();
   const comparator = Object.values(data.semantic.cases)[0] ?? {};
   const judgeFingerprint = fingerprint({
     version,
     model,
     codexCliVersion,
-    evaluatorVersion: 'velora-rag-evaluation-v6-dimension-prompts',
+    evaluatorVersion: CODEX_EVALUATOR_VERSION,
     datasetSha256: data.datasetSha256,
     sampleIds: data.selected.map((item) => item.row.id),
     effort: 'default',
   });
   const outputPath =
-    args.output || path.join(evaluationDir, 'codex-judge-calibration-v1.json');
+    args.output || path.join(evaluationDir, 'codex-judge-calibration-v2.json');
   let report = fs.existsSync(outputPath)
     ? readJson(outputPath)
     : {
@@ -665,7 +679,7 @@ async function main() {
         codexCliVersion,
         effort: 'default',
         judgeFingerprint,
-        evaluatorVersion: 'velora-rag-evaluation-v6-dimension-prompts',
+        evaluatorVersion: CODEX_EVALUATOR_VERSION,
         comparisonReference: 'Groq V22; comparator only, not human gold',
         comparatorProvider: comparator.provider ?? null,
         comparatorModel: comparator.model ?? null,

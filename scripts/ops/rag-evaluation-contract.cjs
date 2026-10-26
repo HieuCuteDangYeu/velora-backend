@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const EVALUATOR_VERSION = 'velora-rag-evaluation-v6';
+const EVALUATOR_VERSION = 'velora-rag-evaluation-v7';
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)

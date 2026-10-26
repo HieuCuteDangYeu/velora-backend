@@ -8,6 +8,7 @@ const test = require('node:test');
 
 const {
   computeStats,
+  generationContextForJudge,
   loadJson,
   parseArgs,
   semanticTaskMetadata,
@@ -44,6 +45,31 @@ test('semantic task metadata passes bounded policy criteria to the judge', () =>
     policyAssertions: ['Do not disclose another user’s private memory.'],
     expectedEvidenceTypes: ['USER_MEMORY'],
   });
+});
+
+test('judge receives evidence only when capture is explicitly confirmed', () => {
+  const evidence = [{ evidenceText: 'captured source' }];
+  assert.equal(
+    generationContextForJudge({
+      contextCaptureStatus: 'CAPTURED',
+      generationEvidence: evidence,
+    }),
+    evidence,
+  );
+  assert.equal(
+    generationContextForJudge({
+      contextCaptureStatus: 'NOT_CAPTURED',
+      generationEvidence: evidence,
+    }),
+    undefined,
+  );
+  assert.equal(
+    generationContextForJudge({
+      contextCaptureStatus: 'CAPTURED',
+      generationEvidence: null,
+    }),
+    undefined,
+  );
 });
 
 test('computeStats correctly calculates mean, median, min, max', () => {

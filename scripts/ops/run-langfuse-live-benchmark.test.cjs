@@ -1,9 +1,13 @@
 const assert = require('node:assert/strict');
+const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const test = require('node:test');
 
 const {
   aggregateEvaluations,
   aggregateLatency,
+  assertCompletedTraceReleaseIdentity,
   assertExpectedDatasetSha256,
   benchmarkEvaluations,
   containmentMatch,
@@ -15,6 +19,7 @@ const {
   outputFromMessage,
   prepareInFlightRetry,
   reelIdsForItem,
+  recordCompletedCase,
   shareReels,
   tokenF1,
   tokenRecall,
@@ -50,6 +55,73 @@ test('requires a full immutable service SHA for a non-provisional dataset run', 
   );
   assert.equal(isFullReleaseSha('2360fcb'), false);
   assert.equal(isFullReleaseSha(''), false);
+});
+
+test('stops and checkpoints a live response whose trace release differs from the requested release', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'rag-release-identity-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const stateFile = join(directory, 'state.json');
+  const expectedReleaseSha = 'a'.repeat(40);
+  const actualReleaseSha = 'b'.repeat(40);
+  const state = {
+    cases: {
+      case1: {
+        status: 'IN_FLIGHT',
+        conversationId: 'conversation-1',
+        userMessageId: 'message-1',
+      },
+    },
+  };
+
+  assert.throws(
+    () =>
+      recordCompletedCase({
+        state,
+        stateFile,
+        caseId: 'case1',
+        current: state.cases.case1,
+        output: { answer: 'saved response', release: actualReleaseSha },
+        expectedReleaseSha,
+      }),
+    /RAG trace release mismatch/,
+  );
+
+  const saved = JSON.parse(readFileSync(stateFile, 'utf8'));
+  assert.equal(saved.cases.case1.status, 'IN_FLIGHT');
+  assert.deepEqual(saved.cases.case1.traceReleaseMismatch, {
+    expected: expectedReleaseSha,
+    actual: actualReleaseSha,
+  });
+  assert.equal(saved.cases.case1.output.answer, 'saved response');
+  assert.throws(
+    () =>
+      assertCompletedTraceReleaseIdentity(
+        {
+          cases: {
+            case1: {
+              status: 'COMPLETED',
+              output: { release: actualReleaseSha },
+            },
+          },
+        },
+        expectedReleaseSha,
+      ),
+    /case1=/,
+  );
+
+  const alignedState = { cases: { case2: { status: 'IN_FLIGHT' } } };
+  recordCompletedCase({
+    state: alignedState,
+    stateFile: join(directory, 'aligned-state.json'),
+    caseId: 'case2',
+    current: alignedState.cases.case2,
+    output: { answer: 'aligned response', release: expectedReleaseSha },
+    expectedReleaseSha,
+  });
+  assert.equal(alignedState.cases.case2.status, 'COMPLETED');
+  assert.doesNotThrow(() =>
+    assertCompletedTraceReleaseIdentity(alignedState, expectedReleaseSha),
+  );
 });
 
 test('requires an exact pinned dataset snapshot before sending RAG requests', () => {

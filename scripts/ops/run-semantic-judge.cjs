@@ -75,6 +75,13 @@ function semanticTaskMetadata(item) {
   };
 }
 
+function generationContextForJudge(output) {
+  return output?.contextCaptureStatus === 'CAPTURED' &&
+    Array.isArray(output.generationEvidence)
+    ? output.generationEvidence
+    : undefined;
+}
+
 function saveJsonAtomic(filePath, data) {
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -411,7 +418,7 @@ async function main() {
             : (item.expectedOutput?.answer ??
               item.expectedOutput?.referenceAnswer);
           const generatedAnswer = caseEntry.output?.answer;
-          const context = caseEntry.output?.generationEvidence;
+          const context = generationContextForJudge(caseEntry.output);
           const availability = dimensionAvailability(item, caseEntry.output);
           if (caseEntry.error || caseEntry.status === 'FAILED') {
             for (const dimension of DIMENSIONS) {
@@ -634,6 +641,7 @@ if (require.main === module) {
 module.exports = {
   availableStats,
   computeStats,
+  generationContextForJudge,
   loadJson,
   parseArgs,
   semanticTaskMetadata,

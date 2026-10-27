@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { CallDeclineTokenService } from '@common/calls/call-decline-token.service';
 import { CallTelemetryTokenService } from '@common/calls/call-telemetry-token.service';
 import Redis from 'ioredis';
 
@@ -23,6 +24,7 @@ import { TerminateCallsAfterMediaLossUseCase } from './application/use-cases/ter
 import { ResumeConsumerUseCase } from './application/use-cases/resume-consumer.use-case';
 import { RestartIceUseCase } from './application/use-cases/restart-ice.use-case';
 import { ChangeCallTypeUseCase } from './application/use-cases/change-call-type.use-case';
+import { CallDeclineController } from './infrastructure/controllers/call-decline.controller';
 import { CallGateway } from './infrastructure/gateways/call.gateway';
 import { CallStateController } from './infrastructure/controllers/call-state.controller';
 import { CallMetricsController } from './infrastructure/controllers/call-metrics.controller';
@@ -93,6 +95,7 @@ import { CallHistoryOutboxWorker } from './infrastructure/workers/call-history-o
   ],
   controllers: [
     CallStateController,
+    CallDeclineController,
     CallMetricsController,
     CallHistoryController,
   ],
@@ -130,6 +133,7 @@ import { CallHistoryOutboxWorker } from './infrastructure/workers/call-history-o
     CallTerminalOutboxWorker,
     CallHistoryOutboxWorker,
     CallTelemetryTokenService,
+    CallDeclineTokenService,
     {
       provide: 'ICallSessionRepository',
       useExisting: RedisCallSessionRepository,

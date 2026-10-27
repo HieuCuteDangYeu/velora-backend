@@ -2259,6 +2259,18 @@ export class CallGateway
       this.assertGroupLifecycleCapable(client, session);
     }
 
+    await this.rejectForUser(payload, userId, client);
+  }
+
+  /**
+   * Shared by the `reject_call` socket event and the push Decline button,
+   * which reaches the server over HTTP without a socket (`client` absent).
+   */
+  async rejectForUser(
+    payload: LeaveCallPayload,
+    userId: string,
+    client?: Socket,
+  ) {
     const result = await this.rejectCallUseCase.execute(
       payload.callId,
       userId,
@@ -2287,7 +2299,7 @@ export class CallGateway
       this.disconnectKey(payload.callId, userId),
     );
     this.clearVideoState(payload.callId);
-    this.untrackCallId(client, payload.callId);
+    if (client) this.untrackCallId(client, payload.callId);
 
     if (result.didTransition !== false) {
       this.server

@@ -33,6 +33,7 @@ const callLifecyclePayloadSchema = z.object({
     .optional(),
   lifecycleRevision: z.number().int().nonnegative().optional(),
   missedUserIds: z.array(z.string().min(1)).optional(),
+  declineToken: z.string().min(1).max(2048).optional(),
   at: z.string().datetime(),
 });
 
@@ -119,6 +120,9 @@ export class CallEventsSubscriber {
           groupAvatarUrl: parsed.data.groupAvatarUrl,
           ringTimeoutMs: parsed.data.ringTimeoutMs,
           expiresAt: parsed.data.expiresAt,
+          ...(parsed.data.declineToken
+            ? { declineToken: parsed.data.declineToken }
+            : {}),
         });
       } else {
         const recipients = parsed.data.invitedUserIds ?? [

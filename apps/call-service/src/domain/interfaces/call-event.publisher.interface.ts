@@ -37,6 +37,11 @@ export interface CallLifecyclePayload {
   lifecycleRevision?: number;
   /** Callees to send a visible "missed call" push to; see call-outcome.ts. */
   missedUserIds?: string[];
+  /**
+   * `call.initiated` only: lets the recipient's notification Decline button
+   * reject this invitation over HTTP when the app is not running.
+   */
+  declineToken?: string;
   at: string;
 }
 

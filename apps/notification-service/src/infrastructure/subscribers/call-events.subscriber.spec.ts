@@ -139,6 +139,17 @@ describe('CallEventsSubscriber', () => {
     expect(nack).not.toHaveBeenCalled();
   });
 
+  it('hands the decline token to the incoming-call notification', async () => {
+    await subscriber.handleCallInitiated(
+      { ...payload, declineToken: 'decline-token-1' },
+      context(),
+    );
+
+    expect(sendIncomingCallNotification.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ declineToken: 'decline-token-1' }),
+    );
+  });
+
   it('keeps group identity in the durable cold-start notification handoff', async () => {
     await subscriber.handleCallInitiated(
       {

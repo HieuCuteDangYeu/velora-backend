@@ -18,6 +18,7 @@ export type SendIncomingCallNotificationInput = {
   groupAvatarUrl?: string;
   ringTimeoutMs: number;
   expiresAt: string;
+  declineToken?: string;
 };
 
 @Injectable()
@@ -58,6 +59,7 @@ export class SendIncomingCallNotificationUseCase {
         groupAvatarUrl: input.groupAvatarUrl,
         ringTimeoutMs: input.ringTimeoutMs,
         expiresAt: expiresAt.toISOString(),
+        ...(input.declineToken ? { declineToken: input.declineToken } : {}),
       },
     });
 

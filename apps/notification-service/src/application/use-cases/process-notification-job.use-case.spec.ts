@@ -372,6 +372,7 @@ describe('notification delivery use cases', () => {
           groupAvatarUrl: 'https://cdn.example/group.png',
           ringTimeoutMs: 30000,
           expiresAt: expiresAt.toISOString(),
+          declineToken: 'decline-token-1',
         },
       };
 
@@ -468,6 +469,10 @@ describe('notification delivery use cases', () => {
       expect(incomingCallFcmInput.data.roomCallId).toBe(
         version === 3 ? 'room-1' : undefined,
       );
+      // Android declines over HTTP while the app is dead; CallKit on iOS
+      // declines with the app running and never needs the token.
+      expect(incomingCallFcmInput.data.declineToken).toBe('decline-token-1');
+      expect(incomingCallVoipInput.payload).not.toHaveProperty('declineToken');
       expect(incomingCallVoipInput.payload.roomCallId).toBe(
         version === 3 ? 'room-1' : undefined,
       );

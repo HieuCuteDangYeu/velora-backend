@@ -386,6 +386,10 @@ export class ProcessNotificationJobUseCase {
           groupAvatarUrl: payload.groupAvatarUrl,
           ringTimeoutMs: payload.ringTimeoutMs,
           expiresAt: payload.expiresAt,
+          // Android only: iOS declines through CallKit with the app running.
+          ...(payload.declineToken
+            ? { declineToken: payload.declineToken }
+            : {}),
         },
       });
 
@@ -666,6 +670,9 @@ export class ProcessNotificationJobUseCase {
         typeof data.expiresAt === 'string' && data.expiresAt.trim()
           ? data.expiresAt
           : (job.expiresAt?.toISOString() ?? new Date().toISOString()),
+      ...(typeof data.declineToken === 'string' && data.declineToken.trim()
+        ? { declineToken: data.declineToken }
+        : {}),
     };
   }
 
@@ -734,6 +741,8 @@ export class ProcessNotificationJobUseCase {
 
 type IncomingCallPayload = {
   roomCallId?: string;
+  /** Lets the Android Decline button reject over HTTP; see call-service. */
+  declineToken?: string;
   initiatorId: string;
   targetUserId: string;
   callType: 'VOICE' | 'VIDEO';

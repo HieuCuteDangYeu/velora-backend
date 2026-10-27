@@ -3,6 +3,7 @@ import { CallStressRunnerService } from './stress/call-stress-runner.service';
 import { AuthController } from '@gateway/auth/auth.controller';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@gateway/auth/guards/roles.guard';
+import { CallDeclineController } from '@gateway/calls/call-decline.controller';
 import { CallController } from '@gateway/calls/call.controller';
 import { ContentController } from '@gateway/content/content.controller';
 import { PublicReelShareController } from '@gateway/content/public-reel-share.controller';
@@ -85,6 +86,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     SearchController,
     NotificationController,
     CallController,
+    CallDeclineController,
     MonitoringController,
     CallStressController,
     RecommendationController,

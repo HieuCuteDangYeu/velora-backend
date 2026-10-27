@@ -16,18 +16,25 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { CallStressRunnerService } from './call-stress-runner.service';
+import { StressRunsService } from './stress-runs.service';
 
+// Only a scenario name and bounded numbers/flags cross this boundary; the agent validates the ranges.
 const StartSchema = z
-  .object({ preset: z.enum(['smoke', 'demo']), requestId: z.string().uuid() })
+  .object({
+    scenario: z.enum(['chat', 'sockets', 'calls', 'mixed']),
+    params: z
+      .record(z.string().max(30), z.union([z.number().finite(), z.boolean()]))
+      .refine((value) => Object.keys(value).length <= 10),
+    requestId: z.string().uuid(),
+  })
   .strict();
 const IdSchema = z.string().uuid();
 
-@Controller('monitoring/stress/calls')
+@Controller('monitoring/stress/runs')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN)
-export class CallStressController {
-  constructor(private readonly runner: CallStressRunnerService) {}
+export class StressRunsController {
+  constructor(private readonly runner: StressRunsService) {}
 
   @Get()
   status(@Req() request: AuthenticatedRequest) {
@@ -40,7 +47,7 @@ export class CallStressController {
     const parsed = StartSchema.safeParse(body);
     if (!parsed.success)
       throw new BadRequestException(
-        'Choose smoke or demo and provide a request UUID',
+        'Choose a scenario with numeric settings and provide a request UUID',
       );
     return this.runner.request(
       'POST',

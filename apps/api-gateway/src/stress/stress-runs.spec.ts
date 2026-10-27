@@ -5,11 +5,16 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
-import { CallStressController } from './call-stress.controller';
-import { CallStressRunnerService } from './call-stress-runner.service';
+import { StressRunsController } from './stress-runs.controller';
+import { StressRunsService } from './stress-runs.service';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@gateway/auth/guards/roles.guard';
 const id = 'a622491c-a471-4e78-9a9c-90d4b3ef4e60';
+const start = (scenario: string) => ({
+  scenario,
+  params: { rps: 10, seconds: 30, storm: true },
+  requestId: id,
+});
 const request = (origin?: string, cookie = true) =>
   ({
     headers: {
@@ -18,16 +23,16 @@ const request = (origin?: string, cookie = true) =>
     },
     cookies: cookie ? { access_token: 'session' } : {},
   }) as never;
-describe('Call stress boundary', () => {
+describe('Stress runs boundary', () => {
   const proxy = { request: jest.fn() };
-  const controller = new CallStressController(proxy as never);
+  const controller = new StressRunsController(proxy as never);
   beforeEach(() => proxy.request.mockReset());
   it('requires verified JWT and ADMIN role on every route', () => {
-    expect(Reflect.getMetadata(GUARDS_METADATA, CallStressController)).toEqual([
+    expect(Reflect.getMetadata(GUARDS_METADATA, StressRunsController)).toEqual([
       JwtAuthGuard,
       RolesGuard,
     ]);
-    expect(Reflect.getMetadata('roles', CallStressController)).toEqual([
+    expect(Reflect.getMetadata('roles', StressRunsController)).toEqual([
       'ADMIN',
     ]);
   });
@@ -36,24 +41,22 @@ describe('Call stress boundary', () => {
     'https://foreign.test',
     'https://dashboard.velora-app.me.foreign.test',
   ])('rejects cookie mutation origin %s', (origin) => {
-    expect(
-      () =>
-        void controller.start(request(origin), {
-          preset: 'smoke',
-          requestId: id,
-        }),
-    ).toThrow(ForbiddenException);
+    expect(() => void controller.start(request(origin), start('chat'))).toThrow(
+      ForbiddenException,
+    );
     expect(proxy.request).not.toHaveBeenCalled();
   });
-  it('permits a fixed preset from the real dashboard and bearer-only automation', () => {
-    void controller.start(request('https://dashboard.velora-app.me'), {
-      preset: 'demo',
-      requestId: id,
-    });
-    expect(proxy.request).toHaveBeenCalledWith('POST', '/runs', 'session', {
-      preset: 'demo',
-      requestId: id,
-    });
+  it('permits a named scenario from the real dashboard and bearer-only automation', () => {
+    void controller.start(
+      request('https://dashboard.velora-app.me'),
+      start('mixed'),
+    );
+    expect(proxy.request).toHaveBeenCalledWith(
+      'POST',
+      '/runs',
+      'session',
+      start('mixed'),
+    );
     void controller.stop(request(undefined, false), id);
     expect(proxy.request).toHaveBeenCalledWith(
       'POST',
@@ -62,10 +65,12 @@ describe('Call stress boundary', () => {
       {},
     );
   });
-  it('rejects arbitrary targets, durations and route injection', () => {
+  it('rejects unknown scenarios, extra fields, non-numeric settings and route injection', () => {
     for (const body of [
-      { preset: 'large', requestId: id },
-      { preset: 'smoke', requestId: id, command: 'exec' },
+      { ...start('chat'), scenario: 'shell' },
+      { ...start('chat'), command: 'exec' },
+      { ...start('chat'), params: { rps: 'ten' } },
+      { ...start('chat'), requestId: 'not-a-uuid' },
     ])
       expect(
         () =>
@@ -99,8 +104,8 @@ const response = (text: string, status = 200) => {
     },
   } as unknown as Response;
 };
-describe('Call stress proxy', () => {
-  const service = new CallStressRunnerService();
+describe('Stress runs proxy', () => {
+  const service = new StressRunsService();
   const originalFetch = global.fetch;
   beforeEach(() => {
     global.fetch = jest.fn();
@@ -113,13 +118,13 @@ describe('Call stress proxy', () => {
       .spyOn(global, 'fetch')
       .mockRejectedValue(new Error('fixture password /private/path'));
     await expect(service.request('GET', '/runs', 'session')).rejects.toThrow(
-      'Call runner is offline',
+      'Stress agent is offline',
     );
     jest
       .spyOn(global, 'fetch')
       .mockResolvedValue(response(JSON.stringify({ token: 'private' })));
     await expect(service.request('GET', '/runs', 'session')).rejects.toThrow(
-      'Call runner is offline',
+      'Stress agent is offline',
     );
   });
   it('keeps conflict status without exposing its body', async () => {
@@ -135,7 +140,7 @@ describe('Call stress proxy', () => {
   it('bounds response bytes', async () => {
     jest.spyOn(global, 'fetch').mockResolvedValue(response('x'.repeat(512001)));
     await expect(service.request('GET', '/runs', 'session')).rejects.toThrow(
-      'Call runner is offline',
+      'Stress agent is offline',
     );
   });
   it('returns safe state and strips private fields', async () => {
@@ -144,11 +149,9 @@ describe('Call stress proxy', () => {
         JSON.stringify({
           available: true,
           busy: false,
-          source: 'host-local',
+          scenarios: [],
           active: null,
           recent: [],
-          fixtureParticipants: 10,
-          fixtureRooms: 5,
           token: 'private',
         }),
       ),

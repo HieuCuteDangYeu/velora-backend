@@ -4,10 +4,10 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 
-import { CallStressResponseSchema } from './call-stress-response';
+import { StressRunsResponseSchema } from './stress-runs-response';
 
 @Injectable()
-export class CallStressRunnerService {
+export class StressRunsService {
   private readonly origin =
     process.platform === 'darwin'
       ? 'http://127.0.0.1:18944'
@@ -38,11 +38,11 @@ export class CallStressRunnerService {
           );
         if (response.status === 400)
           throw new HttpException(
-            'Runner rejected the test configuration',
+            'Stress agent rejected the test configuration',
             400,
           );
         throw new ServiceUnavailableException(
-          'Call runner is unavailable or not authorized',
+          'Stress agent is unavailable or not authorized',
         );
       }
       const reader = response.body?.getReader();
@@ -59,14 +59,14 @@ export class CallStressRunnerService {
         }
         chunks.push(value);
       }
-      return CallStressResponseSchema.parse(
+      return StressRunsResponseSchema.parse(
         JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown,
       );
     } catch (error) {
       if (error instanceof HttpException) throw error;
       // Never forward host paths, upstream errors or fixture credentials to the browser.
       throw new ServiceUnavailableException(
-        'Call runner is offline. Start the server companion before running a test',
+        'Stress agent is offline. Start it on the server before running a test',
       );
     }
   }

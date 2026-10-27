@@ -1,5 +1,5 @@
-import { CallStressController } from './stress/call-stress.controller';
-import { CallStressRunnerService } from './stress/call-stress-runner.service';
+import { StressRunsController } from './stress/stress-runs.controller';
+import { StressRunsService } from './stress/stress-runs.service';
 import { AuthController } from '@gateway/auth/auth.controller';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { RolesGuard } from '@gateway/auth/guards/roles.guard';
@@ -88,14 +88,9 @@ function createRmqClientRegistration(name: string, queue: string) {
     CallController,
     CallDeclineController,
     MonitoringController,
-    CallStressController,
+    StressRunsController,
     RecommendationController,
   ],
-  providers: [
-    JwtAuthGuard,
-    RolesGuard,
-    ReelAuthorService,
-    CallStressRunnerService,
-  ],
+  providers: [JwtAuthGuard, RolesGuard, ReelAuthorService, StressRunsService],
 })
 export class ApiGatewayModule {}

@@ -125,6 +125,78 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     expect(workflow.buildGraph({})).toBeDefined();
   });
 
+  it('records context-agent executions as Langfuse tool observations', async () => {
+    const observations: Array<{ name: string; type: string }> = [];
+    const langfuseTracing = {
+      observe: jest.fn(
+        async (
+          name: string,
+          operation: () => Promise<unknown>,
+          _input: unknown,
+          type: string,
+        ) => {
+          observations.push({ name, type });
+          return operation();
+        },
+      ),
+    };
+    const contextToolAgentUseCase = {
+      execute: jest.fn(
+        async (
+          _input: unknown,
+          options: {
+            observeTool?: (
+              toolName: string,
+              operation: () => Promise<unknown>,
+            ) => Promise<unknown>;
+          },
+        ) => {
+          await options.observeTool?.('search_reel_content', () =>
+            Promise.resolve({ retrievedChunks: [] }),
+          );
+          return { retrievedChunks: [], rerankedChunks: [] };
+        },
+      ),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+      undefined,
+      undefined,
+      langfuseTracing as never,
+      contextToolAgentUseCase as never,
+    ) as unknown as {
+      createContextToolAgentNode: (
+        timings: Record<string, number>,
+      ) => (state: RagChatWorkflowState) => Promise<unknown>;
+    };
+
+    const node = workflow.createContextToolAgentNode({});
+    await node(
+      state({
+        route: { intent: 'REEL_VIDEO_QUESTION', needsRetrieval: true } as never,
+      }),
+    );
+
+    expect(observations).toContainEqual({
+      name: 'tool.search_reel_content',
+      type: 'tool',
+    });
+  });
+
   it('routes an ambiguous Reel referent directly to clarification without retrieval', () => {
     expect(
       routeAfterVerifier.routesAfterQueryRouter(

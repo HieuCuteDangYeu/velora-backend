@@ -648,10 +648,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
                   `tool.${toolName}`,
                   operation,
                   { toolName },
-                  toolName === 'search_reel_content' ||
-                    toolName === 'get_reel_context'
-                    ? 'retriever'
-                    : 'chain',
+                  'tool',
                 )
             : undefined,
         }),

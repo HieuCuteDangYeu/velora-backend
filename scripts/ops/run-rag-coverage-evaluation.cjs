@@ -15,12 +15,19 @@ function providerStatuses(value, output = []) {
   return output;
 }
 
+function contextCaptureStatusFromResponse(response) {
+  return response?.trace?.workflowMetrics?.diagnostics?.evaluationCapture
+    ?.contextCaptured === true
+    ? 'CAPTURED'
+    : 'NOT_CAPTURED';
+}
+
 function executionHealth(response) {
   if (response.error) {
     return { status: 'FAILED', failedStages: [response.error.code || response.error.name || 'WORKFLOW_ERROR'] };
   }
   const diagnostics = response.trace?.workflowMetrics?.diagnostics || {};
-  const capture = diagnostics.evaluationCapture?.contextCaptured === true;
+  const capture = contextCaptureStatusFromResponse(response) === 'CAPTURED';
   const statuses = providerStatuses(diagnostics);
   const degraded = !capture ||
     diagnostics.finalFailureSource && diagnostics.finalFailureSource !== 'NONE' ||
@@ -67,6 +74,69 @@ function buildFingerprint(compiledBase) {
   return fingerprint(compiledRuntimeFiles(compiledBase));
 }
 
+function parseGroqQuotaGroups(value, keyCount) {
+  // Groq quotas are organization-level; unclassified keys must share one budget.
+  if (!value?.trim()) return Array(keyCount).fill('shared');
+  const groups = value.split(',').map((group) => group.trim());
+  if (groups.length !== keyCount || groups.some((group) => !group)) {
+    throw new Error(
+      'GROQ_API_KEY_QUOTA_GROUPS must contain one non-empty organization group per unique key',
+    );
+  }
+  return groups;
+}
+
+function availableGroqKeyIndexes(keyGroups, models, usage, estimate, limit) {
+  return keyGroups
+    .map((_, index) => index)
+    .filter((index) => [...models].every((model) =>
+      (usage[`${keyGroups[index]}:${model}`] || 0) + estimate <= limit,
+    ));
+}
+
+function isDailyQuotaFailure(response) {
+  const error = response?.error || {};
+  if (error.code === 'TOKENS_PER_DAY_EXHAUSTED') return true;
+  if (error.code === 'GROQ_KEY_POOL_EXHAUSTED') {
+    return (
+      Number.isInteger(error.totalKeys) &&
+      error.totalKeys > 0 &&
+      error.exhaustedKeys >= error.totalKeys &&
+      error.cooldownKeys === 0
+    );
+  }
+  return JSON.stringify(response?.trace?.workflowMetrics?.diagnostics || {})
+    .includes('TOKENS_PER_DAY_EXHAUSTED');
+}
+
+function nextUtcQuotaResumeAt(now = new Date()) {
+  const next = new Date(now);
+  next.setUTCHours(24, 1, 30, 0);
+  return next.toISOString();
+}
+
+function deferProviderQuotaFailure(state, caseId, response, now = new Date()) {
+  const current = state.cases?.[caseId];
+  if (current?.status !== 'IN_FLIGHT' || !isDailyQuotaFailure(response)) {
+    throw new Error(`Case cannot be deferred for quota reset: ${caseId}`);
+  }
+  const error = response.error || {};
+  const failure = {
+    caseId,
+    attemptCount: current.attemptCount,
+    code: error.code || 'TOKENS_PER_DAY_EXHAUSTED',
+    totalKeys: error.totalKeys,
+    exhaustedKeys: error.exhaustedKeys,
+    cooldownKeys: error.cooldownKeys,
+    at: new Date(now).toISOString(),
+  };
+  current.status = 'PENDING';
+  current.lastQuotaFailure = failure;
+  state.status = 'WAITING_FOR_UTC_RESET';
+  state.nextResumeAt = nextUtcQuotaResumeAt(now);
+  return failure;
+}
+
 async function main() {
   const [directory, output, compiledBase, runtimeEnv, ledgerPath, mode] = process.argv.slice(2);
   if (!ledgerPath) throw new Error('Usage: run-rag-coverage-evaluation <frozen-dir> <run-dir> <compiled-ai-src> <private-runtime-env> <shared-usage-ledger>');
@@ -77,7 +147,11 @@ async function main() {
   }
   const runtimeFingerprint = buildFingerprint(compiledBase);
   const hash = fingerprint(rows), env = { ...process.env, ...dotenv.parse(fs.readFileSync('.env')), ...dotenv.parse(fs.readFileSync(runtimeEnv)), RAG_COMPILED_AI_BASE: path.resolve(compiledBase), RAG_FROZEN_BACKEND_EMBEDDINGS: 'true', RAG_OPERATIONAL_DETERMINISTIC_LLM: mode === 'operational' ? 'true' : process.env.RAG_OPERATIONAL_DETERMINISTIC_LLM, LANGFUSE_RELEASE: 'frozen-replay-' + runtimeFingerprint.slice(0, 16), RELEASE_SHA: 'frozen-replay-' + runtimeFingerprint.slice(0, 16) };
-  const keyCount = (env.GROQ_API_KEYS || env.GROQ_API_KEY).split(',').filter(Boolean).length;
+  const groqKeys = [...new Set((env.GROQ_API_KEYS || env.GROQ_API_KEY || '').split(',').map((key) => key.trim()).filter(Boolean))];
+  if (!groqKeys.length) throw new Error('GROQ_API_KEYS or GROQ_API_KEY is required');
+  env.GROQ_API_KEYS = groqKeys.join(',');
+  const keyCount = groqKeys.length;
+  const keyGroups = parseGroqQuotaGroups(env.GROQ_API_KEY_QUOTA_GROUPS, keyCount);
   const models = new Set([env.AI_ANSWER_MODEL, env.AI_ROUTER_MODEL, 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'].filter(Boolean));
   fs.mkdirSync(output, { recursive: true, mode: 0o700 });
   const stateFile = path.join(output, 'state.json'), responseFile = path.join(output, 'responses.jsonl');
@@ -108,19 +182,26 @@ async function main() {
     for (const row of rows.filter((r) => state.cases[r.id].status === 'PENDING')) {
       const day = new Date().toISOString().slice(0, 10), usage = {};
       if (fs.existsSync(ledgerPath)) for (const line of fs.readFileSync(ledgerPath, 'utf8').trim().split('\n').filter(Boolean)) {
-        const r = JSON.parse(line); if (r.at.slice(0, 10) === day) usage[r.keyIndex + ':' + r.model] = (usage[r.keyIndex + ':' + r.model] || 0) + r.totalTokens - r.cachedTokens;
+        const r = JSON.parse(line); if (r.at.slice(0, 10) === day && keyGroups[r.keyIndex] && r.model) { const quota = keyGroups[r.keyIndex] + ':' + r.model; usage[quota] = (usage[quota] || 0) + r.totalTokens - r.cachedTokens; }
       }
       const estimatedTokensPerCase = Number(env.ESTIMATED_TOKENS_PER_CASE || 5500);
       const tpdLimit = env.GROQ_PAID_TIER === 'true' ? Infinity : Number(env.GROQ_TPD_LIMIT || 145000);
       const keys = mode === 'operational'
         ? [0]
-        : Array.from({ length: keyCount }, (_, i) => i).filter((i) => [...models].every((m) => (usage[i + ':' + m] || 0) + estimatedTokensPerCase <= tpdLimit));
+        : availableGroqKeyIndexes(keyGroups, models, usage, estimatedTokensPerCase, tpdLimit);
       if (!keys.length) { state.status = 'WAITING_FOR_UTC_RESET'; const reset = new Date(); reset.setUTCHours(24, 1, 30, 0); state.nextResumeAt = reset.toISOString(); save(); break; }
-      const c = state.cases[row.id]; c.status = 'IN_FLIGHT'; c.attemptCount = 1; c.startedAt = new Date().toISOString(); save();
+      const c = state.cases[row.id]; c.status = 'IN_FLIGHT'; c.attemptCount = (c.attemptCount || 0) + 1; c.startedAt = new Date().toISOString(); save();
       const promise = new Promise((resolve, reject) => { pending = { resolve, reject }; });
       child.stdin.write(JSON.stringify({ row: { id: row.id, input: row.input, metadata: row.metadata }, fixture: fixtures[row.id], keyStartIndex: keys[Object.values(state.cases).filter((x) => x.status === 'COMPLETED').length % keys.length] }) + '\n');
       const r = await promise;
       if (r.caseId !== row.id) throw new Error('Response identity mismatch');
+      if (mode !== 'operational' && !r.output && isDailyQuotaFailure(r)) {
+        const attempt = deferProviderQuotaFailure(state, row.id, r);
+        fs.appendFileSync(path.join(output, 'provider-attempts.jsonl'), JSON.stringify(attempt) + '\n', { mode: 0o600 });
+        save();
+        console.log(JSON.stringify({ status: state.status, nextResumeAt: state.nextResumeAt, caseId: row.id }));
+        break;
+      }
       fs.appendFileSync(responseFile, JSON.stringify(r) + '\n', { mode: 0o600 });
       if (mode === 'operational' && fixtures[row.id].fault.stage === 'execution') {
         const duplicate = new Promise((resolve, reject) => { pending = { resolve, reject }; });
@@ -132,6 +213,7 @@ async function main() {
       const diag = r.trace?.workflowMetrics?.diagnostics || {};
       if (!diag.productionExecutionId && !r.error && !(mode === 'operational' && fixtures[row.id].fault.stage === 'trace')) throw new Error('Missing real execution ID');
       c.status = r.error ? 'FAILED' : 'COMPLETED';
+      if (!r.error) delete c.lastQuotaFailure;
       c.productionExecutionId = diag.productionExecutionId;
       c.error = r.error || undefined;
       c.finalFailureSource = diag.finalFailureSource;
@@ -140,6 +222,7 @@ async function main() {
       c.output = {
         ...(r.output || {}),
         generationEvidence: diag.generationEvidence || [],
+        contextCaptureStatus: contextCaptureStatusFromResponse(r),
         executionHealth: c.executionHealth,
         traceId: c.traceId,
       };
@@ -170,4 +253,4 @@ async function main() {
 }
 if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
 
-module.exports = { compiledRuntimeFiles, buildFingerprint };
+module.exports = { compiledRuntimeFiles, buildFingerprint, parseGroqQuotaGroups, availableGroqKeyIndexes, isDailyQuotaFailure, nextUtcQuotaResumeAt, deferProviderQuotaFailure, contextCaptureStatusFromResponse };

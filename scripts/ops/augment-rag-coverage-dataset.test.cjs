@@ -465,3 +465,159 @@ test('V7 augmentation rejects a frame checksum mismatch', () => {
     fs.rmSync(frameDir, { recursive: true, force: true });
   }
 });
+
+test('V7 augmentation corrects existing visual and combined references without altering speech', () => {
+  const bytes = Buffer.from('reviewed existing visual frame');
+  const frameDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'rag-existing-frame-'),
+  );
+  const framePath = path.join(frameDir, 'frame.bin');
+  fs.writeFileSync(framePath, bytes);
+  const frameSha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const visualScene = activeSnapshot(12.5).scenes[0];
+  const transcriptChunk = {
+    id: 'reel:r1:chunk:0',
+    reelId: 'r1',
+    indexAttemptId: 'attempt-new',
+    indexVersion: 'reel-index-v2',
+    isActive: true,
+    startTime: 0,
+    endTime: 5,
+    evidenceText: 'The speaker says hello.',
+    chunkText: 'The speaker says hello.',
+    evidenceType: 'TRANSCRIPT',
+  };
+  const snapshot = activeSnapshot(12.5);
+  snapshot.chunks = [transcriptChunk];
+  const oldFixture = fixture();
+  const rows = [
+    {
+      id: 'case-visual-existing',
+      input: {
+        question: 'What is visible in the sampled frame at 12.5 seconds?',
+        fixtureRef: 'visual-fixture',
+      },
+      expectedOutput: {
+        referenceAnswer: 'An uncertain visual claim.',
+        relevantEvidenceIds: [visualScene.id],
+        relevantEvidenceGroups: [[visualScene.id]],
+        expectedEvidenceTypes: ['VISUAL'],
+        assertions: [],
+      },
+      metadata: {
+        datasetVersion: 'v7-base',
+        bucket: 'VISUAL',
+        split: 'DEVELOPMENT',
+        answerType: 'SCENE_DESCRIPTION',
+        fixtureSha256: fingerprint(oldFixture),
+        humanApproved: false,
+      },
+    },
+    {
+      id: 'case-combined-existing',
+      input: {
+        question:
+          'Describe the sampled frame at 12.5 seconds and summarize the indexed speech.',
+        fixtureRef: 'combined-fixture',
+      },
+      expectedOutput: {
+        referenceAnswer:
+          'Visible: An uncertain visual claim.\nSaid: The speaker says hello.',
+        relevantEvidenceIds: [visualScene.id, transcriptChunk.id],
+        relevantEvidenceGroups: [[visualScene.id], [transcriptChunk.id]],
+        expectedEvidenceTypes: ['VISUAL', 'TRANSCRIPT'],
+        assertions: [],
+      },
+      metadata: {
+        datasetVersion: 'v7-base',
+        bucket: 'COMBINED',
+        split: 'DEVELOPMENT',
+        answerType: 'MULTIMODAL_FACTS',
+        fixtureSha256: fingerprint(oldFixture),
+        humanApproved: false,
+      },
+    },
+  ];
+
+  try {
+    const base = {
+      rows,
+      fixtures: {
+        'visual-fixture': structuredClone(oldFixture),
+        'combined-fixture': structuredClone(oldFixture),
+      },
+      manifest: {
+        datasetSha256: 'base-dataset',
+        sourceHash: 'base-source',
+        quoteReviewSha256: 'inherited-quote-review',
+        agentReviewedQuoteCases: 24,
+      },
+    };
+    const visualReview = {
+      reviewAuthority: 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH',
+      reviewerType: 'AGENT_SOURCE_AND_FRAME_REVIEW',
+      humanApproved: false,
+      reviewedAt: '2026-10-27T00:00:00.000Z',
+      frameReviews: [
+        {
+          caseId: 'case-visual-existing',
+          reelId: 'r1',
+          sceneId: visualScene.id,
+          decision: 'ANSWERABLE',
+          captionAgreement: 'PARTIAL',
+          referenceAnswer: 'An uncertain visual claim.',
+          correctedVisualReference: 'A person wearing a blue jacket.',
+          correction: 'The sampled frame supports a blue jacket.',
+          framePath,
+          frameSha256,
+        },
+        {
+          caseId: 'case-combined-existing',
+          reelId: 'r1',
+          sceneId: visualScene.id,
+          decision: 'ANSWERABLE',
+          captionAgreement: 'PARTIAL',
+          referenceAnswer: 'Visible: An uncertain visual claim.',
+          correctedVisualReference: 'Visible: A person wearing a blue jacket.',
+          correction: 'Keep the transcript section unchanged.',
+          framePath,
+          frameSha256,
+        },
+      ],
+    };
+    const result = augment({
+      base,
+      activeSnapshot: snapshot,
+      quoteReview: {
+        reviewAuthority: 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH',
+        cases: [],
+      },
+      visualReview,
+      version: 'v8-test',
+    });
+    const visual = result.rows.find((row) => row.id === 'case-visual-existing');
+    const combined = result.rows.find(
+      (row) => row.id === 'case-combined-existing',
+    );
+    assert.equal(
+      visual.expectedOutput.referenceAnswer,
+      'A person wearing a blue jacket.',
+    );
+    assert.equal(
+      combined.expectedOutput.referenceAnswer,
+      'Visible: A person wearing a blue jacket.\nSaid: The speaker says hello.',
+    );
+    assert.equal(visual.metadata.bucket, 'VISUAL');
+    assert.equal(combined.metadata.bucket, 'COMBINED');
+    assert.deepEqual(combined.expectedOutput.relevantEvidenceIds, [
+      visualScene.id,
+      transcriptChunk.id,
+    ]);
+    assert.equal(result.manifest.agentReviewedQuoteCases, 24);
+    assert.equal(result.manifest.correctedVisualReferenceCount, 2);
+    assert.equal(result.manifest.captionAgreementCounts.PARTIAL, 2);
+    assert.equal(result.manifest.quoteReviewSha256, 'inherited-quote-review');
+  } finally {
+    fs.rmSync(frameDir, { recursive: true, force: true });
+  }
+});

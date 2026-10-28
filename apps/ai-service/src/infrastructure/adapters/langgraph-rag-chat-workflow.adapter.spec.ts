@@ -637,6 +637,155 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).resolves.toMatchObject({ finalFailureSource: 'CITATION' });
   });
 
+  it('tries an exact evidence fallback after citation coverage exhausts and keeps failing closed if citations still miss the threshold', async () => {
+    const fallback = {
+      answer: 'Episode One: The speaker says hello.',
+      claims: [
+        { claim: 'Episode One: The speaker says hello.', evidenceIds: ['e0'] },
+      ],
+      generationEvidence: [
+        {
+          evidenceId: 'e0',
+          sourceId: 'chunk-one',
+          reelId: 'reel-one',
+          evidenceType: 'TRANSCRIPT',
+          title: 'Episode One',
+          evidenceText: 'The speaker says hello.',
+        },
+      ],
+      finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      fallbackReason: 'UNUSABLE_SYNTHESIS',
+    };
+    const citation = {
+      sourceType: 'REEL',
+      reelId: 'reel-one',
+      evidenceType: 'TRANSCRIPT',
+      title: 'Episode One',
+      startTime: 0,
+      endTime: 2,
+      quote: 'The speaker says hello.',
+    };
+    const assessment = {
+      citations: [citation],
+      coverage: {
+        mode: 'DETERMINISTIC',
+        coverage: 1,
+        factualClaimCount: 1,
+        supportedClaimCount: 1,
+        unsupportedClaims: [],
+        diagnostics: {
+          providerStatus: 'SUCCESS',
+          decisionSource: 'DETERMINISTIC',
+          selectedEvidenceIds: ['e0'],
+          deterministicSupportingEvidenceIds: ['e0'],
+          selectedEvidenceMappings: [
+            {
+              citationIndex: 0,
+              selectedEvidenceId: 'e0',
+              evidenceId: 'chunk-one',
+            },
+          ],
+        },
+      },
+    };
+    const lowAssessment = {
+      citations: [],
+      coverage: {
+        mode: 'DETERMINISTIC',
+        coverage: 0,
+        factualClaimCount: 1,
+        supportedClaimCount: 0,
+        unsupportedClaims: ['unsupported'],
+        diagnostics: { providerStatus: 'SUCCESS' },
+      },
+    };
+    const generateDraftAnswer = {
+      buildExtractiveFallback: jest.fn().mockReturnValue(fallback),
+    };
+    const buildRagCitations = {
+      execute: jest
+        .fn()
+        .mockResolvedValueOnce(assessment)
+        .mockResolvedValueOnce(lowAssessment),
+    };
+    const workflow = new LangGraphRagChatWorkflowAdapter(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      generateDraftAnswer as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      buildRagCitations as never,
+      undefined as never,
+      { get: jest.fn() } as never,
+      undefined as never,
+    ) as unknown as {
+      createVerificationFailureNode: () => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+    const failureNode = workflow.createVerificationFailureNode();
+    const failedCitationState = state({
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+        missingEvidence: [],
+      },
+      answerGenerationMode: 'SYNTHESIZED',
+      verification: {
+        passed: true,
+        confidence: 1,
+        issues: [],
+        requiresRevision: false,
+        diagnostics: {
+          providerStatus: 'SUCCESS',
+          decisionSource: 'LLM_PRIMARY',
+          finalPassed: true,
+          confidence: 1,
+          issues: [],
+          requiresRevision: false,
+          escalated: false,
+        },
+      },
+      citationCoverage: {
+        mode: 'LLM',
+        coverage: 0.857,
+        factualClaimCount: 7,
+        supportedClaimCount: 6,
+        unsupportedClaims: ['unsupported'],
+      },
+      citationRetryCount: 1,
+    });
+
+    await expect(failureNode(failedCitationState)).resolves.toMatchObject({
+      answer: fallback.answer,
+      answerGenerationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      citations: [citation],
+      citationCoverage: { coverage: 1 },
+      finalFailureSource: 'NONE',
+    });
+    expect(generateDraftAnswer.buildExtractiveFallback).toHaveBeenCalledTimes(
+      1,
+    );
+
+    const rejected = await failureNode(failedCitationState);
+    expect(rejected).toMatchObject({
+      citations: [],
+      finalFailureSource: 'CITATION',
+      citationCoverage: { coverage: 0.857 },
+    });
+  });
+
   it('uses the task-action limitation after an exhausted task-action verification failure', async () => {
     const workflow = new LangGraphRagChatWorkflowAdapter(
       undefined as never,

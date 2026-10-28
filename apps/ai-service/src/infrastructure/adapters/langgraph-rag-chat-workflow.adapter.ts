@@ -1125,13 +1125,31 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           false);
       const isMetadataQuestion =
         state.route?.reelQuestionType === 'REEL_METADATA';
-      if (
-        state.route?.intent === 'REEL_VIDEO_QUESTION' &&
-        failedVerification &&
+      const citationThreshold = this.number(
+        'AI_RAG_CITATION_COVERAGE_THRESHOLD',
+        1,
+        0,
+        1,
+      );
+      const sufficientContext = state.contextSufficiency?.sufficient === true;
+      const citationCoverageFailed =
+        sufficientContext &&
+        state.citationCoverage?.mode !== undefined &&
+        state.citationCoverage.mode !== 'NOT_REQUIRED' &&
+        state.citationCoverage.coverage < citationThreshold;
+      const answerGenerationFailedWithSufficientContext =
+        sufficientContext && state.answerGenerationMode === 'FAILURE_FALLBACK';
+      const verifierRecoveryEligible =
+        failedVerification !== undefined &&
         (verifierUnavailable ||
           verifierFalseNegativeCandidate ||
           extractiveAnswerHasLocalProvenance ||
-          isMetadataQuestion)
+          isMetadataQuestion);
+      if (
+        state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+        (verifierRecoveryEligible ||
+          citationCoverageFailed ||
+          answerGenerationFailedWithSufficientContext)
       ) {
         const fallback =
           this.langfuseTracing?.observeSync(
@@ -1159,22 +1177,28 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               ),
             ),
           ];
+          const recoveryReason = verifierUnavailable
+            ? 'Semantic verifier unavailable; recovered with an exact extractive evidence fallback.'
+            : citationCoverageFailed
+              ? 'Citation coverage remained below threshold; recovered with an exact extractive evidence fallback.'
+              : answerGenerationFailedWithSufficientContext
+                ? 'Answer generation failed despite sufficient context; recovered with an exact extractive evidence fallback.'
+                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive evidence fallback.';
           const verification: RagVerificationResult = {
             passed: true,
             confidence: 1,
-            issues: [
-              verifierUnavailable
-                ? 'Semantic verifier unavailable; recovered with an exact extractive evidence fallback.'
-                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive evidence fallback.',
-            ],
+            issues: [recoveryReason],
             answerQualityPassed: true,
             answerQualityIssues: [],
             requiresRevision: false,
             supportedClaimMappings: fallback.claims,
             contradictions: [],
             diagnostics: {
-              ...failedVerification.diagnostics,
-              providerStatus: verifierUnavailable ? 'ERROR' : 'SUCCESS',
+              ...(failedVerification?.diagnostics ?? {}),
+              providerStatus: verifierUnavailable
+                ? 'ERROR'
+                : (failedVerification?.diagnostics?.providerStatus ??
+                  'NOT_CALLED'),
               decisionSource: 'EXACT_PROVENANCE' as const,
               finalPassed: true,
               confidence: 1,
@@ -1194,6 +1218,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             ...state,
             answer: fallback.answer,
             answerClaims: fallback.claims,
+            generationEvidence:
+              fallback.generationEvidence ?? state.generationEvidence,
             answerGenerationMode: fallback.finalizationMode,
             answerFallbackReason: fallback.fallbackReason,
             verification,
@@ -1210,19 +1236,15 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             nodeTimings,
             assessment.coverage.diagnostics?.semanticCalls,
           );
-          const threshold = this.number(
-            'AI_RAG_CITATION_COVERAGE_THRESHOLD',
-            1,
-            0,
-            1,
-          );
-          if (assessment.coverage.coverage >= threshold) {
+          if (assessment.coverage.coverage >= citationThreshold) {
             const citationDiagnostics = assessment.coverage.diagnostics;
             return {
               answer: fallback.answer,
               answerClaims: fallback.claims,
               answerGenerationMode: fallback.finalizationMode,
               answerFallbackReason: fallback.fallbackReason,
+              generationEvidence:
+                fallback.generationEvidence ?? state.generationEvidence,
               verification,
               citations: assessment.citations,
               citationCoverage: assessment.coverage,
@@ -1267,7 +1289,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       return {
         answer: fallbackAnswer,
         citations: [],
-        citationCoverage: {
+        citationCoverage: state.citationCoverage ?? {
           mode: 'NOT_REQUIRED',
           coverage: 1,
           factualClaimCount: 0,

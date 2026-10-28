@@ -383,6 +383,12 @@ jobs:
             scripts/ops/run-langfuse-live-benchmark.test.cjs \
             scripts/ops/rag-evaluation-contract.test.cjs \
             scripts/ops/rag-evaluation-applicability.test.cjs \
+            scripts/ops/run-rag-v6-supervisor.test.cjs \
+            scripts/ops/run-rag-coverage-evaluation.test.cjs \
+            scripts/ops/judge-quota-controller.test.cjs \
+            scripts/ops/finalize-rag-remediation-run.test.cjs \
+            scripts/ops/run-rag-langfuse-experiment.test.cjs \
+            scripts/ops/validate-rag-live-boundary.test.cjs \
             scripts/ops/rag-semantic-judge.test.cjs \
             scripts/ops/run-semantic-judge.test.cjs \
             scripts/ops/publish-langfuse-scores.test.cjs \

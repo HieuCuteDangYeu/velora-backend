@@ -160,6 +160,7 @@ function applyFrameReview({
     throw new Error('Every target Reel needs at least one reviewed frame');
   const reviewed = [];
   const added = [];
+  const corrected = [];
   for (const entry of review.frameReviews) {
     if (!/^[a-f0-9]{64}$/i.test(entry.frameSha256 || '') || !entry.framePath)
       throw new Error(
@@ -189,12 +190,17 @@ function applyFrameReview({
 
     let row;
     let fixtureId;
+    let existingVisualCase = false;
     if (entry.caseId) {
       row = rowsById.get(entry.caseId);
-      if (!row || row.metadata.bucket !== 'ABSTENTION')
+      if (
+        !row ||
+        !['ABSTENTION', 'VISUAL', 'COMBINED'].includes(row.metadata.bucket)
+      )
         throw new Error(
-          `Visual review target is not an abstention case: ${entry.caseId}`,
+          `Visual review target is not an abstention or visual case: ${entry.caseId}`,
         );
+      existingVisualCase = ['VISUAL', 'COMBINED'].includes(row.metadata.bucket);
       fixtureId = row.input.fixtureRef;
     } else if (entry.newCaseId && entry.sourceCaseId) {
       const parent = rowsById.get(entry.sourceCaseId);
@@ -254,6 +260,10 @@ function applyFrameReview({
       throw new Error(
         `Reviewed visual source is not in the authorized fixture: ${entry.sceneId}`,
       );
+    if (existingVisualCase && entry.decision !== 'ANSWERABLE')
+      throw new Error(
+        `Existing visual reference requires a reviewed answer or explicit dataset reannotation: ${row.id}`,
+      );
     if (entry.decision === 'ANSWERABLE') {
       if (entry.caseId && entry.question?.trim()) {
         row.input.question = entry.question.trim();
@@ -275,31 +285,80 @@ function applyFrameReview({
       decision: entry.decision,
       sceneId: entry.sceneId,
       frameSha256: frameHash,
+      captionAgreement: entry.captionAgreement ?? null,
+      observation: entry.observation ?? null,
+      correction: entry.correction ?? null,
       reviewAuthority: review.reviewAuthority,
       reviewedAt: review.reviewedAt,
     };
     if (entry.decision === 'ANSWERABLE') {
-      row.metadata.bucket = 'VISUAL';
-      row.metadata.answerType = 'SCENE_DESCRIPTION';
-      row.metadata.sourceScope = 'INDEXED_VISUAL_CAPTION';
       row.metadata.requiresImageReview = true;
-      row.metadata.annotationStatus = 'AGENT_REVIEWED_CANDIDATE';
       row.metadata.humanApproved = false;
       row.metadata.referenceStartSec = scene.startTime;
       row.metadata.referenceEndSec = scene.endTime;
-      row.expectedOutput.referenceAnswer = entry.referenceAnswer.trim();
-      row.expectedOutput.relevantEvidenceIds = [entry.sceneId];
-      row.expectedOutput.relevantEvidenceGroups = [[entry.sceneId]];
-      row.expectedOutput.expectedEvidenceTypes = ['VISUAL'];
+      if (existingVisualCase) {
+        const correctedVisualReference = String(
+          entry.correctedVisualReference ?? '',
+        ).trim();
+        if (entry.captionAgreement === 'PARTIAL' && !correctedVisualReference)
+          throw new Error(
+            `Partial visual reference requires a correction: ${row.id}`,
+          );
+        if (correctedVisualReference) {
+          const originalReference = String(
+            row.expectedOutput.referenceAnswer ?? '',
+          );
+          if (row.metadata.bucket === 'COMBINED') {
+            const saidOffset = originalReference.indexOf('\nSaid:');
+            if (saidOffset < 0)
+              throw new Error(
+                `Combined visual reference lacks a separable Said section: ${row.id}`,
+              );
+            row.expectedOutput.referenceAnswer =
+              correctedVisualReference + originalReference.slice(saidOffset);
+          } else {
+            row.expectedOutput.referenceAnswer = correctedVisualReference;
+          }
+          row.metadata.annotationStatus = 'AGENT_REVIEWED_CORRECTED_CANDIDATE';
+          row.metadata.visualReferenceCorrection = {
+            priorReferenceSha256: crypto
+              .createHash('sha256')
+              .update(originalReference)
+              .digest('hex'),
+            correctedVisualReferenceSha256: crypto
+              .createHash('sha256')
+              .update(correctedVisualReference)
+              .digest('hex'),
+            rationale: entry.correction ?? null,
+          };
+          corrected.push({
+            caseId: row.id,
+            previousReference: originalReference,
+            correctedVisualReference,
+          });
+        } else {
+          row.metadata.annotationStatus = 'AGENT_REVIEWED_CANDIDATE';
+        }
+      } else {
+        row.metadata.bucket = 'VISUAL';
+        row.metadata.answerType = 'SCENE_DESCRIPTION';
+        row.metadata.sourceScope = 'INDEXED_VISUAL_CAPTION';
+        row.metadata.annotationStatus = 'AGENT_REVIEWED_CANDIDATE';
+        row.expectedOutput.referenceAnswer = entry.referenceAnswer.trim();
+        row.expectedOutput.relevantEvidenceIds = [entry.sceneId];
+        row.expectedOutput.relevantEvidenceGroups = [[entry.sceneId]];
+        row.expectedOutput.expectedEvidenceTypes = ['VISUAL'];
+      }
     }
     reviewed.push({
       caseId: row.id,
       reelId: entry.reelId,
       sceneId: entry.sceneId,
       decision: entry.decision,
+      captionAgreement: entry.captionAgreement ?? null,
     });
   }
-  return { reviewed, added };
+  return { reviewed, added, corrected };
 }
 
 function validateBundle(rows, fixtures) {
@@ -369,12 +428,26 @@ function augment({ base, activeSnapshot, quoteReview, visualReview, version }) {
     datasetSha256: fingerprint(rows),
     fixtureSha256: fingerprint(fixtures),
     visualSnapshotSha256: snapshotFingerprint,
-    quoteReviewSha256: fingerprint(quoteReview),
+    quoteReviewSha256:
+      quoteReview.cases.length > 0
+        ? fingerprint(quoteReview)
+        : (base.manifest.quoteReviewSha256 ?? fingerprint(quoteReview)),
     visualReviewSha256: fingerprint(visualReview),
     sourceSnapshotSha256:
       base.manifest.sourceHash || base.manifest.sourceSnapshotSha256,
-    agentReviewedQuoteCases: reviewedQuoteCases,
+    agentReviewedQuoteCases:
+      (base.manifest.agentReviewedQuoteCases ?? 0) + reviewedQuoteCases,
     agentReviewedVisualFrames: frames.reviewed.length,
+    correctedVisualReferenceCount: frames.corrected.length,
+    captionAgreementCounts: visualReview.frameReviews.reduce(
+      (counts, entry) => {
+        if (entry.captionAgreement)
+          counts[entry.captionAgreement] =
+            (counts[entry.captionAgreement] || 0) + 1;
+        return counts;
+      },
+      {},
+    ),
     addedVisualCases: frames.added.length,
     alternativeEvidenceGroups: rows.reduce(
       (count, row) =>

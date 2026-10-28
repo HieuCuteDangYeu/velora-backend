@@ -419,6 +419,7 @@ export interface RagGenerationEvidence {
   evidenceId: string;
   sourceId: string;
   reelId?: string;
+  title?: string;
   evidenceType:
     | 'TRANSCRIPT'
     | 'VISUAL'

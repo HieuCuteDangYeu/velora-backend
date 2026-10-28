@@ -13,6 +13,7 @@ const {
   applicability,
   DIMENSIONS,
 } = require('./rag-evaluation-applicability.cjs');
+const { ELIGIBILITY_POLICY } = require('./rag-semantic-eligibility.cjs');
 const {
   evaluate: evaluateStructuredActions,
 } = require('./evaluate-rag-structured-actions.cjs');
@@ -64,6 +65,10 @@ const productionValidationPath = path.resolve(
   process.env.RAG_FINAL_PRODUCTION_VALIDATION ||
     path.join(runDir, 'production-retrieval-validation.json'),
 );
+const langfuseExperimentLedgerPath = path.resolve(
+  process.env.RAG_FINAL_LANGFUSE_EXPERIMENT_LEDGER ||
+    path.join(runDir, 'langfuse-experiment-runs.json'),
+);
 const rows = ['development', 'held_out'].flatMap((split) =>
   JSON.parse(fs.readFileSync(path.join(dataDir, `${split}.json`))),
 );
@@ -94,6 +99,26 @@ function readJsonl(file) {
     .map((line) => JSON.parse(line));
 }
 
+function semanticCasesFilename(
+  value = process.env.RAG_FINAL_SEMANTIC_CASES_FILENAME,
+) {
+  const fileName = value?.trim() || 'semantic-cases.jsonl';
+  if (path.basename(fileName) !== fileName || !fileName.endsWith('.jsonl'))
+    throw new Error('Semantic case filename must be a .jsonl basename');
+  return fileName;
+}
+
+function assertSemanticEligibilityPolicy(semanticRows, phase) {
+  const policies = [
+    ...new Set(semanticRows.map((row) => row.eligibilityPolicy)),
+  ];
+  if (policies.length !== 1 || policies[0] !== ELIGIBILITY_POLICY)
+    throw new Error(
+      phase + ' semantic scores do not use ' + ELIGIBILITY_POLICY,
+    );
+  return policies[0];
+}
+
 function assertExactCaseSet(values, label) {
   const ids = values.map((value) => value.caseId || value.id);
   if (
@@ -105,6 +130,43 @@ function assertExactCaseSet(values, label) {
       `${label} must contain exactly one record for every ${rows.length} dataset case`,
     );
   }
+}
+
+function validateCalibrationReview(calibration, datasetRows = rows) {
+  if (!Array.isArray(calibration?.cases) || calibration.cases.length === 0)
+    return false;
+  const rowsById = new Map(datasetRows.map((row) => [row.id, row]));
+  const ids = calibration.cases.map((entry) => entry.caseId);
+  if (new Set(ids).size !== ids.length) return false;
+  return calibration.cases.every((entry) => {
+    const row = rowsById.get(entry.caseId);
+    if (!row) return false;
+    const relevantEvidenceIds = row.expectedOutput?.relevantEvidenceIds || [];
+    const expectedEvidenceTypes =
+      row.expectedOutput?.expectedEvidenceTypes || [];
+    const expectedApplicability = applicability(row);
+    const requiresImageReview =
+      expectedEvidenceTypes.includes('VISUAL') ||
+      relevantEvidenceIds.some((id) => id.includes(':visual:'));
+    return (
+      entry.question === row.input?.question &&
+      entry.referenceAnswer === (row.expectedOutput?.referenceAnswer ?? null) &&
+      entry.bucket === row.metadata?.bucket &&
+      entry.reviewedLabel === 'PASS' &&
+      JSON.stringify(entry.applicability) ===
+        JSON.stringify(expectedApplicability) &&
+      Array.isArray(entry.relevantEvidenceIds) &&
+      JSON.stringify(entry.relevantEvidenceIds) ===
+        JSON.stringify(relevantEvidenceIds) &&
+      Array.isArray(entry.expectedEvidenceTypes) &&
+      JSON.stringify(entry.expectedEvidenceTypes) ===
+        JSON.stringify(expectedEvidenceTypes) &&
+      entry.requiresImageReview === requiresImageReview &&
+      (!requiresImageReview || entry.imageTruth === 'PASS') &&
+      typeof entry.reviewNotes === 'string' &&
+      entry.reviewNotes.trim().length > 0
+    );
+  });
 }
 
 function aggregateDeterministic(details) {
@@ -300,9 +362,13 @@ function semanticAggregate(semanticRows, details, dimension) {
 
 function analyzeSemantic(phase, details) {
   const semanticRows = readJsonl(
-    path.join(runDir, `${cohortPrefix}-${phase}`, 'semantic-cases.jsonl'),
+    path.join(runDir, `${cohortPrefix}-${phase}`, semanticCasesFilename()),
   );
   assertExactCaseSet(semanticRows, `${phase} semantic scores`);
+  const eligibilityPolicy = assertSemanticEligibilityPolicy(
+    semanticRows,
+    phase,
+  );
   const evaluatorVersions = [
     ...new Set(
       semanticRows.map((entry) => entry.evaluatorVersion).filter(Boolean),
@@ -336,6 +402,7 @@ function analyzeSemantic(phase, details) {
   );
   return {
     evaluatorVersion: evaluatorVersions[0],
+    eligibilityPolicy,
     all: Object.fromEntries(
       DIMENSIONS.map((dimension) => [
         dimension,
@@ -343,6 +410,158 @@ function analyzeSemantic(phase, details) {
       ]),
     ),
     byBucket,
+  };
+}
+
+const RERANKER_METRICS = [
+  'recallAt1',
+  'recallAt3',
+  'recallAt5',
+  'recallAt10',
+  'mrr',
+  'ndcgAt5',
+  'ndcgAt10',
+  'evidenceHit',
+];
+
+function qualifyReranker(validation) {
+  const expectedReleaseSha = process.env.RAG_FINAL_RELEASE_SHA?.trim();
+  const releaseShaMatches =
+    !expectedReleaseSha || validation?.releaseSha === expectedReleaseSha;
+  if (validation?.status === 'PASS')
+    return {
+      pass: releaseShaMatches,
+      method: 'EXPLICIT_QUALIFICATION_PASS',
+      caseCount: null,
+      summary: releaseShaMatches
+        ? 'Reranker qualification artifact reports PASS for the expected release.'
+        : 'Reranker qualification release SHA does not match the expected release.',
+    };
+
+  const provider = validation?.provider;
+  const datasetPath = path.join(
+    root,
+    'eval/rag/datasets/rag-reranker-generalization-v1.json',
+  );
+  let dataset;
+  try {
+    dataset = JSON.parse(fs.readFileSync(datasetPath, 'utf8'));
+  } catch {
+    dataset = undefined;
+  }
+  const expectedCaseIds = new Set(dataset?.cases?.map((item) => item.id) || []);
+  const observedCaseIds = provider?.rows?.map((item) => item.id) || [];
+  const safeFixtureSetMatches =
+    dataset?.schemaVersion === 'rag-reranker-qualification-v1' &&
+    dataset?.datasetVersion === 'rag-reranker-generalization-v1' &&
+    dataset?.provenance?.kind === 'SAFE_TEST_FIXTURES' &&
+    expectedCaseIds.size === provider?.datasetCaseCount &&
+    observedCaseIds.length === expectedCaseIds.size &&
+    new Set(observedCaseIds).size === expectedCaseIds.size &&
+    observedCaseIds.every((id) => expectedCaseIds.has(id));
+  const teiMetrics = provider?.metrics?.tei;
+  const baselineMetrics = provider?.metrics?.baseline;
+  const noMaterialRegression = RERANKER_METRICS.every(
+    (metric) =>
+      Number.isFinite(teiMetrics?.[metric]) &&
+      Number.isFinite(baselineMetrics?.[metric]) &&
+      teiMetrics[metric] >= baselineMetrics[metric],
+  );
+  const imageSha = validation?.serviceImage?.split(':').at(-1);
+  const pass =
+    validation?.schemaVersion === 'rag-provider-integration-validation-v3' &&
+    validation.status === 'PASS_PROVIDER_ADMISSION_ONLY' &&
+    provider?.status === 'PASS' &&
+    provider.healthResponseOk === true &&
+    provider.endpoint === 'TEI /rerank' &&
+    provider.model === 'cross-encoder/mmarco-mMiniLMv2-L12-H384-v1' &&
+    safeFixtureSetMatches &&
+    imageSha === validation.releaseSha &&
+    releaseShaMatches &&
+    validation.productionRagRequestsMade === 0 &&
+    validation.langfuseWritesMade === 0 &&
+    noMaterialRegression;
+
+  return {
+    pass,
+    method: pass ? 'DEPLOYED_TEI_SAFE_FIXTURE_NO_REGRESSION' : null,
+    caseCount: provider?.datasetCaseCount ?? null,
+    summary: pass
+      ? `Deployed TEI passes the repository no-material-regression criteria on ${provider.datasetCaseCount} safe fixtures; this does not establish large-scale quality or latency.`
+      : !releaseShaMatches
+        ? 'Reranker provider evidence release SHA does not match the expected release.'
+        : 'The live reranker provider evidence does not prove the deployed TEI safe-fixture no-regression qualification.',
+  };
+}
+
+function qualifyLangfuseReplay(
+  ledger,
+  phaseStates,
+  expectedDatasetSha256,
+  expectedCaseCount,
+) {
+  if (!ledger)
+    return {
+      pass: false,
+      status: 'PENDING',
+      summary: 'The Langfuse cached replay ledger is missing.',
+      phases: [],
+    };
+  if (ledger.datasetSha256 !== expectedDatasetSha256) {
+    return {
+      pass: false,
+      status: 'BLOCKED',
+      summary: 'Langfuse replay ledger belongs to a different frozen dataset.',
+      phases: [],
+    };
+  }
+
+  const evaluatorTag = EVALUATOR_VERSION.replace(/[^A-Za-z0-9._-]/g, '-');
+  const phaseResults = phaseStates.map(({ phase, state }) => {
+    const buildFingerprint = state?.buildFingerprint;
+    if (typeof buildFingerprint !== 'string' || !buildFingerprint) {
+      return { phase, pass: false, status: 'BLOCKED' };
+    }
+    const key = `${phase}-${expectedDatasetSha256.slice(0, 12)}-${buildFingerprint.slice(0, 12)}-${evaluatorTag}`;
+    const run = ledger.runs?.[key];
+    const pass =
+      run?.status === 'COMPLETE' &&
+      run.phase === phase &&
+      run.itemCount === expectedCaseCount &&
+      run.toolObservationsReadBack === true &&
+      Number.isInteger(run.toolObservationCount) &&
+      run.toolObservationCount > 0 &&
+      typeof run.datasetRunId === 'string' &&
+      run.datasetRunId.length > 0 &&
+      typeof run.runName === 'string' &&
+      run.runName.includes(expectedDatasetSha256.slice(0, 12)) &&
+      run.runName.includes(buildFingerprint.slice(0, 12)) &&
+      run.runName.includes(evaluatorTag);
+    return {
+      phase,
+      pass,
+      status: pass ? 'PASS' : run ? 'BLOCKED' : 'PENDING',
+      itemCount: run?.itemCount ?? null,
+      toolObservationCount: run?.toolObservationCount ?? null,
+      datasetRunId: run?.datasetRunId ?? null,
+    };
+  });
+  const pass =
+    phaseResults.length === 2 &&
+    phaseResults.some((entry) => entry.phase === 'baseline') &&
+    phaseResults.some((entry) => entry.phase === 'candidate') &&
+    phaseResults.every((entry) => entry.pass);
+  return {
+    pass,
+    status: pass
+      ? 'PASS'
+      : phaseResults.some((entry) => entry.status === 'BLOCKED')
+        ? 'BLOCKED'
+        : 'PENDING',
+    summary: pass
+      ? `Baseline and candidate Langfuse replays each link all ${expectedCaseCount} cases to this dataset and build, with tool observations read back from Langfuse.`
+      : 'Full baseline and candidate Langfuse cached replays for this dataset/build with tool observations are not both proven.',
+    phases: phaseResults,
   };
 }
 
@@ -354,6 +573,11 @@ function buildExitGateMatrix(
   providerValidation,
   calibration,
   productionValidation,
+  langfuseQualification = {
+    pass: true,
+    required: false,
+    status: 'NOT_REQUIRED',
+  },
 ) {
   const primaryComplete = phases.every(({ state }) =>
     terminalStatuses.has(state.status),
@@ -361,15 +585,9 @@ function buildExitGateMatrix(
   const exactOnce =
     result.gates.exactOncePrimaryResponses &&
     result.gates.exactOnceSemanticScores;
-  const labelsComplete =
-    Array.isArray(calibration?.cases) &&
-    calibration.cases.length > 0 &&
-    calibration.cases.every(
-      (entry) =>
-        entry.reviewedLabel !== null && entry.reviewedLabel !== undefined,
-    );
+  const calibrationDatasetBound = validateCalibrationReview(calibration);
   const humanGold =
-    labelsComplete &&
+    calibrationDatasetBound &&
     (calibration?.humanApproved === true || !calibration?.reviewMetadata);
   const independentReview = calibration?.independentReview === 'PASS';
   const agentAuthority =
@@ -379,16 +597,21 @@ function buildExitGateMatrix(
     calibration?.reviewMetadata?.reviewerType ===
       'AGENT_SOURCE_AND_FRAME_REVIEW' &&
     calibration?.humanApproved === false &&
-    labelsComplete;
+    calibrationDatasetBound;
   const reviewComplete = (humanGold && independentReview) || agentAuthority;
   const productionRetrievalPass =
     result.productionRetrievalProven === true ||
     productionValidation?.status === 'PASS';
-  const rerankerPass = providerValidation?.status === 'PASS';
+  const rerankerQualification = qualifyReranker(providerValidation);
+  const rerankerPass = rerankerQualification.pass;
   const qualityTargetsPass = result.gates.qualityTargets === 'PASS';
   const evaluatorVersionPass =
     result.gates.semanticEvaluatorConsistent === true;
+  const eligibilityPolicyPass =
+    result.gates.semanticEligibilityPolicyConsistent === true;
   const privacyPass = result.gates.privacyCanaryLeaks === 0;
+  const langfusePass =
+    langfuseQualification.required !== true || langfuseQualification.pass;
   const releaseReady =
     productionRetrievalPass &&
     reviewComplete &&
@@ -399,7 +622,9 @@ function buildExitGateMatrix(
     exactOnce &&
     privacyPass &&
     qualityTargetsPass &&
-    evaluatorVersionPass;
+    evaluatorVersionPass &&
+    eligibilityPolicyPass &&
+    langfusePass;
   const phaseName = (phase) => phase.phase || phase.summary?.phase;
   const evidencePath = (file) =>
     path.relative(runDir, file) || path.basename(file);
@@ -417,6 +642,16 @@ function buildExitGateMatrix(
             '.',
       },
       {
+        id: 'semantic-eligibility-policy',
+        status: eligibilityPolicyPass ? 'PASS' : 'BLOCKED',
+        evidence: ['final-benchmark.json'],
+        reason: eligibilityPolicyPass
+          ? 'Both semantic cohorts use ' + ELIGIBILITY_POLICY + '.'
+          : 'Semantic case outputs must consistently use ' +
+            ELIGIBILITY_POLICY +
+            '.',
+      },
+      {
         id: 'benchmark-quality',
         status: qualityTargetsPass ? 'PASS' : 'BLOCKED',
         evidence: ['final-benchmark.json'],
@@ -427,19 +662,30 @@ function buildExitGateMatrix(
             '.',
       },
       {
+        id: 'calibration-dataset-binding',
+        status: calibrationDatasetBound ? 'PASS' : 'BLOCKED',
+        evidence: [
+          evidencePath(calibrationReviewPath),
+          evidencePath(path.join(dataDir, 'manifest.json')),
+        ],
+        reason: calibrationDatasetBound
+          ? 'Every calibration case uniquely matches a frozen dataset row, including its evidence IDs, evidence types, review rationale, and visual truth label.'
+          : 'Calibration cases do not uniquely match frozen dataset rows or their reviewed evidence and visual labels.',
+      },
+      {
         id: 'measurement-applicability',
         status:
           result.gates.applicabilitySeparated && (humanGold || agentAuthority)
             ? 'PASS'
             : 'PROVISIONAL',
         evidence: [
-          'dataset-v6-series-holdout/manifest.json',
-          'calibration-review-v6.json',
+          evidencePath(path.join(dataDir, 'manifest.json')),
+          evidencePath(calibrationReviewPath),
         ],
         reason: humanGold
-          ? 'Applicability protocol and human calibration labels are complete.'
+          ? 'Applicability protocol and dataset-bound human calibration labels are complete.'
           : agentAuthority
-            ? 'Applicability protocol and the explicitly authorized agent source review are complete.'
+            ? 'Applicability protocol and the explicitly authorized, dataset-bound agent source review are complete.'
             : 'Applicability protocol exists; source review authority is still unproven.',
       },
       {
@@ -490,8 +736,10 @@ function buildExitGateMatrix(
               ? 'PROVENANCE_PASS_IMAGE_TRUTH_PENDING'
               : 'BLOCKED',
         evidence: [
-          'evaluation-v6-operational/visual-contract-validation.json',
-          'source/remote-active-eight.json',
+          evidencePath(visualContractPath),
+          ...(visualContract?.sourceSnapshotPath
+            ? [evidencePath(path.resolve(visualContract.sourceSnapshotPath))]
+            : []),
         ],
         reason:
           visualContract?.status === 'PASS' &&
@@ -512,8 +760,15 @@ function buildExitGateMatrix(
             : 'BLOCKED',
         evidence: [
           'apps/ai-service/src/application',
-          'evaluation-v6-baseline/structured-action-summary.json',
-          'evaluation-v6-candidate/structured-action-summary.json',
+          ...phases.map((phase) =>
+            evidencePath(
+              path.join(
+                runDir,
+                `${cohortPrefix}-${phaseName(phase)}`,
+                'structured-action-summary.json',
+              ),
+            ),
+          ),
         ],
         reason:
           result.gates.structuredActionFailures === 0
@@ -529,15 +784,21 @@ function buildExitGateMatrix(
               ? 'OPERATIONAL_PASS_LIVE_RERANKER_BLOCKED'
               : 'BLOCKED',
         evidence: [
-          'evaluation-v6-operational/operational-validation.json',
-          'evaluation-v6-operational/provider-integration-validation.json',
+          evidencePath(operationalValidationPath),
+          evidencePath(providerValidationPath),
         ],
         reason:
           operational?.status === 'PASS' && rerankerPass
-            ? 'Synthetic fault coverage and live provider integration pass.'
+            ? `Synthetic fault coverage and live TEI safe-fixture qualification pass: ${rerankerQualification.summary}`
             : operational?.status === 'PASS'
-              ? 'Synthetic operational contract passes; live TEI reranker admission remains blocked.'
+              ? `Synthetic operational contract passes; live TEI qualification remains blocked: ${rerankerQualification.summary}`
               : 'Operational fault coverage is unavailable or incomplete.',
+      },
+      {
+        id: 'live-tei-reranker-qualification',
+        status: rerankerPass ? 'PASS' : 'BLOCKED',
+        evidence: [evidencePath(providerValidationPath)],
+        reason: rerankerQualification.summary,
       },
       {
         id: 'matched-primary',
@@ -566,11 +827,21 @@ function buildExitGateMatrix(
           ? 'PROVISIONAL_PASS'
           : 'INCOMPLETE',
         evidence: phases.map(
-          (phase) => `${phaseName(phase)}/semantic-cases.jsonl`,
+          (phase) => `${phaseName(phase)}/${semanticCasesFilename()}`,
         ),
         reason: result.gates.exactOnceSemanticScores
           ? 'All case identities have one semantic record; unavailable provider cases remain explicitly unscored.'
           : 'Semantic case identity coverage is incomplete.',
+      },
+      {
+        id: 'langfuse-observability',
+        status: langfuseQualification.required
+          ? langfuseQualification.status
+          : 'NOT_REQUIRED',
+        evidence: [evidencePath(langfuseExperimentLedgerPath)],
+        reason: langfuseQualification.required
+          ? langfuseQualification.summary
+          : 'Langfuse cached replay is not required for this legacy finalizer run.',
       },
       {
         id: 'release-approval',
@@ -613,27 +884,30 @@ function main() {
   const providerValidation = fs.existsSync(providerValidationPath)
     ? JSON.parse(fs.readFileSync(providerValidationPath, 'utf8'))
     : undefined;
+  const rerankerQualification = qualifyReranker(providerValidation);
   const calibration = fs.existsSync(calibrationReviewPath)
     ? JSON.parse(fs.readFileSync(calibrationReviewPath, 'utf8'))
     : undefined;
   const productionValidation = fs.existsSync(productionValidationPath)
     ? JSON.parse(fs.readFileSync(productionValidationPath, 'utf8'))
     : undefined;
+  const langfuseLedger = fs.existsSync(langfuseExperimentLedgerPath)
+    ? JSON.parse(fs.readFileSync(langfuseExperimentLedgerPath, 'utf8'))
+    : undefined;
+  const langfuseQualification = qualifyLangfuseReplay(
+    langfuseLedger,
+    phases.map(({ state }, index) => ({ phase: phaseNames[index], state })),
+    fingerprint(rows),
+    rows.length,
+  );
+  langfuseQualification.required =
+    process.env.RAG_FINAL_REQUIRE_LANGFUSE === 'true';
+  const calibrationDatasetBound = validateCalibrationReview(calibration);
   const humanGold =
-    Array.isArray(calibration?.cases) &&
-    calibration.cases.length > 0 &&
-    calibration.cases.every(
-      (entry) =>
-        entry.reviewedLabel !== null && entry.reviewedLabel !== undefined,
-    ) &&
+    calibrationDatasetBound &&
     (calibration?.humanApproved === true || !calibration?.reviewMetadata);
   const agentSourceReview =
-    Array.isArray(calibration?.cases) &&
-    calibration.cases.length > 0 &&
-    calibration.cases.every(
-      (entry) =>
-        entry.reviewedLabel !== null && entry.reviewedLabel !== undefined,
-    ) &&
+    calibrationDatasetBound &&
     process.env.RAG_FINAL_REVIEW_AUTHORITY ===
       'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
     calibration?.reviewAuthority === 'AGENT_AUTHORIZED_SOURCE_OF_TRUTH' &&
@@ -658,6 +932,8 @@ function main() {
     humanGold,
     agentSourceReview,
     productionRetrievalProven,
+    rerankerQualification,
+    langfuseObservability: langfuseQualification,
     independentReview,
     reviewAuthority,
     evaluatorProtocol: EVALUATOR_VERSION,
@@ -680,6 +956,7 @@ function main() {
       semanticApplicable: semantic[index].all,
       semanticByBucket: semantic[index].byBucket,
       semanticEvaluatorVersion: semantic[index].evaluatorVersion,
+      semanticEligibilityPolicy: semantic[index].eligibilityPolicy,
     })),
     gates: {
       exactOncePrimaryResponses: true,
@@ -687,12 +964,16 @@ function main() {
       semanticEvaluatorConsistent: semantic.every(
         (phase) => phase.evaluatorVersion === EVALUATOR_VERSION,
       ),
+      semanticEligibilityPolicyConsistent: semantic.every(
+        (phase) => phase.eligibilityPolicy === ELIGIBILITY_POLICY,
+      ),
       applicabilitySeparated: true,
       privacyCanaryLeaks: phases.reduce(
         (sum, phase) => sum + phase.summary.privacyCanaryLeaks,
         0,
       ),
       liveProductionRetrieval: productionRetrievalProven ? 'PASS' : 'UNPROVEN',
+      calibrationDatasetBinding: calibrationDatasetBound ? 'PASS' : 'BLOCKED',
       humanGoldLabels: humanGold ? 'PASS' : 'UNPROVEN',
       agentSourceReview: agentSourceReview ? 'PASS' : 'UNPROVEN',
       independentReview: independentReview,
@@ -700,6 +981,12 @@ function main() {
       structuredActionFailures: phases[1].summary.structuredActions.failed,
       operationalFaultCoverage: operational?.status || 'UNVERIFIED',
       visualSourceContract: visualContract?.status || 'UNVERIFIED',
+      liveTeiRerankerQualification: rerankerQualification.pass
+        ? 'PASS'
+        : 'BLOCKED',
+      langfuseObservability: langfuseQualification.required
+        ? langfuseQualification.status
+        : 'NOT_REQUIRED',
     },
   };
   result.qualityGate = buildQualityGate({
@@ -724,6 +1011,7 @@ function main() {
       providerValidation,
       calibration,
       productionValidation,
+      langfuseQualification,
     ),
   );
   const lines = [
@@ -784,7 +1072,12 @@ if (require.main === module) main();
 
 module.exports = {
   analyzePhase,
+  assertSemanticEligibilityPolicy,
   analyzeSemantic,
   buildExitGateMatrix,
+  semanticCasesFilename,
+  qualifyReranker,
+  qualifyLangfuseReplay,
+  validateCalibrationReview,
   semanticAggregate,
 };

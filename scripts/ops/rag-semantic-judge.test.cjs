@@ -291,7 +291,6 @@ test('JudgePoolController rotates keys and records results in quota ledger', asy
   );
 
   // Calling CASE-001 again should hit ledger without calling provider
-  pool.nextKeyIndex = 1;
   const res1Repeat = await pool.evaluateCase({
     caseId: 'CASE-001',
     question: 'Q1',
@@ -334,6 +333,7 @@ test('JudgePoolController stops retrying a key after its TPD quota is exhausted'
   };
   const pool = new JudgePoolController({
     groqApiKeys: ['key-alpha', 'key-beta'],
+    groqQuotaGroups: ['org-alpha', 'org-beta'],
     ledgerBaseDir: tempDir,
     tpmLimitPerKey: 50_000,
     maxRetries: 0,
@@ -353,6 +353,90 @@ test('JudgePoolController stops retrying a key after its TPD quota is exhausted'
   });
 
   assert.deepEqual(calledKeys, ['key-alpha', 'key-beta', 'key-beta']);
+});
+
+test('JudgePoolController shares daily quota within an organization group', async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-shared-org-test-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const calledKeys = [];
+  const pool = new JudgePoolController({
+    groqApiKeys: ['key-alpha', 'key-beta'],
+    groqQuotaGroups: ['same-org', 'same-org'],
+    ledgerBaseDir: tempDir,
+    tpmLimitPerGroup: 6500,
+    tpdLimitPerGroup: 145_000,
+    maxRetries: 0,
+  });
+
+  assert.equal(pool.groqGroups.length, 1);
+  assert.equal(pool.groqGroups[0].keys.length, 2);
+  assert.equal(pool.groqGroups[0].controller.options.tpmLimit, 6500);
+  assert.equal(pool.groqGroups[0].controller.options.tpdLimit, 145_000);
+  await assert.rejects(
+    pool.evaluatePrompt({
+      caseId: 'CASE-SHARED-ORG',
+      prompt: 'Score the answer.',
+      estimatedTokens: 100,
+      fetchFn: async (_url, options) => {
+        calledKeys.push(options.headers.Authorization.replace('Bearer ', ''));
+        return {
+          ok: false,
+          status: 429,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: { message: 'tokens per day (TPD) exhausted' },
+            }),
+        };
+      },
+    }),
+    /tokens per day/i,
+  );
+  assert.deepEqual(calledKeys, ['key-alpha']);
+});
+
+test('JudgePoolController rotates quota across distinct organization groups', async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-org-groups-test-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const calledKeys = [];
+  const pool = new JudgePoolController({
+    groqApiKeys: ['key-alpha', 'key-beta'],
+    groqQuotaGroups: ['org-alpha', 'org-beta'],
+    ledgerBaseDir: tempDir,
+    tpmLimitPerGroup: 6500,
+    tpdLimitPerGroup: 145_000,
+    maxRetries: 0,
+  });
+  const result = await pool.evaluatePrompt({
+    caseId: 'CASE-DISTINCT-ORG',
+    prompt: 'Score the answer.',
+    estimatedTokens: 100,
+    fetchFn: async (_url, options) => {
+      const key = options.headers.Authorization.replace('Bearer ', '');
+      calledKeys.push(key);
+      if (key === 'key-alpha') {
+        return {
+          ok: false,
+          status: 429,
+          headers: new Headers(),
+          text: async () =>
+            JSON.stringify({
+              error: { message: 'tokens per day (TPD) exhausted' },
+            }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: 'judge output' } }],
+          usage: { total_tokens: 40 },
+        }),
+      };
+    },
+  });
+  assert.deepEqual(calledKeys, ['key-alpha', 'key-beta']);
+  assert.equal(result.rawContent, 'judge output');
 });
 
 test('JudgePoolController evaluates only dimensions with sufficient evidence', async (t) => {

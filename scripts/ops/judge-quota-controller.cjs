@@ -30,11 +30,16 @@ class JudgeQuotaController {
     }
 
     return this.lock(async () => {
-      const prior = this.records.find(
-        (record) => record.requestId === requestId && record.type !== 'reserve',
-      );
+      const prior = [...this.records]
+        .reverse()
+        .find(
+          (record) =>
+            record.requestId === requestId && record.type !== 'reserve',
+        );
       if (prior?.type === 'complete') return prior.result;
-      if (prior?.type === 'failed') throw this.errorFromRecord(prior);
+      if (prior?.type === 'failed' && !this.canRetryDailyFailure(prior)) {
+        throw this.errorFromRecord(prior);
+      }
 
       for (
         let attempt = 1;
@@ -112,6 +117,8 @@ class JudgeQuotaController {
     if (
       message.includes('daily') ||
       message.includes('tokens per day') ||
+      message.includes('requests per day') ||
+      /\b(?:tpd|rpd)\b/.test(message) ||
       message.includes('quota exhausted')
     ) {
       return false;
@@ -121,6 +128,21 @@ class JudgeQuotaController {
       status === 429 ||
       status >= 500 ||
       /timeout|network|connect/.test(message)
+    );
+  }
+
+  canRetryDailyFailure(record) {
+    const message = String(record.error?.message ?? '').toLowerCase();
+    const code = String(record.error?.code ?? '').toUpperCase();
+    const dailyQuota =
+      code === 'JUDGE_TPD_EXHAUSTED' ||
+      /tokens per day|requests per day|\b(?:tpd|rpd)\b|daily (?:token|request)|quota exhausted/.test(
+        message,
+      );
+    return (
+      dailyQuota &&
+      new Date(record.at).toISOString().slice(0, 10) <
+        new Date(this.options.now()).toISOString().slice(0, 10)
     );
   }
 

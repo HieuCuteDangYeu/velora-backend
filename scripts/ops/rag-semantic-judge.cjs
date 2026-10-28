@@ -417,38 +417,56 @@ async function callCloudflareJudge({
 
 class JudgePoolController {
   constructor(options) {
-    const groqKeys = (options.groqApiKeys || [])
-      .map((k) => k?.trim())
-      .filter(Boolean);
+    const groqKeys = [
+      ...new Set(
+        (options.groqApiKeys || []).map((key) => key?.trim()).filter(Boolean),
+      ),
+    ];
+    const quotaGroups =
+      options.groqQuotaGroups || Array(groqKeys.length).fill('shared');
+    if (
+      quotaGroups.length !== groqKeys.length ||
+      quotaGroups.some((group) => typeof group !== 'string' || !group.trim())
+    )
+      throw new Error('Groq quota groups must match unique API keys');
 
-    this.groqKeys = groqKeys;
     this.cloudflareAccountId = options.allowProviderFallback
       ? options.cloudflareAccountId
       : undefined;
     this.cloudflareApiToken = options.cloudflareApiToken;
     this.ledgerBaseDir = options.ledgerBaseDir || '.benchmarks/judge-ledgers';
-    this.tpmLimitPerKey = options.tpmLimitPerKey || 6500;
-    this.tpdLimitPerKey = options.tpdLimitPerKey;
-    this.nextKeyIndex = 0;
-
-    this.groqControllers = groqKeys.map((key, i) => {
-      return {
-        key,
-        index: i,
-        controller: new JudgeQuotaController({
-          tpmLimit: this.tpmLimitPerKey,
-          tpdLimit: this.tpdLimitPerKey,
-          ledgerPath: `${this.ledgerBaseDir}/groq-key-${i}.jsonl`,
-          maxRetries: options.maxRetries ?? 2,
-        }),
-      };
-    });
-    this.exhaustedGroqKeyIndexes = new Set();
+    this.tpmLimitPerGroup =
+      options.tpmLimitPerGroup ?? options.tpmLimitPerKey ?? 6500;
+    this.tpdLimitPerGroup = options.tpdLimitPerGroup ?? options.tpdLimitPerKey;
+    const groups = new Map();
+    for (const [index, key] of groqKeys.entries()) {
+      const name = quotaGroups[index].trim();
+      if (!groups.has(name)) {
+        groups.set(name, {
+          index: groups.size,
+          keys: [],
+          nextKeyIndex: 0,
+          controller: new JudgeQuotaController({
+            tpmLimit: this.tpmLimitPerGroup,
+            tpdLimit: this.tpdLimitPerGroup,
+            ledgerPath: `${this.ledgerBaseDir}/groq-group-${fingerprint(name).slice(0, 12)}.jsonl`,
+            maxRetries: options.maxRetries ?? 2,
+          }),
+        });
+      }
+      groups.get(name).keys.push({ key, index });
+    }
+    this.groqGroups = [...groups.values()];
+    this.nextGroupIndex = 0;
+    this.exhaustedGroqGroupIndexes = new Set();
   }
 
-  isTpdExhausted(error) {
+  isDailyQuotaError(error) {
+    if (error?.code === 'JUDGE_TPD_EXHAUSTED') return true;
     const message = String(error?.message ?? error).toLowerCase();
-    return /tokens per day|\btpd\b|daily token (?:limit|quota)/i.test(message);
+    return /tokens per day|requests per day|\b(?:tpd|rpd)\b|daily (?:token|request)|quota exhausted/i.test(
+      message,
+    );
   }
 
   async evaluateCase(input) {
@@ -493,16 +511,16 @@ class JudgePoolController {
       estimatedTokens,
       Math.ceil(prompt.length / 3) + 1536,
     );
-    if (estimatedTokens > this.tpmLimitPerKey)
-      throw new Error('Judge prompt exceeds the per-key TPM budget');
+    if (estimatedTokens > this.tpmLimitPerGroup)
+      throw new Error('Judge prompt exceeds the organization TPM budget');
     const identity = fingerprint({
       version: EVALUATOR_VERSION,
       model: DEFAULT_GROQ_MODEL,
       prompt,
     });
     const requestId = `${caseId}:${identity}`;
-    for (const slot of this.groqControllers) {
-      const complete = slot.controller.records.find(
+    for (const group of this.groqGroups) {
+      const complete = group.controller.records.find(
         (record) =>
           record.type === 'complete' && record.requestId === requestId,
       );
@@ -510,43 +528,49 @@ class JudgePoolController {
     }
     let lastError = null;
 
-    // Try Groq pool first
-    if (this.groqControllers.length > 0) {
-      const startIndex = this.nextKeyIndex;
-      for (
-        let attempt = 0;
-        attempt < this.groqControllers.length;
-        attempt += 1
-      ) {
-        const slot =
-          this.groqControllers[
-            (startIndex + attempt) % this.groqControllers.length
-          ];
-        if (this.exhaustedGroqKeyIndexes.has(slot.index)) continue;
-        this.nextKeyIndex =
-          (startIndex + attempt + 1) % this.groqControllers.length;
+    // Quota is reserved at organization scope; keys within one group share it.
+    for (let attempt = 0; attempt < this.groqGroups.length; attempt += 1) {
+      const groupIndex =
+        (this.nextGroupIndex + attempt) % this.groqGroups.length;
+      const group = this.groqGroups[groupIndex];
+      if (this.exhaustedGroqGroupIndexes.has(group.index)) continue;
 
-        try {
-          const rawResult = await slot.controller.run(
-            requestId,
-            estimatedTokens,
-            async () => {
-              return callGroqJudge({
-                apiKey: slot.key,
-                prompt,
-                fetchFn,
-              });
-            },
-          );
+      try {
+        const rawResult = await group.controller.run(
+          requestId,
+          estimatedTokens,
+          async () => {
+            let lastKeyError;
+            for (
+              let keyAttempt = 0;
+              keyAttempt < group.keys.length;
+              keyAttempt += 1
+            ) {
+              const slot = group.keys[group.nextKeyIndex++ % group.keys.length];
+              try {
+                return await callGroqJudge({
+                  apiKey: slot.key,
+                  prompt,
+                  fetchFn,
+                });
+              } catch (error) {
+                lastKeyError = error;
+                if (this.isDailyQuotaError(error)) throw error;
+                if (error?.status !== 401 && error?.status !== 403) throw error;
+              }
+            }
+            throw (
+              lastKeyError || new Error('No usable Groq key in quota group')
+            );
+          },
+        );
 
-          return rawResult;
-        } catch (error) {
-          lastError = error;
-          if (this.isTpdExhausted(error))
-            this.exhaustedGroqKeyIndexes.add(slot.index);
-          // If TPD exhausted on this key or non-retryable error, try next key in pool
-          continue;
-        }
+        this.nextGroupIndex = (groupIndex + 1) % this.groqGroups.length;
+        return rawResult;
+      } catch (error) {
+        lastError = error;
+        if (this.isDailyQuotaError(error))
+          this.exhaustedGroqGroupIndexes.add(group.index);
       }
     }
 
@@ -570,10 +594,10 @@ class JudgePoolController {
 
     throw (
       lastError ||
-      (this.exhaustedGroqKeyIndexes.size === this.groqControllers.length
+      (this.exhaustedGroqGroupIndexes.size === this.groqGroups.length
         ? Object.assign(
             new Error(
-              'All configured Groq judge keys are TPD-exhausted for this UTC day',
+              'All configured Groq judge quota groups are exhausted for this UTC day',
             ),
             { code: 'JUDGE_TPD_EXHAUSTED' },
           )

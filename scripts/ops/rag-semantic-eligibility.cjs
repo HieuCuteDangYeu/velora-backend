@@ -5,6 +5,8 @@ const {
   applicability,
 } = require('./rag-evaluation-applicability.cjs');
 
+const ELIGIBILITY_POLICY = 'dimension-evidence-v4';
+
 function hasAnswer(output) {
   return typeof output?.answer === 'string' && output.answer.trim().length > 0;
 }
@@ -29,10 +31,11 @@ function hasReference(item) {
 }
 
 function hasCapturedContext(output) {
-  return (
-    output?.contextCaptureStatus === 'CAPTURED' &&
-    Array.isArray(output.generationEvidence)
-  );
+  const captured =
+    typeof output?.contextCaptureStatus === 'string'
+      ? output.contextCaptureStatus === 'CAPTURED'
+      : output?.executionHealth?.status === 'AVAILABLE';
+  return captured && Array.isArray(output.generationEvidence);
 }
 
 function dimensionAvailability(item, output) {
@@ -71,6 +74,7 @@ function dimensionAvailability(item, output) {
 }
 
 module.exports = {
+  ELIGIBILITY_POLICY,
   dimensionAvailability,
   hasAnswer,
   hasCapturedContext,

@@ -2,7 +2,41 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { evaluateProbe } = require('./validate-rag-live-boundary.cjs');
+const {
+  evaluateProbe,
+  probeClientMessageId,
+  shouldProbeExistingConversation,
+} = require('./validate-rag-live-boundary.cjs');
+
+test('existing-conversation probes require an explicit flag and conversation ID', () => {
+  assert.equal(shouldProbeExistingConversation({}, 'conversation-1'), false);
+  assert.equal(
+    shouldProbeExistingConversation(
+      { 'probe-existing-conversation': true },
+      'conversation-1',
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      shouldProbeExistingConversation(
+        { 'probe-existing-conversation': true },
+        '',
+      ),
+    /conversation-id is required/,
+  );
+});
+
+test('live probe client message IDs are stable for exact-once retries', () => {
+  assert.equal(
+    probeClientMessageId('v8-case-0045-vs-0001', 'shared'),
+    probeClientMessageId('v8-case-0045-vs-0001', 'shared'),
+  );
+  assert.notEqual(
+    probeClientMessageId('v8-case-0045-vs-0001', 'shared'),
+    probeClientMessageId('v8-case-0045-vs-0001', 'unshared'),
+  );
+});
 
 const sharedMessage = {
   id: 'shared-message',
@@ -22,7 +56,8 @@ const sharedMessage = {
 
 const unsharedMessage = {
   id: 'unshared-message',
-  content: "I can't provide information about that Reel because it was not shared.",
+  content:
+    "I can't provide information about that Reel because it was not shared.",
   metadata: { citations: [] },
 };
 
@@ -73,7 +108,8 @@ test('accepts the production no-context refusal wording', () => {
     sharedMessage,
     unsharedMessage: {
       ...unsharedMessage,
-      content: 'I do not have enough verified shared reel evidence to answer that reliably.',
+      content:
+        'I do not have enough verified shared reel evidence to answer that reliably.',
     },
     sharedReelId: 'shared-reel',
     unsharedReelId: 'unshared-reel',

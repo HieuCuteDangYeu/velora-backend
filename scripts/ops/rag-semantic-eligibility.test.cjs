@@ -51,6 +51,36 @@ test('treats captured empty evidence as observed context and preserves correct r
   });
 });
 
+test('uses available primary execution health as a legacy capture attestation', () => {
+  const item = {
+    input: { question: 'What did the speaker say?' },
+    expectedOutput: { referenceAnswer: 'A supported answer.' },
+    metadata: { bucket: 'TRANSCRIPT' },
+  };
+  const captured = dimensionAvailability(item, {
+    answer: 'A supported answer.',
+    generationEvidence: [{ evidenceText: 'captured source' }],
+    executionHealth: { status: 'AVAILABLE' },
+  });
+  assert.equal(captured.faithfulness, 'AVAILABLE');
+  assert.equal(captured.contextCompleteness, 'AVAILABLE');
+
+  const explicitlyNotCaptured = dimensionAvailability(item, {
+    answer: 'A supported answer.',
+    contextCaptureStatus: 'NOT_CAPTURED',
+    generationEvidence: [{ evidenceText: 'captured source' }],
+    executionHealth: { status: 'AVAILABLE' },
+  });
+  assert.equal(
+    explicitlyNotCaptured.faithfulness,
+    'GENERATION_CONTEXT_NOT_CAPTURED',
+  );
+  assert.equal(
+    explicitlyNotCaptured.contextCompleteness,
+    'GENERATION_CONTEXT_NOT_CAPTURED',
+  );
+});
+
 test('does not judge ambiguous clarification cases against a null factual reference', () => {
   const availability = dimensionAvailability(
     {

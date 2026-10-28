@@ -411,11 +411,15 @@ function redactEvaluationSnapshot(value) {
           }),
       );
     } catch (error) {
+      const quota = {};
+      for (const key of ['totalKeys', 'exhaustedKeys', 'cooldownKeys']) {
+        if (Number.isInteger(error?.[key])) quota[key] = error[key];
+      }
       console.log(
         '__RESULT__' +
           JSON.stringify({
             caseId: row.id,
-            error: { name: error.name, code: error.code },
+            error: { name: error.name, code: error.code, ...quota },
             trace,
             fixtureEvents: ports.events,
           }),

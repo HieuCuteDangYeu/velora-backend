@@ -19,9 +19,15 @@ const {
   DIMENSIONS,
   isApplicable,
 } = require('./rag-evaluation-applicability.cjs');
-const { dimensionAvailability } = require('./rag-semantic-eligibility.cjs');
-
-const ELIGIBILITY_POLICY = 'dimension-evidence-v3';
+const {
+  ELIGIBILITY_POLICY,
+  dimensionAvailability,
+  hasCapturedContext,
+} = require('./rag-semantic-eligibility.cjs');
+const {
+  parseGroqQuotaGroups,
+  contextCaptureStatusFromResponse,
+} = require('./run-rag-coverage-evaluation.cjs');
 
 function parseArgs(argv) {
   const args = {};
@@ -76,10 +82,37 @@ function semanticTaskMetadata(item) {
 }
 
 function generationContextForJudge(output) {
-  return output?.contextCaptureStatus === 'CAPTURED' &&
-    Array.isArray(output.generationEvidence)
-    ? output.generationEvidence
-    : undefined;
+  return hasCapturedContext(output) ? output.generationEvidence : undefined;
+}
+
+function loadContextCaptureStatusByCaseId(responsesPath, expectedCaseIds) {
+  const expected = new Set(expectedCaseIds);
+  const captureByCaseId = new Map();
+  const lines = fs
+    .readFileSync(path.resolve(responsesPath), 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const response = JSON.parse(line);
+    if (
+      typeof response.caseId !== 'string' ||
+      !expected.has(response.caseId) ||
+      captureByCaseId.has(response.caseId)
+    )
+      throw new Error('Primary response capture identities are invalid');
+    captureByCaseId.set(
+      response.caseId,
+      contextCaptureStatusFromResponse(response),
+    );
+  }
+
+  if (
+    captureByCaseId.size !== expected.size ||
+    [...expected].some((caseId) => !captureByCaseId.has(caseId))
+  )
+    throw new Error('Primary response capture set does not match the frozen cases');
+  return captureByCaseId;
 }
 
 function saveJsonAtomic(filePath, data) {
@@ -91,6 +124,100 @@ function saveJsonAtomic(filePath, data) {
     mode: 0o600,
   });
   fs.renameSync(tmpPath, resolved);
+}
+
+function seedPrimaryUsageLedger({
+  primaryUsageLedgerPath,
+  ledgerBaseDir,
+  quotaGroups,
+  now = Date.now(),
+}) {
+  if (!primaryUsageLedgerPath) return { seededRows: 0, seededTokens: 0 };
+  const sourcePath = path.resolve(primaryUsageLedgerPath);
+  if (!fs.existsSync(sourcePath))
+    throw new Error('Primary Groq usage ledger is missing');
+  const nowValue = typeof now === 'function' ? now() : now;
+  const today = new Date(nowValue).toISOString().slice(0, 10);
+  const byGroup = new Map();
+  const seen = new Set();
+  const primaryRows = fs
+    .readFileSync(sourcePath, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+
+  for (const row of primaryRows) {
+    if (row.model !== DEFAULT_GROQ_MODEL) continue;
+    const at = Date.parse(row.at);
+    if (!Number.isFinite(at))
+      throw new Error('Primary Groq usage row has an invalid timestamp');
+    if (new Date(at).toISOString().slice(0, 10) !== today) continue;
+    if (
+      !Array.isArray(quotaGroups) ||
+      !Number.isInteger(row.keyIndex) ||
+      row.keyIndex < 0 ||
+      row.keyIndex >= quotaGroups.length
+    )
+      throw new Error('Primary Groq usage row has an invalid key index');
+    const group = String(quotaGroups[row.keyIndex] ?? '').trim();
+    if (!group) throw new Error('Primary Groq usage row has no quota group');
+    const totalTokens = Number(row.totalTokens);
+    const cachedTokens = Number(row.cachedTokens ?? 0);
+    if (
+      !Number.isFinite(totalTokens) ||
+      !Number.isFinite(cachedTokens) ||
+      totalTokens < 0 ||
+      cachedTokens < 0
+    )
+      throw new Error('Primary Groq usage row has invalid token counts');
+    const tokens = Math.max(0, totalTokens - cachedTokens);
+    if (tokens === 0) continue;
+    const requestId =
+      'primary-usage:' +
+      fingerprint({
+        caseId: row.caseId ?? null,
+        keyIndex: row.keyIndex,
+        model: row.model,
+        at: row.at,
+        totalTokens,
+        cachedTokens,
+      }).slice(0, 24);
+    if (seen.has(requestId)) continue;
+    seen.add(requestId);
+    const groupRows = byGroup.get(group) ?? [];
+    groupRows.push({ type: 'reserve', requestId, at, tokens });
+    byGroup.set(group, groupRows);
+  }
+
+  let seededRows = 0;
+  let seededTokens = 0;
+  for (const [group, rows] of byGroup) {
+    const ledgerPath = path.join(
+      path.resolve(ledgerBaseDir),
+      'groq-group-' + fingerprint(group).slice(0, 12) + '.jsonl',
+    );
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true, mode: 0o700 });
+    const existing = fs.existsSync(ledgerPath)
+      ? fs
+          .readFileSync(ledgerPath, 'utf8')
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line))
+      : [];
+    const existingIds = new Set(
+      existing.map((record) => record.requestId).filter(Boolean),
+    );
+    const missing = rows.filter((record) => !existingIds.has(record.requestId));
+    if (!missing.length) continue;
+    fs.appendFileSync(
+      ledgerPath,
+      missing.map((record) => JSON.stringify(record)).join('\n') + '\n',
+      { encoding: 'utf8', mode: 0o600 },
+    );
+    seededRows += missing.length;
+    seededTokens += missing.reduce((sum, record) => sum + record.tokens, 0);
+  }
+  return { day: today, seededRows, seededTokens };
 }
 
 function computeStats(values) {
@@ -235,12 +362,19 @@ async function main() {
       statePath = defaultState;
     } else {
       throw new Error(
-        'Usage: run-semantic-judge --state <path/to/.state.json> [--publish] [--concurrency <N>] [--limit <N>]',
+        'Usage: run-semantic-judge --state <path/to/.state.json> [--responses <path/to/responses.jsonl>] [--publish] [--concurrency <N>] [--limit <N>]',
       );
     }
   }
 
   const state = loadJson(statePath);
+  const responseCaptureStatusByCaseId = args.responses
+    ? loadContextCaptureStatusByCaseId(args.responses, Object.keys(state.cases))
+    : null;
+  if (responseCaptureStatusByCaseId)
+    console.log(
+      `[Judge] Loaded exact response capture status for ${responseCaptureStatusByCaseId.size} frozen cases`,
+    );
   const runId =
     state.runId || path.basename(statePath).replace(/\.state\.json$/, '');
   const datasetName =
@@ -338,10 +472,18 @@ async function main() {
     const itemMap = new Map(datasetItems.map((it) => [it.id, it]));
 
     // Setup Groq key pool & quota controllers
-    const groqKeys = (process.env.GROQ_API_KEYS || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const groqKeys = [
+      ...new Set(
+        (process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const groqQuotaGroups = parseGroqQuotaGroups(
+      process.env.GROQ_API_KEY_QUOTA_GROUPS,
+      groqKeys.length,
+    );
 
     if (
       !groqKeys.length &&
@@ -353,16 +495,34 @@ async function main() {
     }
 
     const tpmLimit = Number.parseInt(args['tpm-limit'] ?? '6500', 10) || 6500;
+    const tpdLimit =
+      process.env.GROQ_PAID_TIER === 'true'
+        ? Infinity
+        : Number.parseInt(
+            args['tpd-limit'] ?? process.env.GROQ_TPD_LIMIT ?? '145000',
+            10,
+          ) || 145000;
     const allowProviderFallback =
       args['allow-cloudflare-fallback'] === true ||
       process.env.RAG_SEMANTIC_JUDGE_ALLOW_CLOUDFLARE_FALLBACK === 'true';
+    const primaryUsageSeed = seedPrimaryUsageLedger({
+      primaryUsageLedgerPath: args['primary-usage-ledger'],
+      ledgerBaseDir: ledgerDir,
+      quotaGroups: groqQuotaGroups,
+    });
+    if (primaryUsageSeed.seededRows > 0)
+      console.log(
+        `[Judge] Accounted for ${primaryUsageSeed.seededTokens} uncached primary tokens from ${primaryUsageSeed.day}`,
+      );
     const pool = new JudgePoolController({
       groqApiKeys: groqKeys,
+      groqQuotaGroups,
       cloudflareAccountId: process.env.CLOUDFLARE_ACCOUNT_ID,
       cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
       allowProviderFallback,
       ledgerBaseDir: ledgerDir,
-      tpmLimitPerKey: tpmLimit,
+      tpmLimitPerGroup: tpmLimit,
+      tpdLimitPerGroup: tpdLimit,
       maxRetries: 3,
     });
     console.log(
@@ -407,19 +567,28 @@ async function main() {
               `[Worker ${workerIdx}] Warning: Dataset item ${caseId} not found in Langfuse dataset.`,
             );
             semanticData.cases[caseId] = {
+              caseId,
+              evaluatorVersion: EVALUATOR_VERSION,
+              eligibilityPolicy: ELIGIBILITY_POLICY,
               error: `Dataset item ${caseId} not found`,
             };
             continue;
           }
 
           const question = item.input?.question;
+          const judgeOutput = responseCaptureStatusByCaseId
+            ? {
+                ...caseEntry.output,
+                contextCaptureStatus: responseCaptureStatusByCaseId.get(caseId),
+              }
+            : caseEntry.output;
           const referenceAnswer = item.expectedOutput?.acceptedAnswers?.length
             ? item.expectedOutput.acceptedAnswers
             : (item.expectedOutput?.answer ??
               item.expectedOutput?.referenceAnswer);
-          const generatedAnswer = caseEntry.output?.answer;
-          const context = generationContextForJudge(caseEntry.output);
-          const availability = dimensionAvailability(item, caseEntry.output);
+          const generatedAnswer = judgeOutput?.answer;
+          const context = generationContextForJudge(judgeOutput);
+          const availability = dimensionAvailability(item, judgeOutput);
           if (caseEntry.error || caseEntry.status === 'FAILED') {
             for (const dimension of DIMENSIONS) {
               if (availability[dimension] === 'AVAILABLE')
@@ -471,6 +640,7 @@ async function main() {
 
             semanticData.cases[caseId] = {
               ...evaluation,
+              eligibilityPolicy: ELIGIBILITY_POLICY,
               status,
               datasetItem: item,
               applicability: Object.fromEntries(
@@ -480,11 +650,11 @@ async function main() {
                 ]),
               ),
               dimensionAvailability: availability,
-              executionHealth: caseEntry.output?.executionHealth ?? {
+              executionHealth: judgeOutput?.executionHealth ?? {
                 status: 'UNKNOWN',
                 failedStages: [],
               },
-              traceId: caseEntry.output?.traceId,
+              traceId: judgeOutput?.traceId,
             };
             processedCount += 1;
 
@@ -508,6 +678,7 @@ async function main() {
               status: 'UNAVAILABLE',
               error: error.message,
               evaluatorVersion: EVALUATOR_VERSION,
+              eligibilityPolicy: ELIGIBILITY_POLICY,
             };
             saveJsonAtomic(outputPath, semanticData);
           }
@@ -571,7 +742,12 @@ async function main() {
 
     saveJsonAtomic(outputPath, semanticData);
     const casesLines = Object.entries(semanticData.cases).map(
-      ([caseId, evaluation]) => JSON.stringify({ caseId, ...evaluation }),
+      ([caseId, evaluation]) =>
+        JSON.stringify({
+          caseId,
+          ...evaluation,
+          eligibilityPolicy: ELIGIBILITY_POLICY,
+        }),
     );
     fs.writeFileSync(`${casesOutputPath}.tmp`, `${casesLines.join('\n')}\n`, {
       encoding: 'utf8',
@@ -642,9 +818,11 @@ module.exports = {
   availableStats,
   computeStats,
   generationContextForJudge,
+  loadContextCaptureStatusByCaseId,
   loadJson,
   parseArgs,
   semanticTaskMetadata,
+  seedPrimaryUsageLedger,
   publishSemanticScores,
   saveJsonAtomic,
 };

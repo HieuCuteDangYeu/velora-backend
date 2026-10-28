@@ -91,6 +91,17 @@ function hasExpectedTemporalCitation(citations, expected) {
   });
 }
 
+function shouldProbeExistingConversation(args, conversationId) {
+  if (args['probe-existing-conversation'] !== true) return false;
+  if (!conversationId)
+    throw new Error('--conversation-id is required when probing an existing conversation');
+  return true;
+}
+
+function probeClientMessageId(probeId, label) {
+  return `rag-live-boundary-${probeId}-${label}`;
+}
+
 function evaluateProbe({ sharedMessage, unsharedMessage, sharedReelId, unsharedReelId, expectedEvidenceType, expectedStart, expectedEnd }) {
   const sharedCitations = citationsFromMessage(sharedMessage);
   const unsharedCitations = citationsFromMessage(unsharedMessage);
@@ -181,7 +192,7 @@ async function waitForBotMessage(request, conversationId, botUserId, userCreated
 
 async function sendQuestion(request, conversationId, botUserId, question, runId, label) {
   const userMessage = await request('POST', `/conversations/${conversationId}/messages`, {
-    clientMessageId: `rag-live-boundary-${runId}-${label}-${crypto.randomUUID()}`,
+    clientMessageId: probeClientMessageId(runId, label),
     content: question,
     type: 'text',
     signalType: 0,
@@ -208,6 +219,7 @@ async function main() {
   const sharedQuestion = String(args['shared-question'] || process.env.RAG_LIVE_SHARED_QUESTION || '').trim();
   const unsharedQuestion = String(args['unshared-question'] || process.env.RAG_LIVE_UNSHARED_QUESTION || '').trim();
   const releaseSha = String(args['release-sha'] || process.env.RAG_RELEASE_SHA || '').trim();
+  const probeId = String(args['probe-id'] || process.env.RAG_LIVE_BOUNDARY_PROBE_ID || releaseSha.slice(0, 12)).trim();
   const outputPath = path.resolve(String(args.output || process.env.RAG_LIVE_BOUNDARY_OUTPUT || '.benchmarks/rag-live-boundary-validation.json'));
   const expectedEvidenceType = String(args['expected-evidence-type'] || process.env.RAG_LIVE_EXPECTED_EVIDENCE_TYPE || 'TRANSCRIPT').trim();
   const expectedStart = args['expected-start'] === undefined ? undefined : Number(args['expected-start']);
@@ -224,6 +236,7 @@ async function main() {
     unsharedReelId: unsharedReelId || null,
     conversationId: null,
     probe: {
+      probeId: probeId || null,
       expectedEvidenceType: expectedEvidenceType || null,
       expectedStart: Number.isFinite(expectedStart) ? expectedStart : null,
       expectedEnd: Number.isFinite(expectedEnd) ? expectedEnd : null,
@@ -234,6 +247,7 @@ async function main() {
     if (!baseUrl || !email || !password || !botUserId || !sharedReelId || !unsharedReelId || !sharedQuestion || !unsharedQuestion || !releaseSha) {
       throw new Error('backend credentials, release SHA, probe Reel IDs and questions are required');
     }
+    if (!/^[A-Za-z0-9._-]{1,80}$/.test(probeId)) throw new Error('probe ID must use 1-80 letters, digits, dots, underscores or hyphens');
     if (sharedReelId === unsharedReelId) throw new Error('shared and unshared Reel IDs must differ');
     if ((expectedStart !== undefined && !Number.isFinite(expectedStart)) || (expectedEnd !== undefined && !Number.isFinite(expectedEnd))) {
       throw new Error('expected temporal bounds must be finite numbers');
@@ -241,11 +255,14 @@ async function main() {
     const request = apiClient(baseUrl, { email, password });
     await request('POST', '/auth/login', { email, password });
     const resumedConversationId = String(args['conversation-id'] || process.env.RAG_LIVE_BOUNDARY_CONVERSATION_ID || '').trim();
+    const probeExistingConversation = shouldProbeExistingConversation(args, resumedConversationId);
     const resumedSharedMessageId = String(args['shared-message-id'] || process.env.RAG_LIVE_BOUNDARY_SHARED_MESSAGE_ID || '').trim();
     let conversationId = resumedConversationId;
     let sharedMessage;
     let unsharedMessage;
-    if (resumedConversationId) {
+    if (probeExistingConversation) {
+      sharedMessage = await sendQuestion(request, conversationId, botUserId, sharedQuestion, probeId, 'shared');
+    } else if (resumedConversationId) {
       if (!resumedSharedMessageId) throw new Error('--shared-message-id is required when resuming a conversation');
       const messages = await request('GET', `/conversations/${resumedConversationId}/messages?limit=50`);
       sharedMessage = messageRows(messages).find((message) => message?.id === resumedSharedMessageId);
@@ -268,13 +285,22 @@ async function main() {
         conversationId,
         botUserId,
         sharedQuestion,
-        releaseSha.slice(0, 12),
+        probeId,
         'shared',
       );
     }
     result.conversationId = conversationId;
     const resumedUnsharedMessageId = String(args['unshared-message-id'] || process.env.RAG_LIVE_BOUNDARY_UNSHARED_MESSAGE_ID || '').trim();
-    if (resumedUnsharedMessageId) {
+    if (probeExistingConversation) {
+      unsharedMessage = await sendQuestion(
+        request,
+        conversationId,
+        botUserId,
+        unsharedQuestion,
+        probeId,
+        'unshared',
+      );
+    } else if (resumedUnsharedMessageId) {
       const messages = await request('GET', `/conversations/${conversationId}/messages?limit=50`);
       unsharedMessage = messageRows(messages).find((message) => message?.id === resumedUnsharedMessageId);
       if (!unsharedMessage) throw new Error(`unshared message ${resumedUnsharedMessageId} was not found in the resumed conversation`);
@@ -284,7 +310,7 @@ async function main() {
         conversationId,
         botUserId,
         unsharedQuestion,
-        releaseSha.slice(0, 12),
+        probeId,
         'unshared',
       );
     }
@@ -319,5 +345,7 @@ module.exports = {
   evaluateProbe,
   hasExpectedTemporalCitation,
   isAccessRefusal,
+  probeClientMessageId,
   safeMessageObservation,
+  shouldProbeExistingConversation,
 };

@@ -110,6 +110,61 @@ export class GenerateDraftAnswerUseCase {
     private readonly config: IAiApplicationConfig,
   ) {}
 
+  private isMetadataRequest(state: RagChatWorkflowState): boolean {
+    return (
+      state.route?.reelQuestionType === 'REEL_METADATA' ||
+      /\b(?:title|tags?|description|cast|director|release (?:date|year)|genre|duration)\b/i.test(
+        state.userMessage,
+      )
+    );
+  }
+
+  private requiredAnswerEvidenceTypes(
+    state: RagChatWorkflowState,
+  ): NonNullable<RagChatWorkflowState['route']>['requiredEvidence'] {
+    return (state.route?.requiredEvidence ?? []).filter(
+      (type) =>
+        type !== 'NONE' &&
+        type !== 'AUDIO' &&
+        (type !== 'METADATA' || this.isMetadataRequest(state)),
+    );
+  }
+
+  private generationEvidenceFromCandidate(candidate: {
+    evidenceId: string;
+    chunk: RagChatWorkflowState['rerankedChunks'][number];
+  }): RagGenerationEvidence {
+    const { chunk, evidenceId } = candidate;
+    const title = chunk.title?.trim() || undefined;
+    return {
+      evidenceId,
+      sourceId: chunk.chunkId,
+      reelId: chunk.reelId,
+      indexVersion: chunk.indexVersion,
+      startTime: chunk.startTime,
+      endTime: chunk.endTime,
+      evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+      title,
+      evidenceText:
+        chunk.evidenceText?.trim() ||
+        [
+          title ? `Title: ${title}` : undefined,
+          Array.isArray(chunk.tags) && chunk.tags.length > 0
+            ? `Tags: ${chunk.tags.join(', ')}`
+            : undefined,
+          chunk.description?.trim()
+            ? `Description: ${chunk.description.trim()}`
+            : undefined,
+          chunk.chunkText?.trim(),
+        ]
+          .filter((value): value is string =>
+            Boolean(value && value.length > 0),
+          )
+          .join(' - ')
+          .trim(),
+    };
+  }
+
   async execute(state: RagChatWorkflowState): Promise<RagDraftAnswer> {
     const diagnostics: StructuredLlmCallDiagnostics[] = [];
     const transcriptSegmentKind = transcriptSegmentRequestKind(
@@ -117,6 +172,11 @@ export class GenerateDraftAnswerUseCase {
       state.route,
       state.retrievalPlan,
     );
+    const requiredEvidenceTypes = this.requiredAnswerEvidenceTypes(state);
+    const answerRoute =
+      state.route?.requiredEvidence === undefined
+        ? state.route
+        : { ...state.route, requiredEvidence: requiredEvidenceTypes };
     const bounds = transcriptSegmentPromptBounds(
       readRagPromptBounds(this.config),
       transcriptSegmentKind,
@@ -125,12 +185,12 @@ export class GenerateDraftAnswerUseCase {
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
-      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
+      requiredEvidenceTypes,
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,
       state.contextSufficiency,
-      state.route,
+      answerRoute,
       state.retrievalPlan?.requiresReelCoverage === true,
     );
     const answerEvidence = boundedChunks.flatMap((chunk, index) =>
@@ -139,32 +199,9 @@ export class GenerateDraftAnswerUseCase {
         : [],
     );
     const memoryEvidence = ragMemoryEvidence(state, this.config);
-    const boundedAuthorizedEvidence: RagGenerationEvidence[] =
-      answerEvidence.map(({ chunk, evidenceId }) => ({
-        evidenceId,
-        sourceId: chunk.chunkId,
-        reelId: chunk.reelId,
-        indexVersion: chunk.indexVersion,
-        startTime: chunk.startTime,
-        endTime: chunk.endTime,
-        evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
-        title: chunk.title?.trim() || undefined,
-        evidenceText:
-          chunk.evidenceText?.trim() ||
-          [
-            chunk.title ? `Title: ${chunk.title.trim()}` : undefined,
-            Array.isArray(chunk.tags) && chunk.tags.length > 0
-              ? `Tags: ${chunk.tags.join(', ')}`
-              : undefined,
-            chunk.description?.trim()
-              ? `Description: ${chunk.description.trim()}`
-              : undefined,
-            chunk.chunkText?.trim(),
-          ]
-            .filter((val): val is string => Boolean(val && val.length > 0))
-            .join(' - ')
-            .trim(),
-      }));
+    const boundedAuthorizedEvidence = answerEvidence.map((candidate) =>
+      this.generationEvidenceFromCandidate(candidate),
+    );
     boundedAuthorizedEvidence.push(...memoryEvidence);
     const requestedSource = state.route
       ? sourceRetrievalPlan(state.userMessage, state.route)
@@ -495,11 +532,7 @@ export class GenerateDraftAnswerUseCase {
       }
     }
     const coverageInstructions = [
-      ...(new Set(
-        (state.route?.requiredEvidence ?? []).filter(
-          (type) => type !== 'NONE' && type !== 'AUDIO',
-        ),
-      ).size > 1
+      ...(new Set(requiredEvidenceTypes).size > 1
         ? [
             'Cover every required evidence type with a separate, type-matched factual claim; keep transcript statements separate from visual observations.',
           ]
@@ -533,9 +566,12 @@ export class GenerateDraftAnswerUseCase {
         : []),
     ];
     const systemPrompt = [
-      this.chatPromptBuilder.build(state, {
-        includeRetrievedEvidence: false,
-      }),
+      this.chatPromptBuilder.build(
+        answerRoute ? { ...state, route: answerRoute } : state,
+        {
+          includeRetrievedEvidence: false,
+        },
+      ),
       ...coverageInstructions,
       'Return only JSON matching the supplied schema.',
       'Treat claims as an exhaustive grounding audit of every independently checkable factual reel assertion actually stated in answer; do not omit any such assertion.',
@@ -570,7 +606,7 @@ export class GenerateDraftAnswerUseCase {
               bounds.maxClaimChars,
             )
           : undefined,
-      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
+      requiredEvidenceTypes,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
       contextSufficiency: state.contextSufficiency
         ? {
@@ -705,7 +741,7 @@ export class GenerateDraftAnswerUseCase {
           authorizedEvidence,
         );
       }
-      const retryPrompt = `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement. Re-answer the exact requested relation in the shortest complete form within the supplied answer budget. State any required supported quantity explicitly. Cover every required evidence type and, for a Reel comparison, each Reel represented in the supplied evidence. Omit conversational preambles for titles, quotes, or tags, and return an exhaustive claim mapping using only the supplied authorized evidence IDs. If the evidence cannot support every required part, state that limitation instead of answering only one part.`;
+      const retryPrompt = `${systemPrompt}\n\nThe previous response violated the local grounding contract, including the explicit-quantity requirement, or failed structured-output validation. Re-answer the exact requested relation in the shortest complete form within the supplied answer budget. State any required supported quantity explicitly. Cover every required evidence type and, for a Reel comparison, each Reel represented in the supplied evidence. Omit conversational preambles for titles, quotes, or tags, and return an exhaustive claim mapping using only the supplied authorized evidence IDs. If the evidence cannot support every required part, state that limitation instead of answering only one part.`;
       try {
         raw = await request(retryPrompt);
         return synthesized(raw);
@@ -737,16 +773,21 @@ export class GenerateDraftAnswerUseCase {
         state.retrievalPlan,
       ),
     );
+    const requiredEvidenceTypes = this.requiredAnswerEvidenceTypes(state);
+    const answerRoute =
+      state.route?.requiredEvidence === undefined
+        ? state.route
+        : { ...state.route, requiredEvidence: requiredEvidenceTypes };
     const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
       preserveTail: true,
       focusText: state.userMessage,
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
-      requiredEvidenceTypes: state.route?.requiredEvidence ?? [],
+      requiredEvidenceTypes,
     });
     const answerEvidenceIds = selectRagAnswerEvidenceIds(
       boundedChunks,
       state.contextSufficiency,
-      state.route,
+      answerRoute,
       state.retrievalPlan?.requiresReelCoverage === true,
     );
     const candidates =
@@ -783,6 +824,9 @@ export class GenerateDraftAnswerUseCase {
               evidenceIds: [titleCandidate.evidenceId],
             },
           ],
+          generationEvidence: [
+            this.generationEvidenceFromCandidate(titleCandidate),
+          ],
           modelRole: 'ANSWER',
           diagnostics,
           finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
@@ -817,6 +861,9 @@ export class GenerateDraftAnswerUseCase {
               evidenceIds: [tagCandidate.evidenceId],
             },
           ],
+          generationEvidence: [
+            this.generationEvidenceFromCandidate(tagCandidate),
+          ],
           modelRole: 'ANSWER',
           diagnostics,
           finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
@@ -833,18 +880,36 @@ export class GenerateDraftAnswerUseCase {
     );
     if (multimodalFallback) return multimodalFallback;
 
+    const multiReelTranscriptFallback =
+      this.extractiveMultiReelTranscriptFallback(
+        state,
+        candidates,
+        reason,
+        diagnostics,
+      );
+    if (multiReelTranscriptFallback) return multiReelTranscriptFallback;
+
     const result = this.extractiveTranscriptFallback(state, candidates);
     if (!result) return undefined;
+    const selectedCandidates = candidates.filter(({ evidenceId }) =>
+      result.evidenceIds.includes(evidenceId),
+    );
+    const generationEvidence = selectedCandidates.map((candidate) =>
+      this.generationEvidenceFromCandidate(candidate),
+    );
+    const claims = [
+      {
+        claim: result.answer,
+        evidenceIds: result.evidenceIds,
+      },
+    ];
+    this.validateRequiredEvidenceCoverage(claims, state, generationEvidence);
     return {
       answer: result.answer,
-      claims: [
-        {
-          claim: result.answer,
-          evidenceIds: result.evidenceIds,
-        },
-      ],
+      claims,
       modelRole: 'ANSWER',
       diagnostics,
+      generationEvidence,
       finalizationMode: 'EXTRACTIVE_TRANSCRIPT_FALLBACK',
       fallbackReason: reason,
     };
@@ -978,14 +1043,153 @@ export class GenerateDraftAnswerUseCase {
     };
   }
 
+  private extractiveMultiReelTranscriptFallback(
+    state: RagChatWorkflowState,
+    candidates: Array<{
+      evidenceId: string;
+      chunk: RagChatWorkflowState['rerankedChunks'][number];
+    }>,
+    reason: RagAnswerFallbackReason,
+    diagnostics: StructuredLlmCallDiagnostics[],
+  ): RagDraftAnswer | undefined {
+    if (
+      state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
+      state.retrievalPlan?.requiresReelCoverage !== true ||
+      state.contextSufficiency?.sufficient !== true ||
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ) !== 'MULTI_REEL_COMPARISON'
+    ) {
+      return undefined;
+    }
+    const requiredTypes = this.requiredAnswerEvidenceTypes(state);
+    if (
+      !requiredTypes.includes('TRANSCRIPT') ||
+      requiredTypes.some((type) => type !== 'TRANSCRIPT')
+    ) {
+      return undefined;
+    }
+
+    const supportedIds = new Set(
+      state.contextSufficiency.supportedEvidenceIds ?? [],
+    );
+    const accessibleReelIds = state.accessibleReelIds;
+    const byReel = new Map<
+      string,
+      Array<{
+        evidenceId: string;
+        chunk: RagChatWorkflowState['rerankedChunks'][number];
+      }>
+    >();
+    for (const candidate of candidates) {
+      const { chunk, evidenceId } = candidate;
+      if (
+        !supportedIds.has(evidenceId) ||
+        !chunk.reelId ||
+        (accessibleReelIds !== undefined &&
+          !accessibleReelIds.includes(chunk.reelId)) ||
+        (chunk.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT' ||
+        !(chunk.evidenceText?.trim() || chunk.chunkText?.trim())
+      ) {
+        continue;
+      }
+      const group = byReel.get(chunk.reelId) ?? [];
+      group.push(candidate);
+      byReel.set(chunk.reelId, group);
+    }
+
+    const requiredReelIds = new Set(
+      (state.retrievedChunks ?? [])
+        .map((chunk) => chunk.reelId)
+        .filter((reelId): reelId is string => Boolean(reelId)),
+    );
+    if (
+      byReel.size < 2 ||
+      [...requiredReelIds].some((reelId) => !byReel.has(reelId))
+    ) {
+      return undefined;
+    }
+
+    const groups = [...byReel.values()];
+    const maxAnswerChars = Math.max(
+      ragAnswerBudget(state.route.reelQuestionType).maxChars,
+      1_800,
+    );
+    const perReelBudget = Math.floor(
+      (maxAnswerChars - (groups.length - 1) * 2) / groups.length,
+    );
+    const answerParts: string[] = [];
+    const claims: RagAnswerClaim[] = [];
+    const selectedEvidenceIds = new Set<string>();
+
+    for (const [index, group] of groups.entries()) {
+      const ordered = [...group].sort(
+        (left, right) =>
+          (left.chunk.startTime ?? Infinity) -
+          (right.chunk.startTime ?? Infinity),
+      );
+      const source = ordered[0];
+      if (!source) return undefined;
+      const evidenceText =
+        source.chunk.evidenceText?.trim() ||
+        source.chunk.chunkText?.trim() ||
+        '';
+      const label = source.chunk.title?.trim() || `Clip ${index + 1}`;
+      const prefix = `${label}: `;
+      const excerptBudget = perReelBudget - prefix.length;
+      if (excerptBudget < 80) return undefined;
+
+      const spans = this.selectFallbackSpans(
+        state.userMessage,
+        [{ evidenceId: source.evidenceId, evidenceText }],
+        { shape: 'SUMMARY', maxChars: excerptBudget },
+      );
+      const excerpt = boundPromptText(
+        spans.map((span) => span.text).join(' '),
+        excerptBudget,
+      ).trim();
+      if (!excerpt) return undefined;
+
+      const answerPart = `${prefix}${excerpt}`;
+      answerParts.push(answerPart);
+      claims.push({ claim: answerPart, evidenceIds: [source.evidenceId] });
+      selectedEvidenceIds.add(source.evidenceId);
+    }
+
+    const answer = answerParts.join('\n\n');
+    if (answer.length > maxAnswerChars) return undefined;
+    const generationEvidence = candidates
+      .filter(({ evidenceId }) => selectedEvidenceIds.has(evidenceId))
+      .map((candidate) => this.generationEvidenceFromCandidate(candidate));
+    try {
+      this.validateRequiredEvidenceCoverage(claims, state, generationEvidence);
+    } catch {
+      return undefined;
+    }
+
+    return {
+      answer,
+      claims,
+      modelRole: 'ANSWER',
+      diagnostics,
+      generationEvidence,
+      finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      fallbackReason: reason,
+    };
+  }
+
   private isRetryableAnswerContractError(error: unknown): boolean {
     if (error instanceof DraftAnswerContractError) return true;
     if (!error || typeof error !== 'object') return false;
     const candidate = error as Record<string, unknown>;
     return (
-      candidate['code'] === 'STRUCTURED_COMPLETION_SCHEMA_INVALID' &&
-      candidate['path'] === '$.answer' &&
-      candidate['constraint'] === 'maxLength'
+      (candidate['code'] === 'STRUCTURED_COMPLETION_SCHEMA_INVALID' &&
+        candidate['path'] === '$.answer' &&
+        candidate['constraint'] === 'maxLength') ||
+      (candidate['code'] === 'STRUCTURED_COMPLETION_PROVIDER_ERROR' &&
+        candidate['providerCode'] === 'json_validate_failed')
     );
   }
 
@@ -1005,9 +1209,7 @@ export class GenerateDraftAnswerUseCase {
     authorizedEvidence: RagGenerationEvidence[],
   ): void {
     if (state.route?.intent !== 'REEL_VIDEO_QUESTION') return;
-    const requiredTypes = (state.route.requiredEvidence ?? []).filter(
-      (type) => type !== 'NONE' && type !== 'AUDIO',
-    );
+    const requiredTypes = this.requiredAnswerEvidenceTypes(state);
     if (requiredTypes.length === 0) return;
 
     const evidenceById = new Map(
@@ -1065,15 +1267,20 @@ export class GenerateDraftAnswerUseCase {
         retrievalText?: string;
         chunkText?: string;
         reelId?: string;
+        title?: string;
       };
     }>,
   ): { answer: string; evidenceIds: string[] } | undefined {
+    const requiredEvidenceTypes = this.requiredAnswerEvidenceTypes(state);
+    const metadataOnlyForSourceIdentity =
+      state.route?.requiredEvidence?.includes('METADATA') === true &&
+      !this.isMetadataRequest(state);
     if (
       state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
-      !(state.route.requiredEvidence ?? []).includes('TRANSCRIPT') ||
-      (state.route.requiredEvidence ?? []).some(
-        (type) => type !== 'NONE' && type !== 'TRANSCRIPT',
-      ) ||
+      (metadataOnlyForSourceIdentity &&
+        state.contextSufficiency?.sufficient !== true) ||
+      !requiredEvidenceTypes.includes('TRANSCRIPT') ||
+      requiredEvidenceTypes.some((type) => type !== 'TRANSCRIPT') ||
       candidates.length === 0
     ) {
       return undefined;
@@ -1083,6 +1290,7 @@ export class GenerateDraftAnswerUseCase {
       .map(({ chunk, evidenceId }) => ({
         evidenceId,
         evidenceType: chunk.evidenceType ?? 'TRANSCRIPT',
+        title: chunk.title?.trim() || undefined,
         evidenceText:
           chunk.evidenceText?.trim() ||
           chunk.retrievalText?.trim() ||

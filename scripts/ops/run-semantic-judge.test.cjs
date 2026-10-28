@@ -1,7 +1,12 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require('node:fs');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const test = require('node:test');
@@ -9,11 +14,140 @@ const test = require('node:test');
 const {
   computeStats,
   generationContextForJudge,
+  loadContextCaptureStatusByCaseId,
   loadJson,
   parseArgs,
   semanticTaskMetadata,
+  seedPrimaryUsageLedger,
   saveJsonAtomic,
 } = require('./run-semantic-judge.cjs');
+const { fingerprint } = require('./rag-evaluation-contract.cjs');
+const { JudgePoolController } = require('./rag-semantic-judge.cjs');
+
+test('primary Groq usage seeds the shared judge ledger once per UTC day', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-primary-usage-seed-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const primaryUsageLedgerPath = join(tempDir, 'shared-usage.jsonl');
+  const ledgerBaseDir = join(tempDir, 'judge-ledgers');
+  const entries = [
+    {
+      caseId: 'case-today-a',
+      keyIndex: 0,
+      model: 'openai/gpt-oss-120b',
+      totalTokens: 5_000,
+      cachedTokens: 1_000,
+      at: '2026-10-27T00:02:00.000Z',
+    },
+    {
+      caseId: 'case-today-b',
+      keyIndex: 1,
+      model: 'openai/gpt-oss-120b',
+      totalTokens: 3_000,
+      cachedTokens: 500,
+      at: '2026-10-27T00:02:03.000Z',
+    },
+    {
+      caseId: 'case-yesterday',
+      keyIndex: 0,
+      model: 'openai/gpt-oss-120b',
+      totalTokens: 50_000,
+      cachedTokens: 0,
+      at: '2026-10-26T23:59:00.000Z',
+    },
+    {
+      caseId: 'other-model',
+      keyIndex: 0,
+      model: 'openai/gpt-oss-20b',
+      totalTokens: 50_000,
+      cachedTokens: 0,
+      at: '2026-10-27T00:02:05.000Z',
+    },
+  ];
+  writeFileSync(
+    primaryUsageLedgerPath,
+    entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n',
+  );
+  const options = {
+    primaryUsageLedgerPath,
+    ledgerBaseDir,
+    quotaGroups: ['shared', 'shared'],
+    now: Date.parse('2026-10-27T12:00:00.000Z'),
+  };
+
+  assert.deepEqual(seedPrimaryUsageLedger(options), {
+    day: '2026-10-27',
+    seededRows: 2,
+    seededTokens: 6_500,
+  });
+  const quotaLedger = join(
+    ledgerBaseDir,
+    'groq-group-' + fingerprint('shared').slice(0, 12) + '.jsonl',
+  );
+  const records = readFileSync(quotaLedger, 'utf8')
+    .trim()
+    .split('\n')
+    .map(JSON.parse);
+  assert.deepEqual(
+    records.map(({ type, tokens }) => ({ type, tokens })),
+    [
+      { type: 'reserve', tokens: 4_000 },
+      { type: 'reserve', tokens: 2_500 },
+    ],
+  );
+  assert.deepEqual(seedPrimaryUsageLedger(options), {
+    day: '2026-10-27',
+    seededRows: 0,
+    seededTokens: 0,
+  });
+  assert.equal(readFileSync(quotaLedger, 'utf8').trim().split('\n').length, 2);
+});
+
+test('semantic judge refuses provider calls when primary usage consumed the shared TPD budget', async (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-primary-usage-budget-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const primaryUsageLedgerPath = join(tempDir, 'shared-usage.jsonl');
+  const ledgerBaseDir = join(tempDir, 'judge-ledgers');
+  const today = new Date().toISOString().slice(0, 10);
+  writeFileSync(
+    primaryUsageLedgerPath,
+    JSON.stringify({
+      caseId: 'primary-case',
+      keyIndex: 0,
+      model: 'openai/gpt-oss-120b',
+      totalTokens: 145_432,
+      cachedTokens: 1_000,
+      at: `${today}T00:00:00.000Z`,
+    }) + '\n',
+  );
+  seedPrimaryUsageLedger({
+    primaryUsageLedgerPath,
+    ledgerBaseDir,
+    quotaGroups: ['shared'],
+  });
+  let providerCalls = 0;
+  const pool = new JudgePoolController({
+    groqApiKeys: ['key'],
+    groqQuotaGroups: ['shared'],
+    ledgerBaseDir,
+    tpmLimitPerGroup: 1_000_000,
+    tpdLimitPerGroup: 145_000,
+    maxRetries: 0,
+  });
+
+  await assert.rejects(
+    pool.evaluatePrompt({
+      caseId: 'judge-case',
+      prompt: 'Score this answer.',
+      estimatedTokens: 100,
+      fetchFn: async () => {
+        providerCalls += 1;
+        throw new Error('provider should not be called');
+      },
+    }),
+    { code: 'JUDGE_TPD_EXHAUSTED' },
+  );
+  assert.equal(providerCalls, 0);
+});
 
 test('parseArgs parses flags with values and booleans', () => {
   const args = parseArgs([
@@ -69,6 +203,41 @@ test('judge receives evidence only when capture is explicitly confirmed', () => 
       generationEvidence: null,
     }),
     undefined,
+  );
+});
+
+test('uses exact saved response capture diagnostics for the frozen case set', (t) => {
+  const tempDir = mkdtempSync(join(tmpdir(), 'judge-context-capture-'));
+  t.after(() => rmSync(tempDir, { recursive: true, force: true }));
+  const responses = join(tempDir, 'responses.jsonl');
+  const rows = [
+    {
+      caseId: 'captured',
+      trace: {
+        workflowMetrics: {
+          diagnostics: { evaluationCapture: { contextCaptured: true } },
+        },
+      },
+    },
+    {
+      caseId: 'not-captured',
+      trace: {
+        workflowMetrics: {
+          diagnostics: { evaluationCapture: { contextCaptured: false } },
+        },
+      },
+    },
+  ];
+  writeFileSync(responses, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  const status = loadContextCaptureStatusByCaseId(responses, [
+    'captured',
+    'not-captured',
+  ]);
+  assert.equal(status.get('captured'), 'CAPTURED');
+  assert.equal(status.get('not-captured'), 'NOT_CAPTURED');
+  assert.throws(
+    () => loadContextCaptureStatusByCaseId(responses, ['captured']),
+    /capture identities are invalid/,
   );
 });
 

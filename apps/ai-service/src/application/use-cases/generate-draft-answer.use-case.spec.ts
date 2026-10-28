@@ -184,6 +184,318 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(insufficient).toBeUndefined();
   });
 
+  it('uses exact transcript spans as a source-attributed fallback for a supported multi-Reel comparison', () => {
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject: jest.fn() } as never,
+      { build: jest.fn() },
+      { model: () => 'test', maxCompletionTokens: () => 1024 } as never,
+    );
+    const state = {
+      userMessage:
+        'Compare the first indexed transcript segments of Episode One and Episode Two. Attribute each statement to its own clip.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        requiresReelCoverage: true,
+        sourceOrder: 'ASC',
+        mode: 'REEL_HYBRID',
+        query: 'Compare the opening transcript segments.',
+      },
+      accessibleReelIds: ['reel-one', 'reel-two'],
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0', 'e1'],
+        recommendedAction: 'ANSWER',
+      },
+      retrievedChunks: [
+        { chunkId: 'chunk-one', reelId: 'reel-one' },
+        { chunkId: 'chunk-two', reelId: 'reel-two' },
+      ],
+      rerankedChunks: [
+        {
+          chunkId: 'chunk-one',
+          reelId: 'reel-one',
+          title: 'Episode One',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 30,
+          evidenceText: 'Alice leaves the station after sunrise.',
+          chunkText: 'Alice leaves the station after sunrise.',
+          tags: [],
+        },
+        {
+          chunkId: 'chunk-two',
+          reelId: 'reel-two',
+          title: 'Episode Two',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 30,
+          evidenceText: 'Bob enters the courthouse before noon.',
+          chunkText: 'Bob enters the courthouse before noon.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    const fallback = useCase.buildExtractiveFallback(
+      state,
+      'ANSWER_GENERATION_FAILURE',
+    );
+
+    expect(fallback).toMatchObject({
+      answer: expect.stringContaining('Episode One:'),
+      finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
+      claims: [
+        expect.objectContaining({ evidenceIds: ['e0'] }),
+        expect.objectContaining({ evidenceIds: ['e1'] }),
+      ],
+      generationEvidence: expect.arrayContaining([
+        expect.objectContaining({ reelId: 'reel-one', evidenceId: 'e0' }),
+        expect.objectContaining({ reelId: 'reel-two', evidenceId: 'e1' }),
+      ]),
+    });
+    expect(fallback?.answer).toContain('Alice leaves the station');
+    expect(fallback?.answer).toContain(
+      'Episode Two: Bob enters the courthouse',
+    );
+
+    const oneSource = useCase.buildExtractiveFallback(
+      {
+        ...state,
+        contextSufficiency: {
+          ...state.contextSufficiency,
+          supportedEvidenceIds: ['e0'],
+        },
+      } as unknown as RagChatWorkflowState,
+      'ANSWER_GENERATION_FAILURE',
+    );
+    expect(oneSource).toBeUndefined();
+  });
+
+  it('does not require source-identifying metadata as a transcript claim', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'He arrived at 8 p.m.',
+        claims: [{ claim: 'He arrived at 8 p.m.', evidenceIds: ['e0'] }],
+      }),
+    };
+    const promptBuilder = { build: jest.fn(() => 'Grounding instructions.') };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      {
+        model: () => 'test/test/answer',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+        get: () => undefined,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the indexed transcript segment of Episode Two.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'GENERAL_REEL_SUMMARY',
+        requiredEvidence: ['TRANSCRIPT', 'METADATA'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        requiresReelCoverage: false,
+        mode: 'REEL_HYBRID',
+        query: 'Summarize the indexed transcript segment.',
+      },
+      accessibleReelIds: ['reel-two'],
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['TRANSCRIPT', 'METADATA'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0'],
+        recommendedAction: 'ANSWER',
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'chunk-two',
+          reelId: 'reel-two',
+          title: 'Episode Two',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'He arrived at 8 p.m.',
+          chunkText: 'He arrived at 8 p.m.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+
+    expect(result.answer).toBe('He arrived at 8 p.m.');
+    expect(
+      JSON.parse(service.generateObject.mock.calls[0][0].userPrompt)
+        .requiredEvidenceTypes,
+    ).toEqual(['TRANSCRIPT']);
+    expect(promptBuilder.build.mock.calls[0][0].route.requiredEvidence).toEqual(
+      ['TRANSCRIPT'],
+    );
+  });
+
+  it('retries a Groq JSON validation failure once with the answer repair prompt', async () => {
+    const providerError = Object.assign(
+      new Error('structured output invalid'),
+      {
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        providerCode: 'json_validate_failed',
+        transient: false,
+      },
+    );
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockRejectedValueOnce(providerError)
+        .mockResolvedValueOnce({
+          answer: 'A blue car is parked.',
+          claims: [{ claim: 'A blue car is parked.', evidenceIds: ['e0'] }],
+        }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test/test/answer',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+        get: () => undefined,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage: 'What is visible in the frame?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'VISUAL_CONTENT',
+        requiredEvidence: ['VISUAL'],
+        needsRetrieval: true,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['VISUAL'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0'],
+        recommendedAction: 'ANSWER',
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          title: 'A Reel',
+          evidenceType: 'VISUAL',
+          evidenceText: 'A blue car is parked.',
+          chunkText: 'A blue car is parked.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+
+    expect(result.answer).toBe('A blue car is parked.');
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject.mock.calls[1][0].systemPrompt).toMatch(
+      /failed structured-output validation/i,
+    );
+  });
+
+  it('retries invalid structured output and falls back to supported source-attributed transcript segments', async () => {
+    const invalidStructuredOutput = Object.assign(
+      new Error('structured output validation failed'),
+      {
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        providerCode: 'json_validate_failed',
+        transient: false,
+      },
+    );
+    const service = {
+      generateObject: jest.fn().mockRejectedValue(invalidStructuredOutput),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test/test/answer',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+        get: () => undefined,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'Compare the first indexed transcript segments of Episode One and Episode Two. Attribute each statement to its own clip.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        requiresReelCoverage: true,
+        sourceOrder: 'ASC',
+        mode: 'REEL_HYBRID',
+        query: 'Compare the opening transcript segments.',
+      },
+      accessibleReelIds: ['reel-one', 'reel-two'],
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0', 'e1'],
+        recommendedAction: 'ANSWER',
+      },
+      retrievedChunks: [
+        { chunkId: 'chunk-one', reelId: 'reel-one' },
+        { chunkId: 'chunk-two', reelId: 'reel-two' },
+      ],
+      rerankedChunks: [
+        {
+          chunkId: 'chunk-one',
+          reelId: 'reel-one',
+          title: 'Episode One',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 30,
+          evidenceText: 'Alice leaves the station after sunrise.',
+          chunkText: 'Alice leaves the station after sunrise.',
+          tags: [],
+        },
+        {
+          chunkId: 'chunk-two',
+          reelId: 'reel-two',
+          title: 'Episode Two',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 30,
+          evidenceText: 'Bob enters the courthouse before noon.',
+          chunkText: 'Bob enters the courthouse before noon.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+
+    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(result.finalizationMode).toBe('EXTRACTIVE_EVIDENCE_FALLBACK');
+    expect(result.answer).toContain('Episode One: Alice leaves the station');
+    expect(result.answer).toContain('Episode Two: Bob enters the courthouse');
+    expect(result.claims.map((claim) => claim.evidenceIds)).toEqual([
+      ['e0'],
+      ['e1'],
+    ]);
+    expect(result.generationEvidence?.map((item) => item.reelId)).toEqual([
+      'reel-one',
+      'reel-two',
+    ]);
+  });
+
   it('rejects a synthesized comparison whose claims omit one source Reel', async () => {
     const generateObject = jest.fn().mockResolvedValue({
       answer: 'Reel one shows a blue car.',

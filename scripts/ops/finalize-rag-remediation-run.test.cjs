@@ -2,7 +2,48 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const calibrationFixtureDir = fs.mkdtempSync(
+  path.join(os.tmpdir(), 'rag-finalizer-calibration-'),
+);
+const previousFinalDataDir = process.env.RAG_FINAL_DATA_DIR;
+const calibrationFixtureRows = [
+  {
+    id: 'ci-calibration-transcript',
+    input: { question: 'Quote the indexed transcript.' },
+    expectedOutput: {
+      referenceAnswer: 'The speaker says hello.',
+      relevantEvidenceIds: ['reel:ci:chunk:1'],
+      expectedEvidenceTypes: ['TRANSCRIPT'],
+    },
+    metadata: { bucket: 'TRANSCRIPT', answerType: 'QUOTE' },
+  },
+  {
+    id: 'ci-calibration-visual',
+    input: { question: 'Describe the frame at 2 seconds.' },
+    expectedOutput: {
+      referenceAnswer: 'A person opens the door.',
+      relevantEvidenceIds: ['reel:ci:visual:1'],
+      expectedEvidenceTypes: ['VISUAL'],
+    },
+    metadata: { bucket: 'VISUAL', answerType: 'SCENE_DESCRIPTION' },
+  },
+];
+fs.writeFileSync(
+  path.join(calibrationFixtureDir, 'development.json'),
+  JSON.stringify([calibrationFixtureRows[0]]),
+);
+fs.writeFileSync(
+  path.join(calibrationFixtureDir, 'held_out.json'),
+  JSON.stringify([calibrationFixtureRows[1]]),
+);
+process.env.RAG_FINAL_DATA_DIR = calibrationFixtureDir;
+process.on('exit', () => {
+  if (previousFinalDataDir === undefined) delete process.env.RAG_FINAL_DATA_DIR;
+  else process.env.RAG_FINAL_DATA_DIR = previousFinalDataDir;
+  fs.rmSync(calibrationFixtureDir, { recursive: true, force: true });
+});
 const {
   buildExitGateMatrix,
   qualifyLangfuseReplay,

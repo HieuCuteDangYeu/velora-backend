@@ -225,7 +225,10 @@ export function transcriptSegmentPromptBounds(
   if (!requestKind) return bounds;
   return {
     ...bounds,
-    maxEvidenceTextChars: Math.max(bounds.maxEvidenceTextChars, 1_000),
+    maxEvidenceTextChars: Math.max(
+      bounds.maxEvidenceTextChars,
+      requestKind === 'SUMMARY' ? 3_000 : 1_000,
+    ),
     maxEvidenceTotalChars: Math.max(bounds.maxEvidenceTotalChars, 3_000),
   };
 }

@@ -1344,7 +1344,7 @@ describe('GenerateDraftAnswerUseCase', () => {
           reelId: 'reel-1',
           evidenceType: 'TRANSCRIPT',
           startTime: 0.38,
-          endTime: 59.98,
+          endTime: 44,
           evidenceText:
             'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave.',
           chunkText:
@@ -1358,16 +1358,16 @@ describe('GenerateDraftAnswerUseCase', () => {
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
     expect(call.systemPrompt).toMatch(
-      /cover the main distinct statements and turns across the full authorized interval/i,
+      /cover all material statements and turns across the full authorized interval/i,
     );
     expect(JSON.parse(String(call.userPrompt)).answerShape).toBe('SUMMARY');
     expect(call.jsonSchema.properties.answer).toMatchObject({
-      maxLength: 1400,
+      maxLength: 3000,
     });
     expect(call.maxTokens).toBe(1024);
   });
 
-  it('synthesizes an explanatory answer for a transcript time range', async () => {
+  it('returns an exact indexed interval for a transcript time range', async () => {
     const generateObject = jest.fn().mockResolvedValue({
       answer: 'The speaker names the blue device.',
       claims: [
@@ -1418,7 +1418,8 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(result.answer).toBe('The speaker names the blue device.');
     expect(result.finalizationMode).toBe('SYNTHESIZED');
-    expect(generateObject).toHaveBeenCalledTimes(1);
+    expect(result.claims[0].evidenceIds).toEqual(['e0']);
+    expect(generateObject).not.toHaveBeenCalled();
   });
 
   it('chooses the chunk aligned to a requested range before overlapping chunks', async () => {
@@ -1586,23 +1587,8 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(generateObject.mock.calls[0][0].maxTokens).toBe(1024);
   });
 
-  it('covers the full transcript interval in a multimodal segment summary', async () => {
-    const answer =
-      'Visible: A person stands in the room. Spoken: The speaker describes the plan and asks the other person to leave.';
-    const generateObject = jest.fn().mockResolvedValue({
-      answer,
-      claims: [
-        {
-          claim: 'A person stands in the room.',
-          evidenceIds: ['e0'],
-        },
-        {
-          claim:
-            'The speaker describes the plan and asks the other person to leave.',
-          evidenceIds: ['e1'],
-        },
-      ],
-    });
+  it('returns the complete indexed interval with separate visual and speech evidence', async () => {
+    const generateObject = jest.fn();
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1656,25 +1642,33 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as never);
 
-    expect(result.answer).toBe(answer);
-    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /cover the main distinct statements and turns across the full authorized interval/i,
+    expect(result.answer).toBe(
+      `Visible: A person stands in the room.\n\nSaid: ${speechEvidence}`,
     );
-    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /preserve speaker changes, negation, conditions, uncertainty, and other qualifiers that change meaning/i,
-    );
-    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /completeness takes priority over brevity for this requested summary/i,
-    );
-    expect(
-      JSON.parse(String(generateObject.mock.calls[0][0].userPrompt))
-        .answerShape,
-    ).toBe('SUMMARY');
-    expect(
-      generateObject.mock.calls[0][0].jsonSchema.properties.answer,
-    ).toMatchObject({ maxLength: 1400 });
-    expect(generateObject.mock.calls[0][0].maxTokens).toBe(1024);
-    expect(generateObject.mock.calls[0][0].userPrompt).toContain(segmentTail);
+    const visualEvidenceId = result.generationEvidence?.find(
+      (item) => item.evidenceType === 'VISUAL',
+    )?.evidenceId;
+    const transcriptEvidenceId = result.generationEvidence?.find(
+      (item) => item.evidenceType === 'TRANSCRIPT',
+    )?.evidenceId;
+    expect(result.claims).toEqual([
+      {
+        claim: 'Visible: A person stands in the room.',
+        evidenceIds: [visualEvidenceId],
+      },
+      {
+        claim: `Said: ${speechEvidence}`,
+        evidenceIds: [transcriptEvidenceId],
+      },
+    ]);
+    expect(result.generationEvidence).toMatchObject([
+      {
+        evidenceType: 'VISUAL',
+        evidenceText: 'A person stands in the room.',
+      },
+      { evidenceType: 'TRANSCRIPT', evidenceText: speechEvidence },
+    ]);
+    expect(generateObject).not.toHaveBeenCalled();
   });
 
   it.each([

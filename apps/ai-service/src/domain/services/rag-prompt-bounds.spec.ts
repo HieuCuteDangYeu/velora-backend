@@ -37,9 +37,12 @@ describe('rag prompt bounds', () => {
     expect(
       transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, summary),
     ).toMatchObject({
-      maxEvidenceTextChars: 1_000,
+      maxEvidenceTextChars: 3_000,
       maxEvidenceTotalChars: 3_000,
     });
+    expect(
+      transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, comparison),
+    ).toMatchObject({ maxEvidenceTextChars: 1_000 });
     expect(
       transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, undefined),
     ).toBe(DEFAULT_RAG_PROMPT_BOUNDS);

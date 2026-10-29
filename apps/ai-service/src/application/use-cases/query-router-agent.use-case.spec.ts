@@ -145,6 +145,63 @@ describe('QueryRouterAgentUseCase', () => {
     },
   );
 
+  it('structurally routes an explicit time-bounded transcript summary', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockRejectedValue(transientRouterError(true)),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Summarize what is said in the indexed transcript segment spanning 30–74.66 seconds of Pet Chat Group Episode 5; preserve quantities, negation and uncertainty.',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'STRUCTURAL',
+      },
+    });
+    expect(structuredLlmService.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('keeps explicit visual-plus-speech summaries on multimodal classification', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          needsRetrieval: true,
+          needsVerification: true,
+          reelQuestionType: 'MULTIMODAL_CONTENT',
+          requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Describe the frame at 48 seconds and summarize the indexed speech segment at 0.38–59.98 seconds.',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    });
+    expect(structuredLlmService.generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('defines separate visual and spoken clauses as a multimodal route', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(

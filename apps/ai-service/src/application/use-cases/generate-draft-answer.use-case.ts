@@ -371,9 +371,98 @@ export class GenerateDraftAnswerUseCase {
         ? multiReelTranscriptSegmentComparisonRequest
           ? Math.max(answerBudget.maxChars, 1_800)
           : transcriptSegmentSummaryRequest
-            ? Math.max(answerBudget.maxChars, 1_400)
+            ? Math.max(answerBudget.maxChars, bounds.maxEvidenceTotalChars)
             : answerBudget.maxChars
         : 2_500;
+    const transcriptStart =
+      requestedSource?.transcriptTimestampSec ??
+      requestedSource?.sourceTimestampSec;
+    const transcriptEnd =
+      requestedSource?.transcriptTimestampEndSec ??
+      requestedSource?.sourceTimestampEndSec;
+    // shortcut: source text is returned verbatim only when one authorized chunk spans the full interval; upgrade to ordered chunk stitching if indexed windows split it.
+    if (
+      mayUseInitialExtractiveQuote &&
+      transcriptSegmentSummaryRequest &&
+      state.retrievalPlan?.requiresReelCoverage !== true &&
+      transcriptStart !== undefined &&
+      transcriptEnd !== undefined
+    ) {
+      const transcriptSource = selectTimestampTranscriptEvidence(
+        authorizedEvidence,
+        {
+          sourceTimestampSec: transcriptStart,
+          sourceTimestampEndSec: transcriptEnd,
+        },
+      );
+      const transcriptText = transcriptSource?.evidenceText.trim();
+      const sourceChunk = state.rerankedChunks.find(
+        (chunk) =>
+          chunk.chunkId === transcriptSource?.sourceId &&
+          chunk.reelId === transcriptSource.reelId,
+      );
+      const transcriptIsCompleteExactInterval = Boolean(
+        transcriptSource &&
+        typeof transcriptSource.startTime === 'number' &&
+        transcriptSource.startTime === transcriptStart &&
+        typeof transcriptSource.endTime === 'number' &&
+        transcriptSource.endTime === transcriptEnd &&
+        sourceChunk?.evidenceText?.trim() === transcriptText,
+      );
+      const visualTimestamp = requestedSource?.visualTimestampSec;
+      const visualSource = requiredEvidenceTypes.includes('VISUAL')
+        ? authorizedEvidence.find(
+            (item) =>
+              item.evidenceType === 'VISUAL' &&
+              (visualTimestamp === undefined ||
+                (typeof item.startTime === 'number' &&
+                  item.startTime <= visualTimestamp &&
+                  typeof item.endTime === 'number' &&
+                  item.endTime >= visualTimestamp)),
+          )
+        : undefined;
+      const visualText = visualSource?.evidenceText.trim();
+      const transcriptLabel = visualSource ? 'Said: ' : '';
+      const answer = transcriptText
+        ? visualSource && visualText
+          ? `Visible: ${visualText}\n\n${transcriptLabel}${transcriptText}`
+          : transcriptText
+        : '';
+      if (
+        transcriptIsCompleteExactInterval &&
+        transcriptSource &&
+        transcriptText &&
+        (!requiredEvidenceTypes.includes('VISUAL') ||
+          (visualSource !== undefined && visualText !== undefined)) &&
+        answer.length <= maxAnswerChars
+      ) {
+        const generationEvidence = [
+          ...(visualSource ? [visualSource] : []),
+          transcriptSource,
+        ];
+        return {
+          answer,
+          claims: [
+            ...(visualSource && visualText
+              ? [
+                  {
+                    claim: `Visible: ${visualText}`,
+                    evidenceIds: [visualSource.evidenceId],
+                  },
+                ]
+              : []),
+            {
+              claim: `${transcriptLabel}${transcriptText}`,
+              evidenceIds: [transcriptSource.evidenceId],
+            },
+          ],
+          modelRole: 'ANSWER',
+          diagnostics: [],
+          generationEvidence,
+          finalizationMode: 'SYNTHESIZED',
+        };
+      }
+    }
     const allowedEvidenceIds = new Set(
       authorizedEvidence.map(({ evidenceId }) => evidenceId),
     );
@@ -550,7 +639,7 @@ export class GenerateDraftAnswerUseCase {
         : []),
       ...(transcriptSegmentSummaryRequest
         ? [
-            'For a time-bounded transcript summary, cover the main distinct statements and turns across the full authorized interval, not only its opening line. Keep the speech summary separate from visual observations and use only the supplied transcript evidence. When an interval contains multiple turns, use enough concise sentences to cover its beginning, middle, and end; preserve speaker changes, negation, conditions, uncertainty, and other qualifiers that change meaning. Completeness takes priority over brevity for this requested summary.',
+            'For a time-bounded transcript summary, cover all material statements and turns across the full authorized interval, not only representative excerpts. Keep speech separate from visual observations and use only the supplied transcript evidence. Preserve speaker changes, quantities, negation, conditions, uncertainty, and other qualifiers that change meaning. Completeness takes priority over brevity for this requested summary.',
           ]
         : []),
       ...(multiReelTranscriptSegmentComparisonRequest
@@ -581,7 +670,13 @@ export class GenerateDraftAnswerUseCase {
       'When the evidence directly states the requested fact, reuse its distinctive nouns, names, values, and relations instead of replacing them with broad synonyms or a high-level summary.',
       'For quantity, count, measurement, threshold, date, duration, or age questions, state the directly supported value and unit or relation explicitly. If evidence uses digits, preserve them or spell them out; never replace a supported quantity with a vague phrase.',
       'For metadata, title, tag list, quantity/count, opening statement, or direct quote questions, provide ONLY the exact value, title, tags, or quote directly without conversational preambles or lead-in framing (do NOT write "The title of the Reel is...", "The opening statement is: ...", "The tags associated with this Reel are...", or "According to the transcript...").',
-      'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
+      ...(transcriptSegmentSummaryRequest
+        ? [
+            'For this time-bounded summary, include all material supported statements across the requested interval; do not shorten the answer by omitting a supported turn.',
+          ]
+        : [
+            'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
+          ]),
       'For SHORT_FACT questions, prefer one direct sentence. EXPLANATION and SUMMARY answers may be longer only when the question requires it.',
       'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
       'Normal conversational statements that do not depend on reel evidence may have no claims.',

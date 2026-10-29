@@ -21,7 +21,9 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   boundPromptText,
   readRagPromptBounds,
+  transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { sourceRetrievalPlan } from '@ai/domain/services/rag-source-retrieval-plan';
 
 interface RawRouteDecision {
   intent?: unknown;
@@ -228,6 +230,35 @@ export class QueryRouterAgentUseCase {
       );
       return {
         ...unavailableReelRoute,
+        diagnostics: {
+          modelRole: 'ROUTER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'STRUCTURAL',
+        },
+      };
+    }
+
+    if (this.isExplicitTimeBoundTranscriptSummary(boundedInput.message)) {
+      const transcriptSummaryRoute = this.normalize(
+        {
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          recommendationAction: {
+            type: 'NONE',
+            query: '',
+            allowPersonalizedFallback: false,
+            suggestedQueries: [],
+          },
+          tools: ['search_reel_content'],
+          reason:
+            'A time-bounded indexed transcript summary is a transcript-content request, not an overall Reel summary.',
+        },
+        boundedInput,
+      );
+      return {
+        ...transcriptSummaryRoute,
         diagnostics: {
           modelRole: 'ROUTER',
           providerStatus: 'NOT_CALLED',
@@ -882,6 +913,32 @@ Classify the current user message.
       /\bwhat\b.{0,40}\b(?:shown|said|visible|happened|happens|in)\b/i.test(
         message,
       )
+    );
+  }
+
+  private isExplicitTimeBoundTranscriptSummary(message: string): boolean {
+    if (/\b(?:frame|scene|visual|visible)\b/i.test(message)) return false;
+    const transcriptRoute = {
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      needsRetrieval: true,
+      needsUserMemory: false,
+      needsConversationSummary: false,
+      needsVerification: true,
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+      recommendationAction: {
+        type: 'NONE',
+        reason: 'Transcript evidence is required.',
+      },
+      reason: 'Transcript content request.',
+    } as RagChatRouteDecision;
+    const plan = sourceRetrievalPlan(message, transcriptRoute);
+    return (
+      transcriptSegmentRequestKind(message, transcriptRoute, plan) ===
+        'SUMMARY' &&
+      typeof plan?.sourceTimestampSec === 'number' &&
+      typeof plan.sourceTimestampEndSec === 'number'
     );
   }
 

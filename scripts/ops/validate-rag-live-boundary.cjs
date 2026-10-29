@@ -15,9 +15,17 @@ function parseArgs(argv) {
     const value = argv[index];
     if (!value?.startsWith('--')) continue;
     const [name, inlineValue] = value.slice(2).split('=', 2);
-    const next = inlineValue ?? argv[index + 1];
-    if (inlineValue === undefined && next && !next.startsWith('--')) index += 1;
-    args[name] = inlineValue ?? next ?? true;
+    if (inlineValue !== undefined) {
+      args[name] = inlineValue;
+      continue;
+    }
+    const next = argv[index + 1];
+    if (!next || next.startsWith('--')) {
+      args[name] = true;
+      continue;
+    }
+    args[name] = next;
+    index += 1;
   }
   return args;
 }
@@ -345,6 +353,7 @@ module.exports = {
   evaluateProbe,
   hasExpectedTemporalCitation,
   isAccessRefusal,
+  parseArgs,
   probeClientMessageId,
   safeMessageObservation,
   shouldProbeExistingConversation,

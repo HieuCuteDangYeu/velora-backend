@@ -50,6 +50,87 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  it('refuses when a named Episode does not match the retrieved shared Reel', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const state = {
+      userMessage:
+        'Quote the first complete sentence in "The Broken Hero\'s Return Episode 10".',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      rerankedChunks: [
+        {
+          reelId: 'shared-reel',
+          title: 'Pet Chat Group Episode 14',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'She drove all the way down from Jersey.',
+          chunkText: 'She drove all the way down from Jersey.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      sufficient: false,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+      userFacingReason: expect.stringContaining('cannot provide its content'),
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_REEL_TITLE_MISMATCH',
+      },
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
+  it('continues semantic sufficiency when the retrieved title matches', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: true,
+        confidence: 1,
+        supportedEvidenceIds: ['e0'],
+        reason: 'The requested Reel transcript is available.',
+        recommendedAction: 'ANSWER',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const state = {
+      userMessage:
+        'Quote the first complete sentence in "The Broken Hero\'s Return Episode 10".',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      rerankedChunks: [
+        {
+          reelId: 'shared-reel',
+          title: "The Broken Hero's Return Episode 10",
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The hero returned home.',
+          chunkText: 'The hero returned home.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      sufficient: true,
+      recommendedAction: 'ANSWER',
+    });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a comparison when reranking drops one retrieved Reel', async () => {
     const service = { generateObject: jest.fn() };
     const useCase = new CheckContextSufficiencyUseCase(

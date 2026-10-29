@@ -4,9 +4,27 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   evaluateProbe,
+  parseArgs,
   probeClientMessageId,
   shouldProbeExistingConversation,
 } = require('./validate-rag-live-boundary.cjs');
+
+test('CLI parser keeps valueless boolean flags when another option follows', () => {
+  assert.deepEqual(
+    parseArgs([
+      '--conversation-id',
+      'conversation-1',
+      '--probe-existing-conversation',
+      '--shared-reel-id',
+      'reel-1',
+    ]),
+    {
+      'conversation-id': 'conversation-1',
+      'probe-existing-conversation': true,
+      'shared-reel-id': 'reel-1',
+    },
+  );
+});
 
 test('existing-conversation probes require an explicit flag and conversation ID', () => {
   assert.equal(shouldProbeExistingConversation({}, 'conversation-1'), false);

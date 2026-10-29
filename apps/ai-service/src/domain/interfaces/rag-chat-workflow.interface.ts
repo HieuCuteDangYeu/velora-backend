@@ -309,6 +309,7 @@ export interface RagContextSufficiencyDiagnostics {
   providerStatus: 'NOT_CALLED' | 'SUCCESS' | 'ERROR';
   decisionSource:
     | 'DETERMINISTIC_NO_CONTEXT'
+    | 'DETERMINISTIC_REEL_TITLE_MISMATCH'
     | 'DETERMINISTIC_REQUIRED_MODALITY'
     | 'DETERMINISTIC_REQUIRED_TOOL'
     | 'LLM'

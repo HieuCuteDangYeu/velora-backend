@@ -84,6 +84,26 @@ export class CheckContextSufficiencyUseCase {
     }
 
     const availableEvidence = this.getAvailableEvidence(state);
+    if (this.hasUnmatchedExplicitReelTitle(state)) {
+      return {
+        sufficient: false,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: [],
+        reason:
+          'The explicitly requested Reel title does not match the accessible retrieved evidence.',
+        userFacingReason:
+          'That Reel is not available in this conversation’s shared context, so I cannot provide its content.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_REEL_TITLE_MISMATCH',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
     const deterministicallyMissing = this.getRequiredEvidence(state).filter(
       (required) =>
         required !== 'NONE' && !availableEvidence.includes(required),
@@ -514,6 +534,30 @@ ${JSON.stringify(
           : undefined,
       recommendedAction,
     };
+  }
+
+  private hasUnmatchedExplicitReelTitle(state: RagChatWorkflowState): boolean {
+    if (state.route?.intent !== 'REEL_VIDEO_QUESTION') return false;
+
+    const normalizeTitle = (title: string): string =>
+      title
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, ' ')
+        .trim();
+    const requestedTitles = [...state.userMessage.matchAll(/["“]([^"”]+)["”]/g)]
+      .map((match) => match[1]?.trim() ?? '')
+      .filter((title) => /\b(?:episode|chapter|part)\s+\d+\b/i.test(title))
+      .map(normalizeTitle);
+    if (requestedTitles.length === 0) return false;
+
+    const availableTitles = new Set(
+      state.rerankedChunks
+        .map((chunk) => chunk.title?.trim() ?? '')
+        .filter(Boolean)
+        .map(normalizeTitle),
+    );
+    return requestedTitles.some((title) => !availableTitles.has(title));
   }
 
   private getRequiredEvidence(

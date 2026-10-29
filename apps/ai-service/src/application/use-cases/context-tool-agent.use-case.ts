@@ -283,6 +283,8 @@ export class ContextToolAgentUseCase {
     if (retrievalPlan && retrievedChunks.length > 0) {
       try {
         rerankedChunks = await this.rerankRetrievedEvidenceUseCase.execute({
+          userMessage: state.userMessage,
+          route: state.route!,
           plan: retrievalPlan,
           retrievedChunks,
           requiredEvidence: state.route?.requiredEvidence,

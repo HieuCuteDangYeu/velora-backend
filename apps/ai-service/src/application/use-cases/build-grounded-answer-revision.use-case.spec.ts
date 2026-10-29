@@ -1,4 +1,5 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
 import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revision.use-case';
 
 describe('BuildGroundedAnswerRevisionUseCase', () => {
@@ -215,6 +216,57 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     expect(request.userPrompt).toContain('"answerQualityIssues"');
     expect(request.systemPrompt).toContain(
       'delete the unrelated material while preserving the supported fact',
+    );
+  });
+
+  it('keeps complete first-segment excerpts within the generation answer budget', async () => {
+    const question =
+      'Compare the first indexed transcript segments of Episode One and Episode Two. Attribute each statement to its own clip.';
+    const episodeOne = 'The first episode opens in a laboratory.';
+    const episodeTwo = 'The second episode opens with a child outside.';
+    const input = state({ question, evidence: [episodeOne, episodeTwo] });
+    input.retrievalPlan = { requiresReelCoverage: true } as never;
+    input.rerankedChunks = [
+      {
+        chunkId: 'episode-one',
+        reelId: 'episode-one',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: episodeOne,
+        chunkText: episodeOne,
+      },
+      {
+        chunkId: 'episode-two',
+        reelId: 'episode-two',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: episodeTwo,
+        chunkText: episodeTwo,
+      },
+    ] as never;
+    input.retrievedChunks = input.rerankedChunks;
+    input.answer = 'A'.repeat(1_100);
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: `Episode One: ${episodeOne}\nEpisode Two: ${episodeTwo}`,
+      evidenceIds: ['e0', 'e1'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      answer: `Episode One: ${episodeOne}\nEpisode Two: ${episodeTwo}`,
+      evidenceIds: ['e0', 'e1'],
+    });
+
+    const request = structuredLlm.generateObject.mock.calls[0][0];
+    expect(request.userPrompt).toContain('"answerShape":"SUMMARY"');
+    expect(request.userPrompt).toContain(
+      `"maxAnswerChars":${MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS}`,
+    );
+    expect(request.jsonSchema.properties.answer).toMatchObject({
+      maxLength: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+    });
+    expect(request.systemPrompt).toContain(
+      'preserve the complete earliest transcript segment for each Reel',
+    );
+    expect(request.systemPrompt).toContain(
+      'one concise comparison that follows from those passages',
     );
   });
 

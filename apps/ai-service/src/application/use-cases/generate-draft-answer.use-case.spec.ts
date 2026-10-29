@@ -1,5 +1,6 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
@@ -334,7 +335,7 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(result.answer).toBe('He arrived at 8 p.m.');
     expect(
-      JSON.parse(service.generateObject.mock.calls[0][0].userPrompt)
+      JSON.parse(String(service.generateObject.mock.calls[0][0].userPrompt))
         .requiredEvidenceTypes,
     ).toEqual(['TRANSCRIPT']);
     expect(promptBuilder.build.mock.calls[0][0].route.requiredEvidence).toEqual(
@@ -819,6 +820,92 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
+  it('omits unsupported claims that no readable text is visible', async () => {
+    const objectClaim = 'An orange tabby cat is in a hallway.';
+    const generateObject = jest.fn().mockResolvedValue({
+      answer: `${objectClaim} No readable text is present.`,
+      claims: [
+        { claim: objectClaim, evidenceIds: ['e0'] },
+        { claim: 'No readable text is present.', evidenceIds: ['e0'] },
+      ],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'What is visible in the sampled frame? Separate readable text from objects.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'VISUAL_CONTENT',
+        requiredEvidence: ['VISUAL'],
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText: 'An orange tabby cat in a hallway.',
+          chunkText: 'An orange tabby cat in a hallway.',
+          tags: [],
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe(objectClaim);
+    expect(result.claims).toEqual([
+      { claim: objectClaim, evidenceIds: ['e0'] },
+    ]);
+  });
+
+  it('preserves a readable-text absence claim when the visual evidence states it', async () => {
+    const answer = 'No readable text is visible.';
+    const generateObject = jest.fn().mockResolvedValue({
+      answer,
+      claims: [{ claim: answer, evidenceIds: ['e0'] }],
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage: 'Is readable text visible?',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'VISUAL_CONTENT',
+        requiredEvidence: ['VISUAL'],
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'visual-1',
+          reelId: 'reel-1',
+          evidenceType: 'VISUAL',
+          evidenceText:
+            'A sampled-frame review says no readable text is visible.',
+          chunkText: 'A sampled-frame review says no readable text is visible.',
+          tags: [],
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe(answer);
+  });
+
   it('answers an explicit first indexed sentence from the beginning rather than choosing a later sentence', async () => {
     const generateObject = jest.fn().mockResolvedValue({
       selectedSentenceCandidateId: 'sentence-1',
@@ -1269,14 +1356,14 @@ describe('GenerateDraftAnswerUseCase', () => {
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
     expect(call.systemPrompt).toMatch(
-      /preserve the actual opening transcript wording in source order/i,
+      /quote the complete earliest transcript segment from each Reel/i,
     );
     expect(call.systemPrompt).toMatch(
-      /state a concise, grounded comparison of the clips based on their supplied segments/i,
+      /one concise comparison grounded in those passages/i,
     );
     expect(JSON.parse(String(call.userPrompt)).answerShape).toBe('SUMMARY');
     expect(call.jsonSchema.properties.answer).toMatchObject({
-      maxLength: 1800,
+      maxLength: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
     });
     expect(call.maxTokens).toBe(1024);
     const prompt = JSON.parse(String(call.userPrompt)) as {
@@ -1572,10 +1659,10 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(result.answer).toBe(answer);
     expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /preserve the actual opening transcript wording in source order/i,
+      /quote the complete earliest transcript segment from each Reel/i,
     );
     expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /state a concise, grounded comparison of the clips based on their supplied segments/i,
+      /one concise comparison grounded in those passages/i,
     );
     expect(
       JSON.parse(String(generateObject.mock.calls[0][0].userPrompt))
@@ -1583,7 +1670,9 @@ describe('GenerateDraftAnswerUseCase', () => {
     ).toBe('SUMMARY');
     expect(
       generateObject.mock.calls[0][0].jsonSchema.properties.answer,
-    ).toMatchObject({ maxLength: 1800 });
+    ).toMatchObject({
+      maxLength: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+    });
     expect(generateObject.mock.calls[0][0].maxTokens).toBe(1024);
   });
 

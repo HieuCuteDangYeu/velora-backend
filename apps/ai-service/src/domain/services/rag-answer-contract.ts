@@ -151,9 +151,21 @@ export interface RagAnswerBudget {
   maxChars: number;
 }
 
+export const MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS = 1_800;
+
 export function ragAnswerBudget(
   reelQuestionType: RagReelQuestionType | undefined,
+  multiReelTranscriptComparison = false,
 ): RagAnswerBudget {
+  if (
+    reelQuestionType === 'TRANSCRIPT_CONTENT' &&
+    multiReelTranscriptComparison
+  ) {
+    return {
+      shape: 'SUMMARY',
+      maxChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+    };
+  }
   if (reelQuestionType === 'GENERAL_REEL_SUMMARY') {
     return { shape: 'SUMMARY', maxChars: 1_400 };
   }

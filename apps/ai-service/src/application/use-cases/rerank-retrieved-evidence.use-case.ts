@@ -1,10 +1,12 @@
 import type { TranscriptMatch } from '@ai/domain/interfaces/content-service.interface';
 import type {
+  RagChatRouteDecision,
   RagRequiredEvidence,
   RagRetrievalExecutionDiagnostics,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { IRetrievalEngine } from '@ai/domain/interfaces/retrieval-engine.interface';
+import { transcriptSegmentRequestKind } from '@ai/domain/services/rag-prompt-bounds';
 import { Inject, Injectable } from '@nestjs/common';
 
 @Injectable()
@@ -15,6 +17,8 @@ export class RerankRetrievedEvidenceUseCase {
   ) {}
 
   async execute(input: {
+    userMessage: string;
+    route: RagChatRouteDecision;
     plan: RagRetrievalPlan;
     retrievedChunks: TranscriptMatch[];
     requiredEvidence?: RagRequiredEvidence[];
@@ -24,9 +28,22 @@ export class RerankRetrievedEvidenceUseCase {
       input.diagnostics.retrievedCount = input.retrievedChunks.length;
     }
     try {
-      const reranked = await this.retrievalEngine.rerank(input);
-      if (input.diagnostics) input.diagnostics.rerankedCount = reranked.length;
-      return reranked;
+      const reranked = await this.retrievalEngine.rerank({
+        plan: input.plan,
+        retrievedChunks: input.retrievedChunks,
+        requiredEvidence: input.requiredEvidence,
+        diagnostics: input.diagnostics,
+      });
+      const result =
+        transcriptSegmentRequestKind(
+          input.userMessage,
+          input.route,
+          input.plan,
+        ) === 'MULTI_REEL_COMPARISON'
+          ? firstTranscriptSegmentPerReel(reranked)
+          : reranked;
+      if (input.diagnostics) input.diagnostics.rerankedCount = result.length;
+      return result;
     } catch (error: unknown) {
       if (input.diagnostics && !input.diagnostics.failedStage) {
         input.diagnostics.failedStage = 'RERANK';
@@ -46,4 +63,25 @@ export class RerankRetrievedEvidenceUseCase {
       throw error;
     }
   }
+}
+
+function firstTranscriptSegmentPerReel(
+  candidates: TranscriptMatch[],
+): TranscriptMatch[] {
+  const earliestByReel = new Map<string, TranscriptMatch>();
+  for (const candidate of candidates) {
+    if ((candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT') continue;
+    const current = earliestByReel.get(candidate.reelId);
+    if (
+      !current ||
+      (candidate.startTime ?? Infinity) < (current.startTime ?? Infinity)
+    ) {
+      earliestByReel.set(candidate.reelId, candidate);
+    }
+  }
+  return candidates.filter(
+    (candidate) =>
+      (candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT' ||
+      earliestByReel.get(candidate.reelId) === candidate,
+  );
 }

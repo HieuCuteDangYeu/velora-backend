@@ -67,15 +67,19 @@ export class BuildGroundedAnswerRevisionUseCase {
       return undefined;
     }
 
+    const requestKind = transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      state.retrievalPlan,
+    );
     const bounds = transcriptSegmentPromptBounds(
       readRagPromptBounds(this.config),
-      transcriptSegmentRequestKind(
-        state.userMessage,
-        state.route,
-        state.retrievalPlan,
-      ),
+      requestKind,
     );
-    const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
+    const answerBudget = ragAnswerBudget(
+      state.route?.reelQuestionType,
+      requestKind === 'MULTI_REEL_COMPARISON',
+    );
     const verifierIssues = boundTextItems(
       verification.issues ?? [],
       (issue) => issue,
@@ -148,7 +152,13 @@ export class BuildGroundedAnswerRevisionUseCase {
           'When multiple Reels and modalities are required, include evidence from every required modality for each Reel; evidence from another Reel cannot substitute.',
           'For metadata, title, tag, quantity, opening statement, or quote questions, provide the exact value directly without conversational preambles (e.g. do not write "The title is...", "The tags are...", etc.).',
           'If the current answer is supported but indirect, repetitive, or over-verbose, delete the unrelated material while preserving the supported fact that answers the question.',
-          'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
+          ...(requestKind === 'MULTI_REEL_COMPARISON'
+            ? [
+                'For this comparison, preserve the complete earliest transcript segment for each Reel in its own labeled section and source order, then give one concise comparison that follows from those passages. Do not use ellipses, transfer facts between Reels, or claim a fact is shared unless both passages support it.',
+              ]
+            : [
+                'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
+              ]),
           'Never invent an evidence ID. Return only JSON matching the schema.',
         ].join(' '),
         userPrompt: JSON.stringify({
@@ -158,6 +168,7 @@ export class BuildGroundedAnswerRevisionUseCase {
           ),
           answerShape: answerBudget.shape,
           maxAnswerChars: answerBudget.maxChars,
+          transcriptSegmentRequestKind: requestKind,
           currentAnswer: boundPromptText(
             state.answer ?? '',
             bounds.maxAnswerChars,

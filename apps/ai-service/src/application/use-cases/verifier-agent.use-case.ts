@@ -541,22 +541,28 @@ Do not accept an answer merely because a claim points to an evidence ID. Compare
 
 Evaluate answer quality separately from factual grounding. passed and issues describe grounding only. answerQualityPassed and answerQualityIssues describe whether the answer directly answers the exact question without unrelated supported facts, unnecessary transcript reproduction, or avoidable verbosity for the supplied answer shape and budget. Concise, direct answers for titles, tags, quantities, opening statements, or quotes without conversational preambles are fully valid and strongly preferred for answerQualityPassed. A fully grounded but indirect answer must keep passed=true, set answerQualityPassed=false, and set requiresRevision=true with a brief trimming instruction that keeps the supported answer facts unchanged.
 
+When the user asks for the first indexed transcript segment from each Reel, complete separately labeled segments are required; do not mark them as unnecessary transcript reproduction. A comparison sentence is appropriate only when it follows from those passages, keeps each fact attributed to its source, and does not claim a shared detail unless both passages support it.
+
 Return only compact JSON matching the schema. Keep issues, contradictions, claims, and any revision instruction brief. Use only evidence IDs; do not repeat evidence text, rewrite the answer, invent IDs, or expose reasoning.
 `.trim();
   }
 
   private buildUserPrompt(state: RagChatWorkflowState): string {
+    const requestKind = transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      state.retrievalPlan,
+    );
     const bounds = transcriptSegmentPromptBounds(
       readRagPromptBounds(this.config),
-      transcriptSegmentRequestKind(
-        state.userMessage,
-        state.route,
-        state.retrievalPlan,
-      ),
+      requestKind,
     );
     const answerBudget =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
-        ? ragAnswerBudget(state.route.reelQuestionType)
+        ? ragAnswerBudget(
+            state.route.reelQuestionType,
+            requestKind === 'MULTI_REEL_COMPARISON',
+          )
         : undefined;
     const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveTail: true,
@@ -567,8 +573,13 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     const proposedClaims = boundClaimMappings(state.answerClaims ?? [], bounds);
     return JSON.stringify({
       question: boundPromptText(state.userMessage, bounds.maxUserMessageChars),
+      transcriptSegmentRequestKind: requestKind,
       answerShape: answerBudget?.shape,
       maxAnswerChars: answerBudget?.maxChars,
+      answerQualityGuidance:
+        requestKind === 'MULTI_REEL_COMPARISON'
+          ? 'Complete separately labeled first transcript segments are required; any comparison sentence must be supported by those passages and keep each fact attributed to its source.'
+          : undefined,
       requiredEvidence: state.route?.requiredEvidence ?? [],
       answer: boundPromptText(state.answer ?? '', bounds.maxAnswerChars),
       proposedClaims,
@@ -661,13 +672,14 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     raw: RawVerificationResult,
     state: RagChatWorkflowState,
   ): RagVerificationResult {
+    const requestKind = transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      state.retrievalPlan,
+    );
     const bounds = transcriptSegmentPromptBounds(
       readRagPromptBounds(this.config),
-      transcriptSegmentRequestKind(
-        state.userMessage,
-        state.route,
-        state.retrievalPlan,
-      ),
+      requestKind,
     );
     const boundedEvidence = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveReelCoverage: state.retrievalPlan?.requiresReelCoverage === true,
@@ -747,7 +759,10 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       state.route?.intent === 'REEL_VIDEO_QUESTION'
         ? ragAnswerDirectnessIssue(
             state.answer ?? '',
-            ragAnswerBudget(state.route.reelQuestionType),
+            ragAnswerBudget(
+              state.route.reelQuestionType,
+              requestKind === 'MULTI_REEL_COMPARISON',
+            ),
           )
         : undefined;
     if (directnessIssue) answerQualityIssues.push(directnessIssue);

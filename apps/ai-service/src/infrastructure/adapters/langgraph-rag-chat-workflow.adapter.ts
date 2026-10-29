@@ -690,8 +690,11 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           nodeTimings,
           () =>
             this.rerankRetrievedEvidenceUseCase.execute({
+              userMessage: state.userMessage,
+              route: state.route!,
               plan: state.retrievalPlan!,
               retrievedChunks: state.retrievedChunks,
+              requiredEvidence: state.route?.requiredEvidence,
               diagnostics: retrievalExecution,
             }),
         );

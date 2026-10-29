@@ -31,6 +31,7 @@ import {
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
   answerContentTokens,
+  MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
   missingRequiredReelEvidencePairs,
   ragAnswerBudget,
   ragRequestedFactSignalScore,
@@ -42,6 +43,9 @@ interface RawDraftAnswer {
   claims?: unknown;
   selectedSentenceCandidateId?: unknown;
 }
+
+const VISUAL_TEXT_ABSENCE_CLAIM =
+  /\b(?:no\s+(?:clearly\s+)?(?:readable\s+)?text(?:\s+(?:is|are)\s+(?:visible|present|readable|legible))?|there\s+(?:is|are)\s+no\s+(?:clearly\s+)?(?:readable\s+)?text(?:\s+(?:visible|present|readable|legible))?|(?:readable|visible|on[- ]screen)\s+text\s*:\s*(?:none|no|not\s+(?:visible|present|readable)))\b/i;
 
 class DraftAnswerContractError extends Error {
   constructor(message: string) {
@@ -116,6 +120,18 @@ export class GenerateDraftAnswerUseCase {
       /\b(?:title|tags?|description|cast|director|release (?:date|year)|genre|duration)\b/i.test(
         state.userMessage,
       )
+    );
+  }
+
+  private answerBudgetFor(state: RagChatWorkflowState) {
+    const requestKind = transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      state.retrievalPlan,
+    );
+    return ragAnswerBudget(
+      state.route?.reelQuestionType,
+      requestKind === 'MULTI_REEL_COMPARISON',
     );
   }
 
@@ -243,8 +259,7 @@ export class GenerateDraftAnswerUseCase {
         source &&
         directText &&
         requestedSource.sourceTimestampEndSec === undefined &&
-        directText.length <=
-          ragAnswerBudget(state.route.reelQuestionType).maxChars
+        directText.length <= this.answerBudgetFor(state).maxChars
       ) {
         return {
           answer: directText,
@@ -359,17 +374,17 @@ export class GenerateDraftAnswerUseCase {
         ...authorizedEvidence.map((item) => item.evidenceText),
       );
     }
-    const answerBudget = ragAnswerBudget(state.route?.reelQuestionType);
     const transcriptSegmentSummaryRequest = transcriptSegmentKind === 'SUMMARY';
     const multiReelTranscriptSegmentComparisonRequest =
       transcriptSegmentKind === 'MULTI_REEL_COMPARISON';
+    const answerBudget = this.answerBudgetFor(state);
     const expandedTranscriptAnswer =
       transcriptSegmentSummaryRequest ||
       multiReelTranscriptSegmentComparisonRequest;
     const maxAnswerChars =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
         ? multiReelTranscriptSegmentComparisonRequest
-          ? Math.max(answerBudget.maxChars, 1_800)
+          ? answerBudget.maxChars
           : transcriptSegmentSummaryRequest
             ? Math.max(answerBudget.maxChars, bounds.maxEvidenceTotalChars)
             : answerBudget.maxChars
@@ -644,7 +659,7 @@ export class GenerateDraftAnswerUseCase {
         : []),
       ...(multiReelTranscriptSegmentComparisonRequest
         ? [
-            'When comparing first indexed transcript segments, provide separately labeled source-grounded statements for each Reel and preserve the actual opening transcript wording in source order. After those statements, state a concise, grounded comparison of the clips based on their supplied segments. Keep each statement attributed to its own Reel; do not combine statements across Reels or infer unsupported themes.',
+            'For a comparison of first indexed transcript segments, quote the complete earliest transcript segment from each Reel in its own labeled section and source order, then state one concise comparison grounded in those passages. Do not use ellipses, omit lines, transfer facts between Reels, or claim a fact is shared unless both passages support it.',
           ]
         : []),
       ...(state.route?.intent === 'REEL_VIDEO_QUESTION' &&
@@ -674,9 +689,13 @@ export class GenerateDraftAnswerUseCase {
         ? [
             'For this time-bounded summary, include all material supported statements across the requested interval; do not shorten the answer by omitting a supported turn.',
           ]
-        : [
-            'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
-          ]),
+        : multiReelTranscriptSegmentComparisonRequest
+          ? [
+              'Include every supplied line from both first segments and finish with one concise comparison sentence that keeps each fact attributed to its source. Avoid unsupported shared claims or unrelated commentary.',
+            ]
+          : [
+              'Answer the exact question first in the shortest complete form. Evidence is reasoning material: do not reproduce surrounding transcript or add unrelated facts merely because they are supported.',
+            ]),
       'For SHORT_FACT questions, prefer one direct sentence. EXPLANATION and SUMMARY answers may be longer only when the question requires it.',
       'If you cannot produce a reliable claim mapping, return claims as an empty array rather than inventing evidence IDs; the downstream verifier and citation step independently validate a non-empty answer.',
       'Normal conversational statements that do not depend on reel evidence may have no claims.',
@@ -1063,7 +1082,7 @@ export class GenerateDraftAnswerUseCase {
       }));
     if (!visual || transcripts.length === 0) return undefined;
 
-    const budget = ragAnswerBudget(state.route.reelQuestionType);
+    const budget = this.answerBudgetFor(state);
     const transcriptSpans = this.selectFallbackSpans(
       state.userMessage,
       transcripts,
@@ -1209,8 +1228,8 @@ export class GenerateDraftAnswerUseCase {
 
     const groups = [...byReel.values()];
     const maxAnswerChars = Math.max(
-      ragAnswerBudget(state.route.reelQuestionType).maxChars,
-      1_800,
+      this.answerBudgetFor(state).maxChars,
+      MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
     );
     const perReelBudget = Math.floor(
       (maxAnswerChars - (groups.length - 1) * 2) / groups.length,
@@ -1419,7 +1438,7 @@ export class GenerateDraftAnswerUseCase {
     const selected = this.selectFallbackSpans(
       state.userMessage,
       scopedCandidates,
-      ragAnswerBudget(state.route.reelQuestionType),
+      this.answerBudgetFor(state),
     );
     const answer = selected
       .map((candidate) => candidate.text)
@@ -1633,7 +1652,25 @@ export class GenerateDraftAnswerUseCase {
     allowedEvidenceIds: Set<string>,
     authorizedEvidenceText: string[],
   ): Omit<RagDraftAnswer, 'finalizationMode' | 'fallbackReason'> {
-    const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
+    const rawAnswer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
+    const suppressUnverifiedVisualTextAbsence =
+      state.route?.requiredEvidence?.includes('VISUAL') === true &&
+      !state.rerankedChunks
+        .filter((chunk) => chunk.evidenceType === 'VISUAL')
+        .some((chunk) =>
+          VISUAL_TEXT_ABSENCE_CLAIM.test(
+            [chunk.evidenceText, chunk.description, chunk.chunkText]
+              .filter((text): text is string => Boolean(text?.trim()))
+              .join('\n'),
+          ),
+        );
+    const answer = suppressUnverifiedVisualTextAbsence
+      ? rawAnswer
+          .split(/(?<=[.!?])\s+|\n+/u)
+          .filter((sentence) => !VISUAL_TEXT_ABSENCE_CLAIM.test(sentence))
+          .join(' ')
+          .trim()
+      : rawAnswer;
     const contractError = validateRagAnswerContract({
       answer,
       question: state.userMessage,
@@ -1645,9 +1682,13 @@ export class GenerateDraftAnswerUseCase {
     if (contractError) throw new DraftAnswerContractError(contractError);
 
     const claims = Array.isArray(raw.claims)
-      ? raw.claims.map((value) =>
-          this.normalizeClaim(value, allowedEvidenceIds),
-        )
+      ? raw.claims
+          .map((value) => this.normalizeClaim(value, allowedEvidenceIds))
+          .filter(
+            (claim) =>
+              !suppressUnverifiedVisualTextAbsence ||
+              !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim),
+          )
       : [];
     return { answer, claims, modelRole: 'ANSWER', diagnostics: [] };
   }

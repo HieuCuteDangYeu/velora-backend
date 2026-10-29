@@ -1,8 +1,23 @@
 import {
+  MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
   missingRequiredReelEvidencePairs,
+  ragAnswerBudget,
   ragRequestedFactSignalScore,
   validateRagAnswerContract,
 } from './rag-answer-contract';
+
+describe('ragAnswerBudget', () => {
+  it('gives first-segment multi-Reel comparisons enough room for both attributed passages', () => {
+    expect(ragAnswerBudget('TRANSCRIPT_CONTENT', true)).toEqual({
+      shape: 'SUMMARY',
+      maxChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+    });
+    expect(ragAnswerBudget('TRANSCRIPT_CONTENT')).toEqual({
+      shape: 'EXPLANATION',
+      maxChars: 900,
+    });
+  });
+});
 
 describe('missingRequiredReelEvidencePairs', () => {
   it('reports missing per-Reel modalities without treating another Reel as a substitute', () => {

@@ -1,5 +1,6 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
 import type { GenerateStructuredObjectInput } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { VerifierAgentUseCase } from './verifier-agent.use-case';
 
@@ -493,7 +494,7 @@ describe('VerifierAgentUseCase', () => {
     const noEscalationConfig = {
       ...config,
       boolean: jest.fn(() => false),
-    } as unknown as IAiApplicationConfig;
+    };
     const useCase = new VerifierAgentUseCase(
       service as never,
       noEscalationConfig,
@@ -619,6 +620,63 @@ describe('VerifierAgentUseCase', () => {
         answerQualityPassed: false,
         answerQualityIssues: [expect.stringContaining('direct-answer budget')],
       },
+    });
+  });
+
+  it('uses the generation budget for complete first-segment comparison answers', async () => {
+    const supportedClaim = 'The first segment is source-grounded.';
+    const answer = `${supportedClaim} `.repeat(35).trim();
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            { claim: supportedClaim, evidenceIds: ['e0'] },
+          ],
+        }),
+      ),
+    };
+    const noEscalationConfig = {
+      ...config,
+      boolean: jest.fn(() => false),
+    };
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      noEscalationConfig,
+    );
+    const input = state({ answer, evidenceText: supportedClaim });
+    input.userMessage =
+      'Compare the first indexed transcript segments of Episode One and Episode Two. Attribute each statement to its own clip.';
+    input.retrievalPlan = { requiresReelCoverage: true } as never;
+    input.rerankedChunks = [
+      {
+        chunkId: 'episode-one',
+        reelId: 'episode-one',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: supportedClaim,
+        chunkText: supportedClaim,
+      },
+      {
+        chunkId: 'episode-two',
+        reelId: 'episode-two',
+        evidenceType: 'TRANSCRIPT',
+        evidenceText: supportedClaim,
+        chunkText: supportedClaim,
+      },
+    ] as never;
+    input.retrievedChunks = input.rerankedChunks;
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      passed: true,
+      answerQualityPassed: true,
+      answerQualityIssues: [],
+      requiresRevision: false,
+    });
+    expect(
+      JSON.parse(String(service.generateObject.mock.calls[0][0].userPrompt)),
+    ).toMatchObject({
+      transcriptSegmentRequestKind: 'MULTI_REEL_COMPARISON',
+      answerShape: 'SUMMARY',
+      maxAnswerChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
     });
   });
 

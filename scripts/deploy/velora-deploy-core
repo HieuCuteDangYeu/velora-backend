@@ -856,12 +856,21 @@ preflight_resources() {
     if [[ "$DRY_RUN" == true ]]; then
       fail "only ${free_gb} GB root disk free; dry-run will not mutate Docker"
     fi
-    log "Free disk is below ${MIN_FREE_GB} GB; pruning Docker build cache..."
-    docker builder prune -af >/dev/null || warn "pre-deploy build-cache prune failed"
-    free_gb="$(free_root_gb)"
-    log "Root disk after cleanup: ${free_gb} GB"
+    if [[ "$DB_RISK" == false && -f "$PREVIOUS_RELEASE_FILE" ]] \
+      && rotate_previous_release_snapshot_to_current; then
+      reclaim_unused_docker_images "$preserve_target" \
+        || fail "failed to reclaim obsolete rollback images safely"
+      free_gb="$(free_root_gb)"
+      log "Root disk after rollback refresh: ${free_gb} GB"
+    fi
     if (( free_gb < MIN_FREE_GB )); then
-      fail "only ${free_gb} GB root disk free; minimum is ${MIN_FREE_GB} GB"
+      log "Free disk is below ${MIN_FREE_GB} GB; pruning Docker build cache..."
+      docker builder prune -af >/dev/null || warn "pre-deploy build-cache prune failed"
+      free_gb="$(free_root_gb)"
+      log "Root disk after cleanup: ${free_gb} GB"
+      if (( free_gb < MIN_FREE_GB )); then
+        fail "only ${free_gb} GB root disk free; minimum is ${MIN_FREE_GB} GB"
+      fi
     fi
   fi
 
@@ -1505,7 +1514,13 @@ snapshot_services_json() {
   local from_sha="$1"
   local to_sha="$2"
   local output="$3"
+  local tag_suffix="$DEPLOY_ID"
   shift 3
+  if [[ "${1:-}" == "--tag-suffix" ]]; then
+    [[ -n "${2:-}" ]] || return 1
+    tag_suffix="$2"
+    shift 2
+  fi
   local -a services=("$@")
   local temp_entries service container_id image_id tag
   temp_entries="$(mktemp)"
@@ -1521,7 +1536,7 @@ snapshot_services_json() {
     image_id="$(docker inspect --format '{{.Image}}' "$container_id")"
     [[ -n "$image_id" ]] || continue
 
-    tag="velora-rollback/${service}:${DEPLOY_ID}"
+    tag="velora-rollback/${service}:${tag_suffix}"
     docker image tag "$image_id" "$tag"
     jq -n --arg service "$service" --arg image "$tag" '{service:$service,image:$image}' >>"$temp_entries"
   done
@@ -1550,6 +1565,82 @@ snapshot_current_release() {
 
   TEMP_SNAPSHOT="$STATE_DIR/.rollback-${DEPLOY_ID}.json"
   snapshot_services_json "${LAST_DEPLOYED_SHA:-unknown}" "$TARGET_SHA" "$TEMP_SNAPSHOT" "${services[@]}"
+}
+
+verify_running_app_release_snapshot() {
+  local dockerhub_username service image_service container_id image_ref
+  local -a container_ids=()
+
+  (( ${#INFRA_RECONCILE_SERVICES[@]} == 0 )) || return 1
+  (( ${#RECONCILE_SERVICES[@]} > 0 )) || return 1
+  dockerhub_username="$(read_env_value DOCKERHUB_USERNAME)" || return 1
+
+  for service in "${RECONCILE_SERVICES[@]}"; do
+    case "$service" in
+      media-processing-long-service) image_service=media-processing-service ;;
+      reel-indexing-long-service) image_service=reel-indexing-service ;;
+      *) image_service="$service" ;;
+    esac
+    contains "$image_service" "${APP_SERVICES[@]}" || return 1
+    mapfile -t container_ids < <(docker compose ps -aq "$service")
+    (( ${#container_ids[@]} > 0 )) || return 1
+    for container_id in "${container_ids[@]}"; do
+      image_ref="$(docker inspect --format '{{.Config.Image}}' "$container_id")" || return 1
+      [[ "$image_ref" == "${dockerhub_username}/${image_service}:${LAST_DEPLOYED_SHA}" ]] || return 1
+    done
+  done
+}
+
+rotate_previous_release_snapshot_to_current() {
+  local snapshot_path="$STATE_DIR/.preflight-rollback-${DEPLOY_ID}.json"
+  local old_snapshot_path="$STATE_DIR/.preflight-previous-${DEPLOY_ID}.json"
+  local expected_count observed_count
+  local -a services=()
+
+  [[ "$DB_RISK" == false && "$DRY_RUN" != true ]] || return 1
+  [[ -n "$LAST_DEPLOYED_SHA" && "$TARGET_SHA" != "$LAST_DEPLOYED_SHA" ]] || return 1
+  [[ "$LAST_DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ ! -e "$snapshot_path" && ! -e "$old_snapshot_path" ]] || return 1
+  if grep -Eq '^(docker-compose\.yml|docker-compose\.yaml|compose\.yml|compose\.yaml)$' <<<"$CHANGED_FILES"; then
+    return 1
+  fi
+  verify_running_app_release_snapshot || return 1
+  jq -e '(.services | type == "object") and all(.services[]; type == "string" and length > 0)' \
+    "$PREVIOUS_RELEASE_FILE" >/dev/null || return 1
+
+  mapfile -t services < <(all_mutated_services)
+  (( ${#services[@]} > 0 )) || return 1
+  expected_count="${#services[@]}"
+  if ! snapshot_services_json \
+    "$LAST_DEPLOYED_SHA" "$TARGET_SHA" "$snapshot_path" \
+    --tag-suffix "preflight-${DEPLOY_ID}" "${services[@]}"; then
+    remove_snapshot_tags "$snapshot_path"
+    rm -f -- "$snapshot_path"
+    return 1
+  fi
+  observed_count="$(jq '.services | length' "$snapshot_path")" || return 1
+  if [[ "$observed_count" != "$expected_count" ]]; then
+    remove_snapshot_tags "$snapshot_path"
+    rm -f -- "$snapshot_path"
+    return 1
+  fi
+
+  chmod 600 "$snapshot_path"
+  if ! mv -f -- "$PREVIOUS_RELEASE_FILE" "$old_snapshot_path"; then
+    remove_snapshot_tags "$snapshot_path"
+    rm -f -- "$snapshot_path"
+    return 1
+  fi
+  if ! mv -f -- "$snapshot_path" "$PREVIOUS_RELEASE_FILE"; then
+    mv -f -- "$old_snapshot_path" "$PREVIOUS_RELEASE_FILE"
+    remove_snapshot_tags "$snapshot_path"
+    rm -f -- "$snapshot_path"
+    return 1
+  fi
+
+  remove_snapshot_tags "$old_snapshot_path"
+  rm -f -- "$old_snapshot_path"
+  log "Refreshed rollback snapshot to current healthy release $LAST_DEPLOYED_SHA before reclaiming older images."
 }
 
 remove_removed_compose_services() {
@@ -2264,7 +2355,6 @@ perform_deployment() {
     already_deployed_path
   fi
 
-  preflight_resources
   validate_rabbitmq_static_config
   validate_rabbitmq_live
   validate_target_files
@@ -2275,6 +2365,7 @@ perform_deployment() {
   plan_from_changed_files
   ensure_manual_db_approval
   check_blocked_release
+  preflight_resources
 
   if [[ -n "$TURN_ENV_BASELINE" ]]; then
     approve_turn_env

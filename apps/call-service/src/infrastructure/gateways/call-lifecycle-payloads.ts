@@ -9,6 +9,9 @@ export type JoinCallPayload = {
   callId: string;
 };
 
+/** A recipient's device reports that it is showing the incoming call (so the caller can tell ringing from connecting). */
+export type CallRingingPayload = JoinCallPayload;
+
 export type LegacyAnswerCallPayload = JoinCallPayload & {
   /**
    * Optional so existing clients keep their original answer_call contract.

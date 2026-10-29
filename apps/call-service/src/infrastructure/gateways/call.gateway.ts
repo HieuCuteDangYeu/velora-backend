@@ -70,6 +70,7 @@ import {
 
 import type {
   AcceptIncomingCallPayload,
+  CallRingingPayload,
   InitiateCallPayload,
   JoinCallPayload,
   LeaveCallPayload,
@@ -1921,6 +1922,38 @@ export class CallGateway
     // has not joined the call room yet. Notify it immediately so its pending
     // CallKit/Connecting surface can resolve without waiting for APNs.
     this.server.to(session.targetUserId).emit('call_answered', answeredPayload);
+  }
+
+  /**
+   * A recipient device calls this once it is actually ringing. The caller side
+   * shows "Ringing" instead of "Calling" and plays a ringback tone. It never
+   * changes the call state, is idempotent, and is ignored unless the caller of
+   * this event is an invited recipient of a call that is still ringing.
+   */
+  @SubscribeMessage('call_ringing')
+  async handleCallRinging(
+    @MessageBody() payload: CallRingingPayload,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId = await this.resolveUserId(client);
+    if (!userId) return;
+    const callId = typeof payload?.callId === 'string' ? payload.callId : '';
+    if (!callId || callId.length > 128) return;
+
+    const session = await this.sessionRepository.findByCallId(callId);
+    if (
+      !session ||
+      (session.status !== 'initiated' && session.status !== 'ringing')
+    ) {
+      return;
+    }
+    const isRecipient = session.isGroupCall
+      ? userId !== session.initiatorId &&
+        session.invitedUserIds.includes(userId)
+      : session.targetUserId === userId;
+    if (!isRecipient) return;
+
+    this.server.to(callId).emit('call_ringing', { callId, userId });
   }
 
   @SubscribeMessage('accept_incoming_call')

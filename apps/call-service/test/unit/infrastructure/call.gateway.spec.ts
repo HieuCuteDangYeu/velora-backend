@@ -2711,6 +2711,91 @@ describe('CallGateway reconnect recovery', () => {
     ).rejects.toThrow('Reconnect window expired');
     expect(joinCallUseCase.execute).not.toHaveBeenCalled();
   });
+  describe('call_ringing', () => {
+    const ringingSession = {
+      ...activeSession,
+      status: 'ringing',
+      isGroupCall: false,
+      initiatorId: 'user-a',
+      targetUserId: 'user-b',
+      invitedUserIds: [],
+    };
+    const setup = (session: unknown) => {
+      const roomEmitter = { emit: jest.fn() };
+      const gateway = createGateway({
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(session),
+        },
+      });
+      gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+      return { gateway, roomEmitter };
+    };
+
+    it('tells the call room that the callee device is ringing', async () => {
+      const { gateway, roomEmitter } = setup(ringingSession);
+      await gateway.handleCallRinging(
+        { callId: ringingSession.callId },
+        createSocket({ id: 'socket-b', userId: 'user-b', emit: jest.fn() }),
+      );
+      expect(gateway.server.to).toHaveBeenCalledWith(ringingSession.callId);
+      expect(roomEmitter.emit).toHaveBeenCalledWith('call_ringing', {
+        callId: ringingSession.callId,
+        userId: 'user-b',
+      });
+    });
+
+    it('ignores users who are not the callee, and calls that are no longer ringing', async () => {
+      for (const [session, userId] of [
+        [ringingSession, 'user-a'],
+        [ringingSession, 'user-x'],
+        [{ ...ringingSession, status: 'active' }, 'user-b'],
+        [null, 'user-b'],
+      ] as const) {
+        const { gateway, roomEmitter } = setup(session);
+        await gateway.handleCallRinging(
+          { callId: ringingSession.callId },
+          createSocket({ id: 'socket', userId, emit: jest.fn() }),
+        );
+        expect(roomEmitter.emit).not.toHaveBeenCalled();
+      }
+    });
+
+    it('accepts an invited group member but not the initiator or an outsider', async () => {
+      const group = {
+        ...ringingSession,
+        isGroupCall: true,
+        targetUserId: 'user-b',
+        invitedUserIds: ['user-a', 'user-b', 'user-c'],
+      };
+      const ok = setup(group);
+      await ok.gateway.handleCallRinging(
+        { callId: group.callId },
+        createSocket({ id: 'socket-c', userId: 'user-c', emit: jest.fn() }),
+      );
+      expect(ok.roomEmitter.emit).toHaveBeenCalledWith('call_ringing', {
+        callId: group.callId,
+        userId: 'user-c',
+      });
+      for (const userId of ['user-a', 'user-z']) {
+        const denied = setup(group);
+        await denied.gateway.handleCallRinging(
+          { callId: group.callId },
+          createSocket({ id: 'socket', userId, emit: jest.fn() }),
+        );
+        expect(denied.roomEmitter.emit).not.toHaveBeenCalled();
+      }
+    });
+
+    it('ignores a payload without a call id', async () => {
+      const { gateway, roomEmitter } = setup(ringingSession);
+      await gateway.handleCallRinging(
+        {} as never,
+        createSocket({ id: 'socket-b', userId: 'user-b', emit: jest.fn() }),
+      );
+      expect(roomEmitter.emit).not.toHaveBeenCalled();
+    });
+  });
+
   it('acknowledges an atomic native answer before broadcasting it to the call and callee-user rooms', async () => {
     const acceptIncomingCallUseCase = {
       execute: jest.fn().mockResolvedValue({

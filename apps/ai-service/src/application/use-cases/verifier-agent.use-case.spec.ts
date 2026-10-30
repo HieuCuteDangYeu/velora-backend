@@ -1,6 +1,10 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
+import {
+  DEFAULT_RAG_PROMPT_BOUNDS,
+  transcriptSegmentPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 import type { GenerateStructuredObjectInput } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { VerifierAgentUseCase } from './verifier-agent.use-case';
 
@@ -677,6 +681,49 @@ describe('VerifierAgentUseCase', () => {
       transcriptSegmentRequestKind: 'MULTI_REEL_COMPARISON',
       answerShape: 'SUMMARY',
       maxAnswerChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+    });
+  });
+
+  it('uses the expanded evidence budget for time-bounded summaries', async () => {
+    const supportedClaim = 'The dog refuses to eat.';
+    const answer = `${supportedClaim} `.repeat(30).trim();
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        result({
+          supportedClaimMappings: [
+            { claim: supportedClaim, evidenceIds: ['e0'] },
+          ],
+        }),
+      ),
+    };
+    const useCase = new VerifierAgentUseCase(service as never, {
+      ...config,
+      boolean: jest.fn(() => false),
+    });
+    const input = state({ answer, evidenceText: supportedClaim });
+    input.userMessage =
+      'Summarize what is said in the indexed transcript segment spanning 0–60 seconds.';
+    input.retrievalPlan = {
+      transcriptTimestampSec: 0,
+      transcriptTimestampEndSec: 60,
+    } as never;
+
+    await expect(useCase.execute(input)).resolves.toMatchObject({
+      passed: true,
+      answerQualityPassed: true,
+      answerQualityIssues: [],
+      requiresRevision: false,
+    });
+    expect(
+      JSON.parse(String(service.generateObject.mock.calls[0][0].userPrompt)),
+    ).toMatchObject({
+      transcriptSegmentRequestKind: 'SUMMARY',
+      answerShape: 'SUMMARY',
+      maxAnswerChars: transcriptSegmentPromptBounds(
+        DEFAULT_RAG_PROMPT_BOUNDS,
+        'SUMMARY',
+      ).maxEvidenceTotalChars,
+      answerQualityGuidance: expect.stringContaining('concise paraphrase'),
     });
   });
 

@@ -8,7 +8,11 @@ import {
 
 describe('ragAnswerBudget', () => {
   it('gives first-segment multi-Reel comparisons enough room for both attributed passages', () => {
-    expect(ragAnswerBudget('TRANSCRIPT_CONTENT', true)).toEqual({
+    expect(
+      ragAnswerBudget('TRANSCRIPT_CONTENT', {
+        multiReelTranscriptComparison: true,
+      }),
+    ).toEqual({
       shape: 'SUMMARY',
       maxChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
     });
@@ -16,6 +20,11 @@ describe('ragAnswerBudget', () => {
       shape: 'EXPLANATION',
       maxChars: 900,
     });
+    expect(
+      ragAnswerBudget('MULTIMODAL_CONTENT', {
+        transcriptSummaryMaxChars: 3_000,
+      }),
+    ).toEqual({ shape: 'SUMMARY', maxChars: 3_000 });
   });
 });
 

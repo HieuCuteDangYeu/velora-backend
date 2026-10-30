@@ -76,10 +76,11 @@ export class BuildGroundedAnswerRevisionUseCase {
       readRagPromptBounds(this.config),
       requestKind,
     );
-    const answerBudget = ragAnswerBudget(
-      state.route?.reelQuestionType,
-      requestKind === 'MULTI_REEL_COMPARISON',
-    );
+    const answerBudget = ragAnswerBudget(state.route?.reelQuestionType, {
+      multiReelTranscriptComparison: requestKind === 'MULTI_REEL_COMPARISON',
+      transcriptSummaryMaxChars:
+        requestKind === 'SUMMARY' ? bounds.maxEvidenceTotalChars : undefined,
+    });
     const verifierIssues = boundTextItems(
       verification.issues ?? [],
       (issue) => issue,
@@ -156,9 +157,13 @@ export class BuildGroundedAnswerRevisionUseCase {
             ? [
                 'For this comparison, preserve the complete earliest transcript segment for each Reel in its own labeled section and source order, then give one concise comparison that follows from those passages. Do not use ellipses, transfer facts between Reels, or claim a fact is shared unless both passages support it.',
               ]
-            : [
-                'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
-              ]),
+            : requestKind === 'SUMMARY'
+              ? [
+                  'For a time-bounded transcript summary, write a concise paraphrase rather than reproducing the transcript verbatim. Preserve material facts, complete action-object relations, quantities, negation, and uncertainty. Leave cut-off utterances incomplete; do not infer their missing endings.',
+                ]
+              : [
+                  'Evidence is for deciding the answer, not for reproducing surrounding transcript.',
+                ]),
           'Never invent an evidence ID. Return only JSON matching the schema.',
         ].join(' '),
         userPrompt: JSON.stringify({

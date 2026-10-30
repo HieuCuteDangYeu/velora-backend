@@ -129,10 +129,15 @@ export class GenerateDraftAnswerUseCase {
       state.route,
       state.retrievalPlan,
     );
-    return ragAnswerBudget(
-      state.route?.reelQuestionType,
-      requestKind === 'MULTI_REEL_COMPARISON',
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      requestKind,
     );
+    return ragAnswerBudget(state.route?.reelQuestionType, {
+      multiReelTranscriptComparison: requestKind === 'MULTI_REEL_COMPARISON',
+      transcriptSummaryMaxChars:
+        requestKind === 'SUMMARY' ? bounds.maxEvidenceTotalChars : undefined,
+    });
   }
 
   private requiredAnswerEvidenceTypes(
@@ -383,11 +388,7 @@ export class GenerateDraftAnswerUseCase {
       multiReelTranscriptSegmentComparisonRequest;
     const maxAnswerChars =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
-        ? multiReelTranscriptSegmentComparisonRequest
-          ? answerBudget.maxChars
-          : transcriptSegmentSummaryRequest
-            ? Math.max(answerBudget.maxChars, bounds.maxEvidenceTotalChars)
-            : answerBudget.maxChars
+        ? answerBudget.maxChars
         : 2_500;
     const transcriptStart =
       requestedSource?.transcriptTimestampSec ??
@@ -654,7 +655,7 @@ export class GenerateDraftAnswerUseCase {
         : []),
       ...(transcriptSegmentSummaryRequest
         ? [
-            'For a time-bounded transcript summary, cover all material statements and turns across the full authorized interval, not only representative excerpts. Keep speech separate from visual observations and use only the supplied transcript evidence. Preserve speaker changes, quantities, negation, conditions, uncertainty, and other qualifiers that change meaning. Completeness takes priority over brevity for this requested summary.',
+            'For a time-bounded transcript summary, use concise paraphrase instead of reproducing the transcript verbatim. Cover every material statement and turn across the authorized interval. Keep action and object together; preserve speaker changes, quantities, negation, conditions, and uncertainty. If a source utterance ends mid-sentence, report only the supported fragment and do not infer its completion.',
           ]
         : []),
       ...(multiReelTranscriptSegmentComparisonRequest
@@ -687,7 +688,7 @@ export class GenerateDraftAnswerUseCase {
       'For metadata, title, tag list, quantity/count, opening statement, or direct quote questions, provide ONLY the exact value, title, tags, or quote directly without conversational preambles or lead-in framing (do NOT write "The title of the Reel is...", "The opening statement is: ...", "The tags associated with this Reel are...", or "According to the transcript...").',
       ...(transcriptSegmentSummaryRequest
         ? [
-            'For this time-bounded summary, include all material supported statements across the requested interval; do not shorten the answer by omitting a supported turn.',
+            'For this time-bounded summary, paraphrase all material supported statements across the requested interval without reproducing the transcript verbatim. Preserve complete action-object relations and qualifiers, and leave cut-off utterances incomplete.',
           ]
         : multiReelTranscriptSegmentComparisonRequest
           ? [

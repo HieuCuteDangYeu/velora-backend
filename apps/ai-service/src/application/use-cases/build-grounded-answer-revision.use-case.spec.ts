@@ -1,5 +1,9 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
+import {
+  DEFAULT_RAG_PROMPT_BOUNDS,
+  transcriptSegmentPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revision.use-case';
 
 describe('BuildGroundedAnswerRevisionUseCase', () => {
@@ -267,6 +271,37 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     );
     expect(request.systemPrompt).toContain(
       'one concise comparison that follows from those passages',
+    );
+  });
+
+  it('uses the evidence-sized budget when revising a time-bounded summary', async () => {
+    const question =
+      'Summarize what is said in the indexed transcript segment spanning 0–60 seconds.';
+    const evidence = 'The dog refuses to eat.';
+    const input = state({ question, evidence: [evidence] });
+    input.answer = 'A'.repeat(1_100);
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer: evidence,
+      evidenceIds: ['e0'],
+    });
+
+    await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
+      answer: evidence,
+      evidenceIds: ['e0'],
+    });
+
+    const request = structuredLlm.generateObject.mock.calls[0][0];
+    expect(request.userPrompt).toContain('"answerShape":"SUMMARY"');
+    const summaryMaxChars = transcriptSegmentPromptBounds(
+      DEFAULT_RAG_PROMPT_BOUNDS,
+      'SUMMARY',
+    ).maxEvidenceTotalChars;
+    expect(request.userPrompt).toContain(`"maxAnswerChars":${summaryMaxChars}`);
+    expect(request.jsonSchema.properties.answer).toMatchObject({
+      maxLength: summaryMaxChars,
+    });
+    expect(request.systemPrompt).toContain(
+      'write a concise paraphrase rather than reproducing the transcript verbatim',
     );
   });
 

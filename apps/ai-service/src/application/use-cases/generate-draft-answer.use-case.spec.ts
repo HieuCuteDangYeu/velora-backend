@@ -1,6 +1,10 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
+import {
+  DEFAULT_RAG_PROMPT_BOUNDS,
+  transcriptSegmentPromptBounds,
+} from '@ai/domain/services/rag-prompt-bounds';
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
 describe('GenerateDraftAnswerUseCase', () => {
@@ -1445,11 +1449,18 @@ describe('GenerateDraftAnswerUseCase', () => {
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
     expect(call.systemPrompt).toMatch(
-      /cover all material statements and turns across the full authorized interval/i,
+      /use concise paraphrase instead of reproducing the transcript verbatim/i,
     );
-    expect(JSON.parse(String(call.userPrompt)).answerShape).toBe('SUMMARY');
+    const prompt = JSON.parse(String(call.userPrompt));
+    expect(prompt.answerShape).toBe('SUMMARY');
+    expect(prompt.maxAnswerChars).toBe(
+      call.jsonSchema.properties.answer.maxLength,
+    );
     expect(call.jsonSchema.properties.answer).toMatchObject({
-      maxLength: 3000,
+      maxLength: transcriptSegmentPromptBounds(
+        DEFAULT_RAG_PROMPT_BOUNDS,
+        'SUMMARY',
+      ).maxEvidenceTotalChars,
     });
     expect(call.maxTokens).toBe(1024);
   });

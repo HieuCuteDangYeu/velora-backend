@@ -34,14 +34,24 @@ export class RerankRetrievedEvidenceUseCase {
         requiredEvidence: input.requiredEvidence,
         diagnostics: input.diagnostics,
       });
+      const requestKind = transcriptSegmentRequestKind(
+        input.userMessage,
+        input.route,
+        input.plan,
+      );
+      const startTime =
+        input.plan.transcriptTimestampSec ?? input.plan.sourceTimestampSec;
+      const endTime =
+        input.plan.transcriptTimestampEndSec ??
+        input.plan.sourceTimestampEndSec;
       const result =
-        transcriptSegmentRequestKind(
-          input.userMessage,
-          input.route,
-          input.plan,
-        ) === 'MULTI_REEL_COMPARISON'
+        requestKind === 'MULTI_REEL_COMPARISON'
           ? firstTranscriptSegmentPerReel(reranked)
-          : reranked;
+          : requestKind === 'SUMMARY' &&
+              typeof startTime === 'number' &&
+              typeof endTime === 'number'
+            ? transcriptChunksInWindow(reranked, startTime, endTime)
+            : reranked;
       if (input.diagnostics) input.diagnostics.rerankedCount = result.length;
       return result;
     } catch (error: unknown) {
@@ -83,5 +93,39 @@ function firstTranscriptSegmentPerReel(
     (candidate) =>
       (candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT' ||
       earliestByReel.get(candidate.reelId) === candidate,
+  );
+}
+
+function transcriptChunksInWindow(
+  candidates: TranscriptMatch[],
+  startTime: number,
+  endTime: number,
+): TranscriptMatch[] {
+  const byReel = new Map<string, TranscriptMatch[]>();
+  for (const candidate of candidates) {
+    if ((candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT') continue;
+    const chunks = byReel.get(candidate.reelId) ?? [];
+    chunks.push(candidate);
+    byReel.set(candidate.reelId, chunks);
+  }
+  const selected = new Set<TranscriptMatch>();
+  for (const chunks of byReel.values()) {
+    const exact = chunks.filter(
+      (chunk) => chunk.startTime === startTime && chunk.endTime === endTime,
+    );
+    const relevant = exact.length
+      ? exact
+      : chunks.filter(
+          (chunk) =>
+            typeof chunk.startTime !== 'number' ||
+            typeof chunk.endTime !== 'number' ||
+            (chunk.startTime <= endTime && chunk.endTime >= startTime),
+        );
+    relevant.forEach((chunk) => selected.add(chunk));
+  }
+  return candidates.filter(
+    (candidate) =>
+      (candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT' ||
+      selected.has(candidate),
   );
 }

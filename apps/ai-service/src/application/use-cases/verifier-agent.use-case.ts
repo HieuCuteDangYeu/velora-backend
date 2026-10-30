@@ -543,6 +543,8 @@ Evaluate answer quality separately from factual grounding. passed and issues des
 
 When the user asks for the first indexed transcript segment from each Reel, complete separately labeled segments are required; do not mark them as unnecessary transcript reproduction. A comparison sentence is appropriate only when it follows from those passages, keeps each fact attributed to its source, and does not claim a shared detail unless both passages support it.
 
+For time-bounded transcript summaries, expect concise paraphrase that preserves material facts and complete action-object relations. Do not accept an inferred completion beyond the final supported transcript fragment.
+
 Return only compact JSON matching the schema. Keep issues, contradictions, claims, and any revision instruction brief. Use only evidence IDs; do not repeat evidence text, rewrite the answer, invent IDs, or expose reasoning.
 `.trim();
   }
@@ -559,10 +561,14 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     );
     const answerBudget =
       state.route?.intent === 'REEL_VIDEO_QUESTION'
-        ? ragAnswerBudget(
-            state.route.reelQuestionType,
-            requestKind === 'MULTI_REEL_COMPARISON',
-          )
+        ? ragAnswerBudget(state.route.reelQuestionType, {
+            multiReelTranscriptComparison:
+              requestKind === 'MULTI_REEL_COMPARISON',
+            transcriptSummaryMaxChars:
+              requestKind === 'SUMMARY'
+                ? bounds.maxEvidenceTotalChars
+                : undefined,
+          })
         : undefined;
     const boundedChunks = boundEvidence(state.rerankedChunks ?? [], bounds, {
       preserveTail: true,
@@ -579,7 +585,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       answerQualityGuidance:
         requestKind === 'MULTI_REEL_COMPARISON'
           ? 'Complete separately labeled first transcript segments are required; any comparison sentence must be supported by those passages and keep each fact attributed to its source.'
-          : undefined,
+          : requestKind === 'SUMMARY'
+            ? 'Use concise paraphrase, preserve material facts and action-object relations, and do not infer how a cut-off transcript phrase ends.'
+            : undefined,
       requiredEvidence: state.route?.requiredEvidence ?? [],
       answer: boundPromptText(state.answer ?? '', bounds.maxAnswerChars),
       proposedClaims,
@@ -759,10 +767,14 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       state.route?.intent === 'REEL_VIDEO_QUESTION'
         ? ragAnswerDirectnessIssue(
             state.answer ?? '',
-            ragAnswerBudget(
-              state.route.reelQuestionType,
-              requestKind === 'MULTI_REEL_COMPARISON',
-            ),
+            ragAnswerBudget(state.route.reelQuestionType, {
+              multiReelTranscriptComparison:
+                requestKind === 'MULTI_REEL_COMPARISON',
+              transcriptSummaryMaxChars:
+                requestKind === 'SUMMARY'
+                  ? bounds.maxEvidenceTotalChars
+                  : undefined,
+            }),
           )
         : undefined;
     if (directnessIssue) answerQualityIssues.push(directnessIssue);

@@ -151,28 +151,39 @@ export interface RagAnswerBudget {
   maxChars: number;
 }
 
+export interface RagAnswerBudgetOptions {
+  multiReelTranscriptComparison?: boolean;
+  transcriptSummaryMaxChars?: number;
+}
+
 export const MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS = 1_800;
 
 export function ragAnswerBudget(
   reelQuestionType: RagReelQuestionType | undefined,
-  multiReelTranscriptComparison = false,
+  options: RagAnswerBudgetOptions = {},
 ): RagAnswerBudget {
   if (
     reelQuestionType === 'TRANSCRIPT_CONTENT' &&
-    multiReelTranscriptComparison
+    options.multiReelTranscriptComparison
   ) {
     return {
       shape: 'SUMMARY',
       maxChars: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
     };
   }
+  let budget: RagAnswerBudget;
   if (reelQuestionType === 'GENERAL_REEL_SUMMARY') {
-    return { shape: 'SUMMARY', maxChars: 1_400 };
+    budget = { shape: 'SUMMARY', maxChars: 1_400 };
+  } else if (reelQuestionType === 'REEL_METADATA') {
+    budget = { shape: 'SHORT_FACT', maxChars: 360 };
+  } else {
+    budget = { shape: 'EXPLANATION', maxChars: 900 };
   }
-  if (reelQuestionType === 'REEL_METADATA') {
-    return { shape: 'SHORT_FACT', maxChars: 360 };
-  }
-  return { shape: 'EXPLANATION', maxChars: 900 };
+  if (options.transcriptSummaryMaxChars === undefined) return budget;
+  return {
+    shape: 'SUMMARY',
+    maxChars: Math.max(budget.maxChars, options.transcriptSummaryMaxChars),
+  };
 }
 
 export function ragAnswerDirectnessIssue(

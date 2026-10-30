@@ -948,6 +948,9 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as never);
     expect(result.answer).toBe('The episode begins here!');
+    expect(result.generationEvidence?.[0].evidenceText).toBe(
+      'The episode begins here! Please, take him.',
+    );
     expect(result.claims).toEqual([
       { claim: 'The episode begins here!', evidenceIds: ['e0'] },
     ]);
@@ -1079,12 +1082,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(generateObject).toHaveBeenCalledTimes(1);
     expect(result.answer).toBe('The dog came back.');
     expect(result.generationEvidence?.[0].sourceId).toBe('long-window');
-    expect(result.generationEvidence?.[0].evidenceText).toBe(
-      'The dog came back.',
-    );
-    expect(result.generationEvidence?.[0].evidenceText).toBe(
-      'The dog came back.',
-    );
+    expect(result.generationEvidence?.[0].evidenceText).toBe(fullText);
     const prompt = JSON.parse(
       generateObject.mock.calls[0][0].userPrompt as string,
     ) as {
@@ -1163,7 +1161,9 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(generateObject).toHaveBeenCalledTimes(1);
     expect(result.answer).toBe('Where is it?');
-    expect(result.generationEvidence?.[0].evidenceText).toBe('Where is it?');
+    expect(result.generationEvidence?.[0].evidenceText).toBe(
+      'the red notebook! Where is it? The train is outside.',
+    );
   });
 
   it('omits a leading transcript span that starts before the requested interval', async () => {

@@ -19,6 +19,11 @@ describe('rag prompt bounds', () => {
       route,
       undefined,
     );
+    const explainedSegment = transcriptSegmentRequestKind(
+      'What does the indexed transcript segment spanning 20.58–84.26 seconds say? Explain the stated facts without adding a cause or outcome.',
+      route,
+      undefined,
+    );
     const comparison = transcriptSegmentRequestKind(
       'Compare the first indexed transcript segments.',
       route,
@@ -26,6 +31,14 @@ describe('rag prompt bounds', () => {
     );
 
     expect(summary).toBe('SUMMARY');
+    expect(explainedSegment).toBe('SUMMARY');
+    expect(
+      transcriptSegmentRequestKind(
+        'Quote the first complete sentence in the indexed transcript segment spanning 20.58–84.26 seconds.',
+        route,
+        undefined,
+      ),
+    ).toBeUndefined();
     expect(comparison).toBe('MULTI_REEL_COMPARISON');
     expect(
       transcriptSegmentRequestKind(
@@ -36,6 +49,15 @@ describe('rag prompt bounds', () => {
     ).toBeUndefined();
     expect(
       transcriptSegmentPromptBounds(DEFAULT_RAG_PROMPT_BOUNDS, summary),
+    ).toMatchObject({
+      maxEvidenceTextChars: 3_000,
+      maxEvidenceTotalChars: 3_000,
+    });
+    expect(
+      transcriptSegmentPromptBounds(
+        DEFAULT_RAG_PROMPT_BOUNDS,
+        explainedSegment,
+      ),
     ).toMatchObject({
       maxEvidenceTextChars: 3_000,
       maxEvidenceTotalChars: 3_000,

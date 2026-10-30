@@ -201,9 +201,12 @@ export function transcriptSegmentRequestKind(
   if (route?.requiredEvidence?.includes('TRANSCRIPT') !== true)
     return undefined;
   if (
-    /\b(?:summarize|summary)\b/i.test(question) &&
-    /\b(?:speech|transcript)\b/i.test(question) &&
-    /\bsegment\b/i.test(question)
+    (/\b(?:summarize|summary)\b/i.test(question) &&
+      /\b(?:speech|transcript)\b/i.test(question) &&
+      /\bsegment\b/i.test(question)) ||
+    /\bwhat does\b[^?\n\r]*\b(?:indexed )?transcript segment\b[^?\n\r]*\bsay\b/i.test(
+      question,
+    )
   ) {
     return 'SUMMARY';
   }

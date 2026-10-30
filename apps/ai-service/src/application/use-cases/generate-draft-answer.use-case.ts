@@ -811,9 +811,9 @@ export class GenerateDraftAnswerUseCase {
         ...normalized,
         diagnostics,
         generationEvidence: selectedSentence
-          ? authorizedEvidence
-              .filter((item) => item.evidenceId === selectedSentence.evidenceId)
-              .map((item) => ({ ...item, evidenceText: selectedSentence.text }))
+          ? authorizedEvidence.filter(
+              (item) => item.evidenceId === selectedSentence.evidenceId,
+            )
           : authorizedEvidence,
         finalizationMode: 'SYNTHESIZED',
       };

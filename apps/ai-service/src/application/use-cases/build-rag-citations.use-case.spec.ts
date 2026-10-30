@@ -281,6 +281,65 @@ describe('BuildRagCitationsUseCase', () => {
     expect(assessment.citations[0]).not.toHaveProperty('evidenceId');
   });
 
+  it('keeps a focused citation quote when authorized transcript evidence includes context', async () => {
+    const state = buildState();
+    const evidenceText = `Opening context. ${'Transcript context. '.repeat(20)}The requested sentence. Later context.`;
+    state.userMessage =
+      'Quote the first complete sentence in the indexed transcript segment.';
+    state.answer = 'The requested sentence.';
+    state.route = {
+      ...state.route!,
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+    };
+    state.rerankedChunks = [
+      {
+        chunkId: 'reel:r1:chunk:0',
+        reelId: 'r1',
+        title: 'Debugging demo',
+        evidenceType: 'TRANSCRIPT',
+        startTime: 4,
+        endTime: 30,
+        evidenceText,
+        chunkText: evidenceText,
+        tags: [],
+      },
+    ] as never;
+    state.generationEvidence = [
+      {
+        evidenceId: 'e0',
+        sourceId: 'reel:r1:chunk:0',
+        reelId: 'r1',
+        evidenceType: 'TRANSCRIPT',
+        startTime: 4,
+        endTime: 30,
+        evidenceText,
+      },
+    ];
+    const attribute = jest.fn().mockResolvedValue({
+      selections: [{ evidenceId: 'e0' }],
+      claims: [
+        {
+          claim: state.answer,
+          supported: true,
+          evidenceIds: ['e0'],
+        },
+      ],
+      factualClaimCount: 1,
+      supportedClaimCount: 1,
+      coverage: 1,
+    });
+
+    const result = await new BuildRagCitationsUseCase({ attribute }).execute(
+      state,
+    );
+    const quote = result.citations[0].quote!;
+
+    expect(quote).toContain(state.answer);
+    expect(evidenceText).toContain(quote);
+    expect(quote.length).toBeLessThanOrEqual(240);
+  });
+
   it('cites both supported modalities from an extractive multimodal fallback', async () => {
     const state = buildState();
     const transcript = {

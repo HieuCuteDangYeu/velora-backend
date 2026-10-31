@@ -13,15 +13,17 @@ import {
 } from './llm/conversation-summary.parser';
 import { buildConversationSummaryPrompt } from './llm/conversation-summary.prompt';
 import { renderConversationSummary } from './llm/conversation-summary.renderer';
-import { GroqTextClient } from './groq-text.client';
+import { OllamaTextClient } from './ollama-text.client';
 
 @Injectable()
-export class GroqConversationSummarizerAdapter implements IConversationSummarizerService {
-  private readonly logger = new Logger(GroqConversationSummarizerAdapter.name);
+export class OllamaConversationSummarizerAdapter implements IConversationSummarizerService {
+  private readonly logger = new Logger(
+    OllamaConversationSummarizerAdapter.name,
+  );
 
   constructor(
     private readonly config: ConfigService,
-    private readonly textClient: GroqTextClient,
+    private readonly textClient: OllamaTextClient,
     @Inject('IAiApplicationConfig')
     private readonly applicationConfig: IAiApplicationConfig,
   ) {}
@@ -40,7 +42,7 @@ export class GroqConversationSummarizerAdapter implements IConversationSummarize
         maxTokens: this.applicationConfig.maxCompletionTokens(
           'CONVERSATION_SUMMARY',
         ),
-        temperature: this.number('GROQ_MEMORY_TEMPERATURE', 0.1),
+        temperature: this.number('OLLAMA_MEMORY_TEMPERATURE', 0.1),
       });
       const structured = parseConversationSummaryResult(response, input);
       const shape = getStructuredConversationSummaryShape(structured);
@@ -56,7 +58,7 @@ export class GroqConversationSummarizerAdapter implements IConversationSummarize
         : this.keepExisting(input);
     } catch (error: unknown) {
       this.logger.warn(
-        `Groq conversation summarization failed: ${error instanceof Error ? error.message : String(error)}`,
+        `Ollama conversation summarization failed: ${error instanceof Error ? error.message : String(error)}`,
       );
       return this.keepExisting(input);
     }

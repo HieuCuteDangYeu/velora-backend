@@ -2,15 +2,15 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import type { ILlmService } from '@ai/domain/interfaces/llm.service.interface';
-import { GroqTextClient } from './groq-text.client';
+import { OllamaTextClient } from './ollama-text.client';
 
 @Injectable()
-export class GroqLlmAdapter implements ILlmService {
-  private readonly logger = new Logger(GroqLlmAdapter.name);
+export class OllamaLlmAdapter implements ILlmService {
+  private readonly logger = new Logger(OllamaLlmAdapter.name);
 
   constructor(
     private readonly config: ConfigService,
-    private readonly textClient: GroqTextClient,
+    private readonly textClient: OllamaTextClient,
   ) {}
 
   async generateResponseStream(
@@ -21,8 +21,9 @@ export class GroqLlmAdapter implements ILlmService {
     sessionAffinityKey?: string,
   ): Promise<string> {
     const model = this.config.getOrThrow<string>('AI_ANSWER_MODEL');
+    let streamed = false;
     this.logger.debug(
-      `Generating Groq response for user=${userId} model=${model} session=${createHash(
+      `Generating Ollama response for user=${userId} model=${model} session=${createHash(
         'sha256',
       )
         .update(sessionAffinityKey || userId)
@@ -40,14 +41,18 @@ export class GroqLlmAdapter implements ILlmService {
           { role: 'user', content: userMessage },
         ],
         maxTokens: this.number('AI_ANSWER_MAX_TOKENS', 1536),
-        temperature: this.number('GROQ_CHAT_TEMPERATURE', 0.2, 0, 1),
+        temperature: this.number('OLLAMA_CHAT_TEMPERATURE', 0.2, 0, 1),
         timeoutMs: this.number('AI_ANSWER_TIMEOUT_MS', 45_000, 500, 120_000),
-        onToken,
+        onToken: (token) => {
+          streamed = true;
+          onToken(token);
+        },
       });
       return this.clean(response);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Groq answer generation failed: ${message}`);
+      this.logger.warn(`Ollama answer generation failed: ${message}`);
+      if (streamed) throw error;
       const fallback =
         'I could not generate the answer right now because the AI provider returned an empty or failed response. Please try again.';
       onToken(fallback);

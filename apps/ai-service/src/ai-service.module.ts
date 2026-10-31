@@ -37,12 +37,12 @@ import { ContentServiceAdapter } from '@ai/infrastructure/adapters/content-servi
 import { ConversationTokenPublisherAdapter } from '@ai/infrastructure/adapters/conversation-token-publisher.adapter';
 import { DeterministicRetrievalEngineAdapter } from '@ai/infrastructure/adapters/deterministic-retrieval-engine.adapter';
 import { EvidenceDiversitySelector } from '@ai/infrastructure/adapters/evidence-diversity-selector';
-import { GroqConversationSummarizerAdapter } from '@ai/infrastructure/adapters/groq-conversation-summarizer.adapter';
-import { GroqLlmAdapter } from '@ai/infrastructure/adapters/groq-llm.adapter';
-import { GroqMemoryExtractorAdapter } from '@ai/infrastructure/adapters/groq-memory-extractor.adapter';
-import { GroqStructuredLlmAdapter } from '@ai/infrastructure/adapters/groq-structured-llm.adapter';
-import { GroqTextClient } from '@ai/infrastructure/adapters/groq-text.client';
-import { GroqToolCallingLlmAdapter } from '@ai/infrastructure/adapters/groq-tool-calling-llm.adapter';
+import { OllamaConversationSummarizerAdapter } from '@ai/infrastructure/adapters/ollama-conversation-summarizer.adapter';
+import { OllamaLlmAdapter } from '@ai/infrastructure/adapters/ollama-llm.adapter';
+import { OllamaMemoryExtractorAdapter } from '@ai/infrastructure/adapters/ollama-memory-extractor.adapter';
+import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-structured-llm.adapter';
+import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
+import { OllamaToolCallingLlmAdapter } from '@ai/infrastructure/adapters/ollama-tool-calling-llm.adapter';
 import { GroqTranscriptionAdapter } from '@ai/infrastructure/adapters/groq-transcription.adapter';
 import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
 import { OllamaVisionAdapter } from '@ai/infrastructure/adapters/ollama-vision.adapter';
@@ -158,7 +158,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     EvidenceDiversitySelector,
     TeiRerankerAdapter,
     GroqKeyPool,
-    GroqTextClient,
+    OllamaTextClient,
 
     StreamChatUseCase,
     GenerateEmbeddingUseCase,
@@ -232,7 +232,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'ILlmService',
-      useClass: GroqLlmAdapter,
+      useClass: OllamaLlmAdapter,
     },
     {
       provide: 'IContentService',
@@ -260,7 +260,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IMemoryExtractorService',
-      useClass: GroqMemoryExtractorAdapter,
+      useClass: OllamaMemoryExtractorAdapter,
     },
     {
       provide: 'IConversationMemoryRepository',
@@ -268,15 +268,15 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IConversationSummarizerService',
-      useClass: GroqConversationSummarizerAdapter,
+      useClass: OllamaConversationSummarizerAdapter,
     },
     {
       provide: 'IStructuredLlmService',
-      useClass: GroqStructuredLlmAdapter,
+      useClass: OllamaStructuredLlmAdapter,
     },
     {
       provide: 'IToolCallingLlmService',
-      useClass: GroqToolCallingLlmAdapter,
+      useClass: OllamaToolCallingLlmAdapter,
     },
     {
       provide: 'ICitationAttributionService',

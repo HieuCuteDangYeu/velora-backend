@@ -107,7 +107,8 @@ function eligible(row, events, leases, now = Date.now(), ownAttempt) {
 
 function ownedMaster(row) {
   if (typeof row.hlsMasterKey !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(row.hlsMasterKey) ||
-      row.hlsMasterKey.split('/').some((p) => !p || p === '.' || p === '..') || !row.hlsMasterKey.endsWith('/master.m3u8'))
+      row.hlsMasterKey.split('/').some((p) => !p || p === '.' || p === '..') ||
+      !/\/(?:master|master-v[0-9]{8}T[0-9]{9}Z)\.m3u8$/i.test(row.hlsMasterKey))
     return false;
   if (!ownershipHelpers) {
     require('ts-node').register({ project: path.resolve(__dirname, '../../tsconfig.json'), transpileOnly: true });

@@ -112,12 +112,14 @@ test('inventory classification includes private/unplayable/busy Reels without st
 
 test('ownership matches Content for legacy and user-owned masters while retaining safe master paths', () => {
   for (const key of [`reels/${id}/master.m3u8`, `reels/${id}/${attempt}/master.m3u8`,
+    `reels/${id}/master-v20260923T121215633Z.m3u8`,
     'reels/owner/published/master.m3u8', 'chat-videos/owner/published/master.m3u8']) {
     const result = entry({ ...row(), hlsMasterKey: key });
     assert.equal(result.status, 'PENDING', key);
     assert.equal(result.snapshot.previousHlsMasterKey, key);
   }
   for (const key of [`reels/${id}/not-an-attempt-uuid/master.m3u8`,
+    `reels/${id}/master-vinvalid.m3u8`, `reels/another-owner/master-v20260923T121215633Z.m3u8`,
     'reels/another-owner/master.m3u8', 'chat-videos/another-owner/master.m3u8',
     'reels/owner/published/variant.m3u8', 'reels/owner/../master.m3u8',
     'reels/owner/./master.m3u8', 'reels/owner//master.m3u8',

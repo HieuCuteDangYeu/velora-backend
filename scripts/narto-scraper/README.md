@@ -16,9 +16,10 @@ Narto Drama (Sitemap / Watch Page)
    [Ingestion]  ──> content-service (ReelSeries + Reel records)
         │
         ▼
- [HLS & TikTok] ──> FFmpeg 5s slice -> PNG mask spoof -> TikTok CDN (.ts)
+ [HLS & TikTok] ──> Service adaptive encoding profile (short Reels: 2s GOP/segments)
+        │       ──> PNG mask -> TikTok CDN (.ts), distinct rendition references
         │       ──> Rewritten .m3u8 with byte-ranges -> Cloudflare R2
-        │       ──> Updates hlsMasterKey in content DB
+        │       ──> Validates all output, CAS-publishes a new immutable attempt prefix
         │
         ▼
 [TEI Indexing]  ──> Text Embeddings Inference (BAAI/bge-m3 1024-d via SSH tunnel)
@@ -29,6 +30,18 @@ Narto Drama (Sitemap / Watch Page)
 ---
 
 ## Prerequisites
+
+Install the repository development dependencies (`ts-node` and `tsconfig-paths`)
+and local `ffmpeg`/`ffprobe`. The script invokes the existing
+`SelectReelEncodingProfileUseCase`, source validator and `FfmpegService`; it has
+no separate encoding ladder. Existing `MEDIA_*` profile settings still apply.
+Imports stage direct MP4 files from public HTTPS IPv4 hosts (512 MiB maximum),
+then validate every rendition, segment, keyframe interval and full local decode
+before uploading. Redirects are revalidated and DNS addresses are pinned.
+Existing shared playlist keys are never overwritten. All new playlists use
+`reels/<reel-id>/<attempt-uuid>/...`, conditional object creation and immutable
+caching; a lost database CAS leaves an unadopted version rather than changing
+another attempt's pointer.
 
 1. **Environment Variables**:
    Configured in root `.env`:
@@ -76,6 +89,15 @@ node scripts/narto-scraper/sync.cjs --slug=the-secret-behind-my-scoundrel-husban
 
 ### 3. Maintenance & Recovery Modes
 
+#### Prepare One Existing Reel for HLS Replacement
+
+Use the bounded [HLS replacement procedure](../ops/REEL-HLS-REPLACEMENT.md).
+Preparation is local and provider-free; remote staging, apply and rollback each
+require their own explicit command and the reviewed artifact digest. Normal
+reprocess authorization is unchanged. The operation preserves the existing
+playable version, identifiers, owner, visibility, Series, source metadata and
+index/evidence state, and has a six-hour conditional rollback window.
+
 #### Enrich Existing HLS Reels with Transcript and Visual Evidence
 
 For reels already stored with an `hlsMasterKey`, preview metadata-only reels
@@ -119,16 +141,16 @@ node scripts/narto-scraper/sync.cjs --migrate-cdn [--limit=50]
 
 ## CLI Options
 
-| Flag              | Default   | Description                                           |
-| ----------------- | --------- | ----------------------------------------------------- |
-| `--slug=SLUG`     | `null`    | Sync a specific drama by its URL slug                 |
-| `--sitemaps=N`    | `2`       | Number of latest episode sitemaps to check            |
-| `--all-sitemaps`  | `false`   | Scan all 1,000+ sitemaps on Narto Drama               |
-| `--max-dramas=N`  | `0` (all) | Limit number of newly discovered dramas to process    |
-| `--limit=N`       | `0` (all) | Limit total episodes to process                       |
-| `--concurrency=N` | `3`       | Parallel workers for FFmpeg slicing and TikTok upload |
-| `--crop`          | `false`   | Apply FFmpeg watermark crop filter (`iw:ih-110:0:40`) |
-| `--index-queued`  | `false`   | Run vector indexing on reels in `INDEX_QUEUED`        |
-| `--migrate-cdn`   | `false`   | Run TikTok CDN upload for reels without HLS           |
-| `--dry-run`       | `false`   | Preview operations without writing to DB or CDN       |
-| `--help`          | —         | Display CLI usage summary                             |
+| Flag              | Default   | Description                                                               |
+| ----------------- | --------- | ------------------------------------------------------------------------- |
+| `--slug=SLUG`     | `null`    | Sync a specific drama by its URL slug                                     |
+| `--sitemaps=N`    | `2`       | Number of latest episode sitemaps to check                                |
+| `--all-sitemaps`  | `false`   | Scan all 1,000+ sitemaps on Narto Drama                                   |
+| `--max-dramas=N`  | `0` (all) | Limit number of newly discovered dramas to process                        |
+| `--limit=N`       | `0` (all) | Limit total episodes to process                                           |
+| `--concurrency=N` | `3`       | Parallel workers for FFmpeg slicing and TikTok upload                     |
+| `--crop`          | `false`   | Preserve the legacy 978x1740 upright crop, centered horizontally at y=180 |
+| `--index-queued`  | `false`   | Run vector indexing on reels in `INDEX_QUEUED`                            |
+| `--migrate-cdn`   | `false`   | Run TikTok CDN upload for reels without HLS                               |
+| `--dry-run`       | `false`   | Preview operations without writing to DB or CDN                           |
+| `--help`          | —         | Display CLI usage summary                                                 |

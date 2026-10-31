@@ -1,3 +1,7 @@
+import { ReplaceReelHlsUseCase } from '@content/application/use-cases/replace-reel-hls.use-case';
+import { GetReelHlsReplacementSnapshotUseCase } from '@content/application/use-cases/get-reel-hls-replacement-snapshot.use-case';
+import { ReelHlsOperatorController } from './infrastructure/controllers/reel-hls-operator.controller';
+import { ReelHlsArtifactValidatorService } from './infrastructure/services/reel-hls-artifact-validator.service';
 import { BuildReelMediaJobUseCase } from '@content/application/use-cases/build-reel-media-job.use-case';
 import { ClassifyReelJobLengthUseCase } from '@content/application/use-cases/classify-reel-job-length.use-case';
 import { ClaimReelProcessingAttemptUseCase } from '@content/application/use-cases/claim-reel-processing-attempt.use-case';
@@ -130,8 +134,18 @@ function createRmqClientRegistration(name: string, queue: string) {
       createRmqClientRegistration('INDEX_SERVICE_RMQ', REEL_INDEX_QUERY_QUEUE),
     ]),
   ],
-  controllers: [ContentController, IndexingAttemptGuardController],
+  controllers: [
+    ContentController,
+    IndexingAttemptGuardController,
+    ReelHlsOperatorController,
+  ],
   providers: [
+    ReplaceReelHlsUseCase,
+    GetReelHlsReplacementSnapshotUseCase,
+    {
+      provide: 'IReelHlsArtifactValidator',
+      useClass: ReelHlsArtifactValidatorService,
+    },
     PrismaService,
     ContentRepository,
     OutboxRepository,

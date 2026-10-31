@@ -3,6 +3,11 @@ import type { CompleteReelIndexCommand } from '@common/processing/interfaces/com
 import type { ReelContextAccessRequest } from '@common/content/interfaces/reel-context-search-request.interface';
 import type { ReelMonitoringSnapshot } from '@common/content/dtos/reel-monitoring-snapshot.dto';
 import type {
+  ReelHlsReplacementPlan,
+  ReelHlsReplacementCommand,
+  ReelHlsReplacementResult,
+} from '@common/content/reel-hls-replacement';
+import type {
   ReelIndexStatus,
   ReelMediaStatus,
   ReelSourceLengthClass,
@@ -246,6 +251,10 @@ export interface FriendsReelsQuery {
 }
 
 export interface IContentRepository {
+  reserveReelHlsReplacement(plan: ReelHlsReplacementPlan): Promise<void>;
+  completeReelHlsReplacement(
+    command: ReelHlsReplacementCommand,
+  ): Promise<ReelHlsReplacementResult>;
   getReelMonitoringSnapshot(): Promise<ReelMonitoringSnapshot>;
 
   reserveReelUploadLease(input: {

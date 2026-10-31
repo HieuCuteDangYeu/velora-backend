@@ -137,26 +137,49 @@ describe('MediaProcessingController Reel media-key compatibility', () => {
     );
     expect(delivery.channel.ack).toHaveBeenCalledWith(delivery.message);
   });
-  it('routes a legacy imported evidence job to the stored canonical HLS key', async () => {
+  it.each(['', '87654321-1234-4234-8234-123456789abc/'])(
+    'routes imported evidence to its Reel-bound HLS version %s',
+    async (version) => {
+      const id = '12345678-1234-1234-1234-123456789abc';
+      const hlsMasterKey = `reels/${id}/${version}master.m3u8`;
+      const harness = buildController();
+      const delivery = buildDelivery();
+      await harness.controller.handleReelMediaJob(
+        {
+          ...buildJob('https://external.example/original.mp4', hlsMasterKey),
+          reelId: id,
+        },
+        delivery.context as never,
+      );
+      expect(harness.execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mediaKey: hlsMasterKey,
+          hlsMasterKey,
+          reelId: id,
+        }),
+      );
+      expect(delivery.channel.ack).toHaveBeenCalled();
+      expect(delivery.channel.nack).not.toHaveBeenCalled();
+    },
+  );
+  it('does not allow an imported version to bypass SOURCE_VIDEO ownership', async () => {
     const id = '12345678-1234-1234-1234-123456789abc';
-    const hlsMasterKey = `reels/${id}/master.m3u8`;
+    const key = `reels/${id}/87654321-1234-4234-8234-123456789abc/master.m3u8`;
     const harness = buildController();
     const delivery = buildDelivery();
     await harness.controller.handleReelMediaJob(
       {
-        ...buildJob('https://external.example/original.mp4', hlsMasterKey),
+        ...buildJob('https://external.example/source.mp4', key),
         reelId: id,
+        sourceMode: 'SOURCE_VIDEO',
       },
       delivery.context as never,
     );
-    expect(harness.execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mediaKey: hlsMasterKey,
-        hlsMasterKey,
-        reelId: id,
-      }),
+    expect(harness.execute).not.toHaveBeenCalled();
+    expect(delivery.channel.nack).toHaveBeenCalledWith(
+      delivery.message,
+      false,
+      false,
     );
-    expect(delivery.channel.ack).toHaveBeenCalled();
-    expect(delivery.channel.nack).not.toHaveBeenCalled();
   });
 });

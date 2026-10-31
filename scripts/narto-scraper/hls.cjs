@@ -250,6 +250,7 @@ function legacyCropEdit(metadata) {
 async function prepareHls({
   source,
   outputDir,
+  preserveInputTimestamps = false,
   crop = false,
   edit,
   config = new ConfigService(),
@@ -284,7 +285,7 @@ async function prepareHls({
       trim.outputDurationMs,
       mediaEdit?.trim ? trim : undefined,
     );
-    await ffmpeg.transcodeToHls(input, outputDir, profile);
+    await ffmpeg.transcodeToHls(input, outputDir, profile, { preserveInputTimestamps });
     await ffmpeg.extractThumbnail(
       input,
       path.join(outputDir, 'thumbnail.jpg'),

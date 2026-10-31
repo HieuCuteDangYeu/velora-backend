@@ -57,6 +57,7 @@ export function buildHlsTranscodeArguments(input: {
   inputPath: string;
   outputDir: string;
   profile: ReelEncodingProfile;
+  preserveInputTimestamps?: boolean;
 }): string[] {
   const { inputPath, outputDir, profile } = input;
   const variants = profile.variants;
@@ -80,6 +81,7 @@ export function buildHlsTranscodeArguments(input: {
     '-hide_banner',
     '-nostdin',
     '-y',
+    ...(input.preserveInputTimestamps ? ['-copyts', '-start_at_zero'] : []),
     '-i',
     inputPath,
     ...buildTemporalTrimArguments(profile.trim),
@@ -104,8 +106,7 @@ export function buildHlsTranscodeArguments(input: {
     'yuv420p',
     '-r',
     String(profile.outputFps),
-    '-vsync',
-    '1',
+    ...(input.preserveInputTimestamps ? [] : ['-vsync', '1']),
     '-g',
     String(gopSize),
     '-keyint_min',

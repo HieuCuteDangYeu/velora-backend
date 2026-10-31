@@ -247,7 +247,7 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
     inputPath: string,
     outputDir: string,
     profile: ReelEncodingProfile,
-    options: VideoProcessExecutionOptions = {},
+    options: VideoProcessExecutionOptions & { preserveInputTimestamps?: boolean } = {},
   ): Promise<TranscodeToHlsResult> {
     fs.mkdirSync(outputDir, { recursive: true });
 
@@ -264,7 +264,7 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
     await this.runProcess(
       'ffmpeg',
       this.ffmpegPath,
-      buildHlsTranscodeArguments({ inputPath, outputDir, profile }),
+      buildHlsTranscodeArguments({ inputPath, outputDir, profile, preserveInputTimestamps: options.preserveInputTimestamps }),
       {
         signal: options.signal,
         timeoutMs: options.timeoutMs ?? profile.timeoutMs,

@@ -362,7 +362,7 @@ async function coordinate(options, dependencies) {
             media = saved.media;
             await hls.validateLocalHls(outputDir, media.profile);
           } else {
-            media = await hls.prepareHls({ source, outputDir });
+            media = await hls.prepareHls({ source, outputDir, preserveInputTimestamps: true });
             persist(preparationFile, { reelId: entry.reelId, outputDir, media }, true);
           }
           if (Math.abs(media.outputDurationMs - entry.expectedDurationMs) > 250)

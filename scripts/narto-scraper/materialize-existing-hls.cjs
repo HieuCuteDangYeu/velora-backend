@@ -173,7 +173,8 @@ function mediaShape(probe) {
   if (!Number.isFinite(duration) || duration <= 0 || duration > LIMITS.duration + 1 ||
       !Number.isFinite(start) || !Number.isFinite(rotation) ||
       a && !Number.isFinite(audioOffset)) throw new Error('Invalid media timeline');
-  const audioEndOffset = a ? Number(a.start_time) + Number(a.duration) - start - duration : null;
+  // Compare audio end relative to video start; container duration can differ after remux.
+  const audioEndOffset = a ? Number(a.start_time) + Number(a.duration) - start : null;
   if (a && !Number.isFinite(audioEndOffset)) throw new Error('Invalid audio duration');
   return { width: v.width, height: v.height, sar: v.sample_aspect_ratio || '1:1',
     rotation, duration, start, audioOffset, audioEndOffset };

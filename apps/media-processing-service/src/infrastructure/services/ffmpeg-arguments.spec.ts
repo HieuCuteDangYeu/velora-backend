@@ -29,6 +29,18 @@ const baseProfile = {
 const crop = { x: 320, y: 0, width: 608, height: 1080 };
 
 describe('FFmpeg reel arguments', () => {
+  it('preserves input timestamps only for opted-in Reel replacements', () => {
+    const input = { inputPath: '/tmp/source.mp4', outputDir: '/tmp/hls', profile: baseProfile };
+    const normal = buildHlsTranscodeArguments(input);
+    const replacement = buildHlsTranscodeArguments({ ...input, preserveInputTimestamps: true });
+
+    expect(normal).not.toContain('-copyts');
+    expect(normal).not.toContain('-start_at_zero');
+    expect(normal.slice(normal.indexOf('-vsync'), normal.indexOf('-vsync') + 2)).toEqual(['-vsync', '1']);
+    expect(replacement).not.toContain('-vsync');
+    expect(replacement.slice(replacement.indexOf('-y') + 1, replacement.indexOf('-i')))
+      .toEqual(['-copyts', '-start_at_zero']);
+  });
   it('materializes local HLS playlists with remote nonstandard segment URLs', () => {
     expect(
       buildHlsMaterializationArguments({

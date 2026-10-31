@@ -135,6 +135,18 @@ test('remux verifies timeline/framing and all decoded frames/audio without exter
   assert.throws(() => mediaShape({ streams: [], format: {} }));
 });
 
+test('remux accepts container-duration rounding when relative audio start and end match', async () => {
+  const execute = async (command, args) => {
+    if (command === 'ffprobe') {
+      const before = probe(360, 2, -0.16);
+      if (args.at(-1).endsWith('.mp4')) before.format.duration = '2.15';
+      return { stdout: JSON.stringify(before) };
+    }
+    return { stdout: args.includes('framemd5') ? '#tb 0: 1/30\n0, 0, 0, 1, 100, abc\n' : 'SHA256=audio' };
+  };
+  await verifyRemux('source.m3u8', 'source.mp4', 2000, { execute });
+});
+
 for (const changed of [probe(720), probe(360, 3), probe(360, 2, 0.2)])
   test('remux rejects dimension, duration and audio synchronization changes', async () => {
     await assert.rejects(verifyRemux('source.m3u8', 'source.mp4', 2000, { execute: async (command, args) => {

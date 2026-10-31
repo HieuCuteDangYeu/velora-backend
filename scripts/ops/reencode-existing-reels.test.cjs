@@ -353,7 +353,8 @@ test('preparation passes only the already-published local source to prepareHls',
     return { source };
   };
   f.deps.hls.prepareHls = async (options) => {
-    assert.deepEqual(Object.keys(options).sort(), ['outputDir', 'source']);
+    assert.deepEqual(Object.keys(options).sort(), ['outputDir', 'preserveInputTimestamps', 'source']);
+    assert.equal(options.preserveInputTimestamps, true);
     assert.ok(options.source.endsWith('/source/source.mp4'));
     return { outputDurationMs: 2000 };
   };

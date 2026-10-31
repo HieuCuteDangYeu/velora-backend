@@ -409,7 +409,10 @@ jobs:
             apps/ai-service/src/domain/services/rag-transcript-sentence-selection.spec.ts \
             apps/ai-service/src/infrastructure/adapters/chat-prompt-builder.adapter.spec.ts \
             apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.spec.ts \
-            apps/ai-service/src/infrastructure/adapters/groq-structured-llm.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/ollama-llm.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/ollama-structured-llm.adapter.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/ollama-text.client.spec.ts \
+            apps/ai-service/src/infrastructure/adapters/ollama-tool-calling-llm.adapter.spec.ts \
             apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.spec.ts
 
       - name: Check friend recommendation formatting

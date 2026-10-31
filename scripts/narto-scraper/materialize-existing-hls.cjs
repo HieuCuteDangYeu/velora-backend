@@ -211,7 +211,7 @@ function frameFingerprint(text) {
   const frames = text.split(/\r?\n/).filter((line) => line && !line.startsWith('#')).map((line) => {
     const fields = line.split(',').map((value) => value.trim());
     const pts = Number(fields[2]), duration = Number(fields[3]);
-    if (fields.length !== 6 || !Number.isFinite(pts) || !Number.isFinite(duration) || duration <= 0 || pts <= previous)
+    if (fields.length !== 6 || !Number.isFinite(pts) || !Number.isFinite(duration) || duration <= 0 || pts < previous)
       throw new Error('Invalid decoded frame timeline');
     first ??= pts; previous = pts;
     return [Math.round((pts - first) * tick * 1000), Math.round(duration * tick * 1000), fields[4], fields[5]].join(',');

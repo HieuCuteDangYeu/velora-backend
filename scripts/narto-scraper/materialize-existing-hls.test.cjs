@@ -170,6 +170,15 @@ test('decoded frame comparison binds relative indexed timestamps and preserves r
   assert.throws(() => frameFingerprint('0, 0, 1, 1, 100, a'));
 });
 
+test('decoded frame comparison accepts identical repeated presentation timestamps but rejects regressions', () => {
+  const original = '#tb 0: 1/25\n0, 0, 0, 1, 100, a\n0, 0, 1, 1, 100, b\n0, 0, 1, 1, 100, c\n';
+  const remuxed = '#tb 0: 1/25\n0, 0, 35, 1, 100, a\n0, 0, 36, 1, 100, b\n0, 0, 36, 1, 100, c\n';
+  assert.equal(frameFingerprint(original), frameFingerprint(remuxed));
+  assert.notEqual(frameFingerprint(original), frameFingerprint(remuxed.replace('100, c', '100, changed')));
+  assert.throws(() => frameFingerprint(remuxed.replace('0, 0, 36, 1, 100, c', '0, 0, 35, 1, 100, c')),
+    /Invalid decoded frame timeline/);
+});
+
 test('missing HLS audio duration is checked through packet timing rather than guessed', async () => {
   let packetProbes = 0;
   await verifyRemux('source.m3u8', 'source.mp4', 2000, { execute: async (command, args) => {

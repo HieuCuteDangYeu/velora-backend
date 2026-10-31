@@ -45,6 +45,13 @@ function fixture() {
 }
 
 describe('ReplaceReelHlsUseCase', () => {
+  it('reserves a reviewed replacement of its own timestamp-versioned imported master', async () => {
+    const f = fixture();
+    f.plan.previousHlsMasterKey = `reels/${f.plan.reelId}/master-v20260923T121215633Z.m3u8`;
+    await expect(f.useCase.execute({ ...f.command, action: 'RESERVE',
+      reviewedSha256: reelHlsPlanSha256(f.plan) })).resolves.toEqual({ reserved: true });
+    expect(f.repository.reserveReelHlsReplacement).toHaveBeenCalledWith(f.plan);
+  });
   it('rejects a changed artifact or foreign previous pointer before any storage or repository work', async () => {
     const f = fixture();
     await expect(

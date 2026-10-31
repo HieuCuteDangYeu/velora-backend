@@ -3,10 +3,14 @@ import type { IIndexingContentService } from '@indexing/domain/interfaces/conten
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
 import type { IReelIndexWorkflow } from '@indexing/domain/interfaces/reel-index-workflow.interface';
 import type { ISemanticCandidateLifecycle } from '@indexing/domain/interfaces/semantic-candidate-lifecycle.interface';
+import {
+  ProjectionPendingError,
+  ProjectionSupersededError,
+} from '@indexing/domain/interfaces/reel-vector-store.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
 export type ProcessReelIndexJobResult =
-  | { status: 'COMPLETED' | 'DUPLICATE' | 'STALE' }
+  | { status: 'COMPLETED' | 'DUPLICATE' | 'STALE' | 'PROJECTION_PENDING' }
   | { status: 'RETRY' | 'PERMANENT_FAILURE'; error: string };
 
 /**
@@ -52,6 +56,10 @@ export class ProcessReelIndexJobUseCase {
       });
       return { status };
     } catch (error: unknown) {
+      if (error instanceof ProjectionSupersededError)
+        return { status: 'STALE' };
+      if (error instanceof ProjectionPendingError)
+        return { status: 'PROJECTION_PENDING' };
       const detail = error instanceof Error ? error.message : String(error);
       this.logger.error(`Index job ${input.job.jobId} failed: ${detail}`);
       await this.checkpoints

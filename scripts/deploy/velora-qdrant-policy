@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Only the bounded, disabled-by-default vector migration may bypass worker protection.
+prepare_qdrant_comparison() {
+  local base="$1" target="$2" model service
+  if ! jq -e '.services.qdrant != null' "$target" >/dev/null; then
+    jq -e '.services.qdrant == null' "$base" >/dev/null || fail 'Qdrant removal requires manual recovery'
+    return 0
+  fi
+  jq -e '
+    .services.qdrant as $q |
+    ($q | keys | . - ["profiles","cpus","command","entrypoint","healthcheck","image","mem_limit","mem_reservation","networks","restart","secrets","volumes"] | length == 0)
+    and $q.healthcheck.test == ["CMD","bash","/qdrant/velora-ready.sh"]
+    and $q.healthcheck.timeout == "5s" and $q.healthcheck.interval == "10s" and $q.healthcheck.retries == 6
+    and ($q.mem_reservation | tonumber) == 268435456 and $q.restart == "unless-stopped"
+    and $q.image == "qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2"
+    and (($q.ports // []) | length == 0) and (($q.environment // {}) | length == 0)
+    and $q.networks == {"reel-vector-net":null}
+    and $q.profiles == ["qdrant"] and $q.cpus == 1 and ($q.mem_limit | tonumber) == 805306368
+    and .networks["reel-vector-net"].internal == true
+    and ((.networks["reel-vector-net"] | del(.name,.ipam)) == {internal:true})
+    and ((.volumes.qdrant_storage // {} | del(.name)) == {})
+    and ((.volumes.qdrant_snapshots // {} | del(.name)) == {})
+    and ([$q.volumes[] | select(.type == "volume") | {source,target}] | sort_by(.source)) ==
+      ([{source:"qdrant_storage",target:"/qdrant/storage"},{source:"qdrant_snapshots",target:"/qdrant/snapshots"}] | sort_by(.source))
+    and $q.entrypoint == ["bash","/qdrant/velora-entrypoint.sh"]
+    and ($q.privileged // false) == false and ($q.network_mode // "") == ""
+    and ([$q.volumes[] | select(.type == "bind") | {source,target,read_only}] | sort_by(.source)) ==
+      ([{source:"./infra/qdrant/config.yaml",target:"/qdrant/config/velora.yaml",read_only:true},{source:"./infra/qdrant/entrypoint.sh",target:"/qdrant/velora-entrypoint.sh",read_only:true},{source:"./infra/qdrant/ready.sh",target:"/qdrant/velora-ready.sh",read_only:true}] | sort_by(.source))
+    and ([.secrets | keys[] | select(startswith("qdrant_"))] | sort) == (["qdrant_api_key","qdrant_tls_ca","qdrant_tls_cert","qdrant_tls_key"] | sort)
+    and all($q.secrets[]; .target == ("/run/secrets/" + .source))
+    and ([$q.secrets[].source] | sort) == (["qdrant_api_key","qdrant_tls_ca","qdrant_tls_cert","qdrant_tls_key"] | sort)
+    and ([.services | to_entries[] | select(.key != "qdrant" and .key != "reel-indexing-service" and .key != "reel-indexing-long-service") |
+      select((.value.networks["reel-vector-net"] != null) or ((.value.networks // {} | has("reel-vector-net"))) or any(.value.secrets[]?; .source | startswith("qdrant_")))] | length == 0)
+  ' "$target" >/dev/null || fail 'Qdrant isolation/resource/image policy rejected the Compose model'
+  if jq -e '.services.qdrant != null' "$base" >/dev/null; then
+    jq -n -e --slurpfile a "$base" --slurpfile b "$target" '
+      $a[0].services.qdrant == $b[0].services.qdrant and $a[0].networks["reel-vector-net"] == $b[0].networks["reel-vector-net"]
+      and $a[0].volumes.qdrant_storage == $b[0].volumes.qdrant_storage and $a[0].volumes.qdrant_snapshots == $b[0].volumes.qdrant_snapshots
+      and ([$a[0].secrets | to_entries[]? | select(.key | startswith("qdrant_"))] == [$b[0].secrets | to_entries[]? | select(.key | startswith("qdrant_"))])
+    ' >/dev/null || fail 'Existing Qdrant stateful service or secret mounts changed; manual recovery required'
+  fi
+  for service in reel-indexing-service reel-indexing-long-service; do
+    if jq -n -e --arg s "$service" --slurpfile a "$base" --slurpfile b "$target" '
+      def wiring: {environment: ((.environment // {}) | with_entries(select((.key | startswith("QDRANT_")) or (.key | startswith("INDEX_VECTOR_")) or .key == "NODE_EXTRA_CA_CERTS"))), secrets: [.secrets[]? | select(.source | startswith("qdrant_"))], network: .networks["reel-vector-net"]};
+      ($a[0].services[$s] | wiring) == ($b[0].services[$s] | wiring)
+    ' >/dev/null; then continue; fi
+    if jq -e --arg s "$service" '.services[$s].secrets // [] | any(.source == "qdrant_api_key")' "$target" >/dev/null; then
+      jq -e --arg s "$service" '.services[$s] as $s |
+        $s.environment.QDRANT_URL == "https://qdrant:6333" and $s.environment.QDRANT_API_KEY_FILE == "/run/secrets/qdrant_api_key"
+        and $s.environment.NODE_EXTRA_CA_CERTS == "/run/secrets/qdrant_tls_ca"
+        and $s.environment.INDEX_VECTOR_SEARCH_BACKEND == "postgres"
+        and $s.environment.INDEX_VECTOR_PUBLICATION_REQUIRED == "false"
+        and $s.environment.INDEX_VECTOR_PROJECTION_ENABLED == "false"
+        and $s.environment.INDEX_VECTOR_SHADOW_COMPARE == "false"
+        and all($s.secrets[]; .target == ("/run/secrets/" + .source))
+        and ([$s.secrets[].source] | sort) == ["qdrant_api_key","qdrant_tls_ca"]
+      ' "$target" >/dev/null || fail 'Qdrant lane wiring/cutover requires explicit ordered operator handling'
+      add_app_and_worker_companions reel-indexing-service
+    else
+      fail 'Qdrant lane wiring or secret removal requires manual handling'
+    fi
+  done
+  if ! jq -n -e --slurpfile a "$base" --slurpfile b "$target" '$a[0].services.qdrant == $b[0].services.qdrant' >/dev/null; then
+    add_unique qdrant INFRA_RECONCILE_SERVICES
+  fi
+  for model in "$base" "$target"; do
+    jq 'del(.services.qdrant, .networks["reel-vector-net"], .volumes.qdrant_storage, .volumes.qdrant_snapshots)
+      | .secrets = ((.secrets // {}) | with_entries(select(.key | startswith("qdrant_") | not)))
+      | .services |= with_entries(if (.key == "reel-indexing-service" or .key == "reel-indexing-long-service") then
+          .value |= (del(.networks["reel-vector-net"])
+            | .environment |= del(.QDRANT_URL,.QDRANT_API_KEY_FILE,.NODE_EXTRA_CA_CERTS,.INDEX_VECTOR_SEARCH_BACKEND,.INDEX_VECTOR_PROJECTION_ENABLED,.INDEX_VECTOR_PUBLICATION_REQUIRED,.INDEX_VECTOR_SHADOW_COMPARE)
+            | .secrets = ((.secrets // []) | map(select(.source | startswith("qdrant_") | not)))
+            | if .secrets == [] then del(.secrets) else . end)
+        else . end)' "$model" >"$model.qdrant-filtered"
+    mv "$model.qdrant-filtered" "$model"
+  done
+  jq -n -e --slurpfile a "$base" --slurpfile b "$target" '$a[0].secrets == $b[0].secrets and $a[0].configs == $b[0].configs' >/dev/null \
+    || fail 'Unrelated Compose secrets/configs changed'
+}
+
+qdrant_deploy_preflight() {
+  # A dated explicit proof is required for the backing filesystem and Linux VM volume.
+  [[ "${VELORA_QDRANT_DISK_PROOF_SHA:-}" == "$TARGET_SHA" ]] || fail 'Qdrant requires target-SHA disk/backup/restore approval; no automatic cleanup'
+  (( $(free_root_gb) >= 20 )) || fail 'Qdrant requires at least 20 GiB host backing-volume free space'
+  [[ -f "$STATE_DIR/qdrant-volume-proof-$TARGET_SHA.json" ]] || fail 'Missing Qdrant VM volume/backup/restore proof'
+  jq -e --arg sha "$TARGET_SHA" '.sha == $sha and .vmFreeGiB >= 20 and .backupRestoreVerified == true and .benchmarkHoldCleared == true' \
+    "$STATE_DIR/qdrant-volume-proof-$TARGET_SHA.json" >/dev/null || fail 'Qdrant runtime gates have not cleared'
+}
+
+reconcile_qdrant() {
+  qdrant_deploy_preflight
+  VELORA_IMAGE_TAG="$TARGET_SHA" docker compose --profile qdrant up -d --no-deps qdrant
+  # The pinned image has Bash and OpenSSL, not curl.
+  VELORA_IMAGE_TAG="$TARGET_SHA" docker compose --profile qdrant exec -T qdrant bash /qdrant/velora-ready.sh
+}
+
+qdrant_release_requires_gate() {
+  [[ -n "$LAST_DEPLOYED_SHA" && -n "$TARGET_SHA" ]] || return 1
+  local changes base target
+  changes="$(git diff --name-only "$LAST_DEPLOYED_SHA" "$TARGET_SHA" 2>/dev/null)" || return 1
+  if grep -Eq '^(infra/qdrant/[^/]+\.(yaml|sh)|docker-compose.qdrant.yml)$' <<<"$changes"; then return 0; fi
+  grep -qx docker-compose.yml <<<"$changes" || return 1
+  base="$(git show "$LAST_DEPLOYED_SHA:docker-compose.yml" | awk '/^  qdrant:/{inside=1;print;next} inside && /^  [a-zA-Z]/{exit} inside{print}')"
+  target="$(git show "$TARGET_SHA:docker-compose.yml" | awk '/^  qdrant:/{inside=1;print;next} inside && /^  [a-zA-Z]/{exit} inside{print}')"
+  [[ "$base" != "$target" ]]
+}

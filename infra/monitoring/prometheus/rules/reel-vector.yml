@@ -1,0 +1,38 @@
+groups:
+  - name: reel-vector-projection
+    rules:
+      - alert: ReelVectorTelemetryStale
+        expr: (time() - velora_vector_metrics_timestamp_seconds > 300) and on(instance) (velora_vector_projection_enabled == 1)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Reel vector telemetry is stale; readiness is unknown
+      - alert: ReelVectorStoreUnavailable
+        expr: (velora_qdrant_ready == 0) and on(instance) (velora_vector_projection_enabled == 1)
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Authenticated Reel Qdrant dependency probe failed
+      - alert: ReelVectorProjectionLag
+        expr: (velora_vector_projection_lag_seconds > 300) and on(instance) (velora_vector_projection_enabled == 1)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Reel vector projection work is delayed
+      - alert: ReelVectorStorageLow
+        expr: velora_qdrant_storage_available_bytes < 12884901888
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Qdrant storage is below the existing 12 GiB deployment floor
+      - alert: ReelVectorMemoryPressure
+        expr: velora_qdrant_memory_resident_bytes > 724775731
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Qdrant resident memory exceeds 90 percent of the container limit

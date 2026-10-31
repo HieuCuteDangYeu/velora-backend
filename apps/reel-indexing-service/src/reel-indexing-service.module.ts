@@ -1,3 +1,6 @@
+import { QdrantReelVectorStoreAdapter } from './infrastructure/adapters/qdrant-reel-vector-store.adapter';
+import { PrismaVectorProjectionRepository } from './infrastructure/repositories/prisma-vector-projection.repository';
+import { VectorProjectionWorker } from './infrastructure/services/vector-projection-worker.service';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
@@ -72,6 +75,14 @@ const rabbitClient = (name: string, queue: string) => ({
   controllers: [ReelIndexingController, SemanticIndexController],
   providers: [
     PrismaService,
+    QdrantReelVectorStoreAdapter,
+    PrismaVectorProjectionRepository,
+    VectorProjectionWorker,
+    { provide: 'IReelVectorStore', useExisting: QdrantReelVectorStoreAdapter },
+    {
+      provide: 'ISemanticPublication',
+      useExisting: PrismaVectorProjectionRepository,
+    },
     TranscribeAudioManifestUseCase,
     AnalyzeVisualFrameManifestUseCase,
     MergeTranscriptSegmentsUseCase,

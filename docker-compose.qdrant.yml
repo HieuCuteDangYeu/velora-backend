@@ -1,0 +1,19 @@
+# Opt in only after the benchmark hold, disk, certificate, migration and backup gates.
+# COMPOSE_FILE=docker-compose.yml:docker-compose.qdrant.yml COMPOSE_PROFILES=qdrant
+services:
+  reel-indexing-service: &index-qdrant
+    environment:
+      QDRANT_URL: https://qdrant:6333
+      QDRANT_API_KEY_FILE: /run/secrets/qdrant_api_key
+      NODE_EXTRA_CA_CERTS: /run/secrets/qdrant_tls_ca
+      INDEX_VECTOR_SEARCH_BACKEND: ${INDEX_VECTOR_SEARCH_BACKEND:-postgres}
+      INDEX_VECTOR_PROJECTION_ENABLED: ${INDEX_VECTOR_PROJECTION_ENABLED:-false}
+      INDEX_VECTOR_PUBLICATION_REQUIRED: ${INDEX_VECTOR_PUBLICATION_REQUIRED:-false}
+      INDEX_VECTOR_SHADOW_COMPARE: ${INDEX_VECTOR_SHADOW_COMPARE:-false}
+    networks:
+      - microservices-net
+      - reel-vector-net
+    secrets:
+      - qdrant_api_key
+      - qdrant_tls_ca
+  reel-indexing-long-service: *index-qdrant

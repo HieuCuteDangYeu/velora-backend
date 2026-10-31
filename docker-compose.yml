@@ -1,4 +1,32 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.0@sha256:9bfc89f9914fc14876a88c05270685921a55b8877b254a98bcc1cc2f0a424cd2
+    profiles: [qdrant]
+    restart: unless-stopped
+    cpus: '1.0'
+    mem_limit: 768m
+    mem_reservation: 256m
+    entrypoint: [bash, /qdrant/velora-entrypoint.sh]
+    volumes:
+      - qdrant_storage:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+      - ./infra/qdrant/config.yaml:/qdrant/config/velora.yaml:ro
+      - ./infra/qdrant/entrypoint.sh:/qdrant/velora-entrypoint.sh:ro
+      - ./infra/qdrant/ready.sh:/qdrant/velora-ready.sh:ro
+    secrets:
+      - qdrant_api_key
+      - qdrant_tls_cert
+      - qdrant_tls_key
+      - qdrant_tls_ca
+    healthcheck:
+      test: [CMD, bash, /qdrant/velora-ready.sh]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks:
+      - reel-vector-net
+
   api-gateway:
     image: ${DOCKERHUB_USERNAME}/api-gateway:${VELORA_IMAGE_TAG:-latest}
     build:
@@ -400,7 +428,11 @@ services:
       - ./apps/notification-service/secrets/firebase-admin.json:/usr/src/app/apps/notification-service/secrets/firebase-admin.json:ro
       - ./apps/notification-service/secrets/apns-private-key.p8:/usr/src/app/apps/notification-service/secrets/apns-private-key.p8:ro
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O - http://127.0.0.1:3015/health >/dev/null || exit 1']
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q -O - http://127.0.0.1:3015/health >/dev/null || exit 1',
+        ]
       interval: 15s
       timeout: 3s
       retries: 3
@@ -545,7 +577,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }); }\" >/dev/null && mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"quit(db.hello().isWritablePrimary ? 0 : 1)\"",
+          'mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: ''rs0'', members: [{ _id: 0, host: ''mongo:27017'' }] }); }" >/dev/null && mongosh --quiet -u "$$MONGO_INITDB_ROOT_USERNAME" -p "$$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.hello().isWritablePrimary ? 0 : 1)"',
         ]
       interval: 10s
       timeout: 10s
@@ -572,7 +604,11 @@ services:
     expose:
       - '6379'
     healthcheck:
-      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG']
+      test:
+        [
+          'CMD-SHELL',
+          'redis-cli -a "$$REDIS_PASSWORD" --no-auth-warning ping | grep -q PONG',
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -615,6 +651,8 @@ services:
       - microservices-net
 
 networks:
+  reel-vector-net:
+    internal: true
   microservices-net:
     driver: bridge
 
@@ -631,3 +669,15 @@ volumes:
   rag_embedding_cache:
   rag_reranker_cache:
   rag_vision_cache:
+  qdrant_storage:
+  qdrant_snapshots:
+
+secrets:
+  qdrant_api_key:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/api-key
+  qdrant_tls_cert:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/server.crt
+  qdrant_tls_key:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/server.key
+  qdrant_tls_ca:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/ca.crt

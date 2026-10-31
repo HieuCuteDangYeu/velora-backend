@@ -92,3 +92,6 @@ scripts/narto-scraper/*.json
 
 # Benchmarks
 .benchmarks/
+
+# Service-specific Qdrant credentials and certificates
+infra/qdrant/private/

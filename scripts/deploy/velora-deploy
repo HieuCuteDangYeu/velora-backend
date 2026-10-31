@@ -54,6 +54,7 @@ compare_compose_models() {
   target_normal="$STAGING_DIR/.velora-compose-target-normal.json"
   normalize_compose_json "$BASE_COMPOSE_JSON" "$base_normal"
   normalize_compose_json "$TARGET_COMPOSE_JSON" "$target_normal"
+  prepare_qdrant_comparison "$base_normal" "$target_normal"
 
   if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" \
     '($a[0].networks == $b[0].networks)' >/dev/null; then
@@ -161,6 +162,16 @@ plan_from_changed_files() {
           warn "unknown app path '$file'; conservatively reconciling all application services"
           add_all_application_services
         fi
+        ;;
+      infra/qdrant/*.md)
+        ;;
+      infra/qdrant/*)
+        add_unique qdrant INFRA_RECONCILE_SERVICES
+        ;;
+      docker-compose.qdrant.yml)
+        add_app_and_worker_companions reel-indexing-service
+        ;;
+      scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
         ;;
       infra/nginx/*)
         add_unique nginx INFRA_RECONCILE_SERVICES
@@ -302,6 +313,10 @@ reconcile_infrastructure() {
   local service
   for service in "${INFRA_RECONCILE_SERVICES[@]}"; do
     case "$service" in
+      qdrant)
+        # Already reconciled before indexing writers.
+        :
+        ;;
       nginx)
         log "==> Force-recreating Nginx to refresh config bind mount..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps nginx

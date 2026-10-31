@@ -1,5 +1,9 @@
+import { ProjectionPendingError } from '@indexing/domain/interfaces/reel-vector-store.interface';
 import type { ReelIndexJob } from '@common/processing/interfaces/reel-index-job.interface';
-import { ProcessReelIndexJobUseCase, isDeferredProviderQuotaFailure } from './process-reel-index-job.use-case';
+import {
+  ProcessReelIndexJobUseCase,
+  isDeferredProviderQuotaFailure,
+} from './process-reel-index-job.use-case';
 
 describe('ProcessReelIndexJobUseCase', () => {
   const job = {
@@ -23,7 +27,7 @@ describe('ProcessReelIndexJobUseCase', () => {
     };
     return {
       useCase: new ProcessReelIndexJobUseCase(
-        workflow as never,
+        workflow,
         checkpoints as never,
         content as never,
         candidateLifecycle as never,
@@ -34,6 +38,16 @@ describe('ProcessReelIndexJobUseCase', () => {
       candidateLifecycle,
     };
   }
+
+  it('acknowledges a durably deferred projection without failing or discarding the candidate', async () => {
+    const value = build({ error: new ProjectionPendingError() });
+    await expect(
+      value.useCase.execute({ job, allowReclaim: false, allowRetry: false }),
+    ).resolves.toEqual({ status: 'PROJECTION_PENDING' });
+    expect(value.checkpoints.fail).not.toHaveBeenCalled();
+    expect(value.content.failIndexing).not.toHaveBeenCalled();
+    expect(value.candidateLifecycle.discardCandidate).not.toHaveBeenCalled();
+  });
 
   it('defers provider quota failures instead of retrying them in the same day', async () => {
     const value = build({

@@ -12,7 +12,19 @@ import type {
   SemanticIndexCandidate,
 } from '@indexing/domain/interfaces/semantic-index.repository.interface';
 import { PrismaService } from '@indexing/infrastructure/prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import type {
+  IReelVectorStore,
+  ReelVectorPayload,
+  VectorKind,
+  VectorTuple,
+} from '@indexing/domain/interfaces/reel-vector-store.interface';
+import {
+  VECTOR_TABLES,
+  vectorHash,
+  vectorPointId,
+} from '@indexing/domain/services/reel-vector-manifest';
+import { PrismaVectorProjectionRepository } from './prisma-vector-projection.repository';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/reel-indexing-client';
 import { randomUUID } from 'crypto';
@@ -75,6 +87,10 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    @Optional() private readonly projections?: PrismaVectorProjectionRepository,
+    @Optional()
+    @Inject('IReelVectorStore')
+    private readonly vectors?: IReelVectorStore,
   ) {}
 
   async persistCandidate(input: SemanticIndexCandidate): Promise<void> {
@@ -95,6 +111,11 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
 
     await this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.job.reelId}))`;
+      await this.projections?.assertReplaceable(
+        transaction,
+        input.job.reelId,
+        input.job.indexAttemptId,
+      );
       await transaction.transcriptionSegment.deleteMany({
         where: { indexAttemptId: input.job.indexAttemptId },
       });
@@ -142,6 +163,11 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
           })),
         });
       }
+      await this.projections?.capture(
+        transaction,
+        input.job.reelId,
+        input.job.indexAttemptId,
+      );
     });
   }
 
@@ -151,6 +177,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
   ): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reelId}))`;
+      await this.projections?.assertReady(transaction, reelId, indexAttemptId);
       await transaction.reelVisualScene.updateMany({
         where: { reelId, isActive: true },
         data: { isActive: false },
@@ -186,6 +213,9 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         where: { reelId, indexAttemptId },
         data: { isActive: true },
       });
+      await this.projections?.revoke(transaction, reelId, {
+        exceptAttempt: indexAttemptId,
+      });
       await transaction.reelVisualScene.deleteMany({
         where: { reelId, indexAttemptId: { not: indexAttemptId } },
       });
@@ -215,23 +245,25 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     reelId: string,
     indexAttemptId: string,
   ): Promise<void> {
-    await this.prisma.$transaction([
-      this.prisma.reelVisualScene.deleteMany({
-        where: { reelId, indexAttemptId, isActive: false },
-      }),
-      this.prisma.reelChunk.deleteMany({
-        where: { reelId, indexAttemptId, isActive: false },
-      }),
-      this.prisma.reelSection.deleteMany({
-        where: { reelId, indexAttemptId, isActive: false },
-      }),
-      this.prisma.reelDocument.deleteMany({
-        where: { reelId, indexAttemptId, isActive: false },
-      }),
-      this.prisma.transcriptionSegment.deleteMany({
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reelId}))`;
+      if (
+        await tx.reelDocument.count({
+          where: { reelId, indexAttemptId, isActive: true },
+        })
+      )
+        return;
+      await this.projections?.revoke(tx, reelId, { indexAttemptId });
+      await tx.reelVisualScene.deleteMany({
         where: { reelId, indexAttemptId },
-      }),
-    ]);
+      });
+      await tx.reelChunk.deleteMany({ where: { reelId, indexAttemptId } });
+      await tx.reelSection.deleteMany({ where: { reelId, indexAttemptId } });
+      await tx.reelDocument.deleteMany({ where: { reelId, indexAttemptId } });
+      await tx.transcriptionSegment.deleteMany({
+        where: { reelId, indexAttemptId },
+      });
+    });
   }
 
   async searchReels(
@@ -322,6 +354,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
   async deleteReel(reelId: string): Promise<boolean> {
     return await this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reelId}))`;
+      await this.projections?.tombstone(transaction, reelId);
       const deleted = await transaction.reelDocument.deleteMany({
         where: { reelId },
       });
@@ -346,6 +379,11 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     target: SemanticTable,
     input: SemanticIndexSearchRequest,
   ): Promise<SemanticIndexSearchResult[]> {
+    if (
+      input.filters?.reelIds !== undefined &&
+      !this.cleanStrings(input.filters.reelIds).length
+    )
+      return [];
     if (
       (target === 'ReelChunk' || target === 'ReelVisualScene') &&
       input.sourceOrder === 'ASC'
@@ -390,6 +428,105 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       return rows.map((row) => this.toSearchResult(row));
     }
     const normalized = this.normalizeSearch(input);
+    const useQdrant =
+      normalized.queryEmbedding &&
+      (this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant' ||
+        this.config.get<string>('INDEX_VECTOR_SHADOW_COMPARE') === 'true');
+    if (useQdrant && this.projections && this.vectors) {
+      const started = Date.now();
+      let fallback = 'unavailable';
+      const timing = { qdrantMs: 0, sqlMs: 0 };
+      const measured = async <T>(
+        key: 'qdrantMs' | 'sqlMs',
+        operation: () => Promise<T>,
+      ): Promise<T> => {
+        const start = Date.now();
+        try {
+          return await operation();
+        } finally {
+          timing[key] += Date.now() - start;
+        }
+      };
+      try {
+        if (
+          this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant' &&
+          !this.projections.required
+        )
+          throw new Error('publication_not_required');
+        const result = await this.searchQdrant(target, normalized, measured);
+        if (
+          this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant'
+        ) {
+          this.vectorTelemetry({
+            backend: 'qdrant',
+            ...timing,
+            totalMs: Date.now() - started,
+          });
+          return result.map((row) => this.toSearchResult(row));
+        }
+        const primary = await measured('sqlMs', () =>
+          this.searchPostgres(target, normalized),
+        );
+        this.vectorTelemetry({
+          backend: 'shadow',
+          ...timing,
+          totalMs: Date.now() - started,
+          sameIds:
+            JSON.stringify(primary.map((r) => r.id)) ===
+            JSON.stringify(result.map((r) => r.id)),
+        });
+        return primary.map((row) => this.toSearchResult(row));
+      } catch (error) {
+        fallback =
+          error instanceof Error &&
+          [
+            'publication_not_required',
+            'projection_incomplete',
+            'scope_changed',
+            'hit_mismatch',
+          ].includes(error.message)
+            ? error.message
+            : 'unavailable';
+      }
+      const primary = await measured('sqlMs', () =>
+        this.searchPostgres(target, normalized),
+      );
+      this.vectorTelemetry({
+        backend: 'postgres',
+        fallback,
+        ...timing,
+        totalMs: Date.now() - started,
+      });
+      return primary.map((row) => this.toSearchResult(row));
+    }
+    return (await this.searchPostgres(target, normalized)).map((row) =>
+      this.toSearchResult(row),
+    );
+  }
+
+  private vectorTelemetry(
+    fields: Record<string, string | number | boolean>,
+  ): void {
+    new Logger('SemanticVectorSearch').log(JSON.stringify(fields));
+  }
+
+  private async searchPostgres(
+    target: SemanticTable,
+    normalized: ReturnType<PrismaSemanticIndexRepository['normalizeSearch']>,
+  ): Promise<SearchRow[]> {
+    const query = this.searchQuery(target, normalized);
+    const rows = await this.prisma.$transaction(async (transaction) => {
+      await this.configureHnsw(transaction);
+      return await transaction.$queryRaw<SearchRow[]>(query);
+    });
+    return rows;
+  }
+
+  private searchQuery(
+    target: SemanticTable,
+    normalized: ReturnType<PrismaSemanticIndexRepository['normalizeSearch']>,
+    external?: { rowId: string; rank: number; distance: number }[],
+  ): Prisma.Sql {
     const table = Prisma.raw(`"${target}"`);
     const evidenceType: SemanticIndexEvidenceType =
       target === 'ReelVisualScene'
@@ -411,9 +548,12 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
           AND t."embeddingModel" = ${normalized.queryEmbeddingModel}
           AND t."embeddingVersion" = ${normalized.queryEmbeddingVersion}`
       : Prisma.empty;
-    const query = Prisma.sql`
-      WITH vector_candidates AS (
-        SELECT t."rowId",
+    const vectorCandidates = external
+      ? Prisma.sql`
+      SELECT "rowId", rank::bigint, distance FROM jsonb_to_recordset(${JSON.stringify(external)}::jsonb)
+        AS x("rowId" text, rank integer, distance double precision)
+    `
+      : Prisma.sql`        SELECT t."rowId",
           row_number() OVER (ORDER BY ${vectorColumn} <=> ${vector}::vector) AS rank,
           ${vectorColumn} <=> ${vector}::vector AS distance
         FROM ${table} t
@@ -422,6 +562,10 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
           ${where}
         ORDER BY ${vectorColumn} <=> ${vector}::vector
         LIMIT ${normalized.candidateLimit}
+`;
+    return Prisma.sql`
+      WITH vector_candidates AS (
+        ${vectorCandidates}
       ), keyword_candidates AS (
         SELECT t."rowId",
           row_number() OVER (
@@ -476,12 +620,176 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       ORDER BY "rrfScore" DESC, t."id"
       LIMIT ${normalized.limit}
     `;
+  }
 
-    const rows = await this.prisma.$transaction(async (transaction) => {
-      await this.configureHnsw(transaction);
-      return await transaction.$queryRaw<SearchRow[]>(query);
+  private async captureScope(
+    tx: Prisma.TransactionClient,
+    target: SemanticTable,
+    normalized: ReturnType<PrismaSemanticIndexRepository['normalizeSearch']>,
+  ) {
+    const where = this.filters(
+      normalized.filters,
+      normalized.excludedIds,
+      normalized.requiredIndexVersion,
+    );
+    const rows = await tx.$queryRaw<
+      {
+        rowId: string;
+        record: ReelVectorPayload & { id: string; [key: string]: unknown };
+        digest: string;
+        generation: bigint | null;
+        manifestHash: string | null;
+        readyCollection: string | null;
+        readyFingerprint: string | null;
+        readyEpoch: string | null;
+        readyAt: Date | null;
+        epoch: string | null;
+      }[]
+    >(Prisma.sql`
+      SELECT t."rowId", (to_jsonb(t) - 'embedding' - 'searchVector') AS record, md5(to_jsonb(t)::text) AS digest,
+        p."generation", p."manifestHash", p."readyCollection", p."readyFingerprint", p."readyEpoch", p."readyAt", s."epoch"
+      FROM ${Prisma.raw(`"${target}"`)} t
+      LEFT JOIN "VectorProjection" p ON p."reelId" = t."reelId" AND p."indexAttemptId" = t."indexAttemptId" AND NOT p."revoked"
+      LEFT JOIN "VectorCollectionState" s ON s."collection" = p."readyCollection" AND s."fingerprint" = p."readyFingerprint" AND NOT s."maintenance"
+      WHERE t."isActive" = true ${where}
+        AND t."embeddingDimensions" = ${normalized.embeddingDimensions}
+        AND t."embeddingModel" = ${normalized.queryEmbeddingModel} AND t."embeddingVersion" = ${normalized.queryEmbeddingVersion}
+      ORDER BY t."rowId" LIMIT 20001
+    `);
+    if (rows.length > 20000) throw new Error('projection_incomplete');
+    return rows;
+  }
+  private async searchQdrant(
+    target: SemanticTable,
+    normalized: ReturnType<PrismaSemanticIndexRepository['normalizeSearch']>,
+    measured: <T>(
+      key: 'qdrantMs' | 'sqlMs',
+      operation: () => Promise<T>,
+    ) => Promise<T>,
+  ): Promise<SearchRow[]> {
+    const signal = AbortSignal.timeout(250);
+    const physical = await measured('qdrantMs', () =>
+      this.vectors!.identity(signal),
+    );
+    const before = await measured('sqlMs', () =>
+      this.prisma.$transaction(
+        (tx) => this.captureScope(tx, target, normalized),
+        { isolationLevel: 'RepeatableRead' },
+      ),
+    );
+    if (
+      before.some(
+        (r) =>
+          !r.readyAt ||
+          r.generation === null ||
+          !r.manifestHash ||
+          r.readyCollection !== physical.collection ||
+          r.readyFingerprint !== physical.fingerprint ||
+          !r.epoch ||
+          r.readyEpoch !== r.epoch,
+      )
+    )
+      throw new Error('projection_incomplete');
+    const kind = Object.keys(VECTOR_TABLES).find(
+      (k) => VECTOR_TABLES[k] === target,
+    ) as VectorKind;
+    const tuples = [
+      ...new Map(
+        before.map((row) => {
+          const tuple: VectorTuple = {
+            reelId: row.record.reelId,
+            indexAttemptId: row.record.indexAttemptId,
+            projectionGeneration: row.generation!.toString(),
+            manifestHash: row.manifestHash!,
+          };
+          return [JSON.stringify(tuple), tuple];
+        }),
+      ).values(),
+    ];
+    const hits = await measured('qdrantMs', () =>
+      this.vectors!.search({
+        kind,
+        tuples,
+        pointIds: before.map((r) =>
+          vectorPointId(
+            kind,
+            r.record.reelId,
+            r.record.indexAttemptId,
+            r.generation!.toString(),
+            String(r.record['id']),
+          ),
+        ),
+        vector: normalized.queryEmbedding!,
+        limit: normalized.candidateLimit,
+        signal,
+      }),
+    );
+    if (hits.length !== Math.min(before.length, normalized.candidateLimit))
+      throw new Error('projection_incomplete');
+    const external = hits.map((hit, i) => {
+      const row = before.find(
+        (r) =>
+          vectorPointId(
+            kind,
+            r.record.reelId,
+            r.record.indexAttemptId,
+            r.generation!.toString(),
+            String(r.record['id']),
+          ) === hit.id,
+      );
+      if (!row) throw new Error('hit_mismatch');
+      const expected = {
+        kind,
+        stableId: row.record['id'],
+        reelId: row.record.reelId,
+        indexAttemptId: row.record.indexAttemptId,
+        projectionGeneration: row.generation!.toString(),
+        manifestHash: row.manifestHash,
+        ...Object.fromEntries(
+          [
+            'userId',
+            'parentId',
+            'tags',
+            'sourceLengthClass',
+            'indexVersion',
+            'embeddingProvider',
+            'embeddingModel',
+            'embeddingVersion',
+            'embeddingDimensions',
+            'ordinal',
+            'embeddingInputHash',
+            'retrievalHash',
+            'evidenceHash',
+          ].map((key) => [key, row.record[key]]),
+        ),
+      };
+      if (
+        Object.entries(expected).some(
+          ([key, value]) =>
+            JSON.stringify(hit.payload[key]) !== JSON.stringify(value),
+        )
+      )
+        throw new Error('hit_mismatch');
+      return { rowId: row.rowId, rank: i + 1, distance: 1 - hit.score };
     });
-    return rows.map((row) => this.toSearchResult(row));
+    const afterPhysical = await measured('qdrantMs', () =>
+      this.vectors!.identity(signal),
+    );
+    if (afterPhysical.fingerprint !== physical.fingerprint)
+      throw new Error('scope_changed');
+    return measured('sqlMs', () =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const after = await this.captureScope(tx, target, normalized);
+          if (vectorHash(before) !== vectorHash(after))
+            throw new Error('scope_changed');
+          return tx.$queryRaw<SearchRow[]>(
+            this.searchQuery(target, normalized, external),
+          );
+        },
+        { isolationLevel: 'RepeatableRead' },
+      ),
+    );
   }
 
   private normalizeSearch(input: SemanticIndexSearchRequest): {

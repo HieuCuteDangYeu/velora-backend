@@ -1,0 +1,29 @@
+log_level: INFO
+telemetry_disabled: true
+storage:
+  storage_path: /qdrant/storage
+  snapshots_path: /qdrant/snapshots
+  payload:
+    memory: cached
+  optimizers:
+    default_segment_number: 1
+    max_optimization_threads: 1
+  hnsw_index:
+    m: 16
+    ef_construct: 100
+    max_indexing_threads: 1
+  performance:
+    optimizer_cpu_budget: 1
+service:
+  host: 0.0.0.0
+  http_port: 6333
+  grpc_port: null
+  enable_tls: true
+  max_request_size_mb: 160
+  max_workers: 1
+tls:
+  cert: /run/secrets/qdrant_tls_cert
+  key: /run/secrets/qdrant_tls_key
+  ca_cert: /run/secrets/qdrant_tls_ca
+cluster:
+  enabled: false

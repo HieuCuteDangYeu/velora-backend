@@ -135,6 +135,16 @@ git show "$approved_sha:$CONTROLLER_PATH" >"$controller" \
   || fail "approved release does not contain $CONTROLLER_PATH"
 git show "$approved_sha:$CORE_PATH" >"$core" \
   || fail "approved release does not contain $CORE_PATH"
+# Older approved releases have no helper; newer releases must bundle only the approved blob.
+policy_path="scripts/deploy/velora-qdrant-policy"
+if git cat-file -e "$approved_sha:$policy_path" 2>/dev/null; then
+  git show "$approved_sha:$policy_path" >"$runtime_dir/velora-qdrant-policy" \
+    || fail "approved Qdrant policy could not be extracted"
+  chmod 0700 "$runtime_dir/velora-qdrant-policy"
+  bash -n "$runtime_dir/velora-qdrant-policy" || fail "approved Qdrant policy failed syntax validation"
+elif grep -q velora-qdrant-policy "$core"; then
+  fail "approved core requires a missing Qdrant policy"
+fi
 chmod 0700 "$controller" "$core"
 
 bash -n "$controller" || fail "approved deployment controller failed syntax validation"

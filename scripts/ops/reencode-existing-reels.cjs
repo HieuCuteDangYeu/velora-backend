@@ -92,13 +92,13 @@ function snapshot(row) {
     mediaAttemptId: row.mediaAttemptId ?? null, indexAttemptId: row.indexAttemptId ?? null };
 }
 
-function eligible(row, events, leases, now = Date.now(), ownAttempt) {
+function eligible(row, events, leases, now = Date.now(), ownAttempt, priorAttempt) {
   if (!row.hlsMasterKey) return 'OUT_OF_SCOPE';
   if (row.mediaStatus !== 'COMPLETED' || ['PENDING', 'PROCESSING'].includes(row.indexStatus) ||
       events.some((e) => !e.publishedAt && e.eventType !== CACHE_EVENT)) return 'DEFERRED';
   const previousAttempt = row.hlsMasterKey.split('/').at(-2);
   if (leases.some((l) => !l.completedAt && new Date(l.expiresAt).getTime() > now &&
-      ![ownAttempt, row.mediaAttemptId, previousAttempt].includes(l.attemptId))) return 'DEFERRED';
+      ![ownAttempt, row.mediaAttemptId, previousAttempt, priorAttempt].includes(l.attemptId))) return 'DEFERRED';
   const duration = row.outputDurationMs ?? row.sourceDurationMs;
   if (!Number.isInteger(duration) || duration <= 0 || duration > 600_000) return 'BLOCKED';
   if (!ownedMaster(row)) return 'BLOCKED';
@@ -129,7 +129,6 @@ function reconcile(entry, live, artifact, now = Date.now()) {
   const { row, events, leases } = live;
   if (protectedFingerprint(row) !== entry.protectedSha256) throw new Error('Protected Reel fields changed');
   const attempt = artifact?.plan.attemptId;
-  if (eligible(row, events, leases, now, attempt) !== 'PENDING') throw new Error('Reel is not idle and eligible');
   const receipt = events.find((e) => e.id === attempt);
   const rollback = events.find((e) => e.id === `${attempt}:rollback`);
   if (rollback) throw new Error('Reel was rolled back; review a new inventory');
@@ -140,6 +139,12 @@ function reconcile(entry, live, artifact, now = Date.now()) {
         new Date(row.updatedAt).toISOString() !== receipt.payload.appliedUpdatedAt ||
         receipt.payload.previous?.hlsMasterKey !== entry.snapshot.previousHlsMasterKey)
       throw new Error('Ambiguous replacement receipt or live pointer');
+  }
+  const priorAttempt = receipt && /^[0-9a-f-]{36}$/i.test(entry.snapshot.previousHlsMasterKey.split('/').at(-2))
+    ? entry.snapshot.previousHlsMasterKey.split('/').at(-2) : undefined;
+  if (eligible(row, events, leases, now, attempt, priorAttempt) !== 'PENDING')
+    throw new Error('Reel is not idle and eligible');
+  if (receipt) {
     return { status: receipt.publishedAt ? 'APPLIED' : 'APPLIED_CACHE_PENDING',
       receipt: { id: receipt.id, reviewedSha256: receipt.payload.reviewedSha256,
         appliedUpdatedAt: receipt.payload.appliedUpdatedAt, hlsMasterKey: row.hlsMasterKey,
@@ -292,6 +297,7 @@ async function coordinate(options, dependencies) {
       if (options.mode === 'reconcile' && entryIndex < (progress.reconcileCursor || 0)) continue;
       if (!['PENDING', 'DEFERRED'].includes(entry.status)) continue;
       const current = progress.entries[entry.reelId] || { status: 'PENDING' };
+      if (options.mode !== 'reconcile' && current.status === 'BLOCKED') continue;
       if (approvals && !approvals.some((a) => a.reelId === entry.reelId)) continue;
       if (options.mode === 'prepare' && current.status === 'PREPARED') continue;
       if (options.mode === 'stage' && current.status === 'STAGED') continue;

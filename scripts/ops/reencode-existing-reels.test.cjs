@@ -172,6 +172,23 @@ test('lost apply acknowledgement is reconciled by exact receipt/pointer/version,
   assert.throws(() => reconcile(e, state, a), /Stale/);
 });
 
+test('applied receipt allows the old immutable HLS rollback lease, but still rejects unrelated work', () => {
+  const oldAttempt = 'c3322a3a-2a5f-48b1-a171-3629b6e4ec81';
+  const original = row();
+  original.hlsMasterKey = `reels/${id}/${oldAttempt}/master.m3u8`;
+  const e = entry(original), a = artifact(original), state = live(structuredClone(original));
+  commit(state, original);
+  state.leases.push({ ...lease(), attemptId: oldAttempt });
+  assert.equal(reconcile(e, state, a).status, 'APPLIED_CACHE_PENDING');
+  state.events[0].publishedAt = '2026-10-30T00:01:01.000Z';
+  assert.equal(reconcile(e, state, a).status, 'APPLIED');
+  state.leases.push({ ...lease(), attemptId: 'f1882187-5d36-4cf6-a36d-d1c1b320d09e' });
+  assert.throws(() => reconcile(e, state, a), /idle/);
+  state.leases.pop();
+  state.events.push({ id: 'active-job', eventType: 'INDEX_REEL', publishedAt: null });
+  assert.throws(() => reconcile(e, state, a), /idle/);
+});
+
 test('rollback receipts, competing leases, changed applied rows and unrelated pipeline events block resume', () => {
   const e = entry(), a = artifact(), state = live();
   state.events.push({ id: `${attempt}:rollback`, eventType, publishedAt: new Date().toISOString() });
@@ -183,6 +200,7 @@ test('rollback receipts, competing leases, changed applied rows and unrelated pi
   commit(state);
   state.row.updatedAt = '2026-10-30T00:02:00.000Z';
   assert.throws(() => reconcile(e, state, a), /Ambiguous/);
+  state.row.updatedAt = state.events[0].payload.appliedUpdatedAt;
   state.events.push({ id: 'job', eventType: 'REEL_INDEX', publishedAt: null });
   assert.throws(() => reconcile(e, state, a), /idle/);
 });
@@ -302,10 +320,12 @@ test('apply without confirmed staging or with remote graph mismatch never calls 
   const f = await fixture(t);
   await assert.rejects(coordinate(f.options('apply'), f.deps));
   assert.equal(f.calls.length, 0);
-  await coordinate(f.options('stage'), f.deps);
-  f.deps.inspectObjects = async () => { throw new Error('bad hash'); };
-  await assert.rejects(coordinate(f.options('apply'), f.deps));
-  assert.equal(f.calls.length, 1);
+  assert.equal(f.progress().entries[id].status, 'BLOCKED');
+  const staged = await fixture(t);
+  await coordinate(staged.options('stage'), staged.deps);
+  staged.deps.inspectObjects = async () => { throw new Error('bad hash'); };
+  await assert.rejects(coordinate(staged.options('apply'), staged.deps));
+  assert.equal(staged.calls.length, 1);
 });
 
 test('inventory tampering, approval changes and concurrent invocation block before mutation', async (t) => {
@@ -340,6 +360,21 @@ test('preparation reuses a completed reviewed artifact without cropping or encod
   await coordinate({ mode: 'prepare', 'run-dir': f.directory, limit: 1, 'hold-released': true,
     'inventory-sha256': f.inventory.inventorySha256, 'media-origin': 'https://media.example.com' }, f.deps);
   assert.equal(f.progress().entries[id].status, 'PREPARED');
+});
+
+test('quarantined Reel is skipped without being prepared or staged again', async (t) => {
+  const f = await fixture(t, 2);
+  const progressFile = path.join(f.directory, 'progress.json');
+  const progress = f.progress();
+  progress.entries[id] = { status: 'BLOCKED', reviewedSha256: sha };
+  persist(progressFile, progress);
+  await coordinate({ mode: 'prepare', 'run-dir': f.directory, limit: 1,
+    'hold-released': true, 'inventory-sha256': f.inventory.inventorySha256,
+    'media-origin': 'https://media.example.com' }, f.deps);
+  assert.equal(f.progress().entries[id].status, 'BLOCKED');
+  await coordinate(f.options('stage', 1), f.deps);
+  assert.deepEqual(f.calls, [{ operation: '--stage', reelId: 'ad989463-021e-496d-8345-bc9e91f00a15' }]);
+  assert.equal(f.progress().entries[id].status, 'BLOCKED');
 });
 
 test('preparation passes only the already-published local source to prepareHls', async (t) => {

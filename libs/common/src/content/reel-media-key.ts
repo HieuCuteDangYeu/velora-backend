@@ -1,11 +1,15 @@
 const REEL_MEDIA_KEY_ROOTS = ['reels', 'chat-videos'] as const;
 
-// The trusted importer stored validated playlists by Reel ID before user-key namespaces.
+// Evidence-only imported playlists remain bound to this Reel, including immutable versions.
 export function isLegacyReelHlsKey(key: string, reelId: string): boolean {
+  const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
   return (
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       reelId,
-    ) && normalizeReelMediaKey(key) === `reels/${reelId}/master.m3u8`
+    ) &&
+    new RegExp(`^reels/${reelId}/(?:${uuid}/)?master\\.m3u8$`, 'i').test(
+      normalizeReelMediaKey(key),
+    )
   );
 }
 

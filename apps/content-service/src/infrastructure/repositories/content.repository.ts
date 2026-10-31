@@ -26,6 +26,13 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, PrismaClient } from '@prisma/content-client';
 import { randomUUID } from 'crypto';
+import { createHash } from 'node:crypto';
+import {
+  REEL_HLS_CACHE_EVENT_TYPE,
+  type ReelHlsReplacementPlan,
+  type ReelHlsReplacementCommand,
+  type ReelHlsReplacementResult,
+} from '@common/content/reel-hls-replacement';
 
 const MEDIA_ATTEMPT_LEASE_MS = 6 * 60 * 60 * 1000;
 import { Reel } from '../../domain/entities/reel.entity';
@@ -82,6 +89,290 @@ export class ContentRepository
 
   async onModuleDestroy() {
     await this.$disconnect();
+  }
+
+  private assertHlsReplacementState(
+    current: {
+      userId: string;
+      mediaKey: string;
+      hlsMasterKey: string | null;
+      updatedAt: Date;
+      mediaAttemptId: string | null;
+      indexAttemptId: string | null;
+    },
+    plan: ReelHlsReplacementPlan,
+  ): void {
+    if (
+      current.userId !== plan.userId ||
+      current.hlsMasterKey !== plan.previousHlsMasterKey ||
+      current.updatedAt.toISOString() !== plan.expectedUpdatedAt ||
+      current.mediaAttemptId !== plan.mediaAttemptId ||
+      current.indexAttemptId !== plan.indexAttemptId ||
+      createHash('sha256').update(current.mediaKey).digest('hex') !==
+        plan.mediaKeySha256
+    )
+      throw new Error('Reel changed since the replacement was reviewed');
+  }
+
+  private async assertNoHlsProcessingWork(
+    tx: Prisma.TransactionClient,
+    reel: { id: string; mediaStatus: string; indexStatus: string },
+  ): Promise<void> {
+    if (
+      reel.mediaStatus !== 'COMPLETED' ||
+      ['PENDING', 'PROCESSING'].includes(reel.indexStatus)
+    )
+      throw new Error('Reel has active media or indexing work');
+    const pending = await tx.outboxEvent.findFirst({
+      where: {
+        aggregateId: reel.id,
+        aggregateType: 'REEL',
+        publishedAt: null,
+        eventType: { not: REEL_HLS_CACHE_EVENT_TYPE },
+      },
+    });
+    if (pending) throw new Error('Reel has unpublished pipeline work');
+  }
+
+  async reserveReelHlsReplacement(plan: ReelHlsReplacementPlan): Promise<void> {
+    await this.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Reel" WHERE "id" = ${plan.reelId} FOR UPDATE`;
+      const current = await tx.reel.findUniqueOrThrow({
+        where: { id: plan.reelId },
+      });
+      this.assertHlsReplacementState(current, plan);
+      await this.assertNoHlsProcessingWork(tx, current);
+      const now = new Date();
+      const previousParts = plan.previousHlsMasterKey.split('/');
+      const previousAttempt =
+        previousParts.length >= 4 &&
+        /^[0-9a-f-]{36}$/iu.test(previousParts.at(-2)!)
+          ? previousParts.at(-2)
+          : undefined;
+      const active = await tx.reelMediaAttemptLease.findFirst({
+        where: {
+          reelId: plan.reelId,
+          completedAt: null,
+          expiresAt: { gt: now },
+          attemptId: {
+            notIn: [
+              plan.attemptId,
+              current.mediaAttemptId,
+              previousAttempt,
+            ].filter((id): id is string => Boolean(id)),
+          },
+        },
+      });
+      if (active)
+        throw new Error('Another replacement attempt holds this Reel');
+      const lease = await tx.reelMediaAttemptLease.findUnique({
+        where: { attemptId: plan.attemptId },
+      });
+      if (
+        lease &&
+        (lease.reelId !== plan.reelId ||
+          lease.completedAt ||
+          lease.expiresAt <= now)
+      )
+        throw new Error('Replacement lease cannot be reused');
+      const expiresAt = new Date(now.getTime() + MEDIA_ATTEMPT_LEASE_MS);
+      await tx.reelMediaAttemptLease.upsert({
+        where: { attemptId: plan.attemptId },
+        create: { attemptId: plan.attemptId, reelId: plan.reelId, expiresAt },
+        update: { expiresAt },
+      });
+      // Keep the prior immutable version available throughout the six-hour rollback window.
+      if (previousAttempt)
+        await tx.reelMediaAttemptLease.upsert({
+          where: { attemptId: previousAttempt },
+          create: {
+            attemptId: previousAttempt,
+            reelId: plan.reelId,
+            expiresAt,
+          },
+          update: { expiresAt, completedAt: null },
+        });
+    });
+  }
+
+  async completeReelHlsReplacement(
+    command: ReelHlsReplacementCommand,
+  ): Promise<ReelHlsReplacementResult> {
+    const { plan } = command;
+    const result = await this.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Reel" WHERE "id" = ${plan.reelId} FOR UPDATE`;
+      const current = await tx.reel.findUniqueOrThrow({
+        where: { id: plan.reelId },
+      });
+      const candidateKey = `reels/${plan.reelId}/${plan.attemptId}/master.m3u8`;
+      const event = await tx.outboxEvent.findUnique({
+        where: { id: plan.attemptId },
+      });
+      type Previous = {
+        hlsMasterKey: string;
+        encodedVariantCount: number | null;
+        encodedMaxHeight: number | null;
+        encodedFps: number | null;
+        mediaOutput: Prisma.InputJsonValue | null;
+      };
+      const receipt = event?.payload as unknown as
+        | {
+            reviewedSha256: string;
+            appliedUpdatedAt: string;
+            previous: Previous;
+          }
+        | undefined;
+      if (
+        event &&
+        (event.eventType !== REEL_HLS_CACHE_EVENT_TYPE ||
+          event.aggregateId !== plan.reelId ||
+          receipt?.reviewedSha256 !== command.reviewedSha256)
+      )
+        throw new Error(
+          'Replacement receipt does not match the reviewed artifact',
+        );
+      await this.assertNoHlsProcessingWork(tx, current);
+      const rollback = command.action === 'ROLLBACK';
+      if (!rollback && receipt) {
+        if (
+          current.hlsMasterKey !== candidateKey ||
+          current.updatedAt.toISOString() !== receipt.appliedUpdatedAt
+        )
+          throw new Error('Applied version is no longer current');
+        return {
+          hlsMasterKey: candidateKey,
+          updatedAt: receipt.appliedUpdatedAt,
+        };
+      }
+      if (rollback) {
+        const priorRollback = await tx.outboxEvent.findUnique({
+          where: { id: `${plan.attemptId}:rollback` },
+        });
+        if (priorRollback) {
+          const payload = priorRollback.payload as {
+            updatedAt?: string;
+            reviewedSha256?: string;
+          };
+          if (
+            payload.reviewedSha256 !== command.reviewedSha256 ||
+            current.hlsMasterKey !== plan.previousHlsMasterKey ||
+            current.updatedAt.toISOString() !== payload.updatedAt
+          )
+            throw new Error('Rolled-back version is no longer current');
+          return {
+            hlsMasterKey: plan.previousHlsMasterKey,
+            updatedAt: payload.updatedAt,
+          };
+        }
+        if (
+          !receipt ||
+          current.userId !== plan.userId ||
+          current.hlsMasterKey !== candidateKey ||
+          current.updatedAt.toISOString() !== receipt.appliedUpdatedAt ||
+          current.mediaAttemptId !== plan.mediaAttemptId ||
+          current.indexAttemptId !== plan.indexAttemptId
+        )
+          throw new Error('Rollback lost the applied version');
+      } else this.assertHlsReplacementState(current, plan);
+      const lease = await tx.reelMediaAttemptLease.findUnique({
+        where: { attemptId: plan.attemptId },
+      });
+      if (
+        !lease ||
+        lease.reelId !== plan.reelId ||
+        lease.completedAt ||
+        lease.expiresAt <= new Date()
+      )
+        throw new Error('Replacement lease expired; re-review a new attempt');
+      const now = new Date();
+      const previous: Previous = {
+        hlsMasterKey: current.hlsMasterKey!,
+        encodedVariantCount: current.encodedVariantCount,
+        encodedMaxHeight: current.encodedMaxHeight,
+        encodedFps: current.encodedFps,
+        mediaOutput: current.mediaOutput,
+      };
+      const mediaOutput = current.mediaOutput as Record<
+        string,
+        Prisma.InputJsonValue
+      > | null;
+      const fields = rollback
+        ? receipt!.previous
+        : {
+            hlsMasterKey: candidateKey,
+            encodedVariantCount: plan.variants.length,
+            encodedMaxHeight: Math.max(
+              ...plan.variants.map((variant) => variant.height),
+            ),
+            encodedFps: plan.outputFps,
+            mediaOutput: mediaOutput
+              ? {
+                  ...mediaOutput,
+                  hlsMasterKey: candidateKey,
+                  variants: plan.variants,
+                  hlsObjectCount: plan.files.length,
+                  hlsTotalBytes: plan.files.reduce(
+                    (sum, file) => sum + file.bytes,
+                    0,
+                  ),
+                  checksums: {
+                    ...(mediaOutput.checksums as Record<
+                      string,
+                      Prisma.InputJsonValue
+                    >),
+                    hlsMasterSha256: plan.files.find(
+                      (file) => file.path === 'master.m3u8',
+                    )!.sha256,
+                  },
+                }
+              : null,
+          };
+      const updated = await tx.reel.updateMany({
+        where: {
+          id: plan.reelId,
+          userId: plan.userId,
+          updatedAt: current.updatedAt,
+          hlsMasterKey: current.hlsMasterKey,
+          mediaAttemptId: plan.mediaAttemptId,
+          indexAttemptId: plan.indexAttemptId,
+        },
+        data: {
+          ...fields,
+          mediaOutput: fields.mediaOutput ?? Prisma.DbNull,
+          updatedAt: now,
+        },
+      });
+      if (updated.count !== 1)
+        throw new Error('Replacement lost the Reel compare-and-swap');
+      await tx.outboxEvent.create({
+        data: {
+          id: rollback ? `${plan.attemptId}:rollback` : plan.attemptId,
+          aggregateType: 'REEL',
+          aggregateId: plan.reelId,
+          eventType: REEL_HLS_CACHE_EVENT_TYPE,
+          payload: rollback
+            ? {
+                reelId: plan.reelId,
+                reviewedSha256: command.reviewedSha256,
+                updatedAt: now.toISOString(),
+              }
+            : {
+                reelId: plan.reelId,
+                reviewedSha256: command.reviewedSha256,
+                appliedUpdatedAt: now.toISOString(),
+                previous,
+              },
+          createdAt: now,
+          nextAttemptAt: now,
+        },
+      });
+      return {
+        hlsMasterKey: fields.hlsMasterKey,
+        updatedAt: now.toISOString(),
+      };
+    });
+    await this.recommendationFeedCacheRepository.invalidateReels([plan.reelId]);
+    return result;
   }
 
   async getReelMonitoringSnapshot(): Promise<ReelMonitoringSnapshot> {

@@ -26,17 +26,21 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
-const util = require('util');
-const { exec } = require('child_process');
+const os = require('node:os');
+const { prepareHls } = require('./hls.cjs');
+const { stageSource } = require('./stage-source.cjs');
+const { publishImportedHls, s3Storage } = require('./publish-hls.cjs');
+const { ConfigService } = require('@nestjs/config');
+const {
+  TikTokCdnService,
+} = require('../../apps/media-processing-service/src/infrastructure/services/tiktok-cdn.service.ts');
 const { XMLParser } = require('fast-xml-parser');
 const { PrismaClient: ContentPrisma } = require('@prisma/content-client');
 const {
   PrismaClient: IndexPrisma,
   Prisma,
 } = require('@prisma/reel-indexing-client');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
-
-const execAsync = util.promisify(exec);
+const { S3Client } = require('@aws-sdk/client-s3');
 
 // Constants & Credentials
 const BOT_USER_ID =
@@ -44,20 +48,6 @@ const BOT_USER_ID =
 const TEI_EMBED_URL =
   process.env.TEI_EMBEDDING_URL || 'http://localhost:8088/embed';
 const TEI_INFO_URL = TEI_EMBED_URL.replace(/\/embed$/, '/info');
-
-const TIKTOK_CDN_UPLOAD_ENDPOINT =
-  process.env.TIKTOK_CDN_UPLOAD_ENDPOINT || process.env.CDN_UPLOAD_ENDPOINT;
-const TIKTOK_CDN_CSRF_TOKEN =
-  process.env.TIKTOK_CDN_CSRF_TOKEN || process.env.CDN_CSRF_TOKEN;
-const TIKTOK_CDN_UUID = process.env.TIKTOK_CDN_UUID || process.env.CDN_UUID;
-const TIKTOK_CDN_COOKIE =
-  process.env.TIKTOK_CDN_COOKIE || process.env.CDN_COOKIE;
-
-// 1x1 transparent PNG header mask for spoofing TikTok CDN upload validation
-const PNG_HEX =
-  '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082';
-const PNG_MASK = Buffer.from(PNG_HEX, 'hex');
-const PNG_MASK_SIZE = 67;
 
 // XML parser for sitemaps
 const xmlParser = new XMLParser({
@@ -235,129 +225,36 @@ async function getEmbeddings(texts) {
   return results;
 }
 
-// Upload a single .ts segment to TikTok CDN disguised as PNG
-async function uploadSegmentToTikTok(filePath, filename) {
-  let tsData = fs.readFileSync(filePath);
-  if (tsData.includes('FFmpeg')) {
-    tsData = Buffer.from(tsData);
-    let idx = 0;
-    while ((idx = tsData.indexOf('FFmpeg', idx)) !== -1) {
-      tsData.write('velora', idx);
-      idx += 6;
-    }
-  }
-  const originalSize = tsData.length;
-  const spoofed = Buffer.concat([PNG_MASK, tsData]);
-  const uploadFilename = filename.replace(/\.ts$/, '.png');
-
-  const form = new FormData();
-  const blob = new Blob([new Uint8Array(spoofed)], { type: 'image/png' });
-  form.append('Filedata', blob, uploadFilename);
-
-  const res = await fetch(TIKTOK_CDN_UPLOAD_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'x-ttam-uuid': TIKTOK_CDN_UUID,
-      'x-csrftoken': TIKTOK_CDN_CSRF_TOKEN,
-      Cookie: TIKTOK_CDN_COOKIE,
-    },
-    body: form,
-  });
-
-  const bodyText = await res.text();
-  if (!res.ok) throw new Error(`TikTok CDN HTTP ${res.status}: ${bodyText}`);
-
-  const parsed = JSON.parse(bodyText);
-  if (parsed.code === 0 && parsed.data?.url) {
-    return { filename, remoteUrl: parsed.data.url, originalSize };
-  }
-  throw new Error(`TikTok CDN rejected ${filename}: ${bodyText}`);
-}
-
-// Slices video from direct URL, uploads chunks to TikTok CDN, updates R2 & DB
+// Normalize imports through the service profile, then publish an immutable validated version.
 async function transcodeAndUploadToTikTokCdn(reel, options) {
-  const hlsDir = `/tmp/velora-sync-hls-${reel.id}`;
+  if (options.dryRun) {
+    console.log(`[DRY-RUN] Normalize and upload Reel ${reel.id}`);
+    return;
+  }
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'velora-sync-hls-'));
   const startTime = Date.now();
-
   try {
-    if (options.dryRun) {
-      console.log(
-        `[DRY-RUN] Slicing & uploading reel ${reel.id} (${reel.title})`,
-      );
-      return;
-    }
-
-    fs.mkdirSync(hlsDir, { recursive: true });
-    const m3u8Path = path.join(hlsDir, 'index.m3u8');
-    const cropArg = options.crop
-      ? '-vf "crop=978:1740:(in_w-978)/2:180,scale=1080:1920:flags=lanczos" -c:v libx264 -preset fast -crf 23 -c:a copy'
-      : '-codec: copy';
-    const ffmpegCmd = `ffmpeg -y -rw_timeout 15000000 -i "${reel.mediaKey}" ${cropArg} -map_metadata -1 -metadata service_provider=velora -metadata service_name=velora -start_number 0 -hls_time 5 -hls_list_size 0 -f hls "${m3u8Path}"`;
-
-    await execAsync(ffmpegCmd, { timeout: 180000 });
-
-    const files = fs.readdirSync(hlsDir);
-    const tsFiles = files
-      .filter((f) => f.endsWith('.ts'))
-      .sort(
-        (a, b) =>
-          (parseInt(a.replace(/\D/g, ''), 10) || 0) -
-          (parseInt(b.replace(/\D/g, ''), 10) || 0),
-      );
-
-    if (tsFiles.length === 0)
-      throw new Error('FFmpeg did not produce any .ts segments');
-
-    // Upload segments in parallel batches of 4
-    const uploadResults = [];
-    const SEG_BATCH = 4;
-    for (let i = 0; i < tsFiles.length; i += SEG_BATCH) {
-      const batch = tsFiles.slice(i, i + SEG_BATCH);
-      const batchResults = await Promise.all(
-        batch.map((tsFile) =>
-          uploadSegmentToTikTok(path.join(hlsDir, tsFile), tsFile),
-        ),
-      );
-      uploadResults.push(...batchResults);
-    }
-
-    // Rewrite .m3u8 playlist to use TikTok CDN byte ranges
-    let m3u8Content = fs.readFileSync(m3u8Path, 'utf8');
-    for (const result of uploadResults) {
-      const byterangeBlock = `#EXT-X-BYTERANGE:${result.originalSize}@${PNG_MASK_SIZE}\n${result.remoteUrl}`;
-      m3u8Content = m3u8Content.replace(result.filename, byterangeBlock);
-    }
-    m3u8Content = m3u8Content.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:4');
-
-    const hlsMasterKey = `reels/${reel.id}/master.m3u8`;
-
-    // Upload master playlist to Cloudflare R2
-    await s3Client.send(
-      new PutObjectCommand({
-        Bucket: process.env.R2_BUCKET_NAME,
-        Key: hlsMasterKey,
-        Body: m3u8Content,
-        ContentType: 'application/vnd.apple.mpegurl',
-        CacheControl: 'public, max-age=60, stale-while-revalidate=30',
-      }),
-    );
-
-    // Update Reel in content database
-    await contentPrisma.reel.update({
-      where: { id: reel.id },
-      data: {
-        hlsMasterKey,
-        processingStage: 'INDEX_QUEUED',
-      },
+    const source = path.join(workDir, 'source.mp4');
+    const outputDir = path.join(workDir, 'hls');
+    await stageSource(reel.mediaKey, source);
+    const prepared = await prepareHls({
+      source,
+      outputDir,
+      crop: options.crop,
     });
-
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const hlsMasterKey = await publishImportedHls({
+      reel,
+      prepared,
+      outputDir,
+      db: contentPrisma,
+      storage: s3Storage(s3Client, process.env.R2_BUCKET_NAME),
+      cdn: new TikTokCdnService(new ConfigService()),
+    });
     console.log(
-      `  [CDN OK] Reel ${reel.id} (Ep ${reel.episodeNumber}) -> TikTok CDN + R2 (${elapsed}s)`,
+      `  [CDN OK] Reel ${reel.id} -> ${hlsMasterKey} (${((Date.now() - startTime) / 1000).toFixed(1)}s)`,
     );
   } finally {
-    if (fs.existsSync(hlsDir))
-      fs.rmSync(hlsDir, { recursive: true, force: true });
+    fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
 
@@ -713,7 +610,10 @@ async function syncDramaSeries(dramaInfo, options) {
             ? `${dramaInfo.title} ${decodeHtml(ep.title)}`
             : `${dramaInfo.title} Episode ${epNum}`,
           description: dramaInfo.description
-            ? `Episode ${epNum} of ${dramaInfo.title}: ${decodeHtml(dramaInfo.description)}`.slice(0, 2000)
+            ? `Episode ${epNum} of ${dramaInfo.title}: ${decodeHtml(dramaInfo.description)}`.slice(
+                0,
+                2000,
+              )
             : `${dramaInfo.title} Episode ${epNum}`,
           tags: ['narto-drama', 'short-drama', dramaInfo.slug],
           thumbnailKey: poster,

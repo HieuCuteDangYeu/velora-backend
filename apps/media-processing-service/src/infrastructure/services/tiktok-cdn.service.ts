@@ -19,6 +19,7 @@ const PNG_MASK_SIZE = 67;
 
 interface SegmentUploadResult {
   filename: string;
+  localPath: string;
   remoteUrl: string;
   originalSize: number;
 }
@@ -327,6 +328,7 @@ export class TikTokCdnService implements ITikTokCdnService {
 
     return {
       filename,
+      localPath: path.resolve(filePath),
       remoteUrl,
       originalSize,
     };
@@ -339,12 +341,16 @@ export class TikTokCdnService implements ITikTokCdnService {
   ): void {
     let m3u8 = fs.readFileSync(playlistPath, 'utf8');
 
-    for (const result of results) {
-      if (m3u8.includes(result.filename)) {
-        const byterangeBlock = `#EXT-X-BYTERANGE:${result.originalSize}@${PNG_MASK_SIZE}\n${result.remoteUrl}`;
-        m3u8 = m3u8.replace(result.filename, byterangeBlock);
-      }
-    }
+    m3u8 = m3u8
+      .split(/\r?\n/u)
+      .map((line) => {
+        if (!line.trim() || line.startsWith('#')) return line;
+        const localPath = path.resolve(path.dirname(playlistPath), line.trim());
+        const result = results.find((upload) => upload.localPath === localPath);
+        if (!result) return line;
+        return `#EXT-X-BYTERANGE:${result.originalSize}@${PNG_MASK_SIZE}\n${result.remoteUrl}`;
+      })
+      .join('\n');
 
     m3u8 = m3u8.replace('#EXT-X-VERSION:3', '#EXT-X-VERSION:4');
     fs.writeFileSync(playlistPath, m3u8, 'utf8');

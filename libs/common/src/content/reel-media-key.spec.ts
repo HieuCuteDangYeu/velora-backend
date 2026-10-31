@@ -58,4 +58,18 @@ describe('legacy stored HLS import keys', () => {
       isLegacyReelHlsKey(`reels/${reelId}/../other/master.m3u8`, reelId),
     ).toBe(false);
   });
+  it('accepts an immutable imported version only for this Reel and only as HLS', () => {
+    const key = `reels/${reelId}/87654321-1234-1234-1234-123456789abc/master.m3u8`;
+    expect(isLegacyReelHlsKey(key, reelId)).toBe(true);
+    expect(isUserOwnedReelMediaKey(key, 'owner')).toBe(false);
+    expect(
+      isLegacyReelHlsKey(key.replace('master.m3u8', 'source.mp4'), reelId),
+    ).toBe(false);
+    expect(
+      isLegacyReelHlsKey(
+        key.replace('87654321-1234-1234-1234-123456789abc', 'arbitrary'),
+        reelId,
+      ),
+    ).toBe(false);
+  });
 });

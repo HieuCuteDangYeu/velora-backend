@@ -35,6 +35,7 @@ export interface ReelListItem {
   indexStatus: ReelIndexStatus;
   visibility: ReelVisibility;
   viewCount: number;
+  commentCount: number;
   thumbnailKey?: string;
   thumbnailUrl?: string;
   processingStage?: string;

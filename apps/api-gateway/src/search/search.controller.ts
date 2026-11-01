@@ -186,6 +186,7 @@ export class SearchController {
       mediaStatus: reel.mediaStatus,
       indexStatus: reel.indexStatus,
       visibility: reel.visibility,
+      commentCount: reel.commentCount ?? 0,
       viewCount:
         typeof reel.viewCount === 'bigint'
           ? Number(reel.viewCount)

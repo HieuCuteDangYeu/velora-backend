@@ -1,3 +1,11 @@
+import { ReelCommentsController } from './infrastructure/controllers/reel-comments.controller';
+import { ReelCommentRepository } from './infrastructure/repositories/reel-comment.repository';
+import {
+  CreateReelCommentUseCase,
+  ListReelCommentsUseCase,
+  UpdateReelCommentUseCase,
+  DeleteReelCommentUseCase,
+} from './application/use-cases/reel-comments.use-cases';
 import { ReplaceReelHlsUseCase } from '@content/application/use-cases/replace-reel-hls.use-case';
 import { GetReelHlsReplacementSnapshotUseCase } from '@content/application/use-cases/get-reel-hls-replacement-snapshot.use-case';
 import { ReelHlsOperatorController } from './infrastructure/controllers/reel-hls-operator.controller';
@@ -136,10 +144,16 @@ function createRmqClientRegistration(name: string, queue: string) {
   ],
   controllers: [
     ContentController,
+    ReelCommentsController,
     IndexingAttemptGuardController,
     ReelHlsOperatorController,
   ],
   providers: [
+    { provide: 'IReelCommentRepository', useClass: ReelCommentRepository },
+    CreateReelCommentUseCase,
+    ListReelCommentsUseCase,
+    UpdateReelCommentUseCase,
+    DeleteReelCommentUseCase,
     ReplaceReelHlsUseCase,
     GetReelHlsReplacementSnapshotUseCase,
     {

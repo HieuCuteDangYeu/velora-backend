@@ -19,6 +19,7 @@ export const REEL_LIST_SELECT = {
   indexStatus: true,
   visibility: true,
   viewCount: true,
+  commentCount: true,
   thumbnailKey: true,
   hlsMasterKey: true,
   transcriptionAudioManifestKey: true,
@@ -96,6 +97,7 @@ export function toReelDomain(record: Record<string, unknown>): Reel {
   });
   reel.visibility = (record['visibility'] as Reel['visibility']) ?? 'public';
   reel.viewCount = record['viewCount'] as bigint;
+  reel.commentCount = (record['commentCount'] as number) ?? 0;
   reel.transcript = (record['transcript'] as string | null) ?? undefined;
   reel.transcriptVtt = (record['transcriptVtt'] as string | null) ?? undefined;
   reel.transcriptSegments =

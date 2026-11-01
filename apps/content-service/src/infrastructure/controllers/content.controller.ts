@@ -150,6 +150,7 @@ export class ContentController {
       indexStatus: reel.indexStatus,
       visibility: reel.visibility,
       viewCount: Number(reel.viewCount),
+      commentCount: reel.commentCount,
       thumbnailKey: reel.thumbnailKey,
       hlsMasterKey: reel.hlsMasterKey,
       transcriptionAudioManifestKey: reel.transcriptionAudioManifestKey,

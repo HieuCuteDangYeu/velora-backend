@@ -26,6 +26,7 @@ export class Reel {
   indexStatus: ReelIndexStatus;
   visibility: ReelVisibility;
   viewCount: bigint;
+  commentCount: number;
   transcript?: string;
   transcriptVtt?: string;
   transcriptSegments?: TranscriptSegment[];

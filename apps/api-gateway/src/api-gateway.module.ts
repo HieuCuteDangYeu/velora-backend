@@ -1,3 +1,4 @@
+import { ReelCommentsGatewayController } from './content/reel-comments.controller';
 import { StressRunsController } from './stress/stress-runs.controller';
 import { StressRunsService } from './stress/stress-runs.service';
 import { AuthController } from '@gateway/auth/auth.controller';
@@ -82,6 +83,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     GroupMembersV2Controller,
     MessageController,
     ContentController,
+    ReelCommentsGatewayController,
     PublicReelShareController,
     SearchController,
     NotificationController,

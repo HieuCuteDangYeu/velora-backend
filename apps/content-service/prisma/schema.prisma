@@ -83,6 +83,7 @@ model Reel {
   indexStatus                   ReelIndexStatus  @default(NOT_REQUESTED)
   visibility                    String           @default("public")
   viewCount                     BigInt           @default(0)
+  commentCount                  Int              @default(0)
   transcript                    String?          @db.Text
   transcriptVtt                 String?          @db.Text
   transcriptSegments            Json?
@@ -137,6 +138,7 @@ model Reel {
   updatedAt DateTime @updatedAt
 
   series       ReelSeries?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  comments     ReelComment[]
   shares       ReelShare[]
   shareLinks   ReelShareLink[]
   viewEvents   ReelViewEvent[]
@@ -318,4 +320,24 @@ model OutboxEvent {
   @@index([publishedAt, nextAttemptAt, createdAt])
   @@index([claimToken, claimedAt])
   @@index([aggregateType, aggregateId])
+}
+
+model ReelComment {
+  id              String        @id @default(uuid())
+  reelId          String
+  authorId        String
+  parentId        String?
+  clientRequestId String
+  fingerprint     String
+  text            String        @db.Text
+  replyCount      Int           @default(0)
+  deletedAt       DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  reel            Reel          @relation(fields: [reelId], references: [id], onDelete: Cascade)
+  parent          ReelComment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies         ReelComment[] @relation("CommentReplies")
+
+  @@unique([authorId, clientRequestId])
+  @@index([reelId, parentId, createdAt, id])
 }

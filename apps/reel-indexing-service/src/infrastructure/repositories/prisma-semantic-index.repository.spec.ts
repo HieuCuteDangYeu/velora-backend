@@ -21,6 +21,45 @@ const config = {
 };
 
 describe('PrismaSemanticIndexRepository single-vector search', () => {
+  it('keeps Qdrant request deadlines independent of a slow SQL scope check', async () => {
+    const tx = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    let calls = 0;
+    const db = {
+      $transaction: jest.fn(async (fn: (tx: typeof tx) => unknown) => {
+        if (calls++ === 0)
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        return fn(tx);
+      }),
+    };
+    const identity = jest.fn(async (signal: AbortSignal) => {
+      if (signal.aborted) throw new Error('expired');
+      return { collection: 'test', fingerprint: 'stable' };
+    });
+    const search = jest.fn(async ({ signal }: { signal: AbortSignal }) => {
+      if (signal.aborted) throw new Error('expired');
+      return [];
+    });
+    const cfg = {
+      get: (key: string) =>
+        key === 'INDEX_VECTOR_SEARCH_BACKEND' ? 'qdrant' : configValues[key],
+    };
+    const repository = new PrismaSemanticIndexRepository(
+      db as never,
+      cfg as never,
+      { required: true } as never,
+      { identity, search } as never,
+    );
+    await expect(
+      repository.searchReels({
+        queryEmbedding: Array(SEMANTIC_INDEX_EMBEDDING_DIMENSIONS).fill(0.01),
+        queryEmbeddingModel: embeddingIdentity.model,
+        queryEmbeddingVersion: embeddingIdentity.version,
+      }),
+    ).resolves.toEqual([]);
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(identity).toHaveBeenCalledTimes(2);
+  });
+
   it('reads a timestamp-scoped active visual scene with Reel and version fences', async () => {
     const query = jest.fn().mockResolvedValue([]);
     const repository = new PrismaSemanticIndexRepository(

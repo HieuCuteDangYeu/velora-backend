@@ -667,9 +667,8 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       operation: () => Promise<T>,
     ) => Promise<T>,
   ): Promise<SearchRow[]> {
-    const signal = AbortSignal.timeout(250);
     const physical = await measured('qdrantMs', () =>
-      this.vectors!.identity(signal),
+      this.vectors!.identity(AbortSignal.timeout(250)),
     );
     const before = await measured('sqlMs', () =>
       this.prisma.$transaction(
@@ -721,7 +720,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         ),
         vector: normalized.queryEmbedding!,
         limit: normalized.candidateLimit,
-        signal,
+        signal: AbortSignal.timeout(250),
       }),
     );
     if (hits.length !== Math.min(before.length, normalized.candidateLimit))
@@ -773,7 +772,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       return { rowId: row.rowId, rank: i + 1, distance: 1 - hit.score };
     });
     const afterPhysical = await measured('qdrantMs', () =>
-      this.vectors!.identity(signal),
+      this.vectors!.identity(AbortSignal.timeout(250)),
     );
     if (afterPhysical.fingerprint !== physical.fingerprint)
       throw new Error('scope_changed');

@@ -11,6 +11,7 @@ import type {
   ISemanticIndexRepository,
   SemanticIndexCandidate,
 } from '@indexing/domain/interfaces/semantic-index.repository.interface';
+import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-storage.interface';
 import { PrismaService } from '@indexing/infrastructure/prisma/prisma.service';
 import type {
   IReelVectorStore,
@@ -20,6 +21,7 @@ import type {
 } from '@indexing/domain/interfaces/reel-vector-store.interface';
 import {
   VECTOR_TABLES,
+  validateVector,
   vectorHash,
   vectorPointId,
 } from '@indexing/domain/services/reel-vector-manifest';
@@ -27,7 +29,7 @@ import { PrismaVectorProjectionRepository } from './prisma-vector-projection.rep
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/reel-indexing-client';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 
 type SemanticTable =
   | 'ReelDocument'
@@ -91,6 +93,9 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     @Optional()
     @Inject('IReelVectorStore')
     private readonly vectors?: IReelVectorStore,
+    @Optional()
+    @Inject('IArtifactStorage')
+    private readonly artifacts?: IArtifactStorage,
   ) {}
 
   async persistCandidate(input: SemanticIndexCandidate): Promise<void> {
@@ -108,6 +113,15 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       throw new Error('Semantic index requires exactly one Reel document');
     }
     input.documents.forEach((document) => this.validateDocument(document));
+    if (!this.projections?.enabled)
+      throw new Error('Qdrant vector publication must be enabled');
+    const staged = await this.stageVectorBundle(input);
+    const cacheFiles = await this.prisma.embeddingCacheEntry.findMany({
+      where: {
+        stableItemId: { in: input.documents.map((document) => document.id) },
+      },
+      select: { storageKey: true },
+    });
 
     await this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.job.reelId}))`;
@@ -167,8 +181,72 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         transaction,
         input.job.reelId,
         input.job.indexAttemptId,
+        { key: staged.key, sha256: staged.sha256, candidate: input },
       );
+      await transaction.embeddingCacheEntry.deleteMany({
+        where: {
+          stableItemId: { in: input.documents.map((document) => document.id) },
+        },
+      });
     });
+    for (const key of new Set(
+      cacheFiles.flatMap((entry) =>
+        entry.storageKey ? [entry.storageKey] : [],
+      ),
+    )) {
+      if (
+        !(await this.prisma.embeddingCacheEntry.count({
+          where: { storageKey: key },
+        }))
+      ) {
+        try {
+          await this.artifacts!.deleteArtifact(key);
+        } catch {
+          new Logger(PrismaSemanticIndexRepository.name).warn(
+            'embedding_cache_artifact_cleanup_pending',
+          );
+        }
+      }
+    }
+  }
+
+  private async stageVectorBundle(
+    input: SemanticIndexCandidate,
+  ): Promise<{ key: string; sha256: string }> {
+    if (!this.artifacts)
+      throw new Error('Qdrant staging storage is unavailable');
+    if (!input.documents.length || input.documents.length > 20000)
+      throw new Error('Semantic projection exceeds the point limit');
+    const scope = createHash('sha256')
+      .update(`${input.job.reelId}\0${input.job.indexAttemptId}`)
+      .digest('hex');
+    const prefix = `reel-indexing/semantic-bundles/${scope}`;
+    const shards = [];
+    for (let offset = 0; offset < input.documents.length; offset += 128) {
+      const documents = input.documents
+        .slice(offset, offset + 128)
+        .map((document) => ({
+          kind: document.kind,
+          id: document.id,
+          embedding: document.embedding,
+        }));
+      const bytes = Buffer.from(JSON.stringify({ version: 1, documents }));
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      const key = `${prefix}/${sha256}.part.json`;
+      await this.artifacts.putVerifiedArtifact({ key, bytes, sha256 });
+      shards.push({ key, sha256, count: documents.length });
+    }
+    const manifestBytes = Buffer.from(
+      JSON.stringify({ version: 1, count: input.documents.length, shards }),
+    );
+    const sha256 = createHash('sha256').update(manifestBytes).digest('hex');
+    const key = `${prefix}/${sha256}.manifest.json`;
+    await this.artifacts.putVerifiedArtifact({
+      key,
+      bytes: manifestBytes,
+      sha256,
+    });
+    return { key, sha256 };
   }
 
   async activateCandidate(
@@ -428,11 +506,14 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       return rows.map((row) => this.toSearchResult(row));
     }
     const normalized = this.normalizeSearch(input);
-    const useQdrant =
-      normalized.queryEmbedding &&
-      (this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant' ||
-        this.config.get<string>('INDEX_VECTOR_SHADOW_COMPARE') === 'true');
-    if (useQdrant && this.projections && this.vectors) {
+    if (normalized.queryEmbedding) {
+      if (
+        this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') !== 'qdrant' ||
+        !this.projections ||
+        !this.vectors ||
+        !this.projections.required
+      )
+        throw new Error('Qdrant vector retrieval is required');
       const started = Date.now();
       let fallback = 'unavailable';
       const timing = { qdrantMs: 0, sqlMs: 0 };
@@ -448,34 +529,13 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         }
       };
       try {
-        if (
-          this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant' &&
-          !this.projections.required
-        )
-          throw new Error('publication_not_required');
         const result = await this.searchQdrant(target, normalized, measured);
-        if (
-          this.config.get<string>('INDEX_VECTOR_SEARCH_BACKEND') === 'qdrant'
-        ) {
-          this.vectorTelemetry({
-            backend: 'qdrant',
-            ...timing,
-            totalMs: Date.now() - started,
-          });
-          return result.map((row) => this.toSearchResult(row));
-        }
-        const primary = await measured('sqlMs', () =>
-          this.searchPostgres(target, normalized),
-        );
         this.vectorTelemetry({
-          backend: 'shadow',
+          backend: 'qdrant',
           ...timing,
           totalMs: Date.now() - started,
-          sameIds:
-            JSON.stringify(primary.map((r) => r.id)) ===
-            JSON.stringify(result.map((r) => r.id)),
         });
-        return primary.map((row) => this.toSearchResult(row));
+        return result.map((row) => this.toSearchResult(row));
       } catch (error) {
         fallback =
           error instanceof Error &&
@@ -488,16 +548,15 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
             ? error.message
             : 'unavailable';
       }
-      const primary = await measured('sqlMs', () =>
-        this.searchPostgres(target, normalized),
-      );
       this.vectorTelemetry({
-        backend: 'postgres',
+        backend: 'qdrant',
         fallback,
         ...timing,
         totalMs: Date.now() - started,
       });
-      return primary.map((row) => this.toSearchResult(row));
+      throw new Error('Qdrant semantic retrieval is unavailable', {
+        cause: error,
+      });
     }
     return (await this.searchPostgres(target, normalized)).map((row) =>
       this.toSearchResult(row),
@@ -514,11 +573,10 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     target: SemanticTable,
     normalized: ReturnType<PrismaSemanticIndexRepository['normalizeSearch']>,
   ): Promise<SearchRow[]> {
+    if (normalized.queryEmbedding)
+      throw new Error('Vector similarity search must use Qdrant');
     const query = this.searchQuery(target, normalized);
-    const rows = await this.prisma.$transaction(async (transaction) => {
-      await this.configureHnsw(transaction);
-      return await transaction.$queryRaw<SearchRow[]>(query);
-    });
+    const rows = await this.prisma.$queryRaw<SearchRow[]>(query);
     return rows;
   }
 
@@ -539,30 +597,15 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       normalized.excludedIds,
       normalized.requiredIndexVersion,
     );
-    const vector = normalized.queryEmbedding
-      ? `[${normalized.queryEmbedding.join(',')}]`
-      : null;
-    const vectorColumn = Prisma.raw('t."embedding"');
     const embeddingIdentity = normalized.embeddingDimensions
       ? Prisma.sql`AND t."embeddingDimensions" = ${normalized.embeddingDimensions}
           AND t."embeddingModel" = ${normalized.queryEmbeddingModel}
           AND t."embeddingVersion" = ${normalized.queryEmbeddingVersion}`
       : Prisma.empty;
-    const vectorCandidates = external
-      ? Prisma.sql`
-      SELECT "rowId", rank::bigint, distance FROM jsonb_to_recordset(${JSON.stringify(external)}::jsonb)
+    const vectorCandidates = Prisma.sql`
+      SELECT "rowId", rank::bigint, distance FROM jsonb_to_recordset(${JSON.stringify(external ?? [])}::jsonb)
         AS x("rowId" text, rank integer, distance double precision)
-    `
-      : Prisma.sql`        SELECT t."rowId",
-          row_number() OVER (ORDER BY ${vectorColumn} <=> ${vector}::vector) AS rank,
-          ${vectorColumn} <=> ${vector}::vector AS distance
-        FROM ${table} t
-        WHERE t."isActive" = true AND ${vector}::vector IS NOT NULL
-          ${embeddingIdentity}
-          ${where}
-        ORDER BY ${vectorColumn} <=> ${vector}::vector
-        LIMIT ${normalized.candidateLimit}
-`;
+    `;
     return Prisma.sql`
       WITH vector_candidates AS (
         ${vectorCandidates}
@@ -646,7 +689,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         epoch: string | null;
       }[]
     >(Prisma.sql`
-      SELECT t."rowId", (to_jsonb(t) - 'embedding' - 'searchVector') AS record, md5(to_jsonb(t)::text) AS digest,
+      SELECT t."rowId", (to_jsonb(t) - 'searchVector') AS record, md5(to_jsonb(t)::text) AS digest,
         p."generation", p."manifestHash", p."readyCollection", p."readyFingerprint", p."readyEpoch", p."readyAt", s."epoch"
       FROM ${Prisma.raw(`"${target}"`)} t
       LEFT JOIN "VectorProjection" p ON p."reelId" = t."reelId" AND p."indexAttemptId" = t."indexAttemptId" AND NOT p."revoked"
@@ -872,47 +915,6 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     `;
   }
 
-  private async configureHnsw(transaction: Prisma.TransactionClient) {
-    const efSearch = this.boundedInt(
-      Number(this.config.get<string>('INDEX_HNSW_EF_SEARCH')),
-      100,
-      1,
-      1_000,
-    );
-    const maxScanTuples = this.boundedInt(
-      Number(this.config.get<string>('INDEX_HNSW_MAX_SCAN_TUPLES')),
-      20_000,
-      1,
-      1_000_000,
-    );
-    const scanMemMultiplier = this.positiveNumber(
-      this.config.get<string>('INDEX_HNSW_SCAN_MEM_MULTIPLIER'),
-      1,
-    );
-    const configuredScan =
-      this.config
-        .get<string>('INDEX_HNSW_ITERATIVE_SCAN')
-        ?.trim()
-        .toLowerCase() ?? 'strict_order';
-    const iterativeScan = ['off', 'strict_order', 'relaxed_order'].includes(
-      configuredScan,
-    )
-      ? configuredScan
-      : 'strict_order';
-    await transaction.$executeRawUnsafe(
-      `SET LOCAL hnsw.ef_search = ${efSearch}`,
-    );
-    await transaction.$executeRawUnsafe(
-      `SET LOCAL hnsw.iterative_scan = '${iterativeScan}'`,
-    );
-    await transaction.$executeRawUnsafe(
-      `SET LOCAL hnsw.max_scan_tuples = ${maxScanTuples}`,
-    );
-    await transaction.$executeRawUnsafe(
-      `SET LOCAL hnsw.scan_mem_multiplier = ${scanMemMultiplier}`,
-    );
-  }
-
   private insertDocuments(
     table: SemanticTable,
     documents: SemanticIndexCandidate['documents'],
@@ -923,7 +925,6 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       input.metadata.description ?? input.job.description ?? null;
     const tags = this.cleanStrings(input.metadata.tags);
     const rows = documents.map((document) => {
-      const vector = `[${document.embedding.join(',')}]`;
       return Prisma.sql`(
       ${randomUUID()}, ${document.id}, ${document.reelId}, ${input.job.indexAttemptId}, false, false,
       ${input.job.userId}, ${document.parentId ?? null}, ${document.ordinal}, ${title}, ${description},
@@ -934,7 +935,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       ${document.transcriptVersion ?? null}, ${document.sectioningVersion}, ${document.tokenCount},
       ${tags}::text[], ${document.startTime ?? null}, ${document.endTime ?? null},
       ${input.job.sourceDurationMs}, ${input.job.sourceOrientation}, ${input.job.sourceLengthClass},
-      ${vector}::vector, ${document.embeddingProvider},
+      ${document.embeddingProvider},
       ${document.embeddingModel}, ${document.embeddingDimensions}, ${document.embeddingVersion},
       ${document.embeddingInputHash}, ${document.indexVersion}, ${document.chunkingVersion},
       ${document.summaryVersion}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
@@ -947,7 +948,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         "sourceSectionIds", "sourceSegmentIds", "sourceAudioArtifactIds", "evidenceHash",
         "retrievalHash", "evidenceQuality", "transcriptVersion", "sectioningVersion",
         "tokenCount", "tags", "startTime", "endTime", "sourceDurationMs",
-        "sourceOrientation", "sourceLengthClass", "embedding", "embeddingProvider",
+        "sourceOrientation", "sourceLengthClass", "embeddingProvider",
         "embeddingModel", "embeddingDimensions", "embeddingVersion", "embeddingInputHash",
         "indexVersion", "chunkingVersion", "summaryVersion", "createdAt", "updatedAt"
       ) VALUES ${Prisma.join(rows)}
@@ -970,6 +971,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         `Document ${document.id} has an incompatible embedding identity or dimension`,
       );
     }
+    validateVector(document.embedding);
     if (
       !document.retrievalText.trim() ||
       !document.retrievalHash.trim() ||
@@ -1034,10 +1036,5 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     return Number.isInteger(value) && value! >= minimum && value! <= maximum
       ? value!
       : fallback;
-  }
-
-  private positiveNumber(value: string | undefined, fallback: number): number {
-    const parsed = Number(value ?? fallback);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 }

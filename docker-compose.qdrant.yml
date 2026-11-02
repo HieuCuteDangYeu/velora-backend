@@ -1,19 +1,79 @@
 # Opt in only after the benchmark hold, disk, certificate, migration and backup gates.
 # COMPOSE_FILE=docker-compose.yml:docker-compose.qdrant.yml COMPOSE_PROFILES=qdrant
 services:
-  reel-indexing-service: &index-qdrant
+  reel-indexing-postgres:
+    image: pgvector/pgvector:pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    profiles: [qdrant]
+    restart: unless-stopped
+    cpus: '1.0'
+    mem_limit: 1536m
+    mem_reservation: 256m
     environment:
+      POSTGRES_DB: reel_indexing
+      POSTGRES_USER: reel_indexing_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/reel_indexing_db_admin_password
+      REEL_INDEXING_APP_PASSWORD_FILE: /run/secrets/reel_indexing_db_app_password
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - reel_indexing_postgres_data:/var/lib/postgresql/data
+      - ./infra/qdrant/postgres-init:/docker-entrypoint-initdb.d:ro
+    secrets:
+      - reel_indexing_db_admin_password
+      - reel_indexing_db_app_password
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -h 127.0.0.1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - microservices-net
+
+  reel-indexing-service: &index-qdrant
+    env_file:
+      - .env
+      - ${REEL_INDEXING_PRIVATE_ENV_FILE:-.env.qdrant-indexing}
+    environment:
+      REEL_INDEXING_DATABASE_URL: ${REEL_INDEXING_DATABASE_URL:?Set REEL_INDEXING_DATABASE_URL in .env.qdrant-indexing}
       QDRANT_URL: https://qdrant:6333
       QDRANT_API_KEY_FILE: /run/secrets/qdrant_api_key
       NODE_EXTRA_CA_CERTS: /run/secrets/qdrant_tls_ca
-      INDEX_VECTOR_SEARCH_BACKEND: ${INDEX_VECTOR_SEARCH_BACKEND:-postgres}
-      INDEX_VECTOR_PROJECTION_ENABLED: ${INDEX_VECTOR_PROJECTION_ENABLED:-false}
-      INDEX_VECTOR_PUBLICATION_REQUIRED: ${INDEX_VECTOR_PUBLICATION_REQUIRED:-false}
-      INDEX_VECTOR_SHADOW_COMPARE: ${INDEX_VECTOR_SHADOW_COMPARE:-false}
+      INDEX_VECTOR_SEARCH_BACKEND: ${INDEX_VECTOR_SEARCH_BACKEND:-qdrant}
+      INDEX_VECTOR_PROJECTION_ENABLED: ${INDEX_VECTOR_PROJECTION_ENABLED:-true}
+      INDEX_VECTOR_PUBLICATION_REQUIRED: ${INDEX_VECTOR_PUBLICATION_REQUIRED:-true}
     networks:
       - microservices-net
       - reel-vector-net
     secrets:
       - qdrant_api_key
       - qdrant_tls_ca
+    depends_on:
+      reel-indexing-postgres:
+        condition: service_healthy
   reel-indexing-long-service: *index-qdrant
+
+secrets:
+  qdrant_api_key:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/api-key
+  qdrant_tls_cert:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/server.crt
+  qdrant_tls_key:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/server.key
+  qdrant_tls_ca:
+    file: ${QDRANT_SECRET_DIR:-./infra/qdrant/private}/ca.crt
+  reel_indexing_db_admin_password:
+    file: ${REEL_INDEXING_DB_ADMIN_PASSWORD_FILE:-./infra/qdrant/private/reel-indexing-db-admin-password}
+  reel_indexing_db_app_password:
+    file: ${REEL_INDEXING_DB_APP_PASSWORD_FILE:-./infra/qdrant/private/reel-indexing-db-app-password}
+
+volumes:
+  reel_indexing_postgres_data:
+
+networks:
+  reel-vector-net:
+    external: true
+    name: microservices-boilerplate_reel-vector-net

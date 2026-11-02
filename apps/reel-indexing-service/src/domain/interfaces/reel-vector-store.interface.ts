@@ -45,6 +45,10 @@ export interface IReelVectorStore {
   readonly collection: string;
   identity(signal?: AbortSignal): Promise<VectorTarget>;
   upsert(points: ReelVectorPoint[]): Promise<void>;
+  retrieve(
+    pointIds: string[],
+    signal?: AbortSignal,
+  ): Promise<ReelVectorPoint[]>;
   verify(points: ReelVectorPoint[]): Promise<void>;
   remove(tuple: VectorTuple): Promise<void>;
   search(input: {

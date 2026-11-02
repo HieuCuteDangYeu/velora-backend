@@ -7,13 +7,18 @@ import {
   type IReelVectorStore,
   type VectorTarget,
 } from '@indexing/domain/interfaces/reel-vector-store.interface';
+import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-storage.interface';
 import {
   makePoint,
   pointManifest,
   VECTOR_TABLES,
+  validateVector,
+  vectorPointId,
+  vectorHash,
 } from '@indexing/domain/services/reel-vector-manifest';
+import type { SemanticIndexCandidate } from '@indexing/domain/interfaces/semantic-index.repository.interface';
 import { PrismaService } from '@indexing/infrastructure/prisma/prisma.service';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Prisma,
@@ -32,10 +37,15 @@ export type ProjectionContinuation = {
 
 @Injectable()
 export class PrismaVectorProjectionRepository implements ISemanticPublication {
+  private readonly bundleCache = new Map<string, Map<string, number[]>>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     @Inject('IReelVectorStore') private readonly store: IReelVectorStore,
+    @Optional()
+    @Inject('IArtifactStorage')
+    private readonly artifacts?: IArtifactStorage,
   ) {}
   get enabled(): boolean {
     return (
@@ -53,24 +63,41 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     reelId: string,
     indexAttemptId: string,
     generation: bigint,
+    bundledVectors?: Map<string, number[]>,
   ) {
+    if (!bundledVectors) {
+      const projection = await tx.vectorProjection.findUnique({
+        where: { reelId_generation: { reelId, generation } },
+      });
+      if (projection?.bundleKey && projection.bundleSha256)
+        bundledVectors = await this.stagedVectors(projection);
+    }
     const points: ReturnType<typeof makePoint>[] = [];
     for (const [kind, table] of Object.entries(VECTOR_TABLES)) {
       const rows = await tx.$queryRaw<
         { record: Record<string, unknown> }[]
       >(Prisma.sql`
-        SELECT to_jsonb(t) || jsonb_build_object('embedding', t."embedding"::text) AS record
+        SELECT to_jsonb(t) AS record
         FROM ${Prisma.raw(`"${table}"`)} t WHERE "reelId" = ${reelId} AND "indexAttemptId" = ${indexAttemptId}
         ORDER BY "id" LIMIT 20001
       `);
       points.push(
-        ...rows.map((row) =>
-          makePoint(
+        ...rows.map((row) => {
+          const record = row.record;
+          if (record.embedding === null || record.embedding === undefined) {
+            const vector = bundledVectors?.get(`${kind}:${String(record.id)}`);
+            if (!vector)
+              throw new Error(
+                'Vector staging artifact is missing a candidate embedding',
+              );
+            record.embedding = vector;
+          }
+          return makePoint(
             kind as keyof typeof VECTOR_TABLES,
             generation.toString(),
-            row.record,
-          ),
-        ),
+            record,
+          );
+        }),
       );
       if (points.length > 20000)
         throw new Error('Semantic projection exceeds bounded candidate size');
@@ -80,6 +107,194 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
       point.payload.manifestHash = hash;
     });
     return { points, hash };
+  }
+
+  private async stagedVectors(
+    projection: Pick<VectorProjection, 'bundleKey' | 'bundleSha256'>,
+  ): Promise<Map<string, number[]> | undefined> {
+    if (!projection.bundleKey || !projection.bundleSha256) return undefined;
+    if (!this.artifacts)
+      throw new Error('Vector staging artifact storage is unavailable');
+    if (
+      !projection.bundleKey.startsWith('reel-indexing/semantic-bundles/') ||
+      projection.bundleKey
+        .split('/')
+        .some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid semantic vector bundle key');
+    const bundleDirectory = projection.bundleKey.slice(
+      0,
+      projection.bundleKey.lastIndexOf('/'),
+    );
+    const cached = this.bundleCache.get(projection.bundleSha256);
+    if (cached) return cached;
+    const bytes = await this.artifacts.getVerifiedArtifactBytes({
+      key: projection.bundleKey,
+      sha256: projection.bundleSha256,
+    });
+    const bundle = JSON.parse(Buffer.from(bytes).toString('utf8')) as {
+      version?: unknown;
+      count?: unknown;
+      shards?: { key?: unknown; sha256?: unknown; count?: unknown }[];
+    };
+    if (
+      bundle.version !== 1 ||
+      !Number.isInteger(bundle.count) ||
+      Number(bundle.count) < 1 ||
+      Number(bundle.count) > 20000 ||
+      !Array.isArray(bundle.shards) ||
+      bundle.shards.length > 200
+    )
+      throw new Error('Invalid semantic vector staging artifact');
+    const vectors = new Map<string, number[]>();
+    for (const shard of bundle.shards) {
+      if (
+        typeof shard.key !== 'string' ||
+        !shard.key.startsWith(`${bundleDirectory}/`) ||
+        typeof shard.sha256 !== 'string' ||
+        !Number.isInteger(shard.count) ||
+        Number(shard.count) < 1 ||
+        Number(shard.count) > 128
+      )
+        throw new Error('Invalid semantic vector staging shard');
+      const shardBytes = await this.artifacts.getVerifiedArtifactBytes({
+        key: shard.key,
+        sha256: shard.sha256,
+      });
+      const shardData = JSON.parse(
+        Buffer.from(shardBytes).toString('utf8'),
+      ) as {
+        version?: unknown;
+        documents?: { kind?: unknown; id?: unknown; embedding?: unknown }[];
+      };
+      if (
+        shardData.version !== 1 ||
+        !Array.isArray(shardData.documents) ||
+        shardData.documents.length !== shard.count
+      )
+        throw new Error('Invalid semantic vector staging shard payload');
+      for (const document of shardData.documents) {
+        if (
+          typeof document.kind !== 'string' ||
+          typeof document.id !== 'string' ||
+          !Array.isArray(document.embedding) ||
+          document.embedding.some((value) => typeof value !== 'number')
+        )
+          throw new Error('Invalid semantic vector staging entry');
+        const vector = document.embedding as number[];
+        validateVector(vector);
+        const key = `${document.kind}:${document.id}`;
+        if (vectors.has(key))
+          throw new Error('Duplicate semantic vector staging entry');
+        vectors.set(key, vector);
+      }
+    }
+    if (vectors.size !== bundle.count)
+      throw new Error('Semantic vector staging count mismatch');
+    if (this.bundleCache.size >= 2)
+      this.bundleCache.delete(this.bundleCache.keys().next().value!);
+    this.bundleCache.set(projection.bundleSha256, vectors);
+    return vectors;
+  }
+
+  private async deleteStagedBundle(bundle: {
+    bundleKey: string;
+    bundleSha256: string;
+  }): Promise<void> {
+    if (!this.artifacts)
+      throw new Error('Vector staging artifact storage is unavailable');
+    if (
+      !bundle.bundleKey.startsWith('reel-indexing/semantic-bundles/') ||
+      bundle.bundleKey
+        .split('/')
+        .some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid semantic vector bundle key');
+    const bundleDirectory = bundle.bundleKey.slice(
+      0,
+      bundle.bundleKey.lastIndexOf('/'),
+    );
+    const bytes = await this.artifacts.getVerifiedArtifactBytes({
+      key: bundle.bundleKey,
+      sha256: bundle.bundleSha256,
+    });
+    const manifest = JSON.parse(Buffer.from(bytes).toString('utf8')) as {
+      version?: unknown;
+      shards?: { key?: unknown; sha256?: unknown }[];
+    };
+    if (manifest.version !== 1 || !Array.isArray(manifest.shards))
+      throw new Error('Invalid semantic vector staging manifest');
+    for (const shard of manifest.shards) {
+      if (
+        typeof shard.key !== 'string' ||
+        !shard.key.startsWith(`${bundleDirectory}/`) ||
+        typeof shard.sha256 !== 'string'
+      )
+        throw new Error('Invalid semantic vector staging shard');
+      await this.artifacts.deleteArtifact(shard.key);
+    }
+    await this.artifacts.deleteArtifact(bundle.bundleKey);
+  }
+
+  private async vectorsFromQdrant(
+    projection: Pick<
+      VectorProjection,
+      'reelId' | 'indexAttemptId' | 'generation' | 'manifestHash'
+    >,
+  ): Promise<Map<string, number[]>> {
+    const identities = await this.prisma.$transaction(
+      async (tx) => {
+        const rows: { kind: string; id: string }[] = [];
+        for (const [kind, table] of Object.entries(VECTOR_TABLES)) {
+          const records = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+          SELECT "id" FROM ${Prisma.raw(`"${table}"`)}
+          WHERE "reelId" = ${projection.reelId}
+            AND "indexAttemptId" = ${projection.indexAttemptId}
+          ORDER BY "id" LIMIT 20001
+        `);
+          rows.push(...records.map((record) => ({ kind, id: record.id })));
+          if (rows.length > 20000)
+            throw new Error(
+              'Semantic projection exceeds bounded candidate size',
+            );
+        }
+        return rows;
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    const expected = new Map(
+      identities.map((item) => [
+        vectorPointId(
+          item.kind as keyof typeof VECTOR_TABLES,
+          projection.reelId,
+          projection.indexAttemptId,
+          projection.generation.toString(),
+          item.id,
+        ),
+        item,
+      ]),
+    );
+    const actual = await this.store.retrieve([...expected.keys()]);
+    if (actual.length !== expected.size)
+      throw new Error('Qdrant candidate point set is incomplete');
+    const vectors = new Map<string, number[]>();
+    for (const point of actual) {
+      const identity = expected.get(point.id);
+      if (
+        !identity ||
+        point.payload.kind !== identity.kind ||
+        point.payload.stableId !== identity.id ||
+        point.payload.reelId !== projection.reelId ||
+        point.payload.indexAttemptId !== projection.indexAttemptId ||
+        point.payload.projectionGeneration !==
+          projection.generation.toString() ||
+        point.payload.manifestHash !== projection.manifestHash ||
+        point.payload.vectorHash !== vectorHash(point.vector.map(Math.fround))
+      )
+        throw new Error('Qdrant candidate provenance mismatch');
+      vectors.set(`${identity.kind}:${identity.id}`, point.vector);
+    }
+    return vectors;
   }
 
   async assertReplaceable(
@@ -108,7 +323,16 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
   }
 
   // Caller holds the same per-Reel lock as semantic persistence.
-  async capture(tx: Tx, reelId: string, indexAttemptId: string): Promise<void> {
+  async capture(
+    tx: Tx,
+    reelId: string,
+    indexAttemptId: string,
+    staged?: {
+      key: string;
+      sha256: string;
+      candidate: SemanticIndexCandidate;
+    },
+  ): Promise<void> {
     await this.revoke(tx, reelId, { indexAttemptId });
     const allocated = await tx.$queryRaw<{ generation: bigint }[]>(Prisma.sql`
       INSERT INTO "VectorReelState" ("reelId", "generation", "deleted") VALUES (${reelId}, 1, false)
@@ -117,12 +341,40 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     `);
     if (!allocated[0]) throw new Error('Deleted Reel cannot be projected');
     const generation = allocated[0].generation;
-    const { points, hash } = await this.points(
-      tx,
-      reelId,
-      indexAttemptId,
-      generation,
+    if (!staged)
+      throw new Error(
+        'New semantic candidates must stage their vectors before enrollment',
+      );
+    const tags = Array.from(
+      new Set(
+        staged.candidate.metadata.tags.map((tag) => tag.trim()).filter(Boolean),
+      ),
     );
+    const points = staged.candidate.documents.map((document) =>
+      makePoint(document.kind, generation.toString(), {
+        id: document.id,
+        reelId,
+        indexAttemptId,
+        userId: staged.candidate.job.userId,
+        parentId: document.parentId ?? null,
+        ordinal: document.ordinal,
+        tags,
+        sourceLengthClass: staged.candidate.job.sourceLengthClass,
+        indexVersion: document.indexVersion,
+        embeddingProvider: document.embeddingProvider,
+        embeddingModel: document.embeddingModel,
+        embeddingVersion: document.embeddingVersion,
+        embeddingDimensions: document.embeddingDimensions,
+        embeddingInputHash: document.embeddingInputHash,
+        retrievalHash: document.retrievalHash,
+        evidenceHash: document.evidenceHash ?? null,
+        embedding: document.embedding,
+      }),
+    );
+    const hash = pointManifest(points);
+    points.forEach((point) => {
+      point.payload.manifestHash = hash;
+    });
     if (!points.length)
       throw new Error('Semantic projection candidate is empty');
     await tx.vectorProjection.create({
@@ -132,6 +384,9 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         generation,
         manifestHash: hash,
         pointCount: points.length,
+        ...(staged
+          ? { bundleKey: staged.key, bundleSha256: staged.sha256 }
+          : {}),
       },
     });
     await tx.vectorProjectionTask.create({
@@ -144,6 +399,32 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     });
     if (!existing) await this.capture(tx, reelId, indexAttemptId);
   }
+
+  async loadCandidatePoints(
+    reelId: string,
+    indexAttemptId: string,
+    generation: bigint,
+  ) {
+    const projection = await this.prisma.vectorProjection.findUniqueOrThrow({
+      where: { reelId_generation: { reelId, generation } },
+    });
+    if (projection.indexAttemptId !== indexAttemptId || projection.revoked)
+      throw new ProjectionSupersededError();
+    const vectors =
+      (await this.stagedVectors(projection)) ??
+      (await this.vectorsFromQdrant(projection));
+    const candidate = await this.prisma.$transaction(
+      (tx) => this.points(tx, reelId, indexAttemptId, generation, vectors),
+      { isolationLevel: 'RepeatableRead' },
+    );
+    if (
+      candidate.hash !== projection.manifestHash ||
+      candidate.points.length !== projection.pointCount
+    )
+      throw new Error('Semantic candidate manifest mismatch');
+    return candidate;
+  }
+
   async revoke(
     tx: Tx,
     reelId: string,
@@ -431,13 +712,19 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     token?: string,
   ): Promise<void> {
     if (!generation || !token) return;
-    await this.prisma.$transaction(async (tx) => {
+    const stagedBundle = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reelId}))`;
       await this.assertOwner(tx, {
         reelId,
         indexAttemptId,
         projectionGeneration: generation,
         publicationToken: token,
+      });
+      const projection = await tx.vectorProjection.findUniqueOrThrow({
+        where: {
+          reelId_generation: { reelId, generation: BigInt(generation) },
+        },
+        select: { bundleKey: true },
       });
       await tx.vectorProjection.updateMany({
         where: {
@@ -451,9 +738,18 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
           continuation: Prisma.DbNull,
           continuationToken: null,
           continuationUntil: null,
+          bundleKey: null,
+          bundleSha256: null,
         },
       });
+      return projection.bundleKey && projection.bundleSha256
+        ? {
+            bundleKey: projection.bundleKey,
+            bundleSha256: projection.bundleSha256,
+          }
+        : undefined;
     });
+    if (stagedBundle) await this.deleteStagedBundle(stagedBundle);
   }
   async release(
     reelId: string,
@@ -516,6 +812,11 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         reelId_generation: { reelId: task.reelId, generation: task.generation },
       },
     });
+    const stagedVectors =
+      task.operation === 'UPSERT' && !projection.revoked
+        ? ((await this.stagedVectors(projection)) ??
+          (await this.vectorsFromQdrant(projection)))
+        : undefined;
     if (task.operation === 'DELETE') {
       if (!projection.revoked)
         throw new Error('Refusing to delete a current projection');
@@ -525,6 +826,20 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         projectionGeneration: projection.generation.toString(),
         manifestHash: projection.manifestHash,
       });
+      if (projection.bundleKey && projection.bundleSha256) {
+        await this.deleteStagedBundle({
+          bundleKey: projection.bundleKey,
+          bundleSha256: projection.bundleSha256,
+        });
+        await this.prisma.vectorProjection.updateMany({
+          where: {
+            reelId: projection.reelId,
+            generation: projection.generation,
+            revoked: true,
+          },
+          data: { bundleKey: null, bundleSha256: null },
+        });
+      }
     } else if (!projection.revoked) {
       const target = await this.target();
       const snapshot = await this.prisma.$transaction(
@@ -534,6 +849,7 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
             projection.reelId,
             projection.indexAttemptId,
             projection.generation,
+            stagedVectors,
           ),
         { isolationLevel: 'RepeatableRead' },
       );
@@ -579,6 +895,7 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
           projection.reelId,
           projection.indexAttemptId,
           projection.generation,
+          stagedVectors,
         );
         if (
           !lease ||

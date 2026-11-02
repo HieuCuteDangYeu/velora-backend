@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * sync.cjs - Unified Narto Drama Ingestion, TikTok CDN Slicing & Vector Indexing Pipeline
+ * sync.cjs - Unified Narto Drama Ingestion, TikTok CDN Slicing & Reel Indexing Pipeline
  *
  * Capabilities:
  *  - Discovers new dramas from the latest Narto Drama sitemaps or by specific slug
@@ -9,8 +9,7 @@
  *  - Upserts series and episode records into Velora's content-service database
  *  - Slices videos into HLS segments with FFmpeg, masks PNG headers, and uploads to TikTok CDN
  *  - Uploads master .m3u8 playlists to Cloudflare R2 and updates hlsMasterKey
- *  - Generates 1024-d BAAI/bge-m3 vector embeddings via self-hosted TEI and indexes into pgvector
- *  - Updates processingStage to 'READY'
+ *  - Queues semantic indexing through Content and Reel Indexing service boundaries
  *
  * Usage:
  *  node scripts/narto-scraper/sync.cjs [--slug=drama-slug] [--sitemaps=2] [--concurrency=3] [--limit=10] [--dry-run]
@@ -25,7 +24,6 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const crypto = require('crypto');
 const os = require('node:os');
 const { prepareHls } = require('./hls.cjs');
 const { stageSource } = require('./stage-source.cjs');
@@ -36,18 +34,12 @@ const {
 } = require('../../apps/media-processing-service/src/infrastructure/services/tiktok-cdn.service.ts');
 const { XMLParser } = require('fast-xml-parser');
 const { PrismaClient: ContentPrisma } = require('@prisma/content-client');
-const {
-  PrismaClient: IndexPrisma,
-  Prisma,
-} = require('@prisma/reel-indexing-client');
 const { S3Client } = require('@aws-sdk/client-s3');
+const { publishRmqMessage } = require('../send-rmq-message.cjs');
 
 // Constants & Credentials
 const BOT_USER_ID =
   process.env.BOT_USER_ID || 'b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7';
-const TEI_EMBED_URL =
-  process.env.TEI_EMBEDDING_URL || 'http://localhost:8088/embed';
-const TEI_INFO_URL = TEI_EMBED_URL.replace(/\/embed$/, '/info');
 
 // XML parser for sitemaps
 const xmlParser = new XMLParser({
@@ -62,15 +54,6 @@ contentDbUrl.searchParams.set('connection_limit', '2');
 const contentPrisma = new ContentPrisma({
   datasources: { db: { url: contentDbUrl.toString() } },
 });
-
-let indexPrisma = null;
-if (process.env.REEL_INDEXING_DATABASE_URL) {
-  const indexDbUrl = new URL(process.env.REEL_INDEXING_DATABASE_URL);
-  indexDbUrl.searchParams.set('connection_limit', '2');
-  indexPrisma = new IndexPrisma({
-    datasources: { db: { url: indexDbUrl.toString() } },
-  });
-}
 
 // Cloudflare R2 S3 Client
 const s3Client = new S3Client({
@@ -167,64 +150,6 @@ function fetchUrl(url, maxRedirects = 5, timeoutMs = 30000) {
   });
 }
 
-// Check if TEI embedding service is available
-async function checkTeiAvailability() {
-  try {
-    const res = await fetch(TEI_INFO_URL, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      const info = await res.json();
-      return { available: true, model: info.model_id || 'BAAI/bge-m3' };
-    }
-  } catch {}
-  return { available: false, model: null };
-}
-
-// Fetch embeddings in safe sub-batches with exponential backoff
-async function getEmbeddings(texts) {
-  const SUB_BATCH = 2;
-  const results = [];
-
-  for (let i = 0; i < texts.length; i += SUB_BATCH) {
-    const chunk = texts.slice(i, i + SUB_BATCH);
-    let success = false;
-
-    for (let retry = 0; retry < 6; retry++) {
-      try {
-        const res = await fetch(TEI_EMBED_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ inputs: chunk }),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          results.push(...data);
-          success = true;
-          break;
-        }
-
-        if (res.status === 429) {
-          await new Promise((r) => setTimeout(r, 600 * (retry + 1)));
-          continue;
-        }
-        const errorText = await res.text();
-        throw new Error(`TEI error (${res.status}): ${errorText}`);
-      } catch (err) {
-        if (retry < 5) {
-          await new Promise((r) => setTimeout(r, 600 * (retry + 1)));
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (!success)
-      throw new Error('TEI embedding generation failed after retries');
-  }
-  return results;
-}
-
 // Normalize imports through the service profile, then publish an immutable validated version.
 async function transcodeAndUploadToTikTokCdn(reel, options) {
   if (options.dryRun) {
@@ -258,161 +183,23 @@ async function transcodeAndUploadToTikTokCdn(reel, options) {
   }
 }
 
-// Generate TEI embeddings and index into pgvector
+// Hand semantic indexing to the Indexing Service so candidate publication is journaled in PostgreSQL and Qdrant.
 async function indexReelsMetadata(reels, options) {
-  if (!reels || reels.length === 0) return;
-  if (!indexPrisma) {
-    console.warn(
-      '[WARN] REEL_INDEXING_DATABASE_URL not configured. Skipping vector indexing.',
-    );
-    return;
-  }
-
-  const teiHealth = await checkTeiAvailability();
-  if (!teiHealth.available) {
-    console.warn(
-      '[WARN] TEI embedding service not reachable at ' + TEI_EMBED_URL,
-    );
-    console.warn('       Run: ssh -N -L 8088:192.168.97.3:80 velora-homelab');
-    console.warn('       Reels remain in INDEX_QUEUED stage.');
-    return;
-  }
-
-  const texts = reels.map((r) => {
-    const title = (r.title || '').trim();
-    const description = (r.description || '').trim();
-    const tags = Array.isArray(r.tags) ? r.tags.join(' ') : '';
-    return `${title}\n${description}\n${tags}`.trim();
-  });
-
-  console.log(`  Computing TEI embeddings for ${reels.length} reels...`);
-  const embeddings = await getEmbeddings(texts);
-
-  const reelIds = reels.map((r) => r.id);
-  const attemptRows = [];
-  const docRows = [];
-  const chunkRows = [];
-
-  for (let i = 0; i < reels.length; i++) {
-    const reel = reels[i];
-    const retrievalText = texts[i];
-    const attemptId = reel.indexAttemptId || crypto.randomUUID();
-    const jobId = crypto.randomUUID();
-    const docId = `reel:${reel.id}`;
-    const chunkId = `reel:${reel.id}:chunk:0`;
-    const retrievalHash = crypto
-      .createHash('sha256')
-      .update(retrievalText)
-      .digest('hex');
-    const inputHash = crypto
-      .createHash('sha256')
-      .update(`self-hosted-tei:BAAI/bge-m3:1024:bge-m3-tei-v1:${retrievalText}`)
-      .digest('hex');
-    const tokenCount = Math.ceil(retrievalText.split(/\s+/).length * 1.3);
-    const tags = Array.isArray(reel.tags) ? reel.tags : [];
-    const durationMs = reel.sourceDurationMs || 60000;
-    const orientation = reel.sourceOrientation || 'PORTRAIT';
-    const lengthClass = reel.sourceLengthClass || 'SHORT';
-    const vectorStr = `[${embeddings[i].join(',')}]`;
-
-    attemptRows.push({
-      indexAttemptId: attemptId,
-      jobId,
-      reelId: reel.id,
-      mediaAttemptId: reel.mediaAttemptId || attemptId,
-      indexVersion: 'durable-index-v1',
-      status: 'COMPLETED',
-      stage: 'PERSISTING',
-      extractedMetadata: {
-        title: reel.title,
-        description: reel.description,
-        tags,
-      },
+  for (const reel of reels ?? []) {
+    if (options?.dryRun) {
+      console.log(`  [DRY-RUN] Would queue indexing for Reel ${reel.id}`);
+      continue;
+    }
+    const result = await publishRmqMessage({
+      queue: 'content_queue',
+      pattern: 'content.reindex_reel',
+      payload: { reelId: reel.id },
+      timeoutMs: 30_000,
     });
-
-    docRows.push(Prisma.sql`(
-      ${crypto.randomUUID()}, ${docId}, ${reel.id}, ${attemptId}, true, false,
-      ${reel.userId}, NULL, 0, ${reel.title}, ${reel.description},
-      NULL, ${retrievalText}, NULL,
-      ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[], NULL,
-      ${retrievalHash}, 'METADATA_ONLY'::"EvidenceQuality", NULL, 'metadata-only-v1',
-      ${tokenCount}, ${tags}::text[], NULL, NULL, ${durationMs},
-      ${orientation}, ${lengthClass}, ${vectorStr}::vector, 'self-hosted-tei',
-      'BAAI/bge-m3', 1024, 'bge-m3-tei-v1', ${inputHash},
-      'durable-index-v1', 'metadata-only-v1', 'metadata-only-v1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-    )`);
-
-    chunkRows.push(Prisma.sql`(
-      ${crypto.randomUUID()}, ${chunkId}, ${reel.id}, ${attemptId}, true, false,
-      ${reel.userId}, ${docId}, 0, ${reel.title}, ${reel.description},
-      NULL, ${retrievalText}, NULL,
-      ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[], NULL,
-      ${retrievalHash}, 'METADATA_ONLY'::"EvidenceQuality", NULL, 'metadata-only-v1',
-      ${tokenCount}, ${tags}::text[], 0, ${durationMs / 1000}, ${durationMs},
-      ${orientation}, ${lengthClass}, ${vectorStr}::vector, 'self-hosted-tei',
-      'BAAI/bge-m3', 1024, 'bge-m3-tei-v1', ${inputHash},
-      'durable-index-v1', 'metadata-only-v1', 'metadata-only-v1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-    )`);
+    if (!result?.queued || !result.indexAttemptId)
+      throw new Error(`Reel ${reel.id} could not be queued for indexing`);
+    console.log(`  [INDEX QUEUED] Reel ${reel.id} -> ${result.indexAttemptId}`);
   }
-
-  // Persist to indexing DB
-  await indexPrisma.indexingAttempt.createMany({
-    data: attemptRows,
-    skipDuplicates: true,
-  });
-  await indexPrisma.reelDocument.deleteMany({
-    where: { reelId: { in: reelIds } },
-  });
-  await indexPrisma.reelChunk.deleteMany({
-    where: { reelId: { in: reelIds } },
-  });
-
-  await indexPrisma.$executeRaw`
-    INSERT INTO "ReelDocument" (
-      "rowId", "id", "reelId", "indexAttemptId", "isActive", "isLegacyImport", "userId", "parentId", "ordinal",
-      "title", "description", "evidenceText", "retrievalText", "derivedSummary",
-      "sourceSectionIds", "sourceSegmentIds", "sourceAudioArtifactIds", "evidenceHash",
-      "retrievalHash", "evidenceQuality", "transcriptVersion", "sectioningVersion",
-      "tokenCount", "tags", "startTime", "endTime", "sourceDurationMs",
-      "sourceOrientation", "sourceLengthClass", "embedding", "embeddingProvider",
-      "embeddingModel", "embeddingDimensions", "embeddingVersion", "embeddingInputHash",
-      "indexVersion", "chunkingVersion", "summaryVersion", "createdAt", "updatedAt"
-    ) VALUES ${Prisma.join(docRows, ',')}
-  `;
-
-  await indexPrisma.$executeRaw`
-    INSERT INTO "ReelChunk" (
-      "rowId", "id", "reelId", "indexAttemptId", "isActive", "isLegacyImport", "userId", "parentId", "ordinal",
-      "title", "description", "evidenceText", "retrievalText", "derivedSummary",
-      "sourceSectionIds", "sourceSegmentIds", "sourceAudioArtifactIds", "evidenceHash",
-      "retrievalHash", "evidenceQuality", "transcriptVersion", "sectioningVersion",
-      "tokenCount", "tags", "startTime", "endTime", "sourceDurationMs",
-      "sourceOrientation", "sourceLengthClass", "embedding", "embeddingProvider",
-      "embeddingModel", "embeddingDimensions", "embeddingVersion", "embeddingInputHash",
-      "indexVersion", "chunkingVersion", "summaryVersion", "createdAt", "updatedAt"
-    ) VALUES ${Prisma.join(chunkRows, ',')}
-  `;
-
-  // Mark READY in content-service DB
-  await contentPrisma.reel.updateMany({
-    where: { id: { in: reelIds } },
-    data: {
-      processingStage: 'READY',
-      indexStatus: 'COMPLETED',
-      indexDocumentCount: 1,
-      indexSectionCount: 0,
-      indexChunkCount: 1,
-      indexEmbeddingProvider: 'self-hosted-tei',
-      indexEmbeddingModel: 'BAAI/bge-m3',
-      indexEmbeddingDimensions: 1024,
-      indexEmbeddingVersion: 'bge-m3-tei-v1',
-      indexCompletedAt: new Date(),
-    },
-  });
-
-  console.log(
-    `  [INDEX OK] Indexed ${reels.length} reels into pgvector & marked READY`,
-  );
 }
 
 function decodeHtml(str) {
@@ -661,7 +448,7 @@ async function syncDramaSeries(dramaInfo, options) {
     );
   }
 
-  // 5. Vector index new reels with TEI
+  // 5. Queue semantic indexing through the Content and Reel Indexing services.
   const unindexedReels = await contentPrisma.reel.findMany({
     where: {
       seriesId: series.id,
@@ -689,16 +476,6 @@ async function syncDramaSeries(dramaInfo, options) {
 // Mode: Index all currently queued reels in the database
 async function runIndexQueuedMode(options) {
   console.log('=== Mode: Index All Queued Reels ===');
-  const teiHealth = await checkTeiAvailability();
-  if (!teiHealth.available) {
-    console.error(
-      'ERROR: TEI embedding service is not running at ' + TEI_EMBED_URL,
-    );
-    console.error('Please run: ssh -N -L 8088:192.168.97.3:80 velora-homelab');
-    process.exit(1);
-  }
-  console.log(`TEI service healthy (Model: ${teiHealth.model})`);
-
   const queuedCount = await contentPrisma.reel.count({
     where: {
       processingStage: { in: ['INDEX_QUEUED', 'PERSISTING', 'VALIDATING'] },
@@ -769,7 +546,7 @@ async function runMigrateCdnMode(options) {
 
 function showHelp() {
   console.log(`
-Narto Drama Sync Pipeline - Unified Ingestion, TikTok CDN & pgvector Indexer
+Narto Drama Sync Pipeline - Unified Ingestion, TikTok CDN & Reel Indexing
 
 Usage:
   node scripts/narto-scraper/sync.cjs [options]
@@ -860,7 +637,6 @@ async function main() {
     console.log('\nAll sync tasks completed successfully!');
   } finally {
     await contentPrisma.$disconnect();
-    if (indexPrisma) await indexPrisma.$disconnect();
   }
 }
 

@@ -11,6 +11,9 @@ const {
   PrismaVectorProjectionRepository,
 } = require('../../apps/reel-indexing-service/src/infrastructure/repositories/prisma-vector-projection.repository');
 const {
+  R2ArtifactStorageAdapter,
+} = require('../../apps/reel-indexing-service/src/infrastructure/adapters/r2-artifact-storage.adapter');
+const {
   VECTOR_TABLES,
   makePoint,
   vectorHash,
@@ -78,27 +81,54 @@ async function exportSnapshot(prisma, projection, directory, fingerprint) {
       await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
       const provenance =
         await tx.$queryRaw`SELECT txid_current_snapshot()::text AS snapshot, now()::text AS at`;
+      const candidatePoints = new Map();
       for (const [kind, table] of Object.entries(VECTOR_TABLES)) {
         counts[kind] = 0;
         let cursor = '';
         for (;;) {
           const rows = await tx.$queryRaw(Prisma.sql`
-          SELECT to_jsonb(t) || jsonb_build_object('embedding', t."embedding"::text) AS record,
+          SELECT to_jsonb(t) AS record,
             p."generation"::text, p."manifestHash"
           FROM ${Prisma.raw(`"${table}"`)} t LEFT JOIN "VectorProjection" p
             ON p."reelId" = t."reelId" AND p."indexAttemptId" = t."indexAttemptId" AND NOT p."revoked"
           WHERE t."rowId" > ${cursor} ORDER BY t."rowId" LIMIT ${BATCH}
         `);
           if (!rows.length) break;
-          const records = rows.map((row) => {
+          const records = [];
+          for (const row of rows) {
             if (!row.generation || !row.manifestHash)
               throw new Error(
                 'Source candidate not enrolled; export remains incomplete',
               );
+            if (row.record.embedding == null) {
+              const candidateKey = `${row.record.reelId}:${row.record.indexAttemptId}:${row.generation}`;
+              if (!candidatePoints.has(candidateKey)) {
+                const points = await projection.loadCandidatePoints(
+                  row.record.reelId,
+                  row.record.indexAttemptId,
+                  BigInt(row.generation),
+                );
+                candidatePoints.set(
+                  candidateKey,
+                  new Map(
+                    points.points.map((point) => [
+                      `${point.payload.kind}:${point.payload.stableId}`,
+                      point,
+                    ]),
+                  ),
+                );
+              }
+              const point = candidatePoints
+                .get(candidateKey)
+                .get(`${kind}:${row.record.id}`);
+              if (!point)
+                throw new Error('Candidate staging bundle is incomplete');
+              row.record.embedding = JSON.stringify(point.vector);
+            }
             const point = makePoint(kind, row.generation, row.record);
             point.payload.manifestHash = row.manifestHash;
-            return { kind, record: row.record, point };
-          });
+            records.push({ kind, record: row.record, point });
+          }
           const bytes = encode(records),
             file = `batch-${String(batches.length).padStart(6, '0')}.json`;
           if (Buffer.byteLength(bytes) > 32 * 1024 * 1024)
@@ -169,9 +199,9 @@ async function importSnapshot(
   }
   const isCurrent = async (point) => {
     const p = point.payload;
-    return prisma.$transaction(async (tx) => {
+    const state = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${p.reelId}))`;
-      const state = await tx.vectorProjection.findUnique({
+      return tx.vectorProjection.findUnique({
         where: {
           reelId_generation: {
             reelId: p.reelId,
@@ -179,22 +209,21 @@ async function importSnapshot(
           },
         },
       });
-      if (!state || state.revoked || state.manifestHash !== p.manifestHash)
-        return false;
-      const live = await projection.points(
-        tx,
-        p.reelId,
-        p.indexAttemptId,
-        state.generation,
-      );
-      return (
-        live.hash === p.manifestHash &&
-        live.points.some(
-          (item) =>
-            item.id === point.id && vectorHash(item) === vectorHash(point),
-        )
-      );
     });
+    if (!state || state.revoked || state.manifestHash !== p.manifestHash)
+      return false;
+    const live = await projection.loadCandidatePoints(
+      p.reelId,
+      p.indexAttemptId,
+      state.generation,
+    );
+    return (
+      live.hash === p.manifestHash &&
+      live.points.some(
+        (item) =>
+          item.id === point.id && vectorHash(item) === vectorHash(point),
+      )
+    );
   };
   let projected = 0,
     superseded = 0;
@@ -305,10 +334,18 @@ async function main(argv = process.argv.slice(2)) {
   const prisma = new PrismaClient({ datasources: { db: { url } } });
   const config = new ConfigService();
   const store = new QdrantReelVectorStoreAdapter(config);
+  const artifacts =
+    process.env.R2_ACCOUNT_ID &&
+    process.env.R2_BUCKET_NAME &&
+    process.env.R2_ACCESS_KEY_ID &&
+    process.env.R2_SECRET_ACCESS_KEY
+      ? new R2ArtifactStorageAdapter(config)
+      : undefined;
   const projection = new PrismaVectorProjectionRepository(
     prisma,
     config,
     store,
+    artifacts,
   );
   const maxTasks = Number(args['max-tasks'] || 100);
   if (!Number.isInteger(maxTasks) || maxTasks < 1 || maxTasks > 10000)

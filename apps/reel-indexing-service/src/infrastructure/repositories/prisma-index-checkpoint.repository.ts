@@ -15,13 +15,18 @@ import type {
   TranscriptSection,
 } from '@indexing/domain/entities/index-checkpoint.entity';
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
+import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-storage.interface';
 import { PrismaService } from '@indexing/infrastructure/prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/reel-indexing-client';
+import { createHash, randomUUID } from 'node:crypto';
 
 @Injectable()
 export class PrismaIndexCheckpointRepository implements IIndexCheckpointRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject('IArtifactStorage') private readonly artifacts: IArtifactStorage,
+  ) {}
 
   async startOrResume(job: ReelIndexJob): Promise<IndexJobCheckpoint> {
     const record = await this.prisma.indexingAttempt.upsert({
@@ -242,37 +247,126 @@ export class PrismaIndexCheckpointRepository implements IIndexCheckpointReposito
         cacheKey: { in: identities.map((identity) => identity.cacheKey) },
       },
     });
-    return records.map((record) => ({
-      cacheKey: record.cacheKey,
-      stableItemId: record.stableItemId,
-      documentKind: record.documentKind,
-      embeddingInputHash: record.embeddingInputHash,
-      embeddingProvider: record.embeddingProvider,
-      embeddingModel: record.embeddingModel,
-      embeddingDimensions: record.embeddingDimensions,
-      embeddingVersion: record.embeddingVersion,
-      indexVersion: record.indexVersion,
-      chunkingVersion: record.chunkingVersion,
-      summaryVersion: record.summaryVersion,
-      embedding: record.embedding as unknown as number[],
-    }));
+    const batches = new Map<
+      string,
+      { sha256: string; entries: { cacheKey: string; embedding: number[] }[] }
+    >();
+    for (const record of records) {
+      if (!record.storageKey) continue;
+      if (
+        !record.storageKey.startsWith('reel-indexing/embedding-cache/') ||
+        record.storageKey
+          .split('/')
+          .some((part) => !part || part === '.' || part === '..')
+      )
+        throw new Error('Invalid embedding cache artifact key');
+      if (!record.sha256 || record.offset === null)
+        throw new Error('Embedding cache artifact reference is incomplete');
+      const batch = batches.get(record.storageKey) ?? {
+        sha256: record.sha256,
+        entries: [],
+      };
+      if (batch.sha256 !== record.sha256)
+        throw new Error('Embedding cache batch checksum mismatch');
+      batches.set(record.storageKey, batch);
+    }
+    for (const [key, batch] of batches) {
+      const bytes = await this.artifacts.getVerifiedArtifactBytes({
+        key,
+        sha256: batch.sha256,
+      });
+      const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown;
+      if (
+        !Array.isArray(parsed) ||
+        parsed.length > 100 ||
+        parsed.some((item) => {
+          const entry = item as { cacheKey?: unknown; embedding?: unknown };
+          return (
+            typeof entry.cacheKey !== 'string' ||
+            !Array.isArray(entry.embedding) ||
+            entry.embedding.length < 1 ||
+            entry.embedding.length > 4096 ||
+            entry.embedding.some(
+              (value: unknown) =>
+                typeof value !== 'number' || !Number.isFinite(value),
+            )
+          );
+        })
+      )
+        throw new Error('Invalid embedding cache batch');
+      batch.entries = parsed as { cacheKey: string; embedding: number[] }[];
+    }
+    return records.flatMap((record) => {
+      const embedding =
+        record.storageKey && record.offset !== null
+          ? batches.get(record.storageKey)?.entries[record.offset]
+          : undefined;
+      if (
+        record.storageKey &&
+        (!embedding || embedding.cacheKey !== record.cacheKey)
+      )
+        throw new Error('Embedding cache artifact entry is missing');
+      const vector = embedding?.embedding ?? record.embedding;
+      if (!Array.isArray(vector)) return [];
+      return {
+        cacheKey: record.cacheKey,
+        stableItemId: record.stableItemId,
+        documentKind: record.documentKind,
+        embeddingInputHash: record.embeddingInputHash,
+        embeddingProvider: record.embeddingProvider,
+        embeddingModel: record.embeddingModel,
+        embeddingDimensions: record.embeddingDimensions,
+        embeddingVersion: record.embeddingVersion,
+        indexVersion: record.indexVersion,
+        chunkingVersion: record.chunkingVersion,
+        summaryVersion: record.summaryVersion,
+        embedding: vector as number[],
+      };
+    });
   }
 
   async saveEmbeddings(embeddings: CachedEmbedding[]): Promise<void> {
     if (embeddings.length === 0) return;
+    const bytes = Buffer.from(
+      JSON.stringify(
+        embeddings.map(({ cacheKey, embedding }) => ({ cacheKey, embedding })),
+      ),
+    );
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const storageKey = `reel-indexing/embedding-cache/${randomUUID()}/${sha256}.json`;
+    await this.artifacts.putVerifiedArtifact({
+      key: storageKey,
+      bytes,
+      sha256,
+    });
     await this.prisma.$transaction(
       embeddings.map((entry) =>
         this.prisma.embeddingCacheEntry.upsert({
           where: { cacheKey: entry.cacheKey },
           create: {
-            ...entry,
-            embedding: entry.embedding,
+            cacheKey: entry.cacheKey,
+            stableItemId: entry.stableItemId,
+            documentKind: entry.documentKind,
+            embeddingInputHash: entry.embeddingInputHash,
+            embeddingProvider: entry.embeddingProvider,
+            embeddingModel: entry.embeddingModel,
+            embeddingDimensions: entry.embeddingDimensions,
+            embeddingVersion: entry.embeddingVersion,
+            indexVersion: entry.indexVersion,
+            chunkingVersion: entry.chunkingVersion,
+            summaryVersion: entry.summaryVersion,
+            storageKey,
+            sha256,
+            offset: embeddings.indexOf(entry),
           },
           update: {
             embeddingProvider: entry.embeddingProvider,
             embeddingModel: entry.embeddingModel,
             embeddingDimensions: entry.embeddingDimensions,
-            embedding: entry.embedding,
+            embedding: Prisma.DbNull,
+            storageKey,
+            sha256,
+            offset: embeddings.indexOf(entry),
           },
         }),
       ),

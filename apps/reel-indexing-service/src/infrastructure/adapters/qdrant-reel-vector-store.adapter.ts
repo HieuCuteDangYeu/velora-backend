@@ -165,6 +165,38 @@ export class QdrantReelVectorStoreAdapter implements IReelVectorStore {
         throw new Error('Qdrant write was not completed');
     }
   }
+  async retrieve(
+    pointIds: string[],
+    signal?: AbortSignal,
+  ): Promise<ReelVectorPoint[]> {
+    if (new Set(pointIds).size !== pointIds.length)
+      throw new Error('Duplicate Qdrant point ID');
+    const points: ReelVectorPoint[] = [];
+    for (let i = 0; i < pointIds.length; i += BATCH) {
+      const ids = pointIds.slice(i, i + BATCH);
+      const actual = await this.request<ReelVectorPoint[]>(
+        `/collections/${this.collection}/points`,
+        'POST',
+        { ids, with_payload: true, with_vector: true },
+        signal,
+      );
+      if (
+        !Array.isArray(actual) ||
+        actual.length !== ids.length ||
+        new Set(actual.map((point) => point.id)).size !== ids.length ||
+        actual.some(
+          (point) =>
+            !ids.includes(point.id) ||
+            !point.payload ||
+            !Array.isArray(point.vector),
+        )
+      )
+        throw new Error('Qdrant point retrieval mismatch');
+      actual.forEach((point) => validateVector(point.vector));
+      points.push(...actual);
+    }
+    return points;
+  }
   async verify(points: ReelVectorPoint[]): Promise<void> {
     if (!points.length) throw new Error('Cannot certify an empty candidate');
     const tuple = points[0].payload;

@@ -11,5 +11,11 @@ export interface IArtifactStorage {
     key: string;
     sha256: string;
   }): Promise<Uint8Array>;
+  putVerifiedArtifact(input: {
+    key: string;
+    bytes: Uint8Array;
+    sha256: string;
+  }): Promise<void>;
+  deleteArtifact(key: string): Promise<void>;
   artifactExists(key: string): Promise<boolean>;
 }

@@ -1,6 +1,8 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import type { TranscriptionAudioManifest } from '@common/processing/interfaces/transcription-audio-manifest.interface';
@@ -75,6 +77,55 @@ export class R2ArtifactStorageAdapter implements IArtifactStorage {
       throw new Error(`Artifact ${input.key} checksum mismatch`);
     }
     return bytes;
+  }
+
+  async putVerifiedArtifact(input: {
+    key: string;
+    bytes: Uint8Array;
+    sha256: string;
+  }): Promise<void> {
+    if (
+      !input.key.startsWith('reel-indexing/') ||
+      input.key
+        .split('/')
+        .some((part) => !part || part === '.' || part === '..') ||
+      input.bytes.byteLength > 64 * 1024 * 1024
+    )
+      throw new Error('Invalid Reel Indexing artifact');
+    const sha256 = createHash('sha256').update(input.bytes).digest('hex');
+    if (sha256 !== input.sha256.toLowerCase())
+      throw new Error('Reel Indexing artifact checksum mismatch');
+    if (await this.artifactExists(input.key)) {
+      const existing = await this.getVerifiedArtifactBytes({
+        key: input.key,
+        sha256,
+      });
+      if (!Buffer.from(existing).equals(Buffer.from(input.bytes)))
+        throw new Error('Reel Indexing artifact key collision');
+      return;
+    }
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: input.key,
+        Body: input.bytes,
+        ContentType: 'application/json',
+        CacheControl: 'no-store',
+        Metadata: { sha256 },
+      }),
+    );
+    await this.getVerifiedArtifactBytes({ key: input.key, sha256 });
+  }
+
+  async deleteArtifact(key: string): Promise<void> {
+    if (
+      !key.startsWith('reel-indexing/') ||
+      key.split('/').some((part) => !part || part === '.' || part === '..')
+    )
+      throw new Error('Invalid Reel Indexing artifact key');
+    await this.client.send(
+      new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+    );
   }
 
   async artifactExists(key: string): Promise<boolean> {

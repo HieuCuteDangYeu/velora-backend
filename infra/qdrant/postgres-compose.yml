@@ -1,0 +1,45 @@
+services:
+  reel-indexing-postgres:
+    image: pgvector/pgvector:pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    restart: unless-stopped
+    cpus: '1.0'
+    mem_limit: 1536m
+    mem_reservation: 256m
+    environment:
+      POSTGRES_DB: reel_indexing
+      POSTGRES_USER: reel_indexing_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/reel_indexing_db_admin_password
+      REEL_INDEXING_APP_PASSWORD_FILE: /run/secrets/reel_indexing_db_app_password
+      PGDATA: /var/lib/postgresql/data
+    volumes:
+      - reel_indexing_postgres_data:/var/lib/postgresql/data
+      - ${REEL_INDEXING_PG_INIT_DIR:-./infra/qdrant/postgres-init}:/docker-entrypoint-initdb.d:ro
+    secrets:
+      - reel_indexing_db_admin_password
+      - reel_indexing_db_app_password
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -h 127.0.0.1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - microservices-net
+
+networks:
+  microservices-net:
+    external: true
+    name: microservices-boilerplate_microservices-net
+
+secrets:
+  reel_indexing_db_admin_password:
+    file: ${REEL_INDEXING_DB_ADMIN_PASSWORD_FILE:-./infra/qdrant/private/reel-indexing-db-admin-password}
+  reel_indexing_db_app_password:
+    file: ${REEL_INDEXING_DB_APP_PASSWORD_FILE:-./infra/qdrant/private/reel-indexing-db-app-password}
+
+volumes:
+  reel_indexing_postgres_data:

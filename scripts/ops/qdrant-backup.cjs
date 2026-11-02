@@ -187,8 +187,8 @@ async function publishOffhostR2(client, bucket, prefix, name, bytes) {
   return { key, encryptedSha256: digest(readback) };
 }
 async function backup(prisma, projection, store, args, password) {
-  const remotePrefix = args['offhost-r2-prefix']
-    ? backupPrefix(args['offhost-r2-prefix'])
+  const remotePrefix = args['offhost-r-prefix']
+    ? backupPrefix(args['offhost-r-prefix'])
     : undefined;
   if (
     !args.directory ||

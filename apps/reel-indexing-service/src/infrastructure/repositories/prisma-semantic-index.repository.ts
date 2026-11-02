@@ -557,7 +557,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         totalMs: Date.now() - started,
       });
       throw new Error('Qdrant semantic retrieval is unavailable', {
-        cause: error,
+        cause,
       });
     }
     return (await this.searchPostgres(target, normalized)).map((row) =>

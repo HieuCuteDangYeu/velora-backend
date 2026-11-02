@@ -484,9 +484,16 @@ module.exports = {
   publishOffhostR2,
 };
 if (require.main === module)
-  main().catch(() => {
+  main().catch((error) => {
     console.error(
-      'Qdrant backup/recovery failed; maintenance and retained artifacts must be inspected (details redacted)',
+      JSON.stringify({
+        error: 'Qdrant backup/recovery failed',
+        code:
+          error && typeof error === 'object'
+            ? (error.code ?? error.$metadata?.httpStatusCode ?? error.name)
+            : 'unknown',
+        maintenanceOrSnapshotMayRemain: true,
+      }),
     );
     process.exitCode = 1;
   });

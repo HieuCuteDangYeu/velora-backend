@@ -221,7 +221,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       .update(`${input.job.reelId}\0${input.job.indexAttemptId}`)
       .digest('hex');
     const prefix = `reel-indexing/semantic-bundles/${scope}`;
-    const shards = [];
+    const shards: { key: string; sha256: string; count: number }[] = [];
     for (let offset = 0; offset < input.documents.length; offset += 128) {
       const documents = input.documents
         .slice(offset, offset + 128)
@@ -516,6 +516,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         throw new Error('Qdrant vector retrieval is required');
       const started = Date.now();
       let fallback = 'unavailable';
+      let cause: unknown;
       const timing = { qdrantMs: 0, sqlMs: 0 };
       const measured = async <T>(
         key: 'qdrantMs' | 'sqlMs',
@@ -537,6 +538,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         });
         return result.map((row) => this.toSearchResult(row));
       } catch (error) {
+        cause = error;
         fallback =
           error instanceof Error &&
           [

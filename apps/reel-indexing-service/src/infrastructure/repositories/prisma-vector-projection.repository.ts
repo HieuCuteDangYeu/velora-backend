@@ -724,7 +724,7 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         where: {
           reelId_generation: { reelId, generation: BigInt(generation) },
         },
-        select: { bundleKey: true },
+        select: { bundleKey: true, bundleSha256: true },
       });
       await tx.vectorProjection.updateMany({
         where: {

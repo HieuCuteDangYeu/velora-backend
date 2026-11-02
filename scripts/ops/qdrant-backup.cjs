@@ -492,6 +492,13 @@ if (require.main === module)
           error && typeof error === 'object'
             ? (error.code ?? error.$metadata?.httpStatusCode ?? error.name)
             : 'unknown',
+        detail:
+          error instanceof Error
+            ? error.message
+                .replace(/postgres(?:ql)?:\/\/\S+/giu, '[database URL]')
+                .replace(/https?:\/\/\S+/giu, '[service URL]')
+                .replace(process.env.R2_BUCKET_NAME || '\u0000', '[R2 bucket]')
+            : 'unknown',
         maintenanceOrSnapshotMayRemain: true,
       }),
     );

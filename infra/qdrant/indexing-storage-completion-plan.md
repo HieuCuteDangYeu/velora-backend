@@ -1,6 +1,6 @@
 # Indexing storage completion plan
 
-Status: implementation in progress, 2026-11-03. The user authorized implementation and specified no orchestration. PostgreSQL relocation and Qdrant read cutover are complete; the new Qdrant-only candidate writer is deployed and a canary passed. The final SQL-vector removal remains pending below. This plan supersedes the permanent dual-vector-storage end state in the earlier migration runbook. Existing rollback instructions remain applicable only while SQL vectors are populated.
+Status: storage implementation complete; final acceptance follow-up remains, 2026-11-03. The user authorized implementation and specified no orchestration. PostgreSQL relocation, Qdrant read/publication, R2 staging, cache cleanup, and final SQL-vector removal are deployed. The database/indexing canary, all-generation manifest parity, encrypted Qdrant backup/restore, and PostgreSQL restart checks passed. This plan supersedes the permanent dual-vector-storage end state in the earlier migration runbook.
 
 ## Outcome
 

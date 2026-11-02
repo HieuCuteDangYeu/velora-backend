@@ -183,28 +183,22 @@ describe('PrismaSemanticIndexRepository single-vector search', () => {
     jest.clearAllMocks();
   });
 
-  it('queries the canonical 1024-dimensional column with full model identity', async () => {
+  it('refuses SQL vector fallback when Qdrant is not configured', async () => {
     const repository = new PrismaSemanticIndexRepository(
       prisma as never,
       config as never,
     );
-    await repository.searchChunks({
-      queryEmbedding: Array.from(
-        { length: SEMANTIC_INDEX_EMBEDDING_DIMENSIONS },
-        () => 0.01,
-      ),
-      queryEmbeddingModel: embeddingIdentity.model,
-      queryEmbeddingVersion: embeddingIdentity.version,
-    });
-
-    const query = queries[0] as { strings: string[] };
-    const sql = query.strings.join('');
-    expect(sql).toContain('t."embedding"');
-    expect(sql).not.toContain('embeddingV2');
-    expect(sql.match(/"embeddingDimensions"/g)).toHaveLength(3);
-    expect(sql.match(/"embeddingModel"/g)).toHaveLength(3);
-    expect(sql.match(/"embeddingVersion"/g)).toHaveLength(3);
-    expect(transaction.$queryRaw).toHaveBeenCalledTimes(1);
+    await expect(
+      repository.searchChunks({
+        queryEmbedding: Array.from(
+          { length: SEMANTIC_INDEX_EMBEDDING_DIMENSIONS },
+          () => 0.01,
+        ),
+        queryEmbeddingModel: embeddingIdentity.model,
+        queryEmbeddingVersion: embeddingIdentity.version,
+      }),
+    ).rejects.toThrow('Qdrant vector retrieval is required');
+    expect(transaction.$queryRaw).not.toHaveBeenCalled();
   });
 
   it.each([384, 768])(
@@ -321,19 +315,15 @@ describe('PrismaSemanticIndexRepository single-vector persistence', () => {
     jest.clearAllMocks();
   });
 
-  it('persists only the canonical embedding column', async () => {
+  it('requires Qdrant publication before persisting a semantic candidate', async () => {
     const repository = new PrismaSemanticIndexRepository(
       prisma as never,
       config as never,
     );
-    await repository.persistCandidate(candidate());
-
-    const insert = transaction.$executeRaw.mock.calls
-      .map(([query]) => query as { strings?: string[] })
-      .find((query) => query.strings?.join('').includes('INSERT INTO'));
-    const sql = insert?.strings?.join('') ?? '';
-    expect(sql).toContain('"embedding", "embeddingProvider"');
-    expect(sql).not.toContain('embeddingV2');
+    await expect(repository.persistCandidate(candidate())).rejects.toThrow(
+      'Qdrant vector publication must be enabled',
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('rejects a document whose embedding model does not match BGE-M3', async () => {

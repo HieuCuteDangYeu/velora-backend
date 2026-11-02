@@ -306,7 +306,7 @@ export class PrismaIndexCheckpointRepository implements IIndexCheckpointReposito
         (!embedding || embedding.cacheKey !== record.cacheKey)
       )
         throw new Error('Embedding cache artifact entry is missing');
-      const vector = embedding?.embedding ?? record.embedding;
+      const vector = embedding?.embedding;
       if (!Array.isArray(vector)) return [];
       return {
         cacheKey: record.cacheKey,
@@ -363,7 +363,6 @@ export class PrismaIndexCheckpointRepository implements IIndexCheckpointReposito
             embeddingProvider: entry.embeddingProvider,
             embeddingModel: entry.embeddingModel,
             embeddingDimensions: entry.embeddingDimensions,
-            embedding: Prisma.DbNull,
             storageKey,
             sha256,
             offset: embeddings.indexOf(entry),

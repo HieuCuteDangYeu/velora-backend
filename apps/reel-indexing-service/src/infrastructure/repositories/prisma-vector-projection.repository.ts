@@ -63,15 +63,8 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     reelId: string,
     indexAttemptId: string,
     generation: bigint,
-    bundledVectors?: Map<string, number[]>,
+    bundledVectors: Map<string, number[]>,
   ) {
-    if (!bundledVectors) {
-      const projection = await tx.vectorProjection.findUnique({
-        where: { reelId_generation: { reelId, generation } },
-      });
-      if (projection?.bundleKey && projection.bundleSha256)
-        bundledVectors = await this.stagedVectors(projection);
-    }
     const points: ReturnType<typeof makePoint>[] = [];
     for (const [kind, table] of Object.entries(VECTOR_TABLES)) {
       const rows = await tx.$queryRaw<
@@ -84,14 +77,12 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
       points.push(
         ...rows.map((row) => {
           const record = row.record;
-          if (record.embedding === null || record.embedding === undefined) {
-            const vector = bundledVectors?.get(`${kind}:${String(record.id)}`);
-            if (!vector)
-              throw new Error(
-                'Vector staging artifact is missing a candidate embedding',
-              );
-            record.embedding = vector;
-          }
+          const vector = bundledVectors.get(`${kind}:${String(record.id)}`);
+          if (!vector)
+            throw new Error(
+              'Qdrant vector is missing for a semantic candidate',
+            );
+          record.embedding = vector;
           return makePoint(
             kind as keyof typeof VECTOR_TABLES,
             generation.toString(),
@@ -884,6 +875,8 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         });
       }
     } else if (!projection.revoked) {
+      if (!stagedVectors)
+        throw new Error('Qdrant recovery vectors are unavailable');
       const target = await this.target();
       const snapshot = await this.prisma.$transaction(
         (tx) =>

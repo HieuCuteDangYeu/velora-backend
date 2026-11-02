@@ -303,6 +303,120 @@ async function reconcile(projection, prisma, maxTasks) {
     complete: pending === 0 && unready[0].count === 0,
   };
 }
+async function verifyParity(prisma, projection, store) {
+  const target = await store.identity();
+  const collection = await prisma.vectorCollectionState.findUnique({
+    where: { collection: target.collection },
+  });
+  if (
+    !collection ||
+    collection.maintenance ||
+    collection.fingerprint !== target.fingerprint
+  )
+    throw new Error('Qdrant target is not certified in PostgreSQL');
+  const current = await prisma.vectorProjection.findMany({
+    where: { revoked: false },
+    orderBy: [{ reelId: 'asc' }, { generation: 'asc' }],
+    select: {
+      reelId: true,
+      indexAttemptId: true,
+      generation: true,
+      manifestHash: true,
+      pointCount: true,
+      readyAt: true,
+      readyCollection: true,
+      readyFingerprint: true,
+      readyEpoch: true,
+    },
+  });
+  const signature = (rows) =>
+    sha(
+      JSON.stringify(
+        rows.map((row) => ({
+          reelId: row.reelId,
+          attempt: row.indexAttemptId,
+          generation: row.generation.toString(),
+          manifestHash: row.manifestHash,
+          pointCount: row.pointCount,
+          readyAt: row.readyAt?.toISOString() ?? null,
+          collection: row.readyCollection,
+          fingerprint: row.readyFingerprint,
+          epoch: row.readyEpoch,
+        })),
+      ),
+    );
+  const before = signature(current);
+  let points = 0;
+  for (const row of current) {
+    if (
+      !row.readyAt ||
+      row.readyCollection !== target.collection ||
+      row.readyFingerprint !== target.fingerprint ||
+      row.readyEpoch !== collection.epoch
+    )
+      throw new Error('A current vector generation is not ready');
+    const candidate = await projection.loadCandidatePoints(
+      row.reelId,
+      row.indexAttemptId,
+      row.generation,
+    );
+    if (
+      candidate.hash !== row.manifestHash ||
+      candidate.points.length !== row.pointCount
+    )
+      throw new Error(
+        'A current vector generation failed manifest verification',
+      );
+    points += candidate.points.length;
+  }
+  const pending = await prisma.vectorProjectionTask.count({
+    where: { completedAt: null },
+  });
+  const unready = await prisma.$queryRaw`
+    SELECT count(*)::int AS count FROM "ReelDocument" d
+    LEFT JOIN "VectorProjection" p ON p."reelId"=d."reelId"
+      AND p."indexAttemptId"=d."indexAttemptId" AND NOT p.revoked
+    LEFT JOIN "VectorCollectionState" s ON s.collection=p."readyCollection"
+      AND s.epoch=p."readyEpoch" AND s.fingerprint=p."readyFingerprint"
+      AND NOT s.maintenance
+    WHERE d."isActive" AND (p."readyAt" IS NULL OR s.epoch IS NULL)
+  `;
+  const qdrant = await store.request(
+    `/collections/${store.collection}/points/count`,
+    'POST',
+    { exact: true },
+  );
+  const after = await prisma.vectorProjection.findMany({
+    where: { revoked: false },
+    orderBy: [{ reelId: 'asc' }, { generation: 'asc' }],
+    select: {
+      reelId: true,
+      indexAttemptId: true,
+      generation: true,
+      manifestHash: true,
+      pointCount: true,
+      readyAt: true,
+      readyCollection: true,
+      readyFingerprint: true,
+      readyEpoch: true,
+    },
+  });
+  const complete =
+    before === signature(after) &&
+    pending === 0 &&
+    unready[0].count === 0 &&
+    points === qdrant.count;
+  if (!complete) throw new Error('SQL and Qdrant vector parity is incomplete');
+  return {
+    complete,
+    candidates: current.length,
+    manifestsVerified: current.length,
+    qdrantPoints: qdrant.count,
+    vectorTasksPending: pending,
+    unreadyActiveCandidates: unready[0].count,
+    projectionFingerprint: before,
+  };
+}
 async function main(argv = process.argv.slice(2)) {
   const [command, ...rest] = argv;
   const args = argumentsFor(rest);
@@ -318,10 +432,11 @@ async function main(argv = process.argv.slice(2)) {
       'resume',
       'status',
       'metrics',
+      'verify-parity',
     ].includes(command)
   )
     throw new Error(
-      'Command: probe|initialize|enroll|export|import|reconcile|invalidate|status|metrics',
+      'Command: probe|initialize|enroll|export|import|reconcile|invalidate|status|metrics|verify-parity',
     );
   if (
     !args['target-label'] ||
@@ -431,6 +546,8 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (command === 'reconcile')
       result = await reconcile(projection, prisma, maxTasks);
+    if (command === 'verify-parity')
+      result = await verifyParity(prisma, projection, store);
     if (command === 'status' || command === 'metrics') {
       const pending = await prisma.vectorProjectionTask.count({
         where: { completedAt: null },
@@ -501,6 +618,7 @@ module.exports = {
   exportSnapshot,
   importSnapshot,
   reconcile,
+  verifyParity,
   main,
   targetFingerprint,
 };

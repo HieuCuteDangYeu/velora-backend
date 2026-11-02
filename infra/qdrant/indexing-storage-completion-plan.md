@@ -1,6 +1,6 @@
 # Indexing storage completion plan
 
-Status: proposed implementation plan, 2026-11-03. No migration or deletion is authorized by this document alone; execution follows the user's task authorization. This plan supersedes the permanent dual-vector-storage end state in the earlier migration runbook. Existing rollback instructions remain applicable only while SQL vectors are populated.
+Status: implementation in progress, 2026-11-03. The user authorized implementation and specified no orchestration. PostgreSQL relocation and Qdrant read cutover are complete; the new Qdrant-only candidate writer is deployed and a canary passed. The final SQL-vector removal remains pending below. This plan supersedes the permanent dual-vector-storage end state in the earlier migration runbook. Existing rollback instructions remain applicable only while SQL vectors are populated.
 
 ## Outcome
 
@@ -10,11 +10,13 @@ Do not move unrelated Aiven databases, introduce a new orchestration system, add
 
 ## Starting evidence and uncertainties
 
-The preceding session applied the projection schema, enrolled 180 candidates, observed 3,820 Qdrant points matching SQL row counts, and reconciled with zero pending tasks/unready active candidates. Both lanes ran image 30405eea with Qdrant reads, projection capture and publication enforcement. One scoped live RPC returned the same IDs as PostgreSQL and logged backend=qdrant. These are prior observations, not current acceptance evidence.
+On 2026-11-03, Aiven was dumped (83 MiB) and the same-hash copy stored off-host. The complete dump restored to a new PostgreSQL 18.6 + pgvector 0.8.7 ARM64 container with a non-superuser app role. Four semantic tables matched by count, active count, null-vector count and per-row JSON hash. The PostgreSQL target is a separate private service on the homelab because the shared postgres:18.6 container lacks pgvector; unrelated databases were left on the shared container. A fresh post-canary target dump is also stored off-host with matching SHA-256 `0bc9c78473957f57939b35c2a067dd86bdf6e6e55115deba5030953178ad277e8`.
 
-The detailed import dry run had not reported completion; its result must be recovered. SQL vector data remains in four semantic tables and in EmbeddingCacheEntry.embedding. Persisted drafts and workflow checkpoints need a vector-content audit. Two old PROCESSING attempts require explicit disposition. The legacy scraper writes semantic SQL directly. Qdrant backup/restore and broad retrieval/performance acceptance are not yet proven. infra/qdrant/rollout-status-20261101.md is a historical pre-cutover record and must not be treated as current status.
+Both indexing lanes run `velora-reel-indexing-qdrant:c0965e02` against `reel-indexing-postgres` with Qdrant reads, projection and publication required. Existing SQL and Qdrant manifests reconcile with zero pending/unready active projections. The exact Qdrant count and sum of all ready generations are 3,986. Twelve scoped RPC queries had p50 96.7 ms and p95 137.8 ms; an earlier same-query sample was 177 ms after relocation versus 1,089 ms against Aiven. This is suggestive, not a statistically rigorous benchmark.
 
-The current Compose definition uses postgres:18.6 with shared_buffers=256MB, max_connections=60, work_mem=8MB, effective_cache_size=768MB and a persistent volume. Recent observations show headroom but do not prove peak capacity or that pgvector is installed. Database relocation should address remote SQL round trips; it does not establish the cause of all retrieval latency.
+A new Reel reindex canary completed through Content and Indexing: its Reel document and two chunks have null SQL embeddings, a ready Qdrant generation, zero pending tasks, and its exact self-vector search returned rank 1 through the Qdrant RPC. Visual analysis was skipped under the existing Cloudflare quota, so this canary does not prove a newly created visual-scene point. The older two processing flags were reconciled with Content's completed/ready state; no attempts remain processing. All 4,350 legacy SQL embedding-cache vectors were moved to verified R2 batches, then those cache rows and objects were purged after the canary.
+
+An encrypted Qdrant snapshot was uploaded to the private R2 backup prefix, read back and checksum-verified. Its isolated restore recreated 3,986 points, validated 16 sample vectors and removed the temporary collection. The Aiven database and both SQL dumps remain available for comparison/rollback. The old detailed per-point SQL import dry run is superseded by current source/target hashes, per-generation reconciliation, live point retrieval checks and this restore.
 
 ## Scope and source bindings
 
@@ -89,7 +91,7 @@ Required acceptance:
 - Counts, complete point/payload/vector checksums, hierarchy/chronology, lexical/tag ranking, RRF scores and access results match the fixed baseline except documented equivalent-score ties. A newly changed embedding model uses its own identity baseline.
 - Repeat the same retrieval workload before/after: record p50/p95, SQL and Qdrant time, errors, fallback/degraded rate and resource peaks. Require no correctness regression and demonstrate a measured latency benefit before declaring performance requirements met. Record exact numerical targets before the run; if none are supplied, report relative p50/p95 improvement and flag lack of a product SLO.
 
-After these pass, take a verified fresh backup, then apply a reviewed forward migration dropping only the obsolete embedding columns/vector indexes, SQL vector cache and vector-only triggers/functions. Find dependencies first; do not use CASCADE. Keep semantic tables and lexical indexes. Remove pgvector only if nothing else in this database depends on it; never remove it from unrelated databases.
+After these pass, take a verified fresh backup, then apply a reviewed forward migration dropping only the obsolete embedding columns/vector indexes and SQL vector arrays. Find dependencies first; do not use CASCADE. Keep semantic tables and lexical indexes. The extension package may remain installed in the isolated Indexing database; the runtime no longer requires it.
 
 Remove vector-containing historical cache/checkpoint values with bounded cleanup only after active recovery dependencies have been migrated or resolved. Verify no persistent SQL embeddings remain, including JSON/binary checkpoints. Keep the offline comparison dump/export privately; it is historical evidence, not a synchronized live vector database.
 

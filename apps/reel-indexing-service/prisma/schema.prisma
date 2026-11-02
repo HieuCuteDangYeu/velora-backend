@@ -114,7 +114,6 @@ model EmbeddingCacheEntry {
   indexVersion        String
   chunkingVersion     String
   summaryVersion      String
-  embedding           Json?
   storageKey          String?
   sha256              String?
   offset              Int?
@@ -155,20 +154,20 @@ model AudioSegmentCheckpoint {
 }
 
 model ReelDocument {
-  rowId                  String                       @id @default(uuid())
+  rowId                  String                   @id @default(uuid())
   id                     String
   reelId                 String
   indexAttemptId         String
-  isActive               Boolean                      @default(false)
-  isLegacyImport         Boolean                      @default(false)
+  isActive               Boolean                  @default(false)
+  isLegacyImport         Boolean                  @default(false)
   userId                 String
   parentId               String?
   ordinal                Int
   title                  String?
-  description            String?                      @db.Text
-  evidenceText           String?                      @db.Text
-  retrievalText          String                       @db.Text
-  derivedSummary         String?                      @db.Text
+  description            String?                  @db.Text
+  evidenceText           String?                  @db.Text
+  retrievalText          String                   @db.Text
+  derivedSummary         String?                  @db.Text
   sourceSectionIds       String[]
   sourceSegmentIds       String[]
   sourceAudioArtifactIds String[]
@@ -184,7 +183,6 @@ model ReelDocument {
   sourceDurationMs       Int
   sourceOrientation      String
   sourceLengthClass      String
-  embedding              Unsupported("vector(1024)")?
   searchVector           Unsupported("tsvector")?
   embeddingProvider      String
   embeddingModel         String
@@ -194,8 +192,8 @@ model ReelDocument {
   indexVersion           String
   chunkingVersion        String
   summaryVersion         String
-  createdAt              DateTime                     @default(now())
-  updatedAt              DateTime                     @updatedAt
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   @@unique([id, indexAttemptId])
   @@unique([reelId, indexAttemptId])
@@ -206,20 +204,20 @@ model ReelDocument {
 }
 
 model ReelSection {
-  rowId                  String                       @id @default(uuid())
+  rowId                  String                   @id @default(uuid())
   id                     String
   reelId                 String
   indexAttemptId         String
-  isActive               Boolean                      @default(false)
-  isLegacyImport         Boolean                      @default(false)
+  isActive               Boolean                  @default(false)
+  isLegacyImport         Boolean                  @default(false)
   userId                 String
   parentId               String
   ordinal                Int
   title                  String?
-  description            String?                      @db.Text
-  evidenceText           String?                      @db.Text
-  retrievalText          String                       @db.Text
-  derivedSummary         String?                      @db.Text
+  description            String?                  @db.Text
+  evidenceText           String?                  @db.Text
+  retrievalText          String                   @db.Text
+  derivedSummary         String?                  @db.Text
   sourceSectionIds       String[]
   sourceSegmentIds       String[]
   sourceAudioArtifactIds String[]
@@ -235,7 +233,6 @@ model ReelSection {
   sourceDurationMs       Int
   sourceOrientation      String
   sourceLengthClass      String
-  embedding              Unsupported("vector(1024)")?
   searchVector           Unsupported("tsvector")?
   embeddingProvider      String
   embeddingModel         String
@@ -245,8 +242,8 @@ model ReelSection {
   indexVersion           String
   chunkingVersion        String
   summaryVersion         String
-  createdAt              DateTime                     @default(now())
-  updatedAt              DateTime                     @updatedAt
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   @@unique([id, indexAttemptId])
   @@index([reelId, isActive])
@@ -256,20 +253,20 @@ model ReelSection {
 }
 
 model ReelChunk {
-  rowId                  String                       @id @default(uuid())
+  rowId                  String                   @id @default(uuid())
   id                     String
   reelId                 String
   indexAttemptId         String
-  isActive               Boolean                      @default(false)
-  isLegacyImport         Boolean                      @default(false)
+  isActive               Boolean                  @default(false)
+  isLegacyImport         Boolean                  @default(false)
   userId                 String
   parentId               String
   ordinal                Int
   title                  String?
-  description            String?                      @db.Text
-  evidenceText           String?                      @db.Text
-  retrievalText          String                       @db.Text
-  derivedSummary         String?                      @db.Text
+  description            String?                  @db.Text
+  evidenceText           String?                  @db.Text
+  retrievalText          String                   @db.Text
+  derivedSummary         String?                  @db.Text
   sourceSectionIds       String[]
   sourceSegmentIds       String[]
   sourceAudioArtifactIds String[]
@@ -285,7 +282,6 @@ model ReelChunk {
   sourceDurationMs       Int
   sourceOrientation      String
   sourceLengthClass      String
-  embedding              Unsupported("vector(1024)")?
   searchVector           Unsupported("tsvector")?
   embeddingProvider      String
   embeddingModel         String
@@ -295,8 +291,8 @@ model ReelChunk {
   indexVersion           String
   chunkingVersion        String
   summaryVersion         String
-  createdAt              DateTime                     @default(now())
-  updatedAt              DateTime                     @updatedAt
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   @@unique([id, indexAttemptId])
   @@index([reelId, isActive])
@@ -306,20 +302,20 @@ model ReelChunk {
 }
 
 model ReelVisualScene {
-  rowId                  String                       @id @default(uuid())
+  rowId                  String                   @id @default(uuid())
   id                     String
   reelId                 String
   indexAttemptId         String
-  isActive               Boolean                      @default(false)
-  isLegacyImport         Boolean                      @default(false)
+  isActive               Boolean                  @default(false)
+  isLegacyImport         Boolean                  @default(false)
   userId                 String
   parentId               String
   ordinal                Int
   title                  String?
-  description            String?                      @db.Text
-  evidenceText           String?                      @db.Text
-  retrievalText          String                       @db.Text
-  derivedSummary         String?                      @db.Text
+  description            String?                  @db.Text
+  evidenceText           String?                  @db.Text
+  retrievalText          String                   @db.Text
+  derivedSummary         String?                  @db.Text
   sourceSectionIds       String[]
   sourceSegmentIds       String[]
   sourceAudioArtifactIds String[]
@@ -335,7 +331,6 @@ model ReelVisualScene {
   sourceDurationMs       Int
   sourceOrientation      String
   sourceLengthClass      String
-  embedding              Unsupported("vector(1024)")?
   searchVector           Unsupported("tsvector")?
   embeddingProvider      String
   embeddingModel         String
@@ -345,8 +340,8 @@ model ReelVisualScene {
   indexVersion           String
   chunkingVersion        String
   summaryVersion         String
-  createdAt              DateTime                     @default(now())
-  updatedAt              DateTime                     @updatedAt
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
 
   @@unique([id, indexAttemptId])
   @@index([reelId, isActive])

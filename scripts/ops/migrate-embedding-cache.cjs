@@ -43,10 +43,12 @@ async function main(argv = process.argv.slice(2)) {
   try {
     for (;;) {
       const rows = await prisma.embeddingCacheEntry.findMany({
-        where: { embedding: { not: Prisma.DbNull } },
+        where: {
+          embedding: { not: Prisma.DbNull },
+          ...(cursor ? { cacheKey: { gt: cursor } } : {}),
+        },
         orderBy: { cacheKey: 'asc' },
         take: BATCH,
-        ...(cursor ? { cursor: { cacheKey: cursor }, skip: 1 } : {}),
       });
       if (!rows.length) break;
       const entries = rows.map((row) => ({

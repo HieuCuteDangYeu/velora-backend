@@ -425,10 +425,15 @@ async function verifyRestore(args, password) {
     const exists = await store
       .request(`/collections/${collection}/exists`, 'GET')
       .catch(() => ({ exists: false }));
-    if (exists.exists)
-      await store
-        .request(`/collections/${collection}`, 'DELETE')
-        .catch(() => undefined);
+    if (exists.exists) {
+      await store.request(`/collections/${collection}`, 'DELETE');
+      const remaining = await store.request(
+        `/collections/${collection}/exists`,
+        'GET',
+      );
+      if (remaining.exists)
+        throw new Error('Temporary restore collection cleanup failed');
+    }
   }
 }
 async function main() {

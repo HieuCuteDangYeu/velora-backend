@@ -18,7 +18,7 @@ import {
 } from '@indexing/domain/services/reel-vector-manifest';
 import type { SemanticIndexCandidate } from '@indexing/domain/interfaces/semantic-index.repository.interface';
 import { PrismaService } from '@indexing/infrastructure/prisma/prisma.service';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   Prisma,
@@ -712,7 +712,7 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
     token?: string,
   ): Promise<void> {
     if (!generation || !token) return;
-    const stagedBundle = await this.prisma.$transaction(async (tx) => {
+    const cleanup = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${reelId}))`;
       await this.assertOwner(tx, {
         reelId,
@@ -726,6 +726,26 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
         },
         select: { bundleKey: true, bundleSha256: true },
       });
+      const stableIds: string[] = [];
+      for (const table of Object.values(VECTOR_TABLES)) {
+        const rows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+          SELECT "id" FROM ${Prisma.raw(`"${table}"`)}
+          WHERE "reelId" = ${reelId} AND "indexAttemptId" = ${indexAttemptId}
+        `);
+        stableIds.push(...rows.map((row) => row.id));
+      }
+      const cachedArtifacts = stableIds.length
+        ? await tx.embeddingCacheEntry.findMany({
+            where: { stableItemId: { in: stableIds } },
+            select: { cacheKey: true, storageKey: true },
+          })
+        : [];
+      if (cachedArtifacts.length)
+        await tx.embeddingCacheEntry.deleteMany({
+          where: {
+            cacheKey: { in: cachedArtifacts.map((entry) => entry.cacheKey) },
+          },
+        });
       await tx.vectorProjection.updateMany({
         where: {
           reelId,
@@ -742,14 +762,37 @@ export class PrismaVectorProjectionRepository implements ISemanticPublication {
           bundleSha256: null,
         },
       });
-      return projection.bundleKey && projection.bundleSha256
-        ? {
-            bundleKey: projection.bundleKey,
-            bundleSha256: projection.bundleSha256,
-          }
-        : undefined;
+      return {
+        bundle:
+          projection.bundleKey && projection.bundleSha256
+            ? {
+                bundleKey: projection.bundleKey,
+                bundleSha256: projection.bundleSha256,
+              }
+            : undefined,
+        cachedArtifacts,
+      };
     });
-    if (stagedBundle) await this.deleteStagedBundle(stagedBundle);
+    if (cleanup.bundle) await this.deleteStagedBundle(cleanup.bundle);
+    for (const key of new Set(
+      cleanup.cachedArtifacts.flatMap((entry) =>
+        entry.storageKey ? [entry.storageKey] : [],
+      ),
+    )) {
+      if (
+        !(await this.prisma.embeddingCacheEntry.count({
+          where: { storageKey: key },
+        }))
+      ) {
+        try {
+          await this.artifacts?.deleteArtifact(key);
+        } catch {
+          new Logger(PrismaVectorProjectionRepository.name).warn(
+            'embedding_cache_artifact_cleanup_pending',
+          );
+        }
+      }
+    }
   }
   async release(
     reelId: string,

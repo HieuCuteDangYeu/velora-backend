@@ -116,12 +116,6 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
     if (!this.projections?.enabled)
       throw new Error('Qdrant vector publication must be enabled');
     const staged = await this.stageVectorBundle(input);
-    const cacheFiles = await this.prisma.embeddingCacheEntry.findMany({
-      where: {
-        stableItemId: { in: input.documents.map((document) => document.id) },
-      },
-      select: { storageKey: true },
-    });
 
     await this.prisma.$transaction(async (transaction) => {
       await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.job.reelId}))`;
@@ -183,31 +177,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         input.job.indexAttemptId,
         { key: staged.key, sha256: staged.sha256, candidate: input },
       );
-      await transaction.embeddingCacheEntry.deleteMany({
-        where: {
-          stableItemId: { in: input.documents.map((document) => document.id) },
-        },
-      });
     });
-    for (const key of new Set(
-      cacheFiles.flatMap((entry) =>
-        entry.storageKey ? [entry.storageKey] : [],
-      ),
-    )) {
-      if (
-        !(await this.prisma.embeddingCacheEntry.count({
-          where: { storageKey: key },
-        }))
-      ) {
-        try {
-          await this.artifacts!.deleteArtifact(key);
-        } catch {
-          new Logger(PrismaSemanticIndexRepository.name).warn(
-            'embedding_cache_artifact_cleanup_pending',
-          );
-        }
-      }
-    }
   }
 
   private async stageVectorBundle(

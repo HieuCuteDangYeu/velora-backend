@@ -10,6 +10,13 @@ const {
   PrismaVectorProjectionRepository,
 } = require('../../apps/reel-indexing-service/src/infrastructure/repositories/prisma-vector-projection.repository');
 const { argumentsFor, targetFingerprint } = require('./reel-qdrant.cjs');
+const {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} = require('@aws-sdk/client-s3');
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const { resolve, join, basename } = require('node:path');
@@ -106,34 +113,118 @@ async function rotate(directory, keep) {
     .reverse();
   for (const name of names.slice(keep)) await fs.unlink(join(directory, name));
 }
+function r2Client() {
+  const accountId = process.env.R2_ACCOUNT_ID;
+  const bucket = process.env.R2_BUCKET_NAME;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  if (!accountId || !bucket || !accessKeyId || !secretAccessKey)
+    throw new Error('Private R2 backup access is not configured');
+  return {
+    bucket,
+    client: new S3Client({
+      region: 'auto',
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId, secretAccessKey },
+      forcePathStyle: true,
+    }),
+  };
+}
+function backupPrefix(value) {
+  if (
+    typeof value !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9/_-]{0,180}$/.test(value) ||
+    value.split('/').some((part) => !part || part === '.' || part === '..')
+  )
+    throw new Error('Invalid off-host R2 prefix');
+  return `${value.replace(/\/+$/, '')}/`;
+}
+async function publishOffhostR2(client, bucket, prefix, name, bytes) {
+  const key = `${prefix}${name}`;
+  await client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: bytes,
+      ContentType: 'application/octet-stream',
+      CacheControl: 'no-store',
+      Metadata: { sha256: digest(bytes) },
+    }),
+  );
+  const response = await client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+  );
+  if (!response.Body) throw new Error('Off-host R2 readback failed');
+  const readback = Buffer.from(await response.Body.transformToByteArray());
+  if (digest(readback) !== digest(bytes))
+    throw new Error('Off-host R2 checksum failed');
+  let continuationToken;
+  const keys = [];
+  do {
+    const page = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    keys.push(
+      ...(page.Contents ?? [])
+        .map((item) => item.Key)
+        .filter(
+          (item) =>
+            typeof item === 'string' &&
+            /^velora-qdrant-\d{13}-[a-f0-9-]+\.vqb$/.test(basename(item)),
+        ),
+    );
+    continuationToken = page.IsTruncated
+      ? page.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+  keys.sort().reverse();
+  for (const old of keys.slice(7))
+    await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: old }));
+  return { key, encryptedSha256: digest(readback) };
+}
 async function backup(prisma, projection, store, args, password) {
+  const remotePrefix = args['offhost-r2-prefix']
+    ? backupPrefix(args['offhost-r2-prefix'])
+    : undefined;
   if (
     !args.directory ||
-    !args['offhost-directory'] ||
+    (!remotePrefix && !args['offhost-directory']) ||
     !args['sql-backup-proof']
   )
     throw new Error(
-      'Explicit local/offhost directories and SQL backup proof required',
+      'Explicit local/offhost destination and SQL backup proof required',
     );
-  const directory = resolve(args.directory),
-    offhost = resolve(args['offhost-directory']);
-  if (directory === offhost)
-    throw new Error('Offhost destination must be separate');
+  const directory = resolve(args.directory);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  const offhostStat = await fs.stat(offhost),
-    localStat = await fs.stat(directory);
   const localTest =
     args['local-test'] === 'true' &&
     ['127.0.0.1', 'localhost', '[::1]'].includes(
       new URL(process.env.QDRANT_URL).hostname,
     );
-  if (
-    !offhostStat.isDirectory() ||
-    (!localTest &&
-      (offhostStat.dev === localStat.dev ||
-        args['offhost-proof'] !== 'VERIFIED_REMOTE_MOUNT_AND_ACCESS'))
-  )
-    throw new Error('Offhost mount/access proof missing');
+  let offhost;
+  let r2;
+  if (remotePrefix) {
+    if (args['offhost-proof'] !== 'VERIFIED_R2_BUCKET_ACCESS')
+      throw new Error('Offhost R2 access proof missing');
+    r2 = r2Client();
+  } else {
+    offhost = resolve(args['offhost-directory']);
+    if (directory === offhost)
+      throw new Error('Offhost destination must be separate');
+    const offhostStat = await fs.stat(offhost);
+    const localStat = await fs.stat(directory);
+    if (
+      !offhostStat.isDirectory() ||
+      (!localTest &&
+        (offhostStat.dev === localStat.dev ||
+          args['offhost-proof'] !== 'VERIFIED_REMOTE_MOUNT_AND_ACCESS'))
+    )
+      throw new Error('Offhost mount/access proof missing');
+  }
   const sqlProofBytes = await boundedRead(
     args['sql-backup-proof'],
     1024 * 1024,
@@ -159,6 +250,11 @@ async function backup(prisma, projection, store, args, password) {
     'POST',
   );
   const bytes = await download(store, snapshot.name);
+  const pointCount = await store.request(
+    '/collections/' + store.collection + '/points/count',
+    'POST',
+    { exact: true },
+  );
   const manifest = {
     version: 1,
     identity,
@@ -167,6 +263,7 @@ async function backup(prisma, projection, store, args, password) {
       sha256: digest(bytes),
       bytes: bytes.length,
     },
+    pointCount: pointCount.count,
     aliases: await store.request('/aliases', 'GET'),
     configuration: await store.request(
       `/collections/${store.collection}`,
@@ -191,14 +288,29 @@ async function backup(prisma, projection, store, args, password) {
     mode: 0o600,
   });
   // Publish only a complete encrypted archive; verify readback before rotation or snapshot deletion.
-  const temporary = join(offhost, `.${name}.partial`);
-  await fs.writeFile(temporary, encrypted, { flag: 'wx', mode: 0o600 });
-  if (digest(await boundedRead(temporary)) !== digest(encrypted))
-    throw new Error('Offhost readback checksum failed');
-  await fs.link(temporary, join(offhost, name));
-  await fs.unlink(temporary);
+  let offhostResult;
+  if (remotePrefix) {
+    offhostResult = await publishOffhostR2(
+      r2.client,
+      r2.bucket,
+      remotePrefix,
+      name,
+      encrypted,
+    );
+  } else {
+    const temporary = join(offhost, `.${name}.partial`);
+    await fs.writeFile(temporary, encrypted, { flag: 'wx', mode: 0o600 });
+    if (digest(await boundedRead(temporary)) !== digest(encrypted))
+      throw new Error('Offhost readback checksum failed');
+    await fs.link(temporary, join(offhost, name));
+    await fs.unlink(temporary);
+    offhostResult = {
+      key: join(offhost, name),
+      encryptedSha256: digest(encrypted),
+    };
+  }
   await rotate(directory, 3);
-  await rotate(offhost, 7);
+  if (!remotePrefix) await rotate(offhost, 7);
   await store.request(
     `/collections/${store.collection}/snapshots/${encodeURIComponent(snapshot.name)}?wait=true`,
     'DELETE',
@@ -206,6 +318,7 @@ async function backup(prisma, projection, store, args, password) {
   return {
     name,
     encryptedSha256: digest(encrypted),
+    offhostLocation: offhostResult.key,
     offhostVerified: !localTest,
     localSimulation: localTest,
   };
@@ -255,11 +368,74 @@ async function restore(projection, store, args, password) {
       'Resume recovery then replay/reconcile SQL before enabling publication or reads',
   };
 }
+async function verifyRestore(args, password) {
+  const archive = decrypt(await boundedRead(args.archive), password);
+  const bytes = Buffer.from(archive.snapshot, 'base64');
+  if (
+    archive.manifest?.version !== 1 ||
+    !Number.isInteger(archive.manifest.pointCount) ||
+    bytes.length > MAX_SNAPSHOT ||
+    bytes.length !== archive.manifest.snapshot.bytes ||
+    digest(bytes) !== archive.manifest.snapshot.sha256
+  )
+    throw new Error('Backup snapshot manifest or checksum is invalid');
+  const collection = `restore_verify_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const config = new ConfigService({
+    ...process.env,
+    QDRANT_COLLECTION: collection,
+  });
+  const store = new QdrantReelVectorStoreAdapter(config);
+  try {
+    await store.restoreSnapshot(bytes);
+    const count = await store.request(
+      `/collections/${collection}/points/count`,
+      'POST',
+      { exact: true },
+    );
+    if (count.count !== archive.manifest.pointCount)
+      throw new Error('Restored collection point count mismatch');
+    const sample = await store.request(
+      `/collections/${collection}/points/scroll`,
+      'POST',
+      {
+        limit: Math.min(16, count.count),
+        with_payload: true,
+        with_vector: true,
+      },
+    );
+    if (
+      !Array.isArray(sample.points) ||
+      sample.points.length !== Math.min(16, count.count) ||
+      sample.points.some(
+        (point) =>
+          !point.payload ||
+          !Array.isArray(point.vector) ||
+          point.vector.length !== 1024 ||
+          point.vector.some((value) => !Number.isFinite(value)),
+      )
+    )
+      throw new Error('Restored collection sample validation failed');
+    return {
+      restoredCollection: collection,
+      restoredPointCount: count.count,
+      sampledPoints: sample.points.length,
+      cleanup: 'temporary collection deleted',
+    };
+  } finally {
+    const exists = await store
+      .request(`/collections/${collection}/exists`, 'GET')
+      .catch(() => ({ exists: false }));
+    if (exists.exists)
+      await store
+        .request(`/collections/${collection}`, 'DELETE')
+        .catch(() => undefined);
+  }
+}
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const args = argumentsFor(rest);
   if (
-    !['backup', 'restore'].includes(command) ||
+    !['backup', 'restore', 'verify-restore'].includes(command) ||
     !args['target-label'] ||
     args.confirm !== `QDRANT_${args['target-label']}`
   )
@@ -267,6 +443,14 @@ async function main() {
   const password = await boundedRead(args['encryption-key-file'], 4096);
   if (password.length < 32)
     throw new Error('Encryption key must contain at least 32 random bytes');
+  if (command === 'verify-restore') {
+    const result = await verifyRestore(args, password);
+    password.fill(0);
+    console.log(
+      JSON.stringify({ command, target: args['target-label'], result }),
+    );
+    return;
+  }
   if (!process.env.REEL_INDEXING_DATABASE_URL)
     throw new Error('Owner-service SQL target required');
   const prisma = new PrismaClient();
@@ -278,9 +462,10 @@ async function main() {
     store,
   );
   try {
-    const result = await (command === 'backup'
-      ? backup(prisma, projection, store, args, password)
-      : restore(projection, store, args, password));
+    let result;
+    if (command === 'backup')
+      result = await backup(prisma, projection, store, args, password);
+    else result = await restore(projection, store, args, password);
     console.log(
       JSON.stringify({ command, target: args['target-label'], result }),
     );
@@ -289,7 +474,15 @@ async function main() {
     await prisma.$disconnect();
   }
 }
-module.exports = { encrypt, decrypt, backup, restore, rotate };
+module.exports = {
+  encrypt,
+  decrypt,
+  backup,
+  restore,
+  verifyRestore,
+  rotate,
+  publishOffhostR2,
+};
 if (require.main === module)
   main().catch(() => {
     console.error(

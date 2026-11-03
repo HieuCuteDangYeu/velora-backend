@@ -5,6 +5,8 @@ import * as http2 from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { Logger } from '@nestjs/common';
+
 import { ApnsVoipGateway } from './apns-voip.gateway';
 
 jest.mock('node:http2', () => {
@@ -225,6 +227,31 @@ describe('ApnsVoipGateway', () => {
     request.emit('end');
 
     await expect(sending).rejects.toMatchObject({ code: 'apns/Unregistered' });
+  });
+
+  it('logs the APNs rejection reason without the device token', async () => {
+    configureApnsCredentials();
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const request = Object.assign(new EventEmitter(), {
+      setEncoding: jest.fn(),
+      end: jest.fn(),
+    });
+    const session = createSession(request);
+    jest
+      .mocked(http2.connect)
+      .mockReturnValue(session as unknown as http2.ClientHttp2Session);
+
+    const sending = createGateway().send(sendInput());
+    request.emit('response', { ':status': 403 });
+    request.emit('data', JSON.stringify({ reason: 'InvalidProviderToken' }));
+    request.emit('end');
+
+    await expect(sending).rejects.toMatchObject({ code: 'apns/http_error' });
+    expect(warn).toHaveBeenCalledWith(
+      'APNs VoIP push rejected: status=403 reason=InvalidProviderToken environment=development topic=com.example.velora.voip',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('device-token');
+    warn.mockRestore();
   });
 
   it('rejects an unsafe APNs timeout configuration', async () => {

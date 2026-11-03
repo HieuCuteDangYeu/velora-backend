@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { createSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import * as http2 from 'node:http2';
@@ -34,6 +34,7 @@ const APNS_HOSTS: Record<PushDeliveryEnvironment, string> = {
 
 @Injectable()
 export class ApnsVoipGateway implements IApnsVoipGateway {
+  private readonly logger = new Logger(ApnsVoipGateway.name);
   private cachedJwt?: {
     token: string;
     expiresAt: number;
@@ -128,6 +129,7 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
           return;
         }
 
+        this.logRejection(statusCode, responseBody, input);
         fail(this.buildApnsError(statusCode, responseBody));
       });
       request.on('close', () => {
@@ -147,6 +149,34 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
 
       request.end(body);
     });
+  }
+
+  /**
+   * Apple's `reason` is a fixed enum string such as `BadDeviceToken` or
+   * `InvalidProviderToken`; without it every rejection looks the same. The
+   * device token and payload are never logged.
+   */
+  private logRejection(
+    statusCode: number,
+    responseBody: string,
+    input: SendApnsVoipPushInput,
+  ) {
+    let reason = 'unknown';
+    try {
+      const parsed = JSON.parse(responseBody) as { reason?: unknown };
+      if (
+        typeof parsed.reason === 'string' &&
+        /^[A-Za-z]{1,64}$/.test(parsed.reason)
+      ) {
+        reason = parsed.reason;
+      }
+    } catch {
+      // Keep the placeholder; the status code is still useful.
+    }
+
+    this.logger.warn(
+      `APNs VoIP push rejected: status=${statusCode} reason=${reason} environment=${input.deliveryEnvironment} topic=${input.bundleId}.voip`,
+    );
   }
 
   private buildApnsError(statusCode: number, responseBody: string) {

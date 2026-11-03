@@ -36,17 +36,35 @@ async function publishImportedHls({
       },
     });
   });
-  await cdn.uploadHlsDirectory(outputDir);
-  // Variant playlists and the master keep relative references inside one immutable prefix.
-  for (const file of prepared.validation.files.filter(
-    ({ path: name }) => name.endsWith('.m3u8') || name === 'thumbnail.jpg',
-  )) {
+  let cdnSucceeded = false;
+  if (cdn) {
+    try {
+      await cdn.uploadHlsDirectory(outputDir);
+      cdnSucceeded = true;
+    } catch (err) {
+      console.warn(
+        `[CDN WARNING] TikTok CDN upload failed (${err.message}), falling back to R2 direct storage`,
+      );
+    }
+  }
+  // If CDN succeeded, only upload playlists and thumbnail to R2 (segments are on TikTok CDN).
+  // If CDN failed or was omitted, upload all files (including .ts segments) directly to R2.
+  const filesToUpload = cdnSucceeded
+    ? prepared.validation.files.filter(
+        ({ path: name }) => name.endsWith('.m3u8') || name === 'thumbnail.jpg',
+      )
+    : prepared.validation.files;
+
+  for (const file of filesToUpload) {
+    const contentType = file.path.endsWith('.m3u8')
+      ? 'application/vnd.apple.mpegurl'
+      : file.path.endsWith('.ts')
+        ? 'video/mp2t'
+        : 'image/jpeg';
     await storage.put(
       `${prefix}/${file.path}`,
       fs.readFileSync(path.join(outputDir, file.path)),
-      file.path.endsWith('.m3u8')
-        ? 'application/vnd.apple.mpegurl'
-        : 'image/jpeg',
+      contentType,
     );
   }
   await validate({ storage, reelId: reel.id, prefix });
@@ -56,6 +74,7 @@ async function publishImportedHls({
     const result = await tx.reel.updateMany({
       where: expected,
       data: {
+        mediaAttemptId: attemptId,
         hlsMasterKey: `${prefix}/master.m3u8`,
         processingStage: 'INDEX_QUEUED',
         sourceDurationMs: source.durationMs,
@@ -64,7 +83,7 @@ async function publishImportedHls({
         sourceHeight: source.height,
         sourceFps: source.fps,
         sourceBitrateKbps: source.bitrateKbps,
-        sourceHasAudio: source.hasAudio,
+        sourceHasAudio: false, // Scraped imports use metadata-only route unless an audio transcription manifest is staged
         sourceRotation: source.rotation,
         sourceOrientation: classification.orientation,
         sourceLengthClass: classification.mediaClass,

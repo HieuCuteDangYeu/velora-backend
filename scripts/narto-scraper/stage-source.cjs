@@ -96,6 +96,77 @@ async function stageSource(
       { redirects: redirects - 1, maxBytes },
     );
   }
+  if (response.statusCode === 206) {
+    const rangeHeader = response.headers['content-range'];
+    const match = rangeHeader
+      ? /^bytes (\d+)-(\d+)\/(\d+)$/.exec(rangeHeader)
+      : null;
+    if (!match) {
+      response.destroy();
+      throw new Error('Invalid content-range header for 206 response');
+    }
+    const start = Number(match[1]);
+    const total = Number(match[3]);
+    if (total > maxBytes || start !== 0) {
+      response.destroy();
+      throw new Error(
+        'Import source exceeded size limit or invalid start offset',
+      );
+    }
+    const outStream = fs.createWriteStream(destination, {
+      flags: 'wx',
+      mode: 0o600,
+    });
+    let bytesWritten = 0;
+    try {
+      for await (const chunk of response) {
+        bytesWritten += chunk.length;
+        if (bytesWritten > maxBytes)
+          throw new Error('Import source exceeded size limit');
+        outStream.write(chunk);
+      }
+      let currentOffset = bytesWritten;
+      while (currentOffset < total) {
+        const nextEnd = Math.min(
+          currentOffset + 4 * 1024 * 1024 - 1,
+          total - 1,
+        );
+        const nextRes = await new Promise((resolve, reject) => {
+          const req = https.get(
+            url,
+            {
+              lookup: publicLookup,
+              signal: AbortSignal.timeout(180_000),
+              headers: {
+                'User-Agent': 'Velora-Importer',
+                Range: `bytes=${currentOffset}-${nextEnd}`,
+              },
+            },
+            resolve,
+          );
+          req.on('error', () =>
+            reject(new Error('Import source chunk download failed')),
+          );
+        });
+        if (nextRes.statusCode !== 206) {
+          nextRes.destroy();
+          throw new Error(
+            `Unexpected status ${nextRes.statusCode} during chunk download`,
+          );
+        }
+        for await (const chunk of nextRes) {
+          bytesWritten += chunk.length;
+          if (bytesWritten > maxBytes)
+            throw new Error('Import source exceeded size limit');
+          outStream.write(chunk);
+        }
+        currentOffset = bytesWritten;
+      }
+    } finally {
+      outStream.end();
+    }
+    return { bytes: bytesWritten };
+  }
   if (
     response.statusCode !== 200 ||
     Number(response.headers['content-length'] || 0) > maxBytes

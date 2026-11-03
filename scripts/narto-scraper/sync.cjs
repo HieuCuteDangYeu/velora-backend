@@ -190,15 +190,33 @@ async function indexReelsMetadata(reels, options) {
       console.log(`  [DRY-RUN] Would queue indexing for Reel ${reel.id}`);
       continue;
     }
-    const result = await publishRmqMessage({
-      queue: 'content_queue',
-      pattern: 'content.reindex_reel',
-      payload: { reelId: reel.id },
-      timeoutMs: 30_000,
-    });
-    if (!result?.queued || !result.indexAttemptId)
+    let queued = false;
+    let indexAttemptId = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const result = await publishRmqMessage({
+          queue: 'content_queue',
+          pattern: 'content.reindex_reel',
+          payload: { reelId: reel.id },
+          timeoutMs: 30_000,
+        });
+        if (result?.queued && result.indexAttemptId) {
+          queued = true;
+          indexAttemptId = result.indexAttemptId;
+          break;
+        }
+      } catch (err) {
+        if (attempt === 3) throw err;
+        console.warn(
+          `  [RETRY] Retrying index queue for Reel ${reel.id} (attempt ${attempt}/3): ${err.message}`,
+        );
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    if (!queued || !indexAttemptId)
       throw new Error(`Reel ${reel.id} could not be queued for indexing`);
-    console.log(`  [INDEX QUEUED] Reel ${reel.id} -> ${result.indexAttemptId}`);
+    console.log(`  [INDEX QUEUED] Reel ${reel.id} -> ${indexAttemptId}`);
+    await new Promise((r) => setTimeout(r, 300));
   }
 }
 

@@ -341,28 +341,52 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
   ): Promise<void> {
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 
-    await this.runProcess(
-      'ffmpeg',
-      this.ffmpegPath,
-      buildThumbnailArguments({
-        inputPath,
-        outputPath,
-        timestampSeconds: Math.max(0, timestampSeconds),
-        crop: options.crop,
-        trim: options.trim,
-      }),
-      {
-        signal: options.signal,
-        timeoutMs:
-          options.timeoutMs ??
-          this.getPositiveInt(
-            'MEDIA_THUMBNAIL_TIMEOUT_MS',
-            120_000,
-            1000,
-            600_000,
-          ),
-      },
-    );
+    const extractAt = async (atSeconds: number) => {
+      await this.runProcess(
+        'ffmpeg',
+        this.ffmpegPath,
+        buildThumbnailArguments({
+          inputPath,
+          outputPath,
+          timestampSeconds: Math.max(0, atSeconds),
+          crop: options.crop,
+          trim: options.trim,
+        }),
+        {
+          signal: options.signal,
+          timeoutMs:
+            options.timeoutMs ??
+            this.getPositiveInt(
+              'MEDIA_THUMBNAIL_TIMEOUT_MS',
+              120_000,
+              1000,
+              600_000,
+            ),
+        },
+      );
+    };
+
+    await extractAt(timestampSeconds);
+
+    // Seeking past the last frame exits 0 without writing a file. Screen
+    // recordings of a still screen are one frame inside a container that
+    // claims seconds, so retry from the very first frame before giving up.
+    if (!fs.existsSync(outputPath) && timestampSeconds > 0) {
+      this.logger.warn(
+        `ffmpeg wrote no thumbnail at ${timestampSeconds}s; retrying from the first frame`,
+      );
+      await extractAt(0);
+    }
+
+    if (!fs.existsSync(outputPath)) {
+      throw new MediaProcessError(
+        'ffmpeg produced no thumbnail frame',
+        'ffmpeg',
+        0,
+        null,
+        '',
+      );
+    }
   }
 
   private async runProcess(

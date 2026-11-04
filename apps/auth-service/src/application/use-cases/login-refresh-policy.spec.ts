@@ -52,14 +52,21 @@ describe('Login rolling refresh policy', () => {
               providerId: user.providerId,
               picture: '',
             });
-      const access = jwt.verify<{ exp: number; iat: number }>(
-        tokens.accessToken,
-      );
-      const refresh = jwt.verify<{ exp: number; iat: number; jti: string }>(
-        tokens.refreshToken,
-      );
+      const access = jwt.verify<{
+        exp: number;
+        iat: number;
+        tokenType: string;
+      }>(tokens.accessToken);
+      const refresh = jwt.verify<{
+        exp: number;
+        iat: number;
+        jti: string;
+        tokenType: string;
+      }>(tokens.refreshToken);
       expect(access.exp - access.iat).toBe(15 * 60);
+      expect(access.tokenType).toBe('access');
       expect(refresh.exp - refresh.iat).toBe(90 * 86400);
+      expect(refresh.tokenType).toBe('refresh');
       expect(refresh.jti).toEqual(expect.any(String));
       expect(repository.createRefreshToken).toHaveBeenCalledWith(
         user.id,

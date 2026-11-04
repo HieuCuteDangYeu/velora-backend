@@ -11,7 +11,11 @@ describe('Token verification failure classification', () => {
     jest.restoreAllMocks();
   });
   const fixture = () => {
-    const jwt = { verifyAsync: jest.fn().mockResolvedValue({ sub: 'user-1' }) };
+    const jwt = {
+      verifyAsync: jest
+        .fn()
+        .mockResolvedValue({ sub: 'user-1', tokenType: 'access' }),
+    };
     const users = {
       findByIdForAuth: jest.fn().mockResolvedValue({ id: 'user-1' }),
     };
@@ -65,6 +69,23 @@ describe('Token verification failure classification', () => {
       );
     },
   );
+  it('accepts an access token and returns the authenticated user', async () => {
+    const f = fixture();
+    f.users.findByIdForAuth.mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      fullName: 'User One',
+      username: 'user-one',
+      isVerified: true,
+      picture: null,
+    });
+
+    await expect(f.verify.execute('access-token')).resolves.toMatchObject({
+      id: 'user-1',
+      email: 'user@example.com',
+      roles: ['ADMIN'],
+    });
+  });
   it('rejects a verified token whose user no longer exists', async () => {
     const f = fixture();
     f.users.findByIdForAuth.mockResolvedValue(null);
@@ -72,6 +93,22 @@ describe('Token verification failure classification', () => {
       InvalidTokenError,
     );
   });
+  it.each([
+    ['refresh', { sub: 'user-1', tokenType: 'refresh', jti: 'refresh-id' }],
+    ['legacy untyped', { sub: 'user-1', jti: 'legacy-refresh-id' }],
+    ['untyped', { sub: 'user-1' }],
+  ])(
+    'rejects %s tokens before loading protected user data',
+    async (_type, payload) => {
+      const f = fixture();
+      f.jwt.verifyAsync.mockResolvedValue(payload);
+      await expect(f.verify.execute('token')).rejects.toBeInstanceOf(
+        InvalidTokenError,
+      );
+      expect(f.roles.getUserRoles).not.toHaveBeenCalled();
+      expect(f.users.findByIdForAuth).not.toHaveBeenCalled();
+    },
+  );
   it.each(['user', 'roles', 'jwt'])(
     'returns sanitized 503 for %s infrastructure failure',
     async (step) => {

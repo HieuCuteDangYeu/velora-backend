@@ -1,5 +1,7 @@
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { randomUUID, createHash } from 'crypto';
+import { RefreshTokenUseCase } from '../../application/use-cases/refresh-token.use-case';
 import { AuthRepository } from './auth.repository';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -20,6 +22,25 @@ integration('AuthRepository PostgreSQL integration', () => {
       new ConfigService({ JWT_SECRET: 'integration-only-secret' }),
     );
   });
+
+  const createRefreshUseCase = (jwt: JwtService) =>
+    new RefreshTokenUseCase(
+      repository,
+      {
+        findById: jest.fn().mockResolvedValue({
+          id: userId,
+          email: 'integration@example.com',
+          fullName: 'Integration User',
+          username: 'integration-user',
+          isVerified: true,
+          picture: null,
+        }),
+      } as never,
+      { setUserRoles: jest.fn() } as never,
+      jwt,
+      { recordRequest: jest.fn(), recordRefresh: jest.fn() } as never,
+    );
+
   afterAll(async () => {
     await prisma.refreshToken.deleteMany({ where: { userId } });
     await prisma.$disconnect();
@@ -47,45 +68,96 @@ integration('AuthRepository PostgreSQL integration', () => {
     expect((await repository.findRefreshToken(raw))?.id).toBe(created.id);
   });
 
-  it('atomically returns one winner for concurrent same-ID rotation', async () => {
-    const old = await repository.createRefreshToken(
+  it('rotates typed tokens once across concurrent same-ID refreshes and recovers retries', async () => {
+    const jwt = new JwtService({ secret: 'integration-only-secret' });
+    const oldRefreshToken = await jwt.signAsync(
+      { sub: userId, tokenType: 'refresh' },
+      { expiresIn: 86400, jwtid: randomUUID() },
+    );
+    const stored = await repository.createRefreshToken(
       userId,
-      'old-' + randomUUID(),
+      oldRefreshToken,
       new Date(Date.now() + 86400000),
     );
-    const expiry = new Date(Date.now() + 90 * 86400000);
+    const useCase = createRefreshUseCase(jwt);
     const requestId = randomUUID();
-    const candidates = ['a-' + randomUUID(), 'b-' + randomUUID()];
     const results = await Promise.all(
-      candidates.map((token) =>
-        repository.rotateRefreshToken(old.id, token, expiry, requestId),
-      ),
+      [1, 2].map(() => useCase.execute(oldRefreshToken, requestId)),
     );
-    expect(results.every(Boolean)).toBe(true);
-    expect(results[0]?.token.id).toBe(results[1]?.token.id);
-    expect(results[0]?.refreshToken).toBe(results[1]?.refreshToken);
-    expect(candidates).toContain(results[0]?.refreshToken);
-    const consumed = await prisma.refreshToken.findUniqueOrThrow({
-      where: { id: old.id },
-    });
-    expect(consumed.revoked).toBe(true);
+    expect(results[0].refreshToken).toBe(results[1].refreshToken);
     expect(
-      (await repository.findRefreshToken(results[0]!.refreshToken))
-        ?.rotationRequestExpiresAt,
-    ).toBeNull();
+      jwt.verify<{ tokenType: string }>(results[0].accessToken).tokenType,
+    ).toBe('access');
+    expect(
+      jwt.verify<{ tokenType: string }>(results[0].refreshToken).tokenType,
+    ).toBe('refresh');
+    expect(
+      (
+        await prisma.refreshToken.findUniqueOrThrow({
+          where: { id: stored.id },
+        })
+      ).revoked,
+    ).toBe(true);
+    const replacement = await repository.findRefreshToken(
+      results[0].refreshToken,
+    );
+    expect(replacement?.isActive()).toBe(true);
+    expect(
+      (await useCase.execute(oldRefreshToken, requestId)).refreshToken,
+    ).toBe(results[0].refreshToken);
     await expect(
-      repository.recoverRotatedRefreshToken(old.id, requestId),
-    ).resolves.toBe(results[0]?.refreshToken);
+      repository.recoverRotatedRefreshToken(stored.id, requestId),
+    ).resolves.toBe(results[0].refreshToken);
     await expect(
-      repository.rotateRefreshToken(old.id, 'conflict', expiry, 'other-id'),
+      repository.rotateRefreshToken(
+        stored.id,
+        'conflict',
+        new Date(),
+        'other-id',
+      ),
     ).resolves.toBeNull();
     await prisma.refreshToken.update({
-      where: { id: old.id },
+      where: { id: stored.id },
       data: { rotationRequestExpiresAt: new Date(Date.now() - 1) },
     });
     await expect(
-      repository.recoverRotatedRefreshToken(old.id, requestId),
+      repository.recoverRotatedRefreshToken(stored.id, requestId),
     ).resolves.toBeNull();
+  });
+
+  it('upgrades a legacy untyped raw refresh row and rotates it to typed tokens', async () => {
+    const jwt = new JwtService({ secret: 'integration-only-secret' });
+    const legacyRefreshToken = await jwt.signAsync(
+      { sub: userId },
+      { expiresIn: 86400, jwtid: randomUUID() },
+    );
+    const legacy = await repository.createRefreshToken(
+      userId,
+      legacyRefreshToken,
+      new Date(Date.now() + 86400000),
+    );
+    await prisma.refreshToken.update({
+      where: { id: legacy.id },
+      data: { token: legacyRefreshToken, encryptedToken: null },
+    });
+
+    const result = await createRefreshUseCase(jwt).execute(
+      legacyRefreshToken,
+      randomUUID(),
+    );
+    const upgraded = await prisma.refreshToken.findUniqueOrThrow({
+      where: { id: legacy.id },
+    });
+    expect(upgraded.token).toBe(
+      createHash('sha256').update(legacyRefreshToken).digest('hex'),
+    );
+    expect(upgraded.encryptedToken).toBeTruthy();
+    expect(
+      jwt.verify<{ tokenType: string }>(result.accessToken).tokenType,
+    ).toBe('access');
+    expect(
+      jwt.verify<{ tokenType: string }>(result.refreshToken).tokenType,
+    ).toBe('refresh');
   });
 
   it('logout-style revocation and revoke-all make recovery unavailable', async () => {

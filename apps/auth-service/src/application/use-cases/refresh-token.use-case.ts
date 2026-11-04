@@ -49,6 +49,14 @@ export class RefreshTokenUseCase {
         throw new InvalidTokenError();
       }
 
+      if (
+        payload.tokenType !== 'refresh' &&
+        !(payload.tokenType === undefined && payload.jti)
+      ) {
+        refreshOutcome = 'invalid';
+        throw new InvalidTokenError();
+      }
+
       const storedToken =
         await this.authRepository.findRefreshToken(incomingRefreshToken);
 
@@ -85,7 +93,7 @@ export class RefreshTokenUseCase {
         }
 
         const accessToken = await this.jwtService.signAsync(
-          this.createJwtPayload(user),
+          { ...this.createJwtPayload(user), tokenType: 'access' },
           { expiresIn: '15m' },
         );
 
@@ -123,13 +131,17 @@ export class RefreshTokenUseCase {
       const now = new Date();
       const expiresAt = getRefreshTokenExpiresAt(now);
 
-      const accessToken = await this.jwtService.signAsync(newPayload, {
-        expiresIn: '15m',
-      });
-      const refreshToken = await this.jwtService.signAsync(newPayload, {
-        expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
-        jwtid: randomUUID(),
-      });
+      const accessToken = await this.jwtService.signAsync(
+        { ...newPayload, tokenType: 'access' },
+        { expiresIn: '15m' },
+      );
+      const refreshToken = await this.jwtService.signAsync(
+        { ...newPayload, tokenType: 'refresh' },
+        {
+          expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
+          jwtid: randomUUID(),
+        },
+      );
 
       const persistedRefreshToken =
         await this.authRepository.rotateRefreshToken(

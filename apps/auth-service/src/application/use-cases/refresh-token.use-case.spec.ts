@@ -5,6 +5,8 @@ import { RefreshTokenUseCase } from './refresh-token.use-case';
 
 const payload = {
   sub: 'user-1',
+  tokenType: 'refresh',
+  jti: 'refresh-id',
   email: 'user@example.com',
   fullName: 'User One',
   username: 'user-one',
@@ -111,6 +113,16 @@ describe('RefreshTokenUseCase', () => {
       'new-refresh-token',
       expect.any(Date),
       'request-1',
+    );
+    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ tokenType: 'access' }),
+      { expiresIn: '15m' },
+    );
+    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ tokenType: 'refresh' }),
+      { expiresIn: expect.any(Number), jwtid: expect.any(String) },
     );
   });
 
@@ -258,6 +270,10 @@ describe('RefreshTokenUseCase', () => {
     });
 
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+    expect(jwtService.signAsync).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenType: 'access' }),
+      { expiresIn: '15m' },
+    );
     expect(authRepository.rotateRefreshToken).not.toHaveBeenCalled();
     expect(authRepository.recoverRotatedRefreshToken).toHaveBeenCalledWith(
       'stored-token-1',
@@ -346,6 +362,81 @@ describe('RefreshTokenUseCase', () => {
 
     expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an access token', { ...payload, tokenType: 'access' }],
+    ['an untyped token without a refresh JWT ID', { sub: user.id }],
+  ])(
+    'rejects %s without treating it as a refresh replay',
+    async (_type, claims) => {
+      const { authRepository, jwtService, useCase } = createUseCase();
+      jwtService.verifyAsync.mockResolvedValue(claims);
+
+      await expect(useCase.execute('wrong-token-type')).rejects.toBeInstanceOf(
+        InvalidTokenError,
+      );
+      expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
+      expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rotates a persisted legacy untyped refresh token and types its replacement', async () => {
+    const { authRepository, jwtService, roleCache, userService, useCase } =
+      createUseCase();
+    const legacyPayload = { ...payload, tokenType: undefined };
+    const incomingRefreshToken = 'legacy-refresh-token';
+    authRepository.findRefreshToken.mockResolvedValue(
+      new RefreshToken(
+        'legacy-token-1',
+        user.id,
+        incomingRefreshToken,
+        new Date(Date.now() + 60_000),
+        false,
+        new Date(),
+      ),
+    );
+    authRepository.getUserRole.mockResolvedValue(['USER']);
+    authRepository.rotateRefreshToken.mockResolvedValue({
+      token: new RefreshToken(
+        'replacement-id',
+        user.id,
+        'replacement-hash',
+        new Date(Date.now() + 90 * 86400000),
+        false,
+        new Date(),
+      ),
+      refreshToken: 'typed-refresh-token',
+    });
+    roleCache.setUserRoles.mockResolvedValue(undefined);
+    userService.findById.mockResolvedValue(user);
+    jwtService.verifyAsync.mockResolvedValue(legacyPayload);
+    jwtService.signAsync
+      .mockResolvedValueOnce('typed-access-token')
+      .mockResolvedValueOnce('typed-refresh-token');
+
+    await expect(
+      useCase.execute(incomingRefreshToken, 'legacy-request'),
+    ).resolves.toEqual({
+      accessToken: 'typed-access-token',
+      refreshToken: 'typed-refresh-token',
+    });
+    expect(authRepository.rotateRefreshToken).toHaveBeenCalledWith(
+      'legacy-token-1',
+      'typed-refresh-token',
+      expect.any(Date),
+      'legacy-request',
+    );
+    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ tokenType: 'access' }),
+      { expiresIn: '15m' },
+    );
+    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ tokenType: 'refresh' }),
+      { expiresIn: expect.any(Number), jwtid: expect.any(String) },
+    );
   });
 
   it('preserves infrastructure failures instead of reporting an invalid token', async () => {

@@ -97,13 +97,17 @@ export class GoogleLoginUseCase {
       const now = new Date();
       const expiresAt = getRefreshTokenExpiresAt(now);
 
-      const accessToken = await this.jwtService.signAsync(payload, {
-        expiresIn: '15m',
-      });
-      const refreshToken = await this.jwtService.signAsync(payload, {
-        expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
-        jwtid: randomUUID(),
-      });
+      const accessToken = await this.jwtService.signAsync(
+        { ...payload, tokenType: 'access' },
+        { expiresIn: '15m' },
+      );
+      const refreshToken = await this.jwtService.signAsync(
+        { ...payload, tokenType: 'refresh' },
+        {
+          expiresIn: getRefreshTokenExpiresInSeconds(now, expiresAt),
+          jwtid: randomUUID(),
+        },
+      );
 
       await this.authRepository.createRefreshToken(
         userId,

@@ -34,6 +34,10 @@ export class VerifyTokenUseCase {
       throw error;
     }
 
+    if (payload.tokenType !== 'access') {
+      throw new InvalidTokenError();
+    }
+
     let roles: string[] | null = null;
 
     try {

@@ -9,7 +9,7 @@
     "postinstall": "pnpm prisma:generate:all",
     "build": "nest build",
     "test": "jest",
-    "test:e2e": "jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts",
+    "test:e2e": "jest --runInBand apps/call-service/test/e2e/call-flow.e2e.spec.ts apps/call-service/test/e2e/call-hyperscale.e2e.spec.ts",
     "format": "prettier --write \"apps/**/*.ts\" \"libs/**/*.ts\"",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "start:gateway": "nest start api-gateway --watch",

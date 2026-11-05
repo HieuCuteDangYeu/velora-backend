@@ -24,7 +24,9 @@ export interface MediaWorkerMetricSample {
 export class CallPrometheusMetricsService implements OnModuleDestroy {
   static readonly CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
 
-  private readonly serviceName = 'call-service';
+  // Media nodes reuse this renderer under their own service label.
+  private readonly serviceName =
+    process.env.CALL_METRICS_SERVICE_NAME?.trim() || 'call-service';
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
   private readonly socketDisconnectsByReason = new Map<string, number>();
   private socketReconnectCount = 0;

@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { safeCallErrorCode } from '../gateways/call-debug';
+import { readCallMediaMode } from './call-media-mode';
 
 const RENEW_LEASE_SCRIPT = `
 if redis.call('GET', KEYS[1]) == ARGV[1] then
@@ -34,7 +35,12 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 @Injectable()
 export class CallServiceRuntimeLease implements OnModuleDestroy {
   private readonly logger = new Logger(CallServiceRuntimeLease.name);
-  private readonly enabled = process.env.CALL_SINGLE_INSTANCE_GUARD !== 'false';
+  // Remote media mode keeps no process-local call state, so replicas may run
+  // side by side; the lease only protects the embedded mediasoup runtime.
+  private readonly mediaMode = readCallMediaMode();
+  private readonly enabled =
+    this.mediaMode === 'embedded' &&
+    process.env.CALL_SINGLE_INSTANCE_GUARD !== 'false';
   private readonly key =
     process.env.CALL_RUNTIME_LEASE_KEY || 'velora:call-service:runtime-lease';
   private readonly ttlMs = positiveInteger(
@@ -66,6 +72,7 @@ export class CallServiceRuntimeLease implements OnModuleDestroy {
   async acquire(): Promise<void> {
     if (!this.enabled) {
       this.state = 'bypassed';
+      if (this.mediaMode === 'remote') return;
       this.logger.warn(
         'CALL_SINGLE_INSTANCE_GUARD=false: call runtime is not protected from multiple instances',
       );

@@ -59,6 +59,7 @@ import type {
 import type { ICallSessionRepository } from '../../domain/interfaces/call-session.repository.interface';
 import type { ICallStateRepository } from '../../domain/interfaces/call-state.repository.interface';
 import { CallServiceRuntimeLease } from '../runtime/call-service-runtime-lease.service';
+import { readCallMediaMode } from '../runtime/call-media-mode';
 import {
   CALL_COORDINATOR,
   CallCoordinator,
@@ -432,6 +433,8 @@ export class CallGateway
   }
 
   async onApplicationBootstrap(): Promise<void> {
+    // Only the embedded engine loses rooms when this process restarts.
+    if (readCallMediaMode() === 'remote') return;
     try {
       this.runtimeLease.assertHeld();
       const lostActiveCalls =

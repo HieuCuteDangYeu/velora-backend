@@ -47,6 +47,13 @@ import {
   RedisCallCoordinator,
 } from './infrastructure/runtime/call-coordinator';
 import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
+import { RemoteCallMediaEngine } from './infrastructure/engines/remote-call-media.engine';
+import { MediaNodeEventsController } from './infrastructure/controllers/media-node-events.controller';
+
+// Decided once at startup: a remote-mode replica must never start mediasoup.
+const MEDIA_MODE = readCallMediaMode();
+const MediaEngine =
+  MEDIA_MODE === 'remote' ? RemoteCallMediaEngine : MediasoupCallMediaEngine;
 
 @Module({
   imports: [
@@ -104,6 +111,7 @@ import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
     CallDeclineController,
     CallMetricsController,
     CallHistoryController,
+    MediaNodeEventsController,
   ],
   providers: [
     CallGateway,
@@ -133,7 +141,7 @@ import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
     RabbitCallLogPublisher,
     CallPrismaService,
     PrismaCallHistoryRepository,
-    MediasoupCallMediaEngine,
+    MediaEngine,
     CallServiceRuntimeLease,
     CallAnswerOutboxWorker,
     CallTerminalOutboxWorker,
@@ -162,7 +170,7 @@ import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
     },
     {
       provide: 'ICallMediaEngine',
-      useExisting: MediasoupCallMediaEngine,
+      useExisting: MediaEngine,
     },
     {
       // Remote media mode runs several signaling replicas, so their
@@ -170,7 +178,7 @@ import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
       provide: CALL_COORDINATOR,
       inject: ['REDIS_CLIENT'],
       useFactory: (redis: Redis) =>
-        readCallMediaMode() === 'remote'
+        MEDIA_MODE === 'remote'
           ? new RedisCallCoordinator(redis)
           : new InProcessCallCoordinator(),
     },

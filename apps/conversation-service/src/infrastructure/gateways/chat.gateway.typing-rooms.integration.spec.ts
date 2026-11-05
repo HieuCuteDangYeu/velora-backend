@@ -12,7 +12,7 @@ import { SendMessageUseCase } from '../../application/use-cases/send-message.use
 import { TriggerBotReplyUseCase } from '../../application/use-cases/trigger-bot-reply.use-case';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { ChatGateway } from './chat.gateway';
-import { RedisIoAdapter } from './redis-io.apdater';
+import { RedisIoAdapter } from '@common/socket/redis-io.adapter';
 
 const redisAvailable = spawnSync('redis-server', ['--version']).status === 0;
 const describeWithRedis = redisAvailable ? describe : describe.skip;

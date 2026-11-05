@@ -9,6 +9,10 @@ jest.mock('../../../src/call-service.module', () => ({
   CallServiceModule: class CallServiceModule {},
 }));
 
+jest.mock('@common/socket/socket-adapter.config', () => ({
+  configureSocketAdapter: jest.fn().mockResolvedValue(true),
+}));
+
 import { bootstrap } from '../../../src/main';
 
 describe('call-service bootstrap', () => {

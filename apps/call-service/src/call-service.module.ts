@@ -41,6 +41,12 @@ import { CallServiceRuntimeLease } from './infrastructure/runtime/call-service-r
 import { CallAnswerOutboxWorker } from './infrastructure/workers/call-answer-outbox.worker';
 import { CallTerminalOutboxWorker } from './infrastructure/workers/call-terminal-outbox.worker';
 import { CallHistoryOutboxWorker } from './infrastructure/workers/call-history-outbox.worker';
+import {
+  CALL_COORDINATOR,
+  InProcessCallCoordinator,
+  RedisCallCoordinator,
+} from './infrastructure/runtime/call-coordinator';
+import { readCallMediaMode } from './infrastructure/runtime/call-media-mode';
 
 @Module({
   imports: [
@@ -157,6 +163,16 @@ import { CallHistoryOutboxWorker } from './infrastructure/workers/call-history-o
     {
       provide: 'ICallMediaEngine',
       useExisting: MediasoupCallMediaEngine,
+    },
+    {
+      // Remote media mode runs several signaling replicas, so their
+      // per-call locks and shared UI state must live in Redis.
+      provide: CALL_COORDINATOR,
+      inject: ['REDIS_CLIENT'],
+      useFactory: (redis: Redis) =>
+        readCallMediaMode() === 'remote'
+          ? new RedisCallCoordinator(redis)
+          : new InProcessCallCoordinator(),
     },
     {
       provide: 'REDIS_CLIENT',

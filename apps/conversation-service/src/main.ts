@@ -1,7 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';
-import { configureSocketAdapter } from 'apps/conversation-service/src/infrastructure/gateways/socket-adapter.config';
+import { configureSocketAdapter } from '@common/socket/socket-adapter.config';
 import { ConversationServiceModule } from './conversation-service.module';
 import { resolveLogLevels } from './log-levels';
 

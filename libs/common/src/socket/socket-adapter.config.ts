@@ -1,6 +1,6 @@
 import { INestApplication, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { RedisIoAdapter } from './redis-io.apdater';
+import { RedisIoAdapter } from './redis-io.adapter';
 
 export const SOCKET_IO_REDIS_ADAPTER_ENV = 'SOCKET_IO_REDIS_ADAPTER';
 
@@ -23,17 +23,18 @@ type AdapterFactory = (
  * Registers the Socket.IO Redis adapter, or leaves Nest's in-memory adapter in
  * place when SOCKET_IO_REDIS_ADAPTER is explicitly disabled. Without the
  * adapter, rooms and events are local to this process, so it is only safe while
- * a single conversation-service instance runs.
+ * a single instance of the service runs.
  */
 export async function configureSocketAdapter(
   app: INestApplication,
   config: ConfigService,
   createAdapter: AdapterFactory = (nest, cfg) => new RedisIoAdapter(nest, cfg),
+  serviceName = 'conversation-service',
 ): Promise<boolean> {
   if (!isRedisAdapterEnabled(config.get<string>(SOCKET_IO_REDIS_ADAPTER_ENV))) {
     new Logger('SocketAdapter').warn(
       `${SOCKET_IO_REDIS_ADAPTER_ENV} is disabled: Socket.IO uses its in-memory adapter. ` +
-        'Run exactly one conversation-service instance; a second one would not receive its events.',
+        `Run exactly one ${serviceName} instance; a second one would not receive its events.`,
     );
     return false;
   }

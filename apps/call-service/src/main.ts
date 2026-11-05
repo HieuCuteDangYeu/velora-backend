@@ -5,6 +5,7 @@ import { RecoverActiveCallsAfterMediaRestartUseCase } from './application/use-ca
 import { CallServiceModule } from './call-service.module';
 import { CallServiceRuntimeLease } from './infrastructure/runtime/call-service-runtime-lease.service';
 import { safeCallErrorCode } from './infrastructure/gateways/call-debug';
+import { configureSocketAdapter } from '@common/socket/socket-adapter.config';
 
 export async function bootstrap() {
   const app = await NestFactory.create(CallServiceModule);
@@ -49,6 +50,8 @@ export async function bootstrap() {
       origin: configService.get<string>('FRONTEND_URL'),
       credentials: true,
     });
+    // Rooms and emits must reach sockets held by other signaling replicas.
+    await configureSocketAdapter(app, configService, undefined, 'call-service');
 
     await app.startAllMicroservices();
 

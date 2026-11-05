@@ -85,7 +85,6 @@ readonly -a APP_SERVICES=(
 # that image) and their Compose changes are reviewed as call-service changes.
 readonly -a CALL_MEDIA_SERVICES=(
   call-media-1
-  call-media-2
 )
 
 readonly -a APP_IMAGE_SERVICES=(

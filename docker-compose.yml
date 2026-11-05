@@ -278,6 +278,10 @@ services:
   # Media nodes run the call-service image with the media node entrypoint.
   # Each publishes its own UDP port, which must be forwarded on the router to
   # this host (mediasoup announces the port it listens on, so host == container).
+  # The home router forwards a single UDP port, so only one node runs here.
+  # To add call-media-2, copy this block with MEDIA_NODE_ID=call-media-2 and
+  # UDP 40001, forward that port, and list it in CALL_MEDIA_SERVICES and the
+  # call-media Prometheus job (see docs/call-runtime-rollout.md).
   call-media-1:
     image: ${DOCKERHUB_USERNAME}/call-service:${VELORA_IMAGE_TAG:-latest}
     restart: always
@@ -301,31 +305,6 @@ services:
         condition: service_healthy
       # Ordering only: during the cutover from the embedded runtime the old
       # call-service container must release UDP 40000 before this node binds it.
-      call-service:
-        condition: service_started
-    networks:
-      - microservices-net
-
-  call-media-2:
-    image: ${DOCKERHUB_USERNAME}/call-service:${VELORA_IMAGE_TAG:-latest}
-    restart: always
-    command: ['node', 'dist/apps/call-service/apps/call-service/src/media-node/main.js']
-    expose:
-      - '3019'
-      - '4100'
-    ports:
-      - '40001:40001/udp'
-    environment:
-      NODE_ENV: production
-      MEDIA_NODE_ID: call-media-2
-      MEDIASOUP_WEBRTC_SERVER_PORT: '40001'
-      MEDIASOUP_WORKERS: '1'
-      MEDIASOUP_ANNOUNCED_IP_MODE: ${MEDIASOUP_ANNOUNCED_IP_MODE:-stun}
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
       call-service:
         condition: service_started
     networks:

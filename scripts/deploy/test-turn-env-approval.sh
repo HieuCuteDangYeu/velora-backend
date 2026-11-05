@@ -83,7 +83,7 @@ reset_fixture
 plan_from_changed_files
 approve_turn_env
 [[ "$TURN_ENV_APPROVED" == true && "$FORCE" == false ]]
-[[ "${PULL_SERVICES[*]}" == call-service && "${RECONCILE_SERVICES[*]}" == call-service ]]
+[[ "${PULL_SERVICES[*]}" == call-service && "${RECONCILE_SERVICES[*]}" == "call-service ${CALL_MEDIA_SERVICES[*]}" ]]
 [[ "$(cat "$ENV_HASH_FILE")" == "$STORED_ENV_HASH" ]]
 pass
 
@@ -199,7 +199,8 @@ for settings in rotation clear remove; do
   fi
   CURRENT_ENV_HASH="$(env_hash)"
   approve_turn_env
-  [[ "${RECONCILE_SERVICES[*]}" == call-service ]]
+  # Media nodes attach the TURN servers to transports, so they reload too.
+  [[ "${RECONCILE_SERVICES[*]}" == "call-service ${CALL_MEDIA_SERVICES[*]}" ]]
   pass
 done
 
@@ -325,7 +326,7 @@ pass
 reset_fixture
 LAST_DEPLOYED_SHA="$TARGET_SHA"
 ( perform_deployment ) >"$tmp_dir/success.log"
-grep -Fxq 'docker:compose up -d --no-deps call-service' "$calls"
+grep -Fxq 'docker:compose up -d --no-deps call-service call-media-1' "$calls"
 ! grep -Fxq 'remove-deprecated' "$calls"
 [[ "$(cat "$ENV_HASH_FILE")" == "$CURRENT_ENV_HASH" ]]
 [[ "$(cat "$STATE_FILE")" == "$TARGET_SHA" ]]
@@ -344,7 +345,7 @@ set_langfuse_rate 0.05
 LAST_DEPLOYED_SHA="$TARGET_SHA"
 ( perform_deployment ) >"$tmp_dir/langfuse-success.log"
 grep -Fxq 'docker:compose up -d --no-deps ai-service' "$calls"
-! grep -Fxq 'docker:compose up -d --no-deps call-service' "$calls"
+! grep -Fxq 'docker:compose up -d --no-deps call-service call-media-1' "$calls"
 [[ "$(cat "$ENV_HASH_FILE")" == "$CURRENT_ENV_HASH" ]]
 pass
 
@@ -359,7 +360,7 @@ TURN_ENV_BASELINE=""
 STORED_ENV_HASH="$CURRENT_ENV_HASH"
 printf '%s\n' "$STORED_ENV_HASH" >"$ENV_HASH_FILE"
 ( perform_deployment ) >"$tmp_dir/normal-success.log"
-grep -Fxq 'docker:compose up -d --no-deps call-service' "$calls"
+grep -Fxq 'docker:compose up -d --no-deps call-service call-media-1' "$calls"
 grep -Fxq 'remove-deprecated' "$calls"
 pass
 

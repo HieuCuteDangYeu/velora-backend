@@ -8,10 +8,11 @@ Compose runs call-service with `CALL_MEDIA_MODE=remote`:
   uses the Redis adapter. Per-participant locks, camera/mic revisions, the
   `call_ended` replay and sweep claims live in Redis (`CallCoordinator`), so a
   replica can restart or be added without ending calls.
-- `call-media-1` (UDP 40000) and `call-media-2` (UDP 40001) run mediasoup from
-  the same image (`dist/apps/call-service/apps/call-service/src/media-node/main.js`).
-  Each heartbeats `call:media-node:<id>` with a per-start incarnation and serves
-  `ICallMediaEngine` over an internal TCP RPC (port 4100, never published).
+- `call-media-1` (UDP 40000) runs mediasoup from the same image
+  (`dist/apps/call-service/apps/call-service/src/media-node/main.js`).
+  Each media node heartbeats `call:media-node:<id>` with a per-start
+  incarnation and serves `ICallMediaEngine` over an internal TCP RPC (port
+  4100, never published).
 - A new call is placed on the live node with the fewest rooms
   (`call:<callId>:media-node`). Every later media command goes to that node.
   When a node stops heartbeating, restarts, or loses a worker, signaling ends
@@ -21,13 +22,20 @@ The phone needs no change: the node's public IP and UDP port arrive in the
 ICE candidates of `transport_created`. Every node must use the same codec
 configuration.
 
-### Router and capacity
+### Router and capacity (current limitation)
 
-Forward UDP 40000 **and** UDP 40001 to the homelab host. mediasoup announces
-the port it listens on, so the host port must equal the container port. To
-add a node, copy the `call-media-2` block with the next port, add it to
-`CALL_MEDIA_SERVICES` in `scripts/deploy/velora-deploy-core` and to the
-`call-media` Prometheus job, and forward its port.
+Each media node needs its own public UDP port: mediasoup announces the port
+it listens on, so the host port must equal the container port. The homelab
+router forwards a single UDP port (40000), so production runs **one** media
+node. Multi-node placement, failover and cross-replica signaling are covered
+by `apps/call-service/test/e2e/call-hyperscale.e2e.spec.ts`.
+
+To add a node where more ports (or another public IP) are available: copy the
+`call-media-1` block as `call-media-2` with UDP 40001, forward that port, add
+it to `CALL_MEDIA_SERVICES` in `scripts/deploy/velora-deploy-core`, and add
+its target to the `call-media` Prometheus job. A TURN server (coturn) on the
+single forwarded port, relaying to media nodes on the internal network, is
+the alternative when only one port can be opened.
 
 ### Deploys
 

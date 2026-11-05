@@ -19,8 +19,7 @@ write_model() {
         "call-service": {"image": "x/call-service:latest",
           "environment": (if $with_media then {"CALL_MEDIA_MODE": "remote"} else {"CALL_SINGLE_INSTANCE_GUARD": "true"} end)}
       } + (if $with_media then {
-        "call-media-1": {"image": "x/call-service:latest", "ports": [{"published": $port, "protocol": "udp"}]},
-        "call-media-2": {"image": "x/call-service:latest", "ports": [{"published": "40001", "protocol": "udp"}]}
+        "call-media-1": {"image": "x/call-service:latest", "ports": [{"published": $port, "protocol": "udp"}]}
       } else {} end))
     }' >"$out"
 }
@@ -47,12 +46,12 @@ write_model "$tmp_dir/remote-moved.json" true 40005
 
 # 1. Adding the media nodes reconciles them together with call-service.
 out="$(run_compare "$tmp_dir/embedded.json" "$tmp_dir/remote.json" 2>&1)"
-grep -q 'RECONCILE=call-service call-media-1 call-media-2$' <<<"$out" \
+grep -q 'RECONCILE=call-service call-media-1$' <<<"$out" \
   || { printf '%s\n' "$out" >&2; exit 1; }
 
 # 2. A later media node change is reviewed as a call-service change.
 out="$(run_compare "$tmp_dir/remote.json" "$tmp_dir/remote-moved.json" 2>&1)"
-grep -q 'RECONCILE=call-service call-media-1 call-media-2$' <<<"$out" \
+grep -q 'RECONCILE=call-service call-media-1$' <<<"$out" \
   || { printf '%s\n' "$out" >&2; exit 1; }
 
 # 3. Removing media nodes is still blocked like any service removal.
@@ -67,7 +66,7 @@ grep -q "was removed" <<<"$out" || { printf '%s\n' "$out" >&2; exit 1; }
   RECONCILE_SERVICES=()
   PULL_SERVICES=()
   add_app_and_worker_companions call-service
-  [[ "${RECONCILE_SERVICES[*]}" == "call-service call-media-1 call-media-2" ]] \
+  [[ "${RECONCILE_SERVICES[*]}" == "call-service call-media-1" ]] \
     || { printf 'unexpected companions: %s\n' "${RECONCILE_SERVICES[*]}" >&2; exit 1; }
 )
 

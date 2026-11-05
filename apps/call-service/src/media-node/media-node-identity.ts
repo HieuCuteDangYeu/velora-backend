@@ -13,7 +13,7 @@ export class MediaNodeIdentity {
   /** Hostname signaling replicas dial; the compose service name by default. */
   readonly rpcHost = process.env.CALL_MEDIA_RPC_HOST?.trim() || this.nodeId;
   readonly rpcPort = positiveInteger(process.env.CALL_MEDIA_RPC_PORT, 4100);
-  readonly httpPort = positiveInteger(process.env.CALL_MEDIA_HTTP_PORT, 3017);
+  readonly httpPort = positiveInteger(process.env.CALL_MEDIA_HTTP_PORT, 3019);
   readonly heartbeatTtlMs = positiveInteger(
     process.env.CALL_MEDIA_HEARTBEAT_TTL_MS,
     15_000,

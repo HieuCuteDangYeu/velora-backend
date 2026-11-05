@@ -80,10 +80,19 @@ readonly -a APP_SERVICES=(
 # lanes share the image of their primary service and are included here so a
 # one-time migration from :latest to ${VELORA_IMAGE_TAG} is not mistaken for a
 # protected worker-configuration change.
+# mediasoup media nodes run the call-service image with another entrypoint.
+# They are reconciled together with call-service (the RPC contract ships in
+# that image) and their Compose changes are reviewed as call-service changes.
+readonly -a CALL_MEDIA_SERVICES=(
+  call-media-1
+  call-media-2
+)
+
 readonly -a APP_IMAGE_SERVICES=(
   "${APP_SERVICES[@]}"
   media-processing-long-service
   reel-indexing-long-service
+  "${CALL_MEDIA_SERVICES[@]}"
 )
 
 # Services whose application image has a companion worker lane using the same image.
@@ -226,7 +235,7 @@ Options:
   --force                   Reconcile normal application services for the approved release.
                             Does not blindly restart RAG or worker lanes.
   --approve-turn-env FILE   Approve only TURN env changes against a last-healthy backup.
-                            Refuses a plan touching services other than call-service.
+                            Refuses a plan touching services other than call-service and its media nodes.
   --approve-langfuse-sampling FILE
                             Approve only LANGFUSE_SAMPLE_RATE changes against a last-healthy
                             backup. Refuses a plan touching services other than ai-service.
@@ -334,7 +343,9 @@ approve_turn_env() {
     || fail "TURN approval requires env drift and a recorded healthy env hash"
   local service
   for service in "${PULL_SERVICES[@]}" "${RECONCILE_SERVICES[@]}"; do
-    [[ "$service" == call-service ]] || fail "TURN approval cannot deploy another application service"
+    # Media nodes attach the TURN servers to transports, so they reload too.
+    [[ "$service" == call-service ]] || contains "$service" "${CALL_MEDIA_SERVICES[@]}" \
+      || fail "TURN approval cannot deploy another application service"
   done
   (( ${#INFRA_RECONCILE_SERVICES[@]} == 0 )) \
     && [[ "$DB_RISK" == false ]] || fail "TURN approval cannot include infrastructure or database changes"
@@ -1124,6 +1135,12 @@ add_app_and_worker_companions() {
       ;;
     reel-indexing-service)
       add_unique "reel-indexing-long-service" RECONCILE_SERVICES
+      ;;
+    call-service)
+      local media_service
+      for media_service in "${CALL_MEDIA_SERVICES[@]}"; do
+        add_unique "$media_service" RECONCILE_SERVICES
+      done
       ;;
   esac
 }

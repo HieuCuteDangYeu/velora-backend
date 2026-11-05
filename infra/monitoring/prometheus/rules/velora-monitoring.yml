@@ -125,8 +125,19 @@ groups:
           summary: call-service is unavailable
           description: Prometheus has not been able to scrape call-service for at least one minute.
 
+      - alert: VeloraCallMediaNodeDown
+        expr: up{job="call-media"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: call-media
+        annotations:
+          summary: a call media node is unavailable
+          description: Prometheus has not been able to scrape a mediasoup media node for at least one minute. Calls placed on it have ended and new calls go to the remaining nodes.
+
+      # call-service exports these in the embedded profile, media nodes in the remote one.
       - alert: VeloraCallMediaPublicIpMismatch
-        expr: velora_call_media_public_ip_mismatch{service="call-service"} == 1
+        expr: max(velora_call_media_public_ip_mismatch{service=~"call-service|call-media"}) == 1
         for: 2m
         labels:
           severity: critical
@@ -136,7 +147,7 @@ groups:
           description: For two minutes, STUN has reported a public IPv4 that new calls do not announce, so calls may have no media. Check the homelab network (Wi-Fi, modem) and the call-service logs.
 
       - alert: VeloraCallMediaPublicIpCheckFailing
-        expr: velora_call_media_public_ip_check_success{service="call-service"} == 0
+        expr: min(velora_call_media_public_ip_check_success{service=~"call-service|call-media"}) == 0
         for: 10m
         labels:
           severity: warning

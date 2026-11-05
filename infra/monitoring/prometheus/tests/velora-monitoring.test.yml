@@ -789,3 +789,41 @@ tests:
       - eval_time: 10m
         alertname: VeloraCallMediaPublicIpCheckFailing
         exp_alerts: []
+
+  - name: a media node public IP mismatch alerts like the embedded runtime
+    interval: 15s
+    input_series:
+      - series: 'velora_call_media_public_ip_mismatch{service="call-media",instance="call-media-1:3019"}'
+        values: '0+0x9'
+      - series: 'velora_call_media_public_ip_mismatch{service="call-media",instance="call-media-2:3019"}'
+        values: '1+0x9'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraCallMediaPublicIpMismatch
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: call-service
+            exp_annotations:
+              summary: call media public IP does not match STUN
+              description: For two minutes, STUN has reported a public IPv4 that new calls do not announce, so calls may have no media. Check the homelab network (Wi-Fi, modem) and the call-service logs.
+
+  - name: an unreachable call media node is critical after one minute
+    interval: 15s
+    input_series:
+      - series: 'up{job="call-media",instance="call-media-2:3019"}'
+        values: '0+0x8'
+      - series: 'up{job="call-media",instance="call-media-1:3019"}'
+        values: '1+0x8'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraCallMediaNodeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: call-media
+              job: call-media
+              instance: call-media-2:3019
+            exp_annotations:
+              summary: a call media node is unavailable
+              description: Prometheus has not been able to scrape a mediasoup media node for at least one minute. Calls placed on it have ended and new calls go to the remaining nodes.

@@ -1,7 +1,57 @@
-# TURN fallback rollout
+# Call runtime topology
 
-Call Service reads `TURN_URLS`, `TURN_USERNAME`, and `TURN_CREDENTIAL` from its
-environment. It includes `iceServers` in the existing authenticated
+## Signaling replicas and media nodes
+
+Compose runs call-service with `CALL_MEDIA_MODE=remote`:
+
+- `call-service` (2 replicas behind nginx) is stateless signaling. Socket.IO
+  uses the Redis adapter. Per-participant locks, camera/mic revisions, the
+  `call_ended` replay and sweep claims live in Redis (`CallCoordinator`), so a
+  replica can restart or be added without ending calls.
+- `call-media-1` (UDP 40000) and `call-media-2` (UDP 40001) run mediasoup from
+  the same image (`dist/apps/call-service/apps/call-service/src/media-node/main.js`).
+  Each heartbeats `call:media-node:<id>` with a per-start incarnation and serves
+  `ICallMediaEngine` over an internal TCP RPC (port 4100, never published).
+- A new call is placed on the live node with the fewest rooms
+  (`call:<callId>:media-node`). Every later media command goes to that node.
+  When a node stops heartbeating, restarts, or loses a worker, signaling ends
+  only that node's calls with `media_unavailable`.
+
+The phone needs no change: the node's public IP and UDP port arrive in the
+ICE candidates of `transport_created`. Every node must use the same codec
+configuration.
+
+### Router and capacity
+
+Forward UDP 40000 **and** UDP 40001 to the homelab host. mediasoup announces
+the port it listens on, so the host port must equal the container port. To
+add a node, copy the `call-media-2` block with the next port, add it to
+`CALL_MEDIA_SERVICES` in `scripts/deploy/velora-deploy-core` and to the
+`call-media` Prometheus job, and forward its port.
+
+### Deploys
+
+A call-service image change still recreates the media nodes (same image), so
+active calls end during that deploy, as before. Restarting or scaling only
+the signaling replicas keeps calls alive.
+
+### Rollback to the single-instance runtime
+
+Set `CALL_MEDIA_MODE: embedded` and `replicas: 1` on call-service, publish
+`40000:40000/udp` from it again, and remove the `call-media-*` services. The
+embedded profile restores the runtime lease and the startup recovery.
+
+## Metrics
+
+Prometheus discovers every signaling replica through DNS (`job="call-service"`)
+and scrapes media nodes as `job="call-media"` (`service="call-media"`). Worker
+CPU/rooms and public-IP metrics now come from the media nodes.
+`VeloraCallMediaNodeDown` fires when a node cannot be scraped for a minute.
+
+## TURN fallback rollout
+
+The media nodes (or call-service in the embedded profile) read `TURN_URLS`,
+`TURN_USERNAME`, and `TURN_CREDENTIAL` from their environment. It includes `iceServers` in the existing authenticated
 `transport_created` response for both send and receive. Mobile forwards it to
 mediasoup-client with `iceTransportPolicy: 'all'`, allowing direct SFU candidates
 and TURN relay candidates. ICE selects a working path; TURN is not forced.
@@ -28,7 +78,7 @@ Use the provider's current ICE snippet if the region or plan changes.
 1. Build and release the updated Call Service and mobile JS bundle.
 2. Set the three variables in the deployed backend `.env` or secret manager.
    Docker Compose already uses `env_file: .env`; no new service/ports are needed.
-   Recreate Call Service to load new environment values. Schedule this because
+   Recreate call-service and the call-media nodes to load new environment values. Schedule this because
    replacing the mediasoup process interrupts active calls.
 3. Verify voice/video calls, group voice, and network recovery on real devices.
    Use a controlled test with direct UDP blocked (while permitting TURN TCP/TLS),

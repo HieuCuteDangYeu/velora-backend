@@ -246,6 +246,7 @@ wait_for_prometheus_target "conversation-service" "conversation-service"
 
 echo "[4/11] Checking call-service scrape target..."
 wait_for_prometheus_target "call-service" "call-service"
+wait_for_prometheus_target "call-media" "call-media nodes"
 
 echo "[5/11] Checking notification-service scrape target..."
 wait_for_prometheus_target "notification-service" "notification-service"

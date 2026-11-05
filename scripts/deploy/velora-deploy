@@ -101,6 +101,12 @@ compare_compose_models() {
       continue
     fi
 
+    if contains "$service" "${CALL_MEDIA_SERVICES[@]}"; then
+      log "Compose service '$service' is a call media node; reconciling it with call-service."
+      add_app_and_worker_companions call-service
+      continue
+    fi
+
     if contains "$service" "${BLOCKED_COMPOSE_SERVICES[@]}"; then
       if [[ "$service" == "rabbitmq" ]] \
         && is_approved_rabbitmq_prometheus_migration "$base_normal" "$target_normal" \

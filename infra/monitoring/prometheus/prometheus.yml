@@ -24,11 +24,22 @@ scrape_configs:
       - targets:
           - conversation-service:3005
 
+  # call-service runs several signaling replicas; DNS returns all of them.
   - job_name: call-service
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names:
+          - call-service
+        type: A
+        port: 3007
+        refresh_interval: 15s
+
+  - job_name: call-media
     metrics_path: /metrics
     static_configs:
       - targets:
-          - call-service:3007
+          - call-media-1:3019
+          - call-media-2:3019
 
   - job_name: notification-service
     metrics_path: /metrics

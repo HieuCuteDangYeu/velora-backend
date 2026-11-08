@@ -57,8 +57,8 @@ describe('CreateNoContextAnswerUseCase', () => {
       },
     } as RagChatWorkflowState);
 
-    expect(answer).toMatch(/audio evidence/i);
-    expect(answer).toMatch(/requested audio detail/i);
+    expect(answer).toMatch(/indexed audio/i);
+    expect(answer).toMatch(/identify that sound/i);
     expect(answer).not.toMatch(/no relevant shared reel evidence/i);
   });
 
@@ -73,14 +73,14 @@ describe('CreateNoContextAnswerUseCase', () => {
     } as RagChatWorkflowState);
 
     expect(answer).toMatch(/your own saved memory/i);
-    expect(answer).toMatch(/requested detail/i);
+    expect(answer).toMatch(/nothing saved that answers this/i);
   });
 
   it.each([
-    ['USER_MEMORY', /your own saved memory/i, /ask the other person directly/i],
+    ['USER_MEMORY', /your own saved memory/i, /ask them directly/i],
     ['CONVERSATION_MEMORY', /conversation history/i, /share it again/i],
-    ['AUDIO', /audio evidence/i, /other parts of this Reel/i],
-    ['VISUAL', /visual evidence/i, /other parts of this Reel/i],
+    ['AUDIO', /indexed audio/i, /summarize what is said/i],
+    ['VISUAL', /indexed visual evidence/i, /other parts of this Reel/i],
     ['TRANSCRIPT', /transcript evidence/i, /other parts of this Reel/i],
   ])(
     'keeps the %s limitation and offers a safe next step',

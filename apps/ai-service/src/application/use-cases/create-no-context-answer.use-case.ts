@@ -79,7 +79,7 @@ export class CreateNoContextAnswerUseCase {
     missingEvidence: RagRequiredEvidence[],
   ): string {
     if (missingEvidence.includes('USER_MEMORY')) {
-      return 'I can only search your own saved memory, and I do not have the requested detail available here. If you tell me the detail in this chat I can work from it, or you can ask the other person directly.';
+      return 'I can only search your own saved memory, so I can’t look up another person’s details, and I have nothing saved that answers this. If it is about someone else, you can ask them directly; if it is yours, tell me here and I can work from it.';
     }
 
     if (missingEvidence.includes('CONVERSATION_MEMORY')) {
@@ -97,11 +97,11 @@ export class CreateNoContextAnswerUseCase {
     }
 
     if (missingEvidence.includes('AUDIO')) {
-      return 'The available shared Reel context does not contain enough audio evidence to identify the requested audio detail. I can help with the other parts of this Reel that are available.';
+      return 'I can’t identify that sound: the indexed audio for this Reel captures what is said, not background sounds or effects, so I would only be guessing. I can summarize what is said around that moment or describe what is visible in the nearest frame instead.';
     }
 
     if (missingEvidence.includes('VISUAL')) {
-      return 'The available shared Reel context does not contain enough visual evidence to identify the requested visual detail. I can help with the other parts of this Reel that are available.';
+      return 'I don’t have indexed visual evidence for that detail, so I won’t guess. I can help with the other parts of this Reel that are available, such as what is said around that moment.';
     }
 
     if (missingEvidence.includes('TRANSCRIPT')) {

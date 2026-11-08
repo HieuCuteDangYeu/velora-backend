@@ -16,11 +16,12 @@ async function main() {
     throw new Error(
       'Usage: run-rag-coverage-pilot <frozen-dir> <new-output-dir> <compiled-ai-src> <private-runtime-env>',
     );
+  const split = process.env.RAG_PILOT_SPLIT || 'development';
   const rows = JSON.parse(
-    fs.readFileSync(path.join(directory, 'development.json')),
+    fs.readFileSync(path.join(directory, `${split}.json`)),
   );
   const fixtures = JSON.parse(
-    fs.readFileSync(path.join(directory, 'development-fixtures.json')),
+    fs.readFileSync(path.join(directory, `${split}-fixtures.json`)),
   );
   const first = (predicate, used) =>
     rows.find((row) => !used.has(row.id) && predicate(row));
@@ -42,6 +43,17 @@ async function main() {
       (row) =>
         row.metadata.bucket === 'TRANSCRIPT' &&
         row.metadata.referenceStartSec > 0,
+    );
+  } else if (mode === 'transcript-summaries') {
+    take(
+      rows.filter(
+        (row) =>
+          row.metadata.bucket === 'TRANSCRIPT' &&
+          row.metadata.answerType === 'SEMANTIC_FACTS',
+      ).length,
+      (row) =>
+        row.metadata.bucket === 'TRANSCRIPT' &&
+        row.metadata.answerType === 'SEMANTIC_FACTS',
     );
   } else if (mode === 'visual') {
     take(12, (row) => row.metadata.bucket === 'VISUAL');

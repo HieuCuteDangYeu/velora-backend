@@ -4,6 +4,8 @@ import {
   ListReelCommentsDto,
   UpdateReelCommentDto,
 } from '@common/content/dtos/reel-comment.dto';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import {
   JwtAuthGuard,
   type AuthenticatedRequest,
@@ -40,7 +42,7 @@ type Comment = {
 };
 @ApiTags('Content')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RateLimitGuard)
 @Controller('content/reels/:reelId/comments')
 export class ReelCommentsGatewayController {
   constructor(
@@ -108,7 +110,9 @@ export class ReelCommentsGatewayController {
       nextCursor: page.nextCursor,
     };
   }
-  @Post() createRoot(
+  @RateLimit({ policy: 'content_comment_user', by: 'user' })
+  @Post()
+  createRoot(
     @Param('reelId') reelId: string,
     @Req() req: AuthenticatedRequest,
     @Body() body: CreateReelCommentDto,
@@ -122,7 +126,9 @@ export class ReelCommentsGatewayController {
   ) {
     return this.listPage(reelId, req, query);
   }
-  @Post(':commentId/replies') createReply(
+  @RateLimit({ policy: 'content_comment_user', by: 'user' })
+  @Post(':commentId/replies')
+  createReply(
     @Param('reelId') reelId: string,
     @Param('commentId') commentId: string,
     @Req() req: AuthenticatedRequest,
@@ -138,7 +144,9 @@ export class ReelCommentsGatewayController {
   ) {
     return this.listPage(reelId, req, query, commentId);
   }
-  @Patch(':commentId') async updateComment(
+  @RateLimit({ policy: 'content_comment_user', by: 'user' })
+  @Patch(':commentId')
+  async updateComment(
     @Param('reelId') reelId: string,
     @Param('commentId') commentId: string,
     @Req() req: AuthenticatedRequest,
@@ -152,7 +160,9 @@ export class ReelCommentsGatewayController {
     });
     return (await this.enrich([item]))[0];
   }
-  @Delete(':commentId') deleteComment(
+  @RateLimit({ policy: 'content_comment_user', by: 'user' })
+  @Delete(':commentId')
+  deleteComment(
     @Param('reelId') reelId: string,
     @Param('commentId') commentId: string,
     @Req() req: AuthenticatedRequest,

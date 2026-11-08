@@ -1,6 +1,8 @@
 import { isRpcError } from '@common/constants/rpc-error.types';
 import { FinalizeUploadDto } from '@common/media/dtos/finalize-upload.dto';
 import { GetPresignedUrlDto } from '@common/media/dtos/get-presigned-url.dto';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import {
   JwtAuthGuard,
   type AuthenticatedRequest,
@@ -21,13 +23,14 @@ import { catchError, lastValueFrom } from 'rxjs';
 
 @ApiTags('Media')
 @Controller('media')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RateLimitGuard)
 @ApiBearerAuth()
 export class MediaController {
   constructor(
     @Inject('MEDIA_SERVICE') private readonly mediaClient: ClientProxy,
   ) {}
 
+  @RateLimit({ policy: 'media_upload_url_user', by: 'user' })
   @Post('upload-url')
   @ApiOperation({ summary: 'Get a pre-signed URL to upload' })
   async getUploadUrl(
@@ -54,6 +57,7 @@ export class MediaController {
     );
   }
 
+  @RateLimit({ policy: 'media_finalize_user', by: 'user' })
   @Post('finalize-upload')
   @ApiOperation({
     summary: 'Finalize uploaded chat media and return CDN metadata',

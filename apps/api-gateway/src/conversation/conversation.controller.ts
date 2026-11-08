@@ -24,6 +24,8 @@ import {
 import { CreateMessageResponse } from '@common/conversation/interfaces/create-message-response.interface';
 import { MessageAnchorExpansionResponse } from '@common/conversation/interfaces/message-anchor-expansion.interface';
 import { MessageAnchorWindowResponse } from '@common/conversation/interfaces/message-anchor-window.interface';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import type { Reel } from '@content/domain/entities/reel.entity';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { ReelAuthorService } from '@gateway/content/reel-author.service';
@@ -770,6 +772,8 @@ export class ConversationController {
   }
 
   @Post('chat')
+  @UseGuards(RateLimitGuard)
+  @RateLimit({ policy: 'ai_chat_user', by: 'user' })
   @ApiOperation({
     summary:
       'Chat with AI Bot — creates/finds bot conversation then sends message. Bot reply comes via WebSocket.',

@@ -11,6 +11,8 @@ import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto'
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import { TokenResponse } from '@common/auth/interfaces/token.interface';
 import { isRpcError } from '@common/constants/rpc-error.types';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import { CreateUserResponse } from '@common/user/interfaces/create-user-response.types';
 import type { AuthenticatedRequest } from '@gateway/auth/guards/jwt-auth.guard';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
@@ -47,6 +49,7 @@ type LogoutPushToken = {
 
 @ApiTags('Auth')
 @Controller('auth')
+@UseGuards(RateLimitGuard)
 export class AuthController {
   private readonly notificationServiceUrl: string;
   private readonly notificationGatewaySecret: string | undefined;
@@ -65,6 +68,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @RateLimit({ policy: 'auth_register_ip', by: 'ip' })
   @ApiOperation({ summary: 'Register a new user' })
   async register(@Body() dto: RegisterDto): Promise<CreateUserResponse> {
     return await lastValueFrom(
@@ -77,6 +81,10 @@ export class AuthController {
   }
 
   @Post('login')
+  @RateLimit(
+    { policy: 'auth_login_ip', by: 'ip' },
+    { policy: 'auth_login_account', by: { body: 'email' } },
+  )
   @ApiOperation({ summary: 'Login and set HTTP-only cookies' })
   async login(
     @Body() dto: LoginDto,
@@ -96,6 +104,10 @@ export class AuthController {
   }
 
   @Post('mobile/login')
+  @RateLimit(
+    { policy: 'auth_login_ip', by: 'ip' },
+    { policy: 'auth_login_account', by: { body: 'email' } },
+  )
   @ApiOperation({ summary: 'Login for mobile clients' })
   async mobileLogin(
     @Body() dto: LoginDto,
@@ -111,6 +123,7 @@ export class AuthController {
   }
 
   @Post('mobile/google/verify')
+  @RateLimit({ policy: 'auth_google_ip', by: 'ip' })
   @ApiOperation({ summary: 'Verify a Google ID token for mobile clients' })
   async mobileVerifyGoogleToken(
     @Body() dto: VerifyGoogleTokenDto,
@@ -126,6 +139,7 @@ export class AuthController {
   }
 
   @Post('mobile/refresh')
+  @RateLimit({ policy: 'auth_refresh_ip', by: 'ip' })
   @ApiOperation({ summary: 'Refresh a mobile access token' })
   async mobileRefresh(
     @Body() dto: MobileRefreshDto,
@@ -141,6 +155,7 @@ export class AuthController {
   }
 
   @Post('mobile/logout')
+  @RateLimit({ policy: 'auth_logout_ip', by: 'ip' })
   @ApiOperation({ summary: 'Logout a mobile client' })
   async mobileLogout(
     @Body() dto: MobileLogoutDto,
@@ -215,6 +230,7 @@ export class AuthController {
   }
 
   @Post('confirm')
+  @RateLimit({ policy: 'auth_confirm_ip', by: 'ip' })
   @ApiOperation({ summary: 'Confirm user account' })
   async confirmAccount(@Body() dto: ConfirmAccountDto) {
     return lastValueFrom(
@@ -229,6 +245,10 @@ export class AuthController {
   }
 
   @Post('resend-verification')
+  @RateLimit(
+    { policy: 'auth_resend_ip', by: 'ip' },
+    { policy: 'auth_resend_account', by: { body: 'email' } },
+  )
   @ApiOperation({ summary: 'Resend verification email' })
   async resendVerification(
     @Body() dto: ResendVerificationDto,
@@ -252,6 +272,7 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @RateLimit({ policy: 'auth_refresh_ip', by: 'ip' })
   @ApiOperation({ summary: 'Refresh access token using cookie' })
   async refresh(
     @Req() request: AuthenticatedRequest,
@@ -293,6 +314,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @RateLimit({ policy: 'auth_logout_ip', by: 'ip' })
   @ApiOperation({ summary: 'Logout and clear cookies' })
   async logout(
     @Body() dto: LogoutDto | undefined,
@@ -404,6 +426,7 @@ export class AuthController {
   }
 
   @Post('google/verify')
+  @RateLimit({ policy: 'auth_google_ip', by: 'ip' })
   @ApiOperation({
     summary: 'Verify Google ID token from Web/Mobile and set cookies',
   })
@@ -459,6 +482,10 @@ export class AuthController {
   }
 
   @Post('forgot-password')
+  @RateLimit(
+    { policy: 'auth_forgot_ip', by: 'ip' },
+    { policy: 'auth_forgot_account', by: { body: 'email' } },
+  )
   @ApiOperation({ summary: 'Send forgot password email' })
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return lastValueFrom(
@@ -469,6 +496,7 @@ export class AuthController {
   }
 
   @Post('reset-password')
+  @RateLimit({ policy: 'auth_reset_ip', by: 'ip' })
   @ApiOperation({ summary: 'Reset user password' })
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return lastValueFrom(

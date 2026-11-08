@@ -21,6 +21,8 @@ import { GetUserConversationsUseCase } from 'apps/conversation-service/src/appli
 import { ManageGroupConversationUseCase } from 'apps/conversation-service/src/application/use-cases/manage-group-conversation.use-case';
 import { ManageGroupRoleUseCase } from 'apps/conversation-service/src/application/use-cases/manage-group-role.use-case';
 import { ProcessBotReplyUseCase } from 'apps/conversation-service/src/application/use-cases/process-bot-reply.use-case';
+import { RateLimitService } from '@common/rate-limit/rate-limit.service';
+import { RATE_LIMIT_REDIS } from '@common/rate-limit/rate-limit.types';
 import { TriggerBotReplyUseCase } from 'apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case';
 import { AiServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/ai-service.adapter';
 import { ChatMediaServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/chat-media.service.adapter';
@@ -187,6 +189,9 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     NotificationServiceAdapter,
     MessageNotificationOutboxWorker,
 
+    // Reuse the module's Redis connection for the shared AI-turn budget.
+    { provide: RATE_LIMIT_REDIS, useExisting: 'REDIS_CLIENT' },
+    RateLimitService,
     {
       provide: 'REDIS_CLIENT',
       inject: [ConfigService],

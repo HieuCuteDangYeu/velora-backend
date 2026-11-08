@@ -36,6 +36,8 @@ import {
 import { ReelShareLinkResponse } from '@common/content/interfaces/reel-share-link.interface';
 import { ReelShareResponse } from '@common/content/interfaces/reel-share.interface';
 import { TrackReelEventsResponse } from '@common/content/interfaces/track-reel-events-response.interface';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import { Reel } from '@content/domain/entities/reel.entity';
 import { ReelSeries } from '@content/domain/entities/reel-series.entity';
 import {
@@ -66,7 +68,7 @@ import { ReelAuthorService } from './reel-author.service';
 
 @ApiTags('Content')
 @Controller('content')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RateLimitGuard)
 @ApiBearerAuth()
 export class ContentController {
   private readonly logger = new Logger(ContentController.name);
@@ -131,6 +133,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_publish_user', by: 'user' })
   @Post('reels')
   @ApiOperation({ summary: 'Create a new reel from an uploaded S3 key' })
   async createReel(
@@ -149,6 +152,7 @@ export class ContentController {
     return this._enrichReel(reel);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Post('series')
   @ApiOperation({ summary: 'Create a reel series' })
   async createReelSeries(
@@ -282,6 +286,7 @@ export class ContentController {
     return this.enrichReelSeries(series);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Patch('series/:id')
   @ApiOperation({ summary: 'Update a reel series (owner only)' })
   async updateReelSeries(
@@ -302,6 +307,7 @@ export class ContentController {
     return this.enrichReelSeries(series);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Delete('series/:id')
   @ApiOperation({ summary: 'Delete a reel series and detach its reels' })
   async deleteReelSeries(
@@ -320,6 +326,7 @@ export class ContentController {
     return { success: true };
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Post('series/:id/reels')
   @ApiOperation({ summary: 'Add owned reels to a series' })
   async addReelToSeries(
@@ -340,6 +347,7 @@ export class ContentController {
     return this.enrichReelSeries(series);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Delete('series/:id/reels/:reelId')
   @ApiOperation({ summary: 'Remove a reel from a series' })
   async removeReelFromSeries(
@@ -360,6 +368,7 @@ export class ContentController {
     return this.enrichReelSeries(series);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Patch('series/:id/reels/order')
   @ApiOperation({ summary: 'Replace the episode order for a reel series' })
   async reorderReelSeries(
@@ -421,6 +430,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_events_user', by: 'user' })
   @Post('reels/events')
   @ApiOperation({
     summary: 'Persist retry-safe reel interaction events',
@@ -594,6 +604,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_publish_user', by: 'user' })
   @Post('reels/:id/reprocess')
   @ApiOperation({ summary: 'Retry processing a failed reel' })
   async reprocessReel(
@@ -661,6 +672,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_share_user', by: 'user' })
   @Post('reels/:id/share')
   @ApiOperation({ summary: 'Share a reel into a conversation' })
   async shareReel(
@@ -689,6 +701,7 @@ export class ContentController {
     return await this.enrichReelShareResponse(share);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Post('reels/:id/share-link')
   @ApiOperation({ summary: 'Create an external public share link for a reel' })
   async createReelShareLink(
@@ -713,6 +726,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Delete('reels/share-links/:token')
   @ApiOperation({ summary: 'Revoke an external reel share link' })
   async revokeReelShareLink(
@@ -734,6 +748,7 @@ export class ContentController {
     };
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Patch('reels/:id')
   @ApiOperation({ summary: 'Update reel metadata (owner only)' })
   async updateReel(
@@ -761,6 +776,7 @@ export class ContentController {
     return this._enrichReel(reel);
   }
 
+  @RateLimit({ policy: 'content_write_user', by: 'user' })
   @Delete('reels/:id')
   @ApiOperation({ summary: 'Delete a reel (owner only)' })
   async deleteReel(

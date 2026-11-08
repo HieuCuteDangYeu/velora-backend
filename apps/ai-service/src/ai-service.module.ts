@@ -22,7 +22,10 @@ import { RerankRetrievedEvidenceUseCase } from '@ai/application/use-cases/rerank
 import { RetrieveReelEvidenceUseCase } from '@ai/application/use-cases/retrieve-reel-evidence.use-case';
 import { ReviewIndexQualityUseCase } from '@ai/application/use-cases/review-index-quality.use-case';
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
+import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
 import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
+import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
+import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
 import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-case';
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
@@ -199,6 +202,9 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     BuildRagCitationsUseCase,
     BuildGroundedAnswerRevisionUseCase,
     BuildRagTraceSnapshotUseCase,
+    ScreenRagInputUseCase,
+    ScreenRagResultUseCase,
+    BuildRagGuardrailSummaryUseCase,
     MemoryWriterAgentUseCase,
     ExtractReelMetadataUseCase,
     ReviewIndexQualityUseCase,

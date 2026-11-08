@@ -1,0 +1,21 @@
+import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
+import {
+  readRagGuardrailModes,
+  screenRagInput,
+} from '@ai/domain/services/rag-guardrail/rag-guardrail';
+import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+
+/** Screens a raw user message. Findings are content-free codes; this never alters the request. */
+@Injectable()
+export class ScreenRagInputUseCase {
+  constructor(
+    @Optional()
+    @Inject('IAiApplicationConfig')
+    private readonly config?: IAiApplicationConfig,
+  ) {}
+
+  execute(input: { message: string }): GuardrailFinding[] {
+    return screenRagInput(input.message, readRagGuardrailModes(this.config));
+  }
+}

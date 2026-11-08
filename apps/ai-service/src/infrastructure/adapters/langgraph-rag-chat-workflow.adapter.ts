@@ -17,7 +17,10 @@ import { QueryRouterAgentUseCase } from '@ai/application/use-cases/query-router-
 import { RerankRetrievedEvidenceUseCase } from '@ai/application/use-cases/rerank-retrieved-evidence.use-case';
 import { RetrieveReelEvidenceUseCase } from '@ai/application/use-cases/retrieve-reel-evidence.use-case';
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
+import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
 import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
+import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
+import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
 import type {
@@ -58,6 +61,7 @@ import {
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
+import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
 
 const RagChatStateSchema = new StateSchema({
   userId: z.string(),
@@ -159,6 +163,12 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     private readonly langfuseTracing?: LangfuseTracingService,
     @Optional()
     private readonly contextToolAgentUseCase?: ContextToolAgentUseCase,
+    @Optional()
+    private readonly screenRagInputUseCase?: ScreenRagInputUseCase,
+    @Optional()
+    private readonly screenRagResultUseCase?: ScreenRagResultUseCase,
+    @Optional()
+    private readonly buildRagGuardrailSummaryUseCase?: BuildRagGuardrailSummaryUseCase,
   ) {}
 
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
@@ -227,9 +237,25 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     let result: RagChatWorkflowState = initialState;
     let outcome: RagTelemetryEvent['outcome'] = 'FAILED';
 
+    // Shadow guardrails only record what they would have done; they never
+    // alter routing, evidence or the answer, and can never fail a request.
+    const guardrailFindings: GuardrailFinding[] = [];
+    this.recordGuardrail(guardrailFindings, () =>
+      this.screenRagInputUseCase?.execute({ message: input.message }),
+    );
+
     try {
       result = await graph.invoke(initialState, { recursionLimit: 64 });
       outcome = 'SUCCEEDED';
+      this.recordGuardrail(guardrailFindings, () =>
+        this.screenRagResultUseCase?.execute({
+          answer: result.answer ?? '',
+          userMessage: input.message,
+          citations: result.citations ?? [],
+          accessibleReelIds: result.accessibleReelIds ?? [],
+          evidence: result.rerankedChunks ?? [],
+        }),
+      );
 
       return {
         answer: result.answer?.trim() ?? '',
@@ -260,6 +286,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     } finally {
       const latencyMs = Date.now() - startedAt;
       const tokenUsage = executionContext.tokenUsage;
+      const guardrail =
+        this.buildRagGuardrailSummaryUseCase?.execute(guardrailFindings);
+      if (guardrail && guardrail.findingCount > 0) {
+        const line = `[Guardrail] execution=${productionExecutionId} mode=${guardrail.mode} wouldBlock=${guardrail.wouldBlock} input=${guardrail.inputCodes.join(',') || '-'} evidence=${guardrail.evidenceCodes.join(',') || '-'} output=${guardrail.outputCodes.join(',') || '-'}`;
+        if (guardrail.wouldBlock) this.logger.warn(line);
+        else this.logger.log(line);
+      }
       this.executionContexts.delete(nodeTimings);
       try {
         this.langfuseTracing?.setRootOutput(
@@ -271,6 +304,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             retrievedCount: result.retrievedChunks.length,
             rerankedCount: result.rerankedChunks.length,
             fallbackUsed: Boolean(result.answerFallbackReason),
+            ...(guardrail ? { guardrail } : {}),
           },
           result.answer,
           root
@@ -287,6 +321,19 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.logger.warn('Langfuse RAG diagnostics capture failed');
       }
       this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
+    }
+  }
+
+  private recordGuardrail(
+    into: GuardrailFinding[],
+    screen: () => GuardrailFinding[] | undefined,
+  ): void {
+    try {
+      into.push(...(screen() ?? []));
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Guardrail screening failed: ${this.errorMessage(error)}`,
+      );
     }
   }
 

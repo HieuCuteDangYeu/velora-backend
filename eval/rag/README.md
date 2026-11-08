@@ -14,6 +14,22 @@ The importer requires exactly 220 `GENERATED_CANDIDATE` rows and preserves Reel
 IDs, evidence IDs, modality, and provenance hashes without making production
 RAG requests.
 
+## Guardrail replay
+
+`datasets/rag-guardrail-v1.jsonl` holds attack cases (direct, obfuscated, indirect-in-evidence,
+leaky answers) and hard negatives (benign text that merely sounds like an attack). Each row has a
+`channel` (`user`, `evidence`, `answer`) and an `expect` of `block` (needs a high finding), `flag`
+(a finding, none high) or `allow` (no high finding). The replay is offline, makes no provider calls
+and runs with the normal test suite:
+
+```sh
+npx jest apps/ai-service/src/domain/services/rag-guardrail
+```
+
+It also runs every question in the two committed benchmark datasets through the input check and
+fails if any is blocked, or if more than 2% are flagged at all. No guardrail check may enforce
+until this passes and the paired benchmark regression stays within the existing 0.03 tolerance.
+
 ## Evaluation v2
 
 New runs store a frozen input/reference snapshot and an evaluator version. The

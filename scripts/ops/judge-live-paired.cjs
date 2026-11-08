@@ -62,14 +62,18 @@ function main() {
   const newState = JSON.parse(fs.readFileSync(newPath, 'utf8'));
   if (oldState.datasetFingerprint !== newState.datasetFingerprint)
     throw new Error('The two runs use different datasets');
-  const items = new Map(newState.datasetSnapshot.map((item) => [item.id, item]));
+  const items = new Map(
+    newState.datasetSnapshot.map((item) => [item.id, item]),
+  );
   const ids = [...items.keys()]
     .filter(
       (id) =>
         oldState.cases[id]?.status === 'COMPLETED' &&
         newState.cases[id]?.status === 'COMPLETED',
     )
-    .sort((left, right) => stableRank(seed, left).localeCompare(stableRank(seed, right)))
+    .sort((left, right) =>
+      stableRank(seed, left).localeCompare(stableRank(seed, right)),
+    )
     .slice(0, sample)
     .filter((_, position) => position % shardCount === shardIndex);
   const done = new Set(

@@ -581,13 +581,25 @@ function saveState(file, state) {
   writeJsonAtomically(file, state);
 }
 
+// A production trace may carry the release as the full commit SHA or as "<first 8 SHA characters>-<build label>"
+// (for example "35dceff1-groqvision-20261106b"); both identify the same commit.
+function traceReleaseMatches(expectedReleaseSha, actualRelease) {
+  if (typeof actualRelease !== 'string') return false;
+  if (actualRelease === expectedReleaseSha) return true;
+  const short = expectedReleaseSha.slice(0, 8);
+  return (
+    isFullReleaseSha(expectedReleaseSha) &&
+    (actualRelease === short || actualRelease.startsWith(`${short}-`))
+  );
+}
+
 function assertCompletedTraceReleaseIdentity(state, expectedReleaseSha) {
   if (!expectedReleaseSha) return;
   const mismatches = Object.entries(state.cases ?? {})
     .filter(
       ([, entry]) =>
         entry.status === 'COMPLETED' &&
-        entry.output?.release !== expectedReleaseSha,
+        !traceReleaseMatches(expectedReleaseSha, entry.output?.release),
     )
     .map(
       ([caseId, entry]) => `${caseId}=${entry.output?.release ?? 'MISSING'}`,
@@ -606,7 +618,10 @@ function recordCompletedCase({
   output,
   expectedReleaseSha,
 }) {
-  if (expectedReleaseSha && output?.release !== expectedReleaseSha) {
+  if (
+    expectedReleaseSha &&
+    !traceReleaseMatches(expectedReleaseSha, output?.release)
+  ) {
     state.cases[caseId] = {
       ...current,
       traceReleaseMismatch: {

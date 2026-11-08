@@ -336,6 +336,14 @@ assert.equal(
   matrix.gates.find((gate) => gate.id === 'release-approval').status,
   'BLOCKED',
 );
+assert.match(
+  matrix.gates.find((gate) => gate.id === 'release-approval').reason,
+  /live retrieval\/ACL proof/,
+);
+assert.match(
+  matrix.gates.find((gate) => gate.id === 'release-approval').reason,
+  /benchmark quality targets/,
+);
 assert.equal(
   matrix.gates.find((gate) => gate.id === 'benchmark-quality').status,
   'BLOCKED',
@@ -424,6 +432,11 @@ assert.equal(
   langfuseBlockedMatrix.gates.find((gate) => gate.id === 'release-approval')
     .status,
   'BLOCKED',
+);
+assert.match(
+  langfuseBlockedMatrix.gates.find((gate) => gate.id === 'release-approval')
+    .reason,
+  /Langfuse replay is not complete/,
 );
 
 const previousAuthority = process.env.RAG_FINAL_REVIEW_AUTHORITY;

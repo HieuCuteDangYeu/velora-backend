@@ -625,6 +625,31 @@ function buildExitGateMatrix(
     evaluatorVersionPass &&
     eligibilityPolicyPass &&
     langfusePass;
+  const releaseBlockers = [];
+  if (!productionRetrievalPass) releaseBlockers.push('live retrieval/ACL proof');
+  if (!reviewComplete) releaseBlockers.push('review authority');
+  if (visualContract?.imageTruthStatus !== 'PASS')
+    releaseBlockers.push('image-level visual truth');
+  if (!rerankerPass) releaseBlockers.push('live TEI reranker admission');
+  if (operational?.status !== 'PASS')
+    releaseBlockers.push('operational fault coverage');
+  if (!primaryComplete || !exactOnce)
+    releaseBlockers.push('exact-once primary and semantic coverage');
+  if (!privacyPass) releaseBlockers.push('privacy canary');
+  if (!qualityTargetsPass) {
+    const unmetQualityChecks = result.qualityGate?.blockedChecks ?? [];
+    releaseBlockers.push(
+      unmetQualityChecks.length
+        ? `benchmark quality targets (${unmetQualityChecks.join(', ')})`
+        : 'benchmark quality targets',
+    );
+  }
+  if (!evaluatorVersionPass) releaseBlockers.push('semantic evaluator version');
+  if (!eligibilityPolicyPass) releaseBlockers.push('semantic eligibility policy');
+  if (!langfusePass)
+    releaseBlockers.push(
+      langfuseQualification.summary || 'Langfuse observability',
+    );
   const phaseName = (phase) => phase.phase || phase.summary?.phase;
   const evidencePath = (file) =>
     path.relative(runDir, file) || path.basename(file);
@@ -858,7 +883,7 @@ function buildExitGateMatrix(
           ? agentAuthority
             ? 'All declared release evidence is complete under the explicitly authorized agent source-of-truth review policy.'
             : 'All declared release evidence is complete.'
-          : 'Review authority, independent approval, live retrieval/ACL proof, image-level visual truth, or live TEI reranking admission remain unproven.',
+          : 'Release readiness blocked by: ' + releaseBlockers.join('; '),
       },
     ],
   };

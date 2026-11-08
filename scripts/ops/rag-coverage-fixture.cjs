@@ -115,15 +115,24 @@ function createFixturePorts(fixture) {
               input.sourceTimestampEndSec != null &&
               input.sourceTimestampSec != null
             ) {
-              const aCovers =
-                (a.startTime ?? 0) <= input.sourceTimestampSec &&
-                (a.endTime ?? 0) >= input.sourceTimestampEndSec;
-              const bCovers =
-                (b.startTime ?? 0) <= input.sourceTimestampSec &&
-                (b.endTime ?? 0) >= input.sourceTimestampEndSec;
-              if (aCovers !== bCovers) return aCovers ? -1 : 1;
+              const priority = (item) => {
+                if (
+                  Math.abs((item.startTime ?? 0) - input.sourceTimestampSec) <=
+                    0.05 &&
+                  Math.abs((item.endTime ?? 0) - input.sourceTimestampEndSec) <=
+                    0.05
+                ) {
+                  return 0;
+                }
+                return (item.startTime ?? 0) >= input.sourceTimestampSec &&
+                  (item.endTime ?? 0) <= input.sourceTimestampEndSec
+                  ? 1
+                  : 2;
+              };
+              const priorityDifference = priority(a) - priority(b);
+              if (priorityDifference) return priorityDifference;
               if ((a.endTime ?? 0) !== (b.endTime ?? 0))
-                return (b.endTime ?? 0) - (a.endTime ?? 0);
+                return (a.endTime ?? 0) - (b.endTime ?? 0);
             }
             return (
               (a.startTime ?? 0) - (b.startTime ?? 0) ||

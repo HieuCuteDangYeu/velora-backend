@@ -44,9 +44,15 @@ function parseArgs(argv) {
     const value = argv[index];
     if (!value?.startsWith('--')) continue;
     const [name, inlineValue] = value.slice(2).split('=', 2);
-    const next = inlineValue ?? argv[index + 1];
-    if (inlineValue === undefined && next && !next.startsWith('--')) index += 1;
-    args[name] = inlineValue ?? next ?? true;
+    const next = argv[index + 1];
+    if (inlineValue !== undefined) {
+      args[name] = inlineValue;
+    } else if (next && !next.startsWith('--')) {
+      args[name] = next;
+      index += 1;
+    } else {
+      args[name] = true;
+    }
   }
   return args;
 }
@@ -481,6 +487,45 @@ function prepareInFlightRetry(state, caseId, failureCategory) {
   };
 }
 
+function prepareExcludedRetry(state, caseId) {
+  const current = state.cases[caseId];
+  if (
+    !current ||
+    current.status !== 'EXCLUDED' ||
+    current.exclusionReason !== 'RAG_RESPONSE_TIMEOUT_UNRESOLVED'
+  )
+    throw new Error(
+      `case ${caseId} is not an unresolved-response timeout exclusion`,
+    );
+  if ((current.retryCount ?? 0) >= MAX_CASE_RETRIES) {
+    throw new Error(`case ${caseId} exhausted its bounded retries`);
+  }
+  const { exclusionReason, excludedAt } = current;
+  return {
+    ...state,
+    cases: {
+      ...state.cases,
+      [caseId]: {
+        status: 'PENDING',
+        attemptCount: current.attemptCount ?? 1,
+        retryCount: (current.retryCount ?? 0) + 1,
+        attemptHistory: [
+          ...(current.attemptHistory ?? []),
+          {
+            status: 'EXCLUDED_RECONCILED',
+            failureCategory: exclusionReason,
+            conversationId: current.conversationId,
+            userMessageId: current.userMessageId,
+            requestStartedAt: current.requestStartedAt,
+            excludedAt,
+            reconciledAt: new Date().toISOString(),
+          },
+        ],
+      },
+    },
+  };
+}
+
 function excludeInFlightCase(state, caseId, exclusionReason) {
   if (!EXCLUSION_REASONS.has(exclusionReason)) {
     throw new Error(`unsupported exclusion reason: ${exclusionReason}`);
@@ -718,12 +763,35 @@ async function waitForRagTrace(client, conversationId, maxAttempts = 15) {
   throw new Error(`RAG workflow trace timeout for ${conversationId}`);
 }
 
-async function attachRagTrace(client, output, conversationId) {
-  return attachTrace(
-    output,
-    await waitForRagTrace(client, conversationId),
-    conversationId,
-  );
+function traceOrMissing(output, error, allowMissingTrace) {
+  if (
+    !allowMissingTrace ||
+    !(error instanceof Error) ||
+    !error.message.startsWith('RAG workflow trace timeout')
+  )
+    throw error;
+  return { ...output, traceStatus: 'MISSING' };
+}
+
+async function attachRagTrace(
+  client,
+  output,
+  conversationId,
+  allowMissingTrace = false,
+) {
+  try {
+    const traced = await waitForRagTrace(
+      client,
+      conversationId,
+      allowMissingTrace ? 4 : 15,
+    );
+    return {
+      ...attachTrace(output, traced, conversationId),
+      traceStatus: 'CAPTURED',
+    };
+  } catch (error) {
+    return traceOrMissing(output, error, allowMissingTrace);
+  }
 }
 
 function reelIdsForItem(item) {
@@ -782,6 +850,7 @@ async function runCase({
   runId,
   expectedReleaseSha,
   autoExcludeTimeouts = false,
+  allowMissingTrace = false,
 }) {
   const caseId = item.id;
   const current = state.cases[caseId] ?? { status: 'PENDING' };
@@ -818,6 +887,7 @@ async function runCase({
       langfuseClient,
       outputFromMessage(assistant, current.conversationId),
       current.conversationId,
+      allowMissingTrace,
     );
     return recordCompletedCase({
       state,
@@ -888,6 +958,7 @@ async function runCase({
     langfuseClient,
     outputFromMessage(assistant, conversationId),
     conversationId,
+    allowMissingTrace,
   );
   return recordCompletedCase({
     state,
@@ -1059,7 +1130,8 @@ async function main() {
       if (
         Object.values(state.cases).every((item) =>
           ['COMPLETED', 'EXCLUDED'].includes(item.status),
-        )
+        ) &&
+        !args['retry-excluded-case']
       )
         throw new Error(
           'Completed runs are immutable; use analyze-rag-benchmark with a new output path',
@@ -1119,6 +1191,11 @@ async function main() {
       );
     }
     const retryCaseId = args['retry-in-flight-case'];
+    const retryExcludedCaseId = args['retry-excluded-case'];
+    if (retryCaseId && retryExcludedCaseId)
+      throw new Error(
+        'Choose either --retry-in-flight-case or --retry-excluded-case',
+      );
     if (retryCaseId) {
       const failureCategory = String(args['retry-failure-category'] || '');
       const current = state.cases[retryCaseId];
@@ -1142,6 +1219,31 @@ async function main() {
         JSON.stringify({ retryCaseId, failureCategory, retryAuthorized: true }),
       );
     }
+    if (retryExcludedCaseId) {
+      const current = state.cases[retryExcludedCaseId];
+      if (!current?.conversationId || !current.userMessageId)
+        throw new Error(
+          `case ${retryExcludedCaseId} has no request identity for retry reconciliation`,
+        );
+      const messages = await request(
+        'GET',
+        `/conversations/${current.conversationId}/messages?limit=50`,
+      );
+      if (findBotMessage(messages, current.userMessageCreatedAt)) {
+        throw new Error(
+          `case ${retryExcludedCaseId} already has a bot response; do not retry it`,
+        );
+      }
+      state = prepareExcludedRetry(state, retryExcludedCaseId);
+      saveState(stateFile, state);
+      console.log(
+        JSON.stringify({
+          retryExcludedCaseId,
+          failureCategory: 'RAG_RESPONSE_TIMEOUT_UNRESOLVED',
+          retryAuthorized: true,
+        }),
+      );
+    }
     const reelIds = [
       ...new Set(items.map((item) => item.input?.reelIds?.[0]).filter(Boolean)),
     ];
@@ -1150,6 +1252,11 @@ async function main() {
       (item) =>
         !['COMPLETED', 'EXCLUDED'].includes(state.cases[item.id]?.status),
     );
+    const caseLimit = Number.parseInt(String(args.limit ?? ''), 10);
+    const batch =
+      Number.isInteger(caseLimit) && caseLimit > 0
+        ? pending.slice(0, caseLimit)
+        : pending;
     console.log(
       JSON.stringify({
         runId,
@@ -1157,10 +1264,11 @@ async function main() {
         totalCases: items.length,
         distinctReels: reelIds.length,
         pendingCases: pending.length,
+        batchCases: batch.length,
         stateFile,
       }),
     );
-    if (pending.length) {
+    if (batch.length) {
       let halted = false;
       const autoExcludeTimeouts = Boolean(args['auto-exclude-timeouts']);
       const result = await dataset.runExperiment({
@@ -1176,9 +1284,9 @@ async function main() {
           serviceReleaseSha,
           executionMode: 'LIVE_PRODUCTION_BACKEND',
           benchmarkRunId: runId,
-          productionRagCallsAuthorized: expectedCases,
+          productionRagCallsAuthorized: batch.length,
         },
-        data: pending,
+        data: batch,
         maxConcurrency: Math.min(
           Math.max(Number.parseInt(args.concurrency ?? '1', 10) || 1, 1),
           4,
@@ -1198,6 +1306,7 @@ async function main() {
               runId,
               expectedReleaseSha: serviceReleaseSha,
               autoExcludeTimeouts,
+              allowMissingTrace: args['allow-missing-traces'] === true,
             });
             const completed = Object.values(state.cases).filter(
               (entry) => entry.status === 'COMPLETED',
@@ -1288,6 +1397,23 @@ async function main() {
           output: state.cases[item.id]?.output,
         })),
       ),
+      traceCoverage: (() => {
+        const completed = completedItems.map(
+          (item) => state.cases[item.id]?.output?.traceStatus,
+        );
+        const captured = completed.filter(
+          (status) => status === 'CAPTURED',
+        ).length;
+        const missing = completed.filter(
+          (status) => status === 'MISSING',
+        ).length;
+        return {
+          captured,
+          missing,
+          unknown: completed.length - captured - missing,
+          coverage: completed.length ? captured / completed.length : null,
+        };
+      })(),
       stateFile,
       completedAt: new Date().toISOString(),
     };
@@ -1298,6 +1424,8 @@ async function main() {
       process.exitCode = 2;
     } else if (summary.excludedCases > 0) {
       process.exitCode = 3;
+    } else if (summary.traceCoverage.coverage < 0.9) {
+      process.exitCode = 4;
     }
   } finally {
     await client.shutdown();
@@ -1313,6 +1441,7 @@ if (require.main === module)
   });
 
 module.exports = {
+  parseArgs,
   benchmarkEvaluations,
   outputFromMessage,
   aggregateEvaluations,
@@ -1326,12 +1455,14 @@ module.exports = {
   isClearAbstention,
   excludeInFlightCase,
   prepareInFlightRetry,
+  prepareExcludedRetry,
   reelIdsForItem,
   shareReels,
   tokenF1,
   tokenRecall,
   assertCompletedTraceReleaseIdentity,
   recordCompletedCase,
+  traceOrMissing,
   BENCHMARK_EVALUATOR_VERSION,
   assertExpectedDatasetSha256,
 };

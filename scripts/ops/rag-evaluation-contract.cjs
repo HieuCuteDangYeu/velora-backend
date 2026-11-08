@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const EVALUATOR_VERSION = 'velora-rag-evaluation-v7';
+const EVALUATOR_VERSION = 'velora-rag-evaluation-v10';
 const canonical = (value) =>
   Array.isArray(value)
     ? value.map(canonical)
@@ -123,8 +123,7 @@ function strictEvaluations(input, expectedOutput, output) {
       : allExpectedGroups;
   const values = {
     citation_modality_precision: citations.length
-      ? citations.filter(citationHasExpectedModality).length /
-        citations.length
+      ? citations.filter(citationHasExpectedModality).length / citations.length
       : allExpectedGroups.length === 0
         ? 1
         : 0,
@@ -135,9 +134,7 @@ function strictEvaluations(input, expectedOutput, output) {
     citations.every((c) => typeof c.evidenceId === 'string')
   ) {
     const ids = new Set(
-      citations
-        .filter(citationHasExpectedModality)
-        .map((c) => c.evidenceId),
+      citations.filter(citationHasExpectedModality).map((c) => c.evidenceId),
     );
     if (modalityGroups.length)
       values.citation_source_recall = evidenceGroupCoverage(
@@ -201,7 +198,9 @@ function attachTrace(output, trace, conversationId) {
     ragTraceId: trace.id ?? trace.traceId,
     traceId: diagnostics.langfuseTraceId,
     productionExecutionId: diagnostics.productionExecutionId,
-    workflowLatencyMs: Number.isFinite(trace.latencyMs) ? trace.latencyMs : null,
+    workflowLatencyMs: Number.isFinite(trace.latencyMs)
+      ? trace.latencyMs
+      : null,
     nodeTimings: trace.nodeTimings ?? {},
     retrievedEvidenceIds: trace.retrievedChunkIds,
     rerankedEvidenceIds: trace.rerankedChunkIds,
@@ -258,17 +257,33 @@ function executionHealth(diagnostics) {
       'DETERMINISTIC_REQUIRED_MODALITY',
       'DETERMINISTIC_REQUIRED_TOOL',
     ].includes(contextSufficiency?.decisionSource);
+  const deterministicTranscriptRange =
+    contextSufficiency?.providerStatus === 'NOT_CALLED' &&
+    contextSufficiency?.decisionSource === 'DETERMINISTIC_TRANSCRIPT_RANGE' &&
+    contextSufficiency?.sufficient === true;
+  const deterministicMultimodalRange =
+    contextSufficiency?.providerStatus === 'NOT_CALLED' &&
+    contextSufficiency?.decisionSource === 'DETERMINISTIC_MULTIMODAL_RANGE' &&
+    contextSufficiency?.sufficient === true;
   const routeAvailable = route?.providerStatus === 'SUCCESS' || structuralRoute;
   const requiredTools = routeDecision?.toolPlan?.requiredTools ?? [];
   const contextAvailable = !routeDecision?.needsRetrieval
     ? requiredTools.length === 0 ||
       (diagnostics?.contextToolExecution?.providerStatus === 'SUCCESS' &&
         (contextSufficiency?.providerStatus === 'SUCCESS' ||
+          deterministicTranscriptRange ||
+          deterministicMultimodalRange ||
           deterministicRefusal))
-    : contextSufficiency?.providerStatus === 'SUCCESS' || deterministicRefusal;
+    : contextSufficiency?.providerStatus === 'SUCCESS' ||
+      deterministicTranscriptRange ||
+      deterministicMultimodalRange ||
+      deterministicRefusal;
   const verificationAvailable =
     !routeDecision?.needsVerification ||
     diagnostics?.verification?.providerStatus === 'SUCCESS' ||
+    (diagnostics?.verification?.decisionSource === 'EXACT_PROVENANCE' &&
+      diagnostics?.verification?.finalPassed === true &&
+      diagnostics?.verification?.exactProvenance?.supported === true) ||
     deterministicRefusal ||
     structuralRoute;
   return {

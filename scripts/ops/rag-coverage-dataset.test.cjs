@@ -33,6 +33,29 @@ test('sampled point timestamps and adjacency retain exact source and access scop
   assert.deepEqual(await p.index.searchVisualScenes({ sourceTimestampSec: 5 }), []);
   assert.deepEqual(await p.index.getAdjacentChunks({ chunkId: 'current', eligibleReelIds: ['a', 'b'], parentId: 'reel:a', requiredIndexVersion: 'v2' }), []);
 });
+test('time-window search prefers exact and contained chunks over larger overlaps', async () => {
+  const f = fixture();
+  f.chunks = [
+    { id: 'broad-overlap', reelId: 'a', indexAttemptId: 'new', indexVersion: 'v2', evidenceText: 'outside plus window', startTime: 0, endTime: 84.2 },
+    { id: 'inside-later', reelId: 'a', indexAttemptId: 'new', indexVersion: 'v2', evidenceText: 'later in the window', startTime: 30, endTime: 40 },
+    { id: 'exact-window', reelId: 'a', indexAttemptId: 'new', indexVersion: 'v2', evidenceText: 'the complete requested window', startTime: 0.52, endTime: 77.82 },
+    { id: 'inside-earlier', reelId: 'a', indexAttemptId: 'new', indexVersion: 'v2', evidenceText: 'earlier in the window', startTime: 10, endTime: 25 },
+  ];
+  const p = createFixturePorts(f);
+  const results = await p.index.searchChunks({
+    sourceOrder: 'ASC',
+    sourceTimestampSec: 0.52,
+    sourceTimestampEndSec: 77.82,
+    filters: { reelIds: ['a'] },
+    limit: 3,
+  });
+
+  assert.deepEqual(results.map((result) => result.id), [
+    'exact-window',
+    'inside-earlier',
+    'inside-later',
+  ]);
+});
 test('replay search preserves source metadata, section parents and duration', async () => {
   const f = fixture();
   f.documents[0].sourceDurationMs = 300000;

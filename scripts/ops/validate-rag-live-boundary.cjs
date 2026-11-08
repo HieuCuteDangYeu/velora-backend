@@ -86,7 +86,7 @@ function safeMessageObservation(message) {
 
 function isAccessRefusal(message) {
   const answer = typeof message?.content === 'string' ? message.content : '';
-  return /(?:not shared|wasn't shared|was not shared|don't have access|do not have access|can't provide|cannot provide|unable to|no information about its content|not available|(?:do not|don't|don’t) have enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|not enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|could(?: not|n't|n’t) (?:answer|summarize|provide))/i.test(answer);
+  return /(?:not shared|wasn't shared|was not shared|don't have access|do not have access|can't provide|cannot provide|unable to|no information about its content|not available|(?:do not|don't|don’t) have enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|not enough (?:verified )?(?:relevant )?(?:shared )?(?:reel )?(?:context|evidence|information)|could(?: not|n't|n’t) (?:answer|summarize|provide)|could(?: not|n't|n’t) verify\b[^.!?]{0,120}\bfrom (?:the )?(?:available|provided) context)/i.test(answer);
 }
 
 function hasExpectedTemporalCitation(citations, expected) {

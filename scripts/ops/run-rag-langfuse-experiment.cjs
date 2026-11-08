@@ -24,6 +24,9 @@ const defaultDatasetVersion = 'rag-coverage-v7-visual-reviewed-20261022-02';
 const defaultEvaluatorVersion = 'velora-rag-evaluation-v6';
 const defaultCohortPrefix = 'cohort-v22';
 const phases = ['baseline', 'candidate'];
+// The Langfuse experiment SDK stamps every replayed observation with this
+// environment, regardless of the span processor's configured environment.
+const EXPERIMENT_OBSERVATION_ENVIRONMENT = 'sdk-experiment';
 const semanticFields = [
   ['faithfulness', 'semantic_faithfulness'],
   ['factualCorrectness', 'semantic_factual_correctness'],
@@ -53,6 +56,41 @@ function readJsonl(file) {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function loadSemanticCohort(cohortDir, expectedEvaluatorVersion) {
+  const currentPath = path.join(cohortDir, 'semantic-cases.jsonl');
+  if (!fs.existsSync(currentPath)) {
+    const legacyPath = path.join(cohortDir, 'semantic.json');
+    return fs.existsSync(legacyPath)
+      ? readJson(legacyPath)
+      : { evaluatorVersion: expectedEvaluatorVersion, cases: {} };
+  }
+
+  const rows = readJsonl(currentPath);
+  const versions = [...new Set(rows.map((row) => row.evaluatorVersion))];
+  if (
+    versions.length !== 1 ||
+    versions[0] !== expectedEvaluatorVersion ||
+    rows.some((row) => !row.caseId) ||
+    new Set(rows.map((row) => row.caseId)).size !== rows.length
+  ) {
+    throw new Error('Semantic JSONL cohort is incomplete or mixes evaluator versions');
+  }
+  return {
+    evaluatorVersion: versions[0],
+    cases: Object.fromEntries(
+      rows.map((row) => [
+        row.caseId,
+        {
+          ...(row.scores ?? {}),
+          evaluatorVersion: row.evaluatorVersion,
+          provider: row.judgeProvider,
+          model: row.judgeModel,
+        },
+      ]),
+    ),
+  };
 }
 
 function writeJsonAtomic(file, value) {
@@ -162,14 +200,11 @@ function loadRun(
     const directory = path.join(runDir, `${cohortPrefix}-${phase}`);
     const state = readJson(path.join(directory, 'state.json'));
     const responses = readJsonl(path.join(directory, 'responses.jsonl'));
-    const semanticPath = path.join(directory, 'semantic.json');
     const deterministicPath = path.join(
       directory,
       'deterministic-details.json',
     );
-    const semantic = fs.existsSync(semanticPath)
-      ? readJson(semanticPath)
-      : { evaluatorVersion: expectedEvaluatorVersion, cases: {} };
+    const semantic = loadSemanticCohort(directory, expectedEvaluatorVersion);
     const deterministic = fs.existsSync(deterministicPath)
       ? readJson(deterministicPath)
       : [];
@@ -311,7 +346,11 @@ function assertToolObservationReadback(observations, expectedByTraceId) {
     const traceObservations = byTraceId.get(traceId) || [];
     if (!traceObservations.length)
       throw new Error(`LANGFUSE_TOOL_READBACK_INCOMPLETE trace=${traceId}`);
-    if (traceObservations.some((item) => item.environment !== 'rag-evaluation'))
+    if (
+      traceObservations.some(
+        (item) => item.environment !== EXPERIMENT_OBSERVATION_ENVIRONMENT,
+      )
+    )
       throw new Error(
         `LANGFUSE_TOOL_READBACK_INVALID environment trace=${traceId}`,
       );
@@ -334,7 +373,11 @@ async function readBackToolObservations(
   client,
   itemResults,
   responses,
-  { fromStartTime, retryDelaysMs = [0, 1_000, 3_000, 7_000, 15_000] },
+  {
+    fromStartTime,
+    // Self-hosted ingestion is queued through object storage and can lag by minutes.
+    retryDelaysMs = [0, 1_000, 3_000, 7_000, 15_000, 30_000, 60_000, 120_000],
+  },
 ) {
   const expectedByTraceId = new Map();
   const caseIds = new Set();
@@ -369,7 +412,7 @@ async function readBackToolObservations(
     let cursor;
     do {
       const page = await client.api.observations.getMany({
-        environment: 'rag-evaluation',
+        environment: EXPERIMENT_OBSERVATION_ENVIRONMENT,
         fromStartTime,
         toStartTime,
         fields: 'core,basic',
@@ -683,7 +726,7 @@ async function runExperiment(client, dataset, phase, cohort, options) {
       },
     ],
     runEvaluators: runEvaluators(options.datasetVersion),
-    maxConcurrency: 8,
+    maxConcurrency: options.maxConcurrency ?? 8,
   };
   const fromStartTime = new Date(Date.now() - 60_000).toISOString();
   const result =
@@ -761,7 +804,29 @@ function assertBillingPeriodVerified(
   args,
   requiredHeadroomUnits,
   now = Date.now(),
+  baseUrl = process.env.LANGFUSE_BASE_URL,
 ) {
+  if (args['self-hosted-local'] === true) {
+    let hostname;
+    try {
+      const url = new URL(baseUrl ?? '');
+      hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+        throw new Error('Invalid local Langfuse URL');
+    } catch {
+      throw new Error(
+        '--self-hosted-local requires LANGFUSE_BASE_URL to use localhost or a loopback IP',
+      );
+    }
+    if (!['localhost', '127.0.0.1', '::1'].includes(hostname))
+      throw new Error(
+        '--self-hosted-local requires LANGFUSE_BASE_URL to use localhost or a loopback IP',
+      );
+    return {
+      status: 'SELF_HOSTED_LOCAL_NO_BILLING',
+      requiredHeadroomUnits,
+    };
+  }
   if (args['billing-period-verified'] !== true || !args['billing-proof'])
     throw new Error(
       'Langfuse replay requires --billing-period-verified and --billing-proof pointing to a fresh Billing-page verification.',
@@ -805,6 +870,7 @@ function assertBillingPeriodVerified(
     throw new Error(
       `Langfuse billing proof has ${limit - consumed} units available; replay requires an estimated ${requiredHeadroomUnits} units including headroom.`,
     );
+  return { status: 'BILLING_PROOF_PASS', requiredHeadroomUnits };
 }
 
 async function remoteExperimentExists(client, runName) {
@@ -833,6 +899,11 @@ async function main() {
   if (!['both', ...phases].includes(phaseFilter))
     throw new Error('--phase must be baseline or candidate or both');
   const itemLimit = args.limit ? Number.parseInt(args.limit, 10) : undefined;
+  // Self-hosted events-only Langfuse cannot delete a partial run, so a clean
+  // replay of the same cohort needs a distinct experiment name.
+  const runSuffix = args['run-suffix'];
+  if (runSuffix !== undefined && !/^[A-Za-z0-9._-]{1,32}$/.test(runSuffix))
+    throw new Error('--run-suffix must be 1-32 characters of A-Za-z0-9._-');
   if (
     itemLimit !== undefined &&
     (!Number.isInteger(itemLimit) || itemLimit < 1)
@@ -844,6 +915,10 @@ async function main() {
   const runDir = path.resolve(args['run-dir'] || defaultRunDir);
   const run = loadRun(datasetDir, runDir, {
     cohortPrefix: args['cohort-prefix'] || defaultCohortPrefix,
+    evaluatorVersion:
+      typeof args['evaluator-version'] === 'string'
+        ? args['evaluator-version']
+        : undefined,
     allowNonpassingQuality: args['allow-nonpassing-quality'] === true,
   });
   const requestedPhases = phaseFilter === 'both' ? phases : [phaseFilter];
@@ -852,12 +927,12 @@ async function main() {
     requestedPhases,
     itemLimit,
   );
-  assertBillingPeriodVerified(args, requiredHeadroomUnits);
+  const billingQualification = assertBillingPeriodVerified(
+    args,
+    requiredHeadroomUnits,
+  );
   if (billingPreflight) {
-    process.stdout.write(
-      JSON.stringify({ status: 'BILLING_PROOF_PASS', requiredHeadroomUnits }) +
-        '\n',
-    );
+    process.stdout.write(JSON.stringify(billingQualification) + '\n');
     return;
   }
   process.env.LANGFUSE_ENABLED = 'true';
@@ -887,9 +962,13 @@ async function main() {
     publicKey: process.env.LANGFUSE_PUBLIC_KEY,
     secretKey: process.env.LANGFUSE_SECRET_KEY,
     baseUrl: process.env.LANGFUSE_BASE_URL,
+    // Self-hosted v4 (events-only) stores OTel spans only with this header.
+    additionalHeaders: { 'x-langfuse-ingestion-version': '4' },
     environment: 'rag-evaluation',
     release: `${versionTag.toLowerCase()}-cached-${run.datasetSha256.slice(0, 12)}`,
-    flushAt: 20,
+    // A cached replay emits spans far faster than a live service; larger
+    // batches keep it under the OTLP exporter's concurrent-export cap.
+    flushAt: 200,
     flushInterval: 5,
     mediaUploadEnabled: false,
     mask: ({ data }) => maskLangfuseData(data),
@@ -934,8 +1013,8 @@ async function main() {
         /[^A-Za-z0-9._-]/g,
         '-',
       );
-      const key = `${phase}-${run.datasetSha256.slice(0, 12)}-${build.slice(0, 12)}-${evaluatorTag}${itemLimit ? `-smoke-${itemLimit}` : ''}`;
-      const runName = `${versionTag} ${phase} ${evaluatorTag} cached replay ${run.datasetSha256.slice(0, 12)} ${build.slice(0, 12)}${itemLimit ? ` smoke-${itemLimit}` : ''}`;
+      const key = `${phase}-${run.datasetSha256.slice(0, 12)}-${build.slice(0, 12)}-${evaluatorTag}${itemLimit ? `-smoke-${itemLimit}` : ''}${runSuffix ? `-${runSuffix}` : ''}`;
+      const runName = `${versionTag} ${phase} ${evaluatorTag} cached replay ${run.datasetSha256.slice(0, 12)} ${build.slice(0, 12)}${itemLimit ? ` smoke-${itemLimit}` : ''}${runSuffix ? ` ${runSuffix}` : ''}`;
       return { phase, key, runName, previous: ledger.runs[key] };
     });
     for (const plan of runPlans) {
@@ -991,6 +1070,7 @@ async function main() {
           sourceManifestSha256: run.sourceManifestSha256,
           evaluatorVersion: run.evaluatorVersion,
           qualityGate: run.final?.qualityGate?.status || 'NOT_AVAILABLE',
+          maxConcurrency: args['self-hosted-local'] === true ? 2 : 8,
           startActiveObservation,
           spanProcessor,
         },

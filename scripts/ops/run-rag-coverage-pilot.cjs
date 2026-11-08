@@ -5,6 +5,9 @@ const cp = require('node:child_process');
 const readline = require('node:readline');
 const dotenv = require('dotenv');
 const { fingerprint } = require('./rag-evaluation-contract.cjs');
+const {
+  configureEvaluationProviders,
+} = require('./run-rag-coverage-evaluation.cjs');
 
 async function main() {
   const [directory, output, compiledBase, runtimeEnv, mode] =
@@ -34,7 +37,16 @@ async function main() {
   if (mode === 'multimodal') {
     take(5, (row) => row.metadata.answerType === 'MULTIMODAL_FACTS');
   } else if (mode === 'transcript') {
-    take(5, (row) => row.metadata.bucket === 'TRANSCRIPT' && row.metadata.referenceStartSec > 0);
+    take(
+      5,
+      (row) =>
+        row.metadata.bucket === 'TRANSCRIPT' &&
+        row.metadata.referenceStartSec > 0,
+    );
+  } else if (mode === 'visual') {
+    take(12, (row) => row.metadata.bucket === 'VISUAL');
+  } else if (mode === 'chat') {
+    take(6, (row) => row.metadata.bucket === 'CHAT');
   } else if (mode === 'remediation') {
     take(5, (row) => row.metadata.answerType === 'MULTIMODAL_FACTS');
     take(
@@ -88,6 +100,7 @@ async function main() {
     RAG_COMPILED_AI_BASE: path.resolve(compiledBase),
     RAG_FROZEN_BACKEND_EMBEDDINGS: 'true',
   };
+  configureEvaluationProviders(env);
   const child = cp.spawn(
     process.execPath,
     [path.join(__dirname, 'rag-coverage-worker.cjs')],

@@ -376,26 +376,18 @@ jobs:
         run: |
           set -euo pipefail
           node --check scripts/ops/run-langfuse-live-benchmark.cjs
-          node --check scripts/ops/publish-rag-v8-live-experiment.cjs
-          node --check scripts/ops/publish-rag-codex-source-calibration.cjs
-          node --check scripts/ops/run-rag-v8-codex-judge.cjs
+          node --check scripts/ops/run-rag-semantic-benchmark.cjs
           node --test \
             scripts/ops/run-langfuse-live-benchmark.test.cjs \
             scripts/ops/rag-evaluation-contract.test.cjs \
             scripts/ops/rag-evaluation-applicability.test.cjs \
-            scripts/ops/run-rag-v6-supervisor.test.cjs \
             scripts/ops/run-rag-coverage-evaluation.test.cjs \
-            scripts/ops/judge-quota-controller.test.cjs \
             scripts/ops/finalize-rag-remediation-run.test.cjs \
             scripts/ops/run-rag-langfuse-experiment.test.cjs \
             scripts/ops/validate-rag-live-boundary.test.cjs \
-            scripts/ops/rag-semantic-judge.test.cjs \
-            scripts/ops/run-semantic-judge.test.cjs \
+            scripts/ops/run-rag-semantic-benchmark.test.cjs \
             scripts/ops/publish-langfuse-scores.test.cjs \
             scripts/ops/validate-rag-visual-contract.test.cjs
-          node scripts/ops/publish-rag-v8-live-experiment.cjs --self-test
-          node scripts/ops/publish-rag-codex-source-calibration.cjs --self-test
-          node scripts/ops/run-rag-v8-codex-judge.cjs --self-test
           pnpm exec jest --runInBand \
             apps/ai-service/src/application/use-cases/build-grounded-answer-revision.use-case.spec.ts \
             apps/ai-service/src/application/use-cases/check-context-sufficiency.use-case.spec.ts \

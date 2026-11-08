@@ -17,14 +17,38 @@ const {
   isFullReleaseSha,
   isClearAbstention,
   outputFromMessage,
+  parseArgs,
+  prepareExcludedRetry,
   prepareInFlightRetry,
   reelIdsForItem,
   recordCompletedCase,
   shareReels,
   tokenF1,
   tokenRecall,
+  traceOrMissing,
 } = require('./run-langfuse-live-benchmark.cjs');
 const { strictEvaluations } = require('./rag-evaluation-contract.cjs');
+
+test('parses adjacent boolean flags independently', () => {
+  assert.deepEqual(
+    parseArgs([
+      '--allow-missing-traces',
+      '--auto-exclude-timeouts',
+      '--retry-excluded-case',
+      'SCRAPED-CANDIDATE-0086',
+      '--expected-cases',
+      '220',
+      '--run-id=live-1',
+    ]),
+    {
+      'allow-missing-traces': true,
+      'auto-exclude-timeouts': true,
+      'retry-excluded-case': 'SCRAPED-CANDIDATE-0086',
+      'expected-cases': '220',
+      'run-id': 'live-1',
+    },
+  );
+});
 
 test('reconciles one terminal provider failure without losing the original attempt', () => {
   const state = {
@@ -46,6 +70,42 @@ test('reconciles one terminal provider failure without losing the original attem
     'TEI_RERANKER_OVERLOADED',
   );
   assert.equal(state.cases.case1.status, 'IN_FLIGHT');
+});
+
+test('retries an excluded RAG timeout only after caller reconciles its old conversation', () => {
+  const state = {
+    cases: {
+      case1: {
+        status: 'EXCLUDED',
+        exclusionReason: 'RAG_RESPONSE_TIMEOUT_UNRESOLVED',
+        excludedAt: '2026-11-02T10:00:00.000Z',
+        attemptCount: 1,
+        retryCount: 0,
+        conversationId: 'conversation-1',
+        userMessageId: 'message-1',
+      },
+    },
+  };
+  const next = prepareExcludedRetry(state, 'case1');
+  assert.equal(next.cases.case1.status, 'PENDING');
+  assert.equal(next.cases.case1.retryCount, 1);
+  assert.equal(
+    next.cases.case1.attemptHistory[0].failureCategory,
+    'RAG_RESPONSE_TIMEOUT_UNRESOLVED',
+  );
+  assert.equal(
+    next.cases.case1.attemptHistory[0].conversationId,
+    'conversation-1',
+  );
+  assert.equal(state.cases.case1.status, 'EXCLUDED');
+  assert.throws(
+    () =>
+      prepareExcludedRetry(
+        { cases: { case2: { status: 'EXCLUDED', exclusionReason: 'OTHER' } } },
+        'case2',
+      ),
+    /unresolved-response timeout exclusion/,
+  );
 });
 
 test('requires a full immutable service SHA for a non-provisional dataset run', () => {
@@ -212,6 +272,35 @@ test('preserves an unresolved response timeout as an explicit exclusion', () => 
   assert.equal(
     next.cases.case1.exclusionReason,
     'RAG_RESPONSE_TIMEOUT_UNRESOLVED',
+  );
+});
+
+test('allows explicit deterministic-only scoring when a sampled trace is absent', () => {
+  const output = { answer: 'Persisted answer', citations: [] };
+  const missing = traceOrMissing(
+    output,
+    new Error('RAG workflow trace timeout for conversation-1'),
+    true,
+  );
+  assert.equal(missing.answer, output.answer);
+  assert.equal(missing.traceStatus, 'MISSING');
+  assert.throws(
+    () =>
+      traceOrMissing(
+        output,
+        new Error('RAG workflow trace timeout for conversation-1'),
+        false,
+      ),
+    /RAG workflow trace timeout/,
+  );
+  assert.throws(
+    () =>
+      traceOrMissing(
+        output,
+        new Error('Trace conversation identity mismatch'),
+        true,
+      ),
+    /identity mismatch/,
   );
 });
 

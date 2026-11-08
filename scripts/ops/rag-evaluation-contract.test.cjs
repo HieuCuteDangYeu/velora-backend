@@ -10,10 +10,7 @@ const {
   evidenceGroupCoverage,
 } = require('./rag-evaluation-contract.cjs');
 const { analyze } = require('./analyze-rag-benchmark.cjs');
-const {
-  normalizeJudgeOutput,
-  buildDimensionPrompt,
-} = require('./rag-semantic-judge.cjs');
+const { buildDimensionPrompt } = require('./rag-judge-prompts.cjs');
 const { outputFromMessage } = require('./run-langfuse-live-benchmark.cjs');
 
 test('provider outages are classified independently of a successful fallback answer', () => {
@@ -33,6 +30,49 @@ test('provider outages are classified independently of a successful fallback ans
       route: { providerStatus: 'SUCCESS' },
       routeDecision: { needsRetrieval: false, needsVerification: false },
       verification: { providerStatus: 'NOT_CALLED' },
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: { needsRetrieval: true, needsVerification: true },
+      contextSufficiency: { providerStatus: 'SUCCESS', sufficient: true },
+      verification: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'EXACT_PROVENANCE',
+        finalPassed: true,
+        exactProvenance: { supported: true, supportingEvidenceIndexes: [0] },
+      },
+      finalFailureSource: 'NONE',
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: { needsRetrieval: true, needsVerification: true },
+      contextSufficiency: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+        sufficient: true,
+      },
+      verification: { providerStatus: 'SUCCESS' },
+    }).status,
+    'AVAILABLE',
+  );
+  assert.equal(
+    executionHealth({
+      route: { providerStatus: 'SUCCESS' },
+      routeDecision: { needsRetrieval: true, needsVerification: true },
+      contextSufficiency: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_MULTIMODAL_RANGE',
+        sufficient: true,
+      },
+      verification: { providerStatus: 'SUCCESS' },
+      evaluationCapture: { contextCaptured: true },
+      finalFailureSource: 'NONE',
     }).status,
     'AVAILABLE',
   );
@@ -228,16 +268,6 @@ test('trace attachment fails closed on conversation/answer/provenance mismatches
   assert.equal(
     attachTrace({ answer: 'yes' }, trace, 'c').productionExecutionId,
     'p',
-  );
-});
-test('missing and invalid judge dimensions are unavailable, never silently zero', () => {
-  assert.throws(
-    () => normalizeJudgeOutput({ faithfulness: { score: 0 } }),
-    /unavailable/,
-  );
-  assert.throws(
-    () => normalizeJudgeOutput({ faithfulness: { score: Infinity } }),
-    /unavailable/,
   );
 });
 test('judge dimensions receive only the reference and evidence needed for their task', () => {

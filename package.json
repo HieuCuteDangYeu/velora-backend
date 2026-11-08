@@ -111,7 +111,7 @@
     "ops:reranker:qualify": "node scripts/ops/qualify-reranker.cjs",
     "ops:langfuse:dataset:import": "node scripts/ops/import-langfuse-dataset.cjs",
     "ops:langfuse:scores": "node scripts/ops/publish-langfuse-scores.cjs",
-    "ops:rag:judge": "node scripts/ops/run-semantic-judge.cjs",
+    "ops:rag:judge": "node scripts/ops/run-rag-semantic-benchmark.cjs",
     "ops:rag:audit": "node scripts/ops/analyze-rag-benchmark.cjs",
     "validate:rabbitmq": "node scripts/ops/validate-rabbitmq-config.cjs"
   },

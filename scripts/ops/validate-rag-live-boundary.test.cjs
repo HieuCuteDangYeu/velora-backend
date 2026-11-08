@@ -137,3 +137,30 @@ test('accepts the production no-context refusal wording', () => {
   assert.equal(result.status, 'PASS');
   assert.equal(result.assertions.unsharedRequestRefused, true);
 });
+
+test('accepts the verifier no-context abstention when the unshared Reel has no citations', () => {
+  const result = evaluateProbe({
+    sharedMessage,
+    unsharedMessage: {
+      id: 'unshared-message',
+      content: 'I could not verify that answer reliably from the available context.',
+      metadata: { citations: [] },
+    },
+    sharedReelId: 'shared-reel',
+    unsharedReelId: 'unshared-reel',
+    expectedEvidenceType: 'TRANSCRIPT',
+    expectedStart: 11,
+    expectedEnd: 55,
+  });
+
+  assert.equal(result.status, 'PASS');
+  assert.deepEqual(result.assertions, {
+    sharedCitationPresent: true,
+    sharedCitationsStayWithinConversationScope: true,
+    sharedEvidenceTypeMatches: true,
+    sharedTemporalRangeMatches: true,
+    unsharedCitationAbsent: true,
+    unsharedConversationHasNoEvidence: true,
+    unsharedRequestRefused: true,
+  });
+});

@@ -42,6 +42,9 @@ const { LangfuseTracingService } = load(
   'infrastructure/services/langfuse-tracing.service.js',
 );
 const { AiServiceModule } = load('ai-service.module.js');
+const { GroqKeyPool } = load(
+  'infrastructure/services/groq-key-pool.service.js',
+);
 let ports, trace;
 let activeCaseId;
 let currentFixture;
@@ -227,6 +230,25 @@ function redactEvaluationSnapshot(value) {
   let builder = Test.createTestingModule({ imports: [AiServiceModule] })
     .overrideProvider(PrismaService)
     .useValue({});
+  if (process.env.RAG_EVALUATION_GROQ_DISABLED === 'true') {
+    const failGroqCall = () => {
+      const error = new Error(
+        'Groq calls are disabled for this local evaluation',
+      );
+      error.code = 'GROQ_DISABLED_IN_EVALUATION';
+      throw error;
+    };
+    builder = builder.overrideProvider(GroqKeyPool).useValue({
+      size: 0,
+      onModuleInit() {},
+      onModuleDestroy() {},
+      acquire: failGroqCall,
+      acquireAsync: failGroqCall,
+      reportSuccess() {},
+      reportRateLimited() {},
+      reportFailure() {},
+    });
+  }
   if (!langfuseForEvaluation)
     builder = builder.overrideProvider(LangfuseTracingService).useValue({
       withRoot: (_, operation) =>
@@ -361,9 +383,6 @@ function redactEvaluationSnapshot(value) {
     };
   }
   const workflow = app.get('IRagChatWorkflow');
-  const { GroqKeyPool } = load(
-    'infrastructure/services/groq-key-pool.service.js',
-  );
   const keyPool = app.get(GroqKeyPool);
   const seen = new Set();
   console.log(

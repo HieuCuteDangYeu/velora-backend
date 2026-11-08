@@ -13,6 +13,7 @@ const {
   cachedToolCalls,
   assertToolObservationReadback,
   estimateLangfuseReplayUnits,
+  evaluationsFor,
   loadRun,
   readBackToolObservations,
   replayCachedToolObservations,
@@ -69,6 +70,41 @@ test('Langfuse replay requires a fresh reset proof with enough billable headroom
   assert.throws(
     () => assertBillingPeriodVerified(args, 20_000, now),
     /stale, over limit/,
+  );
+});
+
+test('local self-hosted replay skips cloud billing proof only on loopback', () => {
+  assert.deepEqual(
+    assertBillingPeriodVerified(
+      { 'self-hosted-local': true },
+      90_000,
+      Date.now(),
+      'http://localhost:3000',
+    ),
+    {
+      status: 'SELF_HOSTED_LOCAL_NO_BILLING',
+      requiredHeadroomUnits: 90_000,
+    },
+  );
+  assert.throws(
+    () =>
+      assertBillingPeriodVerified(
+        { 'self-hosted-local': true },
+        90_000,
+        Date.now(),
+        'https://langfuse.example.com',
+      ),
+    /requires LANGFUSE_BASE_URL to use localhost or a loopback IP/,
+  );
+  assert.throws(
+    () =>
+      assertBillingPeriodVerified(
+        {},
+        1,
+        Date.now(),
+        'http://localhost:3000',
+      ),
+    /requires --billing-period-verified and --billing-proof/,
   );
 });
 
@@ -292,7 +328,7 @@ test('billing preflight validates the proof before creating any Langfuse client'
   assert.match(overLimit.stderr, /stale, over limit/);
 });
 
-test('V8 loader keeps the 400-case primary hash distinct from its 440-case artifact', () => {
+test('loader reads v10 semantic JSONL and keeps the primary hash distinct from its artifact', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-langfuse-v8-'));
   const datasetDir = path.join(root, 'dataset');
   const runDir = path.join(root, 'run');
@@ -338,11 +374,31 @@ test('V8 loader keeps the 400-case primary hash distinct from its 440-case artif
         path.join(cohortDir, 'responses.jsonl'),
         `${rows.map((row) => JSON.stringify({ caseId: row.id })).join('\n')}\n`,
       );
+      fs.writeFileSync(
+        path.join(cohortDir, 'semantic-cases.jsonl'),
+        `${rows
+          .map((row) =>
+            JSON.stringify({
+              caseId: row.id,
+              evaluatorVersion: 'velora-rag-evaluation-v10',
+              judgeProvider: 'codex-chatgpt-subscription',
+              judgeModel: 'gpt-6-luna',
+              scores: {
+                faithfulness: { score: 0.9, reasoning: 'grounded' },
+                factualCorrectness: { score: 1, reasoning: 'matches' },
+                responseRelevancy: { score: 0.8, reasoning: 'answers' },
+                contextCompleteness: { score: 1, reasoning: 'present' },
+              },
+            }),
+          )
+          .join('\n')}\n`,
+      );
     }
 
     const run = loadRun(datasetDir, runDir, {
       cohortPrefix: 'cohort-v8',
       allowNonpassingQuality: true,
+      evaluatorVersion: 'velora-rag-evaluation-v10',
     });
 
     assert.equal(
@@ -355,6 +411,21 @@ test('V8 loader keeps the 400-case primary hash distinct from its 440-case artif
     assert.equal(run.sourceManifestSha256, manifestHash);
     assert.equal(run.sourceArtifactCaseCount, 440);
     assert.equal(run.cohorts.candidate.responses.size, 2);
+    assert.equal(
+      run.cohorts.candidate.semantic['case-development'].faithfulness.score,
+      0.9,
+    );
+    assert.deepEqual(
+      evaluationsFor('case-development', run.cohorts.candidate, run.datasetVersion).map(
+        (score) => [score.name, score.value],
+      ),
+      [
+        ['semantic_faithfulness', 0.9],
+        ['semantic_factual_correctness', 1],
+        ['semantic_response_relevancy', 0.8],
+        ['semantic_context_completeness', 1],
+      ],
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -477,20 +548,20 @@ test('tool observation readback proves exact names under each Langfuse trace', (
     ['trace-2', []],
   ]);
   const observations = [
-    { traceId: 'trace-1', type: 'CHAIN', environment: 'rag-evaluation' },
+    { traceId: 'trace-1', type: 'CHAIN', environment: 'sdk-experiment' },
     {
       traceId: 'trace-1',
       type: 'TOOL',
       name: 'get_reel_context',
-      environment: 'rag-evaluation',
+      environment: 'sdk-experiment',
     },
     {
       traceId: 'trace-1',
       type: 'TOOL',
       name: 'search_reel_content',
-      environment: 'rag-evaluation',
+      environment: 'sdk-experiment',
     },
-    { traceId: 'trace-2', type: 'SPAN', environment: 'rag-evaluation' },
+    { traceId: 'trace-2', type: 'SPAN', environment: 'sdk-experiment' },
   ];
 
   assert.equal(assertToolObservationReadback(observations, expected), 2);
@@ -536,20 +607,20 @@ test('reads persisted TOOL observations back across Langfuse pages', async () =>
           id: 'root-1',
           traceId: 'trace-1',
           type: 'CHAIN',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
         {
           id: 'tool-1',
           traceId: 'trace-1',
           type: 'TOOL',
           name: 'search_reel_content',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
         {
           id: 'root-2',
           traceId: 'trace-2',
           type: 'SPAN',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
       ],
       meta: { cursor: 'page-2' },
@@ -561,7 +632,7 @@ test('reads persisted TOOL observations back across Langfuse pages', async () =>
           traceId: 'trace-1',
           type: 'TOOL',
           name: 'get_reel_context',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
       ],
       meta: {},
@@ -589,7 +660,7 @@ test('reads persisted TOOL observations back across Langfuse pages', async () =>
     2,
   );
   assert.equal(queries.length, 2);
-  assert.equal(queries[0].environment, 'rag-evaluation');
+  assert.equal(queries[0].environment, 'sdk-experiment');
   assert.equal(queries[0].fromStartTime, '2026-10-29T00:00:00.000Z');
   assert.equal(typeof queries[0].toStartTime, 'string');
   assert.equal(queries[0].fields, 'core,basic');
@@ -605,7 +676,7 @@ test('retries observation readback when tool spans are not visible yet', async (
           id: 'root-1',
           traceId: 'trace-1',
           type: 'CHAIN',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
       ],
       meta: {},
@@ -616,14 +687,14 @@ test('retries observation readback when tool spans are not visible yet', async (
           id: 'root-1',
           traceId: 'trace-1',
           type: 'CHAIN',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
         {
           id: 'tool-1',
           traceId: 'trace-1',
           type: 'TOOL',
           name: 'search_reel_content',
-          environment: 'rag-evaluation',
+          environment: 'sdk-experiment',
         },
       ],
       meta: {},
@@ -713,14 +784,14 @@ test('experiment ledger uses API readback counts rather than attempted tool writ
               id: 'root-1',
               traceId: 'trace-1',
               type: 'CHAIN',
-              environment: 'rag-evaluation',
+              environment: 'sdk-experiment',
             },
             {
               id: 'tool-1',
               traceId: 'trace-1',
               type: 'TOOL',
               name: 'search_reel_content',
-              environment: 'rag-evaluation',
+              environment: 'sdk-experiment',
             },
           ],
           meta: {},
@@ -734,6 +805,7 @@ test('experiment ledger uses API readback counts rather than attempted tool writ
   const dataset = {
     items: [item],
     runExperiment: async (options) => {
+      assert.equal(options.maxConcurrency, 2);
       const output = await options.task({ metadata: item.metadata });
       return {
         runName: 'RAG V8 baseline cached replay',
@@ -773,6 +845,7 @@ test('experiment ledger uses API readback counts rather than attempted tool writ
       sourceManifestSha256: 'c'.repeat(64),
       evaluatorVersion: 'test-evaluator',
       qualityGate: 'NOT_AVAILABLE',
+      maxConcurrency: 2,
       startActiveObservation: async (_name, callback) =>
         callback({ update: () => {} }),
       spanProcessor: {

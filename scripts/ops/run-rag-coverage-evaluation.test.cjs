@@ -8,6 +8,7 @@ const path = require('node:path');
 const {
   buildFingerprint,
   compiledRuntimeFiles,
+  configureEvaluationProviders,
   parseGroqQuotaGroups,
   availableGroqKeyIndexes,
   isDailyQuotaFailure,
@@ -15,6 +16,39 @@ const {
   deferProviderQuotaFailure,
   contextCaptureStatusFromResponse,
 } = require('./run-rag-coverage-evaluation.cjs');
+
+test('local RAG evaluation strips Groq credentials and disables transcription', () => {
+  const env = {
+    GROQ_API_KEYS: 'local-test-key-one,local-test-key-two',
+    GROQ_API_KEY: 'local-test-single-key',
+    GROQ_API_KEY_QUOTA_GROUPS: 'org-a,org-b',
+  };
+
+  assert.deepEqual(configureEvaluationProviders(env), {
+    groqEnabled: false,
+    keyCount: 0,
+  });
+  assert.equal('GROQ_API_KEYS' in env, false);
+  assert.equal('GROQ_API_KEY' in env, false);
+  assert.equal('GROQ_API_KEY_QUOTA_GROUPS' in env, false);
+  assert.equal(env.RAG_EVALUATION_GROQ_DISABLED, 'true');
+});
+
+test('Groq quota mode requires explicit opt-in and canonicalizes its key list', () => {
+  const env = {
+    RAG_EVALUATION_GROQ_ENABLED: 'true',
+    GROQ_API_KEYS: 'local-test-key-one,local-test-key-one,local-test-key-two',
+    RAG_EVALUATION_GROQ_DISABLED: 'true',
+  };
+
+  assert.deepEqual(configureEvaluationProviders(env), {
+    groqEnabled: true,
+    keyCount: 2,
+  });
+  assert.equal(env.GROQ_API_KEYS, 'local-test-key-one,local-test-key-two');
+  assert.equal('GROQ_API_KEY' in env, false);
+  assert.equal('RAG_EVALUATION_GROQ_DISABLED' in env, false);
+});
 
 test('serializes exact generation-context capture status from the trace diagnostic', () => {
   assert.equal(

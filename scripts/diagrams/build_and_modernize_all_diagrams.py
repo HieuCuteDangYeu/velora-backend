@@ -948,22 +948,22 @@ def create_svg_figure(diagram_elem):
     mx = diagram_elem.find('mxGraphModel')
     page_width = int(mx.attrib.get('pageWidth', '2000'))
     page_height = int(mx.attrib.get('pageHeight', '2500'))
-    
+
     payload = '<mxfile host="app.diagrams.net" type="device">' + ET.tostring(diagram_elem, encoding='unicode') + '</mxfile>'
-    
+
     svg = ET.Element('svg', xmlns='http://www.w3.org/2000/svg', version='1.1',
                      width=f'{page_width}px', height=f'{page_height}px',
                      viewBox=f'0 0 {page_width} {page_height}',
                      style='background: #ffffff; background-color: #ffffff; color-scheme: light;',
                      content=payload)
-    
+
     ET.SubElement(svg, 'rect', width='100%', height='100%', fill='#ffffff')
     g = ET.SubElement(svg, 'g')
-    
+
     # Title
     t = ET.SubElement(g, 'text', x='130', y='50', fill='#202020', style='font-family: Arial; font-size: 24px; font-weight: bold;')
     t.text = title
-    
+
     # Parse cells in diagram to render SVG shapes
     root = mx.find('root')
     for cell in root.findall('mxCell'):
@@ -972,17 +972,17 @@ def create_svg_figure(diagram_elem):
         val = html.unescape(re.sub('<[^<]+?>', ' ', val)).strip()
         geom = cell.find('mxGeometry')
         style = cell.attrib.get('style', '')
-        
+
         if cell.attrib.get('vertex') == '1' and geom is not None and geom.attrib.get('width'):
             x = int(geom.attrib.get('x', '0'))
             y = int(geom.attrib.get('y', '0'))
             w = int(geom.attrib.get('width', '100'))
             h = int(geom.attrib.get('height', '50'))
-            
+
             # Avoid duplicate header emission
             if cid in ('flow1', 'title') or val == title or 'fontSize=24' in style:
                 continue
-            
+
             if 'shape=umlFrame' in style:
                 cg = ET.SubElement(g, 'g', attrib={'data-cell-id': cid})
                 ET.SubElement(cg, 'rect', x=str(x), y=str(y), width=str(w), height=str(h), fill='#ffffff' if 'light-dark' in style else 'none', stroke='#202020', attrib={'stroke-width': '1.4'})
@@ -1001,7 +1001,7 @@ def create_svg_figure(diagram_elem):
                 cg = ET.SubElement(g, 'g', attrib={'data-cell-id': cid})
                 txt = ET.SubElement(cg, 'text', x=str(x), y=str(y + 20), fill='#202020', style='font-family: Arial; font-size: 14px;')
                 txt.text = val
-                
+
         elif cell.attrib.get('edge') == '1' and geom is not None:
             sp = geom.find('mxPoint[@as="sourcePoint"]')
             tp = geom.find('mxPoint[@as="targetPoint"]')
@@ -1011,7 +1011,7 @@ def create_svg_figure(diagram_elem):
                 x2 = int(float(tp.attrib.get('x', '0')))
                 y2 = int(float(tp.attrib.get('y', '0')))
                 cg = ET.SubElement(g, 'g', attrib={'data-cell-id': cid})
-                
+
                 if 'dashed=1;endArrow=none' in style:
                     # Lifeline stem
                     ET.SubElement(cg, 'path', d=f'M {x1} {y1} L {x2} {y2}', stroke='#202020', attrib={'stroke-width': '1.4', 'stroke-dasharray': '4 4', 'fill': 'none'})
@@ -1044,7 +1044,7 @@ def create_svg_figure(diagram_elem):
                                     wrapped_lines.append(cur)
                             else:
                                 wrapped_lines.append(line)
-                                
+
                         text_x = x1 + loop_w + 10
                         start_y = y1 + 14 - (len(wrapped_lines) - 1) * 8
                         mt = ET.SubElement(cg, 'text', x=str(text_x), y=str(start_y), fill='#202020',
@@ -1075,7 +1075,7 @@ def create_svg_figure(diagram_elem):
                             else:
                                 tspan = ET.SubElement(mt, 'tspan', x=str(mid_x), dy='16')
                                 tspan.text = line
-                        
+
     return ET.tostring(svg, encoding='unicode')
 
 MONOLITHIC_TO_REMOVE = {
@@ -1104,7 +1104,7 @@ DIAGRAM_ORDER = [
     # Subsystems & Architecture (2)
     '01-microservices-architecture',
     '02-application-architecture',
-    
+
     # Data Flow Diagrams (15)
     '03-dfd-context',
     '04-dfd-overview',
@@ -1121,14 +1121,14 @@ DIAGRAM_ORDER = [
     '10b-dfd-semantic-candidates',
     '11-dfd-rag',
     '11a-dfd-memory',
-    
+
     # Entity & State Models (5)
     '12-identity-social',
     '13-content',
     '14-semantic-hierarchy',
     '15-index-state',
     '16-ai-conversation',
-    
+
     # Sequence Diagrams (48)
     '17a-auth-registration-request',
     '17b-auth-email-verification',
@@ -1184,16 +1184,16 @@ def main():
     print("Parsing velora-architecture.drawio...")
     tree = ET.parse(ARCH_DRAWIO)
     doc_root = tree.getroot()
-    
+
     # 1. Collect all diagrams by id
     all_diagrams = {p.attrib['id']: p for p in doc_root.findall('diagram')}
-    
+
     # 2. Build and update split diagrams
     for m in SPLIT_MODELS:
         diag_id = m['id']
         diag_elem = build_diagram_element(m)
         all_diagrams[diag_id] = diag_elem
-        
+
         # Write standalone importable SVG
         svg_content = create_svg_figure(diag_elem)
         (IMPORTABLE_DIR / f'{diag_id}.drawio.svg').write_text(svg_content)
@@ -1222,14 +1222,14 @@ def main():
     # 5. Write updated document
     doc_text = ET.tostring(doc_root, encoding='unicode')
     ARCH_DRAWIO.write_text(doc_text)
-    
+
     # 6. Update combined SVG
     combined_svg = COMBINED_SVG.read_text()
     match = re.search(r'<svg\b[^>]*>', combined_svg, re.S)
     opening = re.sub(r'\scontent=\"[^\"]*\"', '', match.group(0))
     opening = opening[:-1] + f' content=\"{html.escape(doc_text, quote=True)}\">'
     COMBINED_SVG.write_text(combined_svg[:match.start()] + opening + combined_svg[match.end():])
-    
+
     print("Master draw.io and combined SVG updated successfully in exact order!")
 
 if __name__ == '__main__':

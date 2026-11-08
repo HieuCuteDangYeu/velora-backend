@@ -459,7 +459,7 @@ def modernize_tree(root):
         mx = d.find('mxGraphModel')
         if mx is None:
             continue
-        
+
         # 1. Update semanticModel
         sm_str = mx.attrib.get('semanticModel')
         if sm_str:
@@ -479,7 +479,7 @@ def modernize_tree(root):
         for c in r.findall('mxCell'):
             cid = c.attrib.get('id', '')
             val = c.attrib.get('value', '')
-            
+
             # Application architecture labels
             if cid in APP_ARCH_REPLACEMENTS:
                 c.set('value', APP_ARCH_REPLACEMENTS[cid])
@@ -525,15 +525,15 @@ def main():
     print("Reading velora-architecture.drawio...")
     tree = ET.parse(ARCH_DRAWIO)
     root = tree.getroot()
-    
+
     print("Modernizing labels across all diagrams...")
     modernize_tree(root)
-    
+
     # Save back
     doc_text = ET.tostring(root, encoding='unicode')
     ARCH_DRAWIO.write_text(doc_text)
     print("Saved velora-architecture.drawio")
-    
+
     # Update standalone SVGs in importable-svg
     print("Updating importable-svg files...")
     for page in root.findall('diagram'):
@@ -546,16 +546,16 @@ def main():
             if match:
                 opening = re.sub(r'\scontent=\"[^\"]*\"', '', match.group(0))
                 opening = opening[:-1] + f' content=\"{html.escape(payload, quote=True)}\">'
-                
+
                 body = svg_text[match.end():]
                 # Replace visible text strings in SVG body only
                 for old, new in REPLACEMENTS.items():
                     body = body.replace(html.escape(clean_text(old)), html.escape(clean_text(new)))
                     body = body.replace(clean_text(old), clean_text(new))
-                
+
                 new_svg = svg_text[:match.start()] + opening + body
                 svg_file.write_text(new_svg)
-                
+
     # Update combined SVG
     print("Updating velora-diagrams.drawio.svg...")
     combined_svg = COMBINED_SVG.read_text()

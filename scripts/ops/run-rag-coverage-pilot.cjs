@@ -55,6 +55,11 @@ async function main() {
         row.metadata.bucket === 'TRANSCRIPT' &&
         row.metadata.answerType === 'SEMANTIC_FACTS',
     );
+  } else if (mode === 'combined-all') {
+    take(
+      rows.filter((row) => row.metadata.bucket === 'COMBINED').length,
+      (row) => row.metadata.bucket === 'COMBINED',
+    );
   } else if (mode === 'visual-all') {
     take(
       rows.filter((row) => row.metadata.bucket === 'VISUAL').length,

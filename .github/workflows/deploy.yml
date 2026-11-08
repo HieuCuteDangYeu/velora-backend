@@ -134,7 +134,7 @@ jobs:
               [ -z "$changed_file" ] && continue
 
               case "$changed_file" in
-                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
+                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|scripts/diagrams/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
                   continue
                   ;;
               esac
@@ -363,7 +363,18 @@ jobs:
 
       - name: Build mediasoup worker for call regression
         if: needs.detect-changes.outputs.call_regression_required == 'true'
-        run: pnpm rebuild mediasoup
+        run: |
+          for attempt in 1 2 3; do
+            echo "Attempt $attempt: rebuilding mediasoup..."
+            pnpm rebuild mediasoup && break || {
+              if [ "$attempt" -eq 3 ]; then
+                echo "Failed to build mediasoup worker after 3 attempts." >&2
+                exit 1
+              fi
+              echo "Retrying in 5 seconds..."
+              sleep 5
+            }
+          done
 
       - name: Ensure Redis server for group-call regression
         if: needs.detect-changes.outputs.call_regression_required == 'true'

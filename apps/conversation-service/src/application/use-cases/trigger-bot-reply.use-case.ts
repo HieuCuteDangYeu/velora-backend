@@ -1,5 +1,6 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { RateLimitService } from '@common/rate-limit/rate-limit.service';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Message } from '../../domain/entities/message.entity';
 import { Conversation } from '../../domain/entities/conversation.entity';
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
@@ -19,6 +20,7 @@ export class TriggerBotReplyUseCase {
   constructor(
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     private readonly processBotReplyUseCase: ProcessBotReplyUseCase,
+    @Optional() private readonly rateLimits?: RateLimitService,
   ) {}
 
   async execute(
@@ -41,6 +43,11 @@ export class TriggerBotReplyUseCase {
       return { triggered: false };
     }
 
+    const rateLimited = await this.checkAiTurnBudget(senderId);
+    if (rateLimited) {
+      return { triggered: false, botError: rateLimited };
+    }
+
     try {
       const result = await this.processBotReplyUseCase.execute(userMessage);
 
@@ -57,5 +64,26 @@ export class TriggerBotReplyUseCase {
         botError: { code: 'UNKNOWN', message: msg },
       };
     }
+  }
+
+  /**
+   * The authoritative RAG budget. REST (`create_message`) and WebSocket
+   * (`send_message`) both converge here, so one limit covers every client.
+   * The user message is already stored; only the paid AI turn is withheld.
+   */
+  private async checkAiTurnBudget(userId: string): Promise<BotError | null> {
+    if (!this.rateLimits) return null;
+    for (const policy of ['ai_turn_minute', 'ai_turn_day'] as const) {
+      const decision = await this.rateLimits.check(policy, `u:${userId}`);
+      if (!decision.allowed) {
+        this.rateLimits.logDenied(policy, decision);
+        return {
+          code: 'RATE_LIMITED',
+          message: 'Too many AI requests. Please try again later.',
+          retryAfterSeconds: decision.retryAfterSeconds,
+        };
+      }
+    }
+    return null;
   }
 }

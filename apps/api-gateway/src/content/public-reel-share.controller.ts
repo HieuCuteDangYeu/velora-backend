@@ -3,6 +3,8 @@ import type {
   ContentResolvedReelShareLinkResponse,
   PublicResolvedReelShareLinkResponse,
 } from '@common/content/interfaces/reel-share-link.interface';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import {
   Controller,
   Get,
@@ -11,6 +13,7 @@ import {
   Inject,
   Logger,
   Param,
+  UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClientProxy } from '@nestjs/microservices';
@@ -19,6 +22,7 @@ import { catchError, lastValueFrom } from 'rxjs';
 
 @ApiTags('Public Reel Share')
 @Controller('r')
+@UseGuards(RateLimitGuard)
 export class PublicReelShareController {
   private readonly logger = new Logger(PublicReelShareController.name);
   private readonly cdnDomain: string;
@@ -46,6 +50,7 @@ export class PublicReelShareController {
   }
 
   @Get(':token')
+  @RateLimit({ policy: 'public_share_ip', by: 'ip' })
   @ApiOperation({ summary: 'Resolve a public reel share link' })
   async resolveShareLink(
     @Param('token') token: string,

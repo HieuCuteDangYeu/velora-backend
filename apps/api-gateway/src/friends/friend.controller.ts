@@ -11,6 +11,8 @@ import {
   PaginatedFriendResults,
 } from '@common/friend/interfaces/friend.types';
 import { UserBlockActionResponse } from '@common/friend/interfaces/user-block-action.interface';
+import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import { Role, Roles } from '@gateway/auth/decorators/roles.decorator';
 import type { AuthenticatedRequest } from '@gateway/auth/guards/jwt-auth.guard';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
@@ -36,7 +38,7 @@ import { catchError, lastValueFrom } from 'rxjs';
 
 @ApiTags('Friends')
 @Controller('friends')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, RateLimitGuard)
 @Roles(Role.ADMIN, Role.USER)
 export class FriendController {
   constructor(
@@ -44,6 +46,7 @@ export class FriendController {
     private readonly friendClient: ClientProxy,
   ) {}
 
+  @RateLimit({ policy: 'friend_request_user', by: 'user' })
   @Post('requests')
   @ApiOperation({
     summary: 'Send a friend request to another user',
@@ -62,6 +65,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Post('requests/:requestId/accept')
   @ApiOperation({
     summary: 'Accept an incoming friend request',
@@ -81,6 +85,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Post('requests/:requestId/reject')
   @ApiOperation({
     summary: 'Reject an incoming friend request',
@@ -100,6 +105,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Post(':userId/block')
   @ApiOperation({
     summary: 'Block a user and remove any relationship',
@@ -120,6 +126,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Delete(':userId/block')
   @ApiOperation({
     summary: 'Unblock a user',
@@ -172,6 +179,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Delete('requests/:requestId')
   @ApiOperation({
     summary: 'Cancel an outgoing friend request',
@@ -289,6 +297,7 @@ export class FriendController {
     );
   }
 
+  @RateLimit({ policy: 'friend_write_user', by: 'user' })
   @Delete(':userId')
   @ApiOperation({
     summary: 'Remove an accepted friend',

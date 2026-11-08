@@ -1,6 +1,7 @@
 import { ApiGatewayModule } from '@gateway/api-gateway.module';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import { ZodValidationPipe } from 'nestjs-zod';
@@ -12,8 +13,24 @@ const parseOrigins = (value: string | undefined) =>
     .filter(Boolean);
 
 async function bootstrap() {
-  const app = await NestFactory.create(ApiGatewayModule);
+  const app =
+    await NestFactory.create<NestExpressApplication>(ApiGatewayModule);
   const configService = app.get(ConfigService);
+
+  // Rate limiting keys on req.ip, which is only the real client when this matches
+  // the number of proxies in front of the gateway (nginx = 1; nginx behind a
+  // tunnel/CDN = 2). A wrong value either collapses all users into one bucket or
+  // lets clients spoof X-Forwarded-For. Verify against the nginx access log.
+  const trustProxyHopsRaw = configService
+    .get<string>('TRUST_PROXY_HOPS')
+    ?.trim();
+  const trustProxyHops = trustProxyHopsRaw ? Number(trustProxyHopsRaw) : NaN;
+  app.set(
+    'trust proxy',
+    Number.isInteger(trustProxyHops) && trustProxyHops >= 0
+      ? trustProxyHops
+      : 1,
+  );
 
   app.use(cookieParser());
 

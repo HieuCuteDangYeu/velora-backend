@@ -1,3 +1,7 @@
+import { createRateLimitRedis } from '@common/rate-limit/rate-limit-redis.factory';
+import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
+import { RateLimitService } from '@common/rate-limit/rate-limit.service';
+import { RATE_LIMIT_REDIS } from '@common/rate-limit/rate-limit.types';
 import { ReelCommentsGatewayController } from './content/reel-comments.controller';
 import { StressRunsController } from './stress/stress-runs.controller';
 import { StressRunsService } from './stress/stress-runs.service';
@@ -93,6 +97,18 @@ function createRmqClientRegistration(name: string, queue: string) {
     StressRunsController,
     RecommendationController,
   ],
-  providers: [JwtAuthGuard, RolesGuard, ReelAuthorService, StressRunsService],
+  providers: [
+    JwtAuthGuard,
+    RolesGuard,
+    ReelAuthorService,
+    StressRunsService,
+    {
+      provide: RATE_LIMIT_REDIS,
+      inject: [ConfigService],
+      useFactory: createRateLimitRedis,
+    },
+    RateLimitService,
+    RateLimitGuard,
+  ],
 })
 export class ApiGatewayModule {}

@@ -25,6 +25,7 @@ import { RateLimitService } from '@common/rate-limit/rate-limit.service';
 import { RATE_LIMIT_REDIS } from '@common/rate-limit/rate-limit.types';
 import { TriggerBotReplyUseCase } from 'apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case';
 import { AiServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/ai-service.adapter';
+import { RateLimitAiTurnLimiterAdapter } from 'apps/conversation-service/src/infrastructure/adapters/rate-limit-ai-turn-limiter.adapter';
 import { ChatMediaServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/chat-media.service.adapter';
 import { ConversationRealtimePublisherAdapter } from 'apps/conversation-service/src/infrastructure/adapters/conversation-realtime-publisher.adapter';
 import { NotificationServiceAdapter } from 'apps/conversation-service/src/infrastructure/adapters/notification-service.adapter';
@@ -192,6 +193,7 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     // Reuse the module's Redis connection for the shared AI-turn budget.
     { provide: RATE_LIMIT_REDIS, useExisting: 'REDIS_CLIENT' },
     RateLimitService,
+    { provide: 'IAiTurnLimiter', useClass: RateLimitAiTurnLimiterAdapter },
     {
       provide: 'REDIS_CLIENT',
       inject: [ConfigService],

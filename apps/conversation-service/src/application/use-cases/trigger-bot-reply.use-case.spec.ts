@@ -1,14 +1,11 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
-import { RateLimitService } from '@common/rate-limit/rate-limit.service';
-import { RATE_LIMIT_REDIS } from '@common/rate-limit/rate-limit.types';
-import { Test } from '@nestjs/testing';
 import { Message } from '../../domain/entities/message.entity';
+import type {
+  AiTurnLimitDecision,
+  IAiTurnLimiter,
+} from '../../domain/interfaces/ai-turn-limiter.interface';
 import { Conversation } from '../../domain/entities/conversation.entity';
-import { ProcessBotReplyUseCase } from './process-bot-reply.use-case';
-import {
-  TriggerBotReplyUseCase,
-  type TriggerBotReplyResult,
-} from './trigger-bot-reply.use-case';
+import { TriggerBotReplyUseCase } from './trigger-bot-reply.use-case';
 
 const USER_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '507f1f77bcf86cd799439011';
@@ -23,6 +20,10 @@ const userMessage = () =>
     createdAt: new Date('2026-08-19T00:01:00.000Z'),
   });
 
+const allowAll: IAiTurnLimiter = {
+  consume: jest.fn().mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }),
+};
+
 describe('TriggerBotReplyUseCase', () => {
   it.each([false, true])(
     'reuses dispatch membership with bot=%s',
@@ -32,6 +33,7 @@ describe('TriggerBotReplyUseCase', () => {
       const useCase = new TriggerBotReplyUseCase(
         repository as never,
         process as never,
+        allowAll,
       );
       const conversation = new Conversation({
         id: CONVERSATION_ID,
@@ -54,6 +56,7 @@ describe('TriggerBotReplyUseCase', () => {
     const useCase = new TriggerBotReplyUseCase(
       repository as never,
       process as never,
+      allowAll,
     );
     expect(await useCase.execute(userMessage(), USER_ID, null)).toEqual({
       triggered: false,
@@ -78,6 +81,7 @@ describe('TriggerBotReplyUseCase', () => {
     const useCase = new TriggerBotReplyUseCase(
       chatRepository as never,
       processBotReplyUseCase as never,
+      allowAll,
     );
 
     await expect(useCase.execute(userMessage(), USER_ID)).resolves.toEqual({
@@ -101,6 +105,7 @@ describe('TriggerBotReplyUseCase', () => {
     const useCase = new TriggerBotReplyUseCase(
       chatRepository as never,
       processBotReplyUseCase as never,
+      allowAll,
     );
 
     await expect(useCase.execute(userMessage(), USER_ID)).resolves.toEqual({
@@ -111,99 +116,68 @@ describe('TriggerBotReplyUseCase', () => {
       },
     });
   });
-  describe('AI turn rate limit', () => {
+
+  describe('AI turn limit', () => {
     const botConversation = () =>
       new Conversation({
         id: CONVERSATION_ID,
         participantIds: [USER_ID, BOT_USER_ID],
       });
-    const limiter = (overrides: Record<string, string> = {}) =>
-      new RateLimitService(undefined, {
-        get: (key: string) => overrides[key],
-      } as never);
-
-    it('withholds the AI turn once the per-minute budget is spent', async () => {
-      const process = { execute: jest.fn().mockResolvedValue({}) };
-      const useCase = new TriggerBotReplyUseCase(
-        { findConversation: jest.fn() } as never,
-        process as never,
-        limiter({ RATE_LIMIT_AI_TURN_MINUTE_LIMIT: '2' }),
-      );
-      const outcomes: TriggerBotReplyResult[] = [];
-      for (let i = 0; i < 3; i += 1) {
-        outcomes.push(
-          await useCase.execute(userMessage(), USER_ID, botConversation()),
-        );
-      }
-      expect(outcomes.map((o) => o.triggered)).toEqual([true, true, false]);
-      expect(outcomes[2].botError).toMatchObject({
-        code: 'RATE_LIMITED',
-        retryAfterSeconds: expect.any(Number),
-      });
-      expect(process.execute).toHaveBeenCalledTimes(2);
+    const limiterWith = (decision: AiTurnLimitDecision): IAiTurnLimiter => ({
+      consume: jest.fn().mockResolvedValue(decision),
     });
 
-    it('enforces the daily budget independently of the minute budget', async () => {
+    it('withholds the AI turn and reports RATE_LIMITED when the budget is spent', async () => {
+      const process = { execute: jest.fn().mockResolvedValue({}) };
+      const limiter = limiterWith({ allowed: false, retryAfterSeconds: 7 });
+      const useCase = new TriggerBotReplyUseCase(
+        { findConversation: jest.fn() } as never,
+        process as never,
+        limiter,
+      );
+
+      expect(
+        await useCase.execute(userMessage(), USER_ID, botConversation()),
+      ).toEqual({
+        triggered: false,
+        botError: {
+          code: 'RATE_LIMITED',
+          message: 'Too many AI requests. Please try again later.',
+          retryAfterSeconds: 7,
+        },
+      });
+      expect(limiter.consume).toHaveBeenCalledWith(USER_ID);
+      expect(process.execute).not.toHaveBeenCalled();
+    });
+
+    it('runs the AI turn when the budget allows it', async () => {
       const process = { execute: jest.fn().mockResolvedValue({}) };
       const useCase = new TriggerBotReplyUseCase(
         { findConversation: jest.fn() } as never,
         process as never,
-        limiter({ RATE_LIMIT_AI_TURN_DAY_LIMIT: '1' }),
+        limiterWith({ allowed: true, retryAfterSeconds: 0 }),
       );
-      await useCase.execute(userMessage(), USER_ID, botConversation());
-      const second = await useCase.execute(
-        userMessage(),
-        USER_ID,
-        botConversation(),
-      );
-      expect(second.botError?.code).toBe('RATE_LIMITED');
+      expect(
+        (await useCase.execute(userMessage(), USER_ID, botConversation()))
+          .triggered,
+      ).toBe(true);
       expect(process.execute).toHaveBeenCalledTimes(1);
     });
 
-    it('limits each user separately and ignores non-bot conversations', async () => {
-      const process = { execute: jest.fn().mockResolvedValue({}) };
+    it('does not spend the budget on plain chats or on the bot own messages', async () => {
+      const limiter = limiterWith({ allowed: true, retryAfterSeconds: 0 });
       const useCase = new TriggerBotReplyUseCase(
         { findConversation: jest.fn() } as never,
-        process as never,
-        limiter({ RATE_LIMIT_AI_TURN_MINUTE_LIMIT: '1' }),
+        { execute: jest.fn() } as never,
+        limiter,
       );
-      const other = '22222222-2222-4222-8222-222222222222';
-      await useCase.execute(userMessage(), USER_ID, botConversation());
-      expect(
-        (await useCase.execute(userMessage(), other, botConversation()))
-          .triggered,
-      ).toBe(true);
-      // Plain chats must not burn the AI budget.
       const plain = new Conversation({
         id: CONVERSATION_ID,
-        participantIds: [USER_ID, other],
+        participantIds: [USER_ID, '22222222-2222-4222-8222-222222222222'],
       });
-      for (let i = 0; i < 5; i += 1) {
-        await useCase.execute(userMessage(), USER_ID, plain);
-      }
-      expect(process.execute).toHaveBeenCalledTimes(2);
-    });
-
-    it('is wired by Nest DI with the module Redis token', async () => {
-      const redis = { defineCommand: jest.fn() };
-      const moduleRef = await Test.createTestingModule({
-        providers: [
-          { provide: 'REDIS_CLIENT', useValue: redis },
-          { provide: RATE_LIMIT_REDIS, useExisting: 'REDIS_CLIENT' },
-          RateLimitService,
-          { provide: 'IChatRepository', useValue: {} },
-          { provide: ProcessBotReplyUseCase, useValue: { execute: jest.fn() } },
-          TriggerBotReplyUseCase,
-        ],
-      }).compile();
-      expect(redis.defineCommand).toHaveBeenCalledWith(
-        'rateLimitConsume',
-        expect.objectContaining({ numberOfKeys: 1 }),
-      );
-      const useCase = moduleRef.get(TriggerBotReplyUseCase);
-      expect(
-        (useCase as unknown as { rateLimits?: RateLimitService }).rateLimits,
-      ).toBeInstanceOf(RateLimitService);
+      await useCase.execute(userMessage(), USER_ID, plain);
+      await useCase.execute(userMessage(), BOT_USER_ID, botConversation());
+      expect(limiter.consume).not.toHaveBeenCalled();
     });
   });
 });

@@ -76,6 +76,26 @@ describe('CreateNoContextAnswerUseCase', () => {
     expect(answer).toMatch(/requested detail/i);
   });
 
+  it.each([
+    ['USER_MEMORY', /your own saved memory/i, /ask the other person directly/i],
+    ['CONVERSATION_MEMORY', /conversation history/i, /share it again/i],
+    ['AUDIO', /audio evidence/i, /other parts of this Reel/i],
+    ['VISUAL', /visual evidence/i, /other parts of this Reel/i],
+    ['TRANSCRIPT', /transcript evidence/i, /other parts of this Reel/i],
+  ])(
+    'keeps the %s limitation and offers a safe next step',
+    (missing, limitation, nextStep) => {
+      const answer = new CreateNoContextAnswerUseCase().execute({
+        route: { intent: 'REEL_VIDEO_QUESTION' },
+        hasSharedReelContext: true,
+        contextSufficiency: { sufficient: false, missingEvidence: [missing] },
+      } as unknown as RagChatWorkflowState);
+
+      expect(answer).toMatch(limitation);
+      expect(answer).toMatch(nextStep);
+    },
+  );
+
   it('explains that an unshared Reel cannot be accessed', () => {
     const useCase = new CreateNoContextAnswerUseCase();
     const answer = useCase.execute({

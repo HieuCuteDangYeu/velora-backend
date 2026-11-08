@@ -130,6 +130,23 @@ export class BuildRagCitationsUseCase {
           .map((claim) => claim.claim)
           .slice(0, 6),
       };
+      if (coverage.coverage < 1) {
+        const verifierFallback = this.buildVerifierMappingFallback(
+          state,
+          candidates,
+          {
+            providerStatus: 'SUCCESS',
+            semanticCalls: attribution.diagnostics?.semanticCalls,
+            maxCitations,
+          },
+        );
+        if (
+          verifierFallback &&
+          verifierFallback.coverage.coverage > coverage.coverage
+        ) {
+          return verifierFallback;
+        }
+      }
       return {
         citations,
         coverage: {

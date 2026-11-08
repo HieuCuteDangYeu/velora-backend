@@ -826,6 +826,102 @@ describe('BuildRagCitationsUseCase', () => {
     });
   });
 
+  it('fills a missing multimodal citation from complete verifier mappings', async () => {
+    const state = buildState();
+    const visual = {
+      chunkId: 'reel:r1:visual:18',
+      reelId: 'r1',
+      title: 'Pet Chat Group Episode 11',
+      evidenceType: 'VISUAL' as const,
+      evidenceText: 'A woman sits on a couch in a living room.',
+      chunkText: 'A woman sits on a couch in a living room.',
+      startTime: 48,
+      endTime: 48,
+      tags: [],
+    };
+    const transcript = {
+      chunkId: 'reel:r1:chunk:2',
+      reelId: 'r1',
+      title: 'Pet Chat Group Episode 11',
+      evidenceType: 'TRANSCRIPT' as const,
+      evidenceText: 'The speaker asks if he can move in and be a roommate.',
+      chunkText: 'The speaker asks if he can move in and be a roommate.',
+      startTime: 61.3,
+      endTime: 106.19362,
+      tags: [],
+    };
+    const claims = [
+      {
+        claim: 'Visible: A woman sits on a couch in a living room.',
+        evidenceIds: ['e0'],
+      },
+      {
+        claim: 'Spoken: The speaker asks to be a roommate.',
+        evidenceIds: ['e1'],
+      },
+    ];
+    state.userMessage = 'Describe what is visible and summarize what is said.';
+    state.answer =
+      'Visible: A woman sits on a couch in a living room. Spoken: The speaker asks to be a roommate.';
+    state.route = {
+      ...state.route!,
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    };
+    state.rerankedChunks = [visual, transcript] as never;
+    state.generationEvidence = [
+      {
+        evidenceId: 'e0',
+        sourceId: visual.chunkId,
+        reelId: visual.reelId,
+        evidenceType: visual.evidenceType,
+        evidenceText: visual.evidenceText,
+      },
+      {
+        evidenceId: 'e1',
+        sourceId: transcript.chunkId,
+        reelId: transcript.reelId,
+        evidenceType: transcript.evidenceType,
+        evidenceText: transcript.evidenceText,
+      },
+    ];
+    state.answerClaims = claims;
+    state.verification = {
+      passed: true,
+      confidence: 1,
+      issues: [],
+      requiresRevision: false,
+      supportedClaimMappings: claims,
+      contradictions: [],
+    };
+    const attribute = jest.fn().mockResolvedValue({
+      selections: [{ evidenceId: 'e0' }],
+      claims: [
+        { ...claims[0], supported: true },
+        { ...claims[1], supported: false },
+      ],
+      factualClaimCount: 2,
+      supportedClaimCount: 1,
+      coverage: 0.5,
+    });
+
+    const result = await new BuildRagCitationsUseCase({ attribute }).execute(
+      state,
+    );
+
+    expect(result.citations).toHaveLength(2);
+    expect(result.coverage).toMatchObject({
+      mode: 'FALLBACK',
+      coverage: 1,
+      factualClaimCount: 2,
+      supportedClaimCount: 2,
+      diagnostics: {
+        decisionSource: 'FALLBACK',
+        selectedEvidenceIds: ['e0', 'e1'],
+      },
+    });
+  });
+
   it('attributes citations for METADATA evidence when evidenceText is empty but title is present', async () => {
     const attribute = jest.fn().mockImplementation(() =>
       Promise.resolve({

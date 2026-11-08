@@ -119,6 +119,7 @@ describe('BuildRagTraceSnapshotUseCase', () => {
         needsConversationSummary: false,
         needsVerification: true,
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'NONE',
         requiredEvidence: ['TRANSCRIPT'],
         recommendationAction: {
           type: 'NONE',
@@ -297,6 +298,7 @@ describe('BuildRagTraceSnapshotUseCase', () => {
               intent: 'REEL_VIDEO_QUESTION',
               referenceTarget: 'SHARED_REEL',
               reelQuestionType: 'TRANSCRIPT_CONTENT',
+              transcriptRequestKind: 'NONE',
               requiredEvidence: ['TRANSCRIPT'],
               needsRetrieval: true,
               needsVerification: true,

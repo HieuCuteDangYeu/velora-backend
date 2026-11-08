@@ -1,6 +1,7 @@
 import type {
   RagChatWorkflowState,
   RagContextSufficiencyResult,
+  RagGenerationEvidence,
   RagRequiredEvidence,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type {
@@ -18,6 +19,10 @@ import {
   transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
 import { missingRequiredReelEvidencePairs } from '@ai/domain/services/rag-answer-contract';
+import {
+  isTranscriptSentenceSelectionRequest,
+  selectTimestampTranscriptEvidence,
+} from '@ai/domain/services/rag-transcript-sentence-selection';
 
 interface RawContextSufficiencyResult {
   sufficient?: unknown;
@@ -149,6 +154,46 @@ export class CheckContextSufficiencyUseCase {
       };
     }
 
+    const exactMultimodalRangeEvidenceIds =
+      this.exactMultimodalRangeEvidenceIds(state);
+    if (exactMultimodalRangeEvidenceIds) {
+      return {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: exactMultimodalRangeEvidenceIds,
+        reason:
+          'Timestamp-matched visual evidence and transcript evidence cover the requested single-Reel interval.',
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_MULTIMODAL_RANGE',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
+    const exactTranscriptRangeEvidenceId =
+      this.exactTranscriptRangeEvidenceId(state);
+    if (exactTranscriptRangeEvidenceId) {
+      return {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: [exactTranscriptRangeEvidenceId],
+        reason:
+          'An indexed transcript source exactly begins at the requested range and covers its full interval.',
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
     const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     try {
       const primaryModel = this.config.model('CONTEXT_SUFFICIENCY');
@@ -186,7 +231,7 @@ export class CheckContextSufficiencyUseCase {
         ...result,
         diagnostics: {
           providerStatus: 'SUCCESS',
-          decisionSource,
+          decisionSource: result.diagnostics?.decisionSource ?? decisionSource,
           modelRole: 'CONTEXT_SUFFICIENCY',
           model,
           semanticCalls: semanticCalls.map(
@@ -381,13 +426,15 @@ Rules:
 14. Transcript ASR may contain punctuation, casing, or word-boundary noise. Do not require verbatim wording when the requested fact is semantically established.
 15. When a typed evidence item directly establishes the requested fact, mark sufficient true and include its evidence ID even if other retrieved items are unrelated.
 16. For a multi-Reel comparison, assess each requested Reel independently. Different content across clips is expected; do not mark insufficient solely because excerpts are not semantically parallel. Mark sufficient only when each requested Reel has direct evidence for its requested part, and include support for each Reel.
+17. A comparison does not require a prewritten comparative conclusion in the retrieved evidence. When every requested Reel and required modality has direct evidence for its requested portion, mark sufficient true and include evidence for each source; answer generation and verification handle the comparison.
+18. For a time-bounded transcript summary, assess the actual text coverage across the requested interval. Exact or overlapping timestamps do not prove that a short chunk contains every material statement. If retrieved text is only a clipped fragment or covers only part of an interval with multiple distinct statements, mark insufficient and request more transcript evidence. When sufficient, include every retrieved chunk needed to cover the interval's distinct statements.
 `.trim();
     return transcriptSegmentRequestKind(
       state.userMessage,
       state.route,
       state.retrievalPlan,
     ) === 'MULTI_REEL_COMPARISON'
-      ? `${prompt}\n17. For a request about the first indexed transcript segments, when retrievalPlan.sourceOrder is ASC and retrievalPlan.requiresReelCoverage is true, assess the earliest source-ordered transcript item for each Reel as its first indexed segment. A nonzero startTime does not disqualify it; direct transcript evidence from every requested Reel is still required.`
+      ? `${prompt}\n19. For a request about the first indexed transcript segments, when retrievalPlan.sourceOrder is ASC and retrievalPlan.requiresReelCoverage is true, assess the earliest source-ordered transcript item for each Reel as its first indexed segment. A nonzero startTime does not disqualify it; direct transcript evidence from every requested Reel is still required.`
       : prompt;
   }
 
@@ -486,10 +533,14 @@ ${JSON.stringify(
         ? raw.recommendedAction
         : 'ANSWER';
     const missingReelIds = this.getMissingRequiredReelIds(state);
+    const directComparisonEvidenceIds =
+      this.getCompleteFirstSegmentComparisonEvidenceIds(state);
     const sufficient =
-      typeof raw.sufficient === 'boolean'
-        ? raw.sufficient && missingReelIds.length === 0
-        : rawRecommendedAction === 'ANSWER' && missingReelIds.length === 0;
+      missingReelIds.length === 0 &&
+      (directComparisonEvidenceIds !== undefined ||
+        (typeof raw.sufficient === 'boolean'
+          ? raw.sufficient
+          : rawRecommendedAction === 'ANSWER'));
     const recommendedAction = sufficient
       ? 'ANSWER'
       : rawRecommendedAction === 'REWRITE_AND_RETRY' &&
@@ -504,60 +555,304 @@ ${JSON.stringify(
     const allowedEvidenceIds = new Set(
       state.rerankedChunks.map((_chunk, index) => `e${index}`),
     );
-    const supportedEvidenceIds = Array.isArray(raw.supportedEvidenceIds)
-      ? [
-          ...new Set(
-            raw.supportedEvidenceIds.filter(
-              (value): value is string =>
-                typeof value === 'string' && allowedEvidenceIds.has(value),
+    const supportedEvidenceIds =
+      directComparisonEvidenceIds ??
+      (Array.isArray(raw.supportedEvidenceIds)
+        ? [
+            ...new Set(
+              raw.supportedEvidenceIds.filter(
+                (value): value is string =>
+                  typeof value === 'string' && allowedEvidenceIds.has(value),
+              ),
             ),
-          ),
-        ]
-      : [];
+          ]
+        : []);
     return {
       sufficient,
-      confidence:
-        typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
+      confidence: directComparisonEvidenceIds
+        ? 1
+        : typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)
           ? Math.min(Math.max(raw.confidence, 0), 1)
           : 0.5,
       availableEvidence,
       missingEvidence,
       ...(missingReelIds.length > 0 ? { missingReelIds } : {}),
       supportedEvidenceIds,
-      reason:
-        typeof raw.reason === 'string' && raw.reason.trim()
+      reason: directComparisonEvidenceIds
+        ? 'Source-ordered transcript evidence directly covers each explicitly requested Reel.'
+        : typeof raw.reason === 'string' && raw.reason.trim()
           ? raw.reason.trim()
           : 'No sufficiency reason provided.',
-      userFacingReason:
-        typeof raw.userFacingReason === 'string' && raw.userFacingReason.trim()
+      userFacingReason: directComparisonEvidenceIds
+        ? undefined
+        : typeof raw.userFacingReason === 'string' &&
+            raw.userFacingReason.trim()
           ? raw.userFacingReason.trim()
           : undefined,
       recommendedAction,
+      ...(directComparisonEvidenceIds
+        ? {
+            diagnostics: {
+              providerStatus: 'SUCCESS' as const,
+              decisionSource: 'DETERMINISTIC_COMPLETE_REEL_COVERAGE' as const,
+            },
+          }
+        : {}),
     };
   }
 
   private hasUnmatchedExplicitReelTitle(state: RagChatWorkflowState): boolean {
     if (state.route?.intent !== 'REEL_VIDEO_QUESTION') return false;
 
-    const normalizeTitle = (title: string): string =>
-      title
-        .normalize('NFKC')
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}]+/gu, ' ')
-        .trim();
-    const requestedTitles = [...state.userMessage.matchAll(/["“]([^"”]+)["”]/g)]
-      .map((match) => match[1]?.trim() ?? '')
-      .filter((title) => /\b(?:episode|chapter|part)\s+\d+\b/i.test(title))
-      .map(normalizeTitle);
+    const requestedTitles = this.explicitEpisodeTitles(state.userMessage).map(
+      (title) => this.normalizeReelTitle(title),
+    );
     if (requestedTitles.length === 0) return false;
 
     const availableTitles = new Set(
       state.rerankedChunks
         .map((chunk) => chunk.title?.trim() ?? '')
         .filter(Boolean)
-        .map(normalizeTitle),
+        .map((title) => this.normalizeReelTitle(title)),
     );
     return requestedTitles.some((title) => !availableTitles.has(title));
+  }
+
+  private getCompleteFirstSegmentComparisonEvidenceIds(
+    state: RagChatWorkflowState,
+  ): string[] | undefined {
+    if (
+      state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
+      state.retrievalPlan?.sourceOrder !== 'ASC' ||
+      state.retrievalPlan.requiresReelCoverage !== true ||
+      transcriptSegmentRequestKind(
+        state.userMessage,
+        state.route,
+        state.retrievalPlan,
+      ) !== 'MULTI_REEL_COMPARISON'
+    ) {
+      return undefined;
+    }
+
+    const requestedTitles = this.explicitEpisodeTitles(state.userMessage).map(
+      (title) => this.normalizeReelTitle(title),
+    );
+    if (requestedTitles.length < 2) return undefined;
+
+    const reelIds = requestedTitles.map((title) => {
+      const matchedReelIds = new Set(
+        state.rerankedChunks
+          .filter(
+            (chunk) =>
+              this.normalizeReelTitle(chunk.title ?? '') === title &&
+              chunk.reelId,
+          )
+          .map((chunk) => chunk.reelId),
+      );
+      return matchedReelIds.size === 1 ? [...matchedReelIds][0] : undefined;
+    });
+    if (
+      reelIds.some((reelId) => !reelId) ||
+      new Set(reelIds).size !== requestedTitles.length
+    ) {
+      return undefined;
+    }
+
+    const requiredEvidence = this.getRequiredEvidence(state).filter(
+      (type) => type !== 'NONE' && type !== 'AUDIO',
+    );
+    const requestedReelIds = reelIds as string[];
+    if (
+      requiredEvidence.length === 0 ||
+      missingRequiredReelEvidencePairs(
+        state.rerankedChunks,
+        requestedReelIds,
+        requiredEvidence,
+      ).length > 0 ||
+      requestedReelIds.some((reelId) =>
+        requiredEvidence.some(
+          (type) =>
+            !state.rerankedChunks.some(
+              (chunk) =>
+                chunk.reelId === reelId &&
+                (chunk.evidenceType ?? 'TRANSCRIPT') === type &&
+                this.hasEvidenceText(chunk),
+            ),
+        ),
+      )
+    ) {
+      return undefined;
+    }
+
+    return state.rerankedChunks.flatMap((chunk, index) =>
+      requestedReelIds.includes(chunk.reelId) &&
+      requiredEvidence.includes(chunk.evidenceType ?? 'TRANSCRIPT') &&
+      this.hasEvidenceText(chunk)
+        ? [`e${index}`]
+        : [],
+    );
+  }
+
+  private exactTranscriptRangeEvidenceId(
+    state: RagChatWorkflowState,
+  ): string | undefined {
+    const plan = state.retrievalPlan;
+    const start = plan?.transcriptTimestampSec ?? plan?.sourceTimestampSec;
+    const end = plan?.transcriptTimestampEndSec ?? plan?.sourceTimestampEndSec;
+    if (
+      state.route?.reelQuestionType !== 'TRANSCRIPT_CONTENT' ||
+      plan?.requiresReelCoverage === true ||
+      plan?.sourceOrder !== 'ASC' ||
+      !isTranscriptSentenceSelectionRequest(state.route) ||
+      typeof start !== 'number' ||
+      !Number.isFinite(start) ||
+      typeof end !== 'number' ||
+      !Number.isFinite(end) ||
+      end < start
+    ) {
+      return undefined;
+    }
+
+    const candidates: RagGenerationEvidence[] = state.rerankedChunks.flatMap(
+      (chunk, index) => {
+        const evidenceText =
+          chunk.evidenceText?.trim() || chunk.chunkText.trim();
+        return (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+          evidenceText &&
+          typeof chunk.startTime === 'number' &&
+          typeof chunk.endTime === 'number'
+          ? [
+              {
+                evidenceId: `e${index}`,
+                sourceId: chunk.chunkId,
+                reelId: chunk.reelId,
+                indexVersion: chunk.indexVersion,
+                evidenceType: 'TRANSCRIPT',
+                startTime: chunk.startTime,
+                endTime: chunk.endTime,
+                evidenceText,
+              },
+            ]
+          : [];
+      },
+    );
+    const selected = selectTimestampTranscriptEvidence(candidates, {
+      sourceTimestampSec: start,
+      sourceTimestampEndSec: end,
+    });
+    if (
+      !selected ||
+      typeof selected.startTime !== 'number' ||
+      typeof selected.endTime !== 'number' ||
+      Math.abs(selected.startTime - start) > 0.05 ||
+      selected.endTime < end - 0.05
+    ) {
+      return undefined;
+    }
+    return selected.evidenceId;
+  }
+
+  private exactMultimodalRangeEvidenceIds(
+    state: RagChatWorkflowState,
+  ): string[] | undefined {
+    const plan = state.retrievalPlan;
+    const required = state.route?.requiredEvidence ?? [];
+    const visualTimestamp = plan?.visualTimestampSec;
+    const start = plan?.transcriptTimestampSec;
+    const end = plan?.transcriptTimestampEndSec;
+    if (
+      state.route?.reelQuestionType !== 'MULTIMODAL_CONTENT' ||
+      plan?.requiresReelCoverage === true ||
+      plan?.sourceOrder !== 'ASC' ||
+      !required.includes('TRANSCRIPT') ||
+      !required.includes('VISUAL') ||
+      typeof visualTimestamp !== 'number' ||
+      !Number.isFinite(visualTimestamp) ||
+      typeof start !== 'number' ||
+      !Number.isFinite(start) ||
+      typeof end !== 'number' ||
+      !Number.isFinite(end) ||
+      end < start
+    ) {
+      return undefined;
+    }
+
+    const requestKind = transcriptSegmentRequestKind(
+      state.userMessage,
+      state.route,
+      plan,
+    );
+    const bounds = transcriptSegmentPromptBounds(
+      readRagPromptBounds(this.config),
+      requestKind,
+    );
+    const boundedChunks = boundEvidence(state.rerankedChunks, bounds, {
+      preserveTail: true,
+      focusText: state.userMessage,
+      preserveReelCoverage: false,
+      requiredEvidenceTypes: required,
+    });
+    const visualIndex = boundedChunks.findIndex(
+      (chunk) =>
+        chunk.evidenceType === 'VISUAL' &&
+        this.hasEvidenceText(chunk) &&
+        typeof chunk.startTime === 'number' &&
+        chunk.startTime <= visualTimestamp &&
+        typeof chunk.endTime === 'number' &&
+        chunk.endTime >= visualTimestamp,
+    );
+    const transcriptCandidates: RagGenerationEvidence[] = boundedChunks.flatMap(
+      (chunk, index) => {
+        const evidenceText =
+          chunk.evidenceText?.trim() || chunk.chunkText.trim();
+        return (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+          evidenceText &&
+          typeof chunk.startTime === 'number' &&
+          typeof chunk.endTime === 'number'
+          ? [
+              {
+                evidenceId: `e${index}`,
+                sourceId: chunk.chunkId,
+                reelId: chunk.reelId,
+                indexVersion: chunk.indexVersion,
+                evidenceType: 'TRANSCRIPT',
+                startTime: chunk.startTime,
+                endTime: chunk.endTime,
+                evidenceText,
+              },
+            ]
+          : [];
+      },
+    );
+    const transcript = selectTimestampTranscriptEvidence(transcriptCandidates, {
+      sourceTimestampSec: start,
+      sourceTimestampEndSec: end,
+    });
+    if (
+      visualIndex < 0 ||
+      !transcript ||
+      typeof transcript.startTime !== 'number' ||
+      transcript.startTime > start ||
+      typeof transcript.endTime !== 'number' ||
+      transcript.endTime < end
+    ) {
+      return undefined;
+    }
+    return [transcript.evidenceId, `e${visualIndex}`];
+  }
+
+  private explicitEpisodeTitles(message: string): string[] {
+    return [...message.matchAll(/["“]([^"”]+)["”]/g)]
+      .map((match) => match[1]?.trim() ?? '')
+      .filter((title) => /\b(?:episode|chapter|part)\s+\d+\b/i.test(title));
+  }
+
+  private normalizeReelTitle(title: string): string {
+    return title
+      .normalize('NFKC')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .trim();
   }
 
   private getRequiredEvidence(

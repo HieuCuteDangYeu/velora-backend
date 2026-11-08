@@ -8,6 +8,11 @@ import type {
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OllamaHttpError, OllamaTextClient } from './ollama-text.client';
+import {
+  StructuredSchemaViolation,
+  structuredJsonType,
+  validateStructuredSchema,
+} from './structured-json-schema';
 
 interface CallState {
   providerStatus: number | 'NETWORK_ERROR' | 'TIMEOUT';
@@ -24,17 +29,6 @@ interface CallState {
   actualJsonType?: StructuredJsonType;
   responseContentType?: StructuredJsonType;
   contentPresent?: boolean;
-}
-
-class StructuredSchemaViolation extends Error {
-  constructor(
-    readonly path: string,
-    readonly constraint: string,
-    readonly expectedType?: StructuredJsonType,
-    readonly actualJsonType?: StructuredJsonType,
-  ) {
-    super('Structured schema violation');
-  }
 }
 
 export class OllamaStructuredCompletionTruncatedError extends Error {
@@ -169,7 +163,7 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
         state.inputTokens = response.prompt_eval_count;
         state.outputTokens = response.eval_count;
         const content = response.message?.content;
-        state.responseContentType = this.jsonType(content);
+        state.responseContentType = structuredJsonType(content);
         state.contentPresent =
           typeof content === 'string' && Boolean(content.trim());
         if (response.done_reason === 'length')
@@ -187,7 +181,7 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
           throw new OllamaStructuredCompletionInvalidJsonError();
         }
         try {
-          this.validateSchema(
+          validateStructuredSchema(
             parsed,
             input.jsonSchema as unknown as Record<string, unknown>,
             '$',
@@ -341,131 +335,5 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
       true,
       'TRANSIENT_PROVIDER_FAILURE',
     );
-  }
-
-  private jsonType(value: unknown): StructuredJsonType {
-    if (value === undefined) return 'absent';
-    if (value === null) return 'null';
-    if (Array.isArray(value)) return 'array';
-    if (typeof value === 'string') return 'string';
-    if (typeof value === 'number') return 'number';
-    if (typeof value === 'boolean') return 'boolean';
-    return 'object';
-  }
-
-  private validateSchema(
-    value: unknown,
-    schema: Record<string, unknown>,
-    path: string,
-  ): void {
-    const type = schema['type'];
-    if (type === 'object') {
-      if (!value || typeof value !== 'object' || Array.isArray(value))
-        throw new StructuredSchemaViolation(
-          path,
-          'type',
-          'object',
-          this.jsonType(value),
-        );
-      const record = value as Record<string, unknown>;
-      const properties = (schema['properties'] ?? {}) as Record<
-        string,
-        Record<string, unknown>
-      >;
-      const required = Array.isArray(schema['required'])
-        ? (schema['required'] as string[])
-        : [];
-      const missing = required.find((key) => !(key in record));
-      if (missing)
-        throw new StructuredSchemaViolation(`${path}.${missing}`, 'required');
-      if (
-        schema['additionalProperties'] === false &&
-        Object.keys(record).some((key) => !(key in properties))
-      )
-        throw new StructuredSchemaViolation(path, 'additionalProperties');
-      for (const [key, propertySchema] of Object.entries(properties))
-        if (key in record)
-          this.validateSchema(record[key], propertySchema, `${path}.${key}`);
-      return;
-    }
-    if (type === 'array') {
-      if (!Array.isArray(value))
-        throw new StructuredSchemaViolation(
-          path,
-          'type',
-          'array',
-          this.jsonType(value),
-        );
-      if (
-        typeof schema['minItems'] === 'number' &&
-        value.length < schema['minItems']
-      )
-        throw new StructuredSchemaViolation(path, 'minItems');
-      if (
-        typeof schema['maxItems'] === 'number' &&
-        value.length > schema['maxItems']
-      )
-        throw new StructuredSchemaViolation(path, 'maxItems');
-      const items = schema['items'];
-      if (items && typeof items === 'object')
-        value.forEach((item, index) =>
-          this.validateSchema(
-            item,
-            items as Record<string, unknown>,
-            `${path}[${index}]`,
-          ),
-        );
-      return;
-    }
-    if (type === 'string' && typeof value !== 'string')
-      throw new StructuredSchemaViolation(
-        path,
-        'type',
-        'string',
-        this.jsonType(value),
-      );
-    if (typeof value === 'string' && type === 'string') {
-      if (
-        typeof schema['minLength'] === 'number' &&
-        value.length < schema['minLength']
-      )
-        throw new StructuredSchemaViolation(path, 'minLength');
-      if (
-        typeof schema['maxLength'] === 'number' &&
-        value.length > schema['maxLength']
-      )
-        throw new StructuredSchemaViolation(path, 'maxLength');
-    }
-    if (type === 'boolean' && typeof value !== 'boolean')
-      throw new StructuredSchemaViolation(
-        path,
-        'type',
-        'boolean',
-        this.jsonType(value),
-      );
-    if (
-      (type === 'number' || type === 'integer') &&
-      (typeof value !== 'number' ||
-        !Number.isFinite(value) ||
-        (type === 'integer' && !Number.isInteger(value)))
-    )
-      throw new StructuredSchemaViolation(
-        path,
-        'type',
-        'number',
-        this.jsonType(value),
-      );
-    if (
-      typeof value === 'number' &&
-      (type === 'number' || type === 'integer')
-    ) {
-      if (typeof schema['minimum'] === 'number' && value < schema['minimum'])
-        throw new StructuredSchemaViolation(path, 'minimum');
-      if (typeof schema['maximum'] === 'number' && value > schema['maximum'])
-        throw new StructuredSchemaViolation(path, 'maximum');
-    }
-    const allowed = schema['enum'];
-    if (Array.isArray(allowed) && !allowed.includes(value))
-      throw new StructuredSchemaViolation(path, 'enum');
   }
 }

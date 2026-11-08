@@ -1,132 +1,141 @@
 import { RerankRetrievedEvidenceUseCase } from './rerank-retrieved-evidence.use-case';
 
 describe('RerankRetrievedEvidenceUseCase', () => {
-  it('keeps only each Reel’s earliest transcript chunk for first-segment comparisons', async () => {
-    const episodeOneLater = {
-      chunkId: 'episode-one-later',
-      reelId: 'episode-one',
+  it('uses the exact transcript window and excludes overlapping outside text', async () => {
+    const exactWindow = {
+      chunkId: 'exact-window',
+      reelId: 'reel-1',
       evidenceType: 'TRANSCRIPT',
-      startTime: 42,
+      startTime: 8,
+      endTime: 63.9,
     };
-    const episodeTwoFirst = {
-      chunkId: 'episode-two-first',
-      reelId: 'episode-two',
+    const continuation = {
+      chunkId: 'continuation',
+      reelId: 'reel-1',
       evidenceType: 'TRANSCRIPT',
-      startTime: 0,
+      startTime: 32.48,
+      endTime: 91.34,
     };
-    const episodeOneFirst = {
-      chunkId: 'episode-one-first',
-      reelId: 'episode-one',
+    const outsideWindow = {
+      chunkId: 'outside-window',
+      reelId: 'reel-1',
       evidenceType: 'TRANSCRIPT',
-      startTime: 0.5,
+      startTime: 70,
+      endTime: 100,
     };
-    const retrievalEngine = {
+    const diagnostics = {};
+    const useCase = new RerankRetrievedEvidenceUseCase({
       rerank: jest
         .fn()
-        .mockResolvedValue([episodeOneLater, episodeTwoFirst, episodeOneFirst]),
-    };
-    const useCase = new RerankRetrievedEvidenceUseCase(
-      retrievalEngine as never,
-    );
-    const diagnostics = {} as never;
+        .mockResolvedValue([continuation, outsideWindow, exactWindow]),
+    } as never);
 
     const result = await useCase.execute({
       userMessage:
-        'Compare the first indexed transcript segments of Episode One and Episode Two. Attribute each statement to its own clip.',
-      route: { requiredEvidence: ['TRANSCRIPT'] } as never,
-      plan: { requiresReelCoverage: true } as never,
-      retrievedChunks: [
-        episodeOneLater,
-        episodeTwoFirst,
-        episodeOneFirst,
-      ] as never,
-      diagnostics,
+        'Summarize what is said in the indexed transcript segment spanning 8–63.9 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        referenceTarget: 'SHARED_REEL',
+        needsRetrieval: true,
+        needsUserMemory: false,
+        needsConversationSummary: false,
+        needsVerification: true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'NONE',
+        requiredEvidence: ['TRANSCRIPT'],
+        recommendationAction: { type: 'NONE', reason: 'No recommendation.' },
+        reason: 'Transcript summary request.',
+      },
+      plan: {
+        mode: 'REEL_HYBRID',
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 8,
+        sourceTimestampEndSec: 63.9,
+        transcriptTimestampSec: 8,
+        transcriptTimestampEndSec: 63.9,
+        requiresReelCoverage: false,
+        query: 'summarize transcript segment',
+        queries: ['summarize transcript segment'],
+        searchLimit: 4,
+        rerankLimit: 4,
+        shouldRerank: false,
+        reason: 'Read the requested transcript window.',
+      },
+      retrievedChunks: [continuation, outsideWindow, exactWindow] as never,
+      diagnostics: diagnostics as never,
     });
 
-    expect(result).toEqual([episodeTwoFirst, episodeOneFirst]);
-    expect(diagnostics).toEqual({ retrievedCount: 3, rerankedCount: 2 });
+    expect(result.map((chunk) => chunk.chunkId)).toEqual([
+      'exact-window',
+    ]);
+    expect(diagnostics).toMatchObject({ rerankedCount: 1 });
   });
 
-  it('preserves adjacent transcript chunks for other Reel questions', async () => {
-    const chunks = [
-      {
-        chunkId: 'episode-one-first',
-        reelId: 'episode-one',
-        evidenceType: 'TRANSCRIPT',
-        startTime: 0,
+  it('uses only fully contained transcript chunks when no exact window exists', async () => {
+    const before = {
+      chunkId: 'before',
+      reelId: 'reel-1',
+      evidenceType: 'TRANSCRIPT',
+      startTime: 0,
+      endTime: 15,
+    };
+    const inside = {
+      chunkId: 'inside',
+      reelId: 'reel-1',
+      evidenceType: 'TRANSCRIPT',
+      startTime: 12,
+      endTime: 18,
+    };
+    const after = {
+      chunkId: 'after',
+      reelId: 'reel-1',
+      evidenceType: 'TRANSCRIPT',
+      startTime: 18,
+      endTime: 30,
+    };
+    const metadata = {
+      chunkId: 'metadata',
+      reelId: 'reel-1',
+      evidenceType: 'METADATA',
+    };
+    const useCase = new RerankRetrievedEvidenceUseCase({
+      rerank: jest.fn().mockResolvedValue([before, inside, after, metadata]),
+    } as never);
+
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the indexed transcript segment spanning 10–20 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        referenceTarget: 'SHARED_REEL',
+        needsRetrieval: true,
+        needsUserMemory: false,
+        needsConversationSummary: false,
+        needsVerification: true,
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'NONE',
+        requiredEvidence: ['TRANSCRIPT'],
+        recommendationAction: { type: 'NONE', reason: 'No recommendation.' },
+        reason: 'Transcript summary request.',
       },
-      {
-        chunkId: 'episode-one-next',
-        reelId: 'episode-one',
-        evidenceType: 'TRANSCRIPT',
-        startTime: 42,
+      plan: {
+        mode: 'REEL_HYBRID',
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 10,
+        sourceTimestampEndSec: 20,
+        transcriptTimestampSec: 10,
+        transcriptTimestampEndSec: 20,
+        requiresReelCoverage: false,
+        query: 'summarize transcript segment',
+        queries: ['summarize transcript segment'],
+        searchLimit: 2,
+        rerankLimit: 2,
+        shouldRerank: false,
+        reason: 'Read the requested transcript window.',
       },
-    ];
-    const retrievalEngine = {
-      rerank: jest.fn().mockResolvedValue(chunks),
-    };
-    const useCase = new RerankRetrievedEvidenceUseCase(
-      retrievalEngine as never,
-    );
+      retrievedChunks: [before, inside, after, metadata] as never,
+    });
 
-    await expect(
-      useCase.execute({
-        userMessage: 'Summarize Episode One.',
-        route: { requiredEvidence: ['TRANSCRIPT'] } as never,
-        plan: { requiresReelCoverage: false } as never,
-        retrievedChunks: chunks as never,
-      }),
-    ).resolves.toEqual(chunks);
-  });
-
-  it('drops adjacent transcript chunks outside an exact requested summary window', async () => {
-    const outside = {
-      chunkId: 'outside',
-      reelId: 'reel-one',
-      evidenceType: 'TRANSCRIPT',
-      startTime: 0.1,
-      endTime: 45.08,
-    };
-    const overlap = {
-      chunkId: 'overlap',
-      reelId: 'reel-one',
-      evidenceType: 'TRANSCRIPT',
-      startTime: 29.78,
-      endTime: 74.66,
-    };
-    const exact = {
-      chunkId: 'exact-window',
-      reelId: 'reel-one',
-      evidenceType: 'TRANSCRIPT',
-      startTime: 58.44,
-      endTime: 114.753,
-    };
-    const visual = {
-      chunkId: 'sampled-frame',
-      reelId: 'reel-one',
-      evidenceType: 'VISUAL',
-      startTime: 85.6,
-      endTime: 85.6,
-    };
-    const retrievalEngine = {
-      rerank: jest.fn().mockResolvedValue([outside, overlap, exact, visual]),
-    };
-    const useCase = new RerankRetrievedEvidenceUseCase(
-      retrievalEngine as never,
-    );
-
-    await expect(
-      useCase.execute({
-        userMessage:
-          'For Episode One, describe the sampled frame at 85.6 seconds and summarize the indexed speech segment at 58.44–114.753 seconds. Keep what is visible separate from what is said.',
-        route: { requiredEvidence: ['TRANSCRIPT', 'VISUAL'] } as never,
-        plan: {
-          requiresReelCoverage: false,
-          transcriptTimestampSec: 58.44,
-          transcriptTimestampEndSec: 114.753,
-        } as never,
-        retrievedChunks: [outside, overlap, exact, visual] as never,
-      }),
-    ).resolves.toEqual([exact, visual]);
+    expect(result.map((chunk) => chunk.chunkId)).toEqual(['inside', 'metadata']);
   });
 });

@@ -1,9 +1,8 @@
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
-import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
 import {
-  DEFAULT_RAG_PROMPT_BOUNDS,
-  transcriptSegmentPromptBounds,
-} from '@ai/domain/services/rag-prompt-bounds';
+  MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
+  TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+} from '@ai/domain/services/rag-answer-contract';
 import { BuildGroundedAnswerRevisionUseCase } from './build-grounded-answer-revision.use-case';
 
 describe('BuildGroundedAnswerRevisionUseCase', () => {
@@ -22,6 +21,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
   const state = (input: {
     question: string;
     evidence: string[];
+    transcriptRequestKind?: 'NONE' | 'FIRST_COMPLETE_UTTERANCE';
   }): RagChatWorkflowState =>
     ({
       userId: 'user-1',
@@ -30,6 +30,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: input.transcriptRequestKind ?? 'NONE',
         requiredEvidence: ['TRANSCRIPT'],
       },
       verification: {
@@ -104,9 +105,14 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       answer: fixture.answer,
       evidenceIds: fixture.evidenceIds,
       modelRole: 'ANSWER_REVISION',
-      generationEvidence: expect.arrayContaining([
-        expect.objectContaining({ sourceId: 'chunk-0', evidenceId: 'e0' }),
-      ]),
+      generationEvidence: expect.arrayContaining(
+        fixture.evidenceIds.map((evidenceId) =>
+          expect.objectContaining({
+            sourceId: `chunk-${evidenceId.slice(1)}`,
+            evidenceId,
+          }),
+        ),
+      ),
       diagnostics: [],
     });
   });
@@ -280,9 +286,27 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     const evidence = 'The dog refuses to eat.';
     const input = state({ question, evidence: [evidence] });
     input.answer = 'A'.repeat(1_100);
+    input.retrievalPlan = {
+      sourceTimestampSec: 0,
+      sourceTimestampEndSec: 60,
+      transcriptTimestampSec: 0,
+      transcriptTimestampEndSec: 60,
+    } as never;
+    input.rerankedChunks = input.rerankedChunks.map((chunk) => ({
+      ...chunk,
+      startTime: 0,
+      endTime: 60,
+    }));
+    input.verification = {
+      ...input.verification,
+      supportedClaimMappings: [
+        { claim: 'The dog refuses to eat.', evidenceIds: ['e0'] },
+      ],
+    };
     structuredLlm.generateObject.mockResolvedValueOnce({
       answer: evidence,
       evidenceIds: ['e0'],
+      claims: [{ claim: evidence, evidenceIds: ['e0'] }],
     });
 
     await expect(useCase.executeWithProvenance(input)).resolves.toMatchObject({
@@ -292,16 +316,108 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
 
     const request = structuredLlm.generateObject.mock.calls[0][0];
     expect(request.userPrompt).toContain('"answerShape":"SUMMARY"');
-    const summaryMaxChars = transcriptSegmentPromptBounds(
-      DEFAULT_RAG_PROMPT_BOUNDS,
-      'SUMMARY',
-    ).maxEvidenceTotalChars;
+    expect(JSON.parse(request.userPrompt).requestedTranscriptWindow).toEqual({
+      startTime: 0,
+      endTime: 60,
+      exactRangeEvidenceIds: ['e0'],
+      truncatedEvidenceIds: [],
+    });
+    const summaryMaxChars = TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS;
     expect(request.userPrompt).toContain(`"maxAnswerChars":${summaryMaxChars}`);
     expect(request.jsonSchema.properties.answer).toMatchObject({
-      maxLength: summaryMaxChars,
+      maxLength: TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
     });
     expect(request.systemPrompt).toContain(
-      'write a concise paraphrase rather than reproducing the transcript verbatim',
+      'write 2–4 short sentences with one main point per sentence',
+    );
+    expect(request.systemPrompt).toContain(
+      'Treat verifier issues as an edit list',
+    );
+    expect(request.systemPrompt).toContain(
+      'use it as the allowlist of factual propositions for the revision',
+    );
+    expect(JSON.parse(request.userPrompt).verifierSupportedClaims).toEqual([
+      { claim: 'The dog refuses to eat.', evidenceIds: ['e0'] },
+    ]);
+  });
+
+  it('gives grounding repairs the verifier-approved claim allowlist', async () => {
+    const input = state({
+      question:
+        'Summarize what is said in the indexed transcript segment spanning 0–60 seconds.',
+      evidence: [
+        'What the fuck? Honestly, I have wanted to renovate this place for years. So, thank you. With power like yours, I could conquer any nation. Crush',
+      ],
+    });
+    input.verification = {
+      passed: false,
+      confidence: 0.9,
+      issues: ['Do not infer an unstated recipient or intent.'],
+      requiresRevision: true,
+      supportedClaimMappings: [
+        { claim: 'The speaker reacts with disbelief.', evidenceIds: ['e0'] },
+        {
+          claim: 'The speaker has wanted to renovate the place for years.',
+          evidenceIds: ['e0'],
+        },
+      ],
+      diagnostics: {
+        providerStatus: 'SUCCESS',
+        decisionSource: 'LLM_ESCALATION',
+        failureClass: 'GROUNDING',
+      },
+    } as never;
+    input.contextSufficiency = {
+      sufficient: true,
+      supportedEvidenceIds: ['e0'],
+    } as never;
+    input.retrievalPlan = {
+      sourceTimestampSec: 0,
+      sourceTimestampEndSec: 60,
+      transcriptTimestampSec: 0,
+      transcriptTimestampEndSec: 60,
+    } as never;
+    input.rerankedChunks = input.rerankedChunks.map((chunk) => ({
+      ...chunk,
+      startTime: 0,
+      endTime: 60,
+    })) as never;
+    input.answer =
+      'The speaker thanks the recipient and urges them to crush something.';
+    structuredLlm.generateObject.mockResolvedValueOnce({
+      answer:
+        'What the fuck? Honestly, I have wanted to renovate this place for years.',
+      evidenceIds: ['e0'],
+      claims: [
+        { claim: 'What the fuck?', evidenceIds: ['e0'] },
+        {
+          claim: 'Honestly, I have wanted to renovate this place for years.',
+          evidenceIds: ['e0'],
+        },
+      ],
+    });
+
+    const revised = await useCase.executeWithProvenance(input);
+
+    expect(revised).toMatchObject({
+      answer: 'What the fuck? Honestly, I have wanted to renovate this place for years.',
+      evidenceIds: ['e0'],
+      claims: [
+        { claim: 'What the fuck?', evidenceIds: ['e0'] },
+        {
+          claim: 'Honestly, I have wanted to renovate this place for years.',
+          evidenceIds: ['e0'],
+        },
+      ],
+      modelRole: 'ANSWER_REVISION',
+    });
+    expect(structuredLlm.generateObject).toHaveBeenCalledTimes(1);
+    const request = structuredLlm.generateObject.mock.calls[0][0];
+    expect(JSON.parse(request.userPrompt).verifierSupportedClaims).toEqual(
+      input.verification.supportedClaimMappings,
+    );
+    expect(request.systemPrompt).toContain(
+      'paraphrase the approved propositions concisely in new wording',
     );
   });
 
@@ -430,6 +546,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       question:
         'Quote the first complete sentence in the indexed transcript segment spanning 9.52-62.28 seconds.',
       evidence: ['opening fragment. The first complete sentence is here.'],
+      transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
     });
     input.retrievalPlan = {
       sourceOrder: 'ASC',
@@ -502,11 +619,15 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     config.get.mockReturnValue(fallbackModel);
     const input = state({
       question:
-        'Describe what is visible and summarize what is said in the clip.',
+        'Describe the sampled frame at 16 seconds and summarize what is said in the indexed transcript segment spanning 0–60 seconds.',
       evidence: ['The speaker says the project is complete.'],
     });
     input.route!.reelQuestionType = 'MULTIMODAL_CONTENT';
     input.route!.requiredEvidence = ['TRANSCRIPT', 'VISUAL'];
+    input.retrievalPlan = {
+      transcriptTimestampSec: 0,
+      transcriptTimestampEndSec: 60,
+    } as never;
     input.rerankedChunks[0].evidenceType = 'TRANSCRIPT';
     input.rerankedChunks.push({
       ...input.rerankedChunks[0],
@@ -533,7 +654,7 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
       )
       .mockResolvedValueOnce({
         answer:
-          'The transcript says the project is complete. The frame shows a person holding a red folder.',
+          'Visible: A person holds a red folder. Spoken: The speaker says the project is complete.',
         evidenceIds: ['e0', 'e1'],
       });
 
@@ -550,5 +671,11 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
         return model;
       }),
     ).toEqual(['test/test/answer-revision', fallbackModel]);
+    expect(
+      structuredLlm.generateObject.mock.calls[1][0].systemPrompt,
+    ).toContain('format the answer as exactly two labeled sections');
+    expect(
+      structuredLlm.generateObject.mock.calls[1][0].systemPrompt,
+    ).toContain('cover the beginning, middle, and end in chronological order');
   });
 });

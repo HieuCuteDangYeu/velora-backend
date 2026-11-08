@@ -62,6 +62,7 @@ describe('CheckContextSufficiencyUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         needsRetrieval: true,
         requiredEvidence: ['TRANSCRIPT'],
       },
@@ -109,6 +110,7 @@ describe('CheckContextSufficiencyUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         needsRetrieval: true,
         requiredEvidence: ['TRANSCRIPT'],
       },
@@ -129,6 +131,78 @@ describe('CheckContextSufficiencyUseCase', () => {
       recommendedAction: 'ANSWER',
     });
     expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the exact indexed transcript range instead of an earlier overlapping chunk', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const state = {
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 23.86–68.76 seconds of "Episode Five".',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 23.86,
+        sourceTimestampEndSec: 68.76,
+        transcriptTimestampSec: 23.86,
+        transcriptTimestampEndSec: 68.76,
+        requiresReelCoverage: false,
+        mode: 'REEL_HYBRID',
+        query: 'first complete sentence',
+        searchLimit: 2,
+        rerankLimit: 2,
+        shouldRerank: false,
+        reason: 'Read the requested transcript window.',
+      },
+      retrievedChunks: [
+        { chunkId: 'overlap', reelId: 'reel-1' },
+        { chunkId: 'exact-range', reelId: 'reel-1' },
+      ],
+      rerankedChunks: [
+        {
+          chunkId: 'overlap',
+          reelId: 'reel-1',
+          title: 'Episode Five',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 44.88,
+          evidenceText: 'The earlier overlapping transcript sentence.',
+          chunkText: 'The earlier overlapping transcript sentence.',
+          tags: [],
+        },
+        {
+          chunkId: 'exact-range',
+          reelId: 'reel-1',
+          title: 'Episode Five',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 23.86,
+          endTime: 68.76,
+          evidenceText: 'Miss me? The dialogue continues after that.',
+          chunkText: 'Miss me? The dialogue continues after that.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      sufficient: true,
+      supportedEvidenceIds: ['e1'],
+      recommendedAction: 'ANSWER',
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+      },
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
   });
 
   it('refuses a comparison when reranking drops one retrieved Reel', async () => {
@@ -264,6 +338,71 @@ describe('CheckContextSufficiencyUseCase', () => {
     });
   });
 
+  it('deterministically accepts timestamp-matched evidence for a single-Reel multimodal range', async () => {
+    const service = { generateObject: jest.fn() };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const multimodalState = {
+      userMessage:
+        'For "Pet Chat Group Episode 11", describe the sampled frame at 105.04 seconds and summarize the indexed speech segment at 61.3–106.19362 seconds. Keep what is visible separate from what is said.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'MULTIMODAL_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      },
+      retrievalPlan: {
+        mode: 'REEL_HYBRID',
+        sourceOrder: 'ASC',
+        sourceTimestampSec: undefined,
+        sourceTimestampEndSec: undefined,
+        transcriptTimestampSec: 61.3,
+        transcriptTimestampEndSec: 106.19362,
+        visualTimestampSec: 105.04,
+        requiresReelCoverage: false,
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'speech-segment',
+          reelId: 'reel-1',
+          title: 'Pet Chat Group Episode 11',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 61.3,
+          endTime: 106.19362,
+          evidenceText: 'The speaker greets the cat and offers a home.',
+          chunkText: 'The speaker greets the cat and offers a home.',
+          tags: [],
+        },
+        {
+          chunkId: 'visual-frame',
+          reelId: 'reel-1',
+          title: 'Pet Chat Group Episode 11',
+          evidenceType: 'VISUAL',
+          startTime: 105.04,
+          endTime: 105.04,
+          evidenceText: 'A woman sits on a couch in a living room.',
+          chunkText: 'A woman sits on a couch in a living room.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(multimodalState)).resolves.toMatchObject({
+      sufficient: true,
+      availableEvidence: ['TRANSCRIPT', 'VISUAL', 'METADATA'],
+      missingEvidence: [],
+      supportedEvidenceIds: ['e0', 'e1'],
+      recommendedAction: 'ANSWER',
+      diagnostics: {
+        providerStatus: 'NOT_CALLED',
+        decisionSource: 'DETERMINISTIC_MULTIMODAL_RANGE',
+      },
+    });
+    expect(service.generateObject).not.toHaveBeenCalled();
+  });
+
   it('instructs the judge to assess requested Reel comparisons independently', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({
@@ -325,6 +464,9 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject.mock.calls[0][0].systemPrompt).toMatch(
       /earliest source-ordered transcript item for each Reel/i,
     );
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+      'A comparison does not require a prewritten comparative conclusion in the retrieved evidence.',
+    );
     expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
       '"requiresReelCoverage":true',
     );
@@ -337,6 +479,162 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject.mock.calls[0][0].userPrompt).toContain(
       segmentTail,
     );
+  });
+
+  it('requires textual coverage across a timed summary interval', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: false,
+        confidence: 0.9,
+        supportedEvidenceIds: [],
+        missingEvidence: ['TRANSCRIPT'],
+        reason: 'A short excerpt does not cover the requested interval.',
+        userFacingReason: 'I found only a small part of that interval.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const state = {
+      userMessage:
+        'Summarize what is said in the indexed transcript segment spanning 8–63.9 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'NONE',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      retrievalPlan: {
+        mode: 'REEL_HYBRID',
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 8,
+        sourceTimestampEndSec: 63.9,
+        transcriptTimestampSec: 8,
+        transcriptTimestampEndSec: 63.9,
+        requiresReelCoverage: false,
+        searchLimit: 4,
+        rerankLimit: 4,
+        shouldRerank: false,
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'short-excerpt',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText:
+            "Absolutely, he won't be able to resist. He's addicted to",
+          chunkText: "Absolutely, he won't be able to resist. He's addicted to",
+          startTime: 8,
+          endTime: 63.9,
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(state)).resolves.toMatchObject({
+      sufficient: false,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+    });
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+      'Exact or overlapping timestamps do not prove that a short chunk contains every material statement.',
+    );
+  });
+
+  it('accepts direct source-ordered evidence when the judge falsely refuses a named comparison', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        sufficient: false,
+        confidence: 1,
+        supportedEvidenceIds: [],
+        reason: 'The excerpts do not contain a prewritten comparison.',
+        userFacingReason: 'Could not find direct statement attribution.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+      }),
+    };
+    const useCase = new CheckContextSufficiencyUseCase(
+      service as never,
+      config,
+    );
+    const comparisonState = {
+      userMessage:
+        'Compare the first indexed transcript segments of "Alpha Episode 10" and "Alpha Episode 1". Attribute each statement to its own clip.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        requiresReelCoverage: true,
+      },
+      retrievedChunks: [
+        {
+          reelId: 'reel-10',
+          title: 'Alpha Episode 10',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The first clip opens with Darius returning.',
+          chunkText: 'The first clip opens with Darius returning.',
+        },
+        {
+          reelId: 'reel-1',
+          title: 'Alpha Episode 1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The second clip opens with Miranda arriving.',
+          chunkText: 'The second clip opens with Miranda arriving.',
+        },
+      ],
+      rerankedChunks: [
+        {
+          reelId: 'reel-10',
+          title: 'Alpha Episode 10',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The first clip opens with Darius returning.',
+          chunkText: 'The first clip opens with Darius returning.',
+          tags: [],
+        },
+        {
+          reelId: 'reel-1',
+          title: 'Alpha Episode 1',
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: 'The second clip opens with Miranda arriving.',
+          chunkText: 'The second clip opens with Miranda arriving.',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState;
+
+    await expect(useCase.execute(comparisonState)).resolves.toMatchObject({
+      sufficient: true,
+      confidence: 1,
+      supportedEvidenceIds: ['e0', 'e1'],
+      recommendedAction: 'ANSWER',
+      reason:
+        'Source-ordered transcript evidence directly covers each explicitly requested Reel.',
+      diagnostics: {
+        providerStatus: 'SUCCESS',
+        decisionSource: 'DETERMINISTIC_COMPLETE_REEL_COVERAGE',
+      },
+    });
+
+    const missingTextState = {
+      ...comparisonState,
+      rerankedChunks: [
+        comparisonState.rerankedChunks[0],
+        {
+          ...comparisonState.rerankedChunks[1],
+          evidenceText: '',
+          chunkText: '',
+        },
+      ],
+    };
+    await expect(useCase.execute(missingTextState)).resolves.toMatchObject({
+      sufficient: false,
+      recommendedAction: 'REFUSE_NO_CONTEXT',
+    });
   });
 
   it('refuses a required user-memory request when the memory tool is empty', async () => {

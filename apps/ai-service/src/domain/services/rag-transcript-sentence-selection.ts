@@ -4,292 +4,61 @@ import type {
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 
-const AUXILIARIES = new Set([
-  'am',
-  'is',
-  'are',
-  'was',
-  'were',
-  'be',
-  'being',
-  'been',
-  'has',
-  'have',
-  'had',
-  'do',
-  'does',
-  'did',
-  'can',
-  'could',
-  'will',
-  'would',
-  'shall',
-  'should',
-  'may',
-  'might',
-  'must',
-]);
-const SUBJECT_PRONOUNS = new Set([
-  'i',
-  'you',
-  'he',
-  'she',
-  'it',
-  'we',
-  'they',
-  'this',
-  'that',
-  'these',
-  'those',
-]);
-const WH_WORDS = new Set(['what', 'who', 'where', 'when', 'why', 'how']);
-const SUBORDINATORS = new Set([
-  'although',
-  'because',
-  'before',
-  'if',
-  'once',
-  'since',
-  'though',
-  'unless',
-  'until',
-  'when',
-  'whereas',
-  'while',
-]);
-const DETERMINERS = new Set([
-  'a',
-  'an',
-  'her',
-  'his',
-  'its',
-  'my',
-  'our',
-  'the',
-  'their',
-  'these',
-  'this',
-  'those',
-  'that',
-  'your',
-]);
-const STANDALONE_UTTERANCES = new Set([
-  'ah',
-  'alright',
-  'come',
-  'fine',
-  'go',
-  'good',
-  'great',
-  'hello',
-  'help',
-  'hey',
-  'hi',
-  'huh',
-  'listen',
-  'look',
-  'meow',
-  'no',
-  'nope',
-  'oh',
-  'ok',
-  'okay',
-  'right',
-  'stop',
-  'thanks',
-  'wait',
-  'what',
-  'yes',
-  'yeah',
-  'yep',
-  'yup',
-  'woof',
-]);
-const NON_VERB_MODAL_COMPLEMENTS = new Set([
-  'a',
-  'an',
-  'for',
-  'from',
-  'her',
-  'his',
-  'in',
-  'it',
-  'my',
-  'never',
-  'no',
-  'not',
-  'of',
-  'on',
-  'our',
-  'the',
-  'their',
-  'to',
-  'with',
-  'your',
-]);
-const COMMON_IRREGULAR_VERBS = new Set([
-  'became',
-  'began',
-  'bought',
-  'brought',
-  'came',
-  'caught',
-  'did',
-  'felt',
-  'found',
-  'gave',
-  'got',
-  'grew',
-  'heard',
-  'held',
-  'kept',
-  'knew',
-  'left',
-  'lost',
-  'made',
-  'met',
-  'paid',
-  'put',
-  'ran',
-  'read',
-  'said',
-  'saw',
-  'sat',
-  'sold',
-  'spoke',
-  'stood',
-  'thought',
-  'told',
-  'took',
-  'went',
-  'won',
-  'wrote',
-]);
-
-function words(text: string): string[] {
-  return (
-    text
-      .normalize('NFKC')
-      .replace(/[’‘]/g, "'")
-      .match(/[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)?/gu)
-      ?.map((word) => word.toLowerCase()) ?? []
-  );
-}
-
-function isFiniteVerb(word: string): boolean {
-  return (
-    AUXILIARIES.has(word) ||
-    COMMON_IRREGULAR_VERBS.has(word) ||
-    /(?:ed|s)$/.test(word)
-  );
-}
-
-function startsSubordinateClause(sentenceWords: string[]): boolean {
-  return (
-    SUBORDINATORS.has(sentenceWords[0]) ||
-    (sentenceWords[0] === 'as' && sentenceWords[1] !== 'for')
-  );
-}
-
-function hasClearIndependentClause(text: string): boolean {
-  const sentenceWords = words(text);
-  if (sentenceWords.length === 0) return false;
-  if (startsSubordinateClause(sentenceWords)) return false;
-  if (
-    sentenceWords.length === 1 &&
-    STANDALONE_UTTERANCES.has(sentenceWords[0])
-  ) {
-    return true;
-  }
-  const contractedSubject =
-    /^(?:i|you|he|she|it|we|they)('m|'re|'s|'ve|'ll|'d)\b/i.exec(
-      text.trim().replace(/[’‘]/g, "'"),
-    );
-  if (contractedSubject && sentenceWords.length > 1) {
-    const following = sentenceWords[1];
-    if (
-      ["'ll", "'d"].includes(contractedSubject[1].toLowerCase()) &&
-      NON_VERB_MODAL_COMPLEMENTS.has(following)
-    ) {
-      return false;
-    }
-    return true;
-  }
-  if (
-    WH_WORDS.has(sentenceWords[0]) &&
-    (AUXILIARIES.has(sentenceWords[1]) || isFiniteVerb(sentenceWords[1] ?? ''))
-  ) {
-    return true;
-  }
-  if (SUBORDINATORS.has(sentenceWords[0])) return false;
-
-  if (
-    SUBJECT_PRONOUNS.has(sentenceWords[0]) &&
-    sentenceWords.slice(1, 5).some(isFiniteVerb)
-  ) {
-    return true;
-  }
-
-  return sentenceWords.some((word, index) => {
-    if (
-      index === 0 ||
-      !AUXILIARIES.has(word) ||
-      sentenceWords[index - 1] === 'to'
-    )
-      return false;
-    return sentenceWords
-      .slice(0, index)
-      .some((subject) => !DETERMINERS.has(subject));
-  });
-}
-
-function isClearlyIncompleteSentence(text: string): boolean {
-  const sentenceWords = words(text);
-  if (sentenceWords.length < 2 || hasClearIndependentClause(text)) return false;
-  if (startsSubordinateClause(sentenceWords)) return true;
-  if (DETERMINERS.has(sentenceWords[0]) && sentenceWords.length >= 3)
-    return true;
-  if (/^(?:[A-Z][\p{L}'-]*\s+){1,3}[A-Z][\p{L}'-]*\.$/u.test(text.trim())) {
-    return true;
-  }
-  return /^(?:too|so|very|quite)\s+[\p{L}'-]+[.!]$/iu.test(text.trim());
-}
-
-export function reconcileTranscriptSentenceCandidate(
-  candidates: Array<{ candidateId: string; text: string }>,
-  selectedCandidateId: string,
-): string {
-  const selectedIndex = candidates.findIndex(
-    (candidate) => candidate.candidateId === selectedCandidateId,
-  );
-  if (selectedIndex < 0) return selectedCandidateId;
-
-  const earlierComplete = candidates
-    .slice(0, selectedIndex)
-    .find((candidate) => hasClearIndependentClause(candidate.text));
-  if (earlierComplete) return earlierComplete.candidateId;
-
-  if (isClearlyIncompleteSentence(candidates[selectedIndex].text)) {
-    const nextComplete = candidates
-      .slice(selectedIndex + 1)
-      .find((candidate) => hasClearIndependentClause(candidate.text));
-    if (nextComplete) return nextComplete.candidateId;
-  }
-
-  return selectedCandidateId;
-}
-
 export function isTranscriptSentenceSelectionRequest(
-  route: Pick<RagChatRouteDecision, 'intent' | 'requiredEvidence'> | undefined,
-  question: string,
+  route:
+    | Pick<
+        RagChatRouteDecision,
+        'intent' | 'requiredEvidence' | 'transcriptRequestKind'
+      >
+    | undefined,
 ): boolean {
   return (
     route?.intent === 'REEL_VIDEO_QUESTION' &&
     route.requiredEvidence?.includes('TRANSCRIPT') === true &&
-    /\b(?:first complete sentence|first (?:statement|sentence)|opening statement)\b/i.test(
-      question,
-    )
+    route.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE'
   );
+}
+
+export function startsInsidePriorTranscriptSentence(
+  span: string,
+  priorTranscript: string,
+): boolean {
+  const normalize = (value: string) =>
+    value
+      .normalize('NFKC')
+      .replace(/[’‘]/g, "'")
+      .replace(/\r\n?/g, '\n')
+      .replace(/[ \t\f\v]+/g, ' ')
+      .toLocaleLowerCase();
+  const needle = normalize(span).trim();
+  const context = normalize(priorTranscript);
+  if (!needle || !context) return false;
+
+  let cursor = 0;
+  let continuationCount = 0;
+  let sentenceStartCount = 0;
+  while (cursor < context.length) {
+    const index = context.indexOf(needle, cursor);
+    if (index < 0) break;
+    const preceding = context.slice(0, index);
+    const boundary = Math.max(
+      preceding.lastIndexOf('.'),
+      preceding.lastIndexOf('?'),
+      preceding.lastIndexOf('!'),
+      preceding.lastIndexOf('\n'),
+    );
+    const sentencePrefix = preceding.slice(boundary + 1, index).trim();
+    if (
+      sentencePrefix &&
+      !/^(?:and|but|for|nor|or|so|yet)$/iu.test(sentencePrefix)
+    ) {
+      continuationCount += 1;
+    } else {
+      sentenceStartCount += 1;
+    }
+    cursor = index + needle.length;
+  }
+  return continuationCount > 0 && sentenceStartCount === 0;
 }
 
 export function selectTimestampTranscriptEvidence<
@@ -320,16 +89,213 @@ export function selectTimestampTranscriptEvidence<
   )[0];
 }
 
-export function transcriptSentenceSpans(
-  text: string,
-  question: string,
-): string[] {
-  const sentences = text
+export function transcriptSentenceSpans(text: string): string[] {
+  return text
     .split(/(?<=[.!?])\s+|\n+/)
     .map((span) => span.trim())
     .filter(Boolean);
-  if (!/\b(?:why|reason|because)\b/i.test(question)) return sentences;
+}
 
+export function firstCompleteTranscriptSentenceCandidate(
+  text: string,
+  priorTranscript?: string,
+): string | undefined {
+  return transcriptSentenceSpans(text).find((span, index) => {
+    if (
+      hasIncompleteTranscriptEnding(span) ||
+      isLikelyIncompleteTranscriptUtterance(span)
+    ) {
+      return false;
+    }
+    const continuesBeforeWindow =
+      index === 0 &&
+      Boolean(
+        priorTranscript &&
+          startsInsidePriorTranscriptSentence(span, priorTranscript),
+      );
+    const completeUtteranceStart =
+      isShortTerminalTranscriptUtterance(span) ||
+      /^please,\s+\p{L}/iu.test(span) ||
+      /^(?:i|you|we|they|he|she|it)(?:['’](?:m|re|ve|ll|d))?\s+\p{L}/iu.test(
+        span,
+      );
+    return !continuesBeforeWindow || completeUtteranceStart;
+  });
+}
+
+export function isLikelyIncompleteTranscriptUtterance(text: string): boolean {
+  const normalized = text.normalize('NFKC').trim();
+  if (hasIncompleteTranscriptEnding(normalized)) return true;
+  const span = normalized.replace(/[.!?。！？]+$/u, '').trim();
+  const words = span.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const firstWord = words[0]?.toLocaleLowerCase() ?? '';
+  if (/^(?:i|you|we|they|he|she|it)$/iu.test(span)) return true;
+  const auxiliary = /^(?:i|you|we|they|he|she|it)(?:['’](?:ll|d|ve|re)|\s+(?:will|would|could|should|can|may|might|must))\s+/iu;
+  const match = auxiliary.exec(span);
+  if (
+    match &&
+    /^(?:(?:of|to|from|in|on|at|for|by|with)\s+)?(?:a|an|the|my|your|his|her|their|our|this|that|these|those)\b/iu.test(
+      span.slice(match[0].length),
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^[\p{L}]+ing\s+(?:if|whether|what|who|where|when|why|how)\b/iu.test(
+      span,
+    ) ||
+    /^(?:is|are|was|were|has|have|does|did)\s+(?:a|an|the|this|that|these|those)\b/iu.test(
+      span,
+    ) ||
+    /^[\p{L}]+ly\s+[\p{L}]+(?:ed|en)\b/iu.test(span)
+  ) {
+    return true;
+  }
+
+  const lowerStart = /^\p{Ll}/u.test(span);
+  const terminalPeriod = /[.。]$/u.test(normalized);
+  const bareDeterminerPhrase =
+    terminalPeriod &&
+    words.length === 2 &&
+    /^(?:a|an|the|my|your|his|her|their|our|this|that|these|those)$/iu.test(
+      firstWord,
+    );
+  if (bareDeterminerPhrase) return true;
+  const hasSubjectOrPredicateSignal =
+    /^(?:i|you|we|they|he|she|it)\b/iu.test(span) ||
+    /\b(?:am|is|are|was|were|has|have|had|do|does|did|can|could|will|would|should|may|might|must)\b/iu.test(
+      span,
+    ) ||
+    words.some((word) => /(?:ed|ing|s)$/iu.test(word));
+  // shortcut: simple fragment shapes only; use a syntax parser if source review finds false exclusions.
+  return (
+    terminalPeriod &&
+    !span.includes(',') &&
+    words.length > 1 &&
+    words.length <= 3 &&
+    !hasSubjectOrPredicateSignal &&
+    lowerStart
+  );
+}
+
+export function isShortTerminalTranscriptUtterance(span: string): boolean {
+  const normalized = span
+    .normalize('NFKC')
+    .trim()
+    .replace(/["'’”»)\]}]+$/u, '')
+    .trim();
+  const wordCount = normalized.match(/[\p{L}\p{N}]+/gu)?.length ?? 0;
+  return (
+    wordCount === 1 &&
+    /[!?！？]$/u.test(normalized) &&
+    !hasIncompleteTranscriptEnding(normalized)
+  );
+}
+
+export function hasIncompleteTranscriptEnding(text: string): boolean {
+  const tail = text
+    .normalize('NFKC')
+    .trim()
+    .replace(/["'’”»)\]}]+$/u, '')
+    .trim();
+  if (!tail) return false;
+  if (/\.{3}$|…$/u.test(tail)) return true;
+  return !/[.!?。！？]$/u.test(tail);
+}
+
+export function hasUnsupportedTranscriptTailCompletion(
+  answer: string,
+  evidenceText: string,
+): boolean {
+  if (!answer.trim() || !hasIncompleteTranscriptEnding(evidenceText)) return false;
+  const source = evidenceText
+    .normalize('NFKC')
+    .trim()
+    .replace(/["'’”»)\]}]+$/u, '')
+    .trim();
+  const boundary = Math.max(
+    source.lastIndexOf('.'),
+    source.lastIndexOf('?'),
+    source.lastIndexOf('!'),
+    source.lastIndexOf('\n'),
+  );
+  const tail = source.slice(boundary + 1).trim();
+  if (!tail) return false;
+  const escapedTail = tail.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const matches = new RegExp(
+    `(^|[^\\p{L}\\p{N}])(${escapedTail})(?=$|[^\\p{L}\\p{N}])`,
+    'giu',
+  );
+  for (const match of answer.matchAll(matches)) {
+    const fragmentStart = match.index! + match[1].length;
+    const afterFragment = answer.slice(fragmentStart + match[2].length);
+    if (/^\s*["'’”]/u.test(afterFragment)) continue;
+    const afterInSentence = afterFragment.split(/[.!?。！？\n]/u, 1)[0];
+    if (!/\p{L}/u.test(afterInSentence)) continue;
+    const prefixBoundary = Math.max(
+      answer.lastIndexOf('.', fragmentStart),
+      answer.lastIndexOf('?', fragmentStart),
+      answer.lastIndexOf('!', fragmentStart),
+      answer.lastIndexOf('\n', fragmentStart),
+    );
+    const prefix = answer.slice(prefixBoundary + 1, fragmentStart);
+    if (
+      /\b(?:transcript|excerpt|segment|text)\s+(?:ends?|stops?|finishes?)\s+(?:with|at)\s*$/iu.test(
+        prefix,
+      ) &&
+      /^\s*,?\s*(?:(?:at\s+(?:the\s+)?(?:end|boundary))|(?:as\s+(?:the\s+)?(?:last|final)\s+(?:word|fragment))|(?:(?:the\s+)?(?:last|final|clipped|trailing)\s+(?:word|fragment|utterance)))\b/iu.test(
+        afterFragment,
+      )
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+export function isNearVerbatimTranscriptSummary(
+  answer: string,
+  evidenceText: string,
+): boolean {
+  const answerTokens: string[] = answer
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  const sourceTokens: string[] = evidenceText
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (answerTokens.length < 16 || sourceTokens.length < 20) return false;
+
+  let previous = new Array<number>(sourceTokens.length + 1).fill(0);
+  let longestMatch = 0;
+  for (const token of answerTokens) {
+    const current = new Array<number>(sourceTokens.length + 1).fill(0);
+    for (let sourceIndex = 1; sourceIndex <= sourceTokens.length; sourceIndex++) {
+      if (token !== sourceTokens[sourceIndex - 1]) continue;
+      current[sourceIndex] = previous[sourceIndex - 1] + 1;
+      longestMatch = Math.max(longestMatch, current[sourceIndex]);
+    }
+    previous = current;
+  }
+  const answerCoverage = longestMatch / answerTokens.length;
+  const sourceCoverage = longestMatch / sourceTokens.length;
+  const answerSourceLength = answerTokens.length / sourceTokens.length;
+  // shortcut: token-order overlap only, replace if paraphrase false positives appear.
+  return (
+    answerCoverage >= 0.75 &&
+    sourceCoverage >= 0.65 &&
+    answerSourceLength >= 0.75
+  );
+}
+
+export function transcriptFallbackSpans(
+  text: string,
+  question: string,
+): string[] {
+  const sentences = transcriptSentenceSpans(text);
+  if (!/\b(?:why|reason|because)\b/i.test(question)) return sentences;
   return sentences.flatMap((sentence) =>
     sentence
       .split(/\s+(?=(?:because|since|so|therefore)\b)/i)

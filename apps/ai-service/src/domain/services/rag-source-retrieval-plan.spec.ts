@@ -44,10 +44,29 @@ describe('source retrieval constraints', () => {
         {
           ...visual,
           reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
           requiredEvidence: ['TRANSCRIPT'],
         },
       ),
     ).toMatchObject({ sourceOrder: 'ASC', shouldRerank: false });
+  });
+  it('uses the typed transcript task for paraphrased earliest-utterance requests', () => {
+    expect(
+      sourceRetrievalPlan(
+        'Repeat the earliest complete spoken line from the shared Reel.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      searchLimit: 1,
+      rerankLimit: 1,
+      shouldRerank: false,
+    });
   });
   it('reads the first transcript segment chronologically for every Reel in a comparison', () => {
     expect(
@@ -98,8 +117,8 @@ describe('source retrieval constraints', () => {
       sourceOrder: 'ASC',
       sourceTimestampSec: 11.68,
       sourceTimestampEndSec: 56.38,
-      searchLimit: 2,
-      rerankLimit: 2,
+      searchLimit: 6,
+      rerankLimit: 6,
     });
   });
 
@@ -176,8 +195,46 @@ describe('source retrieval constraints', () => {
       transcriptTimestampEndSec: 63.9,
       sourceTimestampSec: 8,
       sourceTimestampEndSec: 63.9,
-      searchLimit: 2,
-      rerankLimit: 2,
+      searchLimit: 7,
+      rerankLimit: 7,
+    });
+  });
+
+  it('bounds long summary reads by the retrieval API limit', () => {
+    expect(
+      sourceRetrievalPlan(
+        'Summarize the speech segment spanning 0–600 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 0,
+      sourceTimestampEndSec: 600,
+      searchLimit: 20,
+      rerankLimit: 20,
+    });
+  });
+
+  it('allocates enough chronological reads for dense transcript windows', () => {
+    expect(
+      sourceRetrievalPlan(
+        'Summarize what is said in the indexed transcript segment spanning 0.52–77.82 seconds.',
+        {
+          ...visual,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+      ),
+    ).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 0.52,
+      sourceTimestampEndSec: 77.82,
+      searchLimit: 10,
+      rerankLimit: 10,
     });
   });
 

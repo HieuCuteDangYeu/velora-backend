@@ -1,21 +1,41 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
-import { MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS } from '@ai/domain/services/rag-answer-contract';
 import {
-  DEFAULT_RAG_PROMPT_BOUNDS,
-  transcriptSegmentPromptBounds,
-} from '@ai/domain/services/rag-prompt-bounds';
+  MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS,
+  TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+} from '@ai/domain/services/rag-answer-contract';
 import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
 
+const candidateAssessmentResponse = (
+  selectedCandidateId: string,
+  options: { reverse?: boolean; allComplete?: boolean } = {},
+) =>
+  jest.fn().mockImplementation((input: { userPrompt: string }) => {
+    const prompt = JSON.parse(input.userPrompt) as {
+      authorizedEvidence: Array<{
+        orderedSentenceCandidates?: Array<{ candidateId: string }>;
+      }>;
+    };
+    const assessments = prompt.authorizedEvidence.flatMap((evidence) =>
+      (evidence.orderedSentenceCandidates ?? []).map(({ candidateId }) => ({
+        candidateId,
+        complete: options.allComplete || candidateId === selectedCandidateId,
+      })),
+    );
+    if (options.reverse) assessments.reverse();
+    return { sentenceCandidateAssessments: assessments };
+  });
+
 describe('GenerateDraftAnswerUseCase', () => {
-  it('retries a multimodal answer when its claim mapping omits a required evidence type', async () => {
+  it('retries multimodal answers when claims are absent from the answer text', async () => {
     const answer =
       'Visible: A blue car is parked. Spoken: The speaker says the car is blue.';
     const generateObject = jest
       .fn()
       .mockResolvedValueOnce({
-        answer: 'The speaker says the car is blue.',
+        answer: 'Visible: A blue car is parked.',
         claims: [
+          { claim: 'A blue car is parked.', evidenceIds: ['e1'] },
           { claim: 'The speaker says the car is blue.', evidenceIds: ['e0'] },
         ],
       })
@@ -411,7 +431,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
   });
 
-  it('retries invalid structured output and falls back to supported source-attributed transcript segments', async () => {
+  it('uses exact supported source segments without asking the model to reproduce them', async () => {
     const invalidStructuredOutput = Object.assign(
       new Error('structured output validation failed'),
       {
@@ -487,10 +507,11 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as unknown as RagChatWorkflowState);
 
-    expect(service.generateObject).toHaveBeenCalledTimes(2);
+    expect(service.generateObject).not.toHaveBeenCalled();
     expect(result.finalizationMode).toBe('EXTRACTIVE_EVIDENCE_FALLBACK');
-    expect(result.answer).toContain('Episode One: Alice leaves the station');
-    expect(result.answer).toContain('Episode Two: Bob enters the courthouse');
+    expect(result.answer).toBe(
+      'Episode One: Alice leaves the station after sunrise.\n\nEpisode Two: Bob enters the courthouse before noon.',
+    );
     expect(result.claims.map((claim) => claim.evidenceIds)).toEqual([
       ['e0'],
       ['e1'],
@@ -573,12 +594,12 @@ describe('GenerateDraftAnswerUseCase', () => {
           'In Reel one, the speaker says hello and a red door is visible. In Reel two, the speaker says goodbye.',
         claims: [
           {
-            claim: 'In Reel one, the speaker says hello.',
+            claim: 'In Reel one, the speaker says hello',
             evidenceIds: ['e0'],
           },
-          { claim: 'In Reel one, a red door is visible.', evidenceIds: ['e1'] },
+          { claim: 'a red door is visible', evidenceIds: ['e1'] },
           {
-            claim: 'In Reel two, the speaker says goodbye.',
+            claim: 'In Reel two, the speaker says goodbye',
             evidenceIds: ['e2'],
           },
         ],
@@ -588,16 +609,16 @@ describe('GenerateDraftAnswerUseCase', () => {
           'In Reel one, the speaker says hello and a red door is visible. In Reel two, the speaker says goodbye and a blue window is visible.',
         claims: [
           {
-            claim: 'In Reel one, the speaker says hello.',
+            claim: 'In Reel one, the speaker says hello',
             evidenceIds: ['e0'],
           },
-          { claim: 'In Reel one, a red door is visible.', evidenceIds: ['e1'] },
+          { claim: 'a red door is visible', evidenceIds: ['e1'] },
           {
-            claim: 'In Reel two, the speaker says goodbye.',
+            claim: 'In Reel two, the speaker says goodbye',
             evidenceIds: ['e2'],
           },
           {
-            claim: 'In Reel two, a blue window is visible.',
+            claim: 'a blue window is visible',
             evidenceIds: ['e3'],
           },
         ],
@@ -910,9 +931,10 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(result.answer).toBe(answer);
   });
 
-  it('answers an explicit first indexed sentence from the beginning rather than choosing a later sentence', async () => {
-    const generateObject = jest.fn().mockResolvedValue({
-      selectedSentenceCandidateId: 'sentence-1',
+  it('chooses the earliest complete candidate even when assessments arrive out of order', async () => {
+    const generateObject = candidateAssessmentResponse('sentence-1', {
+      reverse: true,
+      allComplete: true,
     });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
@@ -925,10 +947,11 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
     const result = await useCase.execute({
       userMessage:
-        'What is the first complete sentence recorded in the indexed transcript?',
+        'Repeat the earliest complete spoken line from the shared Reel.',
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
@@ -1038,9 +1061,7 @@ describe('GenerateDraftAnswerUseCase', () => {
   });
 
   it('extracts an exact quote from the full source before prompt evidence truncation', async () => {
-    const generateObject = jest
-      .fn()
-      .mockResolvedValue({ selectedSentenceCandidateId: 'sentence-1' });
+    const generateObject = candidateAssessmentResponse('sentence-1');
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1060,6 +1081,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
@@ -1070,7 +1092,7 @@ describe('GenerateDraftAnswerUseCase', () => {
           reelId: 'r',
           evidenceType: 'TRANSCRIPT',
           startTime: 0,
-          endTime: 100,
+          endTime: 101,
           evidenceText: fullText,
           chunkText: fullText,
           tags: [],
@@ -1098,20 +1120,43 @@ describe('GenerateDraftAnswerUseCase', () => {
     const promptEvidence = prompt.authorizedEvidence[0];
     const candidates = promptEvidence.orderedSentenceCandidates ?? [];
     expect(promptEvidence).not.toHaveProperty('evidenceText');
+    expect(candidates).toHaveLength(8);
     expect(candidates.slice(0, 2)).toEqual([
-      { candidateId: 'sentence-1', ordinal: 1, text: 'The dog came back.' },
-      { candidateId: 'sentence-2', ordinal: 2, text: 'Unrelated dialogue.' },
+      {
+        candidateId: 'sentence-1',
+        ordinal: 1,
+        text: 'The dog came back.',
+        likelyIncompleteUtterance: false,
+      },
+      {
+        candidateId: 'sentence-2',
+        ordinal: 2,
+        text: 'Unrelated dialogue.',
+        likelyIncompleteUtterance: false,
+      },
     ]);
     expect(generateObject.mock.calls[0][0].jsonSchema).toMatchObject({
-      required: ['selectedSentenceCandidateId'],
+      required: ['sentenceCandidateAssessments'],
       properties: {
-        selectedSentenceCandidateId: {
-          enum: expect.arrayContaining(['sentence-1', 'sentence-2']),
+        sentenceCandidateAssessments: {
+          minItems: 8,
+          maxItems: 8,
+          items: {
+            properties: {
+              candidateId: {
+                enum: expect.arrayContaining(['sentence-1', 'sentence-2']),
+              },
+              complete: { type: 'boolean' },
+            },
+          },
         },
       },
     });
     expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /choose the earliest independent utterance within the requested source interval/i,
+      /assess every ordered candidate independently/i,
+    );
+    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
+      /modal or auxiliary followed directly by a preposition\/determiner phrase without its required verb is a fragment/i,
     );
     expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
       /contextOnlyTranscript only to determine whether an opening candidate continues speech/i,
@@ -1121,10 +1166,56 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
   });
 
-  it('corrects an obvious opening fragment returned by the sentence selector', async () => {
-    const generateObject = jest
-      .fn()
-      .mockResolvedValue({ selectedSentenceCandidateId: 'sentence-1' });
+  it('continues candidate assessment batches until it finds a complete utterance', async () => {
+    const generateObject = candidateAssessmentResponse('sentence-13');
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const text = [
+      ...Array.from({ length: 12 }, (_, index) => `Fragment ${index + 1}.`),
+      'The first complete utterance.',
+    ].join(' ');
+
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 0-60 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'long-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 61,
+          evidenceText: text,
+          chunkText: text,
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObject.mock.calls[0][0].userPrompt).toContain('sentence-8');
+    expect(generateObject.mock.calls[1][0].userPrompt).toContain('sentence-13');
+    expect(result.answer).toBe('The first complete utterance.');
+  });
+
+  it('uses the model-selected candidate after it skips a leading fragment', async () => {
+    const generateObject = candidateAssessmentResponse('sentence-2');
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1140,6 +1231,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
@@ -1150,7 +1242,7 @@ describe('GenerateDraftAnswerUseCase', () => {
           reelId: 'r',
           evidenceType: 'TRANSCRIPT',
           startTime: 0,
-          endTime: 60,
+          endTime: 61,
           evidenceText: 'the red notebook! Where is it? The train is outside.',
           chunkText: 'the red notebook! Where is it? The train is outside.',
           tags: [],
@@ -1166,10 +1258,62 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
   });
 
+  it('continues ordered assessment batches until it finds the earliest complete utterance', async () => {
+    const generateObject = candidateAssessmentResponse('sentence-13');
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const text = [
+      ...Array.from({ length: 12 }, () => 'And then.'),
+      'The first complete utterance.',
+    ].join(' ');
+
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 0-60 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'long-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 61,
+          evidenceText: text,
+          chunkText: text,
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(
+      JSON.parse(generateObject.mock.calls[0][0].userPrompt)
+        .authorizedEvidence[0].orderedSentenceCandidates,
+    ).toHaveLength(8);
+    expect(
+      JSON.parse(generateObject.mock.calls[1][0].userPrompt)
+        .authorizedEvidence[0].orderedSentenceCandidates[0].candidateId,
+    ).toBe('sentence-9');
+    expect(result.answer).toBe('The first complete utterance.');
+  });
+
   it('omits a leading transcript span that starts before the requested interval', async () => {
-    const generateObject = jest
-      .fn()
-      .mockResolvedValue({ selectedSentenceCandidateId: 'sentence-1' });
+    const generateObject = candidateAssessmentResponse('sentence-1');
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1185,6 +1329,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
@@ -1221,21 +1366,21 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(prompt.authorizedEvidence[0].orderedSentenceCandidates).toEqual([
       {
         candidateId: 'sentence-1',
-        ordinal: 2,
+        ordinal: 1,
         text: 'The first complete sentence inside it.',
+        likelyIncompleteUtterance: false,
       },
       {
         candidateId: 'sentence-2',
-        ordinal: 3,
+        ordinal: 2,
         text: 'A later sentence.',
+        likelyIncompleteUtterance: false,
       },
     ]);
   });
 
   it('uses verifier feedback instead of repeating the initial extractive quote on revision', async () => {
-    const generateObject = jest
-      .fn()
-      .mockResolvedValue({ selectedSentenceCandidateId: 'sentence-3' });
+    const generateObject = candidateAssessmentResponse('sentence-2');
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn(() => 'Use the verifier revision instruction.') },
@@ -1251,14 +1396,19 @@ describe('GenerateDraftAnswerUseCase', () => {
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
+      answer: 'client.',
+      answerClaims: [{ claim: 'client.', evidenceIds: ['e0'] }],
       nextDraftSource: 'VERIFIER_REVISION',
       verification: {
-        passed: false,
+        passed: true,
+        answerQualityPassed: false,
+        answerQualityIssues: ['The initial quote is incomplete.'],
         confidence: 0.5,
-        issues: ['The initial quote is a fragment.'],
+        issues: [],
         requiresRevision: true,
         revisedInstruction:
           'Quote the first complete sentence after the opening fragment.',
@@ -1283,9 +1433,41 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(result.answer).toBe('Avery thought for a second and said no.');
     expect(generateObject).toHaveBeenCalledTimes(1);
+    const prompt = JSON.parse(
+      generateObject.mock.calls[0][0].userPrompt as string,
+    ) as { sentenceSelectionFeedback?: string };
+    expect(prompt.sentenceSelectionFeedback).toContain(
+      'The initial quote is incomplete.',
+    );
+    expect(prompt.sentenceSelectionFeedback).toContain(
+      'Quote the first complete sentence after the opening fragment.',
+    );
+    const answerPrompt = JSON.parse(
+      generateObject.mock.calls[0][0].userPrompt as string,
+    ) as {
+      authorizedEvidence: Array<{
+        orderedSentenceCandidates?: Array<{ text: string }>;
+      }>;
+    };
+    expect(
+      answerPrompt.authorizedEvidence[0].orderedSentenceCandidates,
+    ).toEqual([
+      {
+        candidateId: 'sentence-1',
+        ordinal: 1,
+        text: 'asking about pets.',
+        likelyIncompleteUtterance: false,
+      },
+      {
+        candidateId: 'sentence-2',
+        ordinal: 2,
+        text: 'Avery thought for a second and said no.',
+        likelyIncompleteUtterance: false,
+      },
+    ]);
   });
 
-  it('requests source wording and sufficient budget for first-segment comparisons', async () => {
+  it('returns complete source-ordered segments when exact evidence fits the comparison budget', async () => {
     const answer =
       'Episode One: A scientist enters the room. Episode Two: The child runs outside.';
     const segmentTail = 'The visitor then explains the laboratory rules.';
@@ -1322,6 +1504,7 @@ describe('GenerateDraftAnswerUseCase', () => {
         query: 'Compare the opening transcript segments.',
       },
       accessibleReelIds: ['reel-1', 'reel-2'],
+      nextDraftSource: 'VERIFIER_REVISION',
       contextSufficiency: {
         sufficient: true,
         availableEvidence: ['TRANSCRIPT'],
@@ -1329,6 +1512,10 @@ describe('GenerateDraftAnswerUseCase', () => {
         supportedEvidenceIds: ['e0', 'e1'],
         recommendedAction: 'ANSWER',
       },
+      retrievedChunks: [
+        { chunkId: 'transcript-one', reelId: 'reel-1' },
+        { chunkId: 'transcript-two', reelId: 'reel-2' },
+      ],
       rerankedChunks: [
         {
           chunkId: 'transcript-one',
@@ -1357,41 +1544,32 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as never);
 
-    const call = generateObject.mock.calls[0][0];
-    expect(result.answer).toBe(answer);
-    expect(call.systemPrompt).toMatch(
-      /quote the complete earliest transcript segment from each Reel/i,
+    expect(result.answer).toBe(
+      `Episode One: ${firstSegmentText}\n\nEpisode Two: The child runs outside.`,
     );
-    expect(call.systemPrompt).toMatch(
-      /one concise comparison grounded in those passages/i,
-    );
-    expect(JSON.parse(String(call.userPrompt)).answerShape).toBe('SUMMARY');
-    expect(call.jsonSchema.properties.answer).toMatchObject({
-      maxLength: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
-    });
-    expect(call.maxTokens).toBe(1024);
-    const prompt = JSON.parse(String(call.userPrompt)) as {
-      authorizedEvidence: Array<{ evidenceText: string }>;
-    };
-    expect(prompt.authorizedEvidence[0].evidenceText).toContain(segmentTail);
+    expect(result.finalizationMode).toBe('EXTRACTIVE_EVIDENCE_FALLBACK');
+    expect(generateObject).not.toHaveBeenCalled();
+    expect(result.claims).toEqual([
+      {
+        claim: `Episode One: ${firstSegmentText}`,
+        evidenceIds: ['e0'],
+      },
+      {
+        claim: 'Episode Two: The child runs outside.',
+        evidenceIds: ['e1'],
+      },
+    ]);
+    expect(result.answer).toContain(segmentTail);
   });
 
   it('summarizes a requested transcript interval across its main turns', async () => {
     const answer =
-      'Visible: A person stands in the room. Spoken: The speaker describes the plan and asks the other person to leave.';
+      'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.';
     const generateObject = jest.fn().mockResolvedValue({
       answer,
-      claims: [
-        {
-          claim: 'A person stands in the room.',
-          evidenceIds: ['e0'],
-        },
-        {
-          claim:
-            'The speaker describes the plan and asks the other person to leave.',
-          evidenceIds: ['e1'],
-        },
-      ],
+      claims: answer
+        .split(/(?<=[.!?])\s+/u)
+        .map((claim) => ({ claim, evidenceIds: ['e0'] })),
     });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
@@ -1404,42 +1582,38 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
     const result = await useCase.execute({
       userMessage:
-        'Describe the sampled frame and summarize the indexed speech segment at 0.38-59.98 seconds.',
+        'Summarize what is said in the indexed speech segment at 0.38-59.98 seconds.',
       route: {
         intent: 'REEL_VIDEO_QUESTION',
-        reelQuestionType: 'MULTIMODAL_CONTENT',
-        requiredEvidence: ['VISUAL', 'TRANSCRIPT'],
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 0.38,
+        sourceTimestampEndSec: 59.98,
+        transcriptTimestampSec: 0.38,
+        transcriptTimestampEndSec: 59.98,
       },
       contextSufficiency: {
         sufficient: true,
-        availableEvidence: ['VISUAL', 'TRANSCRIPT'],
+        availableEvidence: ['TRANSCRIPT'],
         missingEvidence: [],
-        supportedEvidenceIds: ['e0', 'e1'],
+        supportedEvidenceIds: ['e0'],
         recommendedAction: 'ANSWER',
       },
       rerankedChunks: [
-        {
-          chunkId: 'visual-frame',
-          reelId: 'reel-1',
-          evidenceType: 'VISUAL',
-          startTime: 48,
-          endTime: 48,
-          evidenceText: 'A person stands in the room.',
-          chunkText: 'A person stands in the room.',
-          tags: [],
-          distance: null,
-        },
         {
           chunkId: 'speech-segment',
           reelId: 'reel-1',
           evidenceType: 'TRANSCRIPT',
           startTime: 0.38,
-          endTime: 44,
+          endTime: 59.98,
           evidenceText:
-            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave.',
+            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.',
           chunkText:
-            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave.',
+            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.',
           tags: [],
           distance: null,
         },
@@ -1449,23 +1623,87 @@ describe('GenerateDraftAnswerUseCase', () => {
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
     expect(call.systemPrompt).toMatch(
-      /use concise paraphrase instead of reproducing the transcript verbatim/i,
+      /write 2–4 short sentences with one main point per sentence/i,
+    );
+    expect(call.systemPrompt).toContain(
+      'Do not add an unstated speaker, actor, recipient, target, or intent',
     );
     const prompt = JSON.parse(String(call.userPrompt));
     expect(prompt.answerShape).toBe('SUMMARY');
+    expect(prompt.requestedTranscriptWindow).toEqual({
+      startTime: 0.38,
+      endTime: 59.98,
+      exactRangeEvidenceIds: ['e0'],
+      truncatedEvidenceIds: [],
+    });
     expect(prompt.maxAnswerChars).toBe(
       call.jsonSchema.properties.answer.maxLength,
     );
     expect(call.jsonSchema.properties.answer).toMatchObject({
-      maxLength: transcriptSegmentPromptBounds(
-        DEFAULT_RAG_PROMPT_BOUNDS,
-        'SUMMARY',
-      ).maxEvidenceTotalChars,
+      maxLength: TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
     });
+    expect(call.jsonSchema.properties.claims.minItems).toBe(2);
     expect(call.maxTokens).toBe(1024);
   });
 
-  it('returns an exact indexed interval for a transcript time range', async () => {
+  it('retries a multi-sentence transcript summary that maps only one claim', async () => {
+    const answer = 'A speaker enters. The lights turn on.';
+    const generateObject = jest
+      .fn()
+      .mockResolvedValueOnce({
+        answer: 'A speaker enters.',
+        claims: [{ claim: 'A speaker enters.', evidenceIds: ['e0'] }],
+      })
+      .mockResolvedValueOnce({
+        answer,
+        claims: [
+          { claim: 'A speaker enters.', evidenceIds: ['e0'] },
+          { claim: 'The lights turn on.', evidenceIds: ['e0'] },
+        ],
+      });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what the indexed transcript segment spanning 0-20 seconds says.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      contextSufficiency: { sufficient: true, supportedEvidenceIds: ['e0'] },
+      rerankedChunks: [
+        {
+          chunkId: 'multi-sentence-segment',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0,
+          endTime: 20,
+          evidenceText: answer,
+          chunkText: answer,
+          tags: [],
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe(answer);
+    expect(result.claims).toHaveLength(2);
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(
+      generateObject.mock.calls[0][0].jsonSchema.properties.claims.minItems,
+    ).toBe(2);
+  });
+
+  it('summarizes an exact indexed interval instead of returning it verbatim', async () => {
     const generateObject = jest.fn().mockResolvedValue({
       answer: 'The speaker names the blue device.',
       claims: [
@@ -1517,13 +1755,139 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(result.answer).toBe('The speaker names the blue device.');
     expect(result.finalizationMode).toBe('SYNTHESIZED');
     expect(result.claims[0].evidenceIds).toEqual(['e0']);
+    expect(generateObject).toHaveBeenCalledTimes(1);
+    expect(
+      generateObject.mock.calls[0][0].jsonSchema.properties.claims.minItems,
+    ).toBe(1);
+    const request = generateObject.mock.calls[0][0];
+    expect(JSON.parse(String(request.userPrompt)).maxAnswerChars).toBe(
+      TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+    );
+    expect(request.systemPrompt).toMatch(
+      /write 2–4 short sentences[\s\S]*do not quote or retell the transcript sentence by sentence/i,
+    );
+  });
+
+  it('quotes a short terminal utterance directly from an exact authorized transcript window', async () => {
+    const generateObject = jest.fn();
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const text = "good! Now, let's deal with the rest.";
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 94.12534–154.98535 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 94.12534,
+        sourceTimestampEndSec: 154.98535,
+        transcriptTimestampSec: 94.12534,
+        transcriptTimestampEndSec: 154.98535,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+      },
+      accessibleReelIds: ['reel-1'],
+      rerankedChunks: [
+        {
+          chunkId: 'exact-window',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 94.12534,
+          endTime: 154.98535,
+          evidenceText: text,
+          chunkText: text,
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('good!');
+    expect(result.claims).toEqual([{ claim: 'good!', evidenceIds: ['e0'] }]);
+    expect(result.generationEvidence?.[0].sourceId).toBe('exact-window');
+    expect(result.finalizationMode).toBe('SYNTHESIZED');
     expect(generateObject).not.toHaveBeenCalled();
   });
 
-  it('chooses the chunk aligned to a requested range before overlapping chunks', async () => {
-    const generateObject = jest
-      .fn()
-      .mockResolvedValue({ selectedSentenceCandidateId: 'sentence-2' });
+  it('extracts the earliest complete source span after generic opening fragments', async () => {
+    const generateObject = jest.fn();
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const text =
+      'the visitors. asking whether anyone called. Avery thought for a moment and answered. The next sentence follows.';
+    const result = await useCase.execute({
+      userMessage:
+        'Quote the first complete sentence in the indexed transcript segment spanning 10–20 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 10,
+        sourceTimestampEndSec: 20,
+        transcriptTimestampSec: 10,
+        transcriptTimestampEndSec: 20,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+      },
+      accessibleReelIds: ['reel-1'],
+      rerankedChunks: [
+        {
+          chunkId: 'exact-window',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 10,
+          endTime: 20,
+          evidenceText: text,
+          chunkText: text,
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('Avery thought for a moment and answered.');
+    expect(result.claims).toEqual([
+      {
+        claim: 'Avery thought for a moment and answered.',
+        evidenceIds: ['e0'],
+      },
+    ]);
+    expect(result.generationEvidence?.[0].sourceId).toBe('exact-window');
+    expect(result.finalizationMode).toBe('SYNTHESIZED');
+    expect(generateObject).not.toHaveBeenCalled();
+  });
+
+  it('uses the model-selected sentence from the chunk aligned to the requested range', async () => {
+    const generateObject = candidateAssessmentResponse('sentence-1');
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1535,10 +1899,11 @@ describe('GenerateDraftAnswerUseCase', () => {
     );
     const result = await useCase.execute({
       userMessage:
-        'Quote the first complete sentence in the indexed transcript segment spanning 9.52–62.28 seconds of the shared Reel.',
+        'Quote the first complete sentence in the indexed transcript segment spanning 10–20 seconds of the shared Reel.',
       route: {
         intent: 'REEL_VIDEO_QUESTION',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
         requiredEvidence: ['TRANSCRIPT'],
         needsRetrieval: true,
       },
@@ -1552,10 +1917,12 @@ describe('GenerateDraftAnswerUseCase', () => {
           chunkId: 'overlap',
           reelId: 'r',
           evidenceType: 'TRANSCRIPT',
-          startTime: 9.06,
-          endTime: 76.25734,
-          evidenceText: 'that he grew up here. Get away from me.',
-          chunkText: 'that he grew up here. Get away from me.',
+          startTime: 8,
+          endTime: 22,
+          evidenceText:
+            'The courier said the visitor came inside. The meeting began.',
+          chunkText:
+            'The courier said the visitor came inside. The meeting began.',
           tags: [],
           distance: null,
         },
@@ -1563,16 +1930,16 @@ describe('GenerateDraftAnswerUseCase', () => {
           chunkId: 'aligned',
           reelId: 'r',
           evidenceType: 'TRANSCRIPT',
-          startTime: 9.52,
-          endTime: 62.28,
-          evidenceText: 'grew up here. Get away from me.',
-          chunkText: 'grew up here. Get away from me.',
+          startTime: 10,
+          endTime: 21,
+          evidenceText: 'came inside. The meeting began.',
+          chunkText: 'came inside. The meeting began.',
           tags: [],
           distance: null,
         },
       ],
     } as never);
-    expect(result.answer).toBe('Get away from me.');
+    expect(result.answer).toBe('The meeting began.');
     expect(result.claims[0].evidenceIds).toEqual(['e1']);
     expect(result.generationEvidence?.[0].sourceId).toBe('aligned');
     const prompt = JSON.parse(
@@ -1588,17 +1955,60 @@ describe('GenerateDraftAnswerUseCase', () => {
       (item) => item.sourceId === 'overlap',
     );
     expect(boundaryContext?.contextOnlyTranscript).toContain(
-      'that he grew up here.',
+      'The courier said the visitor came inside.',
     );
     expect(boundaryContext).not.toHaveProperty('orderedSentenceCandidates');
     expect(
       prompt.authorizedEvidence.find((item) => item.sourceId === 'aligned')
         ?.orderedSentenceCandidates,
-    ).toHaveLength(2);
+    ).toEqual([
+      {
+        candidateId: 'sentence-1',
+        ordinal: 1,
+        text: 'The meeting began.',
+        likelyIncompleteUtterance: false,
+      },
+    ]);
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
 
-  it('asks for source wording and a larger budget for first-segment comparisons', async () => {
+  it('does not replace a failed first-sentence selection with an extractive span', () => {
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject: jest.fn() } as never,
+      { build: jest.fn() },
+      { model: () => 'test' } as never,
+    );
+
+    expect(
+      useCase.buildExtractiveFallback(
+        {
+          userMessage:
+            'Quote the first complete sentence in the indexed transcript segment spanning 10–20 seconds.',
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          rerankedChunks: [
+            {
+              chunkId: 'transcript',
+              reelId: 'reel-1',
+              evidenceType: 'TRANSCRIPT',
+              startTime: 10,
+              endTime: 20,
+              evidenceText: 'A phrase starts here. Another sentence follows.',
+              chunkText: 'A phrase starts here. Another sentence follows.',
+              tags: [],
+            },
+          ],
+        } as unknown as RagChatWorkflowState,
+        'UNUSABLE_SYNTHESIS',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('extracts complete first-segment evidence when it fits the comparison budget', async () => {
     const answer =
       'Episode One: A scientist enters the room. Episode Two: The child runs outside.';
     const generateObject = jest.fn().mockResolvedValue({
@@ -1668,27 +2078,48 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as never);
 
-    expect(result.answer).toBe(answer);
-    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /quote the complete earliest transcript segment from each Reel/i,
+    expect(result.answer).toBe(
+      'Episode One: A scientist enters the room.\n\nEpisode Two: The child runs outside.',
     );
-    expect(generateObject.mock.calls[0][0].systemPrompt).toMatch(
-      /one concise comparison grounded in those passages/i,
-    );
-    expect(
-      JSON.parse(String(generateObject.mock.calls[0][0].userPrompt))
-        .answerShape,
-    ).toBe('SUMMARY');
-    expect(
-      generateObject.mock.calls[0][0].jsonSchema.properties.answer,
-    ).toMatchObject({
-      maxLength: MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
-    });
-    expect(generateObject.mock.calls[0][0].maxTokens).toBe(1024);
+    expect(result.finalizationMode).toBe('EXTRACTIVE_EVIDENCE_FALLBACK');
+    expect(generateObject).not.toHaveBeenCalled();
   });
 
-  it('returns the complete indexed interval with separate visual and speech evidence', async () => {
-    const generateObject = jest.fn();
+  it('uses the summary model for exact interval requests with separate visual and speech evidence', async () => {
+    const transcriptSummaryClaims = [
+      'The speaker describes the plan.',
+      'The other person asks for details.',
+    ];
+    const answer = `Visible: A person stands in the room. Spoken: ${transcriptSummaryClaims.join(' ')}`;
+    const generateObject = jest
+      .fn()
+      .mockImplementation((input: { userPrompt: string }) => {
+        const prompt = JSON.parse(input.userPrompt) as {
+          authorizedEvidence: Array<{
+            evidenceId: string;
+            evidenceType: string;
+          }>;
+        };
+        const visualEvidenceId = prompt.authorizedEvidence.find(
+          (item) => item.evidenceType === 'VISUAL',
+        )?.evidenceId;
+        const transcriptEvidenceId = prompt.authorizedEvidence.find(
+          (item) => item.evidenceType === 'TRANSCRIPT',
+        )?.evidenceId;
+        return {
+          answer,
+          claims: [
+            {
+              claim: 'Visible: A person stands in the room.',
+              evidenceIds: visualEvidenceId ? [visualEvidenceId] : [],
+            },
+            ...transcriptSummaryClaims.map((claim) => ({
+              claim,
+              evidenceIds: transcriptEvidenceId ? [transcriptEvidenceId] : [],
+            })),
+          ],
+        };
+      });
     const useCase = new GenerateDraftAnswerUseCase(
       { generateObject } as never,
       { build: jest.fn() },
@@ -1699,7 +2130,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       } as never,
     );
     const segmentTail = 'The transcript ends with a final plan review.';
-    const speechEvidence = `${'The speaker describes the plan. '.repeat(20)}The speaker asks the other person to leave. ${segmentTail}`;
+    const speechEvidence = `${'The speaker describes the plan. '.repeat(8)}The other person asks for details. The speaker asks the other person to leave. ${segmentTail}`;
     const result = await useCase.execute({
       userMessage:
         'Describe the sampled frame at 48 seconds and summarize the indexed speech segment at 0.38-59.98 seconds.',
@@ -1742,9 +2173,8 @@ describe('GenerateDraftAnswerUseCase', () => {
       ],
     } as never);
 
-    expect(result.answer).toBe(
-      `Visible: A person stands in the room.\n\nSaid: ${speechEvidence}`,
-    );
+    expect(result.answer).toBe(answer);
+    expect(result.finalizationMode).toBe('SYNTHESIZED');
     const visualEvidenceId = result.generationEvidence?.find(
       (item) => item.evidenceType === 'VISUAL',
     )?.evidenceId;
@@ -1756,19 +2186,44 @@ describe('GenerateDraftAnswerUseCase', () => {
         claim: 'Visible: A person stands in the room.',
         evidenceIds: [visualEvidenceId],
       },
-      {
-        claim: `Said: ${speechEvidence}`,
+      ...transcriptSummaryClaims.map((claim) => ({
+        claim,
         evidenceIds: [transcriptEvidenceId],
-      },
+      })),
     ]);
-    expect(result.generationEvidence).toMatchObject([
-      {
-        evidenceType: 'VISUAL',
-        evidenceText: 'A person stands in the room.',
-      },
-      { evidenceType: 'TRANSCRIPT', evidenceText: speechEvidence },
-    ]);
-    expect(generateObject).not.toHaveBeenCalled();
+    expect(result.generationEvidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          evidenceType: 'VISUAL',
+          evidenceText: 'A person stands in the room.',
+        }),
+        expect.objectContaining({
+          evidenceType: 'TRANSCRIPT',
+          evidenceText: speechEvidence,
+        }),
+      ]),
+    );
+    expect(generateObject).toHaveBeenCalledTimes(1);
+    const request = generateObject.mock.calls[0][0];
+    const prompt = JSON.parse(String(request.userPrompt));
+    expect(prompt.answerShape).toBe('SUMMARY');
+    expect(prompt.maxAnswerChars).toBe(MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS);
+    expect(request.systemPrompt).toContain(
+      'format the answer as exactly two labeled sections: `Visible: ...` followed by `Spoken: ...`',
+    );
+    expect(request.systemPrompt).toContain(
+      'Do not repeat the frame timestamp or transcript time window',
+    );
+    expect(request.systemPrompt).toContain(
+      'For long intervals with several distinct statements, use 4–6 concise Spoken sentences',
+    );
+    expect(request.systemPrompt).toContain(
+      'cover the beginning, middle, and end in chronological order',
+    );
+    expect(request.systemPrompt).toContain(
+      'Omit trailing keyword-only fragments from visual evidence',
+    );
+    expect(request.jsonSchema.properties.claims.minItems).toBe(2);
   });
 
   it.each([
@@ -2125,7 +2580,7 @@ describe('GenerateDraftAnswerUseCase', () => {
         answer,
         claims: [
           {
-            claim: 'The speaker learned TypeScript during the transition.',
+            claim: answer,
             evidenceIds: ['e0', 'e1'],
           },
         ],
@@ -3037,6 +3492,45 @@ describe('GenerateDraftAnswerUseCase', () => {
       jsonSchema: { properties: { claims: { minItems?: number } } };
     };
     expect(request.jsonSchema.properties.claims).not.toHaveProperty('minItems');
+  });
+
+  it('tells ordinary chat turns to reply rather than echo the user message', async () => {
+    const service = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValue({ answer: 'Hi there!', claims: [] }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    await useCase.execute({
+      ...state,
+      route: { intent: 'NORMAL_CHAT' },
+      rerankedChunks: [],
+    } as unknown as RagChatWorkflowState);
+    expect(service.generateObject.mock.calls[0][0].systemPrompt).toContain(
+      'Never repeat or restate the user message',
+    );
+
+    const reelService = {
+      generateObject: jest.fn().mockResolvedValue({ answer: 'x', claims: [] }),
+    };
+    await new GenerateDraftAnswerUseCase(
+      reelService as never,
+      promptBuilder,
+      config,
+    )
+      .execute({
+        ...state,
+        route: { intent: 'REEL_VIDEO_QUESTION' },
+      } as unknown as RagChatWorkflowState)
+      .catch(() => undefined);
+    for (const [request] of reelService.generateObject.mock.calls)
+      expect(request.systemPrompt).not.toContain(
+        'Never repeat or restate the user message',
+      );
   });
 
   it('narrows answer evidence to the sufficiency-selected IDs without renumbering them', async () => {

@@ -460,7 +460,7 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
             : Prisma.sql`AND (t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}))`;
       const timeOrder =
         endPoint !== undefined && point !== undefined
-          ? Prisma.sql`ORDER BY CASE WHEN t."startTime" <= ${point} AND t."endTime" >= ${endPoint} THEN 0 ELSE 1 END, t."endTime" DESC NULLS LAST, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
+          ? Prisma.sql`ORDER BY CASE WHEN ABS(t."startTime" - ${point}) <= 0.05 AND ABS(t."endTime" - ${endPoint}) <= 0.05 THEN 0 WHEN t."startTime" >= ${point} AND t."endTime" <= ${endPoint} THEN 1 ELSE 2 END, t."startTime" ASC NULLS LAST, t."endTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
           : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
       const chronologicalTable = Prisma.raw(`"${target}"`);
       const chronologicalType =

@@ -887,6 +887,31 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
         },
       },
     ],
+    [
+      'low-confidence semantic pass',
+      {
+        passed: true,
+        confidence: 0,
+        issues: [],
+        requiresRevision: false,
+        supportedClaimMappings: [
+          { claim: 'The transcript says this one is blue.', evidenceIds: ['e0'] },
+        ],
+        contradictions: [],
+        diagnostics: {
+          providerStatus: 'SUCCESS',
+          decisionSource: 'LLM_ESCALATION',
+          finalPassed: true,
+          confidence: 0,
+          issues: [],
+          requiresRevision: false,
+          supportedClaimMappings: [
+            { claim: 'The transcript says this one is blue.', evidenceIds: ['e0'] },
+          ],
+          contradictions: [],
+        },
+      },
+    ],
   ])(
     'recovers a verifier %s with an authorized extractive fallback',
     async (_scenario, verification) => {
@@ -947,6 +972,7 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
             intent: 'REEL_VIDEO_QUESTION',
             requiredEvidence: ['TRANSCRIPT'],
           },
+          contextSufficiency: { sufficient: true } as never,
           verification,
         }),
       );

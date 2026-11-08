@@ -66,6 +66,7 @@ describe('QueryRouterAgentUseCase', () => {
       needsConversationSummary: false,
       needsVerification: false,
       reelQuestionType: 'NONE',
+      transcriptRequestKind: 'NONE',
       requiredEvidence: ['NONE'],
       recommendationAction: {
         type: 'NONE',
@@ -145,6 +146,56 @@ describe('QueryRouterAgentUseCase', () => {
     },
   );
 
+  it('routes verbatim first-utterance intent as a typed transcript task', async () => {
+    const structuredLlmService = {
+      generateObject: jest
+        .fn()
+        .mockResolvedValueOnce(
+          response({
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          }),
+        )
+        .mockResolvedValueOnce(
+          response({
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'VISUAL_CONTENT',
+            transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          }),
+        ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Repeat the earliest complete spoken line from the shared Reel.',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+    });
+    await expect(
+      useCase.execute({
+        message: 'What is visible at the start of the shared Reel?',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'VISUAL_CONTENT',
+      transcriptRequestKind: 'NONE',
+    });
+    expect(
+      structuredLlmService.generateObject.mock.calls[0][0].systemPrompt,
+    ).toContain('Classify by meaning across languages and paraphrases');
+  });
+
   it('structurally routes an explicit time-bounded transcript summary', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockRejectedValue(transientRouterError(true)),
@@ -177,6 +228,7 @@ describe('QueryRouterAgentUseCase', () => {
       generateObject: jest.fn().mockResolvedValue(
         response({
           intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'CONVERSATION',
           needsRetrieval: true,
           needsVerification: true,
           reelQuestionType: 'MULTIMODAL_CONTENT',
@@ -200,6 +252,33 @@ describe('QueryRouterAgentUseCase', () => {
       requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
     });
     expect(structuredLlmService.generateObject).toHaveBeenCalledTimes(1);
+  });
+
+  it('corrects a transcript-only model route when the request explicitly asks for a frame and speech segment', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'For "Pet Chat Group Episode 11", describe the sampled frame at 105.04 seconds and summarize the indexed speech segment at 61.3–106.19362 seconds. Keep what is visible separate from what is said.',
+        hasSharedReelContext: true,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'MULTIMODAL_CONTENT',
+      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+    });
   });
 
   it('defines separate visual and spoken clauses as a multimodal route', async () => {
@@ -389,7 +468,7 @@ describe('QueryRouterAgentUseCase', () => {
     );
   });
 
-  it('retains independent modality choices for an ambiguous reel request', async () => {
+  it('derives no evidence obligation for an ambiguous reel request', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(
         response({
@@ -411,7 +490,7 @@ describe('QueryRouterAgentUseCase', () => {
       }),
     ).resolves.toMatchObject({
       reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
-      requiredEvidence: ['TRANSCRIPT', 'VISUAL'],
+      requiredEvidence: ['NONE'],
     });
   });
 
@@ -442,7 +521,7 @@ describe('QueryRouterAgentUseCase', () => {
     expect(generateObject).not.toHaveBeenCalled();
   });
 
-  it('fails closed on an invalid semantic tuple without relying on fixture wording', async () => {
+  it('derives the reference target from the semantic intent', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(
         response({
@@ -462,9 +541,10 @@ describe('QueryRouterAgentUseCase', () => {
         message: 'A generic multilingual semantic request.',
         hasSharedReelContext: true,
       }),
-    ).rejects.toMatchObject({
-      code: 'ROUTER_UNAVAILABLE',
-      causeCode: 'ROUTER_SEMANTIC_INCONSISTENT',
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      needsRetrieval: true,
     });
   });
 
@@ -499,7 +579,7 @@ describe('QueryRouterAgentUseCase', () => {
     expect(request.systemPrompt).toContain('canonical enum values');
   });
 
-  it('rejects contradictory evidence and discovery instead of silently rewriting them', async () => {
+  it('derives evidence and disables discovery actions for Reel questions', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(
         response({
@@ -527,13 +607,18 @@ describe('QueryRouterAgentUseCase', () => {
         message: 'Inspect the shared medium.',
         hasSharedReelContext: true,
       }),
-    ).rejects.toBeInstanceOf(RouterUnavailableError);
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'VISUAL_CONTENT',
+      requiredEvidence: ['VISUAL'],
+      recommendationAction: { type: 'NONE' },
+    });
   });
 
   it.each([
     ['CONVERSATION_MEMORY_QUESTION', ['CONVERSATION_MEMORY']],
     ['USER_MEMORY_QUESTION', ['USER_MEMORY']],
-  ])('rejects contradictory evidence for %s', async (intent) => {
+  ])('derives memory evidence for %s', async (intent, requiredEvidence) => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(
         response({
@@ -549,7 +634,7 @@ describe('QueryRouterAgentUseCase', () => {
 
     await expect(
       useCase.execute({ message: 'Recall context.' }),
-    ).rejects.toBeInstanceOf(RouterUnavailableError);
+    ).resolves.toMatchObject({ intent, requiredEvidence });
   });
 
   it('keeps unrelated chat normal even when reel context exists', async () => {
@@ -570,6 +655,180 @@ describe('QueryRouterAgentUseCase', () => {
       intent: 'NORMAL_CHAT',
       needsRetrieval: false,
       reelQuestionType: 'NONE',
+    });
+  });
+
+  it('distinguishes a named episode content question from conversation recall', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          needsRetrieval: true,
+          needsVerification: true,
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          tools: ['search_reel_content'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message: 'What event happens next in "The Glass Orchard Episode 22"?',
+        hasSharedReelContext: true,
+        sharedReelCount: 1,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      needsRetrieval: true,
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+    });
+
+    const request = structuredLlmService.generateObject.mock.calls[0][0];
+    expect(request.systemPrompt).toContain(
+      'A media title and words such as “next” or “later” do not by themselves refer to conversation history.',
+    );
+    expect(request.systemPrompt).toContain(
+      'asking what was said earlier in the conversation refers to conversation memory.',
+    );
+  });
+
+  it('routes unfamiliar named multi-Reel transcript comparisons to retrieval', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          needsRetrieval: true,
+          needsVerification: true,
+          requiredEvidence: ['TRANSCRIPT'],
+          transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          tools: ['search_reel_content'],
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message:
+          'Compare the first indexed transcript segments of "The Glass Orchard Episode 10" and "The Silver Bind Episode 1". Attribute each statement to its own clip.',
+        hasSharedReelContext: true,
+        sharedReelCount: 2,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      transcriptRequestKind: 'NONE',
+      needsRetrieval: true,
+      requiredEvidence: ['TRANSCRIPT'],
+    });
+
+    expect(
+      structuredLlmService.generateObject.mock.calls[0][0].systemPrompt,
+    ).toContain(
+      'Use TRANSCRIPT_CONTENT when comparing spoken or indexed transcript segments, even if the titles or series are unfamiliar.',
+    );
+  });
+
+  it('derives no recommendation action for a Reel question', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          recommendationAction: {
+            type: 'SUGGEST_QUERIES',
+            query: 'irrelevant search',
+            allowPersonalizedFallback: false,
+            suggestedQueries: ['irrelevant search'],
+          },
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message: 'What did the speaker say in the shared Reel?',
+        hasSharedReelContext: true,
+        sharedReelCount: 1,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      recommendationAction: { type: 'NONE' },
+      needsRetrieval: true,
+    });
+  });
+
+  it('promotes a normal-chat intent when the model identifies a Reel question type', async () => {
+    const structuredLlmService = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'NORMAL_CHAT',
+          reelQuestionType: 'REEL_METADATA',
+        }),
+      ),
+    };
+    const useCase = new QueryRouterAgentUseCase(
+      structuredLlmService as never,
+      config,
+    );
+
+    await expect(
+      useCase.execute({
+        message: 'What is the title of the shared Reel?',
+        hasSharedReelContext: true,
+        sharedReelCount: 1,
+      }),
+    ).resolves.toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      reelQuestionType: 'REEL_METADATA',
+      requiredEvidence: ['METADATA'],
+      needsRetrieval: true,
+    });
+  });
+
+  it('promotes a content type that conflicts with conversation memory when shared Reels are available', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'CONVERSATION_MEMORY_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+        }),
+      ),
+    };
+    const route = await new QueryRouterAgentUseCase(
+      service as never,
+      config,
+    ).execute({
+      message:
+        'Compare the first indexed transcript segments of both episodes.',
+      hasSharedReelContext: true,
+      sharedReelCount: 2,
+    });
+
+    expect(route).toMatchObject({
+      intent: 'REEL_VIDEO_QUESTION',
+      referenceTarget: 'SHARED_REEL',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+      needsRetrieval: true,
     });
   });
 
@@ -654,18 +913,47 @@ describe('QueryRouterAgentUseCase', () => {
       ]).toEqual(flags);
       const input = service.generateObject.mock
         .calls[0][0] as GenerateStructuredObjectInput;
-      expect(input.schemaVersion).toBe('router-semantic-v5');
+      expect(input.schemaVersion).toBe('router-semantic-v8');
       expect(input.jsonSchema.required).toEqual([
         'intent',
-        'referenceTarget',
         'reelQuestionType',
-        'requiredEvidence',
+        'transcriptRequestKind',
         'recommendationAction',
         'tools',
         'reason',
       ]);
+      expect(input.jsonSchema.properties).not.toHaveProperty('referenceTarget');
+      expect(input.jsonSchema.properties).not.toHaveProperty(
+        'requiredEvidence',
+      );
     },
   );
+
+  it('uses the search query as a suggested query when the model omits the suggestion list', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          recommendationAction: {
+            type: 'SUGGEST_QUERIES',
+            query: 'ancient architecture',
+            allowPersonalizedFallback: false,
+            suggestedQueries: [],
+          },
+        }),
+      ),
+    };
+    const route = await new QueryRouterAgentUseCase(
+      service as never,
+      config,
+    ).execute({
+      message: 'What should I search to find ancient architecture reels?',
+    });
+
+    expect(route.recommendationAction).toMatchObject({
+      type: 'SUGGEST_QUERIES',
+      suggestedQueries: ['ancient architecture'],
+    });
+  });
 
   it('filters model-selected tools through the classified intent policy', async () => {
     const service = {
@@ -724,18 +1012,10 @@ describe('QueryRouterAgentUseCase', () => {
   );
 
   it.each([
-    { intent: 'NORMAL_CHAT', referenceTarget: 'SHARED_REEL' },
     {
-      intent: 'TASK_ACTION_REQUEST',
-      recommendationAction: {
-        type: 'RECOMMEND_REELS',
-        query: 'topic',
-        allowPersonalizedFallback: false,
-        suggestedQueries: [],
-      },
+      intent: 'USER_MEMORY_QUESTION',
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
     },
-    { intent: 'NORMAL_CHAT', reelQuestionType: 'VISUAL_CONTENT' },
-    { intent: 'NORMAL_CHAT', requiredEvidence: ['USER_MEMORY'] },
     { intent: 'unknown' },
   ])(
     'fails safely on semantic contradictions without fallback: %j',
@@ -758,9 +1038,12 @@ describe('QueryRouterAgentUseCase', () => {
 
   it('performs at most one semantic repair using the configured 60s fallback budget', async () => {
     const service = {
-      generateObject: jest
-        .fn()
-        .mockResolvedValue(response({ referenceTarget: 'SHARED_REEL' })),
+      generateObject: jest.fn().mockResolvedValue(
+        response({
+          intent: 'USER_MEMORY_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+        }),
+      ),
     };
     const bounded = {
       ...config,
@@ -1210,6 +1493,25 @@ describe('QueryRouterAgentUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledTimes(1);
   });
 
+  it('does not retry a router timeout on the same configured fallback model', async () => {
+    const service = {
+      generateObject: jest.fn().mockRejectedValue(transientRouterError(true)),
+    };
+    const sameModelFallback = {
+      ...config,
+      get: jest.fn((key: string) =>
+        key === 'AI_ROUTER_FALLBACK_MODEL' ? 'test/test/router' : undefined,
+      ),
+    } as unknown as IAiApplicationConfig;
+
+    await expect(
+      new QueryRouterAgentUseCase(service as never, sameModelFallback).execute({
+        message: 'A shared Reel question.',
+      }),
+    ).rejects.toMatchObject({ code: 'ROUTER_UNAVAILABLE' });
+    expect(service.generateObject).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the default primary attempt count at one', async () => {
     const service = {
       generateObject: jest.fn().mockRejectedValue(transientRouterError(true)),
@@ -1267,28 +1569,6 @@ describe('QueryRouterAgentUseCase', () => {
       type: 'INVALID_INTENT',
     },
     {
-      name: 'invalid reference target',
-      overrides: { referenceTarget: 'NOT_A_CANONICAL_TARGET' },
-      input: { hasSharedReelContext: true },
-      type: 'INVALID_REFERENCE_TARGET',
-    },
-    {
-      name: 'intent/reference mismatch',
-      overrides: {
-        intent: 'REEL_VIDEO_QUESTION',
-        referenceTarget: 'NONE',
-        reelQuestionType: 'TRANSCRIPT_CONTENT',
-        requiredEvidence: ['TRANSCRIPT'],
-      },
-      input: { hasSharedReelContext: true },
-      type: 'INTENT_REFERENCE_MISMATCH',
-      details: {
-        actualIntent: 'REEL_VIDEO_QUESTION',
-        actualReferenceTarget: 'NONE',
-        expectedReferenceTarget: 'SHARED_REEL',
-      },
-    },
-    {
       name: 'shared reel without accessible context',
       overrides: {
         intent: 'REEL_VIDEO_QUESTION',
@@ -1298,22 +1578,6 @@ describe('QueryRouterAgentUseCase', () => {
       },
       input: { hasSharedReelContext: false },
       type: 'SHARED_REEL_CONTEXT_UNAVAILABLE',
-    },
-    {
-      name: 'conversation intent with shared-reel reference',
-      overrides: {
-        intent: 'CONVERSATION_MEMORY_QUESTION',
-        referenceTarget: 'SHARED_REEL',
-        reelQuestionType: 'NONE',
-        requiredEvidence: ['CONVERSATION_MEMORY'],
-      },
-      input: { hasSharedReelContext: true },
-      type: 'INTENT_REFERENCE_MISMATCH',
-      details: {
-        actualIntent: 'CONVERSATION_MEMORY_QUESTION',
-        actualReferenceTarget: 'SHARED_REEL',
-        expectedReferenceTarget: 'CONVERSATION',
-      },
     },
     {
       name: 'reel intent with no reel question type',
@@ -1333,34 +1597,17 @@ describe('QueryRouterAgentUseCase', () => {
     {
       name: 'intent/reel-question-type mismatch',
       overrides: {
-        intent: 'NORMAL_CHAT',
-        referenceTarget: 'NONE',
+        intent: 'USER_MEMORY_QUESTION',
+        referenceTarget: 'USER_MEMORY',
         reelQuestionType: 'TRANSCRIPT_CONTENT',
-        requiredEvidence: ['TRANSCRIPT'],
+        requiredEvidence: ['USER_MEMORY'],
       },
       input: { hasSharedReelContext: true },
       type: 'INTENT_REEL_TYPE_MISMATCH',
       details: {
-        actualIntent: 'NORMAL_CHAT',
+        actualIntent: 'USER_MEMORY_QUESTION',
         actualReelQuestionType: 'TRANSCRIPT_CONTENT',
         expectedReelQuestionType: 'NONE',
-      },
-    },
-    {
-      name: 'required-evidence mismatch',
-      overrides: {
-        intent: 'REEL_VIDEO_QUESTION',
-        referenceTarget: 'SHARED_REEL',
-        reelQuestionType: 'TRANSCRIPT_CONTENT',
-        requiredEvidence: ['VISUAL'],
-      },
-      input: { hasSharedReelContext: true },
-      type: 'REQUIRED_EVIDENCE_MISMATCH',
-      details: {
-        actualIntent: 'REEL_VIDEO_QUESTION',
-        actualReelQuestionType: 'TRANSCRIPT_CONTENT',
-        actualEvidence: ['VISUAL'],
-        expectedEvidence: ['TRANSCRIPT'],
       },
     },
     {
@@ -1377,25 +1624,18 @@ describe('QueryRouterAgentUseCase', () => {
       type: 'INVALID_RECOMMENDATION_ACTION',
     },
     {
-      name: 'recommendation action on non-normal intent',
+      name: 'suggestion action without query or suggestions',
       overrides: {
-        intent: 'REEL_VIDEO_QUESTION',
-        referenceTarget: 'SHARED_REEL',
-        reelQuestionType: 'TRANSCRIPT_CONTENT',
-        requiredEvidence: ['TRANSCRIPT'],
         recommendationAction: {
-          type: 'RECOMMEND_REELS',
-          query: 'sensitive query',
+          type: 'SUGGEST_QUERIES',
+          query: '',
           allowPersonalizedFallback: false,
           suggestedQueries: [],
         },
       },
       input: { hasSharedReelContext: true },
-      type: 'RECOMMENDATION_INTENT_MISMATCH',
-      details: {
-        actualIntent: 'REEL_VIDEO_QUESTION',
-        recommendationActionType: 'RECOMMEND_REELS',
-      },
+      type: 'RECOMMENDATION_PAYLOAD_MISMATCH',
+      details: { recommendationActionType: 'SUGGEST_QUERIES' },
     },
     {
       name: 'NONE recommendation with payload',

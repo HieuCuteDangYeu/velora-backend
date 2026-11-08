@@ -28,6 +28,8 @@ export type RagReelQuestionType =
   | 'REEL_METADATA'
   | 'AMBIGUOUS_REEL_REFERENCE';
 
+export type RagTranscriptRequestKind = 'NONE' | 'FIRST_COMPLETE_UTTERANCE';
+
 export type RagRequiredEvidence =
   | 'NONE'
   | 'TRANSCRIPT'
@@ -135,6 +137,7 @@ export interface RagChatRouteDecision {
   needsVerification: boolean;
 
   reelQuestionType: RagReelQuestionType;
+  transcriptRequestKind: RagTranscriptRequestKind;
   requiredEvidence: RagRequiredEvidence[];
 
   recommendationAction: RagRecommendationAction;
@@ -258,6 +261,11 @@ export interface RagSupportedClaimMapping {
   evidenceIds: string[];
 }
 
+export interface RagUnsupportedClaimMapping {
+  claim: string;
+  reason: string;
+}
+
 export interface RagVerificationDiagnostics {
   providerStatus: 'NOT_CALLED' | 'SUCCESS' | 'ERROR';
   decisionSource:
@@ -279,7 +287,17 @@ export interface RagVerificationDiagnostics {
   requiresRevision: boolean;
   revisedInstruction?: string;
   supportedClaimMappings?: RagSupportedClaimMapping[];
+  unsupportedClaimMappings?: RagUnsupportedClaimMapping[];
   contradictions?: string[];
+  rawDecisionPassed?: boolean;
+  rawMappingCount?: number;
+  failureClass?:
+    | 'NONE'
+    | 'GROUNDING'
+    | 'ANSWER_QUALITY'
+    | 'GROUNDING_AND_QUALITY';
+  qualityOnlyGroundingAccepted?: boolean;
+  trustedAnswerClaimIdRepairApplied?: boolean;
   semanticCalls?: RagStructuredCallFailureDiagnostic[];
   exactProvenance: {
     supported: boolean;
@@ -311,6 +329,9 @@ export interface RagContextSufficiencyDiagnostics {
     | 'DETERMINISTIC_NO_CONTEXT'
     | 'DETERMINISTIC_REEL_TITLE_MISMATCH'
     | 'DETERMINISTIC_REQUIRED_MODALITY'
+    | 'DETERMINISTIC_COMPLETE_REEL_COVERAGE'
+    | 'DETERMINISTIC_TRANSCRIPT_RANGE'
+    | 'DETERMINISTIC_MULTIMODAL_RANGE'
     | 'DETERMINISTIC_REQUIRED_TOOL'
     | 'LLM'
     | 'LLM_FALLBACK'
@@ -368,6 +389,7 @@ export interface RagPersistedRouteDecision {
   intent: RagChatIntent;
   referenceTarget: RagReferenceTarget;
   reelQuestionType: RagReelQuestionType;
+  transcriptRequestKind: RagTranscriptRequestKind;
   requiredEvidence: RagRequiredEvidence[];
   needsRetrieval: boolean;
   needsVerification: boolean;

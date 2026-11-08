@@ -142,7 +142,7 @@ describe('PrismaSemanticIndexRepository single-vector search', () => {
     expect(sql.values).toContain('v1');
   });
 
-  it('prioritizes a chunk that covers an explicit source-time range', async () => {
+  it('prioritizes the exact requested window before contained or overlapping chunks', async () => {
     const query = jest.fn().mockResolvedValue([]);
     const repository = new PrismaSemanticIndexRepository(
       { $queryRaw: query } as never,
@@ -160,8 +160,13 @@ describe('PrismaSemanticIndexRepository single-vector search', () => {
       strings: string[];
       values: unknown[];
     };
-    expect(sql.strings.join('')).toContain('CASE WHEN t."startTime" <=');
-    expect(sql.strings.join('')).toContain('t."endTime" DESC');
+    const sqlText = sql.strings.join('');
+    expect(sqlText).toContain('ABS(t."startTime" -');
+    expect(sqlText).toContain('ABS(t."endTime" -');
+    expect(sqlText.indexOf('ABS(t."startTime"')).toBeLessThan(
+      sqlText.indexOf('WHEN t."startTime" >='),
+    );
+    expect(sqlText).toContain('t."endTime" ASC NULLS LAST');
     expect(sql.values).toEqual(expect.arrayContaining([8, 63.9]));
   });
   const queries: unknown[] = [];

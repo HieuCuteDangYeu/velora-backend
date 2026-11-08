@@ -110,22 +110,41 @@ function transcriptChunksInWindow(
   }
   const selected = new Set<TranscriptMatch>();
   for (const chunks of byReel.values()) {
-    const exact = chunks.filter(
-      (chunk) => chunk.startTime === startTime && chunk.endTime === endTime,
+    const exactWindow = chunks.filter(
+      (chunk) =>
+        typeof chunk.startTime === 'number' &&
+        typeof chunk.endTime === 'number' &&
+        Math.abs(chunk.startTime - startTime) <= 0.05 &&
+        Math.abs(chunk.endTime - endTime) <= 0.05,
     );
-    const relevant = exact.length
-      ? exact
+    const relevant = exactWindow.length
+      ? exactWindow.slice(0, 1)
       : chunks.filter(
           (chunk) =>
-            typeof chunk.startTime !== 'number' ||
-            typeof chunk.endTime !== 'number' ||
-            (chunk.startTime <= endTime && chunk.endTime >= startTime),
+            typeof chunk.startTime === 'number' &&
+            typeof chunk.endTime === 'number' &&
+            chunk.startTime >= startTime &&
+            chunk.endTime <= endTime,
         );
     relevant.forEach((chunk) => selected.add(chunk));
   }
-  return candidates.filter(
+  const retained = candidates.filter(
     (candidate) =>
       (candidate.evidenceType ?? 'TRANSCRIPT') !== 'TRANSCRIPT' ||
       selected.has(candidate),
+  );
+  const chronological = retained
+    .filter(
+      (candidate) => (candidate.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT',
+    )
+    .sort(
+      (left, right) =>
+        (left.startTime ?? Infinity) - (right.startTime ?? Infinity),
+    );
+  let transcriptIndex = 0;
+  return retained.map((candidate) =>
+    (candidate.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT'
+      ? chronological[transcriptIndex++]
+      : candidate,
   );
 }

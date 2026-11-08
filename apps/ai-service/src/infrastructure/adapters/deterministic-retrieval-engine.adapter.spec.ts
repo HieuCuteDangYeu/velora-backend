@@ -28,6 +28,7 @@ const transcriptRoute: RagChatRouteDecision = {
   needsConversationSummary: false,
   needsVerification: true,
   reelQuestionType: 'TRANSCRIPT_CONTENT',
+  transcriptRequestKind: 'NONE',
   requiredEvidence: ['TRANSCRIPT'],
   recommendationAction: {
     type: 'NONE',
@@ -285,7 +286,8 @@ describe('DeterministicRetrievalEngineAdapter', () => {
         sourceOrder: 'ASC',
         sourceTimestampSec: 11.68,
         sourceTimestampEndSec: 56.38,
-        limit: 2,
+        // ceil(44.7s summary window / 8s per transcript chunk)
+        limit: 6,
       }),
     );
     expect(embeddingService.generateVector).not.toHaveBeenCalled();
@@ -434,28 +436,38 @@ describe('DeterministicRetrievalEngineAdapter', () => {
   });
 
   it('does not read the beginning of every shared Reel for a singular first-sentence question', async () => {
-    const { adapter, embeddingService } = buildAdapter({
+    const { adapter, embeddingService, semanticIndexService } = buildAdapter({
       NODE_ENV: 'test',
       RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
       RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
     });
     const retrievalPlan = await adapter.plan({
       message: 'What is the first complete sentence in the shared transcript?',
-      route: transcriptRoute,
+      route: {
+        ...transcriptRoute,
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+      },
     });
 
     expect(retrievalPlan).toMatchObject({
       sourceOrder: 'ASC',
       requiresReelCoverage: false,
+      searchLimit: 1,
     });
     await adapter.retrieve({
       userId: 'user',
       conversationId: 'conversation',
-      route: transcriptRoute,
+      route: {
+        ...transcriptRoute,
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+      },
       plan: retrievalPlan,
       accessibleReelIds: ['reel-1', 'reel-2'],
     });
 
+    expect(semanticIndexService.searchChunks).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceOrder: 'ASC', limit: 1 }),
+    );
     expect(embeddingService.generateVector).toHaveBeenCalledTimes(1);
   });
 
@@ -464,12 +476,18 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       buildAdapter({});
     const openingPlan = await adapter.plan({
       message: 'What is the opening statement?',
-      route: transcriptRoute,
+      route: {
+        ...transcriptRoute,
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+      },
     });
     await adapter.retrieve({
       userId: 'u',
       conversationId: 'c',
-      route: transcriptRoute,
+      route: {
+        ...transcriptRoute,
+        transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+      },
       plan: openingPlan,
       accessibleReelIds: ['reel-1'],
     });

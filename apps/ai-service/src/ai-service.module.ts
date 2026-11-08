@@ -40,10 +40,15 @@ import { EvidenceDiversitySelector } from '@ai/infrastructure/adapters/evidence-
 import { OllamaConversationSummarizerAdapter } from '@ai/infrastructure/adapters/ollama-conversation-summarizer.adapter';
 import { OllamaLlmAdapter } from '@ai/infrastructure/adapters/ollama-llm.adapter';
 import { OllamaMemoryExtractorAdapter } from '@ai/infrastructure/adapters/ollama-memory-extractor.adapter';
+import { GroqStructuredLlmAdapter } from '@ai/infrastructure/adapters/groq-structured-llm.adapter';
+import { GroqTextClient } from '@ai/infrastructure/adapters/groq-text.client';
+import { HybridStructuredLlmAdapter } from '@ai/infrastructure/adapters/hybrid-structured-llm.adapter';
 import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-structured-llm.adapter';
 import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
 import { OllamaToolCallingLlmAdapter } from '@ai/infrastructure/adapters/ollama-tool-calling-llm.adapter';
 import { GroqTranscriptionAdapter } from '@ai/infrastructure/adapters/groq-transcription.adapter';
+import { FallbackVisionAdapter } from '@ai/infrastructure/adapters/fallback-vision.adapter';
+import { GroqVisionAdapter } from '@ai/infrastructure/adapters/groq-vision.adapter';
 import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
 import { OllamaVisionAdapter } from '@ai/infrastructure/adapters/ollama-vision.adapter';
 import { ReelSemanticIndexAdapter } from '@ai/infrastructure/adapters/reel-semantic-index.adapter';
@@ -158,6 +163,9 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     EvidenceDiversitySelector,
     TeiRerankerAdapter,
     GroqKeyPool,
+    GroqTextClient,
+    GroqStructuredLlmAdapter,
+    OllamaStructuredLlmAdapter,
     OllamaTextClient,
 
     StreamChatUseCase,
@@ -224,7 +232,11 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       useClass:
         process.env.AI_VISION_PROVIDER === 'ollama'
           ? OllamaVisionAdapter
-          : CloudflareVisionAdapter,
+          : process.env.AI_VISION_PROVIDER === 'groq'
+            ? GroqVisionAdapter
+            : process.env.AI_VISION_FALLBACK_PROVIDER === 'groq'
+              ? FallbackVisionAdapter
+              : CloudflareVisionAdapter,
     },
     {
       provide: 'IAudioStorageService',
@@ -272,7 +284,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IStructuredLlmService',
-      useClass: OllamaStructuredLlmAdapter,
+      useClass: HybridStructuredLlmAdapter,
     },
     {
       provide: 'IToolCallingLlmService',

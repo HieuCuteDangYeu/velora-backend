@@ -23,13 +23,15 @@ import {
   readRagPromptBounds,
   transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
-import { sourceRetrievalPlan } from '@ai/domain/services/rag-source-retrieval-plan';
+import {
+  requiresReelCoverage,
+  sourceRetrievalPlan,
+} from '@ai/domain/services/rag-source-retrieval-plan';
 
 interface RawRouteDecision {
   intent?: unknown;
-  referenceTarget?: unknown;
   reelQuestionType?: unknown;
-  requiredEvidence?: unknown;
+  transcriptRequestKind?: unknown;
   recommendationAction?: unknown;
   tools?: unknown;
   reason?: unknown;
@@ -111,13 +113,6 @@ export class QueryRouterAgentUseCase {
     'TASK_ACTION_REQUEST',
   ]);
 
-  private readonly validReferenceTargets = new Set<RagReferenceTarget>([
-    'NONE',
-    'SHARED_REEL',
-    'CONVERSATION',
-    'USER_MEMORY',
-  ]);
-
   private readonly validReelQuestionTypes = new Set<RagReelQuestionType>([
     'NONE',
     'TRANSCRIPT_CONTENT',
@@ -127,16 +122,6 @@ export class QueryRouterAgentUseCase {
     'GENERAL_REEL_SUMMARY',
     'REEL_METADATA',
     'AMBIGUOUS_REEL_REFERENCE',
-  ]);
-
-  private readonly validRequiredEvidence = new Set<RagRequiredEvidence>([
-    'NONE',
-    'TRANSCRIPT',
-    'VISUAL',
-    'AUDIO',
-    'METADATA',
-    'CONVERSATION_MEMORY',
-    'USER_MEMORY',
   ]);
 
   private readonly validAgentTools = new Set<RagAgentToolName>([
@@ -190,6 +175,7 @@ export class QueryRouterAgentUseCase {
         needsConversationSummary: false,
         needsVerification: false,
         reelQuestionType: 'AMBIGUOUS_REEL_REFERENCE',
+        transcriptRequestKind: 'NONE',
         requiredEvidence: ['NONE'],
         recommendationAction: {
           type: 'NONE',
@@ -213,9 +199,7 @@ export class QueryRouterAgentUseCase {
       const unavailableReelRoute = this.normalize(
         {
           intent: 'REEL_VIDEO_QUESTION',
-          referenceTarget: 'SHARED_REEL',
           reelQuestionType: 'GENERAL_REEL_SUMMARY',
-          requiredEvidence: ['TRANSCRIPT', 'METADATA'],
           recommendationAction: {
             type: 'NONE',
             query: '',
@@ -242,9 +226,7 @@ export class QueryRouterAgentUseCase {
       const transcriptSummaryRoute = this.normalize(
         {
           intent: 'REEL_VIDEO_QUESTION',
-          referenceTarget: 'SHARED_REEL',
           reelQuestionType: 'TRANSCRIPT_CONTENT',
-          requiredEvidence: ['TRANSCRIPT'],
           recommendationAction: {
             type: 'NONE',
             query: '',
@@ -284,6 +266,7 @@ export class QueryRouterAgentUseCase {
         return await this.routeWithFallback({
           input: boundedInput,
           semanticCalls,
+          primaryModel,
           primaryResult: result,
           primaryAttemptCount: this.primaryAttemptCount(
             semanticCalls,
@@ -315,6 +298,7 @@ export class QueryRouterAgentUseCase {
       return await this.routeWithFallback({
         input: boundedInput,
         semanticCalls,
+        primaryModel,
         primaryAttemptCount: this.primaryAttemptCount(
           semanticCalls,
           primaryModel,
@@ -354,6 +338,7 @@ export class QueryRouterAgentUseCase {
   private async routeWithFallback(input: {
     input: Parameters<QueryRouterAgentUseCase['execute']>[0];
     semanticCalls: StructuredLlmCallDiagnostics[];
+    primaryModel: string;
     primaryResult?: RagChatRouteDecision;
     primaryAttemptCount: number;
     semanticInconsistency?: RouterSemanticInconsistencyError;
@@ -362,7 +347,7 @@ export class QueryRouterAgentUseCase {
     const fallbackModel = this.config
       .get<string>('AI_ROUTER_FALLBACK_MODEL')
       ?.trim();
-    if (!fallbackModel) {
+    if (!fallbackModel || fallbackModel === input.primaryModel) {
       if (input.primaryResult) return input.primaryResult;
       throw new RouterUnavailableError(
         input.semanticCalls,
@@ -504,7 +489,7 @@ export class QueryRouterAgentUseCase {
       userPrompt: this.buildUserPrompt(input.input),
       jsonSchema: this.getJsonSchema(),
       maxTokens: input.maxTokens ?? this.config.maxCompletionTokens('ROUTER'),
-      schemaVersion: 'router-semantic-v5',
+      schemaVersion: 'router-semantic-v8',
       temperature: 0,
       model: input.model,
       modelRole: 'ROUTER',
@@ -540,8 +525,15 @@ export class QueryRouterAgentUseCase {
   private buildSystemPrompt(): string {
     return `
 You route Velora AI messages by meaning. Return only schema-valid JSON and never answer the user.
-Output exactly these top-level fields and no others: intent, referenceTarget, reelQuestionType, requiredEvidence, recommendationAction, tools, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives retrieval/memory/verification flags and result-count policy; do not output those fields.
+Output exactly these top-level fields and no others: intent, reelQuestionType, transcriptRequestKind, recommendationAction, tools, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives referenceTarget, requiredEvidence, retrieval/memory/verification flags, and result-count policy from intent and reelQuestionType; do not output those fields.
 Apply every definition by semantic meaning regardless of the language used in the user message, recent history, or reel. Emit only the canonical enum values in this schema; never translate enum values into natural-language labels.
+
+Routing precedence:
+- If the user asks what a shared Reel, video, or named episode says, shows, or describes happening (including what happens next or later), choose REEL_VIDEO_QUESTION with the matching reelQuestionType.
+- When shared Reel context is available and the user names multiple episodes or clips to compare their content, choose REEL_VIDEO_QUESTION with the evidence type required by the request. Use TRANSCRIPT_CONTENT when comparing spoken or indexed transcript segments, even if the titles or series are unfamiliar.
+- For a comparison of first indexed transcript segments across multiple Reels, use transcriptRequestKind=NONE; FIRST_COMPLETE_UTTERANCE applies only to a single-Reel quote request.
+- Choose CONVERSATION_MEMORY_QUESTION only when the user asks what they or the assistant said, asked, decided, or discussed in earlier chat turns. A media title and words such as “next” or “later” do not by themselves refer to conversation history.
+- Asking what happens in a named episode refers to the media when shared Reel context is available; asking what was said earlier in the conversation refers to conversation memory.
 
 Intent meanings:
 - NORMAL_CHAT: general conversation, coding help, app discussion, clarification, recommendation/discovery requests, or normal assistant chat.
@@ -566,6 +558,10 @@ Reel question type meanings:
 - GENERAL_REEL_SUMMARY: asks for the shared reel's overall meaning, summary, topic, main point, takeaway, or what it is about. Do not use it for one specific fact, relation, comparison, cause, quantity, sequence, or other detail.
 - REEL_METADATA: asks about properties of the reel as a media object or publication, such as its title, description, caption, hashtags, tags, uploader, creator attribution of the reel itself, or upload/share metadata. Do not use it for text or names displayed within the video frames.
 - AMBIGUOUS_REEL_REFERENCE: refers to a shared reel/video but the requested information is unclear.
+
+Transcript request kind meanings:
+- NONE: the user is not asking for the verbatim earliest complete spoken utterance.
+- FIRST_COMPLETE_UTTERANCE: the user wants the exact earliest complete spoken utterance from a Reel transcript or a requested time interval. Classify by meaning across languages and paraphrases; do not require a particular phrase or question template.
 
 Evidence meanings:
 - TRANSCRIPT: spoken words, transcript chunks, captions, or textual reel content are needed.
@@ -599,12 +595,12 @@ Invariants:
 - TASK_ACTION_REQUEST may not use context tools.
 - Do not select tools that belong to another intent or invent tool names.
 - Specific factual, quantitative, causal, relational, comparative, or sequence questions about the reel use TRANSCRIPT_CONTENT unless the user explicitly asks about visual appearance, on-screen text/layout, or metadata.
+- Use transcriptRequestKind=FIRST_COMPLETE_UTTERANCE only for a verbatim earliest-utterance request routed as REEL_VIDEO_QUESTION with TRANSCRIPT_CONTENT; otherwise use NONE.
 - Both discovery actions require intent=NORMAL_CHAT, referenceTarget=NONE, reelQuestionType=NONE, requiredEvidence=[NONE]. Internal search is not an external task. For NONE use query="", allowPersonalizedFallback=false and suggestedQueries=[]. For RECOMMEND_REELS use suggestedQueries=[]; for SUGGEST_QUERIES provide suggestions and allowPersonalizedFallback=false.
-- Evidence is minimal for the classified question: TRANSCRIPT_CONTENT=[TRANSCRIPT], VISUAL_CONTENT=[VISUAL], MULTIMODAL_CONTENT=[TRANSCRIPT,VISUAL], REEL_METADATA=[METADATA], GENERAL_REEL_SUMMARY=[TRANSCRIPT,METADATA]. Non-reel routes use their own memory evidence or [NONE], never reel modalities.
+- Evidence is derived mechanically from intent and reelQuestionType: TRANSCRIPT_CONTENT=[TRANSCRIPT], VISUAL_CONTENT=[VISUAL], MULTIMODAL_CONTENT=[TRANSCRIPT,VISUAL], REEL_METADATA=[METADATA], GENERAL_REEL_SUMMARY=[TRANSCRIPT,METADATA]. Non-reel routes use their own memory evidence or [NONE], never reel modalities.
 - Do not invent context or use keyword/regex routing.
 - Structural event metadata says what happened, not what the current message means. A recent reel share is evidence for resolving an implicit referent, but unrelated chat remains NORMAL_CHAT with referenceTarget=NONE.
 - Treat language as presentation context, not as a change to the taxonomy: equivalent meanings in different languages use the same intent, reference, reel type, evidence, and recommendation enums.
-- referenceTarget=SHARED_REEL requires intent=REEL_VIDEO_QUESTION. CONVERSATION requires CONVERSATION_MEMORY_QUESTION. USER_MEMORY requires USER_MEMORY_QUESTION. All other routes use NONE.
 `.trim();
   }
 
@@ -645,9 +641,8 @@ Classify the current user message.
       additionalProperties: false,
       required: [
         'intent',
-        'referenceTarget',
         'reelQuestionType',
-        'requiredEvidence',
+        'transcriptRequestKind',
         'recommendationAction',
         'tools',
         'reason',
@@ -662,10 +657,6 @@ Classify the current user message.
             'USER_MEMORY_QUESTION',
             'TASK_ACTION_REQUEST',
           ],
-        },
-        referenceTarget: {
-          type: 'string',
-          enum: ['NONE', 'SHARED_REEL', 'CONVERSATION', 'USER_MEMORY'],
         },
         reelQuestionType: {
           type: 'string',
@@ -682,24 +673,11 @@ Classify the current user message.
             'AMBIGUOUS_REEL_REFERENCE',
           ],
         },
-        requiredEvidence: {
-          type: 'array',
+        transcriptRequestKind: {
+          type: 'string',
           description:
-            'Return the minimal evidence modalities needed for the semantic request. Content-level facts stated within the media use TRANSCRIPT; metadata about the media item itself uses METADATA; this may be an independent set for an ambiguous reel request.',
-          minItems: 1,
-          maxItems: 4,
-          items: {
-            type: 'string',
-            enum: [
-              'NONE',
-              'TRANSCRIPT',
-              'VISUAL',
-              'AUDIO',
-              'METADATA',
-              'CONVERSATION_MEMORY',
-              'USER_MEMORY',
-            ],
-          },
+            'Semantic transcript task classification. Use FIRST_COMPLETE_UTTERANCE only when the user wants the verbatim earliest complete spoken utterance; otherwise use NONE.',
+          enum: ['NONE', 'FIRST_COMPLETE_UTTERANCE'],
         },
         recommendationAction: {
           type: 'object',
@@ -748,33 +726,51 @@ Classify the current user message.
     raw: RawRouteDecision,
     input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
-    const intent = this.normalizeIntent(raw.intent);
-    const rawReferenceTarget = this.normalizeReferenceTarget(
-      raw.referenceTarget,
+    const rawIntent = this.normalizeIntent(raw.intent);
+    const reelQuestionType = this.isExplicitMultimodalRequest(input.message)
+      ? 'MULTIMODAL_CONTENT'
+      : this.normalizeReelQuestionType(raw.reelQuestionType);
+    const intent =
+      ['NORMAL_CHAT', 'CONVERSATION_MEMORY_QUESTION'].includes(rawIntent) &&
+      reelQuestionType !== 'NONE'
+        ? 'REEL_VIDEO_QUESTION'
+        : rawIntent;
+    this.validateIntentReelTypeConsistency(intent, reelQuestionType);
+    const requiredEvidence = this.defaultRequiredEvidence(
+      intent,
+      reelQuestionType,
     );
+    const multiReelTranscriptComparison =
+      intent === 'REEL_VIDEO_QUESTION' &&
+      transcriptSegmentRequestKind(
+        input.message ?? '',
+        { requiredEvidence },
+        { requiresReelCoverage: requiresReelCoverage(input.message ?? '') },
+      ) === 'MULTI_REEL_COMPARISON';
+    const transcriptRequestKind =
+      intent === 'REEL_VIDEO_QUESTION' &&
+      reelQuestionType === 'TRANSCRIPT_CONTENT' &&
+      !multiReelTranscriptComparison &&
+      raw.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE'
+        ? 'FIRST_COMPLETE_UTTERANCE'
+        : 'NONE';
+    const referenceTarget: RagReferenceTarget =
+      intent === 'REEL_VIDEO_QUESTION'
+        ? 'SHARED_REEL'
+        : intent === 'CONVERSATION_MEMORY_QUESTION'
+          ? 'CONVERSATION'
+          : intent === 'USER_MEMORY_QUESTION'
+            ? 'USER_MEMORY'
+            : 'NONE';
     const allowUnavailableReelReference =
       !input.hasSharedReelContext &&
       intent === 'REEL_VIDEO_QUESTION' &&
       this.isExplicitUnavailableReelReference(input.message);
-    const referenceTarget =
-      allowUnavailableReelReference && rawReferenceTarget === 'NONE'
-        ? 'SHARED_REEL'
-        : rawReferenceTarget;
     this.validateReferentConsistency(
       intent,
       referenceTarget,
       input.hasSharedReelContext ?? false,
       allowUnavailableReelReference,
-    );
-    const reelQuestionType = this.normalizeReelQuestionType(
-      raw.reelQuestionType,
-      intent,
-    );
-
-    const requiredEvidence = this.normalizeRequiredEvidence(
-      raw.requiredEvidence,
-      intent,
-      reelQuestionType,
     );
     const toolPlan = this.normalizeToolPlan(raw.tools, intent);
 
@@ -791,6 +787,7 @@ Classify the current user message.
       ].includes(intent),
       needsVerification: intent !== 'NORMAL_CHAT',
       reelQuestionType,
+      transcriptRequestKind,
       requiredEvidence,
       recommendationAction: this.normalizeRecommendationAction(
         raw.recommendationAction,
@@ -798,9 +795,11 @@ Classify the current user message.
       ),
       toolPlan,
       reason:
-        typeof raw.reason === 'string' && raw.reason.trim()
-          ? raw.reason.trim()
-          : 'No router reason provided.',
+        intent !== rawIntent
+          ? 'The Reel question type requires shared Reel retrieval.'
+          : typeof raw.reason === 'string' && raw.reason.trim()
+            ? raw.reason.trim()
+            : 'No router reason provided.',
     };
   }
 
@@ -846,16 +845,6 @@ Classify the current user message.
     }
 
     return { allowedTools, requiredTools };
-  }
-
-  private normalizeReferenceTarget(value: unknown): RagReferenceTarget {
-    if (
-      typeof value === 'string' &&
-      this.validReferenceTargets.has(value as RagReferenceTarget)
-    ) {
-      return value as RagReferenceTarget;
-    }
-    throw new RouterSemanticInconsistencyError('INVALID_REFERENCE_TARGET');
   }
 
   private validateReferentConsistency(
@@ -926,6 +915,7 @@ Classify the current user message.
       needsConversationSummary: false,
       needsVerification: true,
       reelQuestionType: 'TRANSCRIPT_CONTENT',
+      transcriptRequestKind: 'NONE',
       requiredEvidence: ['TRANSCRIPT'],
       recommendationAction: {
         type: 'NONE',
@@ -939,6 +929,16 @@ Classify the current user message.
         'SUMMARY' &&
       typeof plan?.sourceTimestampSec === 'number' &&
       typeof plan.sourceTimestampEndSec === 'number'
+    );
+  }
+
+  private isExplicitMultimodalRequest(message?: string): boolean {
+    return Boolean(
+      message &&
+      /\b(?:sampled\s+)?(?:frame|scene)\b/i.test(message) &&
+      /\b(?:transcript|speech|spoken\s+words?|what\s+(?:is|was)\s+said)\b/i.test(
+        message,
+      ),
     );
   }
 
@@ -975,77 +975,29 @@ Classify the current user message.
     return describesMultipleReels && leavesChoiceUnresolved;
   }
 
-  private normalizeReelQuestionType(
-    value: unknown,
-    intent: RagChatIntent,
-  ): RagReelQuestionType {
+  private normalizeReelQuestionType(value: unknown): RagReelQuestionType {
     if (
       typeof value === 'string' &&
       this.validReelQuestionTypes.has(value as RagReelQuestionType)
     ) {
-      if ((intent === 'REEL_VIDEO_QUESTION') === (value !== 'NONE'))
-        return value as RagReelQuestionType;
-
-      throw new RouterSemanticInconsistencyError('INTENT_REEL_TYPE_MISMATCH', {
-        actualIntent: intent,
-        actualReelQuestionType: value as RagReelQuestionType,
-        ...(intent !== 'REEL_VIDEO_QUESTION'
-          ? { expectedReelQuestionType: 'NONE' as const }
-          : {}),
-      });
+      return value as RagReelQuestionType;
     }
 
-    throw new RouterSemanticInconsistencyError('INTENT_REEL_TYPE_MISMATCH', {
-      actualIntent: intent,
-    });
+    throw new RouterSemanticInconsistencyError('INTENT_REEL_TYPE_MISMATCH');
   }
 
-  private normalizeRequiredEvidence(
-    value: unknown,
+  private validateIntentReelTypeConsistency(
     intent: RagChatIntent,
     reelQuestionType: RagReelQuestionType,
-  ): RagRequiredEvidence[] {
-    if (Array.isArray(value)) {
-      const normalized = value.filter(
-        (item): item is RagRequiredEvidence =>
-          typeof item === 'string' &&
-          this.validRequiredEvidence.has(item as RagRequiredEvidence),
-      );
-
-      if (
-        normalized.length > 0 &&
-        normalized.length === value.length &&
-        new Set(normalized).size === normalized.length
-      ) {
-        const expected = this.defaultRequiredEvidence(intent, reelQuestionType);
-        const ambiguous =
-          intent === 'REEL_VIDEO_QUESTION' &&
-          reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE';
-        if (
-          ambiguous
-            ? normalized.every((item) =>
-                ['TRANSCRIPT', 'VISUAL', 'AUDIO', 'METADATA'].includes(item),
-              )
-            : normalized.length === expected.length &&
-              expected.every((item) => normalized.includes(item))
-        )
-          return normalized;
-      }
-    }
-
-    const expected = this.defaultRequiredEvidence(intent, reelQuestionType);
-    const actualEvidence = Array.isArray(value)
-      ? value.filter(
-          (item): item is RagRequiredEvidence =>
-            typeof item === 'string' &&
-            this.validRequiredEvidence.has(item as RagRequiredEvidence),
-        )
-      : [];
-    throw new RouterSemanticInconsistencyError('REQUIRED_EVIDENCE_MISMATCH', {
+  ): void {
+    if ((intent === 'REEL_VIDEO_QUESTION') === (reelQuestionType !== 'NONE'))
+      return;
+    throw new RouterSemanticInconsistencyError('INTENT_REEL_TYPE_MISMATCH', {
       actualIntent: intent,
       actualReelQuestionType: reelQuestionType,
-      actualEvidence,
-      expectedEvidence: expected,
+      ...(intent !== 'REEL_VIDEO_QUESTION'
+        ? { expectedReelQuestionType: 'NONE' as const }
+        : {}),
     });
   }
 
@@ -1053,6 +1005,14 @@ Classify the current user message.
     value: unknown,
     intent: RagChatIntent,
   ): RagRecommendationAction {
+    if (intent !== 'NORMAL_CHAT') {
+      return {
+        type: 'NONE',
+        reason:
+          'Recommendation actions are only used for discovery in normal chat.',
+      };
+    }
+
     const record = this.asRecord(value);
 
     if (!record) {
@@ -1072,17 +1032,16 @@ Classify the current user message.
       );
     }
     const actionType = type as (typeof actionTypes)[number];
-    if (actionType !== 'NONE' && intent !== 'NORMAL_CHAT') {
-      throw new RouterSemanticInconsistencyError(
-        'RECOMMENDATION_INTENT_MISMATCH',
-        {
-          actualIntent: intent,
-          recommendationActionType: actionType,
-        },
-      );
-    }
     const query = this.normalizeOptionalString(record.query);
-    const suggestions = this.normalizeSuggestedQueries(record.suggestedQueries);
+    const suppliedSuggestions = this.normalizeSuggestedQueries(
+      record.suggestedQueries,
+    );
+    const suggestions =
+      actionType === 'SUGGEST_QUERIES' &&
+      suppliedSuggestions.length === 0 &&
+      query
+        ? [query]
+        : suppliedSuggestions;
     if (
       (actionType === 'NONE' &&
         (query ||
@@ -1090,7 +1049,8 @@ Classify the current user message.
           suggestions.length > 0)) ||
       (actionType === 'RECOMMEND_REELS' && suggestions.length > 0) ||
       (actionType === 'SUGGEST_QUERIES' &&
-        (record.allowPersonalizedFallback === true || suggestions.length === 0))
+        (record.allowPersonalizedFallback === true ||
+          (suggestions.length === 0 && !query)))
     ) {
       throw new RouterSemanticInconsistencyError(
         'RECOMMENDATION_PAYLOAD_MISMATCH',
@@ -1123,9 +1083,7 @@ Classify the current user message.
         ...(this.normalizeOptionalString(record.query)
           ? { query: this.normalizeOptionalString(record.query) }
           : {}),
-        suggestedQueries: this.normalizeSuggestedQueries(
-          record.suggestedQueries,
-        ),
+        suggestedQueries: suggestions,
         reason: this.normalizeReason(
           record.reason,
           'User asked for query suggestions.',
@@ -1147,6 +1105,8 @@ Classify the current user message.
     reelQuestionType: RagReelQuestionType,
   ): RagRequiredEvidence[] {
     if (intent === 'REEL_VIDEO_QUESTION') {
+      if (reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE') return ['NONE'];
+
       if (reelQuestionType === 'GENERAL_REEL_SUMMARY') {
         return ['TRANSCRIPT', 'METADATA'];
       }
@@ -1250,6 +1210,7 @@ Classify the current user message.
       needsConversationSummary: true,
       needsVerification: false,
       reelQuestionType: 'NONE',
+      transcriptRequestKind: 'NONE',
       requiredEvidence: ['NONE'],
       recommendationAction: {
         type: 'NONE',

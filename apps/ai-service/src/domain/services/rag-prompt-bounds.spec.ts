@@ -474,6 +474,55 @@ describe('rag prompt bounds', () => {
     ).toEqual(['e0', 'e1']);
   });
 
+  it('preserves every bounded time-window summary chunk when sufficiency names one source', () => {
+    const candidates = [
+      {
+        chunkId: 'early',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'The speaker introduces the topic.',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'middle',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'The speaker explains the main claim.',
+        tags: [],
+        distance: 0,
+      },
+      {
+        chunkId: 'late',
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        chunkText: 'The speaker gives the conclusion.',
+        tags: [],
+        distance: 0,
+      },
+    ];
+
+    expect(
+      [
+        ...selectRagAnswerEvidenceIds(
+          candidates,
+          {
+            sufficient: true,
+            confidence: 0.9,
+            availableEvidence: ['TRANSCRIPT'],
+            missingEvidence: [],
+            supportedEvidenceIds: ['e0'],
+            recommendedAction: 'ANSWER',
+            reason: 'The first chunk supports the main fact.',
+          },
+          { requiredEvidence: ['TRANSCRIPT'] },
+          false,
+          true,
+        ),
+      ].sort(),
+    ).toEqual(['e0', 'e1', 'e2']);
+  });
+
   it('keeps all bounded required modalities when sufficiency supports only one', () => {
     const candidates = [
       {

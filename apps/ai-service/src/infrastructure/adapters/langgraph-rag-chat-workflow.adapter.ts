@@ -918,12 +918,12 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         answer,
         finalFailureSource: 'NONE',
         answerClaims: groundedRevision
-          ? [
+          ? (groundedRevision.claims ?? [
               {
                 claim: groundedRevision.answer,
                 evidenceIds: groundedRevision.evidenceIds,
               },
-            ]
+            ])
           : draft!.claims,
         answerDiagnostics: draft?.diagnostics,
         generationEvidence:
@@ -1113,6 +1113,23 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           (mapping) => mapping.evidenceIds.length > 0,
         ) ??
           false);
+      const verifierConfidenceThreshold = this.number(
+        'AI_RAG_VERIFIER_MIN_CONFIDENCE',
+        0.65,
+        0,
+        1,
+      );
+      const verifierLowConfidenceCandidate =
+        state.contextSufficiency?.sufficient === true &&
+        failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
+        failedVerification.passed === true &&
+        failedVerification.confidence < verifierConfidenceThreshold &&
+        (failedVerification.issues?.length ?? 0) === 0 &&
+        (failedVerification.contradictions?.length ?? 0) === 0 &&
+        (failedVerification.supportedClaimMappings?.some(
+          (mapping) => mapping.evidenceIds.length > 0,
+        ) ??
+          false);
       const extractiveAnswerHasLocalProvenance =
         failedVerification?.diagnostics?.providerStatus === 'SUCCESS' &&
         failedVerification.passed === false &&
@@ -1146,6 +1163,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         failedVerification !== undefined &&
         (verifierUnavailable ||
           verifierFalseNegativeCandidate ||
+          verifierLowConfidenceCandidate ||
           extractiveAnswerHasLocalProvenance ||
           isMetadataQuestion);
       if (
@@ -1182,6 +1200,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           ];
           const recoveryReason = verifierUnavailable
             ? 'Semantic verifier unavailable; recovered with an exact extractive evidence fallback.'
+            : verifierLowConfidenceCandidate
+              ? 'Semantic verification confidence was below threshold; recovered with an exact extractive evidence fallback.'
             : citationCoverageFailed
               ? 'Citation coverage remained below threshold; recovered with an exact extractive evidence fallback.'
               : answerGenerationFailedWithSufficientContext

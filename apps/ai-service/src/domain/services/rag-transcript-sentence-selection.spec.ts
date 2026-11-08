@@ -4,61 +4,71 @@ import type {
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import {
   isTranscriptSentenceSelectionRequest,
-  reconcileTranscriptSentenceCandidate,
+  firstCompleteTranscriptSentenceCandidate,
+  hasUnsupportedTranscriptTailCompletion,
+  hasIncompleteTranscriptEnding,
+  isLikelyIncompleteTranscriptUtterance,
+  isNearVerbatimTranscriptSummary,
+  isShortTerminalTranscriptUtterance,
   selectTimestampTranscriptEvidence,
+  startsInsidePriorTranscriptSentence,
+  transcriptFallbackSpans,
+  transcriptSentenceSpans,
 } from './rag-transcript-sentence-selection';
 
-describe('transcript sentence selection policy', () => {
+describe('transcript sentence selection inputs', () => {
   const route = {
     intent: 'REEL_VIDEO_QUESTION',
     requiredEvidence: ['TRANSCRIPT'],
-  } as Pick<RagChatRouteDecision, 'intent' | 'requiredEvidence'>;
+    transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+  } as Pick<
+    RagChatRouteDecision,
+    'intent' | 'requiredEvidence' | 'transcriptRequestKind'
+  >;
 
-  it('only enables ordered selection for explicit first-sentence transcript requests', () => {
+  it('requires the router to classify an earliest complete-utterance transcript task', () => {
+    expect(isTranscriptSentenceSelectionRequest(route)).toBe(true);
     expect(
-      isTranscriptSentenceSelectionRequest(
-        route,
-        'Quote the first complete sentence in the transcript.',
-      ),
-    ).toBe(true);
-    expect(
-      isTranscriptSentenceSelectionRequest(route, 'Quote what she says next.'),
+      isTranscriptSentenceSelectionRequest({
+        ...route,
+        transcriptRequestKind: 'NONE',
+      }),
     ).toBe(false);
     expect(
-      isTranscriptSentenceSelectionRequest(
-        { ...route, requiredEvidence: ['VISUAL'] },
-        'Quote the first complete sentence.',
-      ),
+      isTranscriptSentenceSelectionRequest({
+        ...route,
+        requiredEvidence: ['VISUAL'],
+      }),
     ).toBe(false);
   });
 
-  it('prefers a transcript window covering the requested range', () => {
+  it('prefers a transcript window that covers the requested interval', () => {
     const overlapping = {
       evidenceId: 'e0',
       sourceId: 'overlap',
       evidenceType: 'TRANSCRIPT',
-      startTime: 9.06,
-      endTime: 76.25,
+      startTime: 8,
+      endTime: 22,
       evidenceText: 'overlap',
     } as RagGenerationEvidence;
     const aligned = {
       ...overlapping,
       evidenceId: 'e1',
       sourceId: 'aligned',
-      startTime: 9.52,
-      endTime: 62.28,
+      startTime: 10,
+      endTime: 20,
       evidenceText: 'aligned',
     };
 
     expect(
       selectTimestampTranscriptEvidence([overlapping, aligned], {
-        sourceTimestampSec: 9.52,
-        sourceTimestampEndSec: 62.28,
+        sourceTimestampSec: 10,
+        sourceTimestampEndSec: 20,
       }),
     ).toBe(aligned);
   });
 
-  it('falls back to a transcript containing the requested start point', () => {
+  it('falls back to a transcript that contains the requested start point', () => {
     const evidence = {
       evidenceId: 'e0',
       sourceId: 'point',
@@ -82,89 +92,251 @@ describe('transcript sentence selection policy', () => {
     ).toBeUndefined();
   });
 
-  it('skips clear noun and adjective fragments for a complete sentence', () => {
+  it('keeps punctuation-bounded utterances separate and skips clipped opening spans', () => {
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: 'the red notebook!' },
-          { candidateId: 'two', text: 'Where is it?' },
-        ],
-        'one',
+      firstCompleteTranscriptSentenceCandidate(
+        "good! Now, let's deal with the rest.",
       ),
-    ).toBe('two');
+    ).toBe('good!');
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: 'House Green Lantern.' },
-          { candidateId: 'two', text: 'The signal is clear.' },
-        ],
-        'one',
+      firstCompleteTranscriptSentenceCandidate(
+        'The speaker starts to say... The meeting begins now.',
       ),
-    ).toBe('two');
-    expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: 'too large.' },
-          { candidateId: 'two', text: 'is a serious problem.' },
-          { candidateId: 'three', text: 'Avery has filed the report.' },
-        ],
-        'one',
-      ),
-    ).toBe('three');
+    ).toBe('The meeting begins now.');
   });
 
-  it('restores an earlier complete clause when the model selects a later one', () => {
+  it('keeps a complete multiword in-window clause when overlap contains it inside a longer sentence', () => {
+    const firstSpan = 'You arrived.';
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: "you're setting the table." },
-          { candidateId: 'two', text: "Please, there's no reason." },
-        ],
-        'two',
+      startsInsidePriorTranscriptSentence(
+        firstSpan,
+        'The person said you arrived. The meeting began.',
       ),
-    ).toBe('one');
+    ).toBe(true);
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        'You arrived. The meeting began.',
+        'The person said you arrived. The meeting began.',
+      ),
+    ).toBe(firstSpan);
   });
 
-  it('preserves model choices for short and elliptical utterances', () => {
+  it('keeps a short vocalization and polite command at overlap boundaries', () => {
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: 'Only after lunch?' },
-          { candidateId: 'two', text: 'The meeting started at noon.' },
-        ],
-        'one',
+      firstCompleteTranscriptSentenceCandidate(
+        'Good! The meeting began.',
+        'They said it was looking good! The meeting began.',
       ),
-    ).toBe('one');
+    ).toBe('Good!');
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [{ candidateId: 'one', text: 'No.' }],
-        'one',
+      firstCompleteTranscriptSentenceCandidate(
+        'please, hold this. The room emptied.',
+        'Yes, please, hold this. The room emptied.',
       ),
-    ).toBe('one');
+    ).toBe('please, hold this.');
   });
 
-  it('does not promote a malformed modal fragment or a dangling infinitive', () => {
+  it('skips a lowercase one-word tail when overlap shows it belongs to an earlier sentence', () => {
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: "I'll of a sudden." },
-          { candidateId: 'two', text: 'Volunteered to be my guard.' },
-          { candidateId: 'three', text: 'I wrote a note.' },
-        ],
-        'three',
+      firstCompleteTranscriptSentenceCandidate(
+        'parcel. The room emptied.',
+        'I moved the parcel. The room emptied.',
       ),
-    ).toBe('three');
+    ).toBe('The room emptied.');
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        'please, help her. The room emptied.',
+        'Yes, please, help her. The room emptied.',
+      ),
+    ).toBe('please, help her.');
   });
 
-  it('recognizes a complete topical clause beginning with “As for”', () => {
+  it('recognizes short punctuated utterances without accepting clipped fragments', () => {
+    expect(isShortTerminalTranscriptUtterance('good!')).toBe(true);
+    expect(isShortTerminalTranscriptUtterance('No?')).toBe(true);
+    expect(isShortTerminalTranscriptUtterance('Are you okay?')).toBe(false);
+    expect(isShortTerminalTranscriptUtterance('Fragment 1.')).toBe(false);
+    expect(isShortTerminalTranscriptUtterance('EVE pul...')).toBe(false);
+  });
+
+  it('rejects punctuated spans with a dangling auxiliary before a required phrase', () => {
+    expect(isLikelyIncompleteTranscriptUtterance("I'll of a person.")).toBe(
+      true,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance("I'll of course be there.")).toBe(
+      false,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance("I'll make you laugh.")).toBe(
+      false,
+    );
     expect(
-      reconcileTranscriptSentenceCandidate(
-        [
-          { candidateId: 'one', text: 'As for the report, it was delayed.' },
-          { candidateId: 'two', text: 'The next meeting begins tomorrow.' },
-        ],
-        'two',
+      firstCompleteTranscriptSentenceCandidate(
+        "I'll of a person. The meeting began.",
       ),
-    ).toBe('one');
+    ).toBe('The meeting began.');
+  });
+
+  it('skips clipped, gerund, bare-noun, and subjectless predicate fragments', () => {
+    expect(isLikelyIncompleteTranscriptUtterance('He...')).toBe(true);
+    expect(isLikelyIncompleteTranscriptUtterance('asking whether you saw it.')).toBe(
+      true,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance('little signal.')).toBe(true);
+    expect(isLikelyIncompleteTranscriptUtterance('quietly removed the sign.')).toBe(
+      true,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance('is a reasonable claim.')).toBe(
+      true,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance('Avery thought for a moment.')).toBe(
+      false,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance('I protected my mother.')).toBe(
+      false,
+    );
+    expect(isLikelyIncompleteTranscriptUtterance('Yes.')).toBe(false);
+  });
+
+  it('does not need a reply-word allowlist for one-word utterances', () => {
+    expect(isLikelyIncompleteTranscriptUtterance('ready.')).toBe(false);
+    expect(isLikelyIncompleteTranscriptUtterance('help.')).toBe(false);
+    expect(isLikelyIncompleteTranscriptUtterance('he.')).toBe(true);
+    expect(
+      firstCompleteTranscriptSentenceCandidate('ready. The meeting began.'),
+    ).toBe('ready.');
+  });
+
+  it('returns the earliest remaining complete source span after generic fragments', () => {
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        'the visitors. asking whether you saw it. Avery thought for a moment and answered.',
+      ),
+    ).toBe('Avery thought for a moment and answered.');
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        'quietly removed the sign. Meow! The train was late.',
+      ),
+    ).toBe('Meow!');
+  });
+
+  it('detects completion of an unterminated transcript tail without rejecting exact-fragment reporting', () => {
+    const clipped = 'They said they could conquer any nation. Crush';
+    expect(
+      hasUnsupportedTranscriptTailCompletion(
+        'They could conquer any nation and crush them.',
+        clipped,
+      ),
+    ).toBe(true);
+    expect(
+      hasUnsupportedTranscriptTailCompletion(
+        'The indexed excerpt ends with the fragment "Crush".',
+        clipped,
+      ),
+    ).toBe(false);
+    expect(
+      hasUnsupportedTranscriptTailCompletion(
+        'They could conquer any nation.',
+        clipped,
+      ),
+    ).toBe(false);
+    expect(
+      hasUnsupportedTranscriptTailCompletion(
+        'They said they could conquer any nation. Crush them.',
+        'They said they could conquer any nation. Crush them.',
+      ),
+    ).toBe(false);
+  });
+
+  it('distinguishes a near-verbatim summary from a concise paraphrase', () => {
+    const source =
+      'The speaker says they wanted to renovate the old house for many years. They thank the other person and describe how power could change the situation dramatically.';
+    expect(
+      isNearVerbatimTranscriptSummary(`The speaker says: ${source}`, source),
+    ).toBe(true);
+    expect(
+      isNearVerbatimTranscriptSummary(
+        'They had wanted to renovate for years, thanked the listener, and said the listener\'s power could change things.',
+        source,
+      ),
+    ).toBe(false);
+  });
+
+  it('detects when a timestamp-window prefix continues a sentence in overlapping source text', () => {
+    expect(
+      startsInsidePriorTranscriptSentence(
+        'came inside.',
+        'The courier said the visitor came inside. The meeting began.',
+      ),
+    ).toBe(true);
+    expect(
+      startsInsidePriorTranscriptSentence(
+        'The meeting began.',
+        'The visitor came inside. The meeting began.',
+      ),
+    ).toBe(false);
+    expect(
+      startsInsidePriorTranscriptSentence(
+        'A new guest arrived.',
+        'No overlap.',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps a clause after a sentence-initial coordinating conjunction at the boundary', () => {
+    const priorTranscript =
+      'We planned to stay home. But the visitor decided to leave.';
+    const firstSentence = 'The visitor decided to leave.';
+
+    expect(
+      startsInsidePriorTranscriptSentence(firstSentence, priorTranscript),
+    ).toBe(false);
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        firstSentence + ' The family was surprised.',
+        priorTranscript,
+      ),
+    ).toBe(firstSentence);
+  });
+
+  it('keeps each complete source sentence intact for quote selection', () => {
+    expect(
+      transcriptSentenceSpans(
+        'A courier arrived. Is the package here? Yes! The meeting began.',
+      ),
+    ).toEqual([
+      'A courier arrived.',
+      'Is the package here?',
+      'Yes!',
+      'The meeting began.',
+    ]);
+    expect(
+      transcriptSentenceSpans(
+        'The room was quiet because the guests had left. The lights went out.',
+      ),
+    ).toEqual([
+      'The room was quiet because the guests had left.',
+      'The lights went out.',
+    ]);
+  });
+
+  it('marks an unterminated source tail as incomplete without hardcoding its text', () => {
+    expect(hasIncompleteTranscriptEnding("You're accepted into")).toBe(true);
+    expect(hasIncompleteTranscriptEnding('The meeting ended.')).toBe(false);
+    expect(hasIncompleteTranscriptEnding('The ending trails off...')).toBe(
+      true,
+    );
+  });
+
+  it('keeps causal clause spans available to the generic why fallback', () => {
+    expect(
+      transcriptFallbackSpans(
+        'The room was quiet because the guests had left. The lights went out.',
+        'Why did the room become quiet?',
+      ),
+    ).toEqual([
+      'The room was quiet',
+      'because the guests had left.',
+      'The lights went out.',
+    ]);
   });
 });

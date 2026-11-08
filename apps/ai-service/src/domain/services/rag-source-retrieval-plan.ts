@@ -2,6 +2,12 @@ import type {
   RagChatRouteDecision,
   RagRetrievalPlan,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import { transcriptSegmentRequestKind } from '@ai/domain/services/rag-prompt-bounds';
+
+// shortcut: estimate the observed transcript segment cadence until reads expose total in-window chunk counts.
+const TRANSCRIPT_SUMMARY_SECONDS_PER_CHUNK = 8;
+// shortcut: cap one summary read at the retrieval API's 20-result limit; page longer windows when supported.
+const MAX_TRANSCRIPT_SUMMARY_CHUNKS = 20;
 
 /** Evidence allocation signal; this does not classify the user's intent. */
 export function requiresReelCoverage(message: string): boolean {
@@ -25,15 +31,16 @@ export function sourceRetrievalPlan(
   if (!route.needsRetrieval) return undefined;
   const transcriptRequired =
     route.requiredEvidence?.includes('TRANSCRIPT') === true;
+  const reelCoverageRequired = requiresReelCoverage(message);
+  const requestKind = transcriptSegmentRequestKind(message, route, {
+    requiresReelCoverage: reelCoverageRequired,
+  });
   const firstIndexedTranscriptSegment =
-    transcriptRequired &&
-    /\bfirst\s+(?:indexed\s+)?transcript\s+segments?\b/i.test(message);
+    transcriptRequired && requestKind === 'MULTI_REEL_COMPARISON';
   const opening =
     transcriptRequired &&
     (firstIndexedTranscriptSegment ||
-      /\b(?:opening statement|first (?:complete )?(?:statement|sentence)|first thing (?:said|spoken))\b/i.test(
-        message,
-      ));
+      route.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE');
   const timestamp = message.match(
     /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
   );
@@ -71,6 +78,21 @@ export function sourceRetrievalPlan(
     transcriptWindow && transcriptTimestamp?.[2]
       ? Number(transcriptTimestamp[2])
       : undefined;
+  const summaryWindowReadLimit =
+    requestKind === 'SUMMARY' &&
+    explicitTranscriptTimestampSec !== undefined &&
+    transcriptTimestampEndSec !== undefined
+      ? Math.min(
+          MAX_TRANSCRIPT_SUMMARY_CHUNKS,
+          Math.max(
+            2,
+            Math.ceil(
+              (transcriptTimestampEndSec - explicitTranscriptTimestampSec) /
+                TRANSCRIPT_SUMMARY_SECONDS_PER_CHUNK,
+            ),
+          ),
+        )
+      : undefined;
   const sourceTimestampSec = multimodal
     ? undefined
     : visual && timestamp
@@ -81,7 +103,7 @@ export function sourceRetrievalPlan(
     : transcriptTimestampEndSec;
   const sourceReadLimit =
     transcriptTimestampEndSec !== undefined
-      ? 2
+      ? (summaryWindowReadLimit ?? 2)
       : multimodal
         ? 6
         : opening || visual || transcriptWindow
@@ -89,7 +111,7 @@ export function sourceRetrievalPlan(
           : 5;
   return {
     mode: 'REEL_HYBRID',
-    requiresReelCoverage: requiresReelCoverage(message),
+    requiresReelCoverage: reelCoverageRequired,
     ...(opening || visual || transcriptWindow
       ? { sourceOrder: 'ASC' as const }
       : {}),

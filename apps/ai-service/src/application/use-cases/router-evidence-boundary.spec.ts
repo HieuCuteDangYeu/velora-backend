@@ -109,7 +109,7 @@ describe('generic router evidence minimality boundary', () => {
     },
   );
 
-  it('keeps TRANSCRIPT_CONTENT exact when the model over-selects METADATA', async () => {
+  it('derives TRANSCRIPT_CONTENT evidence itself and ignores a model-supplied METADATA over-selection', async () => {
     const { promise } = executeWith(
       route({
         intent: 'REEL_VIDEO_QUESTION',
@@ -121,14 +121,9 @@ describe('generic router evidence minimality boundary', () => {
       { hasSharedReelContext: true },
     );
 
-    await expect(promise).rejects.toMatchObject({
-      code: 'ROUTER_UNAVAILABLE',
-      causeCode: 'ROUTER_SEMANTIC_INCONSISTENT',
-      semanticInconsistencyType: 'REQUIRED_EVIDENCE_MISMATCH',
-      semanticInconsistencyDetails: {
-        actualEvidence: ['TRANSCRIPT', 'METADATA'],
-        expectedEvidence: ['TRANSCRIPT'],
-      },
+    await expect(promise).resolves.toMatchObject({
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
     });
   });
 

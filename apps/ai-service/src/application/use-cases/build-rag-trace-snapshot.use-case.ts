@@ -95,6 +95,8 @@ export class BuildRagTraceSnapshotUseCase {
                 intent: input.state.route.intent,
                 referenceTarget: input.state.route.referenceTarget,
                 reelQuestionType: input.state.route.reelQuestionType,
+                transcriptRequestKind:
+                  input.state.route.transcriptRequestKind,
                 requiredEvidence: input.state.route.requiredEvidence,
                 needsRetrieval: input.state.route.needsRetrieval,
                 needsVerification: input.state.route.needsVerification,

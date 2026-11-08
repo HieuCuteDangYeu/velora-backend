@@ -604,6 +604,7 @@ export function selectRagAnswerEvidenceIds(
   context: RagContextSufficiencyResult | undefined,
   route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
   preserveReelCoverage = false,
+  preserveAllEvidence = false,
 ): Set<string> {
   const required = new Set(
     (route?.requiredEvidence ?? []).filter(
@@ -614,7 +615,8 @@ export function selectRagAnswerEvidenceIds(
         value === 'METADATA',
     ),
   );
-  const preserveRequiredCoverage = preserveReelCoverage || required.size > 1;
+  const preserveRequiredCoverage =
+    preserveReelCoverage || preserveAllEvidence || required.size > 1;
   const supported = new Set(
     (context?.supportedEvidenceIds ?? []).filter(
       (value): value is string => typeof value === 'string',

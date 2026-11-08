@@ -157,6 +157,8 @@ export interface RagAnswerBudgetOptions {
 }
 
 export const MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS = 1_800;
+export const TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS = 900;
+export const MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS = 1_600;
 
 export function ragAnswerBudget(
   reelQuestionType: RagReelQuestionType | undefined,

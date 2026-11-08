@@ -79,11 +79,11 @@ export class CreateNoContextAnswerUseCase {
     missingEvidence: RagRequiredEvidence[],
   ): string {
     if (missingEvidence.includes('USER_MEMORY')) {
-      return 'I can only search your own saved memory, and I do not have the requested detail available here.';
+      return 'I can only search your own saved memory, and I do not have the requested detail available here. If you tell me the detail in this chat I can work from it, or you can ask the other person directly.';
     }
 
     if (missingEvidence.includes('CONVERSATION_MEMORY')) {
-      return 'I cannot find the requested detail in the conversation history available here.';
+      return 'I cannot find the requested detail in the conversation history available here. If you share it again, I can continue from there.';
     }
 
     if (
@@ -97,15 +97,15 @@ export class CreateNoContextAnswerUseCase {
     }
 
     if (missingEvidence.includes('AUDIO')) {
-      return 'The available shared Reel context does not contain enough audio evidence to identify the requested audio detail.';
+      return 'The available shared Reel context does not contain enough audio evidence to identify the requested audio detail. I can help with the other parts of this Reel that are available.';
     }
 
     if (missingEvidence.includes('VISUAL')) {
-      return 'The available shared Reel context does not contain enough visual evidence to identify the requested visual detail.';
+      return 'The available shared Reel context does not contain enough visual evidence to identify the requested visual detail. I can help with the other parts of this Reel that are available.';
     }
 
     if (missingEvidence.includes('TRANSCRIPT')) {
-      return 'The available shared Reel context does not contain enough transcript evidence to answer the requested detail.';
+      return 'The available shared Reel context does not contain enough transcript evidence to answer the requested detail. I can help with the other parts of this Reel that are available.';
     }
 
     if (missingEvidence.includes('METADATA')) {

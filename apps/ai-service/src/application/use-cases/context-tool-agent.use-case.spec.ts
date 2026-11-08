@@ -130,6 +130,7 @@ describe('ContextToolAgentUseCase', () => {
       state({
         userMessage:
           'What is the first complete sentence recorded in the indexed transcript?',
+        route: { ...route, transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE' },
       }),
     );
     expect(built.toolLlm.complete).not.toHaveBeenCalled();
@@ -228,8 +229,9 @@ describe('ContextToolAgentUseCase', () => {
       sourceOrder: 'ASC',
       sourceTimestampSec: 8,
       sourceTimestampEndSec: 63.9,
-      searchLimit: 2,
-      rerankLimit: 2,
+      // ceil(55.9s window / 8s per transcript chunk)
+      searchLimit: 7,
+      rerankLimit: 7,
     });
     expect(built.toolLlm.complete).not.toHaveBeenCalled();
   });
@@ -293,7 +295,13 @@ describe('ContextToolAgentUseCase', () => {
         },
       });
       await built.agent.execute(
-        state({ userMessage: 'What is the opening statement?' }),
+        state({
+          userMessage: 'What is the opening statement?',
+          route: {
+            ...route,
+            transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          },
+        }),
       );
       expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -315,7 +323,10 @@ describe('ContextToolAgentUseCase', () => {
       },
     });
     await built.agent.execute(
-      state({ userMessage: 'What is the first sentence?' }),
+      state({
+        userMessage: 'What is the first sentence?',
+        route: { ...route, transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE' },
+      }),
     );
     expect(built.retrievalEngine.retrieve).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -1,8 +1,16 @@
-import { startObservation } from '@langfuse/tracing';
+import {
+  propagateAttributes,
+  startActiveObservation,
+  startObservation,
+} from '@langfuse/tracing';
 import type { StructuredLlmCallDiagnostics } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { LangfuseTracingService } from './langfuse-tracing.service';
 
-jest.mock('@langfuse/tracing', () => ({ startObservation: jest.fn() }));
+jest.mock('@langfuse/tracing', () => ({
+  propagateAttributes: jest.fn(),
+  startActiveObservation: jest.fn(),
+  startObservation: jest.fn(),
+}));
 
 describe('LangfuseTracingService semantic generations', () => {
   const previous = { ...process.env };
@@ -26,10 +34,63 @@ describe('LangfuseTracingService semantic generations', () => {
     process.env.LANGFUSE_SECRET_KEY = 'sk-test';
     jest.clearAllMocks();
     jest.mocked(startObservation).mockReturnValue({ end: jest.fn() } as never);
+    jest
+      .mocked(propagateAttributes)
+      .mockImplementation((_attributes, operation) => operation() as never);
+    jest.mocked(startActiveObservation).mockImplementation((_name, operation) =>
+      operation({
+        update: jest.fn(),
+        otelSpan: {
+          isRecording: () => true,
+          setAttribute: jest.fn(),
+        },
+      } as never),
+    );
   });
 
   afterAll(() => {
     process.env = { ...previous };
+  });
+
+  it('sets Langfuse-compatible session and user attributes on the root span', async () => {
+    const root = {
+      update: jest.fn(),
+      otelSpan: {
+        isRecording: () => true,
+        setAttribute: jest.fn(),
+      },
+    };
+    jest
+      .mocked(startActiveObservation)
+      .mockImplementation((_name, operation) => operation(root as never));
+    const tracing = new LangfuseTracingService();
+
+    await expect(
+      tracing.withRoot(
+        {
+          productionExecutionId: 'execution-1',
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+        },
+        () => Promise.resolve('complete'),
+      ),
+    ).resolves.toBe('complete');
+
+    expect(propagateAttributes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        sessionId: 'conversation-1',
+      }),
+      expect.any(Function),
+    );
+    expect(root.otelSpan.setAttribute).toHaveBeenCalledWith(
+      'langfuse.session.id',
+      'conversation-1',
+    );
+    expect(root.otelSpan.setAttribute).toHaveBeenCalledWith(
+      'langfuse.user.id',
+      'user-1',
+    );
   });
 
   it('uses canonical usage keys and keeps reasoning as diagnostic metadata', () => {

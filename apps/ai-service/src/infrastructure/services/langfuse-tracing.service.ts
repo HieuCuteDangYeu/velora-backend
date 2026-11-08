@@ -74,8 +74,15 @@ export class LangfuseTracingService {
   ): Promise<T> {
     if (!this.enabled) return operation();
 
-    return startActiveObservation('rag.workflow', async (root) =>
-      propagateAttributes(
+    return startActiveObservation('rag.workflow', async (root) => {
+      if (root.otelSpan.isRecording()) {
+        root.otelSpan.setAttribute(
+          'langfuse.session.id',
+          metadata.conversationId,
+        );
+        root.otelSpan.setAttribute('langfuse.user.id', metadata.userId);
+      }
+      return propagateAttributes(
         {
           traceName: 'velora-rag',
           ...(metadata.userId ? { userId: metadata.userId } : {}),
@@ -104,8 +111,8 @@ export class LangfuseTracingService {
           });
           return operation(root);
         },
-      ),
-    );
+      );
+    });
   }
 
   setRootOutput(

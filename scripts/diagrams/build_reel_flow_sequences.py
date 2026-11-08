@@ -46,79 +46,79 @@ errors=ref('mobile',VF,'const handleVideoError',58)
 retention=ref('mobile',LP,'export const cleanupExpiredLocalReelPlayback',57)
 
 models=[dict(id='27-upload-retry',title='27 · Publish identity and durable retry reconciliation',participants=[('mobile','Mobile creator'),('gateway','API Gateway'),('media','Media service'),('content','Content service'),('db','Content DB / outbox'),('r2','R2 storage')],steps=[
- note('One logical Publish: synchronous tap lock; secure UUID once; retain edited source and owner-scoped operation.',intent,ref('mobile',UC,'if (publishLockRef.current)',14)),
+ note('One logical Publish: acquire synchronous UI lock, generate secure UUID, and retain edited video source.',intent,ref('mobile',UC,'if (publishLockRef.current)',14)),
  frame('loop',('resume the same persisted intent after timeout, restart or recoverable failure',[
  frame('opt',('upload not checkpointed',[
  frame('opt',('presign missing or expired',[
- msg('mobile','gateway','POST /media/upload-url\n{purpose: reel, fileType, publishIntentId}',presign),
- msg('gateway','media','Authenticated media.get_presigned_url RPC',presign),
- msg('media','content','Reserve user + intent + deterministic key\n24-hour source lease',lease),
- msg('content','db','Key advisory lock; reject cleanup claim / retired key',lease),
- msg('media','gateway','Conditional presign: URL + key + expiresIn: 300',presign,reply=True),
- msg('gateway','mobile','Retain presign checkpoint',presign,reply=True)])),
- msg('mobile','r2','PUT retained original; If-None-Match: *',upload),
- msg('r2','mobile','2xx or 412 already present',upload,reply=True),
- note('Persist uploaded key. A lost PUT response safely reuses the same immutable key.',upload)])),
- msg('mobile','gateway','POST /content/reels\n{publishIntentId, mediaKey, immutable publish payload}',create),
- msg('gateway','content','Authenticated userId + validated DTO via RPC',create),
- msg('content','db','Find UNIQUE(userId, publishIntentId)',unique,create),
+ msg('mobile','gateway','Request upload authorization & presigned URL\n(Reel intent, file type)',presign),
+ msg('gateway','media','Forward upload lease & presign request via RPC',presign),
+ msg('media','content','Reserve 24-hour deterministic upload lease',lease),
+ msg('content','db','Acquire key advisory lock & protect against cleanup',lease),
+ msg('media','gateway','Return presigned upload URL & key (5-min expiry)',presign,reply=True),
+ msg('gateway','mobile','Save upload checkpoint in local storage',presign,reply=True)])),
+ msg('mobile','r2','Upload raw video directly to Cloudflare R2\n(PUT with If-None-Match: *)',upload),
+ msg('r2','mobile','Confirm video upload (200 OK or already present)',upload,reply=True),
+ note('Persist uploaded key. A lost upload response safely reuses the same immutable key.',upload)])),
+ msg('mobile','gateway','Submit Reel publication with intent ID & metadata',create),
+ msg('gateway','content','Forward validated Reel creation to Content Service',create),
+ msg('content','db','Verify publish intent uniqueness in database',unique,create),
  frame('alt',('existing intent + matching fingerprint',[
- msg('content','gateway','Canonical existing Reel; preserve all processing state',replay,reply=True)]),('existing intent + conflicting fingerprint',[
- msg('content','gateway','409 Conflict; never reset or create another Reel',replay,reply=True)]),('no existing intent',[
- note('Check user-owned source and HEAD. Under key lock, recheck object and cleanup/adoption fence.',create,tx),
- msg('content','db','Transaction: Reel + initial media outbox + lease adoption\nDB UNIQUE(userId, publishIntentId)',tx,unique),
+ msg('content','gateway','Return existing canonical Reel (Idempotent replay)',replay,reply=True)]),('existing intent + conflicting fingerprint',[
+ msg('content','gateway','Reject conflicting payload (HTTP 409 Conflict)',replay,reply=True)]),('no existing intent',[
+ note('Check user-owned source. Under key lock, recheck object and cleanup/adoption fence.',create,tx),
+ msg('content','db','Atomically commit Reel, adopt lease & queue outbox job',tx,unique),
  frame('alt',('transaction commits',[
- msg('db','content','Canonical created Reel',tx,reply=True),
+ msg('db','content','Confirm Reel committed to database',tx,reply=True),
  note('Outbox dispatcher reliably publishes the media job; commit and delivery are separate.',outbox)]),('P2002 concurrent intent race',[
- msg('content','db','After rollback, load winner by user + intent',create),
+ msg('content','db','Concurrent race: Reload winning Reel by user & intent',create),
  note('Reconcile immutable fingerprint; return winner or 409. No second outbox event.',replay)]) ),
- msg('content','gateway','Canonical Reel acknowledgement',create,reply=True)])),
+ msg('content','gateway','Acknowledge canonical Reel creation',create,reply=True)])),
  frame('alt',('HTTP acknowledgement arrives',[
- msg('gateway','mobile','Canonical reelId',checkpoint,reply=True),
+ msg('gateway','mobile','Deliver confirmed Reel ID to mobile creator',checkpoint,reply=True),
  note('Persist creation + owner/device local preview; navigate to Reel detail immediately.',checkpoint,ack,local),
- note('Visibility / Series follow-ups resume on this Reel; their failures never restart upload.',checkpoint)]),('response lost or uncertain failure',[
+ note('Visibility and Series follow-ups resume on this Reel; their failures never restart upload.',checkpoint)]),('response lost or uncertain failure',[
  note('Keep pending operation. Replay same intent and uploaded key; never generate a new ID.',intent,checkpoint)]) )])),
- note('Retired source: HTTP 410. Explicit cancel then a new intentional Publish creates a new ID. Legacy clients without an intent retain old retry limits.',lease)
+ note('Retired source: HTTP 410. Explicit cancel then a new intentional Publish creates a new ID.',lease)
 ]),dict(id='28-media-processing',title='28 · Playback readiness before durable evidence and indexing',participants=[('broker','RabbitMQ jobs\nretry / DLQ'),('worker','Media processing worker'),('assets','FFmpeg / R2 assets'),('content','Content service'),('db','Content DB / outbox'),('publisher','Content outbox\ndispatcher'),('index','Indexing worker')],steps=[
- msg('broker','worker','SOURCE_VIDEO job + mediaAttemptId',claim),
- msg('worker','content','Claim current media attempt; lease / retry fences',claim),
- note('Malformed / foreign jobs go to DLQ. Duplicate or stale claims ACK without changing current state.',claim,ref('backend','apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts','async handleReelMediaJob',85)),
- msg('worker','assets','Download + validate source; apply requested trim / crop; transcode HLS',prepare),
- msg('worker','assets','Upload immutable attempt-scoped HLS playlists / segments and thumbnail',prepare),
- note('Validate master, every variant and required URI resources / segments, plus thumbnail availability.',ref('backend','apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts','async execute',80)),
- msg('worker','content','persist_reel_media_completed\nvalidated keys + playback metadata + attempt',process),
- msg('content','db','ATOMIC: media COMPLETED; index PENDING; MEDIA_READY\nHLS / thumbnail keys + EXISTING_HLS evidence outbox',completed),
- msg('content','worker','Applied or stale result',completed,reply=True),
- msg('worker','broker','Return / ACK (applied or stale)',process),
- note('On accepted commit: validated HLS is playable now. Source worker returns before audio / visual evidence.',process),
- msg('publisher','db','Claim committed evidence outbox',outbox),
- msg('publisher','broker','Publish EXISTING_HLS job; durable retry on delivery failure',outbox),
- msg('broker','worker','Separate evidence delivery; survives restart / redelivery',completed),
- msg('worker','content','Claim evidenceOnly on completed media; same attempt fencing',claim),
- msg('worker','assets','Materialize validated HLS; extract / segment audio; upload manifest',ref('backend','apps/media-processing-service/src/application/use-cases/prepare-existing-hls-evidence.use-case.ts','async execute',100)),
- msg('worker','assets','Extract visual frames; upload checksummed visual manifest',visual),
- msg('worker','content','persist_reel_hls_evidence_completed\nmanifest keys; preserve original source metadata',visual),
- msg('content','db','ATOMIC: evidence metadata + one logical indexing outbox',evidence),
- msg('publisher','broker','Reliably publish indexing job from outbox',outbox),
- msg('broker','index','Index job with available audio / visual manifest dependencies',index),
+ msg('broker','worker','Deliver source video transcode job from queue',claim),
+ msg('worker','content','Claim processing lease for current transcode attempt',claim),
+ note('Malformed jobs go to DLQ. Duplicate or stale claims acknowledge without altering state.',claim,ref('backend','apps/media-processing-service/src/infrastructure/controllers/media-processing.controller.ts','async handleReelMediaJob',85)),
+ msg('worker','assets','Download video, apply trim/crop filters, and transcode HLS',prepare),
+ msg('worker','assets','Upload HLS playlists, segments, and thumbnail to Cloudflare R2',prepare),
+ note('Validate master manifest, variant playlists, and all segment resources for playback readiness.',ref('backend','apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts','async execute',80)),
+ msg('worker','content','Commit HLS playback assets and playback metadata',process),
+ msg('content','db','Atomically mark Reel MEDIA_READY and queue evidence outbox job',completed),
+ msg('content','worker','Confirm media status updated to ready for playback',completed,reply=True),
+ msg('worker','broker','Acknowledge transcode job completion to queue',process),
+ note('On accepted commit: Validated HLS is immediately playable! Worker returns before audio/visual evidence extraction.',process),
+ msg('publisher','db','Claim committed multimodal evidence outbox jobs',outbox),
+ msg('publisher','broker','Publish EXISTING_HLS evidence extraction job to RabbitMQ',outbox),
+ msg('broker','worker','Deliver multimodal evidence extraction job to worker',completed),
+ msg('worker','content','Claim evidence lease against completed media attempt',claim),
+ msg('worker','assets','Extract audio track from validated HLS and upload audio manifest',ref('backend','apps/media-processing-service/src/application/use-cases/prepare-existing-hls-evidence.use-case.ts','async execute',100)),
+ msg('worker','assets','Extract keyframes and upload checksummed visual manifest',visual),
+ msg('worker','content','Commit audio and visual evidence manifests',visual),
+ msg('content','db','Atomically commit evidence manifests and queue indexing outbox job',evidence),
+ msg('publisher','broker','Dispatcher publishes indexing job to RabbitMQ queue',outbox),
+ msg('broker','index','Deliver indexing job with audio and visual manifest dependencies',index),
  note('Existing checkpoints: transcription / vision, embeddings, semantic candidate commit; renew attempt leases.',index),
  note('Index / evidence failure preserves playable HLS. Retry publication precedes ACK; exhausted jobs go to DLQ; stale attempts cannot overwrite newer results.',ref('backend',R,'async failIndexing',43),ref('backend',MP,'catch (error',70))
 ]),dict(id='34-hls-streaming',title='34 · Owner-local preview and validated HLS handoff',participants=[('creator','Creator / detail view'),('registry','Owner + device\nlocal registry'),('resolver','Existing playback source hook'),('player','ReelVideo\ntrim / crop player'),('gateway','Gateway status endpoint'),('cdn','Validated HLS / cache')],steps=[
- msg('creator','registry','Canonical reelId after upload / create ACK\nretained original + trim / crop + owner / device',local),
- msg('creator','resolver','Resolve source for current authenticated owner',owner,resolver),
+ msg('creator','registry','Save local playback registration\n(Retained original video, trim/crop, owner scope)',local),
+ msg('creator','resolver','Resolve playback source for current authenticated owner',owner,resolver),
  frame('alt',('authorized local preview + (remote not ready or offline)',[
- msg('resolver','player','Use retained original URI with existing trim / crop renderer',resolver_all),
+ msg('resolver','player','Play retained local original video with client-side crop/trim',resolver_all),
  note('Only uploading owner/device; backend stays PENDING / PROCESSING. Other viewers see processing placeholder.',owner)]),('validated remote HLS and existing offline-cache policy chooses cached stream',[
- msg('resolver','player','Existing cached HLS manifest source',resolver_all)]),('validated remote HLS and online',[
- msg('resolver','player','Validated hlsMaster / stream URL',resolver_all),
- msg('player','cdn','Native HLS playback directly; no Gateway byte proxy',resolver_all)]),('no usable authorized source',[
+ msg('resolver','player','Play cached offline HLS manifest source',resolver_all)]),('validated remote HLS and online',[
+ msg('resolver','player','Play validated remote HLS master stream',resolver_all),
+ msg('player','cdn','Stream HLS segments directly from CDN / Cloudflare R2',resolver_all)]),('no usable authorized source',[
  note('Show queued, processing, failed or offline-unavailable state.',resolver_all)])),
  frame('loop',('media / evidence / index work still pending',[
- msg('creator','gateway','Existing TanStack status query',ref('mobile',UR,'queryKey: queryKeys.reels.status',20)),
- msg('gateway','creator','Media and indexing statuses remain distinct',ref('mobile','src/lib/reelProcessing.ts','export const getReelPlaybackAvailability',29),reply=True)])),
+ msg('creator','gateway','Poll Reel processing status via HTTP GET',ref('mobile',UR,'queryKey: queryKeys.reels.status',20)),
+ msg('gateway','creator','Return Reel mediaStatus and indexStatus flags',ref('mobile','src/lib/reelProcessing.ts','export const getReelPlaybackAvailability',29),reply=True)])),
  frame('opt',('media COMPLETED + valid HLS URL arrives',[
  note('Existing HLS warmup / temporary offline cache runs independently for validated remote assets.',ref('mobile','src/lib/reel-prefetch.ts','export',95)),
- msg('resolver','player','Prefer validated HLS; safely replace the existing coordinated player source',resolver_all,seek),
+ msg('resolver','player','Seamlessly transition player source to validated remote HLS',resolver_all,seek),
  note('Queue output-relative position on detach; trim wrapper adds source offset exactly once. Preserve mute / pause controls.',seek,ref('mobile','src/components/reels/create/trimmed-reel-video.tsx','seekRelativeToTrim',100)),
  frame('opt',('remote playback errors',[
  note('Bounded fallback: try each available remote/local candidate once. No backend media failure mutation.',errors)]))])),

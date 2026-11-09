@@ -1776,6 +1776,21 @@ reconcile_infrastructure() {
   done
 }
 
+# Hosts that run the hand-built Qdrant indexing overlay (a private file outside
+# the checkout) lose it whenever the plain Compose model recreates the indexers
+# (docs/reel-indexing-qdrant-overlay-ci-gap-20261106.md). Re-apply it before
+# health verification. The step is opt-in by overlay presence, skipped when the
+# repository overlay is already selected through COMPOSE_FILE, and never fatal.
+reapply_reel_indexing_qdrant_overlay() {
+  local overlay="${VELORA_QDRANT_INDEX_OVERLAY:-$HOME/velora-operations/qdrant-staging/index-rollout.yml}"
+  local helper="scripts/deploy/ensure-reel-indexing-qdrant"
+  [[ -f "$overlay" && -x "$helper" ]] || return 0
+  [[ "${COMPOSE_FILE:-}" != *docker-compose.qdrant.yml* ]] || return 0
+  log "==> Ensuring reel-indexing services keep their Qdrant overlay..."
+  VELORA_APP_DIR="$PWD" VELORA_QDRANT_INDEX_OVERLAY="$overlay" VELORA_IMAGE_TAG="$TARGET_SHA" \
+    "$helper" --apply || warn "reel-indexing Qdrant overlay is not healthy; run $helper --check"
+}
+
 wait_for_running_services() {
   local attempt service expected running container_id state exit_code
   local -a bad=() bad_services=() bad_details=()
@@ -2459,6 +2474,7 @@ perform_deployment() {
   fi
   reconcile_application_services
   reconcile_infrastructure
+  reapply_reel_indexing_qdrant_overlay
 
   if verify_deployment_health; then
     # Keep removed services alive until the target release passes health checks

@@ -25,3 +25,16 @@
 - The deployed private Compose override retains the database URL and service flags through indexing-container restarts. A full host reboot/release-controller redeploy has not been exercised.
 
 **Status: storage migration complete; development canary, exact manifest parity and isolated recovery pass.** PostgreSQL owns indexing content, lexical search and lifecycle state; Qdrant is the sole persistent Reel vector store. The Aiven source dump and final target dump remain available for comparison/rollback, and the encrypted Qdrant snapshot is in R2. Keep the dedicated PostgreSQL volume, R2 backup key, and private `.env.qdrant-indexing`/password files. Future restarts must use the Qdrant/indexing rollout overlay.
+
+## Update 2026-11-09: database merge and cutover
+
+The indexers had been using the Aiven database since the 2026-11-06 overlay re-apply, because the private overlay takes
+`REEL_INDEXING_DATABASE_URL` from the root `.env`. Aiven and the dedicated Postgres had diverged (Aiven: 71 reels reindexed by the
+visual-reindex job; dedicated Postgres: 79 reels Aiven never indexed, plus a few newer attempts). The two were merged per reel,
+keeping the projection with the highest generation whose Qdrant point count matches in full (Aiven on ties), and the merged
+database became `reel_indexing` on the dedicated Postgres. Validation: 257 reels, one active document each, every projection
+ready with matching epoch, fingerprint and collection, Qdrant counts equal to `pointCount`, and a real `index.search_reels` over
+all 257 reels returned four deliberately awkward reels at rank 1. The previous dedicated database was kept as
+`reel_indexing_pre_merge_20261109`; Aiven is untouched. About 435 superseded Qdrant points remain unreferenced. The root `.env`
+now carries the dedicated database URL and the `INDEX_VECTOR_*` / `QDRANT_*` settings so the overlay and the plain Compose model
+agree.

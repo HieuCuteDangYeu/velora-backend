@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# CI deploys recreate the two reel-indexing services from the plain
+# docker-compose.yml, which drops their Qdrant settings (see
+# docs/reel-indexing-qdrant-overlay-ci-gap-20261106.md). Without them every
+# index job fails with "Qdrant vector publication must be enabled".
+#
+#   ensure-reel-indexing-qdrant            same as --check
+#   ensure-reel-indexing-qdrant --check    report; exit 0 healthy, 1 degraded, 2 missing
+#   ensure-reel-indexing-qdrant --apply    re-apply the host overlay when degraded
+#
+# Run it after every CI deploy. --check is read-only and safe to run any time.
+
+export PATH="$PATH:/usr/local/bin:/opt/homebrew/bin"
+
+readonly APP_DIR="${VELORA_APP_DIR:-$HOME/GitHub/microservices-boilerplate}"
+readonly OVERLAY="${VELORA_QDRANT_INDEX_OVERLAY:-$HOME/velora-operations/qdrant-staging/index-rollout.yml}"
+readonly STATE_DIR="${VELORA_STATE_DIR:-$HOME/.local/state/velora}"
+readonly VECTOR_NETWORK_SUFFIX="reel-vector-net"
+readonly SERVICES=(reel-indexing-service reel-indexing-long-service)
+
+mode="--check"
+[[ $# -eq 0 ]] || mode="$1"
+case "$mode" in
+  --check | --apply) ;;
+  *)
+    printf 'usage: %s [--check|--apply]\n' "${0##*/}" >&2
+    exit 64
+    ;;
+esac
+
+container_for() {
+  docker ps --filter "label=com.docker.compose.service=$1" --format '{{.Names}}' | head -n 1
+}
+
+# Prints a reason and returns 1 when the service is not Qdrant-enabled.
+service_problem() {
+  local service="$1" container image qdrant_vars networks
+  container="$(container_for "$service")"
+  if [[ -z "$container" ]]; then
+    printf '%s: no running container\n' "$service"
+    return 2
+  fi
+  image="$(docker inspect -f '{{.Config.Image}}' "$container")"
+  qdrant_vars="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | grep -c '^QDRANT_' || true)"
+  networks="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' "$container")"
+
+  local problems=()
+  [[ "$image" == velora-reel-indexing-qdrant:* ]] || problems+=("image is $image, expected velora-reel-indexing-qdrant:*")
+  [[ "$qdrant_vars" -gt 0 ]] || problems+=("no QDRANT_* environment variables")
+  [[ "$networks" == *"$VECTOR_NETWORK_SUFFIX"* ]] || problems+=("not attached to $VECTOR_NETWORK_SUFFIX")
+  if ((${#problems[@]} > 0)); then
+    local IFS=';'
+    printf '%s: %s\n' "$service" "${problems[*]}"
+    return 1
+  fi
+  printf '%s: ok (%s)\n' "$service" "$image"
+}
+
+# Sets CHECK_STATUS to the worst service status: 0 healthy, 1 degraded, 2 missing.
+run_check() {
+  CHECK_STATUS=0
+  local service status
+  for service in "${SERVICES[@]}"; do
+    status=0
+    service_problem "$service" || status=$?
+    ((status > CHECK_STATUS)) && CHECK_STATUS=$status
+  done
+  return 0
+}
+
+run_check
+if [[ "$mode" == "--check" || "$CHECK_STATUS" -eq 0 ]]; then
+  [[ "$mode" == "--apply" ]] && printf 'Nothing to apply: both indexing services are Qdrant-enabled.\n'
+  exit "$CHECK_STATUS"
+fi
+
+[[ -f "$OVERLAY" ]] || {
+  printf 'ERROR: overlay not found: %s\n' "$OVERLAY" >&2
+  exit 3
+}
+
+tag="${VELORA_IMAGE_TAG:-}"
+[[ -n "$tag" || ! -f "$STATE_DIR/deployed-sha" ]] || tag="$(tr -d '[:space:]' <"$STATE_DIR/deployed-sha")"
+
+printf 'Re-applying the Qdrant overlay to: %s\n' "${SERVICES[*]}"
+(
+  cd "$APP_DIR"
+  VELORA_IMAGE_TAG="$tag" docker compose -f docker-compose.yml -f "$OVERLAY" \
+    up -d --no-deps --no-build --force-recreate "${SERVICES[@]}"
+)
+
+sleep "${VELORA_QDRANT_APPLY_SETTLE_SECONDS:-15}"
+run_check
+if [[ "$CHECK_STATUS" -ne 0 ]]; then
+  printf 'ERROR: indexing services are still not Qdrant-enabled after applying the overlay\n' >&2
+fi
+exit "$CHECK_STATUS"

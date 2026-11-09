@@ -1348,7 +1348,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       }
 
       const fallbackAnswer =
-        state.route?.intent === 'TASK_ACTION_REQUEST'
+        state.route?.intent === 'TASK_ACTION_REQUEST' ||
+        state.route?.intent === 'NORMAL_CHAT'
           ? this.createNoContextAnswerUseCase.executeAfterAnswerGenerationFailure(
               state,
             )

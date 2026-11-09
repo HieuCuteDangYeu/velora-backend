@@ -15,6 +15,11 @@ export class CreateNoContextAnswerUseCase {
       return this.taskActionLimitation(state.userMessage);
     }
 
+    if (state.route?.intent === 'NORMAL_CHAT') {
+      // A chat turn has no retrieved context, so "found relevant context" would be false.
+      return 'Sorry, I couldn’t put together an answer just now. Please try asking again.';
+    }
+
     if (state.contextSufficiency?.sufficient === true) {
       if (state.route?.intent === 'REEL_VIDEO_QUESTION') {
         if (state.retrievalPlan?.requiresReelCoverage === true) {

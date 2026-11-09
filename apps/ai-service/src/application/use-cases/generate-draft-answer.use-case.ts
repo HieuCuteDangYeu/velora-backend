@@ -791,7 +791,11 @@ export class GenerateDraftAnswerUseCase {
         return this.structuredLlmService.generateObject<RawDraftAnswer>({
           systemPrompt: prompt,
           userPrompt,
-          jsonSchema: this.schema(maxAnswerChars, minimumSummaryClaimCount),
+          jsonSchema: this.schema(
+            maxAnswerChars,
+            minimumSummaryClaimCount,
+            this.allowsClaims(state, allowedEvidenceIds),
+          ),
           model,
           timeoutMs: this.config.timeoutMs('ANSWER'),
           temperature: 0,
@@ -1764,10 +1768,38 @@ export class GenerateDraftAnswerUseCase {
     };
   }
 
+  /**
+   * Claims map factual assertions to evidence IDs. With no authorized evidence (an
+   * ordinary chat turn) there is nothing to cite, and a schema that still demands a
+   * non-empty `evidenceIds` pushes a small model to fill it with placeholders such
+   * as "N/A", which then fails the whole turn. Reel questions always keep claims so
+   * a missing mapping is still caught by the grounding contract.
+   */
+  private allowsClaims(
+    state: RagChatWorkflowState,
+    allowedEvidenceIds: ReadonlySet<string>,
+  ): boolean {
+    return (
+      allowedEvidenceIds.size > 0 ||
+      state.route?.intent === 'REEL_VIDEO_QUESTION'
+    );
+  }
+
   private schema(
     maxAnswerChars: number,
     minimumClaimCount?: number,
+    claimsAllowed = true,
   ): StructuredLlmJsonSchema {
+    if (!claimsAllowed) {
+      return {
+        type: 'object',
+        additionalProperties: false,
+        required: ['answer'],
+        properties: {
+          answer: { type: 'string', maxLength: maxAnswerChars },
+        },
+      };
+    }
     return {
       type: 'object',
       additionalProperties: false,
@@ -1844,15 +1876,16 @@ export class GenerateDraftAnswerUseCase {
     });
     if (contractError) throw new DraftAnswerContractError(contractError);
 
-    const claims = Array.isArray(raw.claims)
-      ? raw.claims
-          .map((value) => this.normalizeClaim(value, allowedEvidenceIds))
-          .filter(
-            (claim) =>
-              !suppressUnverifiedVisualTextAbsence ||
-              !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim),
-          )
-      : [];
+    const claims =
+      this.allowsClaims(state, allowedEvidenceIds) && Array.isArray(raw.claims)
+        ? raw.claims
+            .map((value) => this.normalizeClaim(value, allowedEvidenceIds))
+            .filter(
+              (claim) =>
+                !suppressUnverifiedVisualTextAbsence ||
+                !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim),
+            )
+        : [];
     if (minimumClaimCount !== undefined && claims.length < minimumClaimCount) {
       throw new DraftAnswerContractError(
         'Transcript summary did not map enough distinct supported claims',

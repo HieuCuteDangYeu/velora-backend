@@ -14,6 +14,19 @@ The importer requires exactly 220 `GENERATED_CANDIDATE` rows and preserves Reel
 IDs, evidence IDs, modality, and provenance hashes without making production
 RAG requests.
 
+## Chat answers (no reel evidence)
+
+`datasets/rag-chat-answers-v1.jsonl` holds ordinary chat prompts (English and Vietnamese). The other datasets are all reel
+questions, so the chat answer path was never evaluated; the 17 `NORMAL_CHAT` rows in `rag-generalization-v1` only check
+the router's intent. An opt-in spec runs every prompt through the real draft step and the real local model:
+
+```sh
+OLLAMA_LOCAL_INTEGRATION=1 npx jest generate-draft-answer.chat.local.integration
+```
+
+It must produce an answer for every prompt. Before the fix, the production model (`gemma4:e2b-it-qat`) failed about one
+turn in three, because the answer schema forced a non-empty `evidenceIds` on a turn that had no evidence to cite.
+
 ## Guardrail replay
 
 `datasets/rag-guardrail-v1.jsonl` holds attack cases (direct, obfuscated, indirect-in-evidence,

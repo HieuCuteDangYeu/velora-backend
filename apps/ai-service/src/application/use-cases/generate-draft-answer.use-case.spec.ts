@@ -3469,11 +3469,72 @@ describe('GenerateDraftAnswerUseCase', () => {
     });
   });
 
-  it('allows normal chat to contain no reel claim mappings', async () => {
+  const chatState = (overrides: Record<string, unknown> = {}) =>
+    ({
+      ...state,
+      route: { intent: 'NORMAL_CHAT' },
+      rerankedChunks: [],
+      ...overrides,
+    }) as unknown as RagChatWorkflowState;
+  const requestedSchema = (service: { generateObject: jest.Mock }) =>
+    (
+      service.generateObject.mock.calls[0]?.[0] as {
+        jsonSchema: {
+          required: string[];
+          properties: Record<string, { minItems?: number }>;
+        };
+      }
+    ).jsonSchema;
+
+  it('does not ask a chat turn with no evidence for claim mappings', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({ answer: 'Hello!' }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    await expect(useCase.execute(chatState())).resolves.toMatchObject({
+      answer: 'Hello!',
+      claims: [],
+    });
+    // A schema that demands a non-empty evidenceIds makes a small model write "N/A".
+    const schema = requestedSchema(service);
+    expect(schema.required).toEqual(['answer']);
+    expect(schema.properties).not.toHaveProperty('claims');
+  });
+
+  it.each([[['N/A']], [['']], [['[]']], [['chat_history', 'none']]])(
+    'keeps the answer when a chat turn still returns placeholder claim IDs %j',
+    async (evidenceIds) => {
+      const service = {
+        generateObject: jest.fn().mockResolvedValue({
+          answer: 'Try short study sessions with breaks.',
+          claims: [{ claim: 'Short sessions help.', evidenceIds }],
+        }),
+      };
+      const useCase = new GenerateDraftAnswerUseCase(
+        service as never,
+        promptBuilder,
+        config,
+      );
+      await expect(useCase.execute(chatState())).resolves.toMatchObject({
+        answer: 'Try short study sessions with breaks.',
+        claims: [],
+      });
+      // No contract error, so no second model call.
+      expect(service.generateObject).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps required claim mappings for reel questions', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({
-        answer: 'Hello!',
-        claims: [],
+        answer: 'The zorb is coupled to the quasar.',
+        claims: [
+          { claim: 'The zorb is coupled to the quasar.', evidenceIds: ['e0'] },
+        ],
       }),
     };
     const useCase = new GenerateDraftAnswerUseCase(
@@ -3481,17 +3542,56 @@ describe('GenerateDraftAnswerUseCase', () => {
       promptBuilder,
       config,
     );
-    await expect(
-      useCase.execute({
-        ...state,
-        route: { intent: 'NORMAL_CHAT' },
-        rerankedChunks: [],
-      } as unknown as RagChatWorkflowState),
-    ).resolves.toMatchObject({ answer: 'Hello!', claims: [] });
-    const request = service.generateObject.mock.calls[0]?.[0] as {
-      jsonSchema: { properties: { claims: { minItems?: number } } };
+    await useCase.execute(state);
+    const schema = requestedSchema(service);
+    expect(schema.required).toEqual(['answer', 'claims']);
+    expect(schema.properties.claims.minItems).toBeUndefined();
+    expect(schema.properties).toHaveProperty('claims');
+  });
+
+  it('still rejects an unknown evidence ID on a reel question', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'The zorb is coupled to the quasar.',
+        claims: [
+          { claim: 'The zorb is coupled to the quasar.', evidenceIds: ['N/A'] },
+        ],
+      }),
     };
-    expect(request.jsonSchema.properties.claims).not.toHaveProperty('minItems');
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    await expect(useCase.execute(state)).rejects.toThrow();
+  });
+
+  it('keeps claims when a memory question has memory evidence to cite', async () => {
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: 'You like green tea.',
+        claims: [{ claim: 'You like green tea.', evidenceIds: ['m0'] }],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+    const memoryState = chatState({
+      userId: 'user-1',
+      route: { intent: 'USER_MEMORY_QUESTION' },
+      memorySelection: { includeUserMemory: true },
+      userMemories: {
+        memories: [
+          { id: 'mem-1', userId: 'user-1', content: 'Likes green tea' },
+        ],
+      },
+    });
+    await expect(useCase.execute(memoryState)).resolves.toMatchObject({
+      claims: [{ claim: 'You like green tea.', evidenceIds: ['m0'] }],
+    });
+    expect(requestedSchema(service).properties).toHaveProperty('claims');
   });
 
   it('tells ordinary chat turns to reply rather than echo the user message', async () => {

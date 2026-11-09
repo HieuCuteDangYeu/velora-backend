@@ -157,4 +157,39 @@ describe('CreateNoContextAnswerUseCase', () => {
     expect(answer).toMatch(/requested Reels/i);
     expect(answer).toMatch(/keeps each clip’s statements separate/i);
   });
+
+  describe('after the draft step fails', () => {
+    const useCase = new CreateNoContextAnswerUseCase();
+    // For chat the sufficiency check says "retrieval not required", so it is marked sufficient.
+    const sufficient = {
+      sufficient: true,
+      reason: 'Retrieval is not required for this intent.',
+    };
+
+    it('does not claim to have found context for an ordinary chat turn', () => {
+      const answer = useCase.executeAfterAnswerGenerationFailure({
+        route: { intent: 'NORMAL_CHAT' },
+        contextSufficiency: sufficient,
+      } as unknown as RagChatWorkflowState);
+
+      expect(answer).toBe(
+        'Sorry, I couldn’t put together an answer just now. Please try asking again.',
+      );
+      expect(answer).not.toMatch(/relevant context/i);
+    });
+
+    it('keeps the existing wording for reel questions', () => {
+      expect(
+        useCase.executeAfterAnswerGenerationFailure({
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          contextSufficiency: sufficient,
+        } as unknown as RagChatWorkflowState),
+      ).toBe(
+        'I found relevant shared Reel evidence, but could not verify a reliable answer to your question.',
+      );
+    });
+  });
 });

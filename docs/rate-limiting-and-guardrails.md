@@ -33,8 +33,7 @@ conversation-service replica shares a single budget. Code: `libs/common/src/rate
 | `content_write_user`, `content_share_user`, `content_comment_user` | 60, 30, 30 per min | other content writes |
 | `content_events_user` | 120/min | `POST /content/reels/events` |
 | `friend_request_user` / `friend_write_user` | 30/hour / 60/min | friend requests / accept, reject, block, unfriend |
-| `ai_chat_user` | 20/min | gateway `POST /conversations/chat` (cheap pre-check) |
-| `ai_turn_minute`, `ai_turn_day` | 10/min, 300/day | authoritative AI-reply budget (REST and WebSocket) |
+| `ai_turn_minute`, `ai_turn_day` | 10/min, 300/day | per-user AI-reply budget (REST and WebSocket) |
 
 The values are starting estimates. The source of truth is `rate-limit.policies.ts`.
 
@@ -74,8 +73,9 @@ chain, verify with logins from two different networks.
   `bot_reply_failed` in `SocketProvider` and shows the failure as an in-memory bot message in the thread. It builds
   its own wording per code (`src/lib/conversation/botReplyFailurePolicies.ts`) and falls back to the server text only
   for a code it does not know. The notice is removed when a bot token or a confirmed bot message arrives.
-- The mobile app sends bot messages over the socket (`send_message`) and does not call `POST /conversations/chat`, so
-  for mobile only the `ai_turn_*` budget applies; `ai_chat_user` guards REST clients.
+- Bot replies are triggered by `send_message` (socket) or `POST /conversations/:id/messages` (REST). Both reach the
+  same `ai_turn_*` budget in conversation-service, so no client can bypass it. (A `POST /conversations/chat`
+  convenience endpoint and its `ai_chat_user` pre-check existed until 2026-11-09; it had no callers and was removed.)
 
 ## RAG guardrail (shadow mode)
 

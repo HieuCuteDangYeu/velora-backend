@@ -1,11 +1,9 @@
 import { CurrentUser } from '@common/auth/decorators/current-user.decorator';
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
-import { BOT_USER_ID } from '@common/constants/seed.constants';
 import {
   AddConversationMemberDto,
   AddConversationMemberSchema,
 } from '@common/conversation/dtos/add-conversation-member.dto';
-import { ChatWithBotDto } from '@common/conversation/dtos/chat-with-bot.dto';
 import { ConversationDto } from '@common/conversation/dtos/conversation.dto';
 import {
   CreateConversationDto,
@@ -24,8 +22,6 @@ import {
 import { CreateMessageResponse } from '@common/conversation/interfaces/create-message-response.interface';
 import { MessageAnchorExpansionResponse } from '@common/conversation/interfaces/message-anchor-expansion.interface';
 import { MessageAnchorWindowResponse } from '@common/conversation/interfaces/message-anchor-window.interface';
-import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
-import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import type { Reel } from '@content/domain/entities/reel.entity';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { ReelAuthorService } from '@gateway/content/reel-author.service';
@@ -769,39 +765,5 @@ export class ConversationController {
       }),
     );
     return await this.enrichReelOwnerInMessageResponse(response.message);
-  }
-
-  @Post('chat')
-  @UseGuards(RateLimitGuard)
-  @RateLimit({ policy: 'ai_chat_user', by: 'user' })
-  @ApiOperation({
-    summary:
-      'Chat with AI Bot — creates/finds bot conversation then sends message. Bot reply comes via WebSocket.',
-  })
-  @ApiBody({ type: ChatWithBotDto })
-  @ApiOkResponse({ type: MessageDto })
-  async chatWithBot(
-    @Body() body: ChatWithBotDto,
-    @CurrentUser() user: AuthUser,
-  ): Promise<MessageDto> {
-    const botParticipantId = BOT_USER_ID;
-
-    const convResult = await lastValueFrom(
-      this.conversationClient.send<{ id: string }>('create_conversation', {
-        participantIds: [user.id, botParticipantId],
-        isGroup: false,
-      }),
-    );
-
-    const messageResponse = await lastValueFrom(
-      this.conversationClient.send<CreateMessageResponse>('create_message', {
-        content: body.content,
-        type: body.type,
-        conversationId: convResult.id,
-        senderId: user.id,
-      }),
-    );
-
-    return messageResponse.message;
   }
 }

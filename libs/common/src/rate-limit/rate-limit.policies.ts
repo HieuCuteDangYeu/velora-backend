@@ -115,9 +115,8 @@ export const DEFAULT_RATE_LIMIT_POLICIES = {
     windowSeconds: MINUTE,
     onStoreFailure: 'allow',
   },
-  // RAG / AI. `ai_chat_user` is the cheap gateway pre-check; `ai_turn_*` is the
-  // authoritative budget, enforced where every path (REST and WebSocket) converges.
-  ai_chat_user: { limit: 20, windowSeconds: MINUTE, onStoreFailure: 'local' },
+  // RAG / AI. The per-user AI-reply budget is enforced in conversation-service, where
+  // every path (WebSocket send_message and REST create_message) converges.
   ai_turn_minute: { limit: 10, windowSeconds: MINUTE, onStoreFailure: 'local' },
   ai_turn_day: { limit: 300, windowSeconds: DAY, onStoreFailure: 'local' },
 } as const satisfies Record<string, PolicyDefaults>;

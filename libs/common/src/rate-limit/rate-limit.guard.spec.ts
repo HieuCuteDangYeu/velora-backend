@@ -117,7 +117,9 @@ describe('RateLimitGuard', () => {
       source: 'local',
     });
     const service = { check } as unknown as RateLimitService;
-    const rules: RateLimitRule[] = [{ policy: 'ai_chat_user', by: 'user' }];
+    const rules: RateLimitRule[] = [
+      { policy: 'content_comment_user', by: 'user' },
+    ];
     await guardWith(service).canActivate(
       buildContext(rules, { ip: '1.1.1.1', user: { id: 'user-1' } }).context,
     );

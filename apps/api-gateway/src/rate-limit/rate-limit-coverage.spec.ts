@@ -9,7 +9,6 @@ import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import { ContentController } from '@gateway/content/content.controller';
 import { PublicReelShareController } from '@gateway/content/public-reel-share.controller';
 import { ReelCommentsGatewayController } from '@gateway/content/reel-comments.controller';
-import { ConversationController } from '@gateway/conversation/conversation.controller';
 import { FriendController } from '@gateway/friends/friend.controller';
 import { MediaController } from '@gateway/media/media.controller';
 
@@ -82,13 +81,6 @@ describe('gateway rate-limit coverage', () => {
     },
   );
 
-  it('limits the AI chat entry point of the conversation controller', () => {
-    const chat = routesOf(ConversationController).find(
-      (route) => route.handler === 'chatWithBot',
-    );
-    expect(chat?.rules?.[0].policy).toBe('ai_chat_user');
-  });
-
   it.each(
     [...publicControllers, ...authenticatedWriteControllers].map(
       (c) => [c.name, c] as const,
@@ -122,7 +114,6 @@ describe('gateway rate-limit coverage', () => {
     const controllers = [
       ...publicControllers,
       ...authenticatedWriteControllers,
-      ConversationController,
     ];
     for (const controller of controllers) {
       for (const route of routesOf(controller)) {

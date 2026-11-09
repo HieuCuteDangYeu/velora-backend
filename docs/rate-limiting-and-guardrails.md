@@ -65,8 +65,17 @@ chain, verify with logins from two different networks.
     "error": { "code": "RATE_LIMITED", "message": "You are asking Velora AI too quickly. ...", "retryAfterSeconds": 12 } }
   ```
 
-  Clients should show `error.message` and may offer a retry after `retryAfterSeconds`. Existing codes are
+  Clients should show a message and may offer a retry after `retryAfterSeconds`. Existing codes are
   `AI_UNAVAILABLE`, `NO_CONTENT` and `UNKNOWN`.
+
+### Clients
+
+- **velora-mobile** (Expo / React Native, repo `lequan170205/Velora-Mobile`, commit `d596575`) listens for
+  `bot_reply_failed` in `SocketProvider` and shows the failure as an in-memory bot message in the thread. It builds
+  its own wording per code (`src/lib/conversation/botReplyFailurePolicies.ts`) and falls back to the server text only
+  for a code it does not know. The notice is removed when a bot token or a confirmed bot message arrives.
+- The mobile app sends bot messages over the socket (`send_message`) and does not call `POST /conversations/chat`, so
+  for mobile only the `ai_turn_*` budget applies; `ai_chat_user` guards REST clients.
 
 ## RAG guardrail (shadow mode)
 

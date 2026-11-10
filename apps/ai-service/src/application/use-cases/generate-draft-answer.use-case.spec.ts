@@ -3528,6 +3528,55 @@ describe('GenerateDraftAnswerUseCase', () => {
     },
   );
 
+  describe('general-knowledge instruction', () => {
+    const systemPromptOf = async (
+      route: Record<string, unknown>,
+      overrides: Record<string, unknown> = {},
+    ) => {
+      const service = {
+        generateObject: jest
+          .fn()
+          .mockResolvedValue({ answer: 'Paris.', claims: [] }),
+      };
+      const useCase = new GenerateDraftAnswerUseCase(
+        service as never,
+        promptBuilder,
+        config,
+      );
+      await useCase.execute({
+        ...chatState(),
+        route,
+        ...overrides,
+      } as unknown as RagChatWorkflowState);
+      return (
+        service.generateObject.mock.calls[0]?.[0] as { systemPrompt: string }
+      ).systemPrompt;
+    };
+
+    it('lets a chat turn answer from general knowledge without citing missing context', async () => {
+      const prompt = await systemPromptOf({ intent: 'NORMAL_CHAT' });
+      expect(prompt).toContain('from your own knowledge');
+      expect(prompt).toContain('Never mention "the provided context"');
+      // It must not weaken the limits on what the assistant cannot know.
+      expect(prompt).toContain('Do not pretend to have watched any video');
+      expect(prompt).toContain(
+        'cannot access private or real-time information',
+      );
+    });
+
+    it('leaves the prompt of reel questions untouched', async () => {
+      const prompt = await systemPromptOf(
+        {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+        },
+        state as unknown as Record<string, unknown>,
+      );
+      expect(prompt).not.toContain('from your own knowledge');
+      expect(prompt).not.toContain('Never mention "the provided context"');
+    });
+  });
+
   it('keeps required claim mappings for reel questions', async () => {
     const service = {
       generateObject: jest.fn().mockResolvedValue({

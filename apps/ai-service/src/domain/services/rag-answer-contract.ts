@@ -378,6 +378,9 @@ function hasSupportedRequestedValue(
   answer: string,
 ): boolean {
   if (!EXACT_VALUE_QUESTION_PATTERN.test(question)) return true;
+  // With no evidence (an ordinary chat turn) there is nothing to support a name against.
+  // hasSupportedQuantity makes the same exception.
+  if (evidence.every((value) => !value.trim())) return true;
 
   const questionTokens = new Set(answerContentTokens(question));
   const evidenceTokens = new Set(

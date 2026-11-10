@@ -154,4 +154,41 @@ describe('validateRagAnswerContract', () => {
       }),
     ).toBeUndefined();
   });
+
+  describe('a turn with no evidence to check against', () => {
+    // An ordinary chat turn has no reel evidence. A requested label or name cannot be
+    // "supported by the evidence" there, so it must not fail the turn.
+    it.each([
+      [
+        'What is the meaning of the word "ephemeral"?',
+        'It means lasting a very short time.',
+      ],
+      [
+        'What is the name of the capital of France?',
+        'The capital of France is Paris.',
+      ],
+      ['What is the term for a baby cat?', 'A baby cat is called a kitten.'],
+      ['What is the code for Vietnam on a phone call?', 'It is +84.'],
+    ])('accepts a general answer to %s', (question, answer) => {
+      expect(
+        validateRagAnswerContract({
+          question,
+          answer,
+          evidence: [],
+          evidenceRequired: false,
+        }),
+      ).toBeUndefined();
+    });
+
+    it('still requires the named value to come from the evidence when evidence exists', () => {
+      expect(
+        validateRagAnswerContract({
+          question: 'What is the name of the product in the clip?',
+          answer: 'It is called the Zephyr X.',
+          evidence: ['The presenter holds up a blue bottle.'],
+          evidenceRequired: true,
+        }),
+      ).toBe('Answer model introduced an unsupported requested label or name');
+    });
+  });
 });

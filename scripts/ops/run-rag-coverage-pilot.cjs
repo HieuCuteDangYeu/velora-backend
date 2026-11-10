@@ -55,6 +55,8 @@ async function main() {
         row.metadata.bucket === 'TRANSCRIPT' &&
         row.metadata.answerType === 'SEMANTIC_FACTS',
     );
+  } else if (mode === 'all-rows') {
+    take(rows.length, () => true);
   } else if (mode === 'combined-all') {
     take(
       rows.filter((row) => row.metadata.bucket === 'COMBINED').length,

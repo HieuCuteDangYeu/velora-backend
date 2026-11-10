@@ -61,6 +61,7 @@ import {
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
+import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
 import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
 
 const RagChatStateSchema = new StateSchema({
@@ -700,16 +701,23 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             : undefined,
         }),
       );
+      // An opening-statement question names no time window: pin it to the earliest chunk retrieval returned.
+      const retrievalPlan =
+        resolveOpeningTranscriptWindow(
+          result.retrievalPlan,
+          state.route,
+          result.rerankedChunks,
+        ) ?? result.retrievalPlan;
       const executionContext = this.executionContexts.get(nodeTimings);
       if (executionContext) {
-        executionContext.retrievalPlan = result.retrievalPlan;
+        executionContext.retrievalPlan = retrievalPlan;
         executionContext.retrievalExecution = result.retrievalExecution;
       }
 
       return {
         retrievedChunks: result.retrievedChunks,
         rerankedChunks: result.rerankedChunks,
-        retrievalPlan: result.retrievalPlan,
+        retrievalPlan,
         retrievalExecution: result.retrievalExecution,
         conversationMemory: result.conversationMemory,
         userMemories: result.userMemories,

@@ -242,9 +242,22 @@ export class GenerateDraftAnswerUseCase {
       this.generationEvidenceFromCandidate(candidate),
     );
     boundedAuthorizedEvidence.push(...memoryEvidence);
-    const requestedSource = state.route
+    const messageSource = state.route
       ? sourceRetrievalPlan(state.userMessage, state.route)
       : undefined;
+    // An opening-statement question names no window; the retrieval plan carries the earliest chunk's window once resolved.
+    const requestedSource =
+      messageSource &&
+      messageSource.sourceTimestampSec === undefined &&
+      state.retrievalPlan?.sourceOrder === 'ASC' &&
+      state.retrievalPlan.sourceTimestampSec !== undefined &&
+      state.retrievalPlan.sourceTimestampEndSec !== undefined
+        ? {
+            ...messageSource,
+            sourceTimestampSec: state.retrievalPlan.sourceTimestampSec,
+            sourceTimestampEndSec: state.retrievalPlan.sourceTimestampEndSec,
+          }
+        : messageSource;
     const sentenceSelectionRequest = isTranscriptSentenceSelectionRequest(
       state.route,
     );

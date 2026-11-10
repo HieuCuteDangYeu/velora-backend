@@ -5,6 +5,7 @@ import type {
 import {
   isTranscriptSentenceSelectionRequest,
   firstCompleteTranscriptSentenceCandidate,
+  resolveOpeningTranscriptWindow,
   hasUnsupportedTranscriptTailCompletion,
   hasIncompleteTranscriptEnding,
   isLikelyIncompleteTranscriptUtterance,
@@ -103,6 +104,92 @@ describe('transcript sentence selection inputs', () => {
         'The speaker starts to say... The meeting begins now.',
       ),
     ).toBe('The meeting begins now.');
+  });
+
+  describe('resolveOpeningTranscriptWindow', () => {
+    const route = {
+      intent: 'REEL_VIDEO_QUESTION' as const,
+      requiredEvidence: ['TRANSCRIPT' as const],
+      transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE' as const,
+    };
+    const plan = {
+      mode: 'REEL_HYBRID' as const,
+      sourceOrder: 'ASC' as const,
+      query: 'What is the opening statement?',
+    } as never;
+    const chunk = (reelId: string, startTime: number, endTime: number) => ({
+      reelId,
+      evidenceType: 'TRANSCRIPT',
+      startTime,
+      endTime,
+    });
+
+    it('uses the earliest transcript chunk of one reel as the window', () => {
+      const resolved = resolveOpeningTranscriptWindow(plan, route, [
+        chunk('a', 31.3, 67),
+        chunk('a', 0, 67.12),
+        chunk('a', 0, 31.3),
+      ]);
+      expect(resolved).toMatchObject({
+        sourceTimestampSec: 0,
+        sourceTimestampEndSec: 31.3,
+      });
+    });
+
+    it('leaves requests that already name a window or need several reels alone', () => {
+      expect(
+        resolveOpeningTranscriptWindow(
+          {
+            ...(plan as object),
+            sourceTimestampSec: 5,
+            sourceTimestampEndSec: 9,
+          } as never,
+          route,
+          [chunk('a', 0, 10)],
+        ),
+      ).toBeUndefined();
+      expect(
+        resolveOpeningTranscriptWindow(plan, route, [
+          chunk('a', 0, 10),
+          chunk('b', 0, 12),
+        ]),
+      ).toBeUndefined();
+      expect(
+        resolveOpeningTranscriptWindow(
+          { ...(plan as object), requiresReelCoverage: true } as never,
+          route,
+          [chunk('a', 0, 10)],
+        ),
+      ).toBeUndefined();
+    });
+
+    it('does nothing without an ascending source order, a first-utterance route or timed transcript chunks', () => {
+      expect(
+        resolveOpeningTranscriptWindow(
+          { mode: 'REEL_HYBRID', query: 'q' } as never,
+          route,
+          [chunk('a', 0, 10)],
+        ),
+      ).toBeUndefined();
+      expect(
+        resolveOpeningTranscriptWindow(
+          plan,
+          { ...route, transcriptRequestKind: 'NONE' as const },
+          [chunk('a', 0, 10)],
+        ),
+      ).toBeUndefined();
+      expect(
+        resolveOpeningTranscriptWindow(plan, route, [
+          { reelId: 'a', evidenceType: 'VISUAL', startTime: 0, endTime: 1 },
+          {
+            reelId: 'a',
+            evidenceType: 'TRANSCRIPT',
+            startTime: null,
+            endTime: null,
+          },
+        ]),
+      ).toBeUndefined();
+    });
   });
 
   it('ignores a stray leading full stop left by transcription', () => {

@@ -19,6 +19,68 @@ export function isTranscriptSentenceSelectionRequest(
   );
 }
 
+/**
+ * An opening-statement question names no time window, so it would fall back to model sentence selection. Retrieval for such a
+ * request already reads the earliest transcript chunk of one reel in time order, so that chunk is the exact window: return the
+ * plan with its bounds, and the existing deterministic first-sentence path (draft, verifier, sufficiency) applies unchanged.
+ */
+export function resolveOpeningTranscriptWindow(
+  plan: RagRetrievalPlan | undefined,
+  route:
+    | Pick<
+        RagChatRouteDecision,
+        'intent' | 'requiredEvidence' | 'transcriptRequestKind'
+      >
+    | undefined,
+  chunks: ReadonlyArray<{
+    reelId: string;
+    evidenceType?: string;
+    startTime?: number | null;
+    endTime?: number | null;
+  }>,
+): RagRetrievalPlan | undefined {
+  if (
+    !plan ||
+    !isTranscriptSentenceSelectionRequest(route) ||
+    plan.sourceOrder !== 'ASC' ||
+    plan.requiresReelCoverage === true ||
+    plan.sourceTimestampSec !== undefined ||
+    plan.sourceTimestampEndSec !== undefined ||
+    plan.transcriptTimestampSec !== undefined ||
+    plan.transcriptTimestampEndSec !== undefined
+  ) {
+    return undefined;
+  }
+  const transcript = chunks.flatMap((chunk) =>
+    (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+    typeof chunk.startTime === 'number' &&
+    typeof chunk.endTime === 'number'
+      ? [
+          {
+            reelId: chunk.reelId,
+            startTime: chunk.startTime,
+            endTime: chunk.endTime,
+          },
+        ]
+      : [],
+  );
+  if (
+    transcript.length === 0 ||
+    new Set(transcript.map((chunk) => chunk.reelId)).size !== 1
+  ) {
+    return undefined;
+  }
+  const earliest = [...transcript].sort(
+    (left, right) =>
+      left.startTime - right.startTime || left.endTime - right.endTime,
+  )[0];
+  return {
+    ...plan,
+    sourceTimestampSec: earliest.startTime,
+    sourceTimestampEndSec: earliest.endTime,
+  };
+}
+
 export function startsInsidePriorTranscriptSentence(
   span: string,
   priorTranscript: string,

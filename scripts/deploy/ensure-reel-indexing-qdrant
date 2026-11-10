@@ -18,6 +18,7 @@ readonly APP_DIR="${VELORA_APP_DIR:-$HOME/GitHub/microservices-boilerplate}"
 readonly OVERLAY="${VELORA_QDRANT_INDEX_OVERLAY:-$HOME/velora-operations/qdrant-staging/index-rollout.yml}"
 readonly STATE_DIR="${VELORA_STATE_DIR:-$HOME/.local/state/velora}"
 readonly VECTOR_NETWORK_SUFFIX="reel-vector-net"
+readonly EXPECTED_DB_HOST="${VELORA_REEL_INDEXING_DB_HOST:-reel-indexing-postgres}"
 readonly SERVICES=(reel-indexing-service reel-indexing-long-service)
 
 mode="--check"
@@ -46,7 +47,16 @@ service_problem() {
   qdrant_vars="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | grep -c '^QDRANT_' || true)"
   networks="$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}} {{end}}' "$container")"
 
+  # The overlay resolves REEL_INDEXING_DATABASE_URL from the root .env, so a
+  # stale .env silently points the indexers at the wrong database (2026-11-09).
+  # Only the host is read here; the credentials are never printed.
+  local db_url db_host
+  db_url="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | sed -n 's/^REEL_INDEXING_DATABASE_URL=//p' | head -n 1)"
+  db_host="${db_url#*@}"
+  db_host="${db_host%%[:/?]*}"
+
   local problems=()
+  [[ "$db_host" == "$EXPECTED_DB_HOST" ]] || problems+=("database host is '${db_host:-unset}', expected $EXPECTED_DB_HOST")
   [[ "$image" == velora-reel-indexing-qdrant:* ]] || problems+=("image is $image, expected velora-reel-indexing-qdrant:*")
   [[ "$qdrant_vars" -gt 0 ]] || problems+=("no QDRANT_* environment variables")
   [[ "$networks" == *"$VECTOR_NETWORK_SUFFIX"* ]] || problems+=("not attached to $VECTOR_NETWORK_SUFFIX")

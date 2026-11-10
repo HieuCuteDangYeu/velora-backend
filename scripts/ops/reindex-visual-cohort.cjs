@@ -57,9 +57,16 @@ const prisma = new PrismaClient();
     where: { isActive: true },
     _count: { _all: true },
   });
+  const flatRows = await prisma.reelVisualScene.groupBy({
+    by: ['reelId'],
+    where: { isActive: true, NOT: { evidenceText: { startsWith: 'Caption:' } } },
+    _count: { _all: true },
+  });
+  const flatByReelId = new Map(flatRows.map((row) => [row.reelId, row._count._all]));
   process.stdout.write(JSON.stringify(rows.map((row) => ({
     reelId: row.reelId,
     count: row._count._all,
+    flat: flatByReelId.get(row.reelId) ?? 0,
   }))));
 })().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
@@ -108,8 +115,9 @@ const client = ClientProxyFactory.create({
 `;
 
 function parseArgs(argv) {
-  const args = { apply: false, limit: DEFAULT_LIMIT };
+  const args = { apply: false, flat: false, limit: DEFAULT_LIMIT };
   for (const value of argv) {
+    if (value === '--flat') args.flat = true;
     if (value === '--apply') args.apply = true;
     if (value === '--dry-run') args.apply = false;
     if (value.startsWith('--limit=')) args.limit = Number(value.slice('--limit='.length));
@@ -125,12 +133,16 @@ function positiveLimit(value) {
   return limit;
 }
 
-function selectCandidates(reels, visualSceneCounts, limit) {
-  const countByReelId = new Map(
-    visualSceneCounts.map((row) => [row.reelId, Number(row.count)]),
-  );
+// Default: reels with no active visual scenes. With `flat`: reels whose active scenes include the older unlabelled
+// evidence text (caption, OCR text and object tags in one string), so they can be re-analysed into the labelled form.
+function selectCandidates(reels, visualSceneCounts, limit, flat = false) {
+  const rowByReelId = new Map(visualSceneCounts.map((row) => [row.reelId, row]));
   return reels
-    .filter((reel) => !countByReelId.has(reel.id))
+    .filter((reel) =>
+      flat
+        ? Number(rowByReelId.get(reel.id)?.flat ?? 0) > 0
+        : !rowByReelId.has(reel.id),
+    )
     .slice(0, limit);
 }
 
@@ -230,12 +242,13 @@ async function main(argv = process.argv.slice(2)) {
   try {
     const reels = runContainerNode(CONTENT_CONTAINER, CONTENT_QUERY);
     const visualSceneCounts = runContainerNode(INDEX_CONTAINER, INDEX_QUERY);
-    const candidates = selectCandidates(reels, visualSceneCounts, limit);
+    const candidates = selectCandidates(reels, visualSceneCounts, limit, args.flat);
     const report = {
       runId: `visual-reindex-${new Date().toISOString().replace(/[:.]/g, '-')}`,
       generatedAt: new Date().toISOString(),
       mode: args.apply ? 'apply' : 'dry-run',
       limit,
+      flat: args.flat,
       eligibleReels: reels.length,
       activeVisualReelCount: visualSceneCounts.length,
       selected: candidates,

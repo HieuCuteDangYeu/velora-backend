@@ -979,6 +979,64 @@ describe('GenerateDraftAnswerUseCase', () => {
     ]);
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
+  describe('number or quantity question over the early transcript', () => {
+    const run = async (evidenceText: string) => {
+      const generateObject = candidateAssessmentResponse('sentence-0', {
+        allComplete: true,
+      });
+      const useCase = new GenerateDraftAnswerUseCase(
+        { generateObject } as never,
+        { build: jest.fn() },
+        {
+          model: () => 'test',
+          timeoutMs: () => 10_000,
+          maxCompletionTokens: () => 1024,
+        } as never,
+      );
+      const result = await useCase.execute({
+        userMessage:
+          'What number or quantity is mentioned in the early transcript of "Episode 31"?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          requiredEvidence: ['TRANSCRIPT'],
+          needsRetrieval: true,
+        },
+        retrievalPlan: {},
+        rerankedChunks: [
+          {
+            chunkId: 'c0',
+            reelId: 'r',
+            evidenceType: 'TRANSCRIPT',
+            startTime: 0,
+            endTime: 10,
+            evidenceText,
+            chunkText: evidenceText,
+            tags: [],
+            distance: null,
+          },
+        ],
+      } as never);
+      return { result, generateObject };
+    };
+
+    it('selects a sentence that states a quantity instead of a number-free opening line', async () => {
+      const { result, generateObject } = await run(
+        'Hold on, everyone! There are 10,000 injured here. Please, take him.',
+      );
+      expect(result.answer).toBe('There are 10,000 injured here.');
+      expect(generateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the earliest complete sentence when no sentence states a quantity', async () => {
+      const { result } = await run(
+        'Hold on, everyone! Please, take him. The gate is open.',
+      );
+      expect(result.answer).toBe('Hold on, everyone!');
+    });
+  });
+
   it('keeps complete canonical metadata values beyond ordinary prompt preview limits', async () => {
     const title = 't'.repeat(220);
     const tags = Array.from({ length: 30 }, (_, i) => `tag-${i}`);

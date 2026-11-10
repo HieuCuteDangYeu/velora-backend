@@ -198,6 +198,21 @@ export function ragAnswerDirectnessIssue(
 }
 
 /**
+ * True when the question asks for a number or quantity and `value` states none.
+ * validateRagAnswerContract rejects such a value as an answer, so a caller that
+ * chooses among candidate sentences can skip it up front.
+ */
+export function ragLacksRequestedQuantity(
+  question: string,
+  value: string,
+): boolean {
+  const asksForQuantity =
+    QUANTITY_QUESTION_PATTERN.test(question) ||
+    QUANTITY_RATIONALE_PATTERN.test(question);
+  return asksForQuantity && quantityTokens(value).size === 0;
+}
+
+/**
  * Deterministic signal used only to rank extractive fallback spans. It does
  * not decide semantic correctness; it prefers spans that contain the kind of
  * fact explicitly requested by the question.

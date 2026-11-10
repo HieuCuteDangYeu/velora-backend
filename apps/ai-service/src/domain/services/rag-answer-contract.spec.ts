@@ -2,6 +2,7 @@ import {
   MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
   missingRequiredReelEvidencePairs,
   ragAnswerBudget,
+  ragLacksRequestedQuantity,
   ragRequestedFactSignalScore,
   validateRagAnswerContract,
 } from './rag-answer-contract';
@@ -190,5 +191,31 @@ describe('validateRagAnswerContract', () => {
         }),
       ).toBe('Answer model introduced an unsupported requested label or name');
     });
+  });
+});
+
+describe('ragLacksRequestedQuantity', () => {
+  const question =
+    'What number or quantity is mentioned in the early transcript?';
+
+  it('flags a sentence without a number when a quantity is requested', () => {
+    expect(ragLacksRequestedQuantity(question, 'Hold on, everyone!')).toBe(
+      true,
+    );
+  });
+
+  it('accepts digits and number words', () => {
+    expect(ragLacksRequestedQuantity(question, 'There are 10,000 here.')).toBe(
+      false,
+    );
+    expect(ragLacksRequestedQuantity(question, 'He waited seven years.')).toBe(
+      false,
+    );
+  });
+
+  it('never flags a question that does not ask for a quantity', () => {
+    expect(
+      ragLacksRequestedQuantity('What does he say first?', 'Hold on!'),
+    ).toBe(false);
   });
 });

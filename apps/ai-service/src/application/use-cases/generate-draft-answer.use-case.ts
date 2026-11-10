@@ -38,6 +38,7 @@ import {
   MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS,
   missingRequiredReelEvidencePairs,
   ragAnswerBudget,
+  ragLacksRequestedQuantity,
   ragRequestedFactSignalScore,
   MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS,
   TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
@@ -812,7 +813,21 @@ export class GenerateDraftAnswerUseCase {
       const authorizedEvidence = Array.isArray(promptPayload.authorizedEvidence)
         ? promptPayload.authorizedEvidence
         : [];
-      const candidateIds = [...sentenceCandidateById.keys()];
+      // The model only judges whether an utterance is complete, so for a number
+      // or quantity question offer it the sentences that can answer it; the first
+      // complete one is otherwise often a number-free line the contract rejects.
+      const allCandidateIds = [...sentenceCandidateById.keys()];
+      const quantityCandidateIds = allCandidateIds.filter(
+        (candidateId) =>
+          !ragLacksRequestedQuantity(
+            state.userMessage,
+            sentenceCandidateById.get(candidateId)?.text ?? '',
+          ),
+      );
+      const candidateIds =
+        quantityCandidateIds.length > 0
+          ? quantityCandidateIds
+          : allCandidateIds;
       for (
         let offset = 0;
         offset < candidateIds.length;

@@ -105,6 +105,32 @@ describe('transcript sentence selection inputs', () => {
     ).toBe('The meeting begins now.');
   });
 
+  it('ignores a stray leading full stop left by transcription', () => {
+    expect(
+      transcriptSentenceSpans('. Get away from him, fat ass. Are you okay?'),
+    ).toEqual(['Get away from him, fat ass.', 'Are you okay?']);
+    expect(
+      firstCompleteTranscriptSentenceCandidate(
+        '. Yes, please, help her. He is alive.',
+      ),
+    ).toBe('Yes, please, help her.');
+  });
+
+  it('does not end a sentence after a title abbreviation', () => {
+    expect(
+      transcriptSentenceSpans(
+        "Mr. Darius, it's high time you left my room. I'm not leaving.",
+      ),
+    ).toEqual([
+      "Mr. Darius, it's high time you left my room.",
+      "I'm not leaving.",
+    ]);
+    expect(transcriptSentenceSpans('Ask Dr. Smith. Then leave.')).toEqual([
+      'Ask Dr. Smith.',
+      'Then leave.',
+    ]);
+  });
+
   it('keeps a complete multiword in-window clause when overlap contains it inside a longer sentence', () => {
     const firstSpan = 'You arrived.';
     expect(

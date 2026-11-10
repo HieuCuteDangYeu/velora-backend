@@ -89,11 +89,24 @@ export function selectTimestampTranscriptEvidence<
   )[0];
 }
 
+// A full stop after one of these does not end a sentence ("Mr. Darius, ...").
+const NON_TERMINAL_ABBREVIATION =
+  /(?:^|\s)(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|vs)\.$/i;
+
 export function transcriptSentenceSpans(text: string): string[] {
-  return text
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((span) => span.trim())
-    .filter(Boolean);
+  const spans: string[] = [];
+  for (const raw of text.split(/(?<=[.!?])\s+|\n+/)) {
+    const span = raw.trim();
+    if (!span) continue;
+    const previous = spans[spans.length - 1];
+    if (previous && NON_TERMINAL_ABBREVIATION.test(previous)) {
+      spans[spans.length - 1] = `${previous} ${span}`;
+    } else {
+      spans.push(span);
+    }
+  }
+  // Drop fragments with no letters or digits, such as the stray "." that ASR leaves at the start of a chunk.
+  return spans.filter((span) => /[\p{L}\p{N}]/u.test(span));
 }
 
 export function firstCompleteTranscriptSentenceCandidate(

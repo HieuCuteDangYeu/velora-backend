@@ -219,3 +219,33 @@ describe('ragLacksRequestedQuantity', () => {
     ).toBe(false);
   });
 });
+
+describe('validateRagAnswerContract opening quote', () => {
+  const input = {
+    answer: 'Episode 11 of The abandoned human girl.',
+    question:
+      'What is the opening statement in "The abandoned human girl Episode 11"?',
+    evidence: ['Episode 11 of The abandoned human girl. Welcome back.'],
+    evidenceRequired: true,
+  };
+
+  it('rejects a title restatement as a question echo by default', () => {
+    expect(validateRagAnswerContract(input)).toMatch(/repeated the question/);
+  });
+
+  it('accepts it when the answer is a verbatim opening quote', () => {
+    expect(
+      validateRagAnswerContract({ ...input, verbatimOpeningQuote: true }),
+    ).toBeUndefined();
+  });
+
+  it('still enforces the other checks for an opening quote', () => {
+    expect(
+      validateRagAnswerContract({
+        ...input,
+        answer: '',
+        verbatimOpeningQuote: true,
+      }),
+    ).toMatch(/empty/);
+  });
+});

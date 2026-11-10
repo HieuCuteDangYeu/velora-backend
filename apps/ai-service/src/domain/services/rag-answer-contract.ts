@@ -110,6 +110,12 @@ export interface RagAnswerContractInput {
   question: string;
   evidence: readonly string[];
   evidenceRequired: boolean;
+  /**
+   * The answer is a verbatim sentence from the transcript's opening turn. An
+   * opening line often restates the title ("Episode 11 of ..."), so it must not
+   * be rejected as an echo of the question.
+   */
+  verbatimOpeningQuote?: boolean;
 }
 
 export interface RagEvidenceCoverageItem {
@@ -288,6 +294,7 @@ export function validateRagAnswerContract(
 
   if (
     input.evidenceRequired &&
+    !input.verbatimOpeningQuote &&
     isQuestionVocabularyEcho(input.question, input.evidence, answer)
   ) {
     return 'Answer model repeated the question without an evidence-bearing fact';

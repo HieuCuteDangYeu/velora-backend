@@ -979,6 +979,90 @@ describe('GenerateDraftAnswerUseCase', () => {
     ]);
     expect(generateObject).toHaveBeenCalledTimes(1);
   });
+  describe('opening statement of the transcript', () => {
+    const run = async (
+      evidenceText: string,
+      options: {
+        selectedCandidateId?: string;
+        startTime?: number;
+        userMessage?: string;
+      } = {},
+    ) => {
+      const generateObject = candidateAssessmentResponse(
+        options.selectedCandidateId ?? 'none',
+      );
+      const useCase = new GenerateDraftAnswerUseCase(
+        { generateObject } as never,
+        { build: jest.fn() },
+        {
+          model: () => 'test',
+          timeoutMs: () => 10_000,
+          maxCompletionTokens: () => 1024,
+        } as never,
+      );
+      const startTime = options.startTime ?? 0;
+      return useCase.execute({
+        userMessage:
+          options.userMessage ??
+          'What is the opening statement in "The abandoned human girl Episode 11"?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+          requiredEvidence: ['TRANSCRIPT'],
+          needsRetrieval: true,
+        },
+        retrievalPlan: {},
+        rerankedChunks: [
+          {
+            chunkId: 'c0',
+            reelId: 'r',
+            evidenceType: 'TRANSCRIPT',
+            startTime,
+            endTime: startTime + 10,
+            evidenceText,
+            chunkText: evidenceText,
+            tags: [],
+            distance: null,
+          },
+        ],
+      } as never);
+    };
+
+    it('answers with the first sentence when the model judges no opening utterance complete', async () => {
+      const result = await run(
+        'Ben you conspired with enemies! They slaughtered our kin.',
+      );
+      expect(result.answer).toBe('Ben you conspired with enemies!');
+    });
+
+    it('accepts an opening line that restates the title', async () => {
+      const result = await run(
+        'Episode 11 of The abandoned human girl. Welcome back, everyone.',
+        { selectedCandidateId: 'sentence-1' },
+      );
+      expect(result.answer).toBe('Episode 11 of The abandoned human girl.');
+    });
+
+    it('stays strict when the first transcript line does not start at the opening', async () => {
+      await expect(
+        run('Ben you conspired with enemies! They slaughtered our kin.', {
+          startTime: 30,
+        }),
+      ).rejects.toThrow();
+    });
+
+    it('stays strict for an explicit time window', async () => {
+      await expect(
+        run('Ben you conspired with enemies! They slaughtered our kin.', {
+          startTime: 12,
+          userMessage:
+            'What is the first complete spoken line in the transcript at 12 seconds of "The abandoned human girl Episode 11"?',
+        }),
+      ).rejects.toThrow();
+    });
+  });
+
   describe('number or quantity question over the early transcript', () => {
     const run = async (evidenceText: string) => {
       const generateObject = candidateAssessmentResponse('sentence-0', {

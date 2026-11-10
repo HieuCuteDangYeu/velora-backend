@@ -57,6 +57,10 @@ interface DraftAnswerRequestResult extends RawDraftAnswer {
 
 const SENTENCE_SELECTION_BATCH_SIZE = 8;
 
+// Every indexed Reel's first transcript chunk starts within ~1.2 s (measured on
+// the 178 active Reels), so a line that starts later is not an opening turn.
+const OPENING_TURN_MAX_START_SECONDS = 5;
+
 const VISUAL_TEXT_ABSENCE_CLAIM =
   /\b(?:no\s+(?:clearly\s+)?(?:readable\s+)?text(?:\s+(?:is|are)\s+(?:visible|present|readable|legible))?|there\s+(?:is|are)\s+no\s+(?:clearly\s+)?(?:readable\s+)?text(?:\s+(?:visible|present|readable|legible))?|(?:readable|visible|on[- ]screen)\s+text\s*:\s*(?:none|no|not\s+(?:visible|present|readable)))\b/i;
 
@@ -787,6 +791,26 @@ export class GenerateDraftAnswerUseCase {
     const answerMaxTokens = expandedTranscriptAnswer
       ? Math.max(this.config.maxCompletionTokens('ANSWER'), 1024)
       : this.config.maxCompletionTokens('ANSWER');
+    // An opening-turn request asks for the start of the transcript, with no
+    // explicit time window. Only there is the first sentence an acceptable answer
+    // when the model judges no utterance complete.
+    const isOpeningTurnSentence = (
+      sentence: { evidenceId: string } | undefined,
+    ): boolean => {
+      if (
+        !sentence ||
+        !sentenceSelectionRequest ||
+        requestedSource?.sourceTimestampSec !== undefined
+      )
+        return false;
+      const startTime = authorizedEvidence.find(
+        (item) => item.evidenceId === sentence.evidenceId,
+      )?.startTime;
+      return (
+        typeof startTime === 'number' &&
+        startTime <= OPENING_TURN_MAX_START_SECONDS
+      );
+    };
     const request = async (
       prompt: string,
       model = primaryModel,
@@ -915,6 +939,10 @@ export class GenerateDraftAnswerUseCase {
           if (selectedSentence) return { selectedSentence };
         }
       }
+      const openingSentence = sentenceCandidateById.get(allCandidateIds[0]);
+      if (openingSentence && isOpeningTurnSentence(openingSentence)) {
+        return { selectedSentence: openingSentence };
+      }
       throw new DraftAnswerContractError(
         'Answer model found no complete transcript utterance in the requested interval',
       );
@@ -948,6 +976,7 @@ export class GenerateDraftAnswerUseCase {
         allowedEvidenceIds,
         authorizedEvidenceText,
         minimumSummaryClaimCount,
+        isOpeningTurnSentence(selectedSentence),
       );
       this.validateRequiredEvidenceCoverage(
         normalized.claims,
@@ -1864,6 +1893,7 @@ export class GenerateDraftAnswerUseCase {
     allowedEvidenceIds: Set<string>,
     authorizedEvidenceText: string[],
     minimumClaimCount?: number,
+    verbatimOpeningQuote = false,
   ): Omit<RagDraftAnswer, 'finalizationMode' | 'fallbackReason'> {
     const rawAnswer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
     const suppressUnverifiedVisualTextAbsence =
@@ -1891,6 +1921,7 @@ export class GenerateDraftAnswerUseCase {
       evidenceRequired:
         state.route?.intent === 'REEL_VIDEO_QUESTION' &&
         (state.route.requiredEvidence?.length ?? 0) > 0,
+      verbatimOpeningQuote,
     });
     if (contractError) throw new DraftAnswerContractError(contractError);
 

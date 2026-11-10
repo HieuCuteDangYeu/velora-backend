@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Runs on the homelab every 30 s (LaunchAgent com.velora.model-host-probe). Checks the model
+# server on the laptop through the reverse SSH tunnel and reports through node-exporter's
+# text-file collector, so Prometheus alerts on it with no new service. It uses endpoints that
+# are not queued behind inference (/api/tags, /api/ps), so a long answer never looks like an
+# outage.
+#
+#   velora_model_host_up                       1 if the model server answered 200
+#   velora_model_host_probe_duration_seconds   time the answer took (the timeout if it did not)
+#   velora_model_host_model_resident{model=}   1 if the production model is loaded
+#   velora_model_host_probe_timestamp_seconds  when this probe ran, to detect a stopped probe
+
+PORT="${MODEL_HOST_TUNNEL_PORT:-11435}"
+MODEL="${MODEL_HOST_WARM_MODEL:-gemma4:e2b-it-qat}"
+TIMEOUT="${MODEL_HOST_PROBE_TIMEOUT_SECONDS:-5}"
+APP_DIR="${VELORA_APP_DIR:-$HOME/GitHub/microservices-boilerplate}"
+OUT_DIR="${VELORA_MODEL_HOST_METRICS_DIR:-$APP_DIR/infra/monitoring/node-exporter-textfile}"
+OUT="$OUT_DIR/velora-model-host.prom"
+BASE="http://127.0.0.1:${PORT}"
+
+[[ "$PORT" =~ ^[0-9]+$ && "$TIMEOUT" =~ ^[0-9]+$ ]] || exit 0
+[[ -d "$OUT_DIR" ]] || exit 0
+
+read -r code duration < <(curl -s -m "$TIMEOUT" -o /dev/null -w '%{http_code} %{time_total}\n' "$BASE/api/tags" 2>/dev/null || true)
+code="${code:-000}"
+duration="${duration:-$TIMEOUT}"
+
+up=0
+resident=0
+if [[ "$code" == 200 ]]; then
+  up=1
+  body="$(curl -s -m "$TIMEOUT" "$BASE/api/ps" 2>/dev/null || true)"
+  [[ "$body" == *"\"name\":\"${MODEL}\""* ]] && resident=1
+fi
+
+tmp="$(mktemp "$OUT.XXXXXX")" || exit 0
+{
+  printf '# HELP velora_model_host_up Whether the model server on the laptop answered through the tunnel.\n'
+  printf '# TYPE velora_model_host_up gauge\n'
+  printf 'velora_model_host_up %s\n' "$up"
+  printf '# HELP velora_model_host_probe_duration_seconds Time the model server took to answer the probe.\n'
+  printf '# TYPE velora_model_host_probe_duration_seconds gauge\n'
+  printf 'velora_model_host_probe_duration_seconds %s\n' "$duration"
+  printf '# HELP velora_model_host_model_resident Whether the production model is loaded in the model server.\n'
+  printf '# TYPE velora_model_host_model_resident gauge\n'
+  printf 'velora_model_host_model_resident{model="%s"} %s\n' "$MODEL" "$resident"
+  printf '# HELP velora_model_host_probe_timestamp_seconds Unix time of the last probe.\n'
+  printf '# TYPE velora_model_host_probe_timestamp_seconds gauge\n'
+  printf 'velora_model_host_probe_timestamp_seconds %s\n' "$(date +%s)"
+} >"$tmp"
+# mktemp creates 0600; the node-exporter container reads the directory as another user.
+chmod 0644 "$tmp"
+mv -f "$tmp" "$OUT"

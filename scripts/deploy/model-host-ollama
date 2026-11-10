@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# The homelab ai-service reaches an Ollama container on the developer laptop through a
+# reverse SSH tunnel (see the velora-gemma-ssh-tunnel user service). This script
+# (re)creates that container idempotently so its settings are reproducible and not a
+# one-off `docker run` nobody remembers.
+#
+#   model-host-ollama             apply the settings below; no-op if already applied
+#   model-host-ollama --dry-run   print the docker run command and exit
+#
+# It reuses the image the current container runs (never `:latest`), so Ollama is not
+# upgraded as a side effect. The previous container is kept, stopped and with restart
+# disabled, until you remove it. If the new one does not answer, it is rolled back.
+
+NAME="${MODEL_HOST_CONTAINER:-velora-gemma4}"
+VOLUME="${MODEL_HOST_VOLUME:-velora-gemma4-models}"
+PORT="${MODEL_HOST_PORT:-11434}"
+MODEL="${MODEL_HOST_WARM_MODEL:-gemma4:e2b-it-qat}"
+# -1 keeps the model loaded: with the default 5m the first request after a quiet spell
+# waits for a reload (~12 s measured). One 1.7 GB model fits in 4 GB of VRAM.
+KEEP_ALIVE="${OLLAMA_KEEP_ALIVE:--1}"
+CONTEXT_LENGTH="${OLLAMA_CONTEXT_LENGTH:-4096}"
+# One request at a time and one resident model: production runs a single model
+# (ROUTER and ANSWER both use it). Loading a second model evicts it.
+NUM_PARALLEL="${OLLAMA_NUM_PARALLEL:-1}"
+MAX_LOADED="${OLLAMA_MAX_LOADED_MODELS:-1}"
+READY_TIMEOUT_SECONDS="${MODEL_HOST_READY_TIMEOUT_SECONDS:-90}"
+
+dry_run=false
+case "${1:-}" in
+  "") ;;
+  --dry-run) dry_run=true ;;
+  *)
+    printf 'usage: %s [--dry-run]\n' "${0##*/}" >&2
+    exit 64
+    ;;
+esac
+
+current_env() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" 2>/dev/null | grep -E "^$1=" | head -n1 | cut -d= -f2-
+}
+
+IMAGE="${MODEL_HOST_IMAGE:-$(docker inspect -f '{{.Image}}' "$NAME" 2>/dev/null || true)}"
+[[ -n "$IMAGE" ]] || {
+  printf 'ERROR: no existing %s container to take the image from; set MODEL_HOST_IMAGE\n' "$NAME" >&2
+  exit 3
+}
+
+run_args=(
+  run -d --name "$NAME" --gpus all --restart unless-stopped
+  -p "127.0.0.1:${PORT}:11434"
+  -v "${VOLUME}:/root/.ollama"
+  -e "OLLAMA_HOST=0.0.0.0:11434"
+  -e "OLLAMA_KEEP_ALIVE=${KEEP_ALIVE}"
+  -e "OLLAMA_CONTEXT_LENGTH=${CONTEXT_LENGTH}"
+  -e "OLLAMA_NUM_PARALLEL=${NUM_PARALLEL}"
+  -e "OLLAMA_MAX_LOADED_MODELS=${MAX_LOADED}"
+  "$IMAGE"
+)
+
+if [[ "$dry_run" == true ]]; then
+  printf 'docker'
+  printf ' %q' "${run_args[@]}"
+  printf '\n'
+  exit 0
+fi
+
+wait_ready() {
+  local deadline=$((SECONDS + READY_TIMEOUT_SECONDS))
+  while ((SECONDS < deadline)); do
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:${PORT}/api/tags"; then return 0; fi
+    sleep 2
+  done
+  return 1
+}
+
+warm_model() {
+  # Loading with the configured keep-alive makes the first real request fast.
+  curl -fsS -m 120 -o /dev/null "http://127.0.0.1:${PORT}/api/generate" \
+    -d "{\"model\":\"${MODEL}\",\"prompt\":\"hi\",\"stream\":false,\"keep_alive\":${KEEP_ALIVE},\"options\":{\"num_predict\":1}}" \
+    || printf 'WARNING: could not warm %s\n' "$MODEL" >&2
+}
+
+if [[ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null || true)" == true &&
+  "$(current_env OLLAMA_KEEP_ALIVE)" == "$KEEP_ALIVE" &&
+  "$(current_env OLLAMA_NUM_PARALLEL)" == "$NUM_PARALLEL" &&
+  "$(current_env OLLAMA_MAX_LOADED_MODELS)" == "$MAX_LOADED" &&
+  "$(current_env OLLAMA_CONTEXT_LENGTH)" == "$CONTEXT_LENGTH" ]]; then
+  printf '%s already has the requested settings (keep-alive %s); nothing to do.\n' "$NAME" "$KEEP_ALIVE"
+  exit 0
+fi
+
+previous="${NAME}-previous-$(date -u +%Y%m%dT%H%M%SZ)"
+printf 'Replacing %s (kept as %s, stopped).\n' "$NAME" "$previous"
+docker stop "$NAME" >/dev/null
+docker rename "$NAME" "$previous"
+docker update --restart=no "$previous" >/dev/null
+
+rollback() {
+  printf 'ERROR: %s did not become ready; rolling back to %s\n' "$NAME" "$previous" >&2
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker rename "$previous" "$NAME"
+  docker update --restart=unless-stopped "$NAME" >/dev/null
+  docker start "$NAME" >/dev/null
+}
+
+if ! docker "${run_args[@]}" >/dev/null || ! wait_ready; then
+  rollback
+  exit 1
+fi
+
+warm_model
+printf '%s is up with OLLAMA_KEEP_ALIVE=%s. Remove the old one when satisfied: docker rm %s\n' "$NAME" "$KEEP_ALIVE" "$previous"

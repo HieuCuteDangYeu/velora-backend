@@ -10,7 +10,7 @@ mkdir -p "$tmp_dir/bin" "$tmp_dir/state" "$tmp_dir/app"
 : >"$tmp_dir/overlay.yml"
 printf 'deadbeef1234\n' >"$tmp_dir/state/deployed-sha"
 
-# A stand-in for docker: container state comes from $SHIM_SCENARIO (good | bad | none)
+# A stand-in for docker: container state comes from $SHIM_SCENARIO (good | bad | wrongdb | none)
 # and a compose call flips it to "good", like re-applying the real overlay.
 cat >"$tmp_dir/bin/docker" <<'SHIM'
 #!/usr/bin/env bash
@@ -26,12 +26,14 @@ case "$1" in
   inspect)
     format="$3"
     if [[ "$format" == *'.Config.Image'* ]]; then
-      [[ "$scenario" == good ]] && echo 'velora-reel-indexing-qdrant:6ca1491e' || echo 'hieucutedangyeu/reel-indexing-service:abc'
+      [[ "$scenario" == good || "$scenario" == wrongdb ]] && echo 'velora-reel-indexing-qdrant:6ca1491e' || echo 'hieucutedangyeu/reel-indexing-service:abc'
     elif [[ "$format" == *'.Config.Env'* ]]; then
       echo 'NODE_ENV=production'
-      [[ "$scenario" == good ]] && echo 'QDRANT_URL=https://qdrant:6333'
+      [[ "$scenario" == good || "$scenario" == wrongdb ]] && echo 'QDRANT_URL=https://qdrant:6333'
+      if [[ "$scenario" == good ]]; then echo 'REEL_INDEXING_DATABASE_URL=postgresql://indexer:hunter2@reel-indexing-postgres:5432/reel'; fi
+      if [[ "$scenario" == wrongdb ]]; then echo 'REEL_INDEXING_DATABASE_URL=postgresql://indexer:hunter2@old-db.internal:5432/reel'; fi
     elif [[ "$format" == *'Networks'* ]]; then
-      [[ "$scenario" == good ]] && echo 'proj_microservices-net proj_reel-vector-net ' || echo 'proj_microservices-net '
+      [[ "$scenario" == good || "$scenario" == wrongdb ]] && echo 'proj_microservices-net proj_reel-vector-net ' || echo 'proj_microservices-net '
     fi
     ;;
   compose)
@@ -74,6 +76,12 @@ expect_out "image is hieucutedangyeu/reel-indexing-service:abc" "degraded check"
 expect_out "no QDRANT_* environment variables" "degraded check"
 expect_out "not attached to reel-vector-net" "degraded check"
 [[ "$(compose_calls)" -eq 0 ]] || fail "--check must never recreate containers"
+
+run wrongdb --check
+expect_code 1 "wrong database host"
+expect_out "database host is 'old-db.internal', expected reel-indexing-postgres" "wrong database host"
+[[ "$out" != *hunter2* ]] || fail "the database password must never be printed"
+[[ "$out" != *"velora-reel-indexing-qdrant:*"* ]] || fail "only the database should be flagged"
 
 run none --check
 expect_code 2 "missing container"

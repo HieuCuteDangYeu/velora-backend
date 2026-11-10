@@ -168,3 +168,11 @@ through API Gateway -> monitoring-service instead of sending arbitrary PromQL to
 Prometheus. Treat access to the Docker socket as privileged: keep it mounted
 only in `monitoring-service` and do not expose the socket or container snapshot
 endpoint publicly.
+
+## Model server (laptop) health
+
+The ai-service reaches its model through a reverse SSH tunnel to the developer laptop. `scripts/deploy/model-host-probe`
+(LaunchAgent `com.velora.model-host-probe`, every 30 s) writes `velora-model-host.prom` into the node-exporter text-file
+directory: `velora_model_host_up`, `velora_model_host_probe_duration_seconds`, `velora_model_host_model_resident` and
+`velora_model_host_probe_timestamp_seconds`. The `velora-model-host` rule group alerts on an unreachable server (critical,
+two minutes), a stopped probe, a model that is not loaded, and slow answers. See `docs/model-host.md`.

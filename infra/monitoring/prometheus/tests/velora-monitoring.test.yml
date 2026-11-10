@@ -827,3 +827,115 @@ tests:
             exp_annotations:
               summary: a call media node is unavailable
               description: Prometheus has not been able to scrape a mediasoup media node for at least one minute. Calls placed on it have ended and new calls go to the remaining nodes.
+
+  - name: an unreachable model server is critical after two minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_up'
+        values: '1+0x4 0+0x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraModelHostDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: VeloraModelHostDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: model-host
+            exp_annotations:
+              summary: the AI model server is unreachable
+              description: The homelab has not reached the model server on the laptop through the reverse SSH tunnel for two minutes, so every AI answer is failing. Check that the laptop is awake and plugged in, the velora-gemma4 container is running, and the velora-gemma-ssh-tunnel user service is active.
+
+  - name: a short model server blip does not alert
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_up'
+        values: '1+0x8 0+0x5 1+0x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraModelHostDown
+        exp_alerts: []
+
+  - name: a stopped model probe warns after its results go stale
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_probe_timestamp_seconds'
+        values: '0+0x80'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VeloraModelHostProbeStale
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: VeloraModelHostProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: model-host
+            exp_annotations:
+              summary: the model server probe is not reporting
+              description: No model-server probe result has been written for five minutes, so a model outage would go unnoticed. Check the com.velora.model-host-probe LaunchAgent on the homelab.
+
+  - name: a fresh model probe does not warn
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_probe_timestamp_seconds'
+        values: '1+15x80'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VeloraModelHostProbeStale
+        exp_alerts: []
+
+  - name: a model that is not loaded warns after ten minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_up'
+        values: '1+0x100'
+      - series: 'velora_model_host_model_resident{model="gemma4:e2b-it-qat"}'
+        values: '0+0x100'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VeloraModelHostModelNotResident
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: VeloraModelHostModelNotResident
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: model-host
+            exp_annotations:
+              summary: the production AI model is not loaded
+              description: The model server is up but the production model has not been loaded for ten minutes (another model evicted it, or the server restarted), so the next AI request waits for a cold start of about twelve seconds.
+
+  - name: a loaded model does not warn
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_up'
+        values: '1+0x100'
+      - series: 'velora_model_host_model_resident{model="gemma4:e2b-it-qat"}'
+        values: '1+0x100'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VeloraModelHostModelNotResident
+        exp_alerts: []
+
+  - name: a slow model server warns after five minutes
+    interval: 15s
+    input_series:
+      - series: 'velora_model_host_up'
+        values: '1+0x60'
+      - series: 'velora_model_host_probe_duration_seconds'
+        values: '3+0x60'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VeloraModelHostSlow
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: VeloraModelHostSlow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: model-host
+            exp_annotations:
+              summary: the model server is answering slowly
+              description: The model server has taken more than two seconds to answer a health probe for five minutes, which usually means the laptop is overloaded, thermally throttled or swapping.

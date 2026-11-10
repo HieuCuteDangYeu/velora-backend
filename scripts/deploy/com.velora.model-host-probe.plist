@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Homelab LaunchAgent: probes the laptop model server every 30 s. Install on the homelab with
+    cp scripts/deploy/com.velora.model-host-probe.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.velora.model-host-probe.plist
+  Paths assume the production checkout at /Users/quan/GitHub/microservices-boilerplate.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.velora.model-host-probe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/quan/GitHub/microservices-boilerplate/scripts/deploy/model-host-probe</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>30</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/quan/Library/Logs/Velora/model-host-probe.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/quan/Library/Logs/Velora/model-host-probe.log</string>
+</dict>
+</plist>

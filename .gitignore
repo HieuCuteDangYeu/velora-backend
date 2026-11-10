@@ -85,6 +85,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 !/docs/reel-pipeline-phase-8-validation.md
 !/docs/call-runtime-rollout.md
 !/docs/rate-limiting-and-guardrails.md
+!/docs/model-host.md
 !/docs/reel-indexing-qdrant-overlay-ci-gap-20261106.md
 
 # Local notification service secrets

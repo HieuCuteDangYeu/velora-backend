@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Runs on the laptop as ExecStartPre of the reverse tunnel's systemd user service.
+#
+# The tunnel is `ssh -R 127.0.0.1:11435:localhost:11434 velora-homelab`. If the laptop's ssh
+# dies uncleanly (Wi-Fi change, suspend/resume), the homelab's sshd keeps the old session, and
+# its listener on 11435, until it notices the dead client, which can take a very long time.
+# Every reconnect then fails with "remote port forwarding failed" (ExitOnForwardFailure) and
+# production AI stays down. Before each connect, terminate any sshd session still listening
+# on the port; the new tunnel is about to take it over.
+#
+# Best effort and idempotent: it always exits 0, so it can never block the tunnel from starting.
+
+HOST="${MODEL_HOST_TUNNEL_HOST:-velora-homelab}"
+PORT="${MODEL_HOST_TUNNEL_PORT:-11435}"
+
+[[ "$PORT" =~ ^[0-9]+$ ]] || exit 0
+
+# Only sshd sessions are ever signalled, never another program that happens to use the port.
+remote="for p in \$(lsof -nP -iTCP:${PORT} -sTCP:LISTEN -t 2>/dev/null | sort -u); do
+  ps -o command= -p \"\$p\" | grep -q '^sshd-session' && kill \"\$p\" && echo \"cleared stale tunnel session \$p\"
+done"
+
+ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 "$HOST" "$remote" || true
+exit 0

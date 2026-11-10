@@ -668,3 +668,50 @@ groups:
         annotations:
           summary: User recommendation p95 latency is elevated
           description: User recommendation p95 latency has stayed above two seconds with at least five recent requests.
+
+  # The ai-service reaches its model (Ollama on the developer laptop) through a reverse SSH tunnel.
+  # scripts/deploy/model-host-probe reports these metrics through node-exporter's text-file collector.
+  - name: velora-model-host
+    rules:
+      - alert: VeloraModelHostDown
+        expr: velora_model_host_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: model-host
+        annotations:
+          summary: the AI model server is unreachable
+          description: The homelab has not reached the model server on the laptop through the reverse SSH tunnel for two minutes, so every AI answer is failing. Check that the laptop is awake and plugged in, the velora-gemma4 container is running, and the velora-gemma-ssh-tunnel user service is active.
+
+      - alert: VeloraModelHostProbeStale
+        expr: |
+          (time() - velora_model_host_probe_timestamp_seconds > 300)
+          or
+          absent(velora_model_host_probe_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: warning
+          service: model-host
+        annotations:
+          summary: the model server probe is not reporting
+          description: No model-server probe result has been written for five minutes, so a model outage would go unnoticed. Check the com.velora.model-host-probe LaunchAgent on the homelab.
+
+      - alert: VeloraModelHostModelNotResident
+        expr: velora_model_host_up == 1 and on() velora_model_host_model_resident == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: model-host
+        annotations:
+          summary: the production AI model is not loaded
+          description: The model server is up but the production model has not been loaded for ten minutes (another model evicted it, or the server restarted), so the next AI request waits for a cold start of about twelve seconds.
+
+      - alert: VeloraModelHostSlow
+        expr: velora_model_host_up == 1 and on() velora_model_host_probe_duration_seconds > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: model-host
+        annotations:
+          summary: the model server is answering slowly
+          description: The model server has taken more than two seconds to answer a health probe for five minutes, which usually means the laptop is overloaded, thermally throttled or swapping.

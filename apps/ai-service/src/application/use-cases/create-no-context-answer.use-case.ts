@@ -48,6 +48,14 @@ export class CreateNoContextAnswerUseCase {
       return 'Which shared Reel or clip do you mean? Please identify the one you want me to use.';
     }
 
+    if (
+      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+      state.hasSharedReelContext === false
+    ) {
+      // Nothing is shared here, so whichever modality was missing, the real reason is the same.
+      return 'I can’t access that Reel because it hasn’t been shared in this conversation. Share it here and I can help with it.';
+    }
+
     const userFacingReason = state.contextSufficiency?.userFacingReason?.trim();
     const missingEvidence = state.contextSufficiency?.missingEvidence ?? [];
     const missingReelIds = state.contextSufficiency?.missingReelIds ?? [];

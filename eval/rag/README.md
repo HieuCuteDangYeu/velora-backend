@@ -32,6 +32,19 @@ evidence" (the shared grounding rules otherwise make the model refuse "Why is th
 refuses half of them without the chat instruction), and the `should-decline` rows (an unseen video, private or live
 data) must be declined rather than answered.
 
+## Router with no shared reel
+
+`datasets/rag-router-no-shared-reel-v1.jsonl` holds 24 ways a user asks about a video ("the last video I watched", "the reel
+my friend sent me", ...) in a conversation where nothing is shared. An opt-in spec runs the real router on each, with and
+without a shared reel:
+
+```sh
+OLLAMA_LOCAL_INTEGRATION=1 npx jest query-router-agent.no-shared-reel.local.integration
+```
+
+Every phrasing must yield a route. The router used to reject its own correct reel route when no reel was shared, so the user
+saw "temporarily unavailable" (4 of 10 phrasings on `gemma4:e2b-it-qat`). The answer step now says the reel has to be shared.
+
 ## Guardrail replay
 
 `datasets/rag-guardrail-v1.jsonl` holds attack cases (direct, obfuscated, indirect-in-evidence,

@@ -762,10 +762,13 @@ Classify the current user message.
           : intent === 'USER_MEMORY_QUESTION'
             ? 'USER_MEMORY'
             : 'NONE';
+    // A reel question in a conversation with no shared reel is a legitimate request, not a model
+    // inconsistency: the user asks about a video that is not (or not yet) shared here. Retrieval
+    // then has no accessible reel and the answer step says the reel has to be shared. Rejecting
+    // it here surfaced "temporarily unavailable" for ordinary phrasings such as "the last video
+    // I watched", because only messages that literally said "private" or "not shared" matched.
     const allowUnavailableReelReference =
-      !input.hasSharedReelContext &&
-      intent === 'REEL_VIDEO_QUESTION' &&
-      this.isExplicitUnavailableReelReference(input.message);
+      !input.hasSharedReelContext && intent === 'REEL_VIDEO_QUESTION';
     this.validateReferentConsistency(
       intent,
       referenceTarget,

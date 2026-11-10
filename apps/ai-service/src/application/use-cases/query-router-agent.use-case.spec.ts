@@ -1561,23 +1561,68 @@ describe('QueryRouterAgentUseCase', () => {
     });
   });
 
+  describe('a reel question when the conversation has no shared reel', () => {
+    // The model is right that the user is asking about a reel. Rejecting that as "inconsistent"
+    // surfaced "temporarily unavailable" to the user; the pipeline already answers a reel question
+    // with nothing accessible safely (retrieval returns nothing), and says the reel has to be shared.
+    it.each([
+      'What did the creator say in the last video I watched about pricing?',
+      'Summarize the reel my friend sent me yesterday.',
+      'Can you tell me what the speaker says in the clip?',
+      'Did the creator mention a discount in the reel?',
+    ])('accepts the model route for: %s', async (message) => {
+      const structuredLlmService = {
+        generateObject: jest.fn().mockResolvedValue({
+          intent: 'REEL_VIDEO_QUESTION',
+          referenceTarget: 'SHARED_REEL',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          needsRetrieval: true,
+        }),
+      };
+      const useCase = new QueryRouterAgentUseCase(
+        structuredLlmService as never,
+        config,
+      );
+
+      await expect(
+        useCase.execute({
+          message,
+          hasSharedReelContext: false,
+          sharedReelCount: 0,
+        }),
+      ).resolves.toMatchObject({
+        intent: 'REEL_VIDEO_QUESTION',
+        referenceTarget: 'SHARED_REEL',
+        needsRetrieval: true,
+      });
+    });
+
+    it('still rejects a reference target that contradicts the intent', async () => {
+      const useCase = new QueryRouterAgentUseCase(
+        {
+          generateObject: jest.fn().mockResolvedValue({
+            intent: 'NORMAL_CHAT',
+            referenceTarget: 'SHARED_REEL',
+            reelQuestionType: 'NONE',
+            requiredEvidence: ['NONE'],
+            needsRetrieval: false,
+          }),
+        } as never,
+        config,
+      );
+      await expect(
+        useCase.execute({ message: 'hello', hasSharedReelContext: false }),
+      ).rejects.toBeInstanceOf(RouterUnavailableError);
+    });
+  });
+
   it.each([
     {
       name: 'invalid intent',
       overrides: { intent: 'NOT_A_CANONICAL_INTENT' },
       input: { hasSharedReelContext: true },
       type: 'INVALID_INTENT',
-    },
-    {
-      name: 'shared reel without accessible context',
-      overrides: {
-        intent: 'REEL_VIDEO_QUESTION',
-        referenceTarget: 'SHARED_REEL',
-        reelQuestionType: 'TRANSCRIPT_CONTENT',
-        requiredEvidence: ['TRANSCRIPT'],
-      },
-      input: { hasSharedReelContext: false },
-      type: 'SHARED_REEL_CONTEXT_UNAVAILABLE',
     },
     {
       name: 'reel intent with no reel question type',

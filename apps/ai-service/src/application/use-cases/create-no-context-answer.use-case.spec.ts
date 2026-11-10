@@ -192,4 +192,40 @@ describe('CreateNoContextAnswerUseCase', () => {
       );
     });
   });
+
+  describe('a reel question when no reel is shared in the conversation', () => {
+    const useCase = new CreateNoContextAnswerUseCase();
+    const answerFor = (
+      missingEvidence: string[],
+      hasSharedReelContext: boolean,
+    ) =>
+      useCase.execute({
+        userMessage: 'What did the creator say in the last video I watched?',
+        hasSharedReelContext,
+        route: { intent: 'REEL_VIDEO_QUESTION' },
+        contextSufficiency: { sufficient: false, missingEvidence },
+      } as unknown as RagChatWorkflowState);
+
+    it.each([
+      [['TRANSCRIPT']],
+      [['VISUAL']],
+      [['AUDIO']],
+      [['METADATA']],
+      [['TRANSCRIPT', 'METADATA']],
+      [['TRANSCRIPT', 'VISUAL']],
+    ])('always asks to share the reel first (missing %j)', (missing) => {
+      const answer = answerFor(missing, false);
+      expect(answer).toMatch(/hasn’t been shared in this conversation/i);
+      expect(answer).toMatch(/share it here/i);
+      // These used to claim "the available shared Reel context" when none existed.
+      expect(answer).not.toMatch(/available shared reel/i);
+    });
+
+    it('keeps the evidence-specific wording once a reel is shared', () => {
+      expect(answerFor(['TRANSCRIPT'], true)).toMatch(
+        /available shared Reel context does not contain enough transcript evidence/i,
+      );
+      expect(answerFor(['VISUAL'], true)).toMatch(/visual evidence/i);
+    });
+  });
 });

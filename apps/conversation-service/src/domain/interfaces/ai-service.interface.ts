@@ -6,9 +6,14 @@ import type { AiChatMemoryContext } from '@common/ai/interfaces/chat-memory-cont
 import { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
 
 export interface BotError {
-  code: 'AI_UNAVAILABLE' | 'NO_CONTENT' | 'RATE_LIMITED' | 'UNKNOWN';
+  code:
+    | 'AI_UNAVAILABLE'
+    | 'AI_BUSY'
+    | 'NO_CONTENT'
+    | 'RATE_LIMITED'
+    | 'UNKNOWN';
   message: string;
-  /** Present for RATE_LIMITED: seconds until the user may ask again. */
+  /** RATE_LIMITED: seconds until the user may ask again. AI_BUSY: seconds until a retry is likely to fit. */
   retryAfterSeconds?: number;
 }
 

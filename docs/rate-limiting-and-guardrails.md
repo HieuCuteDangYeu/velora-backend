@@ -64,8 +64,10 @@ chain, verify with logins from two different networks.
     "error": { "code": "RATE_LIMITED", "message": "You are asking Velora AI too quickly. ...", "retryAfterSeconds": 12 } }
   ```
 
-  Clients should show a message and may offer a retry after `retryAfterSeconds`. Existing codes are
-  `AI_UNAVAILABLE`, `NO_CONTENT` and `UNKNOWN`.
+  Clients should show a message and may offer a retry after `retryAfterSeconds`. Other codes are `AI_UNAVAILABLE`,
+  `NO_CONTENT`, `UNKNOWN` and `AI_BUSY`.
+- `AI_BUSY` is not a per-user limit: the model server is saturated (see `docs/model-host.md`). It carries the same
+  `retryAfterSeconds` and means "try again shortly".
 
 ### Clients
 

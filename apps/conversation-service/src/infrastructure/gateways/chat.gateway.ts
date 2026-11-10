@@ -134,8 +134,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
             ? 'No relevant video content found for this query.'
             : error.code === 'RATE_LIMITED'
               ? 'You are asking Velora AI too quickly. Please wait a moment and try again.'
-              : 'AI service is temporarily unavailable',
-        ...(error.code === 'RATE_LIMITED' && error.retryAfterSeconds
+              : error.code === 'AI_BUSY'
+                ? 'Velora AI is busy right now. Please try again in a moment.'
+                : 'AI service is temporarily unavailable',
+        ...((error.code === 'RATE_LIMITED' || error.code === 'AI_BUSY') &&
+        error.retryAfterSeconds
           ? { retryAfterSeconds: error.retryAfterSeconds }
           : {}),
       },

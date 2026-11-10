@@ -1,3 +1,4 @@
+import type { IChatAdmission } from '@ai/domain/interfaces/chat-admission.interface';
 import type {
   IRagChatWorkflow,
   RagChatWorkflowInput,
@@ -19,6 +20,8 @@ export class StreamChatUseCase {
   constructor(
     @Inject('IRagChatWorkflow')
     private readonly ragChatWorkflow: IRagChatWorkflow,
+    @Inject('IChatAdmission')
+    private readonly chatAdmission: IChatAdmission,
   ) {}
 
   async execute(input: {
@@ -27,12 +30,16 @@ export class StreamChatUseCase {
     conversationId: string;
     memory?: AiChatMemoryContext;
   }): Promise<StreamChatResult> {
-    const result = await this.ragChatWorkflow.execute({
-      message: input.message,
-      userId: input.userId,
-      conversationId: input.conversationId,
-      memory: input.memory,
-    } satisfies RagChatWorkflowInput);
+    // The model server answers one request at a time, so a burst of turns would only queue
+    // behind it until a model timeout. Admission turns the overflow away quickly instead.
+    const result = await this.chatAdmission.run(() =>
+      this.ragChatWorkflow.execute({
+        message: input.message,
+        userId: input.userId,
+        conversationId: input.conversationId,
+        memory: input.memory,
+      } satisfies RagChatWorkflowInput),
+    );
 
     return {
       answer: result.answer,

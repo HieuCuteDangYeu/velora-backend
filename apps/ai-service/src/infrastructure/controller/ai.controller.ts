@@ -6,6 +6,7 @@ import { HandleConversationTurnCompletedUseCase } from '@ai/application/use-case
 import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
 import { TranscribeAudioUseCase } from '@ai/application/use-cases/transcribe-audio.use-case';
+import { ChatBusyError } from '@ai/domain/errors/chat-busy.error';
 import { AskQuestionResponse } from '@common/ai/dtos/ask-question-response.dto';
 import { AskQuestionPayload } from '@common/ai/dtos/ask-question.dto';
 import type { CountDocumentTokensRequest } from '@common/ai/interfaces/count-document-tokens.interface';
@@ -250,6 +251,16 @@ export class AiController {
         suggestedQueries: result.suggestedQueries ?? [],
       };
     } catch (err: unknown) {
+      if (err instanceof ChatBusyError) {
+        // Not a failure of the AI: a fast, typed "try again shortly" the client can show.
+        return {
+          error: {
+            code: 'AI_BUSY',
+            message: 'Velora AI is busy right now. Please try again in a moment.',
+            retryAfterSeconds: err.retryAfterSeconds,
+          },
+        };
+      }
       const error = err as Error;
       console.error(`[StreamQuestion] ${error.message}`);
 

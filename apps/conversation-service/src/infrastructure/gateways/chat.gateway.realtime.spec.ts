@@ -321,6 +321,63 @@ describe('ChatGateway realtime membership helpers', () => {
     });
   });
 
+  it.each([
+    ['AI_BUSY', 'Velora AI is busy right now. Please try again in a moment.'],
+    [
+      'RATE_LIMITED',
+      'You are asking Velora AI too quickly. Please wait a moment and try again.',
+    ],
+  ] as const)(
+    'tells the user to retry after a %s failure, with the wait but without provider detail',
+    (code, expectedMessage) => {
+      const message = new Message({
+        id: 'user-message-id',
+        conversationId: CONVERSATION_ID,
+        clientMessageId: 'client-message-id',
+        senderId: OWNER_ID,
+        content: 'question',
+        type: 'text',
+        createdAt: new Date('2026-08-19T00:01:00.000Z'),
+      });
+
+      gateway.emitBotReplyFailure(message, {
+        code,
+        message: 'internal queue detail token=secret',
+        retryAfterSeconds: 14,
+      });
+
+      expect(emit).toHaveBeenCalledWith('bot_reply_failed', {
+        conversationId: CONVERSATION_ID,
+        userMessageId: 'user-message-id',
+        clientMessageId: 'client-message-id',
+        error: { code, message: expectedMessage, retryAfterSeconds: 14 },
+      });
+    },
+  );
+
+  it('does not attach a retry wait to failures that have none', () => {
+    const message = new Message({
+      id: 'user-message-id',
+      conversationId: CONVERSATION_ID,
+      clientMessageId: 'client-message-id',
+      senderId: OWNER_ID,
+      content: 'question',
+      type: 'text',
+      createdAt: new Date('2026-08-19T00:01:00.000Z'),
+    });
+
+    gateway.emitBotReplyFailure(message, {
+      code: 'AI_UNAVAILABLE',
+      message: 'x',
+      retryAfterSeconds: 14,
+    });
+
+    const payload = emit.mock.calls.at(-1)?.[1] as {
+      error: Record<string, unknown>;
+    };
+    expect(payload.error).not.toHaveProperty('retryAfterSeconds');
+  });
+
   it('emits conversation updates to legacy and namespaced account rooms in one fanout', () => {
     const group = conversation();
 

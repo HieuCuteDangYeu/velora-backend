@@ -37,6 +37,7 @@ import { AiApplicationConfigAdapter } from '@ai/infrastructure/adapters/ai-appli
 import { ChatPromptBuilderAdapter } from '@ai/infrastructure/adapters/chat-prompt-builder.adapter';
 import { CloudflareVisionAdapter } from '@ai/infrastructure/adapters/cloudflare-vision.adapter';
 import { ContentServiceAdapter } from '@ai/infrastructure/adapters/content-service.adapter';
+import { InProcessChatAdmissionAdapter } from '@ai/infrastructure/adapters/in-process-chat-admission.adapter';
 import { ConversationTokenPublisherAdapter } from '@ai/infrastructure/adapters/conversation-token-publisher.adapter';
 import { DeterministicRetrievalEngineAdapter } from '@ai/infrastructure/adapters/deterministic-retrieval-engine.adapter';
 import { EvidenceDiversitySelector } from '@ai/infrastructure/adapters/evidence-diversity-selector';
@@ -304,6 +305,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
       provide: 'IChatPromptBuilder',
       useClass: ChatPromptBuilderAdapter,
     },
+    { provide: 'IChatAdmission', useClass: InProcessChatAdmissionAdapter },
     {
       provide: 'IRagChatWorkflow',
       useClass: LangGraphRagChatWorkflowAdapter,

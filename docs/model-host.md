@@ -43,6 +43,35 @@ ai-service admits a limited number of turns (`AI_MAX_CONCURRENT_TURNS`, `AI_MAX_
 `.env.example`) and answers the overflow at once with `AI_BUSY` and a `retryAfterSeconds` hint, instead of letting it queue until
 a model timeout. The client shows "Velora AI is busy right now"; see `docs/rate-limiting-and-guardrails.md`.
 
+## Keeping the laptop cool (measured 2026-11-11)
+The laptop (MSI Thin GF63 12UC: i7-12650H, RTX 3050 with 4 GB VRAM) sat at 94 °C under inference, hit 100 °C, and throttled about
+7,000 times a minute. Inference is GPU-bound (the GPU averaged about 31 W of its 35 W limit at 66 °C), so the heat was mostly the CPU
+boosting for ordinary desktop work in a small cooler.
+
+**Fix: disable Intel turbo** (`/sys/devices/system/cpu/intel_pstate/no_turbo` = 1):
+
+| 150 s of sustained inference | Turbo on | Turbo off |
+|---|---|---|
+| CPU package, mean / peak | 94 / 100 °C | 72 / 87 °C |
+| Thermal throttle events per minute | ~7,000 | 0 |
+| Answer speed | 80-83 tok/s, 1.25-1.29 s per turn | 81 tok/s, 1.28 s per turn |
+| CPU at idle | 84-91 °C | 54 °C |
+
+The only cost is single-core speed for dev work (about 2.3 GHz instead of ~4.7). To keep it across reboots, enable a oneshot
+systemd unit that writes 1 to that file (`velora-no-turbo.service`); switch it to 0 temporarily for heavy builds.
+
+Measured and **not** useful: the `balanced` power profile, capping the container to 4 CPUs, and fewer Ollama threads (`num_thread`
+1 or 2 cut Ollama's CPU from about 360% to 100-150% with no change in temperature). A 2-CPU container cap lowered the temperature by
+only 2.5 °C and cost 30% of the speed. The GPU power limit cannot be changed on this laptop GPU (`nvidia-smi -pl` is unsupported).
+
+Gotcha: `docker update --cpus 0` does **not** remove a CPU cap; set it back to the CPU count (`--cpus 16`) instead.
+
+Other levers: only one fan reports RPM (about 5,100 near max at 90+ °C), which suggests dust or dried thermal paste, so cleaning the
+fans and heatsink and replacing the paste is the next real fix. The local Langfuse stack (ClickHouse and others) is the largest CPU
+consumer after the browser and also uses about 1.9 GB of RAM; production traces go to it, so it cannot simply be stopped.
+Memory is 16 GB (reportedly 2 x 8 GB DDR4-3200 SO-DIMM, 2 slots, 64 GB maximum). More RAM stops swapping but does not speed up the
+model, which lives in the 4 GB of VRAM.
+
 ## Troubleshooting
 - AI answers failing everywhere: check `VeloraModelHostDown`; on the laptop, `systemctl --user status velora-gemma-ssh-tunnel`,
   `docker ps --filter name=velora-gemma4`, and that the machine is awake and on AC power.

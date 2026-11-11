@@ -14,6 +14,7 @@ import { CommitSemanticCandidateUseCase } from './application/use-cases/commit-s
 import { ExtractHierarchicalMetadataUseCase } from './application/use-cases/extract-hierarchical-metadata.use-case';
 import { MergeTranscriptSegmentsUseCase } from './application/use-cases/merge-transcript-segments.use-case';
 import { ProcessReelIndexJobUseCase } from './application/use-cases/process-reel-index-job.use-case';
+import { RetryDeferredVisualAnalysisUseCase } from './application/use-cases/retry-deferred-visual-analysis.use-case';
 import { SelectHealthyTranscriptSectionsUseCase } from './application/use-cases/select-healthy-transcript-sections.use-case';
 import { TranscribeAudioManifestUseCase } from './application/use-cases/transcribe-audio-manifest.use-case';
 import { ValidateEmbeddingQualityUseCase } from './application/use-cases/validate-embedding-quality.use-case';
@@ -29,12 +30,14 @@ import { ReelIndexRetryPublisherAdapter } from './infrastructure/adapters/reel-i
 import { ReelIndexingController } from './infrastructure/controllers/reel-indexing.controller';
 import { SemanticIndexController } from './infrastructure/controllers/semantic-index.controller';
 import { PrismaService } from './infrastructure/prisma/prisma.service';
+import { PrismaDeferredVisualAnalysisRepository } from './infrastructure/repositories/prisma-deferred-visual-analysis.repository';
 import { PrismaIndexCheckpointRepository } from './infrastructure/repositories/prisma-index-checkpoint.repository';
 import { PrismaLangGraphCheckpointSaver } from './infrastructure/repositories/prisma-langgraph-checkpoint-saver';
 import { PrismaSemanticCandidateInspector } from './infrastructure/repositories/prisma-semantic-candidate-inspector';
 import { PrismaSemanticCandidateLifecycle } from './infrastructure/repositories/prisma-semantic-candidate-lifecycle';
 import { PrismaSemanticIndexRepository } from './infrastructure/repositories/prisma-semantic-index.repository';
 import { PrismaIndexQualityReviewRepository } from './infrastructure/repositories/prisma-index-quality-review.repository';
+import { DeferredVisualRetryWorker } from './infrastructure/services/deferred-visual-retry-worker.service';
 import { IndexingMetricsService } from './infrastructure/services/indexing-metrics.service';
 import { ReelIndexLangGraphWorkflow } from './infrastructure/workflows/reel-index-langgraph.workflow';
 
@@ -114,6 +117,13 @@ const rabbitClient = (name: string, queue: string) => ({
     PrismaLangGraphCheckpointSaver,
     ReelIndexLangGraphWorkflow,
     ProcessReelIndexJobUseCase,
+    RetryDeferredVisualAnalysisUseCase,
+    PrismaDeferredVisualAnalysisRepository,
+    DeferredVisualRetryWorker,
+    {
+      provide: 'IDeferredVisualAnalysisRepository',
+      useExisting: PrismaDeferredVisualAnalysisRepository,
+    },
     AiServiceAdapter,
     ContentServiceAdapter,
     R2ArtifactStorageAdapter,

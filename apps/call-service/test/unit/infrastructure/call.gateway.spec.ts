@@ -6,6 +6,10 @@ import { CallParticipant } from '../../../src/domain/entities/call-participant.e
 import { CallSession } from '../../../src/domain/entities/call-session.entity';
 import { GroupJoinMediaUnavailableError } from '../../../src/application/use-cases/join-call.use-case';
 import { CallGateway } from '../../../src/infrastructure/gateways/call.gateway';
+import {
+  type CallCoordinator,
+  InProcessCallCoordinator,
+} from '../../../src/infrastructure/runtime/call-coordinator';
 
 describe('CallGateway reconnect recovery', () => {
   const initiatedVoiceSession = new CallSession({
@@ -2816,6 +2820,149 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  describe('sockets of a signaling replica that stopped', () => {
+    const connectedThrough = (socketIds: string[]) =>
+      new CallParticipant({
+        userId: 'user-a',
+        callId: 'call-1',
+        role: 'host',
+        socketIds,
+        isConnected: true,
+        joinedAt: new Date('2026-01-01T00:00:00.000Z'),
+      });
+    // `other-socket` was accepted by another replica, whose last heartbeat is
+    // `heartbeatAgeMs` old. The sweep runs every 5 s; three missed beats = dead.
+    const setup = async (
+      heartbeatAgeMs: number,
+      participant: CallParticipant,
+    ) => {
+      const coordinator = new InProcessCallCoordinator();
+      await coordinator.hashSet(
+        'call:signaling:replicas',
+        'other-replica',
+        String(Date.now() - heartbeatAgeMs),
+        60_000,
+      );
+      await coordinator.hashSet(
+        'call:call-1:socket-owners',
+        'other-socket',
+        'other-replica',
+        60_000,
+      );
+      const stateRepository = {
+        getParticipant: jest.fn().mockResolvedValue(participant),
+        getParticipants: jest.fn().mockResolvedValue([participant]),
+        upsertParticipant: jest.fn(),
+        removeParticipant: jest.fn(),
+        listExpiredReconnects: jest.fn().mockResolvedValue([]),
+      };
+      const gateway = createGateway({
+        coordinator,
+        stateRepository,
+        sessionRepository: {
+          findByCallId: jest.fn().mockResolvedValue(activeSession),
+          scanActiveGroupCalls: jest
+            .fn()
+            .mockResolvedValue({ cursor: '0', sessions: [] }),
+          listActiveCallIds: jest.fn().mockResolvedValue(['call-1']),
+        },
+      });
+      const roomEmitter = { emit: jest.fn() };
+      gateway.server = { to: jest.fn().mockReturnValue(roomEmitter) } as never;
+      const replicaHeartbeat = () =>
+        coordinator.hashGet('call:signaling:replicas', 'other-replica');
+      return { gateway, stateRepository, roomEmitter, replicaHeartbeat };
+    };
+    const dropSocket1 = (gateway: CallGateway) =>
+      gateway.handleDisconnect(
+        createSocket({ id: 'socket-1', userId: 'user-a', callIds: ['call-1'] }),
+      );
+    const reconnecting = expect.objectContaining({
+      userId: 'user-a',
+      socketIds: [],
+      isConnected: false,
+    });
+
+    it('keeps a participant connected through a socket on a replica that still sends heartbeats', async () => {
+      const { gateway, stateRepository, roomEmitter } = await setup(
+        1_000,
+        connectedThrough(['socket-1', 'other-socket']),
+      );
+
+      await dropSocket1(gateway);
+
+      expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+        expect.objectContaining({
+          socketIds: ['other-socket'],
+          isConnected: true,
+        }),
+      );
+      expect(roomEmitter.emit).not.toHaveBeenCalled();
+    });
+
+    it('starts the reconnect window when the only other socket was on a replica that stopped', async () => {
+      const { gateway, stateRepository, roomEmitter } = await setup(
+        60_000,
+        connectedThrough(['socket-1', 'other-socket']),
+      );
+
+      await dropSocket1(gateway);
+
+      expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+        reconnecting,
+      );
+      expect(roomEmitter.emit).toHaveBeenCalledWith(
+        'peer_reconnecting',
+        expect.objectContaining({ callId: 'call-1', userId: 'user-a' }),
+      );
+      gateway.onModuleDestroy();
+    });
+
+    it('treats a participant as disconnected once the replica holding their only socket stops sending heartbeats', async () => {
+      const { gateway, stateRepository, roomEmitter, replicaHeartbeat } =
+        await setup(60_000, connectedThrough(['other-socket']));
+      try {
+        await gateway.onModuleInit();
+        await jest.advanceTimersByTimeAsync(0);
+
+        expect(stateRepository.upsertParticipant).toHaveBeenCalledWith(
+          reconnecting,
+        );
+        expect(roomEmitter.emit).toHaveBeenCalledWith('peer_reconnecting', {
+          callId: 'call-1',
+          userId: 'user-a',
+          reconnectDeadlineAt: '2026-01-01T00:00:15.000Z',
+        });
+        // Handled once: the stopped replica is forgotten afterwards.
+        expect(await replicaHeartbeat()).toBeNull();
+      } finally {
+        gateway.onModuleDestroy();
+      }
+    });
+
+    it.each([
+      ['their replica still sends heartbeats', 1_000, ['other-socket']],
+      ['they have no socket yet (answered before connecting)', 60_000, []],
+    ])(
+      'leaves a participant alone when %s',
+      async (_case, heartbeatAgeMs, socketIds) => {
+        const { gateway, stateRepository, roomEmitter } = await setup(
+          heartbeatAgeMs,
+          connectedThrough(socketIds),
+        );
+        try {
+          await gateway.onModuleInit();
+          await jest.advanceTimersByTimeAsync(0);
+
+          expect(stateRepository.upsertParticipant).not.toHaveBeenCalled();
+          expect(roomEmitter.emit).not.toHaveBeenCalled();
+        } finally {
+          gateway.onModuleDestroy();
+        }
+      },
+    );
+  });
+
   it('acknowledges an atomic native answer before broadcasting it to the call and callee-user rooms', async () => {
     const acceptIncomingCallUseCase = {
       execute: jest.fn().mockResolvedValue({
@@ -3660,6 +3807,7 @@ function createGateway(overrides?: {
   };
   conversationClient?: { send: jest.Mock };
   terminateCallsAfterMediaLossUseCase?: { execute: jest.Mock };
+  coordinator?: CallCoordinator;
 }) {
   return new CallGateway(
     (overrides?.initiateCallUseCase ?? { execute: jest.fn() }) as never,
@@ -3715,6 +3863,7 @@ function createGateway(overrides?: {
     (overrides?.terminateCallsAfterMediaLossUseCase ?? {
       execute: jest.fn().mockResolvedValue([]),
     }) as never,
+    overrides?.coordinator,
   );
 }
 

@@ -294,6 +294,9 @@ type StoredRecentTerminalCall = RecentTerminalCall & {
   expiresAtMs: number;
 };
 
+// One field per signaling replica: replica id -> time of its last heartbeat.
+const SIGNALING_REPLICAS_KEY = 'call:signaling:replicas';
+
 @WebSocketGateway({
   namespace: '/call',
   cors: { origin: '*' },
@@ -348,6 +351,11 @@ export class CallGateway
   // The in-process timer owns the happy path; the durable sweep only acts on
   // deadlines it has demonstrably missed.
   private readonly reconnectSweepSlackMs = 2000;
+  // A socket id stored for a participant only counts while the signaling
+  // replica that accepted it keeps sending its heartbeat.
+  private readonly replicaId = randomUUID();
+  private readonly replicaTtlMs = this.expirySweepIntervalMs * 3;
+  private replicaSweepInFlight = false;
 
   private async withGroupParticipantQueue<T>(
     callId: string,
@@ -400,17 +408,22 @@ export class CallGateway
     this.mediaEngine.onRoomsLost((callIds) => {
       void this.handleLostMediaRooms(callIds);
     });
+    // Before the first socket is accepted, so that no replica ever sees a
+    // socket of a replica it has no heartbeat for.
+    await this.writeReplicaHeartbeat();
     // A process-local timeout gives prompt feedback, while the Redis-backed
     // sweep makes expiration survive deploys and gateway restarts.
     this.expirySweepTimer = setInterval(() => {
       void this.sweepExpiredCalls();
       void this.reconcileGroupMembership();
       void this.sweepStaleReconnects();
+      void this.sweepDeadReplicas();
     }, this.expirySweepIntervalMs);
     this.expirySweepTimer.unref?.();
     void this.sweepExpiredCalls();
     void this.reconcileGroupMembership();
     void this.sweepStaleReconnects();
+    void this.sweepDeadReplicas();
   }
 
   onModuleDestroy(): void {
@@ -454,6 +467,10 @@ export class CallGateway
 
   private mediaUiKey(callId: string): string {
     return `call:${callId}:media-ui`;
+  }
+
+  private socketOwnersKey(callId: string): string {
+    return `call:${callId}:socket-owners`;
   }
 
   private videoField(producerId: string): string {
@@ -2380,6 +2397,9 @@ export class CallGateway
   private emitCallEnded(session: CallSession, reason: string): void {
     this.metrics.recordCallEvent('terminal_emitted');
     void this.clearMediaUiState(session.callId);
+    void this.coordinator
+      .hashDelete(this.socketOwnersKey(session.callId))
+      .catch(() => undefined);
     this.clearPendingUnansweredCall(session.callId);
     for (const userId of session.invitedUserIds) {
       this.clearPendingDisconnect(session.callId, userId);
@@ -2553,6 +2573,7 @@ export class CallGateway
 
     this.trackCallId(client, callId);
     await client.join(callId);
+    await this.recordSocketOwner(callId, client.id);
 
     // Once the id is tracked, Socket.IO's disconnect hook owns cleanup. Do
     // not emit a success acknowledgement from a socket that is already gone.
@@ -2578,8 +2599,13 @@ export class CallGateway
       return;
     }
 
-    const remainingSocketIds = participant.socketIds.filter(
-      (participantSocketId) => participantSocketId !== socketId,
+    // Ids left behind by a signaling replica that stopped must not keep the
+    // participant connected.
+    const remainingSocketIds = await this.liveSocketIds(
+      callId,
+      participant.socketIds.filter(
+        (participantSocketId) => participantSocketId !== socketId,
+      ),
     );
 
     if (remainingSocketIds.length > 0) {
@@ -2634,6 +2660,134 @@ export class CallGateway
     }
     if (result.didTransition !== false) {
       this.emitCallEnded(result.session, result.endedReason);
+    }
+  }
+
+  // Kept as long as any call state, so a stopped replica stays recognisable.
+  private writeReplicaHeartbeat(): Promise<void> {
+    return this.coordinator.hashSet(
+      SIGNALING_REPLICAS_KEY,
+      this.replicaId,
+      String(Date.now()),
+      this.mediaUiTtlMs,
+    );
+  }
+
+  private isReplicaAlive(lastHeartbeat: string | undefined): boolean {
+    return Number(lastHeartbeat) >= Date.now() - this.replicaTtlMs;
+  }
+
+  /** Remembers which replica holds a socket; a failure only loses that check. */
+  private async recordSocketOwner(
+    callId: string,
+    socketId: string,
+  ): Promise<void> {
+    try {
+      await this.coordinator.hashSet(
+        this.socketOwnersKey(callId),
+        socketId,
+        this.replicaId,
+        this.mediaUiTtlMs,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to record socket owner call=${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+      );
+    }
+  }
+
+  /** The given socket ids whose signaling replica is still running. */
+  private async liveSocketIds(
+    callId: string,
+    socketIds: string[],
+  ): Promise<string[]> {
+    if (socketIds.length === 0) return socketIds;
+    const [owners, replicas] = await Promise.all([
+      this.coordinator.hashGetAll(this.socketOwnersKey(callId)),
+      this.coordinator.hashGetAll(SIGNALING_REPLICAS_KEY),
+    ]);
+    return socketIds.filter((socketId) => {
+      const replicaId = owners[socketId];
+      // An id without a recorded owner cannot be judged: keep it.
+      return (
+        !replicaId ||
+        replicaId === this.replicaId ||
+        this.isReplicaAlive(replicas[replicaId])
+      );
+    });
+  }
+
+  /**
+   * Sends this replica's heartbeat, then cleans up after replicas that stopped
+   * sending theirs. Their socket ids stay in Redis, so their participants
+   * would look connected until the session expires. A participant left with
+   * no live socket is treated exactly like one whose last socket just dropped.
+   */
+  private async sweepDeadReplicas(): Promise<void> {
+    try {
+      this.runtimeLease.assertHeld();
+      // On every tick, also while an earlier cleanup below is still running:
+      // a long cleanup must not make this replica look stopped itself.
+      await this.writeReplicaHeartbeat();
+    } catch (error) {
+      this.logger.warn(
+        `Signaling replica heartbeat failed errorCode=${safeCallErrorCode(error)}`,
+      );
+      return;
+    }
+    if (!this.server || this.replicaSweepInFlight) return;
+
+    this.replicaSweepInFlight = true;
+    try {
+      if (!(await this.claimSweepTick('signaling-replicas'))) return;
+      const replicas = await this.coordinator.hashGetAll(
+        SIGNALING_REPLICAS_KEY,
+      );
+      const deadReplicaIds = Object.keys(replicas).filter(
+        (replicaId) => !this.isReplicaAlive(replicas[replicaId]),
+      );
+      if (deadReplicaIds.length === 0) return;
+
+      let complete = true;
+      for (const callId of await this.sessionRepository.listActiveCallIds()) {
+        const participants = await this.stateRepository.getParticipants(callId);
+        for (const { userId, isConnected, socketIds } of participants) {
+          if (
+            !isConnected ||
+            socketIds.length === 0 ||
+            (await this.liveSocketIds(callId, socketIds)).length > 0
+          )
+            continue;
+          try {
+            await this.withGroupParticipantQueue(callId, userId, async () => {
+              const current = await this.stateRepository.getParticipant(
+                callId,
+                userId,
+              );
+              // The empty id matches no stored socket, so only dead ones go.
+              if (current?.isConnected && current.socketIds.length > 0)
+                await this.reconcileDisconnectedCall(callId, userId, '');
+            });
+          } catch (error) {
+            complete = false;
+            this.logger.warn(
+              `Stopped replica cleanup failed for call ${shortCallIdentifier(callId)} errorCode=${safeCallErrorCode(error)}`,
+            );
+          }
+        }
+      }
+      // Forgotten only after a complete pass; otherwise the next tick retries.
+      if (complete)
+        await this.coordinator.hashDelete(
+          SIGNALING_REPLICAS_KEY,
+          deadReplicaIds,
+        );
+    } catch (error) {
+      this.logger.warn(
+        `Signaling replica sweep failed errorCode=${safeCallErrorCode(error)}`,
+      );
+    } finally {
+      this.replicaSweepInFlight = false;
     }
   }
 

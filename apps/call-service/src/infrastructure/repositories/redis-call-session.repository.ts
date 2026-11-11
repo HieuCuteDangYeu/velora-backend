@@ -1215,6 +1215,10 @@ export class RedisCallSessionRepository implements ICallSessionRepository {
     };
   }
 
+  listActiveCallIds(): Promise<string[]> {
+    return this.redis.zrange(ACTIVE_CALLS_KEY, 0, -1);
+  }
+
   async delete(callId: string): Promise<void> {
     const session = await this.findByCallId(callId);
     await this.redis

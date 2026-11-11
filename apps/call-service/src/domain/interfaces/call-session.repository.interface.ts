@@ -148,6 +148,8 @@ export abstract class ICallSessionRepository {
     cursor: string;
     sessions: CallSession[];
   }>;
+  /** Ids of all calls that are currently active (answered or group). */
+  abstract listActiveCallIds(): Promise<string[]>;
   abstract delete(callId: string): Promise<void>;
   abstract joinParticipant(
     callId: string,

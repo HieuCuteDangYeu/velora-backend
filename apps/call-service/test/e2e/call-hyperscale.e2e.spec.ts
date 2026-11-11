@@ -7,6 +7,10 @@ process.env.CALL_MEDIA_MODE = 'remote';
 process.env.CALL_MEDIA_NODE_SWEEP_INTERVAL_MS = '200';
 process.env.CALL_MEDIA_HEARTBEAT_TTL_MS = '1500';
 process.env.MEDIASOUP_WORKERS = '1';
+// A stopped signaling replica is noticed after three missed sweeps, and its
+// participants then get the reconnect grace. Keep both short for the tests.
+process.env.CALL_EXPIRY_SWEEP_INTERVAL_MS = '1000';
+process.env.CALL_RECONNECT_GRACE_MS = '1500';
 delete process.env.MEDIASOUP_WEBRTC_SERVER_PORT;
 process.env.RABBITMQ_URL ||= 'amqp://127.0.0.1:5672';
 
@@ -145,7 +149,8 @@ function onceEvent<T>(socket: Socket, event: string): Promise<T> {
       return app;
     }
 
-    async function startReplica(): Promise<void> {
+    /** Starts one more signaling replica and returns its index. */
+    async function startReplica(): Promise<number> {
       const { CallServiceModule } =
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         require('../../src/call-service.module') as typeof import('../../src/call-service.module');
@@ -171,6 +176,7 @@ function onceEvent<T>(socket: Socket, event: string): Promise<T> {
       ).address();
       replicas.push(app);
       urls.push(`http://127.0.0.1:${port}`);
+      return replicas.length - 1;
     }
 
     async function connect(replica: number, token: string): Promise<Socket> {
@@ -184,10 +190,10 @@ function onceEvent<T>(socket: Socket, event: string): Promise<T> {
       return socket;
     }
 
-    /** Caller on replica 0, callee on replica 1, call answered. */
-    async function establishActiveCall() {
-      const callerSocket = await connect(0, 'caller-token');
-      const calleeSocket = await connect(1, 'callee-token');
+    /** Caller and callee on different replicas by default, call answered. */
+    async function establishActiveCall(callerReplica = 0, calleeReplica = 1) {
+      const callerSocket = await connect(callerReplica, 'caller-token');
+      const calleeSocket = await connect(calleeReplica, 'callee-token');
 
       const callerJoined = onceEvent<{ callId: string }>(
         callerSocket,
@@ -311,6 +317,54 @@ function onceEvent<T>(socket: Socket, event: string): Promise<T> {
       const ended = onceEvent(calleeSocket, 'call_ended');
       recovered.emit('leave_call', { callId });
       await ended;
+    });
+
+    it('ends the call when a participant never returns after their signaling replica stopped', async () => {
+      const callerReplica = await startReplica();
+      const { calleeSocket, callId } = await establishActiveCall(
+        callerReplica,
+        1,
+      );
+
+      // The replica stops and the caller's app never reconnects.
+      const reconnecting = onceEvent(calleeSocket, 'peer_reconnecting');
+      await replicas[callerReplica].close();
+
+      await expect(reconnecting).resolves.toMatchObject({
+        callId,
+        userId: caller.id,
+      });
+      await expect(
+        onceEvent(calleeSocket, 'call_ended'),
+      ).resolves.toMatchObject({ callId, reason: 'disconnected' });
+    });
+
+    it('notices a later drop of a participant who came back through another replica', async () => {
+      const callerReplica = await startReplica();
+      const { calleeSocket, callId } = await establishActiveCall(
+        callerReplica,
+        1,
+      );
+      await replicas[callerReplica].close();
+
+      // The caller's app reconnects through the surviving replica. The socket
+      // id from the stopped replica is still stored next to the new one.
+      const recovered = await connect(1, 'caller-token');
+      const rejoined = onceEvent(recovered, 'call_rejoined');
+      recovered.emit('rejoin_call', { callId });
+      await rejoined;
+
+      // Later the caller really loses the connection.
+      const reconnecting = onceEvent(calleeSocket, 'peer_reconnecting');
+      recovered.disconnect();
+
+      await expect(reconnecting).resolves.toMatchObject({
+        callId,
+        userId: caller.id,
+      });
+      await expect(
+        onceEvent(calleeSocket, 'call_ended'),
+      ).resolves.toMatchObject({ callId, reason: 'disconnected' });
     });
 
     it('ends calls on a media node that dies, and places new calls on a live one', async () => {

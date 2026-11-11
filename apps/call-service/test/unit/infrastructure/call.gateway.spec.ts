@@ -2761,12 +2761,32 @@ describe('CallGateway reconnect recovery', () => {
     });
 
     it('accepts an invited group member but not the initiator or an outsider', async () => {
+      // A group session is created `active`; only its invitations ring.
+      const invitation = (status: string) => ({
+        invitationId: ringingSession.callId,
+        expiresAt: '2026-11-12T00:00:30.000Z',
+        sentAt: '2026-11-12T00:00:00.000Z',
+        status,
+      });
       const group = {
         ...ringingSession,
+        status: 'active',
         isGroupCall: true,
         targetUserId: 'user-b',
         invitedUserIds: ['user-a', 'user-b', 'user-c'],
+        groupInvitations: {
+          'user-b': invitation('declined'),
+          'user-c': invitation('ringing'),
+        },
       };
+      // A member whose invitation is no longer ringing is ignored.
+      const stale = setup(group);
+      await stale.gateway.handleCallRinging(
+        { callId: group.callId },
+        createSocket({ id: 'socket-b', userId: 'user-b', emit: jest.fn() }),
+      );
+      expect(stale.roomEmitter.emit).not.toHaveBeenCalled();
+
       const ok = setup(group);
       await ok.gateway.handleCallRinging(
         { callId: group.callId },

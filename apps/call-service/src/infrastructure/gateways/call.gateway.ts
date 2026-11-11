@@ -1964,12 +1964,14 @@ export class CallGateway
     if (!callId || callId.length > 128) return;
 
     const session = await this.sessionRepository.findByCallId(callId);
-    if (
-      !session ||
-      (session.status !== 'initiated' && session.status !== 'ringing')
-    ) {
-      return;
-    }
+    if (!session) return;
+    // A group session is `active` from the moment it is created, so whether
+    // it still rings for this user is the state of their own invitation.
+    const isRinging = session.isGroupCall
+      ? session.status === 'active' &&
+        session.groupInvitations[userId]?.status === 'ringing'
+      : session.status === 'initiated' || session.status === 'ringing';
+    if (!isRinging) return;
     const isRecipient = session.isGroupCall
       ? userId !== session.initiatorId &&
         session.invitedUserIds.includes(userId)

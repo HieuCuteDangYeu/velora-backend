@@ -164,7 +164,10 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
       data: {
         status: 'failed',
         lastError: error,
-        nextAttemptAt,
+        // No next attempt means the job is finished. Prisma skips an
+        // `undefined` field, which would keep the previous, already-due time
+        // and hand the job to the retry scheduler forever.
+        nextAttemptAt: nextAttemptAt ?? null,
         sentAt: null,
       },
     });

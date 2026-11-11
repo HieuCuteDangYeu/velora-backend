@@ -221,6 +221,25 @@ describe('PrismaNotificationJobRepository', () => {
       { createdAt: 'asc' },
     ]);
   });
+
+  it('clears the retry time of a failed job that gets no further attempt', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 'job-1' });
+    const repository = new PrismaNotificationJobRepository({
+      notificationJob: { update },
+    } as never);
+    const retryAt = new Date('2026-11-12T00:01:00Z');
+
+    await repository.markFailed('job-1', 'token-1: provider_error', retryAt);
+    await repository.markFailed('job-1', 'token-1: provider_error');
+
+    const written = update.mock.calls.map(
+      ([input]) =>
+        (input as { data: { nextAttemptAt: Date | null } }).data.nextAttemptAt,
+    );
+    // `undefined` would leave the previous, already-due retry time in place.
+    expect(written).toEqual([retryAt, null]);
+  });
+
   describe('durable batch intake', () => {
     const input = {
       type: 'NEW_MESSAGE' as const,

@@ -278,6 +278,30 @@ integration('Notification claim on isolated PostgreSQL', () => {
     expect(await prisma.pushToken.count()).toBe(1);
   });
 
+  it('stops retrying a failed job once it has no next attempt', async () => {
+    await register();
+    const job = await createJob();
+    const isRetryable = async () =>
+      (await repository.findRetryable(100)).some(({ id }) => id === job.id);
+
+    // An earlier attempt failed and its retry time has now passed.
+    await repository.markFailed(
+      job.id,
+      'prior failure',
+      new Date(Date.now() - 1_000),
+    );
+    expect(await isRetryable()).toBe(true);
+    await repository.claimForProcessing(job.id, skipNoToken);
+
+    // The last allowed attempt failed as well: no next attempt is given.
+    await repository.markFailed(job.id, 'last failure');
+    expect(await isRetryable()).toBe(false);
+    expect(await repository.claimForProcessing(job.id, skipNoToken)).toBeNull();
+    expect(
+      await prisma.notificationJob.findUniqueOrThrow({ where: { id: job.id } }),
+    ).toMatchObject({ status: 'failed', nextAttemptAt: null });
+  });
+
   it('sees a later token registration on later jobs without a negative cache', async () => {
     const first = await createJob();
     expect(

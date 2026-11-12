@@ -39,6 +39,17 @@ scrape_configs:
     static_configs:
       - targets:
           - call-media-1:3019
+      # Second media node on velora-node-2 (France). It is not in this compose
+      # stack, so it is scraped through Tailscale by its tailnet address. See
+      # infra/call-media-node/README.md.
+      - targets:
+          - 100.86.68.16:3019
+    relabel_configs:
+      # Keep the instance label readable in alerts and dashboards.
+      - source_labels: [__address__]
+        regex: 100\.86\.68\.16:3019
+        target_label: instance
+        replacement: call-media-2:3019
 
   - job_name: notification-service
     metrics_path: /metrics

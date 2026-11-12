@@ -37,6 +37,10 @@ node contract changes, and keep the image tag in `compose.yaml` in step with it.
   for `5672`. Both services keep their passwords.
 - `CALL_MEDIA_RPC_HOST` set to the node-2 tailnet IP, because the node publishes that host
   in its heartbeat and the signaling replicas dial it.
+- A scrape target in `infra/monitoring/prometheus/prometheus.yml` (job `call-media`,
+  address `100.86.68.16:3019`, relabelled to `instance="call-media-2:3019"`). Without it
+  `VeloraCallMediaNodeDown` cannot fire for this node. The target is reachable from the
+  Prometheus container over Tailscale; it takes effect when Prometheus reloads the file.
 
 Start and stop:
 

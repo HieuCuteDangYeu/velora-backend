@@ -126,15 +126,15 @@ scrape_configs:
           host_name: Homelab
           host_role: primary
           host_region: Vietnam
-      # Second VPS (France). Enable after starting the agent stack from
-      # infra/vps-agent/ on it, otherwise VeloraHostDown fires for the missing
-      # exporter.
-      # - targets:
-      #     - 100.86.68.16:9100
-      #   labels:
-      #     host: velora-node-2
-      #     host_name: Velora node 2
-      #     host_role: worker
-      #     host_region: France
-      #     host_provider: Contabo
-      #     docker_port: '2375'
+      # Second VPS (France): agent stack from infra/vps-agent/, running since
+      # 2026-11-13. Keep the target out of the file while the agent is stopped,
+      # otherwise VeloraHostDown fires for the missing exporter.
+      - targets:
+          - 100.86.68.16:9100
+        labels:
+          host: velora-node-2
+          host_name: Velora node 2
+          host_role: worker
+          host_region: France
+          host_provider: Contabo
+          docker_port: '2375'

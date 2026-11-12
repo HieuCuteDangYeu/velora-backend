@@ -25,19 +25,36 @@ export class GetCallTelemetrySummaryUseCase {
     );
     const attempts = new Set(events.map((event) => event.attemptId));
     const failures = events.filter((event) => event.outcome === 'failed');
+    // A call nobody picked up never started setup, so it says nothing about
+    // setup success. A failure always counts, even when the call also timed out.
+    const settled = new Set(
+      [...controlPlaneSucceeded, ...failures].map((event) => event.attemptId),
+    );
+    const unanswered = new Set(
+      events
+        .filter(
+          (event) =>
+            event.eventType === 'terminal' &&
+            UNANSWERED_TERMINAL_STAGES.has(event.stage) &&
+            !settled.has(event.attemptId),
+        )
+        .map((event) => event.attemptId),
+    );
+    const answerable = attempts.size - unanswered.size;
     const quality = events.filter(
       (event) => event.eventType === 'quality_sample',
     );
 
     return {
       attempts: attempts.size,
+      unansweredAttempts: unanswered.size,
       controlPlaneSuccessRate: rate(
         new Set(controlPlaneSucceeded.map((event) => event.attemptId)).size,
-        attempts.size,
+        answerable,
       ),
       mediaReadySuccessRate: rate(
         new Set(mediaReady.map((event) => event.attemptId)).size,
-        attempts.size,
+        answerable,
       ),
       timeToControlPlaneActiveMs: percentiles(
         controlPlaneSucceeded.map((event) => event.elapsedMs),
@@ -65,6 +82,14 @@ export class GetCallTelemetrySummaryUseCase {
     };
   }
 }
+
+// Terminal stages the mobile app records when a call ends without being answered.
+const UNANSWERED_TERMINAL_STAGES = new Set([
+  'lifecycle:cancelled',
+  'lifecycle:rejected',
+  'lifecycle:expired',
+  'lifecycle:answered_elsewhere',
+]);
 
 const rate = (numerator: number, denominator: number) =>
   denominator === 0 ? null : numerator / denominator;

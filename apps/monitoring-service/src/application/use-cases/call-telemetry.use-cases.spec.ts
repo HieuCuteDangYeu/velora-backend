@@ -158,6 +158,64 @@ describe('Call telemetry use cases', () => {
     });
   });
 
+  it('leaves calls nobody picked up out of the setup success rates', async () => {
+    const endedWith = (attemptId: string, stage: string) =>
+      event({
+        eventId: `${attemptId}-${stage}`,
+        attemptId,
+        eventType: 'terminal',
+        stage,
+        outcome: 'ended',
+      });
+    const repository = {
+      findEvents: jest
+        .fn()
+        .mockResolvedValue([
+          event({ attemptId: 'answered' }),
+          endedWith('cancelled', 'lifecycle:cancelled'),
+          endedWith('rejected', 'lifecycle:rejected'),
+          endedWith('expired', 'lifecycle:expired'),
+          endedWith('elsewhere', 'lifecycle:answered_elsewhere'),
+        ]),
+    };
+    const useCase = new GetCallTelemetrySummaryUseCase(repository as never);
+
+    const result = await useCase.execute(query);
+
+    expect(result.attempts).toBe(5);
+    expect(result.unansweredAttempts).toBe(4);
+    expect(result.controlPlaneSuccessRate).toBe(1);
+  });
+
+  it('still counts a call that timed out during setup as a failure', async () => {
+    const repository = {
+      findEvents: jest.fn().mockResolvedValue([
+        event({ attemptId: 'answered' }),
+        event({
+          eventId: 'timeout-failed',
+          attemptId: 'timed-out',
+          eventType: 'terminal',
+          stage: 'socket_connect_timeout',
+          outcome: 'failed',
+          errorCode: 'timeout',
+        }),
+        event({
+          eventId: 'timeout-expired',
+          attemptId: 'timed-out',
+          eventType: 'terminal',
+          stage: 'lifecycle:expired',
+          outcome: 'ended',
+        }),
+      ]),
+    };
+    const useCase = new GetCallTelemetrySummaryUseCase(repository as never);
+
+    const result = await useCase.execute(query);
+
+    expect(result.unansweredAttempts).toBe(0);
+    expect(result.controlPlaneSuccessRate).toBe(0.5);
+  });
+
   it('returns null rates when there are no attempts', async () => {
     const repository = { findEvents: jest.fn().mockResolvedValue([]) };
     const useCase = new GetCallTelemetrySummaryUseCase(repository as never);

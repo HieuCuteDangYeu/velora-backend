@@ -64,6 +64,8 @@ export type RecentCallLeg = {
 
 export type CallTelemetrySummary = {
   attempts: number;
+  /** Attempts that ended unanswered; excluded from the success-rate denominators. */
+  unansweredAttempts: number;
   controlPlaneSuccessRate: number | null;
   mediaReadySuccessRate: number | null;
   timeToControlPlaneActiveMs: { p50: number | null; p95: number | null };

@@ -1,0 +1,21 @@
+services:
+  mongo-replica:
+    image: mongo:8.0.34
+    container_name: mongo-replica
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--keyFile", "/etc/mongo/keyfile", "--bind_ip_all", "--wiredTigerCacheSizeGB", "2"]
+    extra_hosts:
+      - "mongo:100.102.228.48"
+    ports:
+      - "100.86.68.16:27017:27017"
+    volumes:
+      - mongo_replica_data:/data/db
+      - /opt/mongo-replica/keyfile:/etc/mongo/keyfile:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand({ping:1}).ok\" | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+volumes:
+  mongo_replica_data:

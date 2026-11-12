@@ -8,7 +8,7 @@
  *   node scripts/ops/build-semantic-live-cases.cjs generate \
  *     --items .benchmarks/semantic-live-items.json \
  *     --dataset eval/rag/datasets/rag-semantic-live-v1.jsonl \
- *     --total 100 [--fresh-after 2026-11-12T00:00:00Z] [--seed 1]
+ *     --total 100 [--fresh-after 2026-11-12T00:00:00Z] [--seed 1] [--split-seed v1] [--heldout-percent 40]
  *
  *   # flag cases whose gold chunk is no longer active, restore ones that came back
  *   node scripts/ops/build-semantic-live-cases.cjs check-stale --items ... --dataset ...
@@ -19,7 +19,8 @@
  * `generate` never edits an existing row; it only appends, skips questions that
  * are already present and keeps every series in one split. New rows are
  * CANDIDATE until `review-semantic-live-cases.cjs apply` marks them REVIEWED.
- * Use a different `--seed` per run, otherwise the same chunks are sampled.
+ * Use a different `--seed` per run, otherwise the same chunks are sampled. The split of a
+ * series is fixed by `--split-seed` on its first appearance and never changes afterwards.
  */
 const fs = require('node:fs');
 const lib = require('../../eval/rag/semantic-live-eval-lib.cjs');
@@ -116,6 +117,8 @@ async function main() {
       perSeriesMax: Number(args['per-series-max'] ?? 6),
       viShare: Number(args['vi-share'] ?? 0.2),
       freshAfter: args['fresh-after'],
+      splitSeed: String(args['split-seed'] ?? 'v1'),
+      heldoutPercent: Number(args['heldout-percent'] ?? 40),
       generator: 'claude-haiku-5-5',
     });
     // A series already in the dataset keeps its split, whatever the hash says.

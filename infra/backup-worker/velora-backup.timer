@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Velora backup every day at 20:30 UTC (03:30 in Vietnam)
+
+[Timer]
+OnCalendar=*-*-* 20:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

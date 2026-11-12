@@ -27,7 +27,11 @@ for file in \
   infra/call-media-node/README.md \
   infra/vps-agent/compose.yaml \
   infra/vps-agent/alloy.config \
-  infra/vps-agent/README.md; do
+  infra/vps-agent/README.md \
+  infra/backup-worker/backup.sh \
+  infra/backup-worker/velora-backup.service \
+  infra/backup-worker/velora-backup.timer \
+  infra/backup-worker/README.md; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

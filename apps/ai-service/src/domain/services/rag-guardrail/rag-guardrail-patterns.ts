@@ -63,6 +63,36 @@ const INSTRUCTION_OVERRIDE: GuardrailPattern[] = [
     pattern:
       /\b(?:khong|dung)\s+(?:can\s+)?(?:tuan\s+theo|lam\s+theo)\s+(?:cac\s+)?(?:huong\s+dan|quy\s+tac|chi\s+dan)\s+(?:cua\s+ban|he\s+thong)/,
   },
+  // "Ignore your current restrictions", "set aside your usual rules": addressed to the assistant
+  // by "your", with up to three qualifiers in between (found missing in production, 2026-11-12).
+  {
+    code: 'INSTRUCTION_OVERRIDE',
+    severity: 'high',
+    pattern:
+      /\b(?:forget|ignore|disregard|drop|bypass|override|suspend|waive|lift|disable|set\s+aside|put\s+aside)\s+(?:about\s+)?(?:all\s+|any\s+|every\s+|of\s+)*your\s+(?:[a-z-]+\s+){0,3}?(?:rules?|instructions?|guidelines?|restrictions?|constraints?|guardrails?|policies|policy|limitations?|safeguards?|filters?)\b/,
+  },
+  // "Forget about the current strict rules": no "your", but "current/existing/usual" combined with
+  // a qualifier that only makes sense for an assistant's own limits.
+  {
+    code: 'INSTRUCTION_OVERRIDE',
+    severity: 'high',
+    pattern:
+      /\b(?:forget|ignore|disregard|drop|bypass|override|suspend|waive|set\s+aside|put\s+aside)\s+(?:about\s+)?(?:all\s+|any\s+|every\s+|of\s+)*(?:the\s+|these\s+|those\s+)?(?:current|existing|usual|normal|standard|default)\s+(?:strict|safety|content|hidden|internal|built-?in)\s+(?:rules?|instructions?|guidelines?|restrictions?|constraints?|guardrails?|policies|policy)\b/,
+  },
+  // The same without the extra qualifier ("forget the current rules") is ambiguous in normal use.
+  {
+    code: 'INSTRUCTION_OVERRIDE',
+    severity: 'medium',
+    pattern:
+      /\b(?:forget|ignore|disregard|drop|bypass|override|suspend|waive|set\s+aside|put\s+aside)\s+(?:about\s+)?(?:all\s+|any\s+|every\s+|of\s+)*(?:the\s+|these\s+|those\s+)?(?:current|existing|usual|strict)\s+(?:rules?|instructions?|guidelines?|restrictions?|constraints?|guardrails?|policies|policy)\b/,
+  },
+  // Vietnamese (diacritics folded): "quên các quy tắc hiện tại đi", "bỏ qua các quy tắc nghiêm ngặt hiện tại".
+  {
+    code: 'INSTRUCTION_OVERRIDE',
+    severity: 'high',
+    pattern:
+      /\b(?:bo\s+qua|lo\s+di|quen|vut\s+bo|huy\s+bo|go\s+bo)\s+(?:di\s+)?(?:het\s+|tat\s+ca\s+|moi\s+)?(?:cac\s+)?(?:quy\s+tac|huong\s+dan|chi\s+dan|quy\s+dinh|rang\s+buoc)\s+(?:nghiem\s+ngat\s+)?(?:hien\s+tai|hien\s+co|dang\s+co|hien\s+hanh|cua\s+ban)/,
+  },
   {
     code: 'INSTRUCTION_OVERRIDE',
     severity: 'medium',

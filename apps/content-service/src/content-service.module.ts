@@ -80,6 +80,7 @@ import { OutboxRepository } from '@content/infrastructure/repositories/outbox.re
 import { OptimizedRecommendationRepository } from '@content/infrastructure/repositories/optimized-recommendation.repository';
 import { PrismaIndexAttemptReadRepository } from '@content/infrastructure/repositories/prisma-index-attempt-read.repository';
 import { RecommendationRepository } from '@content/infrastructure/repositories/recommendation.repository';
+import { RecommendationRerankExperimentRepository } from '@content/infrastructure/repositories/recommendation-rerank-experiment.repository';
 import { RedisRecommendationFeedCacheRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-cache.repository';
 import { RedisRecommendationFeedSessionRepository } from '@content/infrastructure/repositories/redis-recommendation-feed-session.repository';
 import { ReelFeedRepository } from '@content/infrastructure/repositories/reel-feed.repository';
@@ -319,6 +320,10 @@ function createRmqClientRegistration(name: string, queue: string) {
     {
       provide: 'ISemanticRecommendationService',
       useClass: SemanticRecommendationServiceAdapter,
+    },
+    {
+      provide: 'IRecommendationRerankExperimentRepository',
+      useClass: RecommendationRerankExperimentRepository,
     },
     {
       provide: 'IRecommendationRerankerService',

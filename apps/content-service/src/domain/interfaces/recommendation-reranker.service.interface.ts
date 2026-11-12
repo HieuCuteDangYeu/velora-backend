@@ -5,6 +5,14 @@ export interface RecommendationRerankSettings {
   /** Maximum score shift (peak to peak) the rerank can apply. */
   weight: number;
   timeoutMs: number;
+  /**
+   * When on, each feed session is assigned an arm from its id: treatment
+   * applies the rerank, control scores the same reels but keeps the feature
+   * order. Both log a ReelRerankExposure row per scored reel.
+   */
+  experimentEnabled: boolean;
+  /** Share of feed sessions (0-100) assigned to treatment. */
+  treatmentPercent: number;
 }
 
 export interface IRecommendationRerankerService {

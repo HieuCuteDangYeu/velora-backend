@@ -8,7 +8,14 @@ import type {
   RecommendationFeedSession,
   RecommendationFeedSessionItem,
 } from '@content/domain/interfaces/recommendation-feed-session.repository.interface';
-import type { IRecommendationRerankerService } from '@content/domain/interfaces/recommendation-reranker.service.interface';
+import type {
+  IRecommendationRerankExperimentRepository,
+  RecommendationRerankArm,
+} from '@content/domain/interfaces/recommendation-rerank-experiment.repository.interface';
+import type {
+  IRecommendationRerankerService,
+  RecommendationRerankSettings,
+} from '@content/domain/interfaces/recommendation-reranker.service.interface';
 import type { IRecommendationRankingConfig } from '@content/domain/interfaces/recommendation-ranking-config.interface';
 import type { IRecommendationTelemetryService } from '@content/domain/interfaces/recommendation-telemetry-service.interface';
 import type {
@@ -29,6 +36,7 @@ import type {
   RecommendedReelsResult,
 } from '@content/domain/interfaces/recommended-reels.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 
 interface RecommendationSessionPageItem {
   reel: Reel;
@@ -80,6 +88,9 @@ export class GetRecommendedReelsUseCase {
 
     @Inject('IRecommendationRerankerService')
     private readonly rerankerService: IRecommendationRerankerService,
+
+    @Inject('IRecommendationRerankExperimentRepository')
+    private readonly rerankExperimentRepository: IRecommendationRerankExperimentRepository,
   ) {}
 
   async execute(
@@ -902,6 +913,7 @@ export class GetRecommendedReelsUseCase {
     const rankedUnseenItems = await this.applyNeuralRerank(
       featureRankedUnseenItems,
       loadInterestTags,
+      { viewerId: input.viewerId, feedSessionId: input.feedSessionId },
     );
     const rankedSeenFallbackItems = rankedItems.filter((item) =>
       recentlySeenReelIds.has(item.reel.id),
@@ -954,10 +966,14 @@ export class GetRecommendedReelsUseCase {
    * reel flatten every difference among the matching ones. The shift is
    * centered on zero so the group stays above the unscored tail, and any
    * failure keeps the order the feature ranker produced.
+   *
+   * With the experiment on, a feed session in the control arm is scored the
+   * same way but keeps the feature order; either arm records what it scored.
    */
   private async applyNeuralRerank(
     items: RankedRecommendationItem[],
     loadInterestTags: () => Promise<string[]>,
+    session: { viewerId: string; feedSessionId: string },
   ): Promise<RankedRecommendationItem[]> {
     const settings = this.rerankerService.getSettings();
 
@@ -996,16 +1012,80 @@ export class GetRecommendedReelsUseCase {
           score: item.score + settings.weight * (rankScores[index] - 0.5),
         }))
         .sort((left, right) => this.compareRankedItems(left, right));
+      const arm = this.assignRerankArm(session.feedSessionId, settings);
+
+      if (settings.experimentEnabled) {
+        this.recordRerankExposures({
+          arm,
+          settings,
+          session,
+          head,
+          reranked,
+          scores,
+        });
+      }
 
       this.logger.debug(
-        `Neural rerank scored ${head.length} reels in ${Date.now() - startedAt}ms`,
+        `Neural rerank scored ${head.length} reels in ${Date.now() - startedAt}ms (${arm})`,
       );
 
-      return [...reranked, ...items.slice(head.length)];
+      return arm === 'control'
+        ? items
+        : [...reranked, ...items.slice(head.length)];
     } catch (error: unknown) {
       this.logger.warn(`Neural rerank skipped: ${this.describeError(error)}`);
       return items;
     }
+  }
+
+  /** Stable per feed session, so every refill of one session uses one arm. */
+  private assignRerankArm(
+    feedSessionId: string,
+    settings: RecommendationRerankSettings,
+  ): RecommendationRerankArm {
+    if (!settings.experimentEnabled) {
+      return 'treatment';
+    }
+
+    const bucket =
+      createHash('sha256').update(feedSessionId).digest().readUInt32BE(0) /
+      2 ** 32;
+
+    return bucket * 100 < settings.treatmentPercent ? 'treatment' : 'control';
+  }
+
+  /** Fire-and-forget: measuring the experiment must never slow or fail the feed. */
+  private recordRerankExposures(input: {
+    arm: RecommendationRerankArm;
+    settings: RecommendationRerankSettings;
+    session: { viewerId: string; feedSessionId: string };
+    head: RankedRecommendationItem[];
+    reranked: RankedRecommendationItem[];
+    scores: number[];
+  }): void {
+    const rerankedRankByReelId = new Map(
+      input.reranked.map((item, index) => [item.reel.id, index + 1]),
+    );
+
+    this.rerankExperimentRepository
+      .record(
+        input.head.map((item, index) => ({
+          feedSessionId: input.session.feedSessionId,
+          reelId: item.reel.id,
+          userId: input.session.viewerId,
+          arm: input.arm,
+          baseRank: index + 1,
+          rerankedRank: rerankedRankByReelId.get(item.reel.id) ?? index + 1,
+          crossScore: input.scores[index],
+          topK: input.settings.topK,
+          weight: input.settings.weight,
+        })),
+      )
+      .catch((error: unknown) =>
+        this.logger.warn(
+          `Neural rerank exposure not recorded: ${this.describeError(error)}`,
+        ),
+      );
   }
 
   /** Maps scores to 0..1 by rank, giving tied scores their average rank. */

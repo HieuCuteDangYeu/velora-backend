@@ -303,6 +303,26 @@ model ReelViewSession {
   @@index([createdAt])
 }
 
+/// One row per reel the neural rerank scored for a feed session. Both arms log
+/// it (the control arm scores but keeps the feature order), so the two orders
+/// can be joined to ReelViewEvent on (userId, feedSessionId, reelId).
+model ReelRerankExposure {
+  feedSessionId String
+  reelId        String
+  userId        String
+  arm           String
+  baseRank      Int
+  rerankedRank  Int
+  crossScore    Float
+  topK          Int
+  weight        Float
+  createdAt     DateTime @default(now())
+
+  @@id([feedSessionId, reelId])
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
 model OutboxEvent {
   id            String    @id @default(uuid())
   aggregateType String

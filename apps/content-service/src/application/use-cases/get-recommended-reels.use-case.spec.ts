@@ -1,5 +1,6 @@
 import type { Reel } from '@content/domain/entities/reel.entity';
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
+import type { IRecommendationRerankExperimentRepository } from '@content/domain/interfaces/recommendation-rerank-experiment.repository.interface';
 import type { IRecommendationRerankerService } from '@content/domain/interfaces/recommendation-reranker.service.interface';
 import type { IRecommendationConfig } from '@content/domain/interfaces/recommendation-config.interface';
 import type {
@@ -207,9 +208,13 @@ function createHarness(options?: {
       topK: 20,
       weight: 0.15,
       timeoutMs: 3000,
+      experimentEnabled: false,
+      treatmentPercent: 50,
     }),
     scoreDocuments: jest.fn().mockResolvedValue(null),
   };
+  const rerankExperiment: jest.Mocked<IRecommendationRerankExperimentRepository> =
+    { record: jest.fn().mockResolvedValue(undefined) };
   const useCase = new GetRecommendedReelsUseCase(
     recommendationRepository,
     feedSessionRepository,
@@ -220,6 +225,7 @@ function createHarness(options?: {
     friends,
     semantic,
     reranker,
+    rerankExperiment,
   );
 
   return {
@@ -231,6 +237,7 @@ function createHarness(options?: {
     telemetry,
     friends,
     reranker,
+    rerankExperiment,
   };
 }
 
@@ -536,6 +543,7 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
 
   function rerankHarness(options?: {
     enabled?: boolean;
+    experiment?: { treatmentPercent: number };
     interestTags?: string[];
     scores?: number[] | null;
   }) {
@@ -545,6 +553,8 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
       topK: 5,
       weight: 0.15,
       timeoutMs: 3000,
+      experimentEnabled: options?.experiment !== undefined,
+      treatmentPercent: options?.experiment?.treatmentPercent ?? 50,
     });
     harness.reranker.scoreDocuments.mockResolvedValue(
       options?.scores === undefined ? [0, 0.1, 0.2, 0.3, 1] : options.scores,
@@ -553,9 +563,12 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
       options?.interestTags ?? ['cooking', 'travel'],
     );
     const run = async () =>
-      (await harness.useCase['buildPipeline'](pipelineInput)).items.map(
-        (item) => item.reel.id,
-      );
+      (
+        await harness.useCase['buildPipeline']({
+          ...pipelineInput,
+          feedSessionId: pipelineInput.feedSessionId,
+        })
+      ).items.map((item) => item.reel.id);
 
     return { harness, run };
   }
@@ -642,5 +655,113 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
     expect(
       harness.recommendationRepository.findViewerInterestTags,
     ).toHaveBeenCalledTimes(1);
+  });
+
+  describe('experiment', () => {
+    const rerankedOrder = [
+      'reel-5',
+      'reel-4',
+      'reel-3',
+      'reel-2',
+      'reel-1',
+      ...featureOrder.slice(5),
+    ];
+
+    it('does not record or assign arms while the experiment is off', async () => {
+      const { harness, run } = rerankHarness();
+
+      expect(await run()).toEqual(rerankedOrder);
+      expect(harness.rerankExperiment.record).not.toHaveBeenCalled();
+    });
+
+    it('applies the rerank and records both orders for a treatment session', async () => {
+      const { harness, run } = rerankHarness({
+        experiment: { treatmentPercent: 100 },
+      });
+
+      expect(await run()).toEqual(rerankedOrder);
+      const rows = harness.rerankExperiment.record.mock.calls[0][0];
+      expect(rows).toHaveLength(5);
+      expect(rows[0]).toMatchObject({
+        feedSessionId: pipelineInput.feedSessionId,
+        userId: 'viewer-1',
+        reelId: 'reel-1',
+        arm: 'treatment',
+        baseRank: 1,
+        rerankedRank: 5,
+        crossScore: 0,
+        topK: 5,
+        weight: 0.15,
+      });
+      expect(rows[4]).toMatchObject({
+        reelId: 'reel-5',
+        baseRank: 5,
+        rerankedRank: 1,
+      });
+    });
+
+    it('scores but keeps the feature order for a control session, logging the counterfactual', async () => {
+      const { harness, run } = rerankHarness({
+        experiment: { treatmentPercent: 0 },
+      });
+
+      expect(await run()).toEqual(featureOrder);
+      const rows = harness.rerankExperiment.record.mock.calls[0][0];
+      expect(rows.every((row) => row.arm === 'control')).toBe(true);
+      expect(rows[0]).toMatchObject({ baseRank: 1, rerankedRank: 5 });
+    });
+
+    it('assigns the same arm to every refill of one feed session', async () => {
+      const { harness, run } = rerankHarness({
+        experiment: { treatmentPercent: 50 },
+      });
+
+      const first = await run();
+      const second = await run();
+      const arms = harness.rerankExperiment.record.mock.calls.map(
+        ([rows]) => rows[0].arm,
+      );
+
+      expect(second).toEqual(first);
+      expect(arms[0]).toBe(arms[1]);
+    });
+
+    it('splits sessions near the configured share', async () => {
+      const { harness } = rerankHarness({
+        experiment: { treatmentPercent: 30 },
+      });
+
+      for (let i = 0; i < 400; i += 1) {
+        await harness.useCase['buildPipeline']({
+          ...pipelineInput,
+          feedSessionId: `session-${i}`,
+        });
+      }
+      const treatment = harness.rerankExperiment.record.mock.calls.filter(
+        ([rows]) => rows[0].arm === 'treatment',
+      ).length;
+
+      expect(treatment).toBeGreaterThan(90);
+      expect(treatment).toBeLessThan(150);
+    });
+
+    it('does not fail the feed when the exposure write fails', async () => {
+      const { harness, run } = rerankHarness({
+        experiment: { treatmentPercent: 100 },
+      });
+      harness.rerankExperiment.record.mockRejectedValue(new Error('db down'));
+
+      expect(await run()).toEqual(rerankedOrder);
+    });
+
+    it('records nothing when the reranker is unavailable', async () => {
+      const { harness, run } = rerankHarness({
+        scores: null,
+        experiment: { treatmentPercent: 50 },
+      });
+
+      expect(await run()).toEqual(featureOrder);
+      expect(harness.rerankExperiment.record).not.toHaveBeenCalled();
+    });
   });
 });

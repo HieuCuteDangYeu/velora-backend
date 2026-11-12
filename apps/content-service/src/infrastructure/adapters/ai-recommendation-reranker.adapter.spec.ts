@@ -25,6 +25,8 @@ describe('AiRecommendationRerankerAdapter', () => {
       topK: 20,
       weight: 0.15,
       timeoutMs: 3000,
+      experimentEnabled: false,
+      treatmentPercent: 50,
     });
   });
 
@@ -35,8 +37,17 @@ describe('AiRecommendationRerankerAdapter', () => {
         REEL_NEURAL_RERANK_TOP_K: '900',
         REEL_NEURAL_RERANK_WEIGHT: '9',
         REEL_NEURAL_RERANK_TIMEOUT_MS: '1',
+        REEL_NEURAL_RERANK_EXPERIMENT_ENABLED: 'true',
+        REEL_NEURAL_RERANK_EXPERIMENT_TREATMENT_PERCENT: '250',
       }).getSettings(),
-    ).toEqual({ enabled: true, topK: 50, weight: 0.5, timeoutMs: 500 });
+    ).toEqual({
+      enabled: true,
+      topK: 50,
+      weight: 0.5,
+      timeoutMs: 500,
+      experimentEnabled: true,
+      treatmentPercent: 100,
+    });
   });
 
   it('sends the documents to ai.rerank_texts and returns the scores', async () => {

@@ -222,3 +222,19 @@ rank normalization. It must run inside the content-service container (Prisma,
 RabbitMQ and the TEI reranker are only reachable there); the usage and caveats
 are in the file header. On the 2026-11-12 data only two viewers had usable
 labels, so treat differences below about 0.05 AUC as noise.
+
+### Feed rerank A/B on live traffic
+
+With `REEL_NEURAL_RERANK_EXPERIMENT_ENABLED=true` (and the rerank flag on),
+content-service assigns each feed session an arm from a hash of its id
+(`REEL_NEURAL_RERANK_EXPERIMENT_TREATMENT_PERCENT`, default 50). Treatment
+serves the reranked order; control scores the same reels but keeps the feature
+order. Both arms write one `ReelRerankExposure` row per scored reel (feature
+rank, reranked rank, cross-encoder score), so the two orders can be joined to
+`ReelViewEvent` on `(userId, feedSessionId, reelId)`. The refill that runs the
+rerank is background work: reels served from the first global slate are not
+reranked in either arm and have no exposure row.
+`recommendation-rerank-ab-report.cjs` (same run-in-container recipe as the
+benchmark) reports treatment-vs-control rates and the counterfactual AUC with
+session-level bootstrap intervals. Needs the `20261112120000` migration.
+

@@ -44,6 +44,17 @@ export class AiRecommendationRerankerAdapter implements IRecommendationRerankerS
         500,
         10_000,
       ),
+      experimentEnabled: this.readBoolean(
+        configService,
+        'REEL_NEURAL_RERANK_EXPERIMENT_ENABLED',
+      ),
+      treatmentPercent: this.readNumber(
+        configService,
+        'REEL_NEURAL_RERANK_EXPERIMENT_TREATMENT_PERCENT',
+        50,
+        0,
+        100,
+      ),
     };
   }
 

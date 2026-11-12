@@ -949,8 +949,11 @@ export class GetRecommendedReelsUseCase {
 
   /**
    * Reorders only the top-K feature-ranked reels with a cross-encoder. The
-   * shift is centered on zero so the group stays above the unscored tail, and
-   * any failure keeps the order the feature ranker produced.
+   * shift uses each reel's rank, not its raw probability: cross-encoder scores
+   * are bimodal (matching vs. unrelated), so min-max would let one unrelated
+   * reel flatten every difference among the matching ones. The shift is
+   * centered on zero so the group stays above the unscored tail, and any
+   * failure keeps the order the feature ranker produced.
    */
   private async applyNeuralRerank(
     items: RankedRecommendationItem[],
@@ -982,20 +985,15 @@ export class GetRecommendedReelsUseCase {
         return items;
       }
 
-      const lowest = Math.min(...scores);
-      const highest = Math.max(...scores);
-
-      if (highest - lowest < 1e-6) {
+      if (Math.max(...scores) - Math.min(...scores) < 1e-6) {
         return items;
       }
 
+      const rankScores = this.rankNormalize(scores);
       const reranked = head
         .map((item, index) => ({
           ...item,
-          score:
-            item.score +
-            settings.weight *
-              ((scores[index] - lowest) / (highest - lowest) - 0.5),
+          score: item.score + settings.weight * (rankScores[index] - 0.5),
         }))
         .sort((left, right) => this.compareRankedItems(left, right));
 
@@ -1008,6 +1006,34 @@ export class GetRecommendedReelsUseCase {
       this.logger.warn(`Neural rerank skipped: ${this.describeError(error)}`);
       return items;
     }
+  }
+
+  /** Maps scores to 0..1 by rank, giving tied scores their average rank. */
+  private rankNormalize(scores: number[]): number[] {
+    const order = scores
+      .map((_, index) => index)
+      .sort((left, right) => scores[left] - scores[right]);
+    const ranks = new Array<number>(scores.length);
+    let start = 0;
+
+    while (start < order.length) {
+      let end = start;
+
+      while (
+        end + 1 < order.length &&
+        scores[order[end + 1]] === scores[order[start]]
+      ) {
+        end += 1;
+      }
+
+      for (let position = start; position <= end; position += 1) {
+        ranks[order[position]] = (start + end) / 2 / (order.length - 1);
+      }
+
+      start = end + 1;
+    }
+
+    return ranks;
   }
 
   private rerankDocument(reel: Reel): string {

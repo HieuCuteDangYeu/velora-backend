@@ -572,17 +572,47 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
   it('reorders only the top-K reels and leaves the tail untouched', async () => {
     const { harness, run } = rerankHarness();
 
+    // Rank shifts of -0.075/-0.0375/0/+0.0375/+0.075 on 0.78..0.90 feature scores.
     expect(await run()).toEqual([
       'reel-5',
-      'reel-1',
-      'reel-2',
-      'reel-3',
       'reel-4',
+      'reel-3',
+      'reel-2',
+      'reel-1',
       ...featureOrder.slice(5),
     ]);
     const request = harness.reranker.scoreDocuments.mock.calls[0][0];
     expect(request.documents).toHaveLength(5);
     expect(request.queryText).toBe('cooking travel');
+  });
+
+  it('ranks by position so one unrelated reel does not flatten the others', async () => {
+    // Min-max would put reels 1-4 within 0.03 of each other and keep the
+    // feature order; rank normalization lets the cross-encoder reverse them.
+    const { run } = rerankHarness({ scores: [0.88, 0.89, 0.9, 0.91, 0.01] });
+
+    expect(await run()).toEqual([
+      'reel-4',
+      'reel-3',
+      'reel-2',
+      'reel-1',
+      'reel-5',
+      ...featureOrder.slice(5),
+    ]);
+  });
+
+  it('gives tied cross-encoder scores the same rank shift', async () => {
+    const { run } = rerankHarness({ scores: [0.2, 0.2, 0.2, 0.2, 0.9] });
+
+    // The four tied reels share one shift, so only reel-5 moves (0.78 -> 0.855).
+    expect(await run()).toEqual([
+      'reel-1',
+      'reel-5',
+      'reel-2',
+      'reel-3',
+      'reel-4',
+      ...featureOrder.slice(5),
+    ]);
   });
 
   it('keeps the feature-ranked order when the reranker is unavailable', async () => {

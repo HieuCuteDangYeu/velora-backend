@@ -237,4 +237,3 @@ reranked in either arm and have no exposure row.
 `recommendation-rerank-ab-report.cjs` (same run-in-container recipe as the
 benchmark) reports treatment-vs-control rates and the counterfactual AUC with
 session-level bootstrap intervals. Needs the `20261112120000` migration.
-

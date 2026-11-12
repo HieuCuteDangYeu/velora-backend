@@ -205,4 +205,34 @@ describe('DockerEngineService', () => {
       'Docker Engine returned no container stats',
     );
   });
+
+  it('reads a remote Docker API over TCP when given a host endpoint', async () => {
+    const seen: string[] = [];
+    const server = createServer((request, response) => {
+      seen.push(request.url ?? '');
+      response.setHeader('Content-Type', 'application/json');
+      response.end(request.url === '/info' ? '{"NCPU":4}' : '{}');
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const { port } = server.address() as { port: number };
+
+    try {
+      // The default socket does not exist: only the TCP endpoint can answer.
+      const service = new DockerEngineService(
+        new ConfigService({
+          DOCKER_ENGINE_SOCKET: '/nonexistent/docker.sock',
+          DOCKER_ENGINE_TIMEOUT_MS: '1000',
+        }),
+      );
+
+      await expect(
+        service.snapshotMetadata({ host: '127.0.0.1', port }),
+      ).resolves.toMatchObject({ hostCpuCount: 4 });
+      expect(seen).toEqual(expect.arrayContaining(['/info', '/system/df']));
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });

@@ -24,7 +24,10 @@ for file in \
   infra/mongo-replica/README.md \
   infra/postgres-replica/compose.yaml \
   infra/call-media-node/compose.yaml \
-  infra/call-media-node/README.md; do
+  infra/call-media-node/README.md \
+  infra/vps-agent/compose.yaml \
+  infra/vps-agent/alloy.config \
+  infra/vps-agent/README.md; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

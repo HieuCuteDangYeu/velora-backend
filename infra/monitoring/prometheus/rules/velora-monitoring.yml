@@ -13,7 +13,7 @@ groups:
 
       - alert: VeloraHostHighCpu
         expr: |
-          1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))
+          1 - avg by (host) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))
           > 0.7
         for: 1m
         labels:
@@ -26,8 +26,8 @@ groups:
       - alert: VeloraHostHighMemory
         expr: |
           1 - (
-            max(node_memory_MemAvailable_bytes{job="node-exporter"})
-            / clamp_min(max(node_memory_MemTotal_bytes{job="node-exporter"}), 1)
+            max by (host) (node_memory_MemAvailable_bytes{job="node-exporter"})
+            / clamp_min(max by (host) (node_memory_MemTotal_bytes{job="node-exporter"}), 1)
           ) > 0.75
         for: 5m
         labels:
@@ -40,12 +40,12 @@ groups:
       - alert: VeloraHostDiskAlmostFull
         expr: |
           1 - (
-            max(node_filesystem_avail_bytes{
+            max by (host) (node_filesystem_avail_bytes{
               job="node-exporter",
               mountpoint=~"^/$|^/opt/orbstack-guest/data$",
               fstype!~"tmpfs|overlay|squashfs"
             })
-            / clamp_min(max(node_filesystem_size_bytes{
+            / clamp_min(max by (host) (node_filesystem_size_bytes{
               job="node-exporter",
               mountpoint=~"^/$|^/opt/orbstack-guest/data$",
               fstype!~"tmpfs|overlay|squashfs"

@@ -110,9 +110,16 @@ The API Gateway requires an authenticated `ADMIN` user. The available endpoints 
 ```text
 GET /api/monitoring/overview
 GET /api/monitoring/status
-GET /api/monitoring/containers
-GET /api/monitoring/timeseries
+GET /api/monitoring/hosts
+GET /api/monitoring/hosts/history?metric=host_cpu&from=&to=&stepSeconds=
+GET /api/monitoring/containers?host=
+GET /api/monitoring/timeseries?host=
+GET /api/monitoring/alerts
+GET /api/monitoring/logs?host=
 ```
+
+`host` is optional everywhere; without it the endpoints describe the primary machine,
+exactly as before.
 
 The timeseries endpoint accepts only the server-side metric whitelist and a bounded
 range; clients cannot submit arbitrary PromQL.
@@ -122,6 +129,54 @@ monitored host's total CPU capacity across all cores. This matches the CPU
 percentage used by the Server view and its Docker container breakdown. The
 underlying process counters remain available in Prometheus as cumulative
 CPU-seconds, but the dashboard API normalizes them before returning them.
+
+## Monitoring more than one VPS
+
+The dashboard monitors every machine that has a node-exporter target in
+`infra/monitoring/prometheus/prometheus.yml`. There is no separate host list: the
+labels on the target are the registry.
+
+| Label | Meaning |
+| --- | --- |
+| `host` | Required. Stable URL-safe id (letters, digits, `_`, `.`, `-`). Used in every query, in the dashboard URL and in alerts. |
+| `host_name` | Display name. |
+| `host_role` | `primary` for the machine that runs this Compose stack, `worker` for any other VPS. Exactly one `primary`. |
+| `host_region`, `host_provider` | Optional, shown on the host card. |
+| `docker_port` | Optional. Port of the read-only Docker socket proxy on that VPS; turns on its per-container CPU/RAM/disk breakdown. |
+
+To add a VPS:
+
+1. Start the agent stack from `infra/vps-agent/` on it (node-exporter, the Docker socket
+   proxy and optionally the log shipper), all on its Tailscale address.
+2. Add one `static_configs` block to the `node-exporter` job with the labels above.
+3. Push. The deploy script recreates Prometheus; `monitoring-service` and the dashboard
+   pick the host up within ten seconds, with no code change.
+
+How the data flows:
+
+```text
+Dashboard -> /api/monitoring/hosts -> monitoring-service
+  ├─ Prometheus: 12 queries grouped by host, whatever the number of VPSs
+  └─ cached for one scrape interval and shared by every open dashboard
+Dashboard -> /api/monitoring/containers?host=X -> monitoring-service
+  ├─ primary host: the local Docker socket
+  └─ worker host: its Docker socket proxy over Tailscale
+```
+
+Notes:
+
+- Service CPU ratios (`conversation_cpu`, `call_cpu`, ...) are fractions of the **primary**
+  machine's cores, because the services run there. Adding a worker does not change them as
+  long as the worker carries `host_role: worker`.
+- Host alerts (`VeloraHostDown`, `VeloraHostHighCpu`, `VeloraHostHighMemory`,
+  `VeloraHostDiskAlmostFull`) are evaluated per host and carry the `host` label, which the
+  Alerts page shows.
+- A Prometheus config that has no `host` label yet keeps working: the series show up as one
+  primary host named `local`.
+- Per-host history is queried straight from Prometheus (`host_cpu`, `host_memory`,
+  `host_swap`, `host_disk`, `host_load1`, `host_network_receive`, `host_network_transmit`).
+- Logs: the homelab Alloy tags its lines with `host="homelab"`; Alloy on a VPS tags its own.
+  Lines without a `host` label count as the primary machine.
 
 ## Retention and scrape interval
 
@@ -159,6 +214,11 @@ Then verify `/api/v1/status/config` reports `scrape_interval: 5s`,
 The Compose command does not enable the HTTP lifecycle reload endpoint.
 
 ## Security
+
+The Docker socket proxy on a worker VPS cannot authenticate callers and
+`GET /containers/<id>/json` includes a container's environment variables. Publish it on the
+Tailscale address only (the agent compose file does) and restrict who may reach port 2375
+with a Tailscale ACL.
 
 Do not expose ports 9090 or 3001 directly to the public internet. The root
 Compose file binds both ports to `127.0.0.1`. Keep `GRAFANA_ADMIN_PASSWORD` set

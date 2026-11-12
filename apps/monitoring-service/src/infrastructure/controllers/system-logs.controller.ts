@@ -1,6 +1,11 @@
+import {
+  HOST_ID_PATTERN,
+  type MonitoringHostRecord,
+} from '@monitoring/domain/models/monitoring-host.model';
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
 import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service';
+import { HostRegistryService } from '../services/host-registry.service';
 import {
   LokiQueryService,
   type LokiLogEntry,
@@ -23,6 +28,8 @@ const STANDARD_LOG_SERVICES = [
   'mail-service',
   'conversation-service',
   'call-service',
+  'call-media-1',
+  'call-media-2',
   'monitoring-service',
   'notification-service',
   'ai-service',
@@ -35,6 +42,10 @@ const STANDARD_LOG_SERVICES = [
   'grafana',
   'loki',
   'alloy',
+  // Workloads on the additional VPSs.
+  'mongo-replica',
+  'postgres-replica',
+  'docker-proxy',
 ] as const;
 
 // Langfuse's backing services use generic Compose service names. Expose only
@@ -44,12 +55,10 @@ const LANGFUSE_LOG_SERVICE_SELECTORS: Record<string, string> = {
   'langfuse-web': '{compose_project="velora-langfuse",service="langfuse-web"}',
   'langfuse-worker':
     '{compose_project="velora-langfuse",service="langfuse-worker"}',
-  'langfuse-postgres':
-    '{compose_project="velora-langfuse",service="postgres"}',
+  'langfuse-postgres': '{compose_project="velora-langfuse",service="postgres"}',
   'langfuse-clickhouse':
     '{compose_project="velora-langfuse",service="clickhouse"}',
-  'langfuse-redis':
-    '{compose_project="velora-langfuse",service="redis"}',
+  'langfuse-redis': '{compose_project="velora-langfuse",service="redis"}',
   'langfuse-minio': '{compose_project="velora-langfuse",service="minio"}',
 };
 
@@ -66,6 +75,7 @@ const DEBUG_LOG_PATTERN = String.raw`(?i)\b(DEBUG|VERBOSE)\b`;
 
 type LogsPayload = {
   service?: unknown;
+  host?: unknown;
   level?: unknown;
   search?: unknown;
   from?: unknown;
@@ -75,6 +85,7 @@ type LogsPayload = {
 
 type ParsedLogsQuery = {
   service: string;
+  host?: string;
   level: 'all' | LokiLogLevel;
   search: string;
   from: string;
@@ -87,13 +98,15 @@ export class SystemLogsController {
   constructor(
     private readonly loki: LokiQueryService,
     private readonly metrics: PrometheusMetricsService,
+    private readonly hosts: HostRegistryService,
   ) {}
 
   @MessagePattern('system.logs.query')
   async query(@Payload() payload: LogsPayload) {
     return this.measure('system.logs.query', async () => {
       const parsed = this.parsePayload(payload);
-      const logQlQueries = this.buildLogQl(parsed);
+      const host = parsed.host ? await this.requireHost(parsed.host) : null;
+      const logQlQueries = this.buildLogQl(parsed, host);
       // The LogQL level filter is applied before Loki's limit. Ask for one
       // extra matching entry so mayHaveMore reflects matching logs, not noise.
       const sourceLimit = parsed.limit + 1;
@@ -132,6 +145,15 @@ export class SystemLogsController {
     const from = payload?.from;
     const to = payload?.to;
     const limit = Number(payload?.limit ?? 200);
+
+    const host =
+      typeof payload?.host === 'string' && payload.host.trim()
+        ? payload.host.trim()
+        : undefined;
+
+    if (host !== undefined && !HOST_ID_PATTERN.test(host)) {
+      throw new RpcException({ statusCode: 400, message: 'host is invalid' });
+    }
 
     if (service !== 'all' && !ALLOWED_LOG_SERVICES.has(service)) {
       throw new RpcException({
@@ -186,6 +208,7 @@ export class SystemLogsController {
 
     return {
       service,
+      ...(host ? { host } : {}),
       level: level as ParsedLogsQuery['level'],
       search,
       from,
@@ -194,8 +217,38 @@ export class SystemLogsController {
     };
   }
 
-  private buildLogQl(query: ParsedLogsQuery): string[] {
-    const selectors =
+  private async requireHost(hostId: string): Promise<MonitoringHostRecord> {
+    try {
+      return await this.hosts.require(hostId);
+    } catch (error) {
+      throw error instanceof RpcException ? error : this.lokiError(error);
+    }
+  }
+
+  /**
+   * Alloy tags every log line with the VPS it came from. Streams written
+   * before that label existed belong to the primary machine, so it also
+   * accepts lines without a host label.
+   */
+  private withHostMatcher(
+    selector: string,
+    host: MonitoringHostRecord | null,
+  ): string {
+    if (host === null) return selector;
+
+    const value = host.label || host.id;
+    const matcher =
+      host.role === 'primary'
+        ? `host=~${JSON.stringify(`${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|`)}`
+        : `host=${JSON.stringify(value)}`;
+    return `${selector.slice(0, -1)},${matcher}}`;
+  }
+
+  private buildLogQl(
+    query: ParsedLogsQuery,
+    host: MonitoringHostRecord | null,
+  ): string[] {
+    const selectors = (
       query.service === 'all'
         ? [
             `{service=~"${STANDARD_LOG_SERVICES.map((service) => service.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}"}`,
@@ -204,7 +257,8 @@ export class SystemLogsController {
         : [
             LANGFUSE_LOG_SERVICE_SELECTORS[query.service] ??
               `{service=${JSON.stringify(query.service)}}`,
-          ];
+          ]
+    ).map((selector) => this.withHostMatcher(selector, host));
 
     return selectors.flatMap((selector) =>
       this.buildLevelLogQl(selector, query.level).map((levelQuery) =>

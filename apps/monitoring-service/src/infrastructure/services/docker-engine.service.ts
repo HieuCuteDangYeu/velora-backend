@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { request } from 'node:http';
+import type { DockerTcpEndpoint } from '@monitoring/domain/models/monitoring-host.model';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -62,6 +63,12 @@ export type DockerSnapshotMetadata = {
   hostCpuCount: number | null;
   storage: DockerStorageSummary;
 };
+
+/**
+ * Where to reach a Docker Engine API: the local unix socket, or a read-only
+ * socket proxy on a remote VPS (reached over the private network).
+ */
+export type DockerEndpoint = { socketPath: string } | DockerTcpEndpoint;
 
 export type DockerSnapshot = {
   containers: DockerContainerResource[];
@@ -231,14 +238,20 @@ export class DockerEngineService {
         : DEFAULT_TIMEOUT_MS;
   }
 
-  async snapshot(): Promise<DockerContainerResource[]> {
-    const snapshot = await this.snapshotWithCoverage();
+  async snapshot(
+    endpoint?: DockerEndpoint,
+  ): Promise<DockerContainerResource[]> {
+    const snapshot = await this.snapshotWithCoverage(endpoint);
     return snapshot.containers;
   }
 
-  async snapshotWithCoverage(): Promise<DockerSnapshot> {
+  async snapshotWithCoverage(
+    endpoint?: DockerEndpoint,
+  ): Promise<DockerSnapshot> {
+    const target = endpoint ?? this.localEndpoint();
     const summaries = await this.requestJson<DockerContainerSummary[]>(
       '/containers/json?all=false&size=true',
+      target,
     );
 
     if (!Array.isArray(summaries)) {
@@ -246,7 +259,7 @@ export class DockerEngineService {
     }
 
     const results = await Promise.allSettled(
-      summaries.map((summary) => this.collectContainer(summary)),
+      summaries.map((summary) => this.collectContainer(summary, target)),
     );
     const resources = results.flatMap((result) =>
       result.status === 'fulfilled' && result.value !== null
@@ -271,10 +284,13 @@ export class DockerEngineService {
     };
   }
 
-  async snapshotMetadata(): Promise<DockerSnapshotMetadata> {
+  async snapshotMetadata(
+    endpoint?: DockerEndpoint,
+  ): Promise<DockerSnapshotMetadata> {
+    const target = endpoint ?? this.localEndpoint();
     const [infoResult, storageResult] = await Promise.allSettled([
-      this.requestJson<DockerInfo>('/info'),
-      this.requestJson<DockerSystemDf>('/system/df'),
+      this.requestJson<DockerInfo>('/info', target),
+      this.requestJson<DockerSystemDf>('/system/df', target),
     ]);
 
     return {
@@ -289,8 +305,13 @@ export class DockerEngineService {
     };
   }
 
+  private localEndpoint(): DockerEndpoint {
+    return { socketPath: this.socketPath };
+  }
+
   private async collectContainer(
     summary: DockerContainerSummary,
+    endpoint: DockerEndpoint,
   ): Promise<DockerContainerResource | null> {
     const id = stringValue(summary.Id);
     if (!id) return null;
@@ -303,9 +324,11 @@ export class DockerEngineService {
     const [statsResult, inspectResult] = await Promise.allSettled([
       this.requestJson<DockerStats>(
         `/containers/${encodedId}/stats?stream=false`,
+        endpoint,
       ),
       this.requestJson<DockerContainerInspect>(
         `/containers/${encodedId}/json?size=true`,
+        endpoint,
       ),
     ]);
 
@@ -326,11 +349,11 @@ export class DockerEngineService {
     };
   }
 
-  private requestJson<T>(path: string): Promise<T> {
+  private requestJson<T>(path: string, endpoint: DockerEndpoint): Promise<T> {
     return new Promise((resolve, reject) => {
       const clientRequest = request(
         {
-          socketPath: this.socketPath,
+          ...endpoint,
           path,
           method: 'GET',
           headers: { Accept: 'application/json' },

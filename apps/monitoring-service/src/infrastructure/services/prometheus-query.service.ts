@@ -46,6 +46,11 @@ export type PrometheusInstantSample = {
   value: number;
 };
 
+export type PrometheusRangeSeries = {
+  metric: Record<string, string>;
+  points: Array<{ timestamp: number; value: number }>;
+};
+
 @Injectable()
 export class PrometheusQueryService {
   private readonly baseUrl: string;
@@ -118,6 +123,32 @@ export class PrometheusQueryService {
         return Number.isFinite(value) ? [{ timestamp, value }] : [];
       },
     );
+  }
+
+  /** Range query that keeps every returned series, e.g. one per host. */
+  async rangeSeries(
+    query: string,
+    from: string,
+    to: string,
+    stepSeconds: number,
+  ): Promise<PrometheusRangeSeries[]> {
+    const payload = await this.request<PrometheusRangeResult>(
+      '/api/v1/query_range',
+      new URLSearchParams({
+        query,
+        start: from,
+        end: to,
+        step: String(stepSeconds),
+      }),
+    );
+
+    return payload.result.map((series) => ({
+      metric: series.metric,
+      points: (series.values ?? []).flatMap(([timestamp, rawValue]) => {
+        const value = Number(rawValue);
+        return Number.isFinite(value) ? [{ timestamp, value }] : [];
+      }),
+    }));
   }
 
   async activeAlerts(): Promise<PrometheusActiveAlert[]> {

@@ -182,3 +182,14 @@ latencies, overlap and Jaccard metrics. Query text is excluded by default.
 Hierarchy label-template export requires `LANGFUSE_CAPTURE_CONTENT=true` when
 capturing an isolated evaluation, and fails explicitly for redacted queries. Apply the migration
 only after the existing benchmark finishes and its results are retained.
+
+## Feed rerank benchmark
+
+`recommendation-rerank-benchmark.cjs` is an offline, read-only benchmark of the
+reel feed's neural rerank (content-service `applyNeuralRerank`). It scores
+held-out reels a viewer finished versus skipped (AUC) with tag overlap, the
+bi-encoder, the cross-encoder, and the production top-K blend with min-max or
+rank normalization. It must run inside the content-service container (Prisma,
+RabbitMQ and the TEI reranker are only reachable there); the usage and caveats
+are in the file header. On the 2026-11-12 data only two viewers had usable
+labels, so treat differences below about 0.05 AUC as noise.

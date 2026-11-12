@@ -143,4 +143,76 @@ describe('OllamaStructuredLlmAdapter', () => {
       }),
     );
   });
+  describe('network failure while the model-host tunnel restarts', () => {
+    afterEach(() => jest.useRealTimers());
+
+    it('waits before retrying a network failure, then succeeds', async () => {
+      jest.useFakeTimers();
+      const onDiagnostics = jest.fn();
+      jest
+        .mocked(client.chat)
+        .mockRejectedValueOnce(new TypeError('fetch failed'))
+        .mockResolvedValueOnce({
+          message: { content: '{"choice":"one"}' },
+          done: true,
+        });
+      const result = adapter.generateObject({
+        ...input,
+        modelRole: 'ANSWER',
+        onDiagnostics,
+      });
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(client.chat).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(600);
+      await expect(result).resolves.toEqual({ choice: 'one' });
+      expect(client.chat).toHaveBeenCalledTimes(2);
+      expect(onDiagnostics).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          providerStatus: 'NETWORK_ERROR',
+          latencyMs: 0,
+        }),
+      );
+    });
+
+    it('does not wait for an HTTP server failure', async () => {
+      jest.useFakeTimers();
+      jest
+        .mocked(client.chat)
+        .mockRejectedValueOnce(new OllamaHttpError(503, 'unavailable'))
+        .mockResolvedValueOnce({
+          message: { content: '{"choice":"one"}' },
+          done: true,
+        });
+      const result = adapter.generateObject({ ...input, modelRole: 'ANSWER' });
+      await jest.advanceTimersByTimeAsync(0);
+      await expect(result).resolves.toEqual({ choice: 'one' });
+    });
+
+    it('cuts the wait to the remaining call budget', async () => {
+      jest.useFakeTimers();
+      jest.mocked(client.chat).mockRejectedValue(new TypeError('fetch failed'));
+      const result = adapter
+        .generateObject({ ...input, modelRole: 'ANSWER', timeoutMs: 1_000 })
+        .catch((error: unknown) => error);
+      await jest.advanceTimersByTimeAsync(1_000);
+      // The wait is cut to the remaining budget, so the call still ends on time.
+      expect(await result).toMatchObject({
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+      });
+      expect(client.chat).toHaveBeenCalledTimes(2);
+    });
+
+    it('tells the router how long to back off after a network failure', async () => {
+      jest
+        .mocked(client.chat)
+        .mockRejectedValueOnce(new TypeError('fetch failed'));
+      await expect(adapter.generateObject(input)).rejects.toMatchObject({
+        code: 'STRUCTURED_COMPLETION_PROVIDER_ERROR',
+        transient: true,
+        retryAfterMs: 2_500,
+      });
+      expect(client.chat).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -117,6 +117,10 @@ export class OllamaStructuredCompletionTimeoutError extends Error {
   }
 }
 
+// The model host is reached through a reverse tunnel that restarts within a few
+// seconds when it drops. An immediate retry hits the closed listener, so wait first.
+const NETWORK_ERROR_RETRY_DELAY_MS = 2_500;
+
 @Injectable()
 export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
   private readonly logger = new Logger(OllamaStructuredLlmAdapter.name);
@@ -142,6 +146,7 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
     for (let retry = 0; retry < maxAttempts; retry++) {
       const attempt = (input.attempt ?? 1) + retry;
       const state: CallState = { providerStatus: 'NETWORK_ERROR' };
+      let retryDelayMs = 0;
       const startedAt = Date.now();
       try {
         const remaining = deadline - Date.now();
@@ -230,6 +235,7 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
           )
         )
           throw mapped;
+        retryDelayMs = mapped.retryAfterMs ?? 0;
       } finally {
         const usage =
           state.inputTokens !== undefined || state.outputTokens !== undefined
@@ -272,6 +278,10 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
           this.logger.warn('Ollama structured diagnostics callback failed');
         }
       }
+      // After the diagnostics, so the recorded latency excludes the wait.
+      const waitMs = Math.min(retryDelayMs, deadline - Date.now() - 1);
+      if (waitMs > 0)
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
     throw new Error('Ollama structured completion exhausted its attempts');
   }
@@ -331,7 +341,7 @@ export class OllamaStructuredLlmAdapter implements IStructuredLlmService {
       model,
       undefined,
       undefined,
-      undefined,
+      NETWORK_ERROR_RETRY_DELAY_MS,
       true,
       'TRANSIENT_PROVIDER_FAILURE',
     );

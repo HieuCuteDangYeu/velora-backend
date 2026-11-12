@@ -19,6 +19,7 @@ import { MemoryWriterAgentUseCase } from '@ai/application/use-cases/memory-write
 import { PlanRetrievalUseCase } from '@ai/application/use-cases/plan-retrieval.use-case';
 import { QueryRouterAgentUseCase } from '@ai/application/use-cases/query-router-agent.use-case';
 import { RerankRetrievedEvidenceUseCase } from '@ai/application/use-cases/rerank-retrieved-evidence.use-case';
+import { ScoreTextRelevanceUseCase } from '@ai/application/use-cases/score-text-relevance.use-case';
 import { RetrieveReelEvidenceUseCase } from '@ai/application/use-cases/retrieve-reel-evidence.use-case';
 import { ReviewIndexQualityUseCase } from '@ai/application/use-cases/review-index-quality.use-case';
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
@@ -193,6 +194,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     PlanRetrievalUseCase,
     RetrieveReelEvidenceUseCase,
     RerankRetrievedEvidenceUseCase,
+    ScoreTextRelevanceUseCase,
     RewriteRetrievalQueryUseCase,
     MemoryAgentUseCase,
     GenerateDraftAnswerUseCase,
@@ -259,6 +261,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     },
     {
       provide: 'IRerankerService',
+      useExisting: TeiRerankerAdapter,
+    },
+    {
+      provide: 'ITextRelevanceScorer',
       useExisting: TeiRerankerAdapter,
     },
     {

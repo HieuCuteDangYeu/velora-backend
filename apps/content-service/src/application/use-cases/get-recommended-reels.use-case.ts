@@ -8,6 +8,7 @@ import type {
   RecommendationFeedSession,
   RecommendationFeedSessionItem,
 } from '@content/domain/interfaces/recommendation-feed-session.repository.interface';
+import type { IRecommendationRerankerService } from '@content/domain/interfaces/recommendation-reranker.service.interface';
 import type { IRecommendationRankingConfig } from '@content/domain/interfaces/recommendation-ranking-config.interface';
 import type { IRecommendationTelemetryService } from '@content/domain/interfaces/recommendation-telemetry-service.interface';
 import type {
@@ -76,6 +77,9 @@ export class GetRecommendedReelsUseCase {
 
     @Inject('ISemanticRecommendationService')
     private readonly semanticRecommendationService: ISemanticRecommendationService,
+
+    @Inject('IRecommendationRerankerService')
+    private readonly rerankerService: IRecommendationRerankerService,
   ) {}
 
   async execute(
@@ -730,6 +734,14 @@ export class GetRecommendedReelsUseCase {
       friendUserIds: input.friendUserIds,
     };
     const featureFlags = this.recommendationConfig.getFeatureFlags();
+    // The semantic pool and the neural rerank both need the viewer's tags.
+    let interestTagsLoad: Promise<string[]> | undefined;
+    const loadInterestTags = () =>
+      (interestTagsLoad ??=
+        this.recommendationRepository.findViewerInterestTags(
+          candidateQuery.viewerId,
+          20,
+        ));
     const sourceOperations: Array<{
       source: RecommendationCandidateSource;
       execute: () => Promise<RecommendationCandidateEvidence[]>;
@@ -776,11 +788,7 @@ export class GetRecommendedReelsUseCase {
       {
         source: 'SEMANTIC',
         execute: async () => {
-          const interestTags =
-            await this.recommendationRepository.findViewerInterestTags(
-              candidateQuery.viewerId,
-              20,
-            );
+          const interestTags = await loadInterestTags();
 
           return await this.semanticRecommendationService.findCandidates({
             viewerId: candidateQuery.viewerId,
@@ -887,22 +895,13 @@ export class GetRecommendedReelsUseCase {
       .map(({ candidate, reel }) =>
         this.rankCandidate(reel, candidate, snapshot),
       )
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        const createdAtDifference =
-          right.reel.createdAt.getTime() - left.reel.createdAt.getTime();
-
-        if (createdAtDifference !== 0) {
-          return createdAtDifference;
-        }
-
-        return left.reel.id.localeCompare(right.reel.id);
-      });
-    const rankedUnseenItems = rankedItems.filter(
+      .sort((left, right) => this.compareRankedItems(left, right));
+    const featureRankedUnseenItems = rankedItems.filter(
       (item) => !recentlySeenReelIds.has(item.reel.id),
+    );
+    const rankedUnseenItems = await this.applyNeuralRerank(
+      featureRankedUnseenItems,
+      loadInterestTags,
     );
     const rankedSeenFallbackItems = rankedItems.filter((item) =>
       recentlySeenReelIds.has(item.reel.id),
@@ -928,6 +927,97 @@ export class GetRecommendedReelsUseCase {
       deduplicatedCandidateCount: mergedCandidates.length,
       sourceCounts,
     };
+  }
+
+  private compareRankedItems(
+    left: RankedRecommendationItem,
+    right: RankedRecommendationItem,
+  ): number {
+    if (right.score !== left.score) {
+      return right.score - left.score;
+    }
+
+    const createdAtDifference =
+      right.reel.createdAt.getTime() - left.reel.createdAt.getTime();
+
+    if (createdAtDifference !== 0) {
+      return createdAtDifference;
+    }
+
+    return left.reel.id.localeCompare(right.reel.id);
+  }
+
+  /**
+   * Reorders only the top-K feature-ranked reels with a cross-encoder. The
+   * shift is centered on zero so the group stays above the unscored tail, and
+   * any failure keeps the order the feature ranker produced.
+   */
+  private async applyNeuralRerank(
+    items: RankedRecommendationItem[],
+    loadInterestTags: () => Promise<string[]>,
+  ): Promise<RankedRecommendationItem[]> {
+    const settings = this.rerankerService.getSettings();
+
+    if (!settings.enabled || settings.weight <= 0 || items.length < 2) {
+      return items;
+    }
+
+    try {
+      const interestTags = (await loadInterestTags())
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+
+      if (interestTags.length === 0) {
+        return items;
+      }
+
+      const startedAt = Date.now();
+      const head = items.slice(0, settings.topK);
+      const scores = await this.rerankerService.scoreDocuments({
+        queryText: interestTags.join(' '),
+        documents: head.map((item) => this.rerankDocument(item.reel)),
+      });
+
+      if (!scores) {
+        return items;
+      }
+
+      const lowest = Math.min(...scores);
+      const highest = Math.max(...scores);
+
+      if (highest - lowest < 1e-6) {
+        return items;
+      }
+
+      const reranked = head
+        .map((item, index) => ({
+          ...item,
+          score:
+            item.score +
+            settings.weight *
+              ((scores[index] - lowest) / (highest - lowest) - 0.5),
+        }))
+        .sort((left, right) => this.compareRankedItems(left, right));
+
+      this.logger.debug(
+        `Neural rerank scored ${head.length} reels in ${Date.now() - startedAt}ms`,
+      );
+
+      return [...reranked, ...items.slice(head.length)];
+    } catch (error: unknown) {
+      this.logger.warn(`Neural rerank skipped: ${this.describeError(error)}`);
+      return items;
+    }
+  }
+
+  private rerankDocument(reel: Reel): string {
+    return (
+      [reel.title, reel.description, reel.tags.join(' ')]
+        .map((part) => part?.trim())
+        .filter(Boolean)
+        .join('\n')
+        .slice(0, 1_000) || reel.id
+    );
   }
 
   private mergeCandidates(

@@ -211,4 +211,74 @@ describe('TeiRerankerAdapter', () => {
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe('a');
   });
+  describe('scoreTexts', () => {
+    const scorer = (extra: Record<string, string> = {}) =>
+      new TeiRerankerAdapter(
+        new ConfigService({
+          TEI_RERANKER_BASE_URL: 'http://test',
+          TEI_RERANKER_MAX_CONCURRENT_REQUESTS: '1',
+          ...extra,
+        }),
+      );
+    const answer = (body: unknown, status = 200) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }));
+
+    it('returns one score per text in input order, one text per TEI request', async () => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation((_url, init) => {
+          const body = JSON.parse(init?.body as string) as { texts: string[] };
+          expect(body.texts).toHaveLength(1);
+          return answer([
+            { index: 0, score: body.texts[0].includes('best') ? 0.9 : 0.1 },
+          ]);
+        });
+
+      await expect(
+        scorer().scoreTexts({
+          queryText: 'cooking',
+          texts: ['plain', 'the best one', 'other'],
+        }),
+      ).resolves.toEqual([0.1, 0.9, 0.1]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('rejects a response that leaves a text unscored', async () => {
+      jest.spyOn(global, 'fetch').mockImplementation(() => answer([]));
+
+      await expect(
+        scorer().scoreTexts({ queryText: 'q', texts: ['a'] }),
+      ).rejects.toMatchObject({ code: 'RERANKER_INVALID_RESPONSE' });
+    });
+
+    it('stops between batches once the time budget is spent', async () => {
+      const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(() => {
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve(new Response(JSON.stringify([{ index: 0, score: 1 }]))),
+            30,
+          ),
+        );
+      });
+
+      await expect(
+        scorer().scoreTexts({
+          queryText: 'q',
+          texts: ['a', 'b', 'c', 'd'],
+          budgetMs: 40,
+        }),
+      ).rejects.toMatchObject({ code: 'RERANKER_TIMEOUT' });
+      expect(fetchMock.mock.calls.length).toBeLessThan(4);
+    });
+
+    it('does not call TEI when there is nothing to score', async () => {
+      const fetchMock = jest.spyOn(global, 'fetch');
+
+      await expect(
+        scorer().scoreTexts({ queryText: 'q', texts: [] }),
+      ).resolves.toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 });

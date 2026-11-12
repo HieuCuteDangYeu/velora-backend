@@ -1,5 +1,6 @@
 import type { Reel } from '@content/domain/entities/reel.entity';
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
+import type { IRecommendationRerankerService } from '@content/domain/interfaces/recommendation-reranker.service.interface';
 import type { IRecommendationConfig } from '@content/domain/interfaces/recommendation-config.interface';
 import type {
   IRecommendationFeedCacheRepository,
@@ -200,6 +201,15 @@ function createHarness(options?: {
   const semantic: jest.Mocked<ISemanticRecommendationService> = {
     findCandidates: jest.fn().mockResolvedValue([]),
   };
+  const reranker: jest.Mocked<IRecommendationRerankerService> = {
+    getSettings: jest.fn().mockReturnValue({
+      enabled: false,
+      topK: 20,
+      weight: 0.15,
+      timeoutMs: 3000,
+    }),
+    scoreDocuments: jest.fn().mockResolvedValue(null),
+  };
   const useCase = new GetRecommendedReelsUseCase(
     recommendationRepository,
     feedSessionRepository,
@@ -209,6 +219,7 @@ function createHarness(options?: {
     telemetry,
     friends,
     semantic,
+    reranker,
   );
 
   return {
@@ -219,6 +230,7 @@ function createHarness(options?: {
     feedCacheRepository,
     telemetry,
     friends,
+    reranker,
   };
 }
 
@@ -509,5 +521,96 @@ describe('GetRecommendedReelsUseCase Redis-first delivery', () => {
     expect(result.items.map((item) => item.id)).toEqual(['reel-2']);
     expect(result.items[0].recommendation?.rank).toBe(2);
     expect(result.nextCursor?.id).toBe('reel-2');
+  });
+});
+
+describe('GetRecommendedReelsUseCase neural rerank', () => {
+  const pipelineInput = {
+    viewerId: 'viewer-1',
+    limit: 15,
+    excludedUserIds: [],
+    excludedReelIds: [],
+    friendUserIds: [],
+    feedSessionId: '2f628c36-e32d-4b0c-8df5-c1f91087a001',
+  };
+
+  function rerankHarness(options?: {
+    enabled?: boolean;
+    interestTags?: string[];
+    scores?: number[] | null;
+  }) {
+    const harness = createHarness();
+    harness.reranker.getSettings.mockReturnValue({
+      enabled: options?.enabled ?? true,
+      topK: 5,
+      weight: 0.15,
+      timeoutMs: 3000,
+    });
+    harness.reranker.scoreDocuments.mockResolvedValue(
+      options?.scores === undefined ? [0, 0.1, 0.2, 0.3, 1] : options.scores,
+    );
+    harness.recommendationRepository.findViewerInterestTags.mockResolvedValue(
+      options?.interestTags ?? ['cooking', 'travel'],
+    );
+    const run = async () =>
+      (await harness.useCase['buildPipeline'](pipelineInput)).items.map(
+        (item) => item.reel.id,
+      );
+
+    return { harness, run };
+  }
+
+  const featureOrder = Array.from({ length: 15 }, (_, i) => `reel-${i + 1}`);
+
+  it('does nothing while the flag is off', async () => {
+    const { harness, run } = rerankHarness({ enabled: false });
+
+    expect(await run()).toEqual(featureOrder);
+    expect(harness.reranker.scoreDocuments).not.toHaveBeenCalled();
+  });
+
+  it('reorders only the top-K reels and leaves the tail untouched', async () => {
+    const { harness, run } = rerankHarness();
+
+    expect(await run()).toEqual([
+      'reel-5',
+      'reel-1',
+      'reel-2',
+      'reel-3',
+      'reel-4',
+      ...featureOrder.slice(5),
+    ]);
+    const request = harness.reranker.scoreDocuments.mock.calls[0][0];
+    expect(request.documents).toHaveLength(5);
+    expect(request.queryText).toBe('cooking travel');
+  });
+
+  it('keeps the feature-ranked order when the reranker is unavailable', async () => {
+    const { run } = rerankHarness({ scores: null });
+
+    expect(await run()).toEqual(featureOrder);
+  });
+
+  it('keeps the feature-ranked order when the reranker cannot separate the reels', async () => {
+    const { run } = rerankHarness({ scores: [0.5, 0.5, 0.5, 0.5, 0.5] });
+
+    expect(await run()).toEqual(featureOrder);
+  });
+
+  it('skips the reranker for viewers without interest tags', async () => {
+    const { harness, run } = rerankHarness({ interestTags: [] });
+
+    expect(await run()).toEqual(featureOrder);
+    expect(harness.reranker.scoreDocuments).not.toHaveBeenCalled();
+  });
+
+  it('loads the viewer interest tags once for the semantic pool and the rerank', async () => {
+    const { harness, run } = rerankHarness();
+
+    await run();
+
+    expect(
+      harness.recommendationRepository.findViewerInterestTags,
+    ).toHaveBeenCalledTimes(1);
   });
 });

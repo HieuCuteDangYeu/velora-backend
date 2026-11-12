@@ -2,6 +2,7 @@ import { AnalyzeVisualFrameUseCase } from '@ai/application/use-cases/analyze-vis
 import { BackfillUserMemoryEmbeddingsUseCase } from '@ai/application/use-cases/backfill-user-memory-embeddings.use-case';
 import { CountDocumentTokensUseCase } from '@ai/application/use-cases/count-document-tokens.use-case';
 import { ExtractReelMetadataUseCase } from '@ai/application/use-cases/extract-reel-metadata.use-case';
+import { ScoreTextRelevanceUseCase } from '@ai/application/use-cases/score-text-relevance.use-case';
 import { HandleConversationTurnCompletedUseCase } from '@ai/application/use-cases/handle-conversation-turn-completed.use-case';
 import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
@@ -14,6 +15,11 @@ import type {
   GenerateEmbeddingBatchRequest,
   GenerateEmbeddingRequest,
 } from '@common/ai/interfaces/generate-embedding.interface';
+import {
+  RERANK_TEXTS_MAX_ITEMS,
+  RERANK_TEXTS_MAX_TEXT_LENGTH,
+  type RerankTextsRequest,
+} from '@common/ai/interfaces/rerank-texts.interface';
 import type { ReelMetadataExtractionInput } from '@common/ai/interfaces/reel-metadata-extraction.interface';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
 import type { AnalyzeVisualFrameRequest } from '@common/ai/interfaces/visual-analysis.interface';
@@ -40,6 +46,7 @@ export class AiController {
     private readonly handleConversationTurnCompletedUseCase: HandleConversationTurnCompletedUseCase,
     private readonly extractReelMetadataUseCase: ExtractReelMetadataUseCase,
     private readonly backfillUserMemoryEmbeddingsUseCase: BackfillUserMemoryEmbeddingsUseCase,
+    private readonly scoreTextRelevanceUseCase: ScoreTextRelevanceUseCase,
   ) {}
 
   @MessagePattern('ai.generate_embedding')
@@ -101,6 +108,40 @@ export class AiController {
     }
 
     return await this.generateEmbeddingBatchUseCase.execute(data);
+  }
+
+  @MessagePattern('ai.rerank_texts')
+  async handleRerankTexts(@Payload() data: RerankTextsRequest) {
+    if (
+      !data ||
+      typeof data.queryText !== 'string' ||
+      !data.queryText.trim() ||
+      data.queryText.length > RERANK_TEXTS_MAX_TEXT_LENGTH ||
+      !Array.isArray(data.texts) ||
+      data.texts.length === 0 ||
+      data.texts.length > RERANK_TEXTS_MAX_ITEMS ||
+      data.texts.some(
+        (text) =>
+          typeof text !== 'string' ||
+          !text.trim() ||
+          text.length > RERANK_TEXTS_MAX_TEXT_LENGTH,
+      ) ||
+      (data.budgetMs !== undefined &&
+        (!Number.isFinite(data.budgetMs) || data.budgetMs <= 0))
+    ) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid rerank texts request payload',
+      });
+    }
+
+    try {
+      return await this.scoreTextRelevanceUseCase.execute(data);
+    } catch (err: unknown) {
+      const error = err as Error;
+      console.error(`[RerankTexts] ${error.message}`);
+      throw new RpcException({ statusCode: 503, message: error.message });
+    }
   }
 
   @MessagePattern('ai.count_document_tokens')

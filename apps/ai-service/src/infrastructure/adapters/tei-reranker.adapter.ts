@@ -1,4 +1,5 @@
 import type { IRerankerService } from '@ai/domain/interfaces/reranker.service.interface';
+import type { ITextRelevanceScorer } from '@ai/domain/interfaces/text-relevance-scorer.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -23,7 +24,9 @@ export class TeiRerankerError extends Error {
 }
 
 @Injectable()
-export class TeiRerankerAdapter implements IRerankerService {
+export class TeiRerankerAdapter
+  implements IRerankerService, ITextRelevanceScorer
+{
   constructor(
     private readonly config: ConfigService,
     private readonly diversitySelector: EvidenceDiversitySelector = new EvidenceDiversitySelector(
@@ -45,22 +48,14 @@ export class TeiRerankerAdapter implements IRerankerService {
       this.number('AI_RAG_RERANK_MAX_LIMIT', 8, 1, 20),
     );
     const candidates = this.boundCandidates(input.candidates);
-    const batchSize = Math.floor(
-      Math.min(
-        this.number('TEI_RERANKER_MAX_CONCURRENT_REQUESTS', 1, 1, 128),
-        Math.max(
-          1,
-          Math.floor(
-            this.safeBatchTokens() /
-              (this.queryTokenBudget(this.safeBatchTokens()) + 128 + 16),
-          ),
-        ),
-      ),
-    );
+    const batchSize = this.batchSize();
     const response: TeiScore[] = [];
     for (let offset = 0; offset < candidates.length; offset += batchSize) {
       const batch = candidates.slice(offset, offset + batchSize);
-      const scores = await this.request(input.queryText, batch);
+      const scores = await this.request(
+        input.queryText,
+        batch.map((candidate) => this.context(candidate)),
+      );
       const usable = scores.filter(
         (item) =>
           Number.isInteger(Number(item.index)) &&
@@ -105,9 +100,63 @@ export class TeiRerankerAdapter implements IRerankerService {
     return this.diversitySelector.select(scored, limit);
   }
 
+  async scoreTexts(input: {
+    queryText: string;
+    texts: string[];
+    budgetMs?: number;
+  }): Promise<number[]> {
+    if (!input.texts.length) return [];
+    const startedAt = Date.now();
+    const budgetMs = input.budgetMs ?? Number.POSITIVE_INFINITY;
+    const batchSize = this.batchSize();
+    const scores: number[] = new Array<number>(input.texts.length);
+    const seen = new Set<number>();
+
+    for (let offset = 0; offset < input.texts.length; offset += batchSize) {
+      if (Date.now() - startedAt >= budgetMs) {
+        throw new TeiRerankerError('RERANKER_TIMEOUT');
+      }
+      const batch = input.texts.slice(offset, offset + batchSize);
+      for (const item of await this.request(input.queryText, batch)) {
+        const index = Number(item.index);
+        const score = Number(item.score);
+        if (
+          Number.isInteger(index) &&
+          index >= 0 &&
+          index < batch.length &&
+          Number.isFinite(score)
+        ) {
+          scores[offset + index] = score;
+          seen.add(offset + index);
+        }
+      }
+    }
+
+    // A partial answer would compare scored and unscored texts, so reject it.
+    if (seen.size !== input.texts.length) {
+      throw new TeiRerankerError('RERANKER_INVALID_RESPONSE');
+    }
+    return scores;
+  }
+
+  private batchSize(): number {
+    return Math.floor(
+      Math.min(
+        this.number('TEI_RERANKER_MAX_CONCURRENT_REQUESTS', 1, 1, 128),
+        Math.max(
+          1,
+          Math.floor(
+            this.safeBatchTokens() /
+              (this.queryTokenBudget(this.safeBatchTokens()) + 128 + 16),
+          ),
+        ),
+      ),
+    );
+  }
+
   private async request(
     queryText: string,
-    candidates: ReelContextSearchResult[],
+    texts: string[],
   ): Promise<TeiScore[]> {
     const timeoutMs = this.number(
       'AI_RAG_NEURAL_RERANK_TIMEOUT_MS',
@@ -125,7 +174,7 @@ export class TeiRerankerAdapter implements IRerankerService {
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       timer.unref();
       try {
-        const requestBody = this.payload(queryText, candidates);
+        const requestBody = this.payload(queryText, texts);
         const response = await fetch(`${this.baseUrl()}/rerank`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -184,14 +233,14 @@ export class TeiRerankerAdapter implements IRerankerService {
 
   private payload(
     queryText: string,
-    candidates: ReelContextSearchResult[],
+    texts: string[],
   ): { query: string; texts: string[]; return_text: false; truncate: true } {
     const safeBatchTokens = this.safeBatchTokens();
     const queryTokens = this.queryTokenBudget(safeBatchTokens);
     const candidateTokens = Math.max(
       64,
       Math.floor(
-        safeBatchTokens / Math.max(candidates.length, 1) - queryTokens - 16,
+        safeBatchTokens / Math.max(texts.length, 1) - queryTokens - 16,
       ),
     );
     const maxInputTokens = Math.min(
@@ -205,9 +254,7 @@ export class TeiRerankerAdapter implements IRerankerService {
     );
     return {
       query: this.truncate(queryText, queryTokens),
-      texts: candidates.map((candidate) =>
-        this.truncate(this.context(candidate), maxInputTokens),
-      ),
+      texts: texts.map((text) => this.truncate(text, maxInputTokens)),
       return_text: false,
       truncate: true,
     };

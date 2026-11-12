@@ -64,6 +64,7 @@ import { FriendSharePolicyAdapter } from '@content/infrastructure/adapters/frien
 import { ReelMediaJobPublisherAdapter } from '@content/infrastructure/adapters/reel-media-job-publisher.adapter';
 import { ReelIndexJobPublisherAdapter } from '@content/infrastructure/adapters/reel-index-job-publisher.adapter';
 import { RecommendationTelemetryServiceAdapter } from '@content/infrastructure/adapters/recommendation-telemetry-service.adapter';
+import { AiRecommendationRerankerAdapter } from '@content/infrastructure/adapters/ai-recommendation-reranker.adapter';
 import { SemanticRecommendationServiceAdapter } from '@content/infrastructure/adapters/semantic-recommendation-service.adapter';
 import { SemanticReelSearchAdapter } from '@content/infrastructure/adapters/semantic-reel-search.adapter';
 import { REEL_INDEX_QUERY_QUEUE } from '@common/processing/interfaces/semantic-index.interface';
@@ -318,6 +319,10 @@ function createRmqClientRegistration(name: string, queue: string) {
     {
       provide: 'ISemanticRecommendationService',
       useClass: SemanticRecommendationServiceAdapter,
+    },
+    {
+      provide: 'IRecommendationRerankerService',
+      useClass: AiRecommendationRerankerAdapter,
     },
     {
       provide: 'ISemanticReelSearchService',

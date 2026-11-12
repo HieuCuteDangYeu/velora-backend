@@ -62,6 +62,7 @@ import {
 } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
+import { RAG_INPUT_REFUSAL_MESSAGE } from '@ai/domain/services/rag-guardrail/rag-guardrail';
 import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
 
 const RagChatStateSchema = new StateSchema({
@@ -207,7 +208,18 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       tokenUsage: RagTelemetryTokenUsage[];
     } = { tokenUsage: [] };
     this.executionContexts.set(nodeTimings, executionContext);
-    const graph = this.buildGraph(nodeTimings);
+    // Shadow guardrails only record what they would have done; they never
+    // alter routing, evidence or the answer, and can never fail a request. The
+    // one exception is the input check in enforce mode, which refuses before any model call.
+    const guardrailFindings: GuardrailFinding[] = [];
+    this.recordGuardrail(guardrailFindings, () =>
+      this.screenRagInputUseCase?.execute({ message: input.message }),
+    );
+    const refusedByGuardrail =
+      this.screenRagInputUseCase?.blocks(guardrailFindings) ?? false;
+
+    // A refused request never runs the pipeline, so do not build it either.
+    const graph = refusedByGuardrail ? undefined : this.buildGraph(nodeTimings);
     const startedAt = Date.now();
 
     const initialState: RagChatWorkflowState = {
@@ -238,14 +250,18 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     let result: RagChatWorkflowState = initialState;
     let outcome: RagTelemetryEvent['outcome'] = 'FAILED';
 
-    // Shadow guardrails only record what they would have done; they never
-    // alter routing, evidence or the answer, and can never fail a request.
-    const guardrailFindings: GuardrailFinding[] = [];
-    this.recordGuardrail(guardrailFindings, () =>
-      this.screenRagInputUseCase?.execute({ message: input.message }),
-    );
-
     try {
+      if (refusedByGuardrail || !graph) {
+        result = { ...initialState, answer: RAG_INPUT_REFUSAL_MESSAGE };
+        outcome = 'SUCCEEDED';
+        return {
+          answer: RAG_INPUT_REFUSAL_MESSAGE,
+          citations: [],
+          recommendedReels: [],
+          suggestedQueries: [],
+        };
+      }
+
       result = await graph.invoke(initialState, { recursionLimit: 64 });
       outcome = 'SUCCEEDED';
       this.recordGuardrail(guardrailFindings, () =>
@@ -290,7 +306,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       const guardrail =
         this.buildRagGuardrailSummaryUseCase?.execute(guardrailFindings);
       if (guardrail && guardrail.findingCount > 0) {
-        const line = `[Guardrail] execution=${productionExecutionId} mode=${guardrail.mode} wouldBlock=${guardrail.wouldBlock} input=${guardrail.inputCodes.join(',') || '-'} evidence=${guardrail.evidenceCodes.join(',') || '-'} output=${guardrail.outputCodes.join(',') || '-'}`;
+        const line = `[Guardrail] execution=${productionExecutionId} mode=${guardrail.mode} wouldBlock=${guardrail.wouldBlock} blocked=${guardrail.blocked} input=${guardrail.inputCodes.join(',') || '-'} evidence=${guardrail.evidenceCodes.join(',') || '-'} output=${guardrail.outputCodes.join(',') || '-'}`;
         if (guardrail.wouldBlock) this.logger.warn(line);
         else this.logger.log(line);
       }
@@ -321,7 +337,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       } catch {
         this.logger.warn('Langfuse RAG diagnostics capture failed');
       }
-      this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
+      // A refusal never reached the pipeline; counting it would skew latency and success rates.
+      if (!refusedByGuardrail) {
+        this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
+      }
     }
   }
 

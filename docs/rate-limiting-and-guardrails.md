@@ -79,9 +79,9 @@ chain, verify with logins from two different networks.
   same `ai_turn_*` budget in conversation-service, so no client can bypass it. (A `POST /conversations/chat`
   convenience endpoint and its `ai_chat_user` pre-check existed until 2026-11-09; it had no callers and was removed.)
 
-## RAG guardrail (shadow mode)
+## RAG guardrail (shadow by default, input check can enforce)
 
-Records what a guardrail would block and changes nothing. Code: `apps/ai-service/src/domain/services/rag-guardrail/`
+In shadow mode it records what a guardrail would block and changes nothing. Code: `apps/ai-service/src/domain/services/rag-guardrail/`
 (rules), `application/use-cases/screen-rag-*.use-case.ts` and `build-rag-guardrail-summary.use-case.ts`.
 
 - Input: instruction override, prompt extraction, jailbreak personas and role tags (English and Vietnamese), including
@@ -93,10 +93,19 @@ Each request that produces a finding logs one line with codes only, never text:
 `[Guardrail] execution=<id> mode=shadow wouldBlock=<bool> input=<codes> evidence=<codes> output=<codes>`.
 The same summary is added to the Langfuse root output.
 
-`AI_GUARDRAIL_MODE=off|shadow` (default `shadow`), with per-check overrides `AI_GUARDRAIL_INPUT_MODE`,
-`AI_GUARDRAIL_EVIDENCE_MODE`, `AI_GUARDRAIL_OUTPUT_MODE`. Enforcement is not implemented; `enforce` is read as `shadow`.
-Before any check may enforce, it needs the offline replay (`eval/rag/README.md`) plus a few days of production
-`[Guardrail]` lines to measure false positives.
+`AI_GUARDRAIL_MODE=off|shadow|enforce` (default `shadow`), with per-check overrides `AI_GUARDRAIL_INPUT_MODE`,
+`AI_GUARDRAIL_EVIDENCE_MODE`, `AI_GUARDRAIL_OUTPUT_MODE`. Only the **input** check can enforce; for evidence and
+output `enforce` is read as `shadow`.
+
+With the input check enforcing, a message with a **high** input finding is answered with a fixed refusal
+(`RAG_INPUT_REFUSAL_MESSAGE`) before the router, retrieval or any model call. Medium findings are still answered.
+The log line then reads `mode=enforce ... blocked=true`. A refused turn is not sent to RAG telemetry and is not
+summarised or remembered (`HandleConversationTurnCompletedUseCase`), so the refused text cannot return through memory.
+
+Know the cost before turning it on: the check is a pattern list, so a quoted attack ("the video says to ignore all
+previous instructions, is that real?") is refused too, and rewordings it has never seen still get through. The measured
+catch and false-positive rates are in `eval/rag/README.md`. To roll back, unset `AI_GUARDRAIL_INPUT_MODE` (or set it
+to `shadow`) and redeploy; nothing is stored.
 
 ## After every deploy
 

@@ -27,15 +27,23 @@ function parseMode(raw: unknown): GuardrailMode | undefined {
   if (typeof raw !== 'string') return undefined;
   const value = raw.trim().toLowerCase();
   if (value === 'off') return 'off';
-  // Enforcement does not exist yet. Treat the value as shadow so a premature
-  // `enforce` records findings but cannot change any answer.
-  if (value === 'shadow' || value === 'enforce') return 'shadow';
+  if (value === 'shadow') return 'shadow';
+  if (value === 'enforce') return 'enforce';
   return undefined;
 }
 
+/** Only the input check can enforce; anywhere else `enforce` is recorded as shadow. */
+const withoutEnforce = (mode: GuardrailMode): GuardrailMode =>
+  mode === 'enforce' ? 'shadow' : mode;
+
+/** What the user sees when the input check refuses. It says nothing about why. */
+export const RAG_INPUT_REFUSAL_MESSAGE =
+  'I can’t help with that request. Ask me about a Reel or another question and I’ll do my best.';
+
 /**
- * AI_GUARDRAIL_MODE sets the default (off | shadow, default shadow);
- * AI_GUARDRAIL_{INPUT,EVIDENCE,OUTPUT}_MODE override one check.
+ * AI_GUARDRAIL_MODE sets the default (off | shadow | enforce, default shadow);
+ * AI_GUARDRAIL_{INPUT,EVIDENCE,OUTPUT}_MODE override one check. `enforce` only
+ * takes effect for the input check.
  */
 export function readRagGuardrailModes(
   config?: RagGuardrailConfig,
@@ -44,9 +52,22 @@ export function readRagGuardrailModes(
   const read = (key: string) => parseMode(config?.get(key)) ?? fallback;
   return {
     input: read('AI_GUARDRAIL_INPUT_MODE'),
-    evidence: read('AI_GUARDRAIL_EVIDENCE_MODE'),
-    output: read('AI_GUARDRAIL_OUTPUT_MODE'),
+    evidence: withoutEnforce(read('AI_GUARDRAIL_EVIDENCE_MODE')),
+    output: withoutEnforce(read('AI_GUARDRAIL_OUTPUT_MODE')),
   };
+}
+
+/** True when the input check enforces and found something with no benign reading. */
+export function shouldBlockRagInput(
+  findings: readonly GuardrailFinding[],
+  modes: RagGuardrailModes,
+): boolean {
+  return (
+    modes.input === 'enforce' &&
+    findings.some(
+      (finding) => finding.check === 'input' && finding.severity === 'high',
+    )
+  );
 }
 
 export function screenRagInput(
@@ -83,13 +104,18 @@ export function summarizeGuardrail(
     ),
   ];
   const mode: GuardrailMode =
-    modes.input === 'off' && modes.evidence === 'off' && modes.output === 'off'
-      ? 'off'
-      : 'shadow';
+    modes.input === 'enforce'
+      ? 'enforce'
+      : modes.input === 'off' &&
+          modes.evidence === 'off' &&
+          modes.output === 'off'
+        ? 'off'
+        : 'shadow';
   return {
     mode,
     findingCount: findings.length,
     wouldBlock: findings.some((finding) => finding.severity === 'high'),
+    blocked: shouldBlockRagInput(findings, modes),
     codes: [...new Set(findings.map((finding) => finding.code))],
     inputCodes: codesFor('input'),
     evidenceCodes: codesFor('evidence'),

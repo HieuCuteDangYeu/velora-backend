@@ -9,9 +9,11 @@ export type GuardrailSeverity = 'medium' | 'high';
 
 /**
  * `shadow` records what a check would have done and never changes behaviour.
- * Enforcement (blocking, neutralising, redacting) is a later phase.
+ * `enforce` is supported for the input check only: a high-severity finding
+ * makes the request return a fixed refusal. Evidence and output checks stay
+ * shadow until they have their own replay gate.
  */
-export type GuardrailMode = 'off' | 'shadow';
+export type GuardrailMode = 'off' | 'shadow' | 'enforce';
 
 export interface GuardrailFinding {
   check: GuardrailCheckName;
@@ -28,6 +30,8 @@ export interface RagGuardrailSummary {
   mode: GuardrailMode;
   findingCount: number;
   wouldBlock: boolean;
+  /** The input check is enforcing and refused this request. */
+  blocked: boolean;
   codes: string[];
   inputCodes: string[];
   evidenceCodes: string[];

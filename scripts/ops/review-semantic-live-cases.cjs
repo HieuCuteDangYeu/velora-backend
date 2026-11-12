@@ -34,6 +34,7 @@ const COLUMNS = [
   'goldEvidenceId',
   'goldText',
   'proposals',
+  'proposalText',
   'verdict',
   'acceptProposals',
   'notes',
@@ -103,6 +104,13 @@ function buildSheet(rows, textById) {
         goldText:
           textById.get(gold.evidenceId) ?? '(chunk missing from snapshot)',
         proposals: proposalText(r.proposedRelevant),
+        // Text of each suggested chunk so the reviewer can judge it without a lookup.
+        proposalText: (r.proposedRelevant ?? [])
+          .map(
+            (p, i) =>
+              `[${i + 1}] (grade ${p.grade}) ${(textById.get(p.evidenceId) ?? '(chunk missing from snapshot)').slice(0, 600)}`,
+          )
+          .join('\n\n'),
         verdict: '',
         acceptProposals: '',
         notes: '',

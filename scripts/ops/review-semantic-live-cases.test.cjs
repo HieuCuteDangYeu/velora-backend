@@ -39,6 +39,22 @@ test('CSV survives quotes, commas and newlines in transcript text', () => {
   assert.throws(() => parseCsv('a,b\r\n1,2\r\n'), /sheet header/);
 });
 
+test('buildSheet shows the text of each suggested chunk', () => {
+  const sheet = buildSheet(
+    [
+      row(1, {
+        proposedRelevant: [{ evidenceId: 'reel:r1:chunk:1', grade: 2 }],
+      }),
+    ],
+    texts,
+  );
+  assert.match(
+    sheet[0].proposalText,
+    /^\[1\] \(grade 2\) A neighbouring passage\./,
+  );
+  assert.equal(parseCsv(toCsv(sheet))[0].proposalText, sheet[0].proposalText);
+});
+
 test('buildSheet lists only candidates', () => {
   const sheet = buildSheet([row(1), row(2, { status: 'REJECTED' })], texts);
   assert.deepEqual(

@@ -3507,6 +3507,45 @@ describe('CallGateway reconnect recovery', () => {
     expect(evict.socketsLeave).toHaveBeenCalledWith('call-1');
   });
 
+  it('keeps the mic and video state of the people who stay when one participant leaves a group call', async () => {
+    const coordinator = new InProcessCallCoordinator();
+    const mediaUi = 'call:call-1:media-ui';
+    for (const [field, value] of [
+      ['mic:user-b', '{"muted":true}'],
+      ['mic:user-c', '{"muted":true}'],
+      ['video:producer-b', '{"enabled":false}'],
+      ['video:producer-c', '{"enabled":false}'],
+    ]) {
+      await coordinator.hashSet(mediaUi, field, value, 60_000);
+    }
+    const leaveCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        session: activeSession,
+        endedReason: 'left',
+        shouldEmitPeerLeft: true,
+        didTransition: false,
+        closedProducers: [{ producerId: 'producer-b', kind: 'video' }],
+      }),
+    };
+    const gateway = createGateway({ coordinator, leaveCallUseCase });
+    gateway.server = {
+      to: jest.fn().mockReturnValue({ emit: jest.fn() }),
+      in: jest.fn().mockReturnValue({ socketsLeave: jest.fn() }),
+    } as never;
+
+    await gateway.handleLeaveCall(
+      { callId: 'call-1' },
+      createSocket({ id: 'socket-b', userId: 'user-b', callIds: ['call-1'] }),
+    );
+
+    expect(await coordinator.hashGet(mediaUi, 'mic:user-b')).toBeNull();
+    expect(await coordinator.hashGet(mediaUi, 'video:producer-b')).toBeNull();
+    expect(await coordinator.hashGet(mediaUi, 'mic:user-c')).not.toBeNull();
+    expect(
+      await coordinator.hashGet(mediaUi, 'video:producer-c'),
+    ).not.toBeNull();
+  });
+
   it('prevents a losing group device from ending the winning device call', async () => {
     const groupSession = new CallSession({
       ...activeSession,

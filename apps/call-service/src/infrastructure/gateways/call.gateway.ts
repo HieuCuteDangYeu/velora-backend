@@ -2304,7 +2304,14 @@ export class CallGateway
     this.reconnectStartedAtByParticipant.delete(
       this.disconnectKey(payload.callId, userId),
     );
-    await this.clearVideoState(payload.callId);
+    // Only what belongs to the leaver. The rest of a group keeps its mic and
+    // video state; when the call ends, `emitCallEnded` clears the whole hash.
+    await this.clearGroupMicState(payload.callId, userId);
+    for (const producer of result.closedProducers ?? []) {
+      if (producer.kind === 'video') {
+        await this.clearVideoState(payload.callId, producer.producerId);
+      }
+    }
     this.untrackCallId(client, payload.callId);
     if (result.shouldEmitPeerLeft) {
       // A participant is account-scoped; evict every socket for that account,

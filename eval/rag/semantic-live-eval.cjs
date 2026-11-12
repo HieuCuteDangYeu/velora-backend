@@ -11,10 +11,10 @@
  *   docker cp eval/rag/semantic-live-eval.cjs eval/rag/semantic-live-eval-lib.cjs \
  *     eval/rag/datasets/rag-semantic-live-v1.jsonl <content-service>:/usr/src/app/
  *   docker exec <content-service> node semantic-live-eval.cjs run \
- *     --cases rag-semantic-live-v1.jsonl --out run-a.json [--split heldout] [--limit 50]
- *   docker cp <content-service>:/usr/src/app/run-a.json .benchmarks/semantic-live-run-a.json
+ *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50]
+ *   docker cp <content-service>:/tmp/run-a.json .benchmarks/semantic-live-run-a.json
  *   docker exec -u root <content-service> rm /usr/src/app/semantic-live-eval*.cjs \
- *     /usr/src/app/rag-semantic-live-v1.jsonl /usr/src/app/run-a.json
+ *     /usr/src/app/rag-semantic-live-v1.jsonl /tmp/run-a.json
  *
  * `compare` is pure and runs anywhere:
  *

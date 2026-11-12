@@ -8,7 +8,7 @@
  *   #    using the top hits of a run. Proposals never change `relevant`.
  *   node scripts/ops/review-semantic-live-cases.cjs propose \
  *     --dataset eval/rag/datasets/rag-semantic-live-v1.jsonl \
- *     --items .benchmarks/semantic-live-items.json --run .benchmarks/semantic-live-run-a.json
+ *     --items .benchmarks/semantic-live-items.json --run .benchmarks/semantic-live-run-a.json [--top-k 3]
  *
  *   # 2. Write a CSV sheet of rows still waiting for review.
  *   node scripts/ops/review-semantic-live-cases.cjs sheet --dataset ... \
@@ -277,6 +277,7 @@ async function main() {
       run: JSON.parse(fs.readFileSync(args.run, 'utf8')),
       textById: loadText(args.items),
       askFn: askHaiku,
+      topK: Number(args['top-k'] ?? 3),
     });
     writeAtomic(dataset, lib.toJsonl(next));
     console.log(

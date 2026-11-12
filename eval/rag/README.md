@@ -271,7 +271,7 @@ node scripts/ops/build-semantic-live-cases.cjs generate --items .benchmarks/sema
 # 3. review: sheet -> reviewer fills verdict -> apply
 node scripts/ops/review-semantic-live-cases.cjs sheet --items .benchmarks/semantic-live-items.json --out .benchmarks/semantic-live-review.csv
 node scripts/ops/review-semantic-live-cases.cjs apply --sheet .benchmarks/semantic-live-review.csv --reviewer <id>
-# 4. score against the live index (content-service container, see the script header) and compare
+# 4. score against the live index (content-service container, see the script header; write --out under /tmp, the app dir is read-only) and compare
 node eval/rag/semantic-live-eval.cjs compare .benchmarks/run-a.json .benchmarks/run-b.json --stage rerank
 # 5. after any reindex
 node scripts/ops/build-semantic-live-cases.cjs check-stale --items .benchmarks/semantic-live-items.json

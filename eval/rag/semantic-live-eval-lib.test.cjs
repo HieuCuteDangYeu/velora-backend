@@ -159,6 +159,9 @@ test('summarizeBy groups by every tag a case carries', () => {
   assert.equal(by.a.n, 2);
   assert.equal(by.a.rr, 0.5);
   assert.equal(by.vi.n, 1);
+  // A tag listed twice on one case must not count that case twice.
+  const dup = lib.summarizeBy([per[0]], () => ['vi', 'vi']);
+  assert.equal(dup.vi.n, 1);
 });
 
 test('pairedBootstrap detects a consistent gain and a null difference', () => {

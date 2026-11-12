@@ -386,7 +386,7 @@ function summarize(perCase) {
 function summarizeBy(perCase, keyFn) {
   const groups = new Map();
   for (const c of perCase)
-    for (const key of [].concat(keyFn(c)))
+    for (const key of new Set([].concat(keyFn(c))))
       groups.set(key, [...(groups.get(key) ?? []), c]);
   return Object.fromEntries([...groups].map(([k, v]) => [k, summarize(v)]));
 }

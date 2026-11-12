@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check editable SVG fidelity and bounded source evidence for changed Reel pages."""
+"""Check editable SVG fidelity, page/export parity and bounded source evidence for every page."""
 from pathlib import Path
 import json
 import os
@@ -9,29 +9,6 @@ import xml.etree.ElementTree as ET
 REPO = Path(__file__).resolve().parents[2]
 DIRECTORY = REPO / 'docs/diagrams/velora-current'
 MOBILE = Path(os.environ.get('VELORA_MOBILE_ROOT', '/home/hieucutedangyeu/Velora-Mobile'))
-CHANGED = {
-    '01-microservices-architecture', '02-application-architecture', '08-dfd-media',
-    '08a-dfd-streaming', '09-dfd-index', '13-content',
-    '20a-auth-refresh-standard', '20b-auth-refresh-deduplication', '20c-auth-refresh-recovery-theft',
-    '27a-reel-upload-flow', '27b-reel-publish-idempotency',
-    '28a-media-playback-readiness', '28b-media-evidence-pipeline',
-    '29a-index-intake-routing', '29b-index-multimodal-extraction', '29c-index-vectorization-staging',
-    '32a-feed-cache-paging', '32b-feed-background-refill',
-    '39a-rag-scope-routing', '39b-rag-search-rerank',
-    '41a-rag-streamed-generation', '41b-rag-verification-attribution',
-    '17a-auth-registration-request', '17b-auth-email-verification',
-    '23a-friend-send-request', '23b-friend-accept-request',
-    '24a-friend-reject-request', '24b-friend-cancel-request', '24c-friend-unfriend',
-    '30a-index-checkpoint-resume', '30b-index-stale-fencing',
-    '31a-index-atomic-activation', '31b-index-rollback-recovery',
-    '34a-hls-owner-preview', '34b-hls-validated-stream',
-    '35a-series-creation-flow', '35b-series-reels-ordering',
-    '36a-series-playback-entry', '36b-series-episode-switch',
-    '37a-share-to-ai-assistant', '37b-share-to-user-chat',
-    '38a-share-link-generation', '38b-share-link-resolution',
-    '40a-rag-turn-memory-assembly', '40b-rag-summary-maintenance',
-    '42a-observability-trace-capture', '42b-observability-trace-analysis',
-}
 
 
 def canonical(element):
@@ -52,7 +29,10 @@ def references(value):
 def main():
     document = ET.parse(DIRECTORY / 'velora-architecture.drawio').getroot()
     pages = {page.attrib['id']: page for page in document.findall('diagram')}
-    assert CHANGED <= pages.keys(), 'missing required Reel pages'
+    CHANGED = set(pages)
+    exported = {path.name[:-len('.drawio.svg')] for path in (DIRECTORY / 'importable-svg').glob('*.drawio.svg')}
+    assert exported == set(pages), f'export/page mismatch: {sorted(exported ^ set(pages))}'
+    assert [p.attrib['id'] for p in document.findall('diagram')] == sorted(pages, key=lambda i: (int(re.match(r'\d+', i).group()), i)), 'pages are not in numeric order'
     for page_id, page in pages.items():
         model = page.find('mxGraphModel')
         assert model is not None and model.find('root') is not None, page_id

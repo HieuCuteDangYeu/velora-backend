@@ -246,6 +246,11 @@ services:
       - '3005'
     env_file:
       - .env
+    environment:
+      # Reads that tolerate a few seconds of lag (reaction details) use the Mongo
+      # secondary on velora-node-2, with a fallback to the primary. Set the value
+      # to empty to keep every read on the primary. See infra/mongo-replica/README.md.
+      CONVERSATION_READ_REPLICA_PREFERENCE: secondaryPreferred
     depends_on:
       rabbitmq:
         condition: service_healthy

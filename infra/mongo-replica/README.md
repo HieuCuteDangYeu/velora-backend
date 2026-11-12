@@ -59,9 +59,11 @@ before answering 404 (`target="miss"`), and the membership check for the request
 always runs on the primary. Do not route authorization checks, read-after-write
 reads, or message history (recalled messages must not reappear) through it.
 
-To turn it on, add `CONVERSATION_READ_REPLICA_PREFERENCE=secondaryPreferred` to
-the homelab `.env` and recreate only `conversation-service`. This changes `.env`,
-so `velora-deploy` will report env drift until the new hash is accepted.
+It is switched on in `docker-compose.yml` (`environment` of `conversation-service`:
+`CONVERSATION_READ_REPLICA_PREFERENCE: secondaryPreferred`), so it ships through the
+normal release and only `conversation-service` is recreated. Do not set it in the
+homelab `.env` instead: `velora-deploy` pauses automatic releases on any `.env` change
+until a full-env approval. To switch it off, set the value to empty in the compose file.
 
 ### Showing the split
 

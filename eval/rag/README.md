@@ -69,11 +69,11 @@ and 42 benign messages that sound similar ("ignore my previous message", "what a
 chess in this reel", "forget your limits" said in a motivational video). Input-check results at
 `high` severity, before and after tuning:
 
-| Set | Before | After |
-| --- | --- | --- |
-| Own attacks (65) | 17 | 54 (64 flagged at any severity) |
-| Own benign (42) | 3 false highs | 1 false high |
-| Public `deepset/prompt-injections`, English rows (120 attacks / 249 benign) | 17 | 37, 0 false highs |
+| Set                                                                         | Before        | After                           |
+| --------------------------------------------------------------------------- | ------------- | ------------------------------- |
+| Own attacks (65)                                                            | 17            | 54 (64 flagged at any severity) |
+| Own benign (42)                                                             | 3 false highs | 1 false high                    |
+| Public `deepset/prompt-injections`, English rows (120 attacks / 249 benign) | 17            | 37, 0 false highs               |
 
 Read these with care: the own set was used to write the patterns, so its "after" number is optimistic.
 The public set is a better guide; most of its remaining misses are persona play, output forcing

@@ -76,3 +76,15 @@ Not done, and why: switching the host to the repository overlay (`COMPOSE_FILE=d
 `REEL_INDEXING_DATABASE_URL` or the private env file the overlay now requires, and `velora-qdrant-policy` still expects the
 overlay's `INDEX_VECTOR_*` values to be the `postgres`/`false` pre-cutover ones, whereas the overlay defaults to `qdrant`/`true`.
 Both need an explicit decision before the host can use that path.
+
+## Indexer image pinned by the host overlay (2026-11-11)
+
+`index-rollout.yml` on the host pins the indexer image (`velora-reel-indexing-qdrant:6ca1491e`, a build of the 2026-11-03 code), and the deploy
+controller re-applies that overlay after every release. So indexing-service code merged after that build is not live until the pin is moved.
+Rolled forward on 2026-11-11 to `velora-reel-indexing-qdrant:af7a7c1d`: `docker pull hieucutedangyeu/reel-indexing-service:<full sha>`, tag it
+`velora-reel-indexing-qdrant:<short sha>`, edit the `image:` line in the overlay, then
+`VELORA_IMAGE_TAG=<full sha> docker compose -f docker-compose.yml -f <overlay> up -d --no-deps --no-build --force-recreate reel-indexing-service reel-indexing-long-service`.
+Checked afterwards with `scripts/deploy/ensure-reel-indexing-qdrant --check` (ok), a real re-index (COMPLETED in about 90 seconds) and the bundled
+`dist/apps/reel-indexing-service/main.js` (contains the deferred visual retry worker). Rollback: copy the backup
+`index-rollout.yml.bak-20261111T095552Z` back over `index-rollout.yml` and run the same compose command; the old image is still on the host.
+Each indexing-service change needs the same pin move, or the host moves to the repo overlay as recommended above.

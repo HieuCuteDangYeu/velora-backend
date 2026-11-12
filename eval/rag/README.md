@@ -237,3 +237,50 @@ reranked in either arm and have no exposure row.
 `recommendation-rerank-ab-report.cjs` (same run-in-container recipe as the
 benchmark) reports treatment-vs-control rates and the counterfactual AUC with
 session-level bootstrap intervals. Needs the `20261112120000` migration.
+
+## Live semantic retrieval set
+
+`datasets/rag-semantic-live-v1.jsonl` (created by the first `generate`) holds natural
+questions with graded relevant evidence IDs, scored against the **live index**
+(`index.search_chunks`, then the cross-encoder rerank), not an offline fixture. It
+replaces the throwaway 80-question set that lived in `/tmp`. Row schema and rules are in
+`semantic-live-eval-lib.cjs`; `validate` enforces them.
+
+- `source`: `synthetic` (Haiku writes a question from a chunk), `regression` (a fixed
+  production bug), `hand`, or `traffic`. `traffic` is allowed by the schema but unused: the
+  local Langfuse held no end-user traces on 2026-11-12, and tracing stores question text.
+- Synthetic questions that copy their chunk (content-token containment > 0.6 or a shared
+  run of 4+ tokens) are dropped, so the set is not easier than real asking.
+- `status`: only `REVIEWED` rows are scored. `CANDIDATE` is generated, `REJECTED` is kept
+  out, `STALE` means the gold chunk is no longer active (not a retrieval miss).
+- `split`: all questions of one series share a split. `fresh` is a series whose reels were
+  **all** indexed after `--fresh-after`; it regrows as content arrives. Never tune on
+  `heldout` or `fresh`, and report them separately.
+- `proposedRelevant` is a Haiku suggestion that another chunk also answers the question. It
+  never counts until a reviewer sets `acceptProposals` to `Y`.
+
+Workflow (the export and the run happen in the homelab containers; the snapshot and the
+review sheet contain transcript text, so keep them under `.benchmarks/`, never in Git):
+
+```sh
+# 1. snapshot active chunks (reel-indexing container, see the script header)
+docker exec <reel-indexing> node export-semantic-live-items.cjs > .benchmarks/semantic-live-items.json
+# 2. grow the set; use a new --seed each time
+node scripts/ops/build-semantic-live-cases.cjs generate --items .benchmarks/semantic-live-items.json \
+  --total 100 --seed 2 [--fresh-after <iso>]
+# 3. review: sheet -> reviewer fills verdict -> apply
+node scripts/ops/review-semantic-live-cases.cjs sheet --items .benchmarks/semantic-live-items.json --out .benchmarks/semantic-live-review.csv
+node scripts/ops/review-semantic-live-cases.cjs apply --sheet .benchmarks/semantic-live-review.csv --reviewer <id>
+# 4. score against the live index (content-service container, see the script header) and compare
+node eval/rag/semantic-live-eval.cjs compare .benchmarks/run-a.json .benchmarks/run-b.json --stage rerank
+# 5. after any reindex
+node scripts/ops/build-semantic-live-cases.cjs check-stale --items .benchmarks/semantic-live-items.json
+```
+
+Tests (offline, no provider): `node --test eval/rag/ scripts/ops/review-semantic-live-cases.test.cjs`.
+
+A run reports a failed embed, search or rerank as `unavailable` and leaves it out of the
+means. `compare` runs a paired bootstrap on the shared cases and warns when the index
+version differs between runs or fewer than 150 cases are shared. The query is the raw
+question, without the planner's keyword rewrite, so use the set to compare builds rather
+than to quote an absolute score.

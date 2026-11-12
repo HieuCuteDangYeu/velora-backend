@@ -6,9 +6,9 @@ by hand over SSH.
 
 | Item | Value |
 | --- | --- |
-| VPS | `144.91.101.1` (Ubuntu 24.04, 6 vCPU, 11 GB RAM), tailnet name `velora-db-replica`, tailnet IP `100.86.68.16` |
+| VPS | `144.91.101.1` (Ubuntu 24.04, 6 vCPU, 11 GB RAM), tailnet name `velora-node-2`, tailnet IP `100.86.68.16` |
 | Homelab | tailnet name `quan`, tailnet IP `100.102.228.48` |
-| Secondary | container `mongo-replica` from `compose.yaml`, files in `/opt/mongo-replica/` on the VPS |
+| Secondary | container `mongo-replica` from `compose.yaml`, files in `/opt/velora/mongo-replica/` on the VPS (other stacks for this server go next to it in `/opt/velora/`) |
 | Member config | `{ host: '100.86.68.16:27017', priority: 0, votes: 0 }` |
 
 ## How it is wired
@@ -24,7 +24,7 @@ by hand over SSH.
   public IP. Docker is ordered after `tailscaled` by
   `/etc/systemd/system/docker.service.d/10-after-tailscale.conf`.
 - The keyfile is the homelab one (`mongo_config` volume), copied to
-  `/opt/mongo-replica/keyfile` with owner 999 and mode 400. It is a secret and is
+  `/opt/velora/mongo-replica/keyfile` with owner 999 and mode 400. It is a secret and is
   not in this repo. If the homelab keyfile is ever regenerated, copy it again.
 
 ## Why the secondary has no vote

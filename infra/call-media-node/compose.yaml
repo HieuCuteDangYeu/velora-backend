@@ -1,7 +1,7 @@
 name: call-media
 services:
   call-media-2:
-    image: call-service-node2:d477799e
+    image: call-service-node2:09f413fc
     container_name: call-media-2
     restart: unless-stopped
     # A mediasoup media node for the homelab signaling replicas. It registers in

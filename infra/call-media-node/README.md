@@ -5,7 +5,10 @@ Tested 2026-11-12. `call-media-2` is a copy of the homelab `call-media-1` that r
 described in `docs/call-runtime-rollout.md`: the home router forwards only UDP 40000, so
 the homelab can host one media node, while node-2 has its own public IP and free ports.
 It is **not** part of the homelab compose stack and the deploy script does not manage it.
-It is stopped by default (start with the command below).
+Since 2026-11-13 it runs all the time as the **standby and failover node**: priority 1, so
+new calls stay on `call-media-1` and only reach this node when the homelab already holds
+20 rooms or is down. Three real test calls with both nodes registered all landed on
+`call-media-1`.
 
 | Item | Value |
 | --- | --- |
@@ -61,8 +64,9 @@ is about 217 ms, and every media RPC from signaling and every Redis command from
 crosses it, so a call placed here is slower to set up and has more delay.
 
 The priority is part of the node's heartbeat, so node-2 must run an image built from a
-commit that has it. Until it is rebuilt, node-2 counts as priority 0 and the old random
-split applies.
+commit that has it (`call-service-node2:09f413fc` or newer). A node running an older image
+publishes no priority and counts as priority 0, which brings back the random split; check
+`redis-cli get call:media-node:call-media-2` shows `"priority":1` after every rebuild.
 
 ## Test result, 2026-11-12
 

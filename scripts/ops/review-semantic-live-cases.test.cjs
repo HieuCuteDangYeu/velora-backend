@@ -55,6 +55,33 @@ test('buildSheet shows the text of each suggested chunk', () => {
   assert.equal(parseCsv(toCsv(sheet))[0].proposalText, sheet[0].proposalText);
 });
 
+test('parseCsv refuses a sheet whose cells were split into extra columns', () => {
+  const sheet = buildSheet([row(1)], texts);
+  const good = toCsv(sheet);
+  assert.equal(parseCsv(good).length, 1);
+  const lines = good.split('\r\n');
+  lines[1] += ',spilled over,from a split cell';
+  assert.throws(() => parseCsv(lines.join('\r\n')), /past the last column/);
+  // Empty trailing columns, as some spreadsheets add, are harmless.
+  lines[1] = good.split('\r\n')[1] + ',,';
+  assert.equal(parseCsv(lines.join('\r\n')).length, 1);
+});
+
+test('suggestions are listed one per line, with no separator a spreadsheet splits on', () => {
+  const sheet = buildSheet(
+    [
+      row(1, {
+        proposedRelevant: [
+          { evidenceId: 'a', grade: 1 },
+          { evidenceId: 'b', grade: 2 },
+        ],
+      }),
+    ],
+    texts,
+  );
+  assert.equal(sheet[0].proposals, 'a|1\nb|2');
+});
+
 test('buildSheet lists only candidates', () => {
   const sheet = buildSheet([row(1), row(2, { status: 'REJECTED' })], texts);
   assert.deepEqual(

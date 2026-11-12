@@ -82,13 +82,23 @@ function parseCsv(text) {
   const [header, ...body] = rows.filter((r) => r.some((c) => c !== ''));
   if (!header || COLUMNS.some((c, i) => header[i] !== c))
     throw new Error(`sheet header must be: ${COLUMNS.join(',')}`);
+  // Data past the last column means the file was re-saved with another
+  // separator (for example ';' split a cell), which shifts values into the
+  // wrong columns. Refuse it instead of reading shifted verdicts.
+  const shifted = body.findIndex((r) =>
+    r.slice(COLUMNS.length).some((c) => c.trim() !== ''),
+  );
+  if (shifted >= 0)
+    throw new Error(
+      `sheet row ${shifted + 2} has data past the last column: the file was probably re-saved with ';' or another extra separator. Open it with only the comma ticked as separator and the double quote (") as text delimiter, then fill verdict again`,
+    );
   return body.map((r) =>
     Object.fromEntries(COLUMNS.map((c, i) => [c, r[i] ?? ''])),
   );
 }
 
 const proposalText = (proposals) =>
-  (proposals ?? []).map((p) => `${p.evidenceId}|${p.grade}`).join('; ');
+  (proposals ?? []).map((p) => `${p.evidenceId}|${p.grade}`).join('\n');
 
 function buildSheet(rows, textById) {
   return rows

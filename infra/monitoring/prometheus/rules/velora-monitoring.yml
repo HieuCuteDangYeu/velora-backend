@@ -13,7 +13,8 @@ groups:
 
       - alert: VeloraHostHighCpu
         expr: |
-          1 - avg by (host) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))
+          1 - sum by (host) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))
+          / sum by (host) (rate(node_cpu_seconds_total{job="node-exporter"}[1m]))
           > 0.7
         for: 1m
         labels:

@@ -143,6 +143,7 @@ labels on the target are the registry.
 | `host_role` | `primary` for the machine that runs this Compose stack, `worker` for any other VPS. Exactly one `primary`. |
 | `host_region`, `host_provider` | Optional, shown on the host card. |
 | `docker_port` | Optional. Port of the read-only Docker socket proxy on that VPS; turns on its per-container CPU/RAM/disk breakdown. |
+| `host_network` | Optional. `unavailable` when the exporter runs in a bridged container (as the Compose `node-exporter` does): its `node_network_*` then describes the container's own NIC, so the dashboard shows no network figures for that host. The agent in `infra/vps-agent/` uses host networking and needs no label. |
 
 To add a VPS:
 
@@ -172,7 +173,9 @@ Notes:
   `VeloraHostDiskAlmostFull`) are evaluated per host and carry the `host` label, which the
   Alerts page shows.
 - A Prometheus config that has no `host` label yet keeps working: the series show up as one
-  primary host named `local`.
+  primary host named `local`. For five minutes after Prometheus restarts with new labels, the
+  old unlabelled series are still visible; they are dropped when the same scrape address
+  also has a labelled series, so no ghost host appears.
 - Per-host history is queried straight from Prometheus (`host_cpu`, `host_memory`,
   `host_swap`, `host_disk`, `host_load1`, `host_network_receive`, `host_network_transmit`).
 - Logs: the homelab Alloy tags its lines with `host="homelab"`; Alloy on a VPS tags its own.

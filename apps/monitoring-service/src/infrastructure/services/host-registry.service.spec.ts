@@ -36,6 +36,7 @@ describe('host registry', () => {
         provider: 'Contabo',
         instance: '100.86.68.16:9100',
         containers: 'remote',
+        network: 'host',
         dockerEndpoint: { host: '100.86.68.16', port: 2375 },
         up: true,
       });
@@ -52,6 +53,23 @@ describe('host registry', () => {
         containers: 'local',
         dockerEndpoint: null,
       });
+    });
+
+    it('marks a host whose exporter cannot see the machine network', () => {
+      expect(
+        parseHostSample(
+          sample({
+            host: 'home',
+            host_network: 'unavailable',
+            instance: 'a:1',
+          }),
+        )?.network,
+      ).toBe('unavailable');
+      expect(parseHostSample(sample({ host: 'home' }))?.network).toBe('host');
+      // Only the exact value counts: a typo must not hide real data.
+      expect(
+        parseHostSample(sample({ host: 'home', host_network: 'no' }))?.network,
+      ).toBe('host');
     });
 
     it('has no container access for a worker without a Docker port', () => {
@@ -128,6 +146,44 @@ describe('host registry', () => {
 
       expect(hosts.map((host) => host.id)).toEqual(['home', 'alpha', 'zeta']);
       expect(defaultHostOf(hosts)?.id).toBe('home');
+    });
+
+    it('drops the unlabelled leftover of a host that now has labels', () => {
+      // Prometheus was restarted with new target labels: for five minutes the
+      // old series (no host label) and the new ones are both visible.
+      const hosts = mergeHostRecords([
+        sample({ instance: 'node-exporter:9100' }),
+        sample({ host: 'home', instance: 'node-exporter:9100' }),
+      ]);
+
+      expect(hosts.map((host) => host.id)).toEqual(['home']);
+    });
+
+    it('keeps the network warning while old and new series of a host are both visible', () => {
+      const [first] = mergeHostRecords([
+        sample({ host: 'home', instance: 'a:1' }),
+        sample({ host: 'home', host_network: 'unavailable', instance: 'a:1' }),
+      ]);
+      const [second] = mergeHostRecords([
+        sample({ host: 'home', host_network: 'unavailable', instance: 'a:1' }),
+        sample({ host: 'home', instance: 'a:1' }),
+      ]);
+
+      expect(first.network).toBe('unavailable');
+      expect(second.network).toBe('unavailable');
+    });
+
+    it('keeps an unlabelled host when no labelled series shares its address', () => {
+      const hosts = mergeHostRecords([
+        sample({ instance: 'node-exporter:9100' }),
+        sample({
+          host: 'node-2',
+          host_role: 'worker',
+          instance: '10.0.0.2:9100',
+        }),
+      ]);
+
+      expect(hosts.map((host) => host.id).sort()).toEqual(['local', 'node-2']);
     });
 
     it('treats a host as up when any of its targets is up', () => {

@@ -408,7 +408,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
         controller.timeseries({ metric: 'host_cpu', from, to, stepSeconds }),
       ).resolves.toMatchObject({ stepSeconds: 10, points: [] });
       expect(prometheus.range).toHaveBeenCalledWith(
-        '1 - avg(rate(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"}[1m]))',
+        '(1 - sum(rate(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"}[1m])) / sum(rate(node_cpu_seconds_total{job="node-exporter",host_role!="worker"}[1m]))) and on() (count(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"} offset 1m))',
         from,
         to,
         10,
@@ -475,6 +475,10 @@ describe('SystemMetricsController multi-host', () => {
       snapshotMetadata: jest.fn().mockResolvedValue(null),
     };
     const hosts = {
+      list: jest.fn().mockResolvedValue([
+        { id: 'home', role: 'primary', network: 'unavailable' },
+        { id: 'node-2', role: 'worker', network: 'host' },
+      ]),
       require: jest.fn((id: string) =>
         id === NODE_2.id
           ? Promise.resolve(options.host ?? NODE_2)
@@ -528,6 +532,39 @@ describe('SystemMetricsController multi-host', () => {
     expect(prometheus.range.mock.calls[0][0]).toContain(
       'node_network_receive_bytes_total{job="node-exporter",host="velora-node-2"',
     );
+  });
+
+  it('refuses network history for a host whose exporter cannot see the machine NICs', async () => {
+    const { controller, prometheus } = createController({
+      host: { ...NODE_2, network: 'unavailable' },
+    });
+
+    await expect(
+      controller.timeseries({
+        metric: 'host_network_transmit',
+        host: NODE_2.id,
+        ...range,
+      }),
+    ).rejects.toMatchObject({
+      error: {
+        statusCode: 400,
+        message: expect.stringContaining('network metrics are not available'),
+      },
+    });
+    expect(prometheus.range).not.toHaveBeenCalled();
+  });
+
+  it('applies the same rule to the primary host when no host is given', async () => {
+    const { controller, prometheus } = createController();
+
+    // The registry above lists the primary ("home") without network visibility.
+    await expect(
+      controller.timeseries({ metric: 'host_network_receive', ...range }),
+    ).rejects.toMatchObject({ error: { statusCode: 400 } });
+    await expect(
+      controller.timeseries({ metric: 'host_disk', ...range }),
+    ).resolves.toMatchObject({ metric: 'host_disk' });
+    expect(prometheus.range).toHaveBeenCalledTimes(1);
   });
 
   it('answers host metrics without a host from the primary machine', async () => {

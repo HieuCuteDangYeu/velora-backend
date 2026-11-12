@@ -21,6 +21,13 @@ export type MonitoringHostRole = 'primary' | 'worker';
 /** How container resources of a host can be read. */
 export type MonitoringHostContainers = 'local' | 'remote' | 'none';
 
+/**
+ * `unavailable` when node-exporter cannot see the machine's network interfaces
+ * (it runs in a bridged container, so node_network_* describes the container's
+ * own NIC). The target says so with the label `host_network: unavailable`.
+ */
+export type MonitoringHostNetwork = 'host' | 'unavailable';
+
 export type MonitoringHostInfo = {
   id: string;
   name: string;
@@ -30,6 +37,7 @@ export type MonitoringHostInfo = {
   /** node-exporter scrape address, e.g. `100.86.68.16:9100`. */
   instance: string;
   containers: MonitoringHostContainers;
+  network: MonitoringHostNetwork;
 };
 
 export type DockerTcpEndpoint = { host: string; port: number };
@@ -82,4 +90,5 @@ export const toHostInfo = (record: MonitoringHostInfo): MonitoringHostInfo => ({
   provider: record.provider,
   instance: record.instance,
   containers: record.containers,
+  network: record.network,
 });

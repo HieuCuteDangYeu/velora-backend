@@ -660,6 +660,8 @@ tests:
     input_series:
       - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="idle"}'
         values: '0+1x30'
+      - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="user"}'
+        values: '0+4x30'
     alert_rule_test:
       - eval_time: 1m
         alertname: VeloraHostHighCpu
@@ -679,6 +681,8 @@ tests:
     input_series:
       - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="idle"}'
         values: '0+2x30'
+      - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="user"}'
+        values: '0+3x30'
     alert_rule_test:
       - eval_time: 2m
         alertname: VeloraHostHighCpu
@@ -688,7 +692,9 @@ tests:
     interval: 5s
     input_series:
       - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="idle"}'
-        values: '0+1x6 9+5x24'
+        values: '0+1x6 11+5x24'
+      - series: 'node_cpu_seconds_total{job="node-exporter",cpu="0",mode="user"}'
+        values: '0+4x6 24+0x24'
     alert_rule_test:
       - eval_time: 1m5s
         alertname: VeloraHostHighCpu
@@ -725,8 +731,12 @@ tests:
     input_series:
       - series: 'node_cpu_seconds_total{job="node-exporter",host="home",cpu="0",mode="idle"}'
         values: '0+1x30'
+      - series: 'node_cpu_seconds_total{job="node-exporter",host="home",cpu="0",mode="user"}'
+        values: '0+4x30'
       - series: 'node_cpu_seconds_total{job="node-exporter",host="node-2",cpu="0",mode="idle"}'
         values: '0+2x30'
+      - series: 'node_cpu_seconds_total{job="node-exporter",host="node-2",cpu="0",mode="user"}'
+        values: '0+3x30'
     alert_rule_test:
       - eval_time: 1m5s
         alertname: VeloraHostHighCpu
@@ -738,6 +748,22 @@ tests:
             exp_annotations:
               summary: host CPU usage is above 70 percent
               description: The one-minute mean CPU usage across the monitored host has remained above 70 percent for one minute.
+
+  # A virtual machine's kernel does not account for all wall-clock time. Here
+  # 0.28 s idle + 0.62 s user per second leaves 0.10 s unaccounted: the busy
+  # share of accounted time is 0.62 / 0.90 = 69%, below the threshold. Counting
+  # the missing time as busy (1 - idle = 72%) would raise a false alert.
+  - name: CPU time the kernel did not account for is not counted as busy
+    interval: 5s
+    input_series:
+      - series: 'node_cpu_seconds_total{job="node-exporter",host="vps",cpu="0",mode="idle"}'
+        values: '0+1.4x30'
+      - series: 'node_cpu_seconds_total{job="node-exporter",host="vps",cpu="0",mode="user"}'
+        values: '0+3.1x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: VeloraHostHighCpu
+        exp_alerts: []
 
   - name: host memory is judged per VPS and the alert names the host
     interval: 5s

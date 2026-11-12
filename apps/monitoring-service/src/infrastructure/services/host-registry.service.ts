@@ -78,12 +78,21 @@ export const parseHostSample = (
       : role === 'primary'
         ? 'local'
         : 'none',
+    network:
+      labels.host_network?.trim() === 'unavailable' ? 'unavailable' : 'host',
     dockerEndpoint,
     up: sample.value > 0,
   };
 };
 
-/** One record per host id; a host is up when any of its targets is up. */
+/**
+ * One record per host id; a host is up when any of its targets is up.
+ *
+ * After Prometheus is restarted with new target labels, the series from before
+ * stay visible for the 5-minute staleness window. An unlabelled record whose
+ * scrape address also appears with a `host` label is that leftover (the same
+ * machine, seen twice), so it is dropped instead of showing a ghost host.
+ */
 export const mergeHostRecords = (
   samples: readonly Pick<PrometheusInstantSample, 'metric' | 'value'>[],
 ): MonitoringHostRecord[] => {
@@ -96,16 +105,40 @@ export const mergeHostRecords = (
     const existing = byId.get(record.id);
     byId.set(
       record.id,
-      existing ? { ...existing, up: existing.up || record.up } : record,
+      existing
+        ? {
+            ...existing,
+            up: existing.up || record.up,
+            // Right after a label change both the old and the new `up` series
+            // are visible: never show traffic figures if either says they are wrong.
+            network:
+              existing.network === 'unavailable' ||
+              record.network === 'unavailable'
+                ? 'unavailable'
+                : 'host',
+          }
+        : record,
     );
   }
 
-  return [...byId.values()].sort(
-    (left, right) =>
-      Number(right.role === 'primary') - Number(left.role === 'primary') ||
-      left.name.localeCompare(right.name) ||
-      left.id.localeCompare(right.id),
+  const records = [...byId.values()];
+  const labelledInstances = new Set(
+    records
+      .filter((record) => record.label !== '')
+      .map((record) => record.instance),
   );
+
+  return records
+    .filter(
+      (record) =>
+        record.label !== '' || !labelledInstances.has(record.instance),
+    )
+    .sort(
+      (left, right) =>
+        Number(right.role === 'primary') - Number(left.role === 'primary') ||
+        left.name.localeCompare(right.name) ||
+        left.id.localeCompare(right.id),
+    );
 };
 
 /** The host the dashboard opens first: the primary machine. */

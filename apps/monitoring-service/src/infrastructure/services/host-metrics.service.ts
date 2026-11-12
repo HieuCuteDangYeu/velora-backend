@@ -63,8 +63,12 @@ const snapshotOf = (
     diskUsageRatio: usageRatio(diskUsedBytes, diskTotalBytes),
     load1: read('load1'),
     uptimeSeconds: read('uptimeSeconds'),
-    networkReceiveBytesPerSecond: read('networkReceiveBytesPerSecond'),
-    networkTransmitBytesPerSecond: read('networkTransmitBytesPerSecond'),
+    // A bridged exporter only sees its own container's NIC: report no figure
+    // rather than a wrong one.
+    networkReceiveBytesPerSecond:
+      record.network === 'host' ? read('networkReceiveBytesPerSecond') : null,
+    networkTransmitBytesPerSecond:
+      record.network === 'host' ? read('networkTransmitBytesPerSecond') : null,
   };
 };
 

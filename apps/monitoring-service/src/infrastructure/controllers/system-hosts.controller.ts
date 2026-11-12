@@ -67,7 +67,13 @@ export class SystemHostsController {
             range.stepSeconds,
           ),
         ]);
-        const idByLabel = new Map(hosts.map((host) => [host.label, host.id]));
+        const wantsNetwork = metric.startsWith('host_network_');
+        // Hosts whose exporter cannot see the machine's NICs have no network history.
+        const idByLabel = new Map(
+          hosts
+            .filter((host) => !wantsNetwork || host.network === 'host')
+            .map((host) => [host.label, host.id]),
+        );
 
         return {
           metric,

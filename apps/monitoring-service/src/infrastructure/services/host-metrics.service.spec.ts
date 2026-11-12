@@ -128,4 +128,48 @@ describe('HostMetricsService', () => {
 
     expect(prometheus.vector).toHaveBeenCalledTimes(13);
   });
+
+  it('reports no network figures for an exporter that cannot see the machine NICs', async () => {
+    const prometheus = {
+      vector: jest.fn((query: string) =>
+        Promise.resolve(
+          query === 'up{job="node-exporter"}'
+            ? [
+                sample(
+                  {
+                    host: 'home',
+                    host_network: 'unavailable',
+                    instance: 'a:1',
+                  },
+                  1,
+                ),
+                sample(
+                  { host: 'node-2', host_role: 'worker', instance: 'b:1' },
+                  1,
+                ),
+              ]
+            : query.includes('node_network_')
+              ? [
+                  sample({ host: 'home' }, 153),
+                  sample({ host: 'node-2' }, 2048),
+                ]
+              : [],
+        ),
+      ),
+    };
+    const fleet = await new HostMetricsService(prometheus as never).fleet();
+    const byId = Object.fromEntries(fleet.hosts.map((host) => [host.id, host]));
+
+    // The container's own NIC (153 B/s) must not pass for the machine's traffic.
+    expect(byId.home).toMatchObject({
+      network: 'unavailable',
+      networkReceiveBytesPerSecond: null,
+      networkTransmitBytesPerSecond: null,
+    });
+    expect(byId['node-2']).toMatchObject({
+      network: 'host',
+      networkReceiveBytesPerSecond: 2048,
+      networkTransmitBytesPerSecond: 2048,
+    });
+  });
 });

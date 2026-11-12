@@ -23,6 +23,7 @@ import {
   type HostTimeseriesMetric,
 } from '../services/host-queries';
 import {
+  defaultHostOf,
   HostRegistryService,
   HOST_REGISTRY_QUERY,
   mergeHostRecords,
@@ -1112,11 +1113,23 @@ export class SystemMetricsController {
       return RANGE_QUERIES[query.metric as MonitoringMetric];
     }
 
-    const scope = query.host
-      ? hostScope(await this.requireHost(query.host))
-      : PRIMARY_HOST_SCOPE;
+    const host = query.host ? await this.requireHost(query.host) : null;
 
-    return hostTimeseriesQuery(query.metric as HostTimeseriesMetric, scope);
+    if (query.metric.startsWith('host_network_')) {
+      const target = host ?? defaultHostOf(await this.hosts.list());
+      if (target?.network === 'unavailable') {
+        throw new RpcException({
+          statusCode: 400,
+          message:
+            'network metrics are not available for this host: its node-exporter cannot see the machine network interfaces',
+        });
+      }
+    }
+
+    return hostTimeseriesQuery(
+      query.metric as HostTimeseriesMetric,
+      host ? hostScope(host) : PRIMARY_HOST_SCOPE,
+    );
   }
 
   private parseTimeseriesPayload(payload: TimeseriesPayload) {

@@ -37,6 +37,28 @@ export const hostScope = (host: { label: string }): string =>
 const aggregate = (fn: string, byHost: boolean, expression: string): string =>
   byHost ? `${fn} by (host) (${expression})` : `${fn}(${expression})`;
 
+/**
+ * rate(x[1m]) divides the increase by the whole minute, so a series younger
+ * than a minute reports only a fraction of its real rate: node-2's idle CPU
+ * read 31% instead of 94% in its first minute, i.e. CPU usage of 68% on a
+ * machine that was 5% busy. Report a value only once the host's series
+ * already existed a window ago, so a new host (or new labels after a
+ * Prometheus restart) shows no figure instead of a wrong one.
+ */
+const seasoned = (
+  expression: string,
+  scope: string,
+  byHost: boolean,
+): string => {
+  const existedAWindowAgo = aggregate(
+    'count',
+    byHost,
+    `node_cpu_seconds_total{${scope},mode="idle"} offset 1m`,
+  );
+
+  return `(${expression}) and ${byHost ? 'on(host)' : 'on()'} (${existedAWindowAgo})`;
+};
+
 export type HostBaseMetric =
   | 'cpuUsageRatio'
   | 'cpuCount'
@@ -55,11 +77,19 @@ export const hostBaseQueries = (
   scope: string,
   byHost: boolean,
 ): Record<HostBaseMetric, string> => ({
-  cpuUsageRatio: `1 - ${aggregate(
-    'avg',
+  // Share of the CPU time the kernel accounted for that was not idle: the
+  // figure `top` and `vmstat` print. Not `1 - avg(rate(idle))`: a virtual
+  // machine's kernel does not account for all wall-clock time (node-2 accounts
+  // for 96.5%), and that formula would count the missing 3.5% as busy.
+  cpuUsageRatio: seasoned(
+    `1 - ${aggregate(
+      'sum',
+      byHost,
+      `rate(node_cpu_seconds_total{${scope},mode="idle"}[1m])`,
+    )} / ${aggregate('sum', byHost, `rate(node_cpu_seconds_total{${scope}}[1m])`)}`,
+    scope,
     byHost,
-    `rate(node_cpu_seconds_total{${scope},mode="idle"}[1m])`,
-  )}`,
+  ),
   cpuCount: aggregate(
     'count',
     byHost,
@@ -101,15 +131,23 @@ export const hostBaseQueries = (
     byHost,
     `time() - node_boot_time_seconds{${scope}}`,
   ),
-  networkReceiveBytesPerSecond: aggregate(
-    'sum',
+  networkReceiveBytesPerSecond: seasoned(
+    aggregate(
+      'sum',
+      byHost,
+      `rate(node_network_receive_bytes_total{${scope},${PHYSICAL_NETWORK_DEVICES}}[1m])`,
+    ),
+    scope,
     byHost,
-    `rate(node_network_receive_bytes_total{${scope},${PHYSICAL_NETWORK_DEVICES}}[1m])`,
   ),
-  networkTransmitBytesPerSecond: aggregate(
-    'sum',
+  networkTransmitBytesPerSecond: seasoned(
+    aggregate(
+      'sum',
+      byHost,
+      `rate(node_network_transmit_bytes_total{${scope},${PHYSICAL_NETWORK_DEVICES}}[1m])`,
+    ),
+    scope,
     byHost,
-    `rate(node_network_transmit_bytes_total{${scope},${PHYSICAL_NETWORK_DEVICES}}[1m])`,
   ),
 });
 

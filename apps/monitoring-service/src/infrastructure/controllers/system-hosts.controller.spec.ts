@@ -65,7 +65,7 @@ describe('SystemHostsController', () => {
 
     expect(prometheus.rangeSeries).toHaveBeenCalledTimes(1);
     expect(prometheus.rangeSeries).toHaveBeenCalledWith(
-      '1 - avg by (host) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))',
+      '(1 - sum by (host) (rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m])) / sum by (host) (rate(node_cpu_seconds_total{job="node-exporter"}[1m]))) and on(host) (count by (host) (node_cpu_seconds_total{job="node-exporter",mode="idle"} offset 1m))',
       FROM,
       TO,
       30,
@@ -114,5 +114,24 @@ describe('SystemHostsController', () => {
     ).rejects.toMatchObject({
       error: { message: expect.stringContaining('24 hours') },
     });
+  });
+
+  it('leaves hosts without network visibility out of the network history', async () => {
+    registry.list.mockResolvedValue([
+      { id: 'home', label: 'home', network: 'unavailable' },
+      { id: 'node-2', label: 'node-2', network: 'host' },
+    ]);
+    prometheus.rangeSeries.mockResolvedValue([
+      { metric: { host: 'home' }, points: [{ timestamp: 1, value: 153 }] },
+      { metric: { host: 'node-2' }, points: [{ timestamp: 1, value: 2048 }] },
+    ]);
+
+    const result = await controller.history({
+      metric: 'host_network_receive',
+      from: FROM,
+      to: TO,
+    });
+
+    expect(result.series.map((item) => item.host)).toEqual(['node-2']);
   });
 });

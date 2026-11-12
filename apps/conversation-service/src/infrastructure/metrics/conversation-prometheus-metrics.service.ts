@@ -27,6 +27,10 @@ export type MongoCommand =
   | 'conversation_read'
   | 'conversation_update';
 
+// Which Mongo member answered a read that may be routed to a replica.
+export type RoutedReadOperation = 'reaction_details';
+export type RoutedReadTarget = 'primary' | 'replica' | 'fallback' | 'miss';
+
 type SendMessageStatus = 'success' | 'rejected' | 'error';
 type OutboxOutcome =
   | 'queued'
@@ -61,6 +65,7 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
   >();
   private readonly phaseDurations = new Map<string, HistogramState>();
   private readonly mongoDurations = new Map<MongoCommand, HistogramState>();
+  private readonly routedReadDurations = new Map<string, HistogramState>();
   private messagesCreated = 0;
   // Messages created per 100 ms bucket (last second), so background work can yield to live traffic.
   private readonly recentTicks = new Array<number>(10).fill(-1);
@@ -91,6 +96,29 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
       if (duration <= bucket) state.bucketCounts[index]++;
     });
     this.mongoDurations.set(command, state);
+  }
+
+  // Reads that may be served by a replica. The target label says which member
+  // answered: primary (replica routing off), replica, fallback (replica failed,
+  // primary answered) or miss (replica had no row, primary confirmed).
+  recordRoutedRead(
+    operation: RoutedReadOperation,
+    target: RoutedReadTarget,
+    seconds: number,
+  ): void {
+    const key = `${operation}:${target}`;
+    const state = this.routedReadDurations.get(key) ?? {
+      bucketCounts: this.durationBuckets.map(() => 0),
+      count: 0,
+      sum: 0,
+    };
+    const duration = Number.isFinite(seconds) && seconds >= 0 ? seconds : 0;
+    state.count++;
+    state.sum += duration;
+    this.durationBuckets.forEach((bucket, index) => {
+      if (duration <= bucket) state.bucketCounts[index]++;
+    });
+    this.routedReadDurations.set(key, state);
   }
 
   async measurePhase<T>(
@@ -381,6 +409,30 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
       );
       lines.push(
         `${mongoMetric}_count${this.labels(commandLabels)} ${state.count}`,
+      );
+    }
+
+    const routedMetric = 'velora_conversation_routed_read_duration_seconds';
+    this.metricHeader(
+      lines,
+      routedMetric,
+      'Duration of reads that may be routed to a Mongo replica, labelled by the member that answered; _count per target shows how reads are split.',
+      'histogram',
+    );
+    for (const [key, state] of this.routedReadDurations) {
+      const [operation, target] = key.split(':');
+      const readLabels = { service: this.serviceName, operation, target };
+      this.durationBuckets.forEach((bucket, index) =>
+        lines.push(
+          `${routedMetric}_bucket${this.labels({ ...readLabels, le: String(bucket) })} ${state.bucketCounts[index]}`,
+        ),
+      );
+      lines.push(
+        `${routedMetric}_bucket${this.labels({ ...readLabels, le: '+Inf' })} ${state.count}`,
+      );
+      lines.push(`${routedMetric}_sum${this.labels(readLabels)} ${state.sum}`);
+      lines.push(
+        `${routedMetric}_count${this.labels(readLabels)} ${state.count}`,
       );
     }
 

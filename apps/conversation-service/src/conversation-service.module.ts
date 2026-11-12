@@ -35,6 +35,7 @@ import { ConversationMicroserviceController } from 'apps/conversation-service/sr
 import { GroupMembersMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/group-members.controller';
 import { ReactionDetailsMicroserviceController } from 'apps/conversation-service/src/infrastructure/controllers/reaction-details.controller';
 import { ConversationPrometheusMetricsService } from 'apps/conversation-service/src/infrastructure/metrics/conversation-prometheus-metrics.service';
+import { PrismaReadReplicaService } from 'apps/conversation-service/src/infrastructure/prisma/prisma-read-replica.service';
 import { PrismaService } from 'apps/conversation-service/src/infrastructure/prisma/prisma.service';
 import { AesEncryptionRepository } from 'apps/conversation-service/src/infrastructure/repositories/aes-encryption.repository';
 import { PrismaConversationChatRepository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-conversation-chat.repository';
@@ -122,6 +123,7 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
   ],
   providers: [
     PrismaService,
+    PrismaReadReplicaService,
     ChatGateway,
     ConversationPrometheusMetricsService,
 

@@ -10,7 +10,7 @@ import {
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import type { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaReadReplicaService } from '../prisma/prisma-read-replica.service';
 import { toRpcException } from '../rpc/to-rpc-exception';
 
 type StoredReaction = {
@@ -25,7 +25,7 @@ export class ReactionDetailsMicroserviceController {
   );
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly readReplica: PrismaReadReplicaService,
     @Inject('IChatRepository')
     private readonly chatRepository: IChatRepository,
     @Inject('IUserService')
@@ -41,15 +41,23 @@ export class ReactionDetailsMicroserviceController {
         throw new BadRequestException('Invalid message ID');
       }
 
-      const message = await this.prisma.message.findUnique({
-        where: { id: data.messageId },
-        select: {
-          id: true,
-          conversationId: true,
-          isRecalled: true,
-          reactions: true,
-        },
-      });
+      // Who reacted tolerates a few seconds of replica lag, so this read may be
+      // routed to a replica. The membership check below stays on the primary,
+      // and a replica miss is confirmed on the primary before answering 404.
+      const message = await this.readReplica.read(
+        'reaction_details',
+        (client) =>
+          client.message.findUnique({
+            where: { id: data.messageId },
+            select: {
+              id: true,
+              conversationId: true,
+              isRecalled: true,
+              reactions: true,
+            },
+          }),
+        { confirmMiss: true },
+      );
 
       if (!message) {
         throw new NotFoundException('Message not found');

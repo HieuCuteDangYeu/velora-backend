@@ -22,6 +22,27 @@ describe('Chat phase measurements', () => {
     }
   });
 
+  it('splits routed reads by the member that answered', () => {
+    const metrics = new ConversationPrometheusMetricsService();
+    try {
+      metrics.recordRoutedRead('reaction_details', 'replica', 0.2);
+      metrics.recordRoutedRead('reaction_details', 'replica', 0.3);
+      metrics.recordRoutedRead('reaction_details', 'primary', 0.001);
+      const output = metrics.metrics(0);
+      expect(output).toContain(
+        'velora_conversation_routed_read_duration_seconds_count{service="conversation-service",operation="reaction_details",target="replica"} 2',
+      );
+      expect(output).toContain(
+        'velora_conversation_routed_read_duration_seconds_count{service="conversation-service",operation="reaction_details",target="primary"} 1',
+      );
+      expect(output).toContain(
+        'velora_conversation_routed_read_duration_seconds_bucket{service="conversation-service",operation="reaction_details",target="replica",le="0.25"} 1',
+      );
+    } finally {
+      metrics.onModuleDestroy();
+    }
+  });
+
   it.each(['mongo_write', 'outbox_intake'] as const)(
     'records %s successes and failures while preserving result and original error',
     async (phase) => {

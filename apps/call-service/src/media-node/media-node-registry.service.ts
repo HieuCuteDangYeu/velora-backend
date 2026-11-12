@@ -83,6 +83,8 @@ export class MediaNodeRegistry
       rpcPort: this.identity.rpcPort,
       rooms: load.reduce((total, worker) => total + worker.rooms, 0),
       updatedAtMs: Date.now(),
+      priority: this.identity.priority,
+      maxRooms: this.identity.maxRooms,
     };
     await this.redis
       .multi()

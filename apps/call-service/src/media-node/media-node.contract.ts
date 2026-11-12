@@ -62,6 +62,13 @@ export interface MediaNodeRecord {
   rpcPort: number;
   rooms: number;
   updatedAtMs: number;
+  /**
+   * Placement preference, lower is preferred; missing means 0. A node only
+   * takes new calls once every more preferred node is full or gone.
+   */
+  priority?: number;
+  /** Rooms this node takes before new calls spill over; 0 or missing = no limit. */
+  maxRooms?: number;
 }
 
 export interface MediaRoomsLostEvent {

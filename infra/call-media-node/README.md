@@ -49,14 +49,20 @@ cd /opt/velora/call-media && docker compose up -d     # registers in call:media-
 cd /opt/velora/call-media && docker compose stop      # its Redis record expires within seconds
 ```
 
-## Placement warning
+## Placement
 
-New calls go to the live node with the fewest rooms, with a random choice among equals
-(`chooseNode` in `remote-call-media.engine.ts`). There is no weight, drain flag or latency
-awareness, so while node-2 is registered about half of the new calls are placed in France.
-The homelab to node-2 round trip is about 217 ms, and every media RPC from signaling and
-every Redis command from the node crosses it. Run it only for demos and tests, or add
-region-aware placement first.
+Nodes publish a priority and a room limit, and signaling prefers the lowest priority
+number (`selectMediaNode` in `apps/call-service/src/media-node/media-node-placement.ts`).
+`call-media-1` runs with priority 0 and a limit of 20 rooms (set in `docker-compose.yml`),
+this node with priority 1 (`CALL_MEDIA_NODE_PRIORITY` in `compose.yaml`). So new calls stay
+on the homelab, and only go to node-2 when `call-media-1` already holds 20 rooms or is
+down, which makes node-2 the overflow and failover node. The homelab to node-2 round trip
+is about 217 ms, and every media RPC from signaling and every Redis command from the node
+crosses it, so a call placed here is slower to set up and has more delay.
+
+The priority is part of the node's heartbeat, so node-2 must run an image built from a
+commit that has it. Until it is rebuilt, node-2 counts as priority 0 and the old random
+split applies.
 
 ## Test result, 2026-11-12
 

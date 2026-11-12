@@ -61,6 +61,35 @@ It also runs every question in the two committed benchmark datasets through the 
 fails if any is blocked, or if more than 2% are flagged at all. No guardrail check may enforce
 until this passes and the paired benchmark regression stays within the existing 0.03 tolerance.
 
+### Red-team pass (2026-11-12)
+
+Rows GR-108 onward come from an offline red-team pass: about 65 attacks written for this app
+(override, prompt extraction, persona, role markers, obfuscation, es/fr/de/ru/zh, other users' data)
+and 42 benign messages that sound similar ("ignore my previous message", "what are the rules of
+chess in this reel", "forget your limits" said in a motivational video). Input-check results at
+`high` severity, before and after tuning:
+
+| Set | Before | After |
+| --- | --- | --- |
+| Own attacks (65) | 17 | 54 (64 flagged at any severity) |
+| Own benign (42) | 3 false highs | 1 false high |
+| Public `deepset/prompt-injections`, English rows (120 attacks / 249 benign) | 17 | 37, 0 false highs |
+
+Read these with care: the own set was used to write the patterns, so its "after" number is optimistic.
+The public set is a better guide; most of its remaining misses are persona play, output forcing
+("say X") and non-English text, which are outside what a pattern list should decide. The public rows
+are not copied into the repo.
+
+Known limits that no pattern fix removes:
+
+- A quoted attack is indistinguishable from a real one ("the video says to ignore all previous
+  instructions, is that real?" is a `high` hit). Downgrading on a reporting frame would let an
+  attacker add the frame, so it is not done. This is why enforcement should not rest on this check.
+- Words such as `limits`, `filters`, `orders`, `commands` and `policy` have ordinary meanings in a
+  reels app ("cancel your order", "turn off your filters"), so they only count as `medium`.
+- Asking about other users' data ("what did the previous user ask") is only `medium`; the real
+  control is server-side scope.
+
 ## Evaluation v2
 
 New runs store a frozen input/reference snapshot and an evaluator version. The

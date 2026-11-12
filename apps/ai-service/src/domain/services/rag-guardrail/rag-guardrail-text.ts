@@ -78,7 +78,13 @@ export function normalizeForScreening(text: string): NormalizedText {
   const plain = foldPlain(text);
 
   const deobfuscated = foldPlain(
-    text.normalize('NFKC').replace(INVISIBLE, '').replace(CONTROL, ''),
+    text
+      .normalize('NFKC')
+      .replace(INVISIBLE, '')
+      .replace(CONTROL, '')
+      // A wider gap between spaced-out letters is a word break: keep it through the
+      // whitespace folding, then restore it as a single space below.
+      .replace(/(?<=[a-z]) {2,}(?=[a-z](?: |$))/gi, ' \u0001 '),
   )
     .replace(HOMOGLYPH_PATTERN, (char) => HOMOGLYPHS[char] ?? char)
     // 1gn0re, pr3v10us: only inside tokens that mix letters and look-alike symbols.
@@ -90,7 +96,9 @@ export function normalizeForScreening(text: string): NormalizedText {
     // i.g.n.o.r.e / i g n o r e: four or more single letters joined by separators.
     .replace(/\b(?:[a-z][ .\-_*]){3,}[a-z]\b/g, (run) =>
       run.replace(/[ .\-_*]/g, ''),
-    );
+    )
+    // eslint-disable-next-line no-control-regex -- the word-gap marker added above
+    .replace(/ ?\u0001 ?/g, ' ');
 
   return { plain, deobfuscated };
 }

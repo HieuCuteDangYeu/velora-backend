@@ -1,4 +1,5 @@
 import type { GuardrailSeverity } from './rag-guardrail.types';
+import { INPUT_ONLY_PATTERNS } from './rag-guardrail-input-patterns';
 import type { NormalizedText } from './rag-guardrail-text';
 
 export interface GuardrailPattern {
@@ -25,7 +26,7 @@ const INSTRUCTION_OVERRIDE: GuardrailPattern[] = [
     code: 'INSTRUCTION_OVERRIDE',
     severity: 'high',
     pattern:
-      /\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+|every\s+)?(?:of\s+)?(?:(?:the\s+|your\s+|my\s+)?(?:previous|prior|above|earlier|preceding|former|original|initial|system|developer)|your)\s+(?:instructions?|prompts?|rules?|guidelines?|directions?|directives?|constraints?|policy|policies|programming|restrictions?|commands?|context|messages?)\b/,
+      /\b(?:ignore|disregard|forget|override|bypass)\s+(?:all\s+|any\s+|every\s+)?(?:of\s+)?(?:(?:the\s+|your\s+)?(?:previous|prior|above|earlier|preceding|former|original|initial|system|developer)|your)\s+(?:instructions?|prompts?|rules?|guidelines?|directions?|directives?|constraints?|policy|policies|programming|restrictions?|commands?)\b/,
   },
   {
     code: 'INSTRUCTION_OVERRIDE',
@@ -69,7 +70,7 @@ const INSTRUCTION_OVERRIDE: GuardrailPattern[] = [
     code: 'INSTRUCTION_OVERRIDE',
     severity: 'high',
     pattern:
-      /\b(?:forget|ignore|disregard|drop|bypass|override|suspend|waive|lift|disable|set\s+aside|put\s+aside)\s+(?:about\s+)?(?:all\s+|any\s+|every\s+|of\s+)*your\s+(?:[a-z-]+\s+){0,3}?(?:rules?|instructions?|guidelines?|restrictions?|constraints?|guardrails?|policies|policy|limitations?|safeguards?|filters?)\b/,
+      /\b(?:forget|ignore|disregard|drop|bypass|override|suspend|waive|lift|disable|set\s+aside|put\s+aside)\s+(?:about\s+)?(?:all\s+|any\s+|every\s+|of\s+)*your\s+(?:[a-z-]+\s+){0,3}?(?:rules?|instructions?|guidelines?|restrictions?|constraints?|guardrails?|policies|policy|safeguards?)\b/,
   },
   // "Forget about the current strict rules": no "your", but "current/existing/usual" combined with
   // a qualifier that only makes sense for an assistant's own limits.
@@ -141,7 +142,7 @@ const PROMPT_EXTRACTION: GuardrailPattern[] = [
     code: 'PROMPT_EXTRACTION',
     severity: 'high',
     pattern:
-      /\b(?:cho\s+(?:toi|minh|tao)\s+xem|tiet\s+lo|in\s+ra|hien\s+thi|lap\s+lai|doc\s+lai|noi\s+cho\s+(?:toi|minh)\s+biet)\s+[^.\n]{0,25}(?:system\s*prompt|prompt\s+he\s+thong|huong\s+dan\s+he\s+thong|chi\s+dan\s+he\s+thong|quy\s+tac\s+(?:an|noi\s+bo)|huong\s+dan\s+(?:ban\s+dau|goc|an))/,
+      /\b(?:cho\s+(?:toi|minh|tao)\s+xem|tiet\s+lo|in\s+ra|hien\s+thi|lap\s+lai|doc\s+lai|noi\s+cho\s+(?:toi|minh)\s+biet)\s+[^.\n]{0,25}(?:system\s*prompt|prompt\s+he\s+thong|huong\s+dan\s+he\s+thong|chi\s+dan\s+he\s+thong|quy\s+tac\s+(?:an(?!\s+(?:toan|ninh))|noi\s+bo)|huong\s+dan\s+(?:ban\s+dau|goc|an(?!\s+(?:toan|ninh))))/,
   },
   {
     code: 'PROMPT_EXTRACTION',
@@ -276,6 +277,7 @@ const SHARED = [
 export const INPUT_PATTERNS: readonly GuardrailPattern[] = [
   ...SHARED,
   ...INTERNAL_DISCLOSURE,
+  ...INPUT_ONLY_PATTERNS,
 ];
 
 /** What a reel's transcript, OCR text, title or tags must not contain. */

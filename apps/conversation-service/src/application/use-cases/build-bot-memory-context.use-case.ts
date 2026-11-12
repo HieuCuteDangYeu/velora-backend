@@ -20,6 +20,7 @@ export class BuildBotMemoryContextUseCase {
   async execute(input: {
     conversationId: string;
     currentMessageId: string;
+    requesterUserId?: string;
   }): Promise<AiChatMemoryContext> {
     const messages = await this.chatRepository.findMessagesByConversationId(
       input.conversationId,
@@ -42,6 +43,9 @@ export class BuildBotMemoryContextUseCase {
             message.type === 'reel'
               ? ('REEL_SHARE' as const)
               : ('TEXT' as const),
+          ...(role === 'user' && input.requesterUserId
+            ? { authorIsRequester: message.senderId === input.requesterUserId }
+            : {}),
         };
       })
       .filter((message) => message.content.length > 0)

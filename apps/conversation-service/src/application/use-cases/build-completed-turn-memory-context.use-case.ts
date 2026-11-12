@@ -24,6 +24,7 @@ export class BuildCompletedTurnMemoryContextUseCase {
         content: input.userMessage.content?.trim() ?? '',
         createdAt: input.userMessage.createdAt.toISOString(),
         eventType: 'TEXT' as const,
+        authorIsRequester: true,
       },
       {
         role: assistantRole,

@@ -46,7 +46,10 @@ export class ExtractUserMemoriesFromTurnUseCase {
   ): string {
     const recentUserMessages =
       input.memory?.recentMessages
-        ?.filter((message) => message.role === 'user')
+        ?.filter(
+          (message) =>
+            message.role === 'user' && message.authorIsRequester !== false,
+        )
         .map((message) => message.content?.trim() ?? '')
         .filter((content) => content.length > 0) ?? [];
 

@@ -53,6 +53,87 @@ describe('conversation memory context builders', () => {
     expect(JSON.stringify(result)).not.toContain('private-id');
   });
 
+  it('marks which user messages were written by the requester so other members are not remembered as them', async () => {
+    const repository = {
+      findMessagesByConversationId: jest.fn().mockResolvedValue([
+        new Message({
+          id: 'a',
+          senderId: 'alice',
+          type: 'text',
+          content: 'I am vegan and I live in Hanoi',
+          createdAt: at(1),
+        }),
+        new Message({
+          id: 'b',
+          senderId: BOT_USER_ID,
+          type: 'text',
+          content: 'Noted.',
+          createdAt: at(2),
+        }),
+        new Message({
+          id: 'c',
+          senderId: 'bob',
+          type: 'text',
+          content: 'I prefer short answers',
+          createdAt: at(3),
+        }),
+      ]),
+    };
+
+    const result = await new BuildBotMemoryContextUseCase(
+      repository as never,
+    ).execute({
+      conversationId: 'conversation',
+      currentMessageId: 'current',
+      requesterUserId: 'bob',
+    });
+
+    expect(
+      result.recentMessages
+        .filter((message) => message.role === 'user')
+        .map((message) => [message.content, message.authorIsRequester]),
+    ).toEqual([
+      ['I am vegan and I live in Hanoi', false],
+      ['I prefer short answers', true],
+    ]);
+  });
+
+  it('leaves authorship unset when no requester is given', async () => {
+    const repository = {
+      findMessagesByConversationId: jest.fn().mockResolvedValue([
+        new Message({
+          id: 'a',
+          senderId: 'alice',
+          type: 'text',
+          content: 'hello there',
+          createdAt: at(1),
+        }),
+      ]),
+    };
+
+    const result = await new BuildBotMemoryContextUseCase(
+      repository as never,
+    ).execute({ conversationId: 'conversation', currentMessageId: 'current' });
+
+    expect(result.recentMessages[0]).not.toHaveProperty('authorIsRequester');
+  });
+
+  it('marks the completed turn user message as written by the requester', () => {
+    const result = new BuildCompletedTurnMemoryContextUseCase().execute({
+      userMessage: new Message({ content: 'What is it?', createdAt: at(2) }),
+      assistantMessage: new Message({
+        content: 'An answer.',
+        createdAt: at(3),
+      }),
+    });
+
+    expect(result.recentMessages[0]).toMatchObject({
+      role: 'user',
+      authorIsRequester: true,
+    });
+    expect(result.recentMessages[1]).not.toHaveProperty('authorIsRequester');
+  });
+
   it('marks newly completed user and assistant messages as text events', () => {
     const result = new BuildCompletedTurnMemoryContextUseCase().execute({
       previousMemory: {

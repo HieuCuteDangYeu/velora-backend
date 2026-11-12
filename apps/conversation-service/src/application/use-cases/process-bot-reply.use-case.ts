@@ -37,6 +37,7 @@ export class ProcessBotReplyUseCase {
       const answerMemory = await this.buildBotMemoryContextUseCase.execute({
         conversationId: userMessage.conversationId,
         currentMessageId: userMessage.id,
+        requesterUserId: userMessage.senderId,
       });
 
       const result = await this.aiService.askQuestionStream({

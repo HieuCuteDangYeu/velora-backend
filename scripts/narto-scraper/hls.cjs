@@ -305,6 +305,45 @@ async function prepareHls({
       bytes: fs.statSync(thumbnail).size,
       sha256: await sha256(thumbnail),
     });
+
+    let audioManifest = null;
+    if (sourceMetadata.hasAudio) {
+      try {
+        const audioDir = path.join(outputDir, 'transcription');
+        fs.mkdirSync(audioDir, { recursive: true });
+        const audioSegments = [
+          {
+            startMs: 0,
+            endMs: trim.outputDurationMs,
+            overlapBeforeMs: 0,
+            outputPath: path.join(audioDir, 'audio_000000.wav'),
+          },
+        ];
+        await ffmpeg.extractTranscriptionAudioSegments(input, audioSegments, 'wav');
+        if (fs.existsSync(audioSegments[0].outputPath)) {
+          const byteLength = fs.statSync(audioSegments[0].outputPath).size;
+          const checksum = await sha256(audioSegments[0].outputPath);
+          audioManifest = {
+            totalDurationMs: trim.outputDurationMs,
+            format: 'wav',
+            version: 1,
+            artifacts: [
+              {
+                filename: 'transcription/audio_000000.wav',
+                startMs: 0,
+                endMs: trim.outputDurationMs,
+                overlapBeforeMs: 0,
+                checksum,
+                byteLength,
+              },
+            ],
+          };
+        }
+      } catch {
+        // Non-fatal if audio extraction fails
+      }
+    }
+
     return {
       sourceSha256: await sha256(input),
       sourceMetadata,
@@ -312,6 +351,7 @@ async function prepareHls({
       outputDurationMs: trim.outputDurationMs,
       profile,
       validation,
+      audioManifest,
     };
   } finally {
     ffmpeg.onModuleDestroy();

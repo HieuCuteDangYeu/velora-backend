@@ -70,12 +70,58 @@ async function publishImportedHls({
   await validate({ storage, reelId: reel.id, prefix });
   const source = prepared.sourceMetadata;
   const classification = prepared.classification;
+  let transcriptionAudioManifestKey = null;
+  let hasStagedAudio = false;
+
+  if (prepared.audioManifest) {
+    const audioPrefix = `${prefix}/transcription/${attemptId}`;
+    const uploadedArtifacts = [];
+    for (const artifact of prepared.audioManifest.artifacts) {
+      const artifactPath = path.join(outputDir, artifact.filename);
+      if (fs.existsSync(artifactPath)) {
+        const destKey = `${audioPrefix}/${path.basename(artifact.filename)}`;
+        await storage.put(
+          destKey,
+          fs.readFileSync(artifactPath),
+          artifact.format === 'flac' ? 'audio/flac' : 'audio/wav',
+        );
+        uploadedArtifacts.push({
+          key: destKey,
+          startMs: artifact.startMs,
+          endMs: artifact.endMs,
+          overlapBeforeMs: artifact.overlapBeforeMs,
+          checksum: artifact.checksum,
+          byteLength: artifact.byteLength,
+        });
+      }
+    }
+    if (uploadedArtifacts.length > 0) {
+      const manifestPayload = {
+        reelId: reel.id,
+        mediaAttemptId: attemptId,
+        totalDurationMs: prepared.outputDurationMs,
+        format: prepared.audioManifest.format || 'wav',
+        artifacts: uploadedArtifacts,
+        version: 1,
+      };
+      const manifestKey = `${audioPrefix}/manifest.json`;
+      await storage.put(
+        manifestKey,
+        Buffer.from(JSON.stringify(manifestPayload)),
+        'application/json',
+      );
+      transcriptionAudioManifestKey = manifestKey;
+      hasStagedAudio = true;
+    }
+  }
+
   const updated = await db.$transaction(async (tx) => {
     const result = await tx.reel.updateMany({
       where: expected,
       data: {
         mediaAttemptId: attemptId,
         hlsMasterKey: `${prefix}/master.m3u8`,
+        transcriptionAudioManifestKey,
         processingStage: 'INDEX_QUEUED',
         sourceDurationMs: source.durationMs,
         outputDurationMs: prepared.outputDurationMs,
@@ -83,7 +129,7 @@ async function publishImportedHls({
         sourceHeight: source.height,
         sourceFps: source.fps,
         sourceBitrateKbps: source.bitrateKbps,
-        sourceHasAudio: false, // Scraped imports use metadata-only route unless an audio transcription manifest is staged
+        sourceHasAudio: hasStagedAudio,
         sourceRotation: source.rotation,
         sourceOrientation: classification.orientation,
         sourceLengthClass: classification.mediaClass,

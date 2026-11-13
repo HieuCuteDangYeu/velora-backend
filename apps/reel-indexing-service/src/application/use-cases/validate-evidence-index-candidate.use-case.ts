@@ -2,6 +2,10 @@ import type { TranscriptSegment } from '@common/ai/interfaces/transcription-resu
 import type { ReelEvidenceDocument } from '@common/processing/interfaces/reel-index-document.interface';
 import type { ReelIndexJob } from '@common/processing/interfaces/reel-index-job.interface';
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
+import {
+  joinVietnamese,
+  splitVietnameseEvidence,
+} from '@indexing/domain/services/bilingual-evidence';
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 
@@ -61,6 +65,13 @@ export class ValidateEvidenceIndexCandidateUseCase {
       ]),
     );
 
+    const segmentsBySourceId = new Map(
+      (input.transcriptSegments ?? []).map((segment, ordinal) => [
+        this.sourceSegmentId(segment, ordinal),
+        segment,
+      ]),
+    );
+
     for (const document of documents) {
       const ordinalKey = `${document.parentId ?? 'root'}:${document.kind}:${document.ordinal}`;
       if (ordinals.has(ordinalKey)) {
@@ -113,7 +124,24 @@ export class ValidateEvidenceIndexCandidateUseCase {
         );
       }
       if (document.evidenceText) {
-        const normalizedEvidence = this.normalize(document.evidenceText);
+        const { primary, vietnamese } = splitVietnameseEvidence(
+          document.evidenceText,
+        );
+        const normalizedEvidence = this.normalize(primary);
+        if (
+          vietnamese !== undefined &&
+          (document.kind !== 'CHUNK' ||
+            this.normalize(vietnamese) !==
+              joinVietnamese(
+                document.sourceSegmentIds
+                  .map((id) => segmentsBySourceId.get(id))
+                  .filter((segment): segment is TranscriptSegment => !!segment),
+              ))
+        ) {
+          throw new Error(
+            `Document ${document.id} has unsupported Vietnamese evidence`,
+          );
+        }
         if (
           document.kind === 'VISUAL_SCENE' &&
           !document.evidenceHash?.trim()

@@ -195,6 +195,67 @@ describe('ContentRepository existing HLS evidence indexing', () => {
       120_000,
     );
   });
+
+  it('upgrades sourceHasAudio from false to true when verified audio evidence is provided', async () => {
+    const outboxCreate = jest.fn().mockResolvedValue({});
+    const transaction = {
+      reel: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'reel-1',
+          mediaStatus: 'COMPLETED',
+          indexStatus: 'PENDING',
+          sourceHasAudio: false,
+        }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'reel-1',
+          userId: 'user-1',
+          mediaKey: 'reels/user-1/source.mp4',
+          indexAttemptId: 'index-attempt-1',
+          sourceDurationMs: 60_000,
+          outputDurationMs: 60_000,
+          sourceHasAudio: false,
+          sourceOrientation: 'PORTRAIT',
+          sourceLengthClass: 'SHORT',
+          title: 'Imported reel',
+          tags: [],
+        }),
+      },
+      outboxEvent: { create: outboxCreate },
+    };
+    const repository = {
+      $transaction: jest.fn((callback: (tx: typeof transaction) => unknown) =>
+        callback(transaction),
+      ),
+      configService: { get: jest.fn().mockReturnValue('reel-index-v2') },
+      recommendationFeedCacheRepository: {
+        invalidateReels: jest.fn().mockResolvedValue(undefined),
+      },
+      toMediaMetadataData: jest.fn().mockReturnValue({
+        sourceHasAudio: true,
+      }),
+    } as unknown as ContentRepository;
+
+    await expect(
+      ContentRepository.prototype.completeExistingHlsEvidence.call(repository, {
+        reelId: 'reel-1',
+        mediaAttemptId: 'media-attempt-1',
+        transcriptionAudioManifestKey: 'reels/user-1/audio/manifest.json',
+        visualFrameManifestKey: 'reels/user-1/visual/manifest.json',
+        mediaMetadata: {
+          sourceDurationMs: 60_000,
+          sourceHasAudio: true,
+          sourceOrientation: 'PORTRAIT',
+          sourceLengthClass: 'SHORT',
+        },
+      }),
+    ).resolves.toBe(true);
+
+    expect(
+      transaction.reel.updateMany.mock.calls[0][0].data.sourceHasAudio,
+    ).toBe(true);
+    expect(outboxCreate.mock.calls[0][0].data.payload.sourceHasAudio).toBe(true);
+  });
 });
 
 describe('ContentRepository early Reel media readiness', () => {

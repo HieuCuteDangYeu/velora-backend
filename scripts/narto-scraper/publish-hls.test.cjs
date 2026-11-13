@@ -138,3 +138,54 @@ test('publication CAS binds source, owner, old pointer and updatedAt, and reject
     fs.rmSync(f.dir, { recursive: true });
   }
 });
+
+test('stages audio manifest and sets sourceHasAudio when audio artifacts are prepared', async () => {
+  const f = fixture();
+  try {
+    const audioPath = path.join(f.dir, 'audio_000000.wav');
+    fs.writeFileSync(audioPath, Buffer.from('RIFF....WAVEfmt '));
+    const storagePuts = [];
+    const storage = {
+      put: async (key, body, contentType) => {
+        storagePuts.push({ key, contentType, body });
+      },
+    };
+    const args = {
+      ...f.args,
+      storage,
+      prepared: {
+        ...f.args.prepared,
+        audioManifest: {
+          totalDurationMs: 4000,
+          format: 'wav',
+          version: 1,
+          artifacts: [
+            {
+              filename: 'audio_000000.wav',
+              startMs: 0,
+              endMs: 4000,
+              overlapBeforeMs: 0,
+              checksum: 'audio-sha',
+              byteLength: 16,
+            },
+          ],
+        },
+      },
+    };
+
+    await publishImportedHls(args);
+
+    assert.equal(f.writes[0].data.sourceHasAudio, true);
+    assert.match(
+      f.writes[0].data.transcriptionAudioManifestKey,
+      /^reels\/12345678-1234-1234-1234-123456789abc\/[0-9a-f-]{36}\/transcription\/[0-9a-f-]{36}\/manifest\.json$/,
+    );
+    const audioPut = storagePuts.find((p) => p.key.endsWith('/audio_000000.wav'));
+    assert.ok(audioPut, 'audio_000000.wav was uploaded to storage');
+    assert.equal(audioPut.contentType, 'audio/wav');
+    const manifestPut = storagePuts.find((p) => p.key.endsWith('/manifest.json'));
+    assert.ok(manifestPut, 'manifest.json was uploaded to storage');
+  } finally {
+    fs.rmSync(f.dir, { recursive: true });
+  }
+});

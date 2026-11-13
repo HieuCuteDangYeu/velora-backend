@@ -1,17 +1,24 @@
 import { Reel } from '@content/domain/entities/reel.entity';
+import { SearchTagItem } from '@common/search/interfaces/search-tag.interface';
 import type {
   FriendsReelsQuery,
+  ListReelsByTagQuery,
   RecommendedReelsQuery,
   ReelCursor,
   ReelListQuery,
   ReelProfileContextQuery,
   ReelProfileContextResult,
+  SearchReelTagsQuery,
   SearchSuggestion,
   SearchSuggestionsQuery,
 } from '@content/domain/interfaces/content.repository.interface';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/content-client';
 import { REEL_LIST_SELECT, toReelDomain } from './reel-record.mapper';
+
+const REEL_TAG_SEARCH_WINDOW_DAYS = 90;
+const REEL_TAG_SEARCH_WINDOW_ROWS = 20_000;
 
 @Injectable()
 export class ReelFeedRepository {
@@ -234,6 +241,102 @@ export class ReelFeedRepository {
         source: suggestion.source,
         score: Number(suggestion.score.toFixed(4)),
       }));
+  }
+
+  /**
+   * Tag search/trending over a bounded window of the newest public reels so the
+   * aggregation cost stays flat as the catalogue grows. Counts therefore
+   * describe recent activity, not all-time totals.
+   */
+  async searchReelTags(query: SearchReelTagsQuery): Promise<SearchTagItem[]> {
+    const since = new Date(
+      Date.now() - REEL_TAG_SEARCH_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const needle = query.query
+      ? query.query.replace(/[\\%_]/g, (character) => `\\${character}`)
+      : null;
+    const tagFilter = needle
+      ? Prisma.sql`WHERE t.tag LIKE ${`%${needle}%`}`
+      : Prisma.empty;
+    const ordering = needle
+      ? Prisma.sql`ORDER BY (t.tag = ${query.query}) DESC, (t.tag LIKE ${`${needle}%`}) DESC, "reelCount" DESC, t.tag ASC`
+      : Prisma.sql`ORDER BY "reelCount" DESC, t.tag ASC`;
+
+    const rows = await this.prisma.$queryRaw<
+      { tag: string; reelCount: number }[]
+    >(Prisma.sql`
+      SELECT t.tag AS tag, COUNT(*)::int AS "reelCount"
+      FROM (
+        SELECT "searchTags"
+        FROM "Reel"
+        WHERE visibility = 'public'
+          AND "mediaStatus" = 'COMPLETED'
+          AND "createdAt" >= ${since}
+          AND cardinality("searchTags") > 0
+        ORDER BY "createdAt" DESC
+        LIMIT ${REEL_TAG_SEARCH_WINDOW_ROWS}
+      ) AS recent
+      CROSS JOIN LATERAL unnest(recent."searchTags") AS t(tag)
+      ${tagFilter}
+      GROUP BY t.tag
+      ${ordering}
+      LIMIT ${query.limit}
+    `);
+
+    return rows.map((row) => ({
+      tag: row.tag,
+      reelCount: Number(row.reelCount),
+    }));
+  }
+
+  async listReelsByTag(query: ListReelsByTagQuery): Promise<{
+    items: Reel[];
+    nextCursor: ReelCursor | null;
+  }> {
+    const excludedUserIds = [
+      ...new Set((query.excludedUserIds ?? []).filter(Boolean)),
+    ];
+    const where: Prisma.ReelWhereInput = {
+      visibility: 'public',
+      mediaStatus: 'COMPLETED',
+      searchTags: { has: query.tag },
+      ...(excludedUserIds.length > 0
+        ? { userId: { notIn: excludedUserIds } }
+        : {}),
+      ...(query.cursor
+        ? {
+            OR: [
+              { createdAt: { lt: query.cursor.createdAt } },
+              {
+                createdAt: query.cursor.createdAt,
+                id: { gt: query.cursor.id },
+              },
+            ],
+          }
+        : {}),
+    };
+
+    const records = await this.prisma.reel.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      take: query.limit + 1,
+      select: REEL_LIST_SELECT,
+    });
+
+    const items = records
+      .slice(0, query.limit)
+      .map((record) =>
+        toReelDomain(record as unknown as Record<string, unknown>),
+      );
+    const lastItem = items.at(-1);
+
+    return {
+      items,
+      nextCursor:
+        records.length > query.limit && lastItem
+          ? { createdAt: lastItem.createdAt, id: lastItem.id }
+          : null,
+    };
   }
 
   async listRecommendedReels(query: RecommendedReelsQuery): Promise<{

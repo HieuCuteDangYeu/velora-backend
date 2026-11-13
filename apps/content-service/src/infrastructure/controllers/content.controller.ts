@@ -48,7 +48,9 @@ import { ReorderReelSeriesUseCase } from '@content/application/use-cases/reorder
 import { ResolveReelShareLinkUseCase } from '@content/application/use-cases/resolve-reel-share-link.use-case';
 import { ResolveReelContextAccessUseCase } from '@content/application/use-cases/resolve-reel-context-access.use-case';
 import { RevokeReelShareLinkUseCase } from '@content/application/use-cases/revoke-reel-share-link.use-case';
+import { ListReelsByTagUseCase } from '@content/application/use-cases/list-reels-by-tag.use-case';
 import { SearchPublicReelsUseCase } from '@content/application/use-cases/search-public-reels.use-case';
+import { SearchReelTagsUseCase } from '@content/application/use-cases/search-reel-tags.use-case';
 import { ShareReelUseCase } from '@content/application/use-cases/share-reel.use-case';
 import { TrackReelEventsUseCase } from '@content/application/use-cases/track-reel-events.use-case';
 import { UpdateReelStatusUseCase } from '@content/application/use-cases/update-reel-status.use-case';
@@ -122,6 +124,8 @@ export class ContentController {
     private readonly updateReelIndexStatusUseCase: UpdateReelIndexStatusUseCase,
     private readonly searchPublicReelsUseCase: SearchPublicReelsUseCase,
     private readonly getSearchSuggestionsUseCase: GetSearchSuggestionsUseCase,
+    private readonly searchReelTagsUseCase: SearchReelTagsUseCase,
+    private readonly listReelsByTagUseCase: ListReelsByTagUseCase,
     private readonly getFriendsReelsUseCase: GetFriendsReelsUseCase,
     private readonly createReelSeriesUseCase: CreateReelSeriesUseCase,
     private readonly listOwnedReelSeriesUseCase: ListOwnedReelSeriesUseCase,
@@ -1476,6 +1480,55 @@ export class ContentController {
     });
 
     return { suggestions };
+  }
+
+  @MessagePattern('content.search_tags')
+  async searchTags(
+    @Payload() data: { query?: string; limit?: number } | undefined,
+  ) {
+    const tags = await this.searchReelTagsUseCase.execute({
+      query: typeof data?.query === 'string' ? data.query : undefined,
+      limit: data?.limit,
+    });
+
+    return { tags };
+  }
+
+  @MessagePattern('content.list_reels_by_tag')
+  async listReelsByTag(
+    @Payload()
+    data: {
+      viewerId: string;
+      tag: string;
+      limit?: number;
+      cursor?: { createdAt: string; id: string };
+    },
+  ) {
+    if (
+      !data ||
+      typeof data.viewerId !== 'string' ||
+      data.viewerId.trim().length === 0 ||
+      typeof data.tag !== 'string'
+    ) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid tag reels payload',
+      });
+    }
+
+    const result = await this.listReelsByTagUseCase.execute({
+      viewerId: data.viewerId.trim(),
+      tag: data.tag,
+      limit: data.limit,
+      cursor: data.cursor
+        ? { createdAt: new Date(data.cursor.createdAt), id: data.cursor.id }
+        : undefined,
+    });
+
+    return {
+      items: result.items.map((reel) => this.toListSerializable(reel)),
+      nextCursor: this.serializeCursor(result.nextCursor),
+    };
   }
 
   @MessagePattern('content.get_recommended_reels')

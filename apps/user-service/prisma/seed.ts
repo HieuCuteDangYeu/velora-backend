@@ -11,8 +11,12 @@ import {
 const prisma = new PrismaClient();
 const DEFAULT_ADMIN_AVATAR_URL =
   'https://ui-avatars.com/api/?name=Admin+User&background=2563eb&color=ffffff&bold=true';
-const BOT_AVATAR_URL =
-  'https://ui-avatars.com/api/?name=System+Bot&background=7c3aed&color=ffffff&bold=true';
+// R2 object key of apps/user-service/prisma/assets/velora-ai-avatar.png, uploaded through
+// POST /media/upload-url (purpose: avatar) as the bot user.
+const BOT_AVATAR_KEY =
+  'avatars/b6ddf921-c87c-4f68-8d71-f1b1fd33f3e7/a4f60a49-8674-4883-b640-23524b6984ae.png';
+const BOT_FULL_NAME = 'Velora AI';
+const BOT_USERNAME = 'velora_ai';
 
 async function main() {
   console.log('Seeding User Service...');
@@ -45,20 +49,20 @@ async function main() {
   const bot = await prisma.user.upsert({
     where: { email: BOT_USER_EMAIL },
     update: {
-      fullName: 'System Bot',
-      username: 'system_bot',
+      fullName: BOT_FULL_NAME,
+      username: BOT_USERNAME,
       password: hashedPassword,
       isVerified: true,
-      avatarKey: BOT_AVATAR_URL,
+      avatarKey: BOT_AVATAR_KEY,
     },
     create: {
       id: BOT_USER_ID,
       email: BOT_USER_EMAIL,
-      fullName: 'System Bot',
-      username: 'system_bot',
+      fullName: BOT_FULL_NAME,
+      username: BOT_USERNAME,
       password: hashedPassword,
       isVerified: true,
-      avatarKey: BOT_AVATAR_URL,
+      avatarKey: BOT_AVATAR_KEY,
       createdAt: new Date(),
     },
   });

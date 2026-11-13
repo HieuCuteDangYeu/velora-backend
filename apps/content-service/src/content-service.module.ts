@@ -29,6 +29,8 @@ import { GetReelStatusUseCase } from '@content/application/use-cases/get-reel-st
 import { GetReelMonitoringSnapshotUseCase } from '@content/application/use-cases/get-reel-monitoring-snapshot.use-case';
 import { GetReelUseCase } from '@content/application/use-cases/get-reel.use-case';
 import { GetSearchSuggestionsUseCase } from '@content/application/use-cases/get-search-suggestions.use-case';
+import { ListReelsByTagUseCase } from '@content/application/use-cases/list-reels-by-tag.use-case';
+import { SearchReelTagsUseCase } from '@content/application/use-cases/search-reel-tags.use-case';
 import { IsReelIndexingAttemptCurrentUseCase } from '@content/application/use-cases/is-reel-indexing-attempt-current.use-case';
 import { ListReelsUseCase } from '@content/application/use-cases/list-reels.use-case';
 import { ReprocessReelUseCase } from '@content/application/use-cases/reprocess-reel.use-case';
@@ -213,6 +215,8 @@ function createRmqClientRegistration(name: string, queue: string) {
     GetRecommendedReelsUseCase,
     RefreshGlobalRecommendationSlateUseCase,
     GetSearchSuggestionsUseCase,
+    SearchReelTagsUseCase,
+    ListReelsByTagUseCase,
     GetFriendsReelsUseCase,
     CreateReelSeriesUseCase,
     ListOwnedReelSeriesUseCase,

@@ -4,6 +4,12 @@ import { ReelFeedListItem } from '@common/content/interfaces/reel-response.inter
 import { GlobalSearchQueryDto } from '@common/search/dtos/global-search-query.dto';
 import { SearchSuggestionsQueryDto } from '@common/search/dtos/search-suggestions-query.dto';
 import { GlobalSearchResponse } from '@common/search/interfaces/global-search-response.interface';
+import {
+  SearchTagItem,
+  SearchTagsResponse,
+} from '@common/search/interfaces/search-tag.interface';
+import { SearchTagsQueryDto } from '@common/search/dtos/search-tags-query.dto';
+import { TagReelsQueryDto } from '@common/search/dtos/tag-reels-query.dto';
 import { SearchSuggestionsResponse } from '@common/search/interfaces/search-suggestions-response.interface';
 import { PublicUserProfile } from '@common/user/interfaces/public-user-profile.types';
 import { Reel } from '@content/domain/entities/reel.entity';
@@ -63,8 +69,9 @@ export class SearchController {
 
     const shouldSearchUsers = type === 'all' || type === 'users';
     const shouldSearchReels = type === 'all' || type === 'reels';
+    const shouldSearchTags = type === 'all' || type === 'tags';
 
-    const [users, reels] = await Promise.all([
+    const [users, reels, tags] = await Promise.all([
       shouldSearchUsers
         ? this.searchUsers({
             query: searchText,
@@ -79,6 +86,12 @@ export class SearchController {
             viewerId: request.user!.id,
           })
         : Promise.resolve([]),
+      shouldSearchTags
+        ? this.searchTags({
+            query: searchText,
+            limit: type === 'tags' ? limit : Math.min(limit, 6),
+          })
+        : Promise.resolve([]),
     ]);
 
     const enrichedReels = await this.enrichFeedItems(reels);
@@ -88,9 +101,11 @@ export class SearchController {
       type,
       users,
       reels: enrichedReels,
+      tags,
       counts: {
         users: users.length,
         reels: enrichedReels.length,
+        tags: tags.length,
       },
     };
   }
@@ -110,6 +125,58 @@ export class SearchController {
         })
         .pipe(catchError((error) => this.handleMicroserviceError(error))),
     );
+  }
+
+  @Get('tags')
+  @ApiOperation({
+    summary: 'Search reel tags, or list trending tags when q is omitted',
+  })
+  async tags(@Query() query: SearchTagsQueryDto): Promise<SearchTagsResponse> {
+    return {
+      tags: await this.searchTags({ query: query.q, limit: query.limit }),
+    };
+  }
+
+  @Get('tags/reels')
+  @ApiOperation({ summary: 'Page through public reels carrying a tag' })
+  async tagReels(
+    @Req() request: AuthenticatedRequest,
+    @Query() query: TagReelsQueryDto,
+  ): Promise<{ items: ReelFeedListItem[]; nextCursor: string | null }> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<{
+          items: SearchableReel[];
+          nextCursor: string | null;
+        }>('content.list_reels_by_tag', {
+          viewerId: request.user!.id,
+          tag: query.tag,
+          limit: query.limit,
+          cursor: query.cursor,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return {
+      items: await this.enrichFeedItems(result.items),
+      nextCursor: result.nextCursor,
+    };
+  }
+
+  private async searchTags(input: {
+    query?: string | undefined;
+    limit: number;
+  }): Promise<SearchTagItem[]> {
+    const result = await lastValueFrom(
+      this.contentClient
+        .send<SearchTagsResponse>('content.search_tags', {
+          query: input.query,
+          limit: input.limit,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+
+    return result.tags;
   }
 
   private async searchUsers(input: {

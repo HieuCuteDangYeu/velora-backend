@@ -24,6 +24,7 @@ import {
 import type { IStorageService } from '@content/domain/interfaces/storage.service.interface';
 import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { SearchTagItem } from '@common/search/interfaces/search-tag.interface';
 import { Prisma, PrismaClient } from '@prisma/content-client';
 import { randomUUID } from 'crypto';
 import { createHash } from 'node:crypto';
@@ -59,8 +60,10 @@ import {
   ReelShareLinkCreateInput,
   ReelShareLinkWithReel,
   ReelUpdateData,
+  SearchReelTagsQuery,
   SearchSuggestion,
   SearchSuggestionsQuery,
+  ListReelsByTagQuery,
 } from '../../domain/interfaces/content.repository.interface';
 import { ReelFeedRepository } from './reel-feed.repository';
 import { toReelDomain } from './reel-record.mapper';
@@ -1965,6 +1968,16 @@ export class ContentRepository
     query: SearchSuggestionsQuery,
   ): Promise<SearchSuggestion[]> {
     return this.reelFeedRepository.getSearchSuggestions(query);
+  }
+
+  async searchReelTags(query: SearchReelTagsQuery): Promise<SearchTagItem[]> {
+    return this.reelFeedRepository.searchReelTags(query);
+  }
+
+  async listReelsByTag(
+    query: ListReelsByTagQuery,
+  ): Promise<{ items: Reel[]; nextCursor: ReelCursor | null }> {
+    return this.reelFeedRepository.listReelsByTag(query);
   }
 
   async listRecommendedReels(

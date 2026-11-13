@@ -15,6 +15,7 @@ import type {
 } from '@common/content/interfaces/reel-state.interface';
 import type { ReelMediaJob } from '@common/processing/interfaces/reel-media-job.interface';
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
+import { SearchTagItem } from '@common/search/interfaces/search-tag.interface';
 import {
   SearchSuggestionItem,
   SearchSuggestionType,
@@ -222,6 +223,20 @@ export interface SearchSuggestionsQuery {
 }
 
 export type SearchSuggestion = SearchSuggestionItem;
+
+export interface SearchReelTagsQuery {
+  /** Normalized prefix/substring; omit for trending tags. */
+  query?: string;
+  limit: number;
+}
+
+export interface ListReelsByTagQuery {
+  /** Normalized tag key (see normalizeReelSearchTag). */
+  tag: string;
+  limit: number;
+  cursor?: ReelCursor;
+  excludedUserIds?: string[];
+}
 
 export interface ReelMediaOutboxEventInput {
   id: string;
@@ -459,6 +474,13 @@ export interface IContentRepository {
   getSearchSuggestions(
     query: SearchSuggestionsQuery,
   ): Promise<SearchSuggestion[]>;
+
+  searchReelTags(query: SearchReelTagsQuery): Promise<SearchTagItem[]>;
+
+  listReelsByTag(query: ListReelsByTagQuery): Promise<{
+    items: Reel[];
+    nextCursor: ReelCursor | null;
+  }>;
 
   listRecommendedReels(query: RecommendedReelsQuery): Promise<{
     items: Reel[];

@@ -78,6 +78,8 @@ model Reel {
   title                         String?
   description                   String?
   tags                          String[]
+  // Normalized copy of `tags` maintained by a DB trigger (see 20261113090000_add_reel_search_tags).
+  searchTags                    String[]         @default([])
   status                        ProcessingStatus @default(PENDING)
   mediaStatus                   ReelMediaStatus  @default(PENDING)
   indexStatus                   ReelIndexStatus  @default(NOT_REQUESTED)
@@ -160,6 +162,7 @@ model Reel {
   @@index([seriesId, episodeNumber])
   @@index([status, processingStartedAt])
   @@index([status, visibility, createdAt(sort: Desc)])
+  @@index([searchTags], type: Gin)
 }
 
 model ReelUploadLease {

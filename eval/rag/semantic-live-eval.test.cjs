@@ -48,7 +48,8 @@ test('selectCases defaults to REVIEWED and filters by split and limit', () => {
 
 // Fake services: the index returns the gold chunk 2nd for case 1 and 1st for
 // case 2; the "reranker" promotes any text containing GOLD. Case 3's search fails.
-function fakeDeps(log) {
+function fakeDeps(log, { rerankFailsFirst = false } = {}) {
+  const failed = new Set();
   const gold = { 1: 'reel:r1:chunk:0', 2: 'reel:r2:chunk:0' };
   const client = (queue) => ({
     connect: async () => {},
@@ -75,10 +76,15 @@ function fakeDeps(log) {
         const hit = { id: gold[n], text: 'GOLD passage', indexVersion: 'iv-1' };
         return of(n === 1 ? [other, hit] : [hit, other]);
       }
-      if (pattern === 'ai.rerank_texts')
+      if (pattern === 'ai.rerank_texts') {
+        if (rerankFailsFirst && !failed.has(data.queryText)) {
+          failed.add(data.queryText);
+          return throwError(() => new Error('RERANKER_OVERLOADED (429)'));
+        }
         return of({
           scores: data.texts.map((t) => (t.includes('GOLD') ? 0.9 : 0.1)),
         });
+      }
       throw new Error(`unexpected ${pattern}`);
     },
   });
@@ -91,7 +97,10 @@ test('run scores retrieval and rerank, and reports failed cases as unavailable',
   fs.writeFileSync(cases, lib.toJsonl([mk(1), mk(2), mk(3)]));
   const out = path.join(dir, 'out.json');
   const log = [];
-  const result = await run({ cases, out, 'delay-ms': 0 }, fakeDeps(log));
+  const result = await run(
+    { cases, out, 'delay-ms': 0, 'retry-delay-ms': 0 },
+    fakeDeps(log),
+  );
 
   assert.equal(result.cases, 3);
   assert.equal(result.unavailable, 1);
@@ -108,10 +117,35 @@ test('run scores retrieval and rerank, and reports failed cases as unavailable',
   assert.ok(log.includes('reel_index_query:index.search_chunks'));
 
   const none = await run(
-    { cases, out, 'no-rerank': true, 'delay-ms': 0 },
+    { cases, out, 'no-rerank': true, 'delay-ms': 0, 'retry-delay-ms': 0 },
     fakeDeps([]),
   );
   assert.equal(none.stages.rerank, undefined);
+});
+
+test('run retries a transient failure and still reports a persistent one as unavailable', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'semlive-'));
+  const cases = path.join(dir, 'cases.jsonl');
+  fs.writeFileSync(cases, lib.toJsonl([mk(1), mk(2), mk(3)]));
+  const base = { cases, out: path.join(dir, 'o.json'), 'delay-ms': 0 };
+  const result = await run(
+    { ...base, 'retry-delay-ms': 0 },
+    fakeDeps([], { rerankFailsFirst: true }),
+  );
+  // Both rerank calls fail once and then succeed; case 3's search keeps failing.
+  assert.equal(result.stages.rerank.overall.n, 2);
+  assert.equal(result.unavailable, 1);
+  assert.equal(result.meta.retriedCalls, 2 + 3);
+  const strict = await run(
+    { ...base, retries: 0 },
+    fakeDeps([], { rerankFailsFirst: true }),
+  );
+  assert.equal(
+    strict.stages.rerank,
+    undefined,
+    'no retries: every rerank fails',
+  );
+  assert.equal(strict.meta.retriedCalls, 0);
 });
 
 test('run refuses to score when no reviewed case exists', async () => {
@@ -132,7 +166,12 @@ test('compareRuns pairs shared cases, warns on index drift and small n', async (
   const cases = path.join(dir, 'cases.jsonl');
   fs.writeFileSync(cases, lib.toJsonl([mk(1), mk(2)]));
   const a = await run(
-    { cases, out: path.join(dir, 'a.json'), 'delay-ms': 0 },
+    {
+      cases,
+      out: path.join(dir, 'a.json'),
+      'delay-ms': 0,
+      'retry-delay-ms': 0,
+    },
     fakeDeps([]),
   );
   const b = JSON.parse(JSON.stringify(a));

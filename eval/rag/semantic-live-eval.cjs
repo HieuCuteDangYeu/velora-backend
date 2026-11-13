@@ -98,8 +98,25 @@ async function run(args, deps = rabbitDeps()) {
   const ai = deps.client('ai_queue');
   const index = deps.client('reel_index_query');
   await Promise.all([ai.connect(), index.connect()]);
-  const rpc = (c, pattern, data, ms) =>
-    deps.firstValueFrom(c.send(pattern, data).pipe(deps.timeout(ms)));
+  // The shared reranker answers 429 when chat traffic overlaps and the broker
+  // sometimes drops a call, so a failed call is retried a few times with a
+  // growing pause. A call that keeps failing still makes the case unavailable.
+  const retries = Number(args.retries ?? 3);
+  const retryDelay = Number(args['retry-delay-ms'] ?? 2000);
+  let retriedCalls = 0;
+  const rpc = async (c, pattern, data, ms) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await deps.firstValueFrom(
+          c.send(pattern, data).pipe(deps.timeout(ms)),
+        );
+      } catch (error) {
+        if (attempt >= retries) throw error;
+        retriedCalls += 1;
+        await sleep(retryDelay * (attempt + 1));
+      }
+    }
+  };
 
   const raw = fs.readFileSync(args.cases, 'utf8');
   const cases = selectCases(lib.parseJsonl(raw), args);
@@ -208,6 +225,7 @@ async function run(args, deps = rabbitDeps()) {
     {
       ...meta,
       indexVersions: [...meta.indexVersions].sort(),
+      retriedCalls,
       finishedAt: new Date().toISOString(),
     },
     perCase,

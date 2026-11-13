@@ -18,6 +18,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Public Docker Hub namespace of the images; the build cache is read from it.
+  DOCKERHUB_CACHE_OWNER: hieucutedangyeu
+
 # Only stale runs for the same PR are cancelled. Pushes to master deliberately
 # get a unique group so independent CI runs can execute concurrently. Production
 # serialization lives in the separate Homelab CD workflow.
@@ -140,14 +144,25 @@ jobs:
                   ;;
               esac
 
+              # The Dockerfiles only copy the repository and run `pnpm run build
+              # <service>`; nothing under scripts/ or infra/ ends up in an image,
+              # so deploy-controller and server-config changes must not rebuild
+              # all twelve images. infra/docker/* is the one exception.
               case "$changed_file" in
-                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|scripts/diagrams/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
+                infra/docker/*)
+                  build_all=true
+                  break
+                  ;;
+              esac
+
+              case "$changed_file" in
+                docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/*|scripts/*|.env.example|.github/*|docs/*|eval/rag/*|libs/*|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
                   continue
                   ;;
               esac
 
               case "$changed_file" in
-                package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|scripts/*|Dockerfile|Dockerfile.*|docker/*|infra/docker/*)
+                package.json|pnpm-lock.yaml|pnpm-workspace.yaml|nest-cli.json|tsconfig.json|tsconfig.build.json|.npmrc|.dockerignore|Dockerfile|Dockerfile.*|docker/*)
                   build_all=true
                   break
                   ;;
@@ -299,6 +314,9 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+
+      - name: Test CD rebuild selection
+        run: bash scripts/ci/test-select-rebuild-services.sh
 
       - name: Check whitespace errors
         env:
@@ -539,9 +557,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
-      # Keep each CI run to one ARM slot so multiple PR/master validations can
-      # make progress instead of one broad change monopolizing the ARM pool.
-      max-parallel: 1
+      # Four ARM slots per run: a broad change used to take 30-48 minutes with
+      # one slot. Narrow changes only build the affected images anyway.
+      max-parallel: 4
       matrix:
         include: ${{ fromJson(needs.detect-changes.outputs.build_matrix_json) }}
     steps:
@@ -560,5 +578,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/arm64
           push: false
-          cache-from: type=gha,scope=${{ matrix.service }}-arm64
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
+          # Read-only: the CD writes this cache on Docker Hub (public repos, no
+          # login needed). The 10 GB GitHub cache this replaced was over its
+          # limit and evicted the call-service build cache (10 min rebuilds).
+          cache-from: type=registry,ref=${{ env.DOCKERHUB_CACHE_OWNER }}/${{ matrix.image }}:buildcache

@@ -29,6 +29,10 @@ jobs:
       target_sha: ${{ steps.prepare.outputs.target_sha }}
       should_release: ${{ steps.prepare.outputs.should_release }}
       build_matrix_json: ${{ steps.prepare.outputs.build_matrix_json }}
+      # Last promoted commit and the images whose build inputs changed since
+      # then ('*' = all, empty = none). The others are re-tagged, not rebuilt.
+      base_sha: ${{ steps.prepare.outputs.base_sha }}
+      rebuild_services: ${{ steps.prepare.outputs.rebuild_services }}
     steps:
       - name: Checkout CI-approved commit
         uses: actions/checkout@v4
@@ -49,6 +53,7 @@ jobs:
             exit 1
           fi
 
+          base_sha=''
           git fetch --no-tags origin '+refs/heads/master:refs/remotes/origin/master'
           if ! git merge-base --is-ancestor "$target_sha" refs/remotes/origin/master; then
             echo "Approved commit $target_sha is no longer on master; refusing release." >&2
@@ -77,6 +82,7 @@ jobs:
               echo "homelab-deploy $deployed_sha diverged from candidate $target_sha." >&2
               exit 1
             fi
+            base_sha="$deployed_sha"
           else
             remote_status=$?
             if [ "$remote_status" -ne 2 ]; then
@@ -163,10 +169,25 @@ jobs:
             fi
           done < <(jq -r '.[] | [.service, .context, .dockerfile, .image] | @tsv' <<< "$build_matrix_json")
 
+          # Every release must have a <sha>-tagged image for every service (the
+          # deploy controller pulls by that tag), but only images whose build
+          # inputs changed need a real build; the rest are re-tagged from the
+          # last promoted release. No previous release means build everything.
+          rebuild_services='*'
+          if [ -n "$base_sha" ]; then
+            rebuild_services="$(
+              git diff --name-only "$base_sha" "$target_sha" \
+                | bash scripts/ci/select-rebuild-services.sh "${all_services[@]}" friend-service mail-service
+            )"
+          fi
+          echo "Previous release: ${base_sha:-none}; images to rebuild: ${rebuild_services:-none}"
+
           {
             printf 'target_sha=%s\n' "$target_sha"
             printf 'should_release=true\n'
             printf 'build_matrix_json=%s\n' "$build_matrix_json"
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'rebuild_services=%s\n' "$rebuild_services"
           } >> "$GITHUB_OUTPUT"
 
   build-and-push-images:
@@ -175,17 +196,26 @@ jobs:
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
-      max-parallel: 2
+      # Most jobs only re-tag an image and finish in seconds.
+      max-parallel: 4
       matrix:
         include: ${{ fromJson(needs.prepare-release.outputs.build_matrix_json) }}
     steps:
-      - name: Checkout approved commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.target_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Decide whether the deployed image can be reused
+        id: plan
+        env:
+          BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
+          REBUILD_SERVICES: ${{ needs.prepare-release.outputs.rebuild_services }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          reuse=false
+          if [ -n "$BASE_SHA" ] && [ "$REBUILD_SERVICES" != '*' ]; then
+            case " $REBUILD_SERVICES " in
+              *" $SERVICE "*) ;;
+              *) reuse=true ;;
+            esac
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -193,7 +223,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Nothing this service is built from changed since the last release, so
+      # point the new SHA tag (and :latest) at that image. If the old tag is
+      # missing the build below runs instead.
+      - name: Re-tag the previous release image
+        id: reuse
+        if: steps.plan.outputs.reuse == 'true'
+        continue-on-error: true
+        env:
+          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+          BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
+          TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${REPO}:latest" \
+            --tag "${REPO}:${TARGET_SHA}" \
+            "${REPO}:${BASE_SHA}"
+
+      - name: Checkout approved commit
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
+        uses: docker/setup-buildx-action@v4
+
       - name: Build and push ARM64 image
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -208,8 +267,13 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.prepare-release.outputs.target_sha }}
-          cache-from: type=gha,scope=${{ matrix.service }}-arm64
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-arm64
+          # The build cache lives on Docker Hub: the 10 GB GitHub cache was over
+          # its limit and kept evicting the call-service layers. The gha line
+          # is a read-only fallback for the first run and can be removed later.
+          cache-from: |
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:buildcache
+            type=gha,scope=${{ matrix.service }}-arm64
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
   promote-homelab:
     needs:
@@ -285,13 +349,21 @@ jobs:
           - friend-service
           - mail-service
     steps:
-      - name: Checkout approved commit
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare-release.outputs.target_sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+      - name: Decide whether the deployed image can be reused
+        id: plan
+        env:
+          BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
+          REBUILD_SERVICES: ${{ needs.prepare-release.outputs.rebuild_services }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          reuse=false
+          if [ -n "$BASE_SHA" ] && [ "$REBUILD_SERVICES" != '*' ]; then
+            case " $REBUILD_SERVICES " in
+              *" $SERVICE "*) ;;
+              *) reuse=true ;;
+            esac
+          fi
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
@@ -299,7 +371,32 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Re-tag the previous release image
+        id: reuse
+        if: steps.plan.outputs.reuse == 'true'
+        continue-on-error: true
+        env:
+          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}
+          BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
+          TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --tag "${REPO}:${TARGET_SHA}-amd64" \
+            "${REPO}:${BASE_SHA}-amd64"
+
+      - name: Checkout approved commit
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
+        uses: docker/setup-buildx-action@v4
+
       - name: Build and push AMD64 image
+        if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -310,8 +407,10 @@ jobs:
             SOURCE_DATE_EPOCH=1767225600
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ needs.prepare-release.outputs.target_sha }}-amd64
-          cache-from: type=gha,scope=${{ matrix.service }}-amd64
-          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-amd64
+          cache-from: |
+            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:buildcache-amd64
+            type=gha,scope=${{ matrix.service }}-amd64
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:buildcache-amd64,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
   # Independent of promote-homelab: a node-2 problem must not hold back the homelab
   # release, and the other way round. The key can only run the forced command

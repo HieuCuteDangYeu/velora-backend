@@ -1,6 +1,6 @@
 import { MemoryWriterAgentUseCase } from '@ai/application/use-cases/memory-writer-agent.use-case';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
-import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
+import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
 import { Injectable, Optional } from '@nestjs/common';
 
 @Injectable()
@@ -8,7 +8,7 @@ export class HandleConversationTurnCompletedUseCase {
   constructor(
     private readonly memoryWriterAgentUseCase: MemoryWriterAgentUseCase,
     @Optional()
-    private readonly screenRagInputUseCase?: ScreenRagInputUseCase,
+    private readonly refuseRagInputUseCase?: RefuseRagInputUseCase,
   ) {}
 
   async execute(payload: ConversationTurnCompletedPayload): Promise<void> {
@@ -31,11 +31,6 @@ export class HandleConversationTurnCompletedUseCase {
   }
 
   private wasRefused(message: string): boolean {
-    try {
-      const screen = this.screenRagInputUseCase;
-      return screen?.blocks(screen.execute({ message })) ?? false;
-    } catch {
-      return false;
-    }
+    return this.refuseRagInputUseCase?.execute({ message }).refuse ?? false;
   }
 }

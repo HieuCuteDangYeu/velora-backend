@@ -30,8 +30,6 @@ export interface RagGuardrailSummary {
   mode: GuardrailMode;
   findingCount: number;
   wouldBlock: boolean;
-  /** The input check is enforcing and refused this request. */
-  blocked: boolean;
   codes: string[];
   inputCodes: string[];
   evidenceCodes: string[];

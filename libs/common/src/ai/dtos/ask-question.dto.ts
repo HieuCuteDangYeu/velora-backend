@@ -6,6 +6,7 @@ export const AiChatMessageContextSchema = z.object({
   content: z.string().min(1),
   createdAt: z.string(),
   eventType: z.enum(['TEXT', 'REEL_SHARE']).optional(),
+  authorIsRequester: z.boolean().optional(),
 });
 
 export const AiChatMemoryContextSchema = z.object({

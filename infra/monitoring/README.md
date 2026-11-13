@@ -1,32 +1,31 @@
 # Velora monitoring stack
 
-This directory contains the Prometheus and Grafana configuration used by the
-repository root `docker-compose.yml`. Prometheus, Grafana, and
-`monitoring-service` are part of the default homelab Compose topology so the
+This directory contains the Prometheus, Loki, Alloy and Grafana configuration. Prometheus,
+Loki, Alloy and `monitoring-service` are part of the default homelab Compose topology so the
 existing CD service can reconcile them without a separate overlay command.
+
+**Grafana no longer runs on the homelab.** Since 2026-11-13 it runs on velora-node-2 (France),
+reading the homelab Prometheus and Loki over Tailscale, to free about 240 MiB of RAM. See
+`../grafana-node/README.md`. The dashboards and provisioning in `grafana/` are still the
+source: after editing them, copy them to `/opt/velora/grafana/` on the VPS by hand (the
+homelab CD no longer touches them) and restart the container there.
 
 ## Start
 
-Set Grafana credentials in your shell or `.env` before starting the stack:
-
-```bash
-export GRAFANA_ADMIN_USER=admin
-export GRAFANA_ADMIN_PASSWORD='change-me'
-```
-
-The 8 GB self-host profile applies conservative memory caps by default:
+The 8 GB self-host profile applies a conservative memory cap by default:
 
 ```text
 Prometheus: 512 MiB
-Grafana:    256 MiB
 ```
 
-Override them only after measuring the host:
+Override it only after measuring the host:
 
 ```bash
 export PROMETHEUS_MEMORY_LIMIT=768m
-export GRAFANA_MEMORY_LIMIT=384m
 ```
+
+The `GRAFANA_*` and `GF_*` variables in `.env` are no longer read by the homelab stack. They
+are left in place on purpose: editing `.env` pauses automatic releases.
 
 `monitoring-service` reads live container stats from the Docker Engine API over
 the read-only `/var/run/docker.sock` mount. Set `DOCKER_ENGINE_GID` to the
@@ -36,12 +35,11 @@ reported from the Docker container summary. Container rows are live snapshots;
 Prometheus continues to retain host and service history, not per-container
 time series.
 
-Prometheus and Grafana are now defined directly in the root Compose file, so a
-normal deployment starts them automatically. To start only the monitoring
-components manually:
+Prometheus is defined directly in the root Compose file, so a normal deployment starts it
+automatically. To start only the monitoring components manually:
 
 ```bash
-docker compose up -d monitoring-service prometheus grafana
+docker compose up -d monitoring-service prometheus loki alloy
 ```
 
 ## Verify
@@ -86,10 +84,12 @@ sum(rate(velora_monitoring_rpc_requests_total[1m]))
 histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[1m])))
 ```
 
-Grafana is bound to localhost only:
+Grafana runs on velora-node-2 and listens on its Tailscale address only. From a machine that is
+not on the tailnet, reach it through an SSH tunnel:
 
-```text
-http://127.0.0.1:3001
+```bash
+ssh -N -L 3001:100.86.68.16:3001 root@144.91.101.1
+# then open http://localhost:3001
 ```
 
 The Prometheus datasource and the **Velora / Monitoring Service** dashboard are
@@ -223,10 +223,10 @@ The Docker socket proxy on a worker VPS cannot authenticate callers and
 Tailscale address only (the agent compose file does) and restrict who may reach port 2375
 with a Tailscale ACL.
 
-Do not expose ports 9090 or 3001 directly to the public internet. The root
-Compose file binds both ports to `127.0.0.1`. Keep `GRAFANA_ADMIN_PASSWORD` set
-in the server `.env`; the CI workflow supplies only a non-secret placeholder for
-configuration validation. The Velora admin frontend should read selected metrics
+Do not expose ports 9090, 3100 or 3001 directly to the public internet. The root
+Compose file binds 9090 and 3100 to `127.0.0.1`; they are published on the tailnet only through
+`tailscale serve` for Grafana on the VPS, and neither authenticates callers, so limit them with a
+Tailscale ACL. Keep `GRAFANA_ADMIN_PASSWORD` set in `/opt/velora/grafana/.env` on the VPS. The Velora admin frontend should read selected metrics
 through API Gateway -> monitoring-service instead of sending arbitrary PromQL to
 Prometheus. Treat access to the Docker socket as privileged: keep it mounted
 only in `monitoring-service` and do not expose the socket or container snapshot

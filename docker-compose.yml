@@ -425,26 +425,6 @@ services:
     networks:
       - microservices-net
 
-  grafana:
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    mem_limit: ${GRAFANA_MEMORY_LIMIT:-384m}
-    env_file:
-      - .env
-    environment:
-      GF_PLUGINS_DISABLE_PLUGINS: elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-metricsdrilldown-app,grafana-advisor-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-lokiexplore-app
-    volumes:
-      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - '127.0.0.1:3001:3000'
-    depends_on:
-      - prometheus
-      - loki
-    networks:
-      - microservices-net
-
   notification-service:
     image: ${DOCKERHUB_USERNAME}/notification-service:${VELORA_IMAGE_TAG:-latest}
     build:
@@ -704,7 +684,6 @@ volumes:
   postgres_data:
   rabbitmq_data:
   prometheus_data:
-  grafana_data:
   loki_data:
   alloy_data:
   rag_embedding_cache:

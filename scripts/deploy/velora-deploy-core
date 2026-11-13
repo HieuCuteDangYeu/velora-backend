@@ -124,7 +124,6 @@ readonly -a MANAGED_INFRA_SERVICES=(
   nginx
   prometheus
   node-exporter
-  grafana
 )
 
 # Services intentionally removed from the Compose topology. They are cleaned
@@ -133,6 +132,8 @@ readonly -a MANAGED_INFRA_SERVICES=(
 readonly -a REMOVED_COMPOSE_SERVICES=(
   cadvisor
   jev-reranker
+  # Runs on velora-node-2 now (infra/grafana-node/), reading this host over Tailscale.
+  grafana
 )
 
 # Compose changes to these services require deliberate operator handling.
@@ -1300,7 +1301,6 @@ plan_from_changed_files() {
     add_unique nginx INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
-    add_unique grafana INFRA_RECONCILE_SERVICES
     return
   fi
 
@@ -1342,7 +1342,7 @@ plan_from_changed_files() {
         ;;
 
       infra/monitoring/grafana/*)
-        add_unique grafana INFRA_RECONCILE_SERVICES
+        # Grafana runs on velora-node-2 and is updated by hand (infra/grafana-node/README.md).
         ;;
 
       infra/monitoring/node-exporter-textfile/*)
@@ -1760,10 +1760,6 @@ reconcile_infrastructure() {
       prometheus)
         log "==> Force-recreating Prometheus to refresh config bind mount..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps prometheus
-        ;;
-      grafana)
-        log "==> Force-recreating Grafana to refresh provisioning/dashboard bind mounts..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps grafana
         ;;
       node-exporter)
         log "==> Recreating node-exporter..."

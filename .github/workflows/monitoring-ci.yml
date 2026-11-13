@@ -74,10 +74,11 @@ jobs:
             (.services["monitoring-service"].environment.LOKI_URL == "http://loki:3100") and
             (.services["monitoring-service"].environment.PROMETHEUS_URL == "http://prometheus:9090") and
             (.services["monitoring-service"].depends_on.loki.condition == "service_started") and
-            (.services.grafana.depends_on.loki.condition == "service_started") and
+            ((.services | has("grafana")) | not) and
             (.services.alloy.depends_on.loki.condition == "service_started") and
             (.volumes | has("loki_data")) and
-            (.volumes | has("alloy_data"))
+            (.volumes | has("alloy_data")) and
+            ((.volumes | has("grafana_data")) | not)
           ' /tmp/velora-compose.json >/dev/null
 
           test ! -e infra/monitoring/docker-compose.monitoring.yml
@@ -98,6 +99,7 @@ jobs:
           bash scripts/deploy/test-redis-compose-addition.sh
           bash scripts/deploy/test-postgres-compose-addition.sh
           bash scripts/deploy/test-call-media-compose-addition.sh
+          bash scripts/deploy/test-grafana-compose-removal.sh
           bash scripts/deploy/test-second-vps-infra-ignored.sh
           bash -n scripts/ops/check-monitoring-stack.sh
 

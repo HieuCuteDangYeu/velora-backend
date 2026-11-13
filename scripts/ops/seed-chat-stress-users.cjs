@@ -4,11 +4,17 @@
 // Operator-only fixture preparation; this script adds no public endpoint.
 const fs = require('node:fs');
 
+const SCALE_MAX_ACCOUNTS = 5000;
+
 function validateManifest(input) {
   const namespace = input?.fixtureNamespace;
   if (!/^mu-[a-f0-9]{12}$/.test(namespace ?? '')) throw new Error('Invalid fixture namespace');
   const accounts = input.accounts;
-  if (!Array.isArray(accounts) || accounts.length < 2 || accounts.length > 200) throw new Error('Expected 2..200 fixture accounts');
+  // The default is the 50-user demo; a scale manifest describes a crowd (see
+  // generate-chat-stress-scale-fixtures.cjs).
+  if (input.fixtureProfile !== undefined && input.fixtureProfile !== 'scale') throw new Error('Unknown fixture profile');
+  const maxAccounts = input.fixtureProfile === 'scale' ? SCALE_MAX_ACCOUNTS : 200;
+  if (!Array.isArray(accounts) || accounts.length < 2 || accounts.length > maxAccounts) throw new Error(`Expected 2..${maxAccounts} fixture accounts`);
   const ids = new Set(), emails = new Set(), usernames = new Set();
   for (const [index, a] of accounts.entries()) {
     const suffix = String(index + 1).padStart(3, '0');
@@ -90,7 +96,7 @@ async function main(args = process.argv.slice(2)) {
   const phase = args[args.indexOf('--phase') + 1];
   if (!['users', 'roles'].includes(phase)) throw new Error('Choose --phase users or roles');
   const text = fs.readFileSync(0, 'utf8');
-  if (Buffer.byteLength(text) > 150000) throw new Error('Fixture input too large');
+  if (Buffer.byteLength(text) > 4_000_000) throw new Error('Fixture input too large');
   const input = JSON.parse(text);
   validateManifest(input);
   const { PrismaClient } = require(phase === 'users' ? '@prisma/user-client' : '@prisma/auth-client');

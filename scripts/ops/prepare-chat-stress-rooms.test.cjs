@@ -39,3 +39,29 @@ test('room reuse verifies exact name and membership, regardless of ordering', ()
   assert.throws(() => assertRoom({ ...expected, participantIds: [randomUUID(), ...expected.participantIds.slice(1)] }, expected));
   assert.throws(() => assertRoom({ ...expected, participantIds: [...expected.participantIds, randomUUID()] }, expected));
 });
+
+test('a scale manifest gets one trio and one pair per block of five, every user in one room', () => {
+  const { generate } = require('./generate-chat-stress-scale-fixtures.cjs');
+  const input = generate({ users: 100, baseUrl: 'https://velora.test' });
+  const rooms = roomPlan(input);
+  assert.equal(rooms.length, 40);
+  assert.equal(rooms.filter(r => r.participantIds.length === 3).length, 20);
+  assert.equal(new Set(rooms.map(r => r.name)).size, 40);
+  const ids = rooms.flatMap(r => r.participantIds);
+  assert.equal(ids.length, 100); assert.equal(new Set(ids).size, 100);
+  // A prefix ending on a block boundary holds whole rooms: the chat cohort depends on it.
+  const first = new Set(input.accounts.slice(0, 20).map(a => a.id));
+  assert.equal(rooms.filter(r => r.participantIds.every(id => first.has(id))).length, 8);
+  assert.deepEqual(roomPlan(input), rooms);
+});
+
+test('a scale plan needs a multiple of five users and the local gateway needs its own address header', () => {
+  const { generate } = require('./generate-chat-stress-scale-fixtures.cjs');
+  const input = generate({ users: 10, baseUrl: 'https://velora.test' });
+  input.accounts.pop();
+  assert.throws(() => roomPlan(input), /multiple of 5/);
+  const { fixtureClientIp } = require('./prepare-chat-stress-rooms.cjs');
+  const ip = fixtureClientIp('some-user');
+  assert.match(ip, /^198\.(18|19)\.\d+\.\d+$/);
+  assert.equal(fixtureClientIp('some-user'), ip);
+});

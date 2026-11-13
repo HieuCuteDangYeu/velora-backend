@@ -69,6 +69,41 @@ native push, calls, all product traffic, or a guaranteed number of production
 users. Only the live runner result establishes distinct authenticated users and
 timely delivery; fixture row counts alone do not establish capacity.
 
+## A crowd (scale profile)
+
+The 50-user demo fixture has 20 rooms, so a stress run that holds thousands of
+sockets spreads them over 50 accounts (80 sockets each) and one message is
+written to about 200 sockets. A real message reaches a handful. For capacity
+and scale-out work use a crowd instead: thousands of accounts in many small
+rooms, one or two sockets per account.
+
+```sh
+# 1. A new isolated namespace; never touches the demo fixture. Multiple of 5, up to 5000.
+node scripts/ops/generate-chat-stress-scale-fixtures.cjs --users 2000 \
+  --base-url https://velora-app.me --out /private/scale-manifest.json
+
+# 2. Users (User Service database) and USER roles (Auth Service database), exactly as above.
+node scripts/ops/seed-chat-stress-users.cjs --phase users [--apply] < /private/scale-manifest.json
+node scripts/ops/seed-chat-stress-users.cjs --phase roles [--apply] < /private/scale-manifest.json
+
+# 3. Rooms through the normal API. On the server host use the local gateway; each user
+#    presents its own benchmark address so the per-IP login limit does not apply.
+node scripts/ops/prepare-chat-stress-rooms.cjs --config /private/scale-manifest.json \
+  --base-url http://127.0.0.1 [--limit 25] [--apply]
+```
+
+The manifest carries `"fixtureProfile": "scale"`; without it the 200-account and
+20-room limits of the demo apply. Rooms come in blocks of five accounts, one trio
+and one pair per block (2.5 members on average, every account in exactly one
+room). `--limit N` creates only the first N rooms, which is how to try the
+procedure on a small batch before running it in full.
+
+In `Velora-dashboard` the tools accept this manifest. The Mixed tool lets only a
+bounded cohort send chat (`--chat-users`, default 200, on a block boundary,
+which keeps whole rooms); the other accounts stay online through the connections
+tool. There is no script that deletes a crowd: fixtures are isolated by
+namespace and are never updated or removed by these tools.
+
 ## Local checks
 
 ```sh

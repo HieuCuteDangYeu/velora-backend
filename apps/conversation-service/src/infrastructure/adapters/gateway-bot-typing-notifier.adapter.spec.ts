@@ -1,4 +1,5 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
+import type { ModuleRef } from '@nestjs/core';
 import { ChatGateway } from '../gateways/chat.gateway';
 import { GatewayBotTypingNotifierAdapter } from './gateway-bot-typing-notifier.adapter';
 
@@ -17,8 +18,9 @@ describe('GatewayBotTypingNotifierAdapter', () => {
     jest.useFakeTimers();
     emitToConversation = jest.fn();
     adapter = new GatewayBotTypingNotifierAdapter({
-      emitToConversation,
-    } as unknown as ChatGateway);
+      get: (token: unknown) =>
+        token === ChatGateway ? { emitToConversation } : undefined,
+    } as unknown as ModuleRef);
   });
 
   afterEach(() => {

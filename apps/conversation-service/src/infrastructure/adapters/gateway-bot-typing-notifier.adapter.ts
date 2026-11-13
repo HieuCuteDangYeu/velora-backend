@@ -1,5 +1,6 @@
 import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { IBotTypingNotifier } from '../../domain/interfaces/bot-typing-notifier.interface';
 import { ChatGateway } from '../gateways/chat.gateway';
 
@@ -21,7 +22,10 @@ export class GatewayBotTypingNotifierAdapter
 {
   private readonly active = new Map<string, ActiveTyping>();
 
-  constructor(private readonly chatGateway: ChatGateway) {}
+  // ChatGateway depends on the use case that depends on this notifier. Injecting
+  // the gateway directly closes that loop and Nest then never finishes booting
+  // (no error, the service just never starts consuming), so resolve it lazily.
+  constructor(private readonly moduleRef: ModuleRef) {}
 
   start(conversationId: string): void {
     if (this.active.has(conversationId)) {
@@ -61,11 +65,13 @@ export class GatewayBotTypingNotifierAdapter
 
   private emit(conversationId: string, isTyping: boolean): void {
     try {
-      this.chatGateway.emitToConversation(conversationId, 'user_typing', {
-        conversationId,
-        userId: BOT_USER_ID,
-        isTyping,
-      });
+      this.moduleRef
+        .get(ChatGateway, { strict: false })
+        .emitToConversation(conversationId, 'user_typing', {
+          conversationId,
+          userId: BOT_USER_ID,
+          isTyping,
+        });
     } catch {
       // Typing is a cosmetic signal; a socket hiccup must not fail the AI turn.
     }

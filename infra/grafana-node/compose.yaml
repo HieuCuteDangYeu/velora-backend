@@ -1,0 +1,36 @@
+name: grafana-node
+# Grafana for the Velora dashboards, running on velora-node-2 (France) so the homelab
+# does not spend ~240 MiB of RAM on it. Copy this folder to /opt/velora/grafana/ on the VPS
+# and follow README.md. It is managed by hand over SSH, not by CI.
+#
+# It listens on the Tailscale address only (TAILNET_IP). Prometheus and Loki stay on the
+# homelab and are read over Tailscale.
+services:
+  grafana:
+    image: grafana/grafana:13.2.2
+    container_name: grafana
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_UNIFIED_ALERTING_ENABLED: 'false'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_PLUGINS_PREINSTALL_DISABLED: 'true'
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: 'false'
+      GF_PLUGINS_DISABLE_PLUGINS: elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-metricsdrilldown-app,grafana-advisor-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-lokiexplore-app
+    volumes:
+      # Datasources point at the homelab over Tailscale (see provisioning/datasources).
+      - ./provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      # Same dashboards and provider as the homelab; copied from infra/monitoring/grafana.
+      - ./provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      # Neither Grafana nor the datasources behind it are meant for the public internet.
+      - '${TAILNET_IP:?set TAILNET_IP in .env}:3001:3000'
+
+volumes:
+  grafana_data:

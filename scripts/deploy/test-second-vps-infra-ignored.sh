@@ -31,7 +31,11 @@ for file in \
   infra/backup-worker/backup.sh \
   infra/backup-worker/velora-backup.service \
   infra/backup-worker/velora-backup.timer \
-  infra/backup-worker/README.md; do
+  infra/backup-worker/README.md \
+  infra/grafana-node/compose.yaml \
+  infra/grafana-node/README.md \
+  infra/grafana-node/provisioning/datasources/prometheus.yml \
+  infra/grafana-node/provisioning/datasources/loki.yml; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

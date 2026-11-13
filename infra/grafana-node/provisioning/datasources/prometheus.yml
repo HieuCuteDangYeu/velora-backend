@@ -1,0 +1,11 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    # Homelab Prometheus, published on the tailnet with `tailscale serve` (see README.md).
+    url: http://100.102.228.48:9090
+    isDefault: true
+    editable: false

@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    # Homelab Loki, published on the tailnet with `tailscale serve` (see README.md).
+    url: http://100.102.228.48:3100
+    editable: false

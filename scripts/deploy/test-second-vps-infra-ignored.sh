@@ -28,6 +28,9 @@ for file in \
   infra/friend-mail-node/compose.yaml \
   infra/friend-mail-node/deploy.sh \
   infra/friend-mail-node/README.md \
+  infra/langfuse-node/docker-compose.yml \
+  infra/langfuse-node/node2.yaml \
+  infra/langfuse-node/README.md \
   infra/vps-agent/compose.yaml \
   infra/vps-agent/alloy.config \
   infra/vps-agent/README.md \

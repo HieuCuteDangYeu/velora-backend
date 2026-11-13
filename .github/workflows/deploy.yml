@@ -135,7 +135,7 @@ jobs:
               # not Compose build services. Their code is still linted and tested by
               # the validate job.
               case "$changed_file" in
-                apps/friend-service/*|apps/mail-service/*|infra/friend-mail-node/*)
+                apps/friend-service/*|apps/mail-service/*|infra/friend-mail-node/*|infra/langfuse-node/*)
                   continue
                   ;;
               esac

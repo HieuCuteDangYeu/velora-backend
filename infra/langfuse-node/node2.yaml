@@ -1,0 +1,18 @@
+# velora-node-2 overrides: publish only the web UI/ingestion API and MinIO (browser
+# media uploads), both on the Tailscale address. Nothing is reachable from the public
+# interface, and the databases stay on the private Compose network.
+services:
+  langfuse-web:
+    ports: !override
+      - ${TAILNET_IP:?set TAILNET_IP in .env}:13000:3000
+  langfuse-worker:
+    ports: !reset []
+  clickhouse:
+    ports: !reset []
+  minio:
+    ports: !override
+      - ${TAILNET_IP:?set TAILNET_IP in .env}:19090:9000
+  redis:
+    ports: !reset []
+  postgres:
+    ports: !reset []

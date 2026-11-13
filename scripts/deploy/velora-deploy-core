@@ -1326,7 +1326,7 @@ plan_from_changed_files() {
         ;;
       scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
         ;;
-      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/friend-mail-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*|infra/loki-node/*|infra/windows-node/*)
+      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/friend-mail-node/*|infra/langfuse-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*|infra/loki-node/*|infra/windows-node/*)
         # Notes and compose files for the other servers (velora-node-2 and the
         # Windows laptop). Those hosts are managed by hand over SSH and nothing
         # here is deployed on the homelab.

@@ -1,0 +1,38 @@
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+services:
+  langfuse-worker:
+    image: langfuse/langfuse-worker:4.75.0
+    mem_limit: 1250m
+    cpus: 0.75
+    logging: *local-logging
+    environment:
+      NODE_OPTIONS: --max-old-space-size=768
+      LANGFUSE_INGESTION_QUEUE_PROCESSING_CONCURRENCY: 2
+      LANGFUSE_TRACE_UPSERT_WORKER_CONCURRENCY: 2
+  langfuse-web:
+    image: langfuse/langfuse:4.75.0
+    mem_limit: 1250m
+    cpus: 0.75
+    logging: *local-logging
+    environment:
+      NODE_OPTIONS: --max-old-space-size=768
+  clickhouse:
+    mem_limit: 2500m
+    cpus: 1.5
+    logging: *local-logging
+  minio:
+    mem_limit: 256m
+    cpus: 0.25
+    logging: *local-logging
+  redis:
+    mem_limit: 256m
+    cpus: 0.25
+    logging: *local-logging
+  postgres:
+    mem_limit: 512m
+    cpus: 0.5
+    logging: *local-logging

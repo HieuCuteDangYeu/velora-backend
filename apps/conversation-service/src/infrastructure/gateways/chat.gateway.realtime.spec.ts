@@ -1,3 +1,4 @@
+import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { Conversation } from '../../domain/entities/conversation.entity';
@@ -149,6 +150,27 @@ describe('ChatGateway realtime membership helpers', () => {
       expect(chatRepository.findPresenceAudienceUserIds).not.toHaveBeenCalled();
     },
   );
+
+  it('reports the Velora AI bot as always online even with no socket', async () => {
+    fetchSockets.mockResolvedValue([]);
+    const clientEmit = jest.fn();
+    const client = {
+      id: 'asker',
+      data: { userId: OWNER_ID },
+      emit: clientEmit,
+    } as unknown as Socket;
+
+    await gateway.handleCheckPresence(
+      { userIds: [BOT_USER_ID], conversationId: CONVERSATION_ID },
+      client,
+    );
+
+    expect(clientEmit).toHaveBeenCalledWith('presence_update', {
+      userId: BOT_USER_ID,
+      isOnline: true,
+      lastSeenAt: null,
+    });
+  });
 
   it('does not join or publish presence for an unauthenticated socket', async () => {
     const client = {

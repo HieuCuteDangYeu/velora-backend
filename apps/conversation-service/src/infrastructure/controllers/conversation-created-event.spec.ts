@@ -47,6 +47,7 @@ const createController = ({
     {} as never,
     chatRepository as never,
     {} as never,
+    {} as never,
   );
 
   return {

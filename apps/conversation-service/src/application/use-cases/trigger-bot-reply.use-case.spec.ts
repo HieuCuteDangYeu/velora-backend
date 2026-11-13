@@ -24,7 +24,14 @@ const allowAll: IAiTurnLimiter = {
   consume: jest.fn().mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }),
 };
 
+const botTypingNotifier = { start: jest.fn(), stop: jest.fn() };
+
 describe('TriggerBotReplyUseCase', () => {
+  beforeEach(() => {
+    botTypingNotifier.start.mockClear();
+    botTypingNotifier.stop.mockClear();
+  });
+
   it.each([false, true])(
     'reuses dispatch membership with bot=%s',
     async (withBot) => {
@@ -34,6 +41,7 @@ describe('TriggerBotReplyUseCase', () => {
         repository as never,
         process as never,
         allowAll,
+        botTypingNotifier,
       );
       const conversation = new Conversation({
         id: CONVERSATION_ID,
@@ -57,6 +65,7 @@ describe('TriggerBotReplyUseCase', () => {
       repository as never,
       process as never,
       allowAll,
+      botTypingNotifier,
     );
     expect(await useCase.execute(userMessage(), USER_ID, null)).toEqual({
       triggered: false,
@@ -82,6 +91,7 @@ describe('TriggerBotReplyUseCase', () => {
       chatRepository as never,
       processBotReplyUseCase as never,
       allowAll,
+      botTypingNotifier,
     );
 
     await expect(useCase.execute(userMessage(), USER_ID)).resolves.toEqual({
@@ -106,6 +116,7 @@ describe('TriggerBotReplyUseCase', () => {
       chatRepository as never,
       processBotReplyUseCase as never,
       allowAll,
+      botTypingNotifier,
     );
 
     await expect(useCase.execute(userMessage(), USER_ID)).resolves.toEqual({
@@ -114,6 +125,73 @@ describe('TriggerBotReplyUseCase', () => {
         code: 'UNKNOWN',
         message: 'internal detail',
       },
+    });
+  });
+
+  describe('bot typing indicator', () => {
+    const botConversation = () =>
+      new Conversation({
+        id: CONVERSATION_ID,
+        participantIds: [USER_ID, BOT_USER_ID],
+      });
+
+    it('shows the bot typing for the whole turn and clears it after the reply', async () => {
+      const order: string[] = [];
+      botTypingNotifier.start.mockImplementation(() => order.push('start'));
+      botTypingNotifier.stop.mockImplementation(() => order.push('stop'));
+      const process = {
+        execute: jest.fn().mockImplementation(() => {
+          order.push('process');
+          return Promise.resolve({});
+        }),
+      };
+      const useCase = new TriggerBotReplyUseCase(
+        { findConversation: jest.fn() } as never,
+        process as never,
+        allowAll,
+        botTypingNotifier,
+      );
+
+      await useCase.execute(userMessage(), USER_ID, botConversation());
+
+      expect(order).toEqual(['start', 'process', 'stop']);
+      expect(botTypingNotifier.start).toHaveBeenCalledWith(CONVERSATION_ID);
+      expect(botTypingNotifier.stop).toHaveBeenCalledWith(CONVERSATION_ID);
+    });
+
+    it('clears the typing state when the AI turn throws', async () => {
+      const useCase = new TriggerBotReplyUseCase(
+        { findConversation: jest.fn() } as never,
+        { execute: jest.fn().mockRejectedValue(new Error('boom')) } as never,
+        allowAll,
+        botTypingNotifier,
+      );
+
+      await useCase.execute(userMessage(), USER_ID, botConversation());
+
+      expect(botTypingNotifier.stop).toHaveBeenCalledWith(CONVERSATION_ID);
+    });
+
+    it('never shows typing for plain chats or a withheld (rate limited) turn', async () => {
+      const limited = new TriggerBotReplyUseCase(
+        { findConversation: jest.fn() } as never,
+        { execute: jest.fn() } as never,
+        {
+          consume: jest
+            .fn()
+            .mockResolvedValue({ allowed: false, retryAfterSeconds: 5 }),
+        },
+        botTypingNotifier,
+      );
+      const plain = new Conversation({
+        id: CONVERSATION_ID,
+        participantIds: [USER_ID, '22222222-2222-4222-8222-222222222222'],
+      });
+
+      await limited.execute(userMessage(), USER_ID, botConversation());
+      await limited.execute(userMessage(), USER_ID, plain);
+
+      expect(botTypingNotifier.start).not.toHaveBeenCalled();
     });
   });
 
@@ -134,6 +212,7 @@ describe('TriggerBotReplyUseCase', () => {
         { findConversation: jest.fn() } as never,
         process as never,
         limiter,
+        botTypingNotifier,
       );
 
       expect(
@@ -156,6 +235,7 @@ describe('TriggerBotReplyUseCase', () => {
         { findConversation: jest.fn() } as never,
         process as never,
         limiterWith({ allowed: true, retryAfterSeconds: 0 }),
+        botTypingNotifier,
       );
       expect(
         (await useCase.execute(userMessage(), USER_ID, botConversation()))
@@ -170,6 +250,7 @@ describe('TriggerBotReplyUseCase', () => {
         { findConversation: jest.fn() } as never,
         { execute: jest.fn() } as never,
         limiter,
+        botTypingNotifier,
       );
       const plain = new Conversation({
         id: CONVERSATION_ID,

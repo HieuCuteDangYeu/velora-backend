@@ -16,6 +16,7 @@ import { GetMessagesAroundUseCase } from '../../application/use-cases/get-messag
 import { GetMessagesUseCase } from '../../application/use-cases/get-messages.use-case';
 import { ManageGroupConversationUseCase } from '../../application/use-cases/manage-group-conversation.use-case';
 import { SendMessageUseCase } from '../../application/use-cases/send-message.use-case';
+import type { IBotTypingNotifier } from '../../domain/interfaces/bot-typing-notifier.interface';
 import { TriggerBotReplyUseCase } from '../../application/use-cases/trigger-bot-reply.use-case';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IChatMediaService } from '../../domain/interfaces/chat-media.service.interface';
@@ -44,6 +45,8 @@ export class ConversationMicroserviceController {
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     @Inject('IChatMediaService')
     private readonly chatMediaService: IChatMediaService,
+    @Inject('IBotTypingNotifier')
+    private readonly botTypingNotifier: IBotTypingNotifier,
   ) {}
 
   @MessagePattern('create_conversation')
@@ -673,6 +676,8 @@ export class ConversationMicroserviceController {
       `[AI_STREAM_TOKEN] conversation=${data.conversationId} tokenLength=${data.token.length}`,
     );
 
+    // The reply is visibly arriving; the typing indicator would duplicate it.
+    this.botTypingNotifier.stop(data.conversationId);
     this.chatGateway.emitToConversation(data.conversationId, 'bot_token', {
       conversationId: data.conversationId,
       token: data.token,

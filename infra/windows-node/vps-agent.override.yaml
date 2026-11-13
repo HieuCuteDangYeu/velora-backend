@@ -1,0 +1,10 @@
+# Install as /opt/velora/vps-agent/docker-compose.override.yaml next to the
+# unchanged infra/vps-agent/compose.yaml.
+#
+# Inside WSL2 the root mount is private, so the agent's `/:/host:ro,rslave`
+# bind fails with "path / is mounted on / but it is not a shared or slave
+# mount". Mount it without propagation instead; node-exporter only needs to read.
+services:
+  node-exporter:
+    volumes: !override
+      - /:/host:ro

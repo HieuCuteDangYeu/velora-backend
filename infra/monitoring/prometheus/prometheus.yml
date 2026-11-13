@@ -144,6 +144,19 @@ scrape_configs:
           host_region: France
           host_provider: Contabo
           docker_port: '2375'
+      # Third server (the Windows laptop on the home LAN): the same agent stack
+      # inside WSL2, see infra/windows-node/. Figures describe the WSL2 VM
+      # (memory limit from .wslconfig, disk is the VM's virtual disk), not the
+      # whole Windows machine.
+      - targets:
+          - 100.104.227.44:9100
+        labels:
+          host: homelab-2
+          host_name: Homelab 2
+          host_role: worker
+          host_region: Vietnam
+          host_provider: Windows laptop (WSL2)
+          docker_port: '2375'
     metric_relabel_configs:
       # Registry-only label: it stays on `up`, which the dashboard reads to build
       # the host list, but is not copied onto every node_* series. Adding a label

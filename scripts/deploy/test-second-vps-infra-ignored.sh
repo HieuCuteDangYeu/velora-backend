@@ -48,6 +48,7 @@ for file in \
   infra/windows-node/README.md \
   infra/windows-node/mongo-replica.compose.yaml \
   infra/windows-node/postgres-replica.compose.yaml \
+  infra/windows-node/vps-agent.override.yaml \
   infra/windows-node/wslconfig.example; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then

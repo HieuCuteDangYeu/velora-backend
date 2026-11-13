@@ -45,6 +45,19 @@ row counts equal (1,707,272), writes refused on the standby. Failover is manual,
 - Latency homelab to this machine: about 6 ms on the LAN, 14 to 18 ms over Tailscale, with
   peaks of 30 to 45 ms because both ends use Wi-Fi. Cable the laptop for steadier numbers.
 
+## Dashboard host (Homelab 2)
+
+The monitoring agent from `../vps-agent/` runs here too (node-exporter 9100 and the read-only
+Docker proxy 2375, both on the tailnet IP only), in `/opt/velora/vps-agent/` with
+`TAILNET_IP=100.104.227.44`. WSL2 needs `vps-agent.override.yaml` saved next to the compose file as
+`docker-compose.override.yaml`: the root mount is private there, so the agent's `rslave` bind fails
+without it. The target is the `homelab-2` block in `infra/monitoring/prometheus/prometheus.yml`.
+
+The figures describe the WSL2 VM, not the whole Windows machine: memory is the `.wslconfig` limit
+(about 4.8 GiB), the CPU count is the processors given to WSL, and the disk is the VM's virtual
+disk (reported as about 1 TB, its maximum size, while the real room is what is free on C:).
+The log shipper (`alloy`, profile `logs`) is not started here.
+
 ## Not done yet
 
 - A media node here (UDP 40001 must be forwarded to this machine; the image has to be built on
@@ -52,4 +65,3 @@ row counts equal (1,707,272), writes refused on the standby. Failover is manual,
 - Routing more reads to the replicas. Done: `get_reaction_details` and the presence audience read
   (`presence_audience`) use the Mongo secondary nearest to the homelab, which is this laptop.
   Postgres has no routed reads: the call history list is the only safe candidate and was left out.
-- A Prometheus/host registry entry for this machine.

@@ -1,0 +1,36 @@
+name: postgres-replica
+services:
+  postgres-replica:
+    image: postgres:18.6
+    container_name: postgres-replica
+    restart: unless-stopped
+    # A hot standby streaming from the homelab primary. max_connections must be
+    # at least the primary value (60) or the standby refuses to start.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - max_connections=60
+      - -c
+      - work_mem=8MB
+      - -c
+      - effective_cache_size=1500MB
+      - -c
+      - hot_standby=on
+      # The nightly pg_dump runs on this standby (infra/backup-worker): let replay wait up
+      # to 15 minutes for a running dump instead of cancelling it on a conflict.
+      - -c
+      - max_standby_streaming_delay=900s
+    ports:
+      - "100.104.227.44:5432:5432"
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+volumes:
+  postgres_replica_data:

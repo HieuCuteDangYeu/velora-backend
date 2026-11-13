@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Files that describe the second VPS (velora-node-2) must not make the homelab CD
+# Files that describe the other servers (velora-node-2, the Windows laptop) must not make the homelab CD
 # restart anything, while a genuinely unknown path must still reconcile every
 # application service.
 set -Eeuo pipefail
@@ -38,7 +38,11 @@ for file in \
   infra/grafana-node/provisioning/datasources/loki.yml \
   infra/loki-node/compose.yaml \
   infra/loki-node/loki-config.yml \
-  infra/loki-node/README.md; do
+  infra/loki-node/README.md \
+  infra/windows-node/README.md \
+  infra/windows-node/mongo-replica.compose.yaml \
+  infra/windows-node/postgres-replica.compose.yaml \
+  infra/windows-node/wslconfig.example; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

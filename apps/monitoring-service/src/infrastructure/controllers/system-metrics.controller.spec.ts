@@ -644,6 +644,45 @@ describe('SystemMetricsController multi-host', () => {
     });
   });
 
+  it('answers before a slow storage read finishes and reuses it afterwards', async () => {
+    jest.useFakeTimers();
+    try {
+      let finishStorage: (value: unknown) => void = () => undefined;
+      const docker = {
+        snapshotWithCoverage: jest.fn().mockResolvedValue({
+          containers: [],
+          runningContainers: 0,
+          sampledContainers: 0,
+        }),
+        snapshotMetadata: jest.fn().mockReturnValue(
+          new Promise((resolve) => {
+            finishStorage = resolve;
+          }),
+        ),
+      };
+      const { controller } = createController({ docker });
+
+      const first = controller.containers({ host: NODE_2.id });
+      await jest.advanceTimersByTimeAsync(2_000);
+      const firstResult = await first;
+      expect(firstResult).toMatchObject({ dockerEngineUp: true });
+      expect(firstResult).not.toHaveProperty('storage');
+
+      finishStorage({
+        hostCpuCount: 4,
+        storage: { imagesBytes: 1, volumesBytes: 2, buildCacheBytes: 3 },
+      });
+      await jest.advanceTimersByTimeAsync(3_000);
+
+      await expect(
+        controller.containers({ host: NODE_2.id }),
+      ).resolves.toMatchObject({ hostCpuCount: 4 });
+      expect(docker.snapshotMetadata).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('uses the local socket for the primary host', async () => {
     const docker = {
       snapshot: jest.fn().mockResolvedValue([]),

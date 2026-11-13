@@ -78,6 +78,9 @@ export type DockerSnapshot = {
 
 const DEFAULT_SOCKET_PATH = '/var/run/docker.sock';
 const DEFAULT_TIMEOUT_MS = 4000;
+// `/system/df` walks every image, volume and layer; on a busy remote host it
+// takes well over the usual request budget (13 s on velora-node-2).
+const STORAGE_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 const finiteNumber = (value: unknown): number | null => {
@@ -290,7 +293,11 @@ export class DockerEngineService {
     const target = endpoint ?? this.localEndpoint();
     const [infoResult, storageResult] = await Promise.allSettled([
       this.requestJson<DockerInfo>('/info', target),
-      this.requestJson<DockerSystemDf>('/system/df', target),
+      this.requestJson<DockerSystemDf>(
+        '/system/df',
+        target,
+        Math.max(this.timeoutMs, STORAGE_TIMEOUT_MS),
+      ),
     ]);
 
     return {
@@ -349,7 +356,11 @@ export class DockerEngineService {
     };
   }
 
-  private requestJson<T>(path: string, endpoint: DockerEndpoint): Promise<T> {
+  private requestJson<T>(
+    path: string,
+    endpoint: DockerEndpoint,
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const clientRequest = request(
         {
@@ -392,11 +403,9 @@ export class DockerEngineService {
         },
       );
 
-      clientRequest.setTimeout(this.timeoutMs, () => {
+      clientRequest.setTimeout(timeoutMs, () => {
         clientRequest.destroy(
-          new Error(
-            `Docker Engine request timed out after ${this.timeoutMs}ms`,
-          ),
+          new Error(`Docker Engine request timed out after ${timeoutMs}ms`),
         );
       });
       clientRequest.on('error', reject);

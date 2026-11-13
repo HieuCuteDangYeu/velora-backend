@@ -39,6 +39,7 @@ import {
   type MediaRoomsLostEvent,
   type RemoteMediaMethod,
 } from '../../media-node/media-node.contract';
+import { selectMediaNode } from '../../media-node/media-node-placement';
 import { safeCallErrorCode, shortCallIdentifier } from '../gateways/call-debug';
 import { RedisCallStateRepository } from '../repositories/redis-call-state.repository';
 
@@ -381,7 +382,7 @@ export class RemoteCallMediaEngine
     for (const listener of this.roomsLostListeners) listener(callIds);
   }
 
-  /** Returns the call's placement, choosing the least-loaded node if new. */
+  /** Returns the call's placement, choosing a node by priority then load if new. */
   private async place(callId: string): Promise<MediaPlacement> {
     const existing = await this.getPlacement(callId, { fresh: true });
     if (existing) return existing;
@@ -415,11 +416,9 @@ export class RemoteCallMediaEngine
     const live = (
       await Promise.all(nodeIds.map((nodeId) => this.readNode(nodeId)))
     ).filter((record): record is MediaNodeRecord => record !== null);
-    if (!live.length) throw new Error('Media worker is unavailable');
-    const fewest = Math.min(...live.map((record) => record.rooms));
-    const candidates = live.filter((record) => record.rooms === fewest);
-    // Random among equals so replicas placing at once do not pile on one node.
-    return candidates[Math.floor(Math.random() * candidates.length)];
+    const node = selectMediaNode(live);
+    if (!node) throw new Error('Media worker is unavailable');
+    return node;
   }
 
   private async readNode(nodeId: string): Promise<MediaNodeRecord | null> {

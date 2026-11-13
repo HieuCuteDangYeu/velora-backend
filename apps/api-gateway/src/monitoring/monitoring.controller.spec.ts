@@ -73,4 +73,101 @@ describe('MonitoringController', () => {
       },
     );
   });
+
+  describe('hosts', () => {
+    const range = {
+      from: '2026-10-04T12:00:00Z',
+      to: '2026-10-04T12:15:00Z',
+    };
+
+    it('lists the monitored hosts', async () => {
+      const { controller, monitoringClient } = createController();
+
+      await controller.hosts();
+
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.hosts.list',
+        {},
+      );
+    });
+
+    it('forwards a host to the timeseries, containers and logs queries', async () => {
+      const { controller, monitoringClient } = createController();
+
+      await controller.timeseries({
+        query: { metric: 'host_cpu', host: 'velora-node-2', ...range },
+      } as never);
+      await controller.containers('velora-node-2');
+      await controller.logs({
+        query: { service: 'mongo-replica', host: 'velora-node-2', ...range },
+      } as never);
+
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.metrics.timeseries',
+        expect.objectContaining({ host: 'velora-node-2' }),
+      );
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.metrics.containers',
+        { host: 'velora-node-2' },
+      );
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.logs.query',
+        expect.objectContaining({ host: 'velora-node-2' }),
+      );
+    });
+
+    it('keeps the old payloads when no host is selected', async () => {
+      const { controller, monitoringClient } = createController();
+
+      await controller.containers();
+
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.metrics.containers',
+        {},
+      );
+    });
+
+    it.each(['bad host', 'a"b', '../x', 'x'.repeat(65)])(
+      'rejects the malformed host %s',
+      (host) => {
+        const { controller } = createController();
+
+        expect(() => controller.containers(host)).toThrow(BadRequestException);
+        expect(() =>
+          controller.timeseries({
+            query: { metric: 'host_cpu', host, ...range },
+          } as never),
+        ).toThrow(BadRequestException);
+      },
+    );
+
+    it('accepts the host metrics, including ones the shared list does not know', async () => {
+      const { controller, monitoringClient } = createController();
+
+      await controller.timeseries({
+        query: { metric: 'host_network_receive', ...range },
+      } as never);
+      await controller.hostsHistory({
+        query: { metric: 'host_cpu', ...range, stepSeconds: '30' },
+      } as never);
+
+      expect(monitoringClient.send).toHaveBeenCalledWith(
+        'system.hosts.history',
+        { metric: 'host_cpu', ...range, stepSeconds: 30 },
+      );
+    });
+
+    it('rejects a non-host metric for the host history', () => {
+      const { controller } = createController();
+
+      expect(() =>
+        controller.hostsHistory({
+          query: { metric: 'conversation_cpu', ...range },
+        } as never),
+      ).toThrow(BadRequestException);
+      expect(() =>
+        controller.hostsHistory({ query: { metric: 'host_cpu' } } as never),
+      ).toThrow(BadRequestException);
+    });
+  });
 });

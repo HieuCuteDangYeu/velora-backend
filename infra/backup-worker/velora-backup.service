@@ -1,0 +1,12 @@
+[Unit]
+Description=Velora daily backup from the replicas on this server
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/velora/backup-worker/backup.sh
+# Keep the dump from competing with the call media node for CPU and disk.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h

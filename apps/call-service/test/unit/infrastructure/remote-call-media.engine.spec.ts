@@ -86,6 +86,32 @@ import {
       ).toMatchObject({ nodeId: 'idle' });
     });
 
+    it('keeps new calls on the preferred node until it is full, then overflows', async () => {
+      await registerNode({
+        nodeId: 'home',
+        priority: 0,
+        maxRooms: 2,
+        rooms: 1,
+      });
+      await registerNode({ nodeId: 'remote', priority: 1, rooms: 0 });
+      const { instance } = engine();
+      await instance.createRoom('call-a');
+      expect(
+        JSON.parse((await redis.get(callMediaPlacementKey('call-a')))!),
+      ).toMatchObject({ nodeId: 'home' });
+
+      await registerNode({
+        nodeId: 'home',
+        priority: 0,
+        maxRooms: 2,
+        rooms: 2,
+      });
+      await instance.createRoom('call-b');
+      expect(
+        JSON.parse((await redis.get(callMediaPlacementKey('call-b')))!),
+      ).toMatchObject({ nodeId: 'remote' });
+    });
+
     it('fails clearly when no media node is alive', async () => {
       const { instance } = engine();
       await expect(instance.createRoom('call-3')).rejects.toThrow(

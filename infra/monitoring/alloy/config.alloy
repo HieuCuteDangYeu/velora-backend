@@ -36,7 +36,7 @@ discovery.relabel "velora" {
 loki.source.docker "velora" {
   host             = "unix:///var/run/docker.sock"
   targets          = discovery.relabel.velora.output
-  labels           = { environment = "production" }
+  labels           = { environment = "production", host = "homelab" }
   refresh_interval = "15s"
   forward_to       = [loki.process.velora.receiver]
 }

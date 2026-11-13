@@ -13,10 +13,18 @@ Compose runs call-service with `CALL_MEDIA_MODE=remote`:
   Each media node heartbeats `call:media-node:<id>` with a per-start
   incarnation and serves `ICallMediaEngine` over an internal TCP RPC (port
   4100, never published).
-- A new call is placed on the live node with the fewest rooms
+- A new call is placed on a live node chosen by priority, then by load
   (`call:<callId>:media-node`). Every later media command goes to that node.
   When a node stops heartbeating, restarts, or loses a worker, signaling ends
   only that node's calls with `media_unavailable`.
+- Each node publishes `CALL_MEDIA_NODE_PRIORITY` (default 0, lower is preferred)
+  and `CALL_MEDIA_NODE_MAX_ROOMS` (default 0, no limit) in its heartbeat. The most
+  preferred priority with a node below its room limit takes the call, on its
+  least loaded node (random among equals). A node with a higher priority number,
+  for example one in another region, only takes calls when every more preferred
+  node is full or gone, so it works as overflow and failover. When every live
+  node is full the call still goes to the least loaded one. Nodes that do not
+  publish these fields count as priority 0 without a limit.
 
 The phone needs no change: the node's public IP and UDP port arrive in the
 ICE candidates of `transport_created`. Every node must use the same codec

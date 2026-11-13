@@ -1,0 +1,37 @@
+name: call-media
+services:
+  call-media-2:
+    image: call-service-node2:09f413fc
+    container_name: call-media-2
+    restart: unless-stopped
+    # A mediasoup media node for the homelab signaling replicas. It registers in
+    # the homelab Redis, so signaling can place new calls here.
+    command: ['node', 'dist/apps/call-service/apps/call-service/src/media-node/main.js']
+    env_file:
+      - .env # REDIS_PASSWORD and RABBITMQ_URL only
+    environment:
+      NODE_ENV: production
+      MEDIA_NODE_ID: call-media-2
+      # Remote node: it only takes new calls when call-media-1 is full or gone.
+      CALL_MEDIA_NODE_PRIORITY: '1'
+      MEDIASOUP_WEBRTC_SERVER_PORT: '40000'
+      MEDIASOUP_RTC_MIN_PORT: '40000'
+      MEDIASOUP_RTC_MAX_PORT: '40100'
+      MEDIASOUP_WORKERS: '1'
+      MEDIASOUP_LISTEN_IP: 0.0.0.0
+      # This host has a static public IPv4, so no STUN lookup is needed.
+      MEDIASOUP_ANNOUNCED_IP_MODE: static
+      MEDIASOUP_ANNOUNCED_IP: 144.91.101.1
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+      # How the homelab signaling replicas reach this node (tailnet address).
+      CALL_MEDIA_RPC_HOST: 100.86.68.16
+    extra_hosts:
+      - 'redis:100.102.228.48'
+      - 'rabbitmq:100.102.228.48'
+    ports:
+      # mediasoup announces the port it listens on, so host and container match.
+      - '40000:40000/udp'
+      # RPC has no authentication: keep it on the tailnet address only.
+      - '100.86.68.16:4100:4100'
+      - '100.86.68.16:3019:3019'

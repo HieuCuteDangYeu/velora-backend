@@ -15,6 +15,7 @@ import { RecommendationTelemetryController } from '@monitoring/infrastructure/co
 import { RagTelemetryController } from '@monitoring/infrastructure/controllers/rag-telemetry.controller';
 import { ReelPipelineTelemetryController } from '@monitoring/infrastructure/controllers/reel-pipeline-telemetry.controller';
 import { SystemAlertsController } from '@monitoring/infrastructure/controllers/system-alerts.controller';
+import { SystemHostsController } from '@monitoring/infrastructure/controllers/system-hosts.controller';
 import { SystemLogsController } from '@monitoring/infrastructure/controllers/system-logs.controller';
 import { SystemMetricsController } from '@monitoring/infrastructure/controllers/system-metrics.controller';
 import { CallTelemetryRetentionJob } from '@monitoring/infrastructure/jobs/call-telemetry-retention.job';
@@ -26,6 +27,8 @@ import { PrismaService } from '@monitoring/infrastructure/prisma/prisma.service'
 import { PrismaCallTelemetryRepository } from '@monitoring/infrastructure/repositories/prisma-call-telemetry.repository';
 import { RecommendationTelemetryRepository } from '@monitoring/infrastructure/repositories/recommendation-telemetry.repository';
 import { DockerEngineService } from '@monitoring/infrastructure/services/docker-engine.service';
+import { HostMetricsService } from '@monitoring/infrastructure/services/host-metrics.service';
+import { HostRegistryService } from '@monitoring/infrastructure/services/host-registry.service';
 import { LokiQueryService } from '@monitoring/infrastructure/services/loki-query.service';
 import { PrometheusQueryService } from '@monitoring/infrastructure/services/prometheus-query.service';
 import { Module } from '@nestjs/common';
@@ -67,12 +70,15 @@ import { ScheduleModule } from '@nestjs/schedule';
     MonitoringHealthController,
     MetricsController,
     SystemMetricsController,
+    SystemHostsController,
     SystemLogsController,
     SystemAlertsController,
   ],
   providers: [
     PrometheusMetricsService,
     DockerEngineService,
+    HostRegistryService,
+    HostMetricsService,
     PrometheusQueryService,
     LokiQueryService,
     CallTelemetryTokenService,

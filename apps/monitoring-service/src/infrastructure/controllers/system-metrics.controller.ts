@@ -9,19 +9,44 @@ import { PrometheusMetricsService } from '../metrics/prometheus-metrics.service'
 import {
   DockerEngineService,
   type DockerContainerResource,
+  type DockerEndpoint,
   type DockerSnapshot,
   type DockerSnapshotMetadata,
 } from '../services/docker-engine.service';
+import {
+  hostBaseQueries,
+  hostScope,
+  hostTimeseriesQuery,
+  HOST_TIMESERIES_METRICS,
+  HOST_TIMESERIES_METRIC_SET,
+  PRIMARY_HOST_SCOPE,
+  type HostTimeseriesMetric,
+} from '../services/host-queries';
+import {
+  defaultHostOf,
+  HostRegistryService,
+  HOST_REGISTRY_QUERY,
+  mergeHostRecords,
+} from '../services/host-registry.service';
+import {
+  subtractMetric,
+  targetStatus,
+  usageRatio,
+} from '../services/metric-math';
 import { PrometheusQueryService } from '../services/prometheus-query.service';
+import { parseTimeRange } from '../services/time-range';
+import { KeyedTtlSingleFlight } from '../services/ttl-single-flight';
+import { HOST_ID_PATTERN } from '@monitoring/domain/models/monitoring-host.model';
 
-const HOST_FILESYSTEM_SELECTOR =
-  'job="node-exporter",mountpoint=~"^/$|^/opt/orbstack-guest/data$",fstype!~"tmpfs|overlay|squashfs"';
+// The overview keeps its single-host `host` block for older dashboards. It
+// always describes the primary machine; use the hosts endpoints for the rest.
+const PRIMARY_HOST = hostBaseQueries(PRIMARY_HOST_SCOPE, false);
 
-const hostFilesystemQuery = (metric: string) =>
-  `max(${metric}{${HOST_FILESYSTEM_SELECTOR}})`;
+// Service process counters are fractions of the machine running the stack, so
+// divide by the primary host's core count, not by every VPS in the fleet.
+const HOST_CPU_COUNT_QUERY = PRIMARY_HOST.cpuCount;
 
-const HOST_CPU_COUNT_QUERY =
-  'count(node_cpu_seconds_total{job="node-exporter",mode="idle"})';
+const PRIMARY_HOST_UP_QUERY = `max(up{${PRIMARY_HOST_SCOPE}})`;
 
 // Process counters report core-equivalents (CPU-seconds per wall-second).
 // Divide by the host core count so every dashboard CPU metric uses the same
@@ -48,14 +73,11 @@ const RANGE_QUERIES = {
     'histogram_quantile(0.95, sum by (le) (rate(velora_monitoring_rpc_duration_seconds_bucket[1m])))',
   event_loop_p99:
     'max(velora_nodejs_event_loop_lag_p99_seconds{service="monitoring-service"})',
-  host_cpu:
-    '1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))',
-  host_memory:
-    '1 - (max(node_memory_MemAvailable_bytes{job="node-exporter"}) / clamp_min(max(node_memory_MemTotal_bytes{job="node-exporter"}), 1))',
-  host_swap:
-    '(max(node_memory_SwapTotal_bytes{job="node-exporter"}) - max(node_memory_SwapFree_bytes{job="node-exporter"})) / clamp_min(max(node_memory_SwapTotal_bytes{job="node-exporter"}), 1)',
-  host_disk: `1 - (${hostFilesystemQuery('node_filesystem_avail_bytes')} / clamp_min(${hostFilesystemQuery('node_filesystem_size_bytes')}, 1))`,
-  host_load1: 'max(node_load1{job="node-exporter"})',
+  host_cpu: hostTimeseriesQuery('host_cpu', PRIMARY_HOST_SCOPE),
+  host_memory: hostTimeseriesQuery('host_memory', PRIMARY_HOST_SCOPE),
+  host_swap: hostTimeseriesQuery('host_swap', PRIMARY_HOST_SCOPE),
+  host_disk: hostTimeseriesQuery('host_disk', PRIMARY_HOST_SCOPE),
+  host_load1: hostTimeseriesQuery('host_load1', PRIMARY_HOST_SCOPE),
   conversation_cpu: processCpuUsageQuery('conversation-service'),
   conversation_memory:
     'sum(velora_process_resident_memory_bytes{service="conversation-service"})',
@@ -279,8 +301,6 @@ const RANGE_QUERIES = {
   reel_index_delivery_rate:
     'sum(rate(rabbitmq_detailed_channel_messages_delivered_ack_total{job="rabbitmq-reels",queue=~"reel_index_.*"}[1m])) + sum(rate(rabbitmq_detailed_channel_messages_delivered_total{job="rabbitmq-reels",queue=~"reel_index_.*"}[1m]))',
 } as const satisfies Record<MonitoringMetric, string>;
-type ScalarMetric = number | null;
-
 type PrometheusVectorSample = Awaited<
   ReturnType<PrometheusQueryService['vector']>
 >[number];
@@ -328,32 +348,17 @@ const mergeReelQueueSamples = (
 
 type TimeseriesPayload = {
   metric?: unknown;
+  host?: unknown;
   from?: unknown;
   to?: unknown;
   stepSeconds?: unknown;
 };
 
-const subtractMetric = (
-  total: ScalarMetric,
-  available: ScalarMetric,
-): ScalarMetric => {
-  if (total === null || available === null) {
-    return null;
-  }
+// The container dialog polls every few seconds; two admins should not double
+// the Docker Engine sampling.
+const CONTAINER_SNAPSHOT_TTL_MS = 2_000;
 
-  return Math.max(0, total - available);
-};
-
-const usageRatio = (used: ScalarMetric, total: ScalarMetric): ScalarMetric => {
-  if (used === null || total === null) {
-    return null;
-  }
-
-  return total > 0 ? used / total : 0;
-};
-
-const targetStatus = (value: ScalarMetric): boolean | null =>
-  value === null ? null : value > 0;
+const LOCAL_DOCKER = { key: 'local', endpoint: undefined } as const;
 
 @Controller()
 export class SystemMetricsController {
@@ -362,26 +367,38 @@ export class SystemMetricsController {
   > | null = null;
   private overviewExpiresAt = 0;
 
+  private readonly containerSnapshots = new KeyedTtlSingleFlight<
+    Awaited<ReturnType<SystemMetricsController['readContainers']>>
+  >(CONTAINER_SNAPSHOT_TTL_MS);
+
   constructor(
     private readonly prometheus: PrometheusQueryService,
     private readonly metrics: PrometheusMetricsService,
     private readonly docker: DockerEngineService,
+    private readonly hosts: HostRegistryService,
   ) {}
 
   @MessagePattern('system.metrics.status')
   async status() {
     return this.measure('system.metrics.status', async () => {
       try {
-        const [monitoringUp, hostUp] = await Promise.all([
+        const [monitoringUp, hostUp, hostTargets] = await Promise.all([
           this.prometheus.scalar('max(up{job="monitoring-service"})'),
-          this.prometheus.scalar('max(up{job="node-exporter"})'),
+          this.prometheus.scalar(PRIMARY_HOST_UP_QUERY),
+          this.prometheus.vector(HOST_REGISTRY_QUERY),
         ]);
+        const hosts = mergeHostRecords(hostTargets);
 
         return {
           generatedAt: new Date().toISOString(),
           source: 'prometheus' as const,
           monitoringUp: targetStatus(monitoringUp),
+          // The machine that runs the stack; other VPSs are in `hosts`.
           hostUp: targetStatus(hostUp),
+          hosts: {
+            total: hosts.length,
+            up: hosts.filter((host) => host.up).length,
+          },
         };
       } catch (error) {
         throw this.prometheusError(error);
@@ -390,36 +407,29 @@ export class SystemMetricsController {
   }
 
   @MessagePattern('system.metrics.containers')
-  async containers() {
+  async containers(@Payload() payload?: { host?: unknown }) {
     return this.measure('system.metrics.containers', async () => {
-      try {
-        const [snapshot, metadata] = await Promise.all([
-          this.readDockerSnapshot(),
-          this.readDockerSnapshotMetadata(),
-        ]);
+      const hostId = this.parseHostId(payload?.host);
+      const target = hostId
+        ? await this.resolveDockerTarget(hostId)
+        : LOCAL_DOCKER;
 
-        const metadataFields = metadata
-          ? {
-              hostCpuCount: metadata.hostCpuCount,
-              storage: metadata.storage,
-            }
-          : {};
-        const coverageFields =
-          snapshot.runningContainers === undefined
-            ? {}
-            : {
-                runningContainers: snapshot.runningContainers,
-                sampledContainers: snapshot.sampledContainers,
-              };
-
+      if (target === null) {
         return {
           generatedAt: new Date().toISOString(),
           source: 'docker' as const,
-          dockerEngineUp: true,
-          containers: snapshot.containers,
-          ...metadataFields,
-          ...coverageFields,
+          dockerEngineUp: null,
+          containers: [],
+          reason: 'not-configured' as const,
         };
+      }
+
+      try {
+        // Sampling every container costs about a second per call and the
+        // dialog polls: share one batch between concurrent viewers.
+        return await this.containerSnapshots.get(target.key, () =>
+          this.readContainers(target.endpoint),
+        );
       } catch {
         return {
           generatedAt: new Date().toISOString(),
@@ -431,30 +441,101 @@ export class SystemMetricsController {
     });
   }
 
-  private readDockerSnapshot(): Promise<{
+  private async readContainers(endpoint: DockerEndpoint | undefined) {
+    const [snapshot, metadata] = await Promise.all([
+      this.readDockerSnapshot(endpoint),
+      this.readDockerSnapshotMetadata(endpoint),
+    ]);
+
+    const metadataFields = metadata
+      ? {
+          hostCpuCount: metadata.hostCpuCount,
+          storage: metadata.storage,
+        }
+      : {};
+    const coverageFields =
+      snapshot.runningContainers === undefined
+        ? {}
+        : {
+            runningContainers: snapshot.runningContainers,
+            sampledContainers: snapshot.sampledContainers,
+          };
+
+    return {
+      generatedAt: new Date().toISOString(),
+      source: 'docker' as const,
+      dockerEngineUp: true,
+      containers: snapshot.containers,
+      ...metadataFields,
+      ...coverageFields,
+    };
+  }
+
+  /** `null` when the host's containers cannot be read from here. */
+  private async resolveDockerTarget(
+    hostId: string,
+  ): Promise<{ key: string; endpoint: DockerEndpoint | undefined } | null> {
+    const host = await this.requireHost(hostId);
+
+    if (host.containers === 'local') return LOCAL_DOCKER;
+    if (host.containers === 'remote' && host.dockerEndpoint) {
+      return { key: host.id, endpoint: host.dockerEndpoint };
+    }
+
+    return null;
+  }
+
+  private async requireHost(hostId: string) {
+    try {
+      return await this.hosts.require(hostId);
+    } catch (error) {
+      // An unknown host is a client error; anything else is Prometheus.
+      throw error instanceof RpcException ? error : this.prometheusError(error);
+    }
+  }
+
+  private parseHostId(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === '') {
+      return undefined;
+    }
+
+    if (typeof value !== 'string' || !HOST_ID_PATTERN.test(value)) {
+      throw new RpcException({ statusCode: 400, message: 'host is invalid' });
+    }
+
+    return value;
+  }
+
+  private readDockerSnapshot(endpoint: DockerEndpoint | undefined): Promise<{
     containers: DockerContainerResource[];
     runningContainers?: number;
     sampledContainers?: number;
   }> {
     const snapshotWithCoverage = (
       this.docker as DockerEngineService & {
-        snapshotWithCoverage?: () => Promise<DockerSnapshot>;
+        snapshotWithCoverage?: (
+          endpoint?: DockerEndpoint,
+        ) => Promise<DockerSnapshot>;
       }
     ).snapshotWithCoverage;
 
     if (typeof snapshotWithCoverage === 'function') {
-      return Promise.resolve(snapshotWithCoverage.call(this.docker));
+      return Promise.resolve(snapshotWithCoverage.call(this.docker, endpoint));
     }
 
-    return Promise.resolve(this.docker.snapshot()).then((containers) => ({
-      containers,
-    }));
+    return Promise.resolve(this.docker.snapshot(endpoint)).then(
+      (containers) => ({ containers }),
+    );
   }
 
-  private readDockerSnapshotMetadata(): Promise<DockerSnapshotMetadata | null> {
+  private readDockerSnapshotMetadata(
+    endpoint: DockerEndpoint | undefined,
+  ): Promise<DockerSnapshotMetadata | null> {
     const snapshotMetadata = (
       this.docker as DockerEngineService & {
-        snapshotMetadata?: () => Promise<DockerSnapshotMetadata>;
+        snapshotMetadata?: (
+          endpoint?: DockerEndpoint,
+        ) => Promise<DockerSnapshotMetadata>;
       }
     ).snapshotMetadata;
 
@@ -462,7 +543,7 @@ export class SystemMetricsController {
       return Promise.resolve(null);
     }
 
-    return Promise.resolve(snapshotMetadata.call(this.docker)).catch(
+    return Promise.resolve(snapshotMetadata.call(this.docker, endpoint)).catch(
       () => null,
     );
   }
@@ -638,30 +719,16 @@ export class SystemMetricsController {
         this.prometheus.scalar(RANGE_QUERIES.rpc_rate),
         this.prometheus.scalar(RANGE_QUERIES.error_rate),
         this.prometheus.scalar(RANGE_QUERIES.p95_rpc_latency),
-        this.prometheus.scalar('max(up{job="node-exporter"})'),
-        this.prometheus.scalar(RANGE_QUERIES.host_cpu),
-        this.prometheus.scalar(
-          'max(node_memory_MemTotal_bytes{job="node-exporter"})',
-        ),
-        this.prometheus.scalar(
-          'max(node_memory_MemAvailable_bytes{job="node-exporter"})',
-        ),
-        this.prometheus.scalar(
-          'max(node_memory_SwapTotal_bytes{job="node-exporter"})',
-        ),
-        this.prometheus.scalar(
-          'max(node_memory_SwapFree_bytes{job="node-exporter"})',
-        ),
-        this.prometheus.scalar(
-          hostFilesystemQuery('node_filesystem_size_bytes'),
-        ),
-        this.prometheus.scalar(
-          hostFilesystemQuery('node_filesystem_avail_bytes'),
-        ),
-        this.prometheus.scalar(RANGE_QUERIES.host_load1),
-        this.prometheus.scalar(
-          'max(time() - node_boot_time_seconds{job="node-exporter"})',
-        ),
+        this.prometheus.scalar(PRIMARY_HOST_UP_QUERY),
+        this.prometheus.scalar(PRIMARY_HOST.cpuUsageRatio),
+        this.prometheus.scalar(PRIMARY_HOST.memoryTotalBytes),
+        this.prometheus.scalar(PRIMARY_HOST.memoryAvailableBytes),
+        this.prometheus.scalar(PRIMARY_HOST.swapTotalBytes),
+        this.prometheus.scalar(PRIMARY_HOST.swapFreeBytes),
+        this.prometheus.scalar(PRIMARY_HOST.diskTotalBytes),
+        this.prometheus.scalar(PRIMARY_HOST.diskAvailableBytes),
+        this.prometheus.scalar(PRIMARY_HOST.load1),
+        this.prometheus.scalar(PRIMARY_HOST.uptimeSeconds),
         this.prometheus.scalar('max(up{job="conversation-service"})'),
         this.prometheus.scalar(RANGE_QUERIES.conversation_cpu),
         this.prometheus.scalar(RANGE_QUERIES.conversation_memory),
@@ -1013,8 +1080,9 @@ export class SystemMetricsController {
       const query = this.parseTimeseriesPayload(payload);
 
       try {
+        const promql = await this.timeseriesQuery(query);
         const points = await this.prometheus.range(
-          RANGE_QUERIES[query.metric],
+          promql,
           query.from,
           query.to,
           query.stepSeconds,
@@ -1022,69 +1090,83 @@ export class SystemMetricsController {
 
         return {
           metric: query.metric,
+          ...(query.host ? { host: query.host } : {}),
           from: query.from,
           to: query.to,
           stepSeconds: query.stepSeconds,
           points,
         };
       } catch (error) {
-        throw this.prometheusError(error);
+        throw error instanceof RpcException
+          ? error
+          : this.prometheusError(error);
       }
     });
   }
 
+  /** Host metrics follow the requested host, or the primary machine. */
+  private async timeseriesQuery(query: {
+    metric: MonitoringMetric | HostTimeseriesMetric;
+    host?: string;
+  }): Promise<string> {
+    if (!HOST_TIMESERIES_METRIC_SET.has(query.metric)) {
+      return RANGE_QUERIES[query.metric as MonitoringMetric];
+    }
+
+    const host = query.host ? await this.requireHost(query.host) : null;
+
+    if (query.metric.startsWith('host_network_')) {
+      const target = host ?? defaultHostOf(await this.hosts.list());
+      if (target?.network === 'unavailable') {
+        throw new RpcException({
+          statusCode: 400,
+          message:
+            'network metrics are not available for this host: its node-exporter cannot see the machine network interfaces',
+        });
+      }
+    }
+
+    return hostTimeseriesQuery(
+      query.metric as HostTimeseriesMetric,
+      host ? hostScope(host) : PRIMARY_HOST_SCOPE,
+    );
+  }
+
   private parseTimeseriesPayload(payload: TimeseriesPayload) {
     const metric = payload?.metric;
-    const from = payload?.from;
-    const to = payload?.to;
-    const requestedStep = Number(payload?.stepSeconds ?? 10);
-
-    if (typeof metric !== 'string' || !MONITORING_METRIC_SET.has(metric)) {
-      throw new RpcException({
-        statusCode: 400,
-        message: `metric must be one of: ${MONITORING_METRICS.join(', ')}`,
-      });
-    }
-
-    if (typeof from !== 'string' || typeof to !== 'string') {
-      throw new RpcException({
-        statusCode: 400,
-        message: 'from and to are required ISO timestamps',
-      });
-    }
-
-    const fromMs = Date.parse(from);
-    const toMs = Date.parse(to);
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
-      throw new RpcException({
-        statusCode: 400,
-        message: 'from and to must define a valid increasing time range',
-      });
-    }
-
-    if (toMs - fromMs > 24 * 60 * 60 * 1000) {
-      throw new RpcException({
-        statusCode: 400,
-        message: 'monitoring timeseries range cannot exceed 24 hours',
-      });
-    }
 
     if (
-      !Number.isInteger(requestedStep) ||
-      requestedStep < 10 ||
-      requestedStep > 300
+      typeof metric !== 'string' ||
+      !(
+        MONITORING_METRIC_SET.has(metric) ||
+        HOST_TIMESERIES_METRIC_SET.has(metric)
+      )
     ) {
       throw new RpcException({
         statusCode: 400,
-        message: 'stepSeconds must be an integer between 10 and 300',
+        message: `metric must be one of: ${[
+          ...MONITORING_METRICS,
+          ...HOST_TIMESERIES_METRICS.filter(
+            (name) => !MONITORING_METRIC_SET.has(name),
+          ),
+        ].join(', ')}`,
+      });
+    }
+
+    const range = parseTimeRange(payload);
+    const host = this.parseHostId(payload?.host);
+
+    if (host !== undefined && !HOST_TIMESERIES_METRIC_SET.has(metric)) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'host is only supported for host_* metrics',
       });
     }
 
     return {
-      metric: metric as MonitoringMetric,
-      from,
-      to,
-      stepSeconds: requestedStep,
+      metric: metric as MonitoringMetric | HostTimeseriesMetric,
+      host,
+      ...range,
     };
   }
 

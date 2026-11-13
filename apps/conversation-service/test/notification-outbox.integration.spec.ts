@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Message } from '../src/domain/entities/message.entity';
 import { PrismaChatRepository } from '../src/infrastructure/repositories/prisma-chat.repository';
 import {
+  countPendingNotificationIntents,
   findDueNotificationIntents,
   readNotificationIntent,
 } from '../src/infrastructure/repositories/notification-intent.reader';
@@ -138,6 +139,9 @@ integration(
       expect(await findDueNotificationIntents(prisma, new Date(0), 20)).toEqual(
         [],
       );
+      // The backlog gauge sees the same single pending intent through the real
+      // $count pipeline, the same date-typed range the due read uses.
+      expect(await countPendingNotificationIntents(prisma)).toBe(1);
 
       // Verify the real BSON projection and indexed join, not a mocked pipeline.
       const probeClaim = randomUUID();
@@ -284,6 +288,7 @@ integration(
       expect(await findDueNotificationIntents(prisma, new Date(), 20)).toEqual(
         [],
       );
+      expect(await countPendingNotificationIntents(prisma)).toBe(0);
       await worker().runOnce();
       expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
 

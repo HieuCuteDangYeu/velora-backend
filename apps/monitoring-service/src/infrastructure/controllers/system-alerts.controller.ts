@@ -65,6 +65,8 @@ export class SystemAlertsController {
       state: alert.state,
       severity,
       service,
+      // Present on host alerts so the dashboard can attribute them to a VPS.
+      host: alert.labels.host?.trim() || null,
       activeAt: alert.activeAt,
       value: alert.value,
       summary: alert.annotations.summary || name,

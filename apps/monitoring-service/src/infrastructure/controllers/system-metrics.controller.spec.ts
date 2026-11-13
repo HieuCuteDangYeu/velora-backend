@@ -1,3 +1,4 @@
+import { RpcException } from '@nestjs/microservices';
 import { SystemMetricsController } from './system-metrics.controller';
 
 describe('SystemMetricsController container resources', () => {
@@ -11,10 +12,12 @@ describe('SystemMetricsController container resources', () => {
     snapshot: jest.fn(),
     snapshotMetadata: jest.fn().mockResolvedValue(null),
   };
+  const hosts = { require: jest.fn() };
   let controller = new SystemMetricsController(
     prometheus as never,
     metrics as never,
     docker as never,
+    hosts as never,
   );
 
   beforeEach(() => {
@@ -24,6 +27,7 @@ describe('SystemMetricsController container resources', () => {
       prometheus as never,
       metrics as never,
       docker as never,
+      hosts as never,
     );
     jest.restoreAllMocks();
   });
@@ -154,8 +158,9 @@ describe('SystemMetricsController container resources', () => {
     expect(
       processCpuQueries.every(
         (query) =>
+          // Divided by the primary machine's cores, never the whole fleet's.
           query.includes(
-            'count(node_cpu_seconds_total{job="node-exporter",mode="idle"})',
+            'count(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"})',
           ) && query.includes('/ clamp_min('),
       ),
     ).toBe(true);
@@ -187,6 +192,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
       prometheus as never,
       metrics as never,
       { snapshotMetadata: jest.fn().mockResolvedValue(null) } as never,
+      { require: jest.fn() } as never,
     );
     return { controller, prometheus, metrics };
   };
@@ -402,7 +408,7 @@ describe('SystemMetricsController live queries and overview sharing', () => {
         controller.timeseries({ metric: 'host_cpu', from, to, stepSeconds }),
       ).resolves.toMatchObject({ stepSeconds: 10, points: [] });
       expect(prometheus.range).toHaveBeenCalledWith(
-        '1 - avg(rate(node_cpu_seconds_total{job="node-exporter",mode="idle"}[1m]))',
+        '(1 - sum(rate(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"}[1m])) / sum(rate(node_cpu_seconds_total{job="node-exporter",host_role!="worker"}[1m]))) and on() (count(node_cpu_seconds_total{job="node-exporter",host_role!="worker",mode="idle"} offset 1m))',
         from,
         to,
         10,
@@ -443,5 +449,285 @@ describe('SystemMetricsController live queries and overview sharing', () => {
       }),
     ).rejects.toThrow('24 hours');
     expect(prometheus.range).not.toHaveBeenCalled();
+  });
+});
+
+describe('SystemMetricsController multi-host', () => {
+  const NODE_2 = {
+    id: 'velora-node-2',
+    label: 'velora-node-2',
+    role: 'worker',
+    containers: 'remote',
+    dockerEndpoint: { host: '100.86.68.16', port: 2375 },
+  };
+
+  const createController = (
+    options: { docker?: Record<string, jest.Mock>; host?: unknown } = {},
+  ) => {
+    const prometheus = {
+      scalar: jest.fn().mockResolvedValue(0),
+      vector: jest.fn().mockResolvedValue([]),
+      range: jest.fn().mockResolvedValue([]),
+    };
+    const metrics = { recordRpc: jest.fn() };
+    const docker = options.docker ?? {
+      snapshot: jest.fn().mockResolvedValue([]),
+      snapshotMetadata: jest.fn().mockResolvedValue(null),
+    };
+    const hosts = {
+      list: jest.fn().mockResolvedValue([
+        { id: 'home', role: 'primary', network: 'unavailable' },
+        { id: 'node-2', role: 'worker', network: 'host' },
+      ]),
+      require: jest.fn((id: string) =>
+        id === NODE_2.id
+          ? Promise.resolve(options.host ?? NODE_2)
+          : Promise.reject(
+              new RpcException({
+                statusCode: 404,
+                message: `Unknown host "${id}"`,
+              }),
+            ),
+      ),
+    };
+    const controller = new SystemMetricsController(
+      prometheus as never,
+      metrics as never,
+      docker as never,
+      hosts as never,
+    );
+    return { controller, prometheus, docker, hosts, metrics };
+  };
+
+  const range = {
+    from: '2026-10-04T12:00:00.000Z',
+    to: '2026-10-04T12:15:00.000Z',
+  };
+
+  it('queries host history for the requested host only', async () => {
+    const { controller, prometheus } = createController();
+
+    await expect(
+      controller.timeseries({
+        metric: 'host_memory',
+        host: NODE_2.id,
+        ...range,
+      }),
+    ).resolves.toMatchObject({ metric: 'host_memory', host: NODE_2.id });
+
+    const [query] = prometheus.range.mock.calls[0];
+    expect(query).toContain('host="velora-node-2"');
+    expect(query).not.toContain('host_role');
+  });
+
+  it('serves the new network metrics for a host', async () => {
+    const { controller, prometheus } = createController();
+
+    await controller.timeseries({
+      metric: 'host_network_receive',
+      host: NODE_2.id,
+      ...range,
+    });
+
+    expect(prometheus.range.mock.calls[0][0]).toContain(
+      'node_network_receive_bytes_total{job="node-exporter",host="velora-node-2"',
+    );
+  });
+
+  it('refuses network history for a host whose exporter cannot see the machine NICs', async () => {
+    const { controller, prometheus } = createController({
+      host: { ...NODE_2, network: 'unavailable' },
+    });
+
+    await expect(
+      controller.timeseries({
+        metric: 'host_network_transmit',
+        host: NODE_2.id,
+        ...range,
+      }),
+    ).rejects.toMatchObject({
+      error: {
+        statusCode: 400,
+        message: expect.stringContaining('network metrics are not available'),
+      },
+    });
+    expect(prometheus.range).not.toHaveBeenCalled();
+  });
+
+  it('applies the same rule to the primary host when no host is given', async () => {
+    const { controller, prometheus } = createController();
+
+    // The registry above lists the primary ("home") without network visibility.
+    await expect(
+      controller.timeseries({ metric: 'host_network_receive', ...range }),
+    ).rejects.toMatchObject({ error: { statusCode: 400 } });
+    await expect(
+      controller.timeseries({ metric: 'host_disk', ...range }),
+    ).resolves.toMatchObject({ metric: 'host_disk' });
+    expect(prometheus.range).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers host metrics without a host from the primary machine', async () => {
+    const { controller, prometheus, hosts } = createController();
+
+    await controller.timeseries({ metric: 'host_disk', ...range });
+
+    expect(hosts.require).not.toHaveBeenCalled();
+    expect(prometheus.range.mock.calls[0][0]).toContain(
+      'job="node-exporter",host_role!="worker"',
+    );
+  });
+
+  it('rejects an unknown host as a client error', async () => {
+    const { controller, prometheus } = createController();
+
+    await expect(
+      controller.timeseries({ metric: 'host_cpu', host: 'nope', ...range }),
+    ).rejects.toMatchObject({ error: { statusCode: 404 } });
+    expect(prometheus.range).not.toHaveBeenCalled();
+  });
+
+  it.each(['bad host', 'x"} or vector(1) #', 42])(
+    'rejects the malformed host %p before any query',
+    async (host) => {
+      const { controller, prometheus, hosts } = createController();
+
+      await expect(
+        controller.timeseries({ metric: 'host_cpu', host, ...range }),
+      ).rejects.toMatchObject({
+        error: { statusCode: 400, message: 'host is invalid' },
+      });
+      expect(hosts.require).not.toHaveBeenCalled();
+      expect(prometheus.range).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not accept a host for a service metric', async () => {
+    const { controller } = createController();
+
+    await expect(
+      controller.timeseries({ metric: 'cpu', host: NODE_2.id, ...range }),
+    ).rejects.toMatchObject({
+      error: { message: 'host is only supported for host_* metrics' },
+    });
+  });
+
+  it('reads the containers of a remote host through its Docker endpoint', async () => {
+    const docker = {
+      snapshotWithCoverage: jest.fn().mockResolvedValue({
+        containers: [{ service: 'mongo-replica' }],
+        runningContainers: 1,
+        sampledContainers: 1,
+      }),
+      snapshotMetadata: jest.fn().mockResolvedValue({
+        hostCpuCount: 4,
+        storage: { imagesBytes: 1, volumesBytes: 2, buildCacheBytes: 3 },
+      }),
+    };
+    const { controller } = createController({ docker });
+
+    await expect(
+      controller.containers({ host: NODE_2.id }),
+    ).resolves.toMatchObject({
+      dockerEngineUp: true,
+      hostCpuCount: 4,
+      runningContainers: 1,
+      containers: [{ service: 'mongo-replica' }],
+    });
+    expect(docker.snapshotWithCoverage).toHaveBeenCalledWith({
+      host: '100.86.68.16',
+      port: 2375,
+    });
+    expect(docker.snapshotMetadata).toHaveBeenCalledWith({
+      host: '100.86.68.16',
+      port: 2375,
+    });
+  });
+
+  it('uses the local socket for the primary host', async () => {
+    const docker = {
+      snapshot: jest.fn().mockResolvedValue([]),
+      snapshotMetadata: jest.fn().mockResolvedValue(null),
+    };
+    const { controller } = createController({
+      docker,
+      host: {
+        ...NODE_2,
+        role: 'primary',
+        containers: 'local',
+        dockerEndpoint: null,
+      },
+    });
+
+    await controller.containers({ host: NODE_2.id });
+
+    expect(docker.snapshot).toHaveBeenCalledWith(undefined);
+  });
+
+  it('says so when a host has no container access instead of reporting an outage', async () => {
+    const { controller, docker } = createController({
+      host: { ...NODE_2, containers: 'none', dockerEndpoint: null },
+    });
+
+    await expect(controller.containers({ host: NODE_2.id })).resolves.toEqual({
+      generatedAt: expect.any(String),
+      source: 'docker',
+      dockerEngineUp: null,
+      containers: [],
+      reason: 'not-configured',
+    });
+    expect(docker.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('reports an unreachable remote Docker API without failing the RPC', async () => {
+    const docker = {
+      snapshot: jest.fn().mockRejectedValue(new Error('connect ETIMEDOUT')),
+      snapshotMetadata: jest.fn().mockResolvedValue(null),
+    };
+    const { controller } = createController({ docker });
+
+    await expect(
+      controller.containers({ host: NODE_2.id }),
+    ).resolves.toMatchObject({
+      dockerEngineUp: false,
+      containers: [],
+    });
+  });
+
+  it('shares one container sampling between concurrent viewers of the same host', async () => {
+    const docker = {
+      snapshot: jest.fn().mockResolvedValue([]),
+      snapshotMetadata: jest.fn().mockResolvedValue(null),
+    };
+    const { controller } = createController({ docker });
+
+    await Promise.all([
+      controller.containers({ host: NODE_2.id }),
+      controller.containers({ host: NODE_2.id }),
+    ]);
+
+    expect(docker.snapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds the fleet size to the lightweight status', async () => {
+    const { controller, prometheus } = createController();
+    prometheus.scalar.mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+    prometheus.vector.mockResolvedValue([
+      { metric: { host: 'home' }, timestamp: 1, value: 1 },
+      {
+        metric: { host: 'node-2', host_role: 'worker' },
+        timestamp: 1,
+        value: 0,
+      },
+    ]);
+
+    await expect(controller.status()).resolves.toMatchObject({
+      monitoringUp: true,
+      hostUp: true,
+      hosts: { total: 2, up: 1 },
+    });
+    expect(prometheus.scalar.mock.calls[1][0]).toBe(
+      'max(up{job="node-exporter",host_role!="worker"})',
+    );
   });
 });

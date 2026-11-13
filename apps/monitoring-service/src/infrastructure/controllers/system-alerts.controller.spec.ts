@@ -94,4 +94,37 @@ describe('SystemAlertsController', () => {
       ['VeloraConversationServiceDown', 'conversation-service', 'critical'],
     ]);
   });
+
+  it('attributes host alerts to their VPS', async () => {
+    prometheus.activeAlerts.mockResolvedValue([
+      {
+        labels: {
+          alertname: 'VeloraHostDown',
+          severity: 'critical',
+          service: 'node-exporter',
+          host: 'velora-node-2',
+        },
+        annotations: {},
+        state: 'firing',
+        activeAt: '2026-01-01T00:00:00.000Z',
+        value: 0,
+      },
+      {
+        labels: { alertname: 'VeloraCallServiceDown', severity: 'critical' },
+        annotations: {},
+        state: 'firing',
+        activeAt: '2026-01-01T00:00:00.000Z',
+        value: 0,
+      },
+    ]);
+
+    const result = await controller.list();
+
+    expect(result.alerts.map((alert) => [alert.name, alert.host])).toEqual(
+      expect.arrayContaining([
+        ['VeloraHostDown', 'velora-node-2'],
+        ['VeloraCallServiceDown', null],
+      ]),
+    );
+  });
 });

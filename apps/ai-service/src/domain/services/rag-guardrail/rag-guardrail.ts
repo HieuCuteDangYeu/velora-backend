@@ -36,10 +36,6 @@ function parseMode(raw: unknown): GuardrailMode | undefined {
 const withoutEnforce = (mode: GuardrailMode): GuardrailMode =>
   mode === 'enforce' ? 'shadow' : mode;
 
-/** What the user sees when the input check refuses. It says nothing about why. */
-export const RAG_INPUT_REFUSAL_MESSAGE =
-  'I can’t help with that request. Ask me about a Reel or another question and I’ll do my best.';
-
 /**
  * AI_GUARDRAIL_MODE sets the default (off | shadow | enforce, default shadow);
  * AI_GUARDRAIL_{INPUT,EVIDENCE,OUTPUT}_MODE override one check. `enforce` only
@@ -115,7 +111,6 @@ export function summarizeGuardrail(
     mode,
     findingCount: findings.length,
     wouldBlock: findings.some((finding) => finding.severity === 'high'),
-    blocked: shouldBlockRagInput(findings, modes),
     codes: [...new Set(findings.map((finding) => finding.code))],
     inputCodes: codesFor('input'),
     evidenceCodes: codesFor('evidence'),

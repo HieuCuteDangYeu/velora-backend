@@ -246,6 +246,11 @@ services:
       - '3005'
     env_file:
       - .env
+    environment:
+      # Reads that tolerate a few seconds of lag (reaction details) use the Mongo
+      # secondary on velora-node-2, with a fallback to the primary. Set the value
+      # to empty to keep every read on the primary. See infra/mongo-replica/README.md.
+      CONVERSATION_READ_REPLICA_PREFERENCE: secondaryPreferred
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -296,6 +301,11 @@ services:
       MEDIA_NODE_ID: call-media-1
       MEDIASOUP_WEBRTC_SERVER_PORT: '40000'
       MEDIASOUP_WORKERS: '1'
+      # The home node is preferred for new calls. Past 20 open rooms (the load
+      # held by the 20-call stress run) new calls overflow to a node with a
+      # higher priority number, such as call-media-2 on velora-node-2.
+      CALL_MEDIA_NODE_PRIORITY: '0'
+      CALL_MEDIA_NODE_MAX_ROOMS: '20'
       # Follow the ISP's public IPv4; MEDIASOUP_ANNOUNCED_IP in .env is the fallback.
       MEDIASOUP_ANNOUNCED_IP_MODE: ${MEDIASOUP_ANNOUNCED_IP_MODE:-stun}
     env_file:

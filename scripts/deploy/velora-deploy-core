@@ -1329,6 +1329,10 @@ plan_from_changed_files() {
         ;;
       scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
         ;;
+      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/vps-agent/*|infra/backup-worker/*)
+        # Notes and compose files for the second VPS (velora-node-2). That host is
+        # managed by hand over SSH and nothing here is deployed on the homelab.
+        ;;
       infra/nginx/*)
         add_unique nginx INFRA_RECONCILE_SERVICES
         ;;

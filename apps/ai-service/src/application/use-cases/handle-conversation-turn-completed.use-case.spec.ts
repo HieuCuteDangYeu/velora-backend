@@ -1,4 +1,4 @@
-import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
+import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
 import { HandleConversationTurnCompletedUseCase } from './handle-conversation-turn-completed.use-case';
 
 const payload = (userMessage: string) => ({
@@ -10,7 +10,7 @@ const payload = (userMessage: string) => ({
 
 const build = (env: Record<string, string> = {}) => {
   const execute = jest.fn().mockResolvedValue(undefined);
-  const screen = new ScreenRagInputUseCase({
+  const screen = new RefuseRagInputUseCase({
     get: (key: string) => env[key],
   } as never);
   const useCase = new HandleConversationTurnCompletedUseCase(

@@ -39,6 +39,17 @@ scrape_configs:
     static_configs:
       - targets:
           - call-media-1:3019
+      # Second media node on velora-node-2 (France). It is not in this compose
+      # stack, so it is scraped through Tailscale by its tailnet address. See
+      # infra/call-media-node/README.md.
+      - targets:
+          - 100.86.68.16:3019
+    relabel_configs:
+      # Keep the instance label readable in alerts and dashboards.
+      - source_labels: [__address__]
+        regex: 100\.86\.68\.16:3019
+        target_label: instance
+        replacement: call-media-2:3019
 
   - job_name: notification-service
     metrics_path: /metrics
@@ -90,7 +101,54 @@ scrape_configs:
         regex: 'up;|rabbitmq_detailed_.*;(auth_queue|user_queue)'
         action: keep
 
+  # One node-exporter per VPS. The labels on each target are the host registry:
+  # the dashboard lists every target of this job and reads its name, role and
+  # region from these labels, so adding a VPS is one more block here and
+  # nothing else (see "Monitoring more than one VPS" in
+  # infra/monitoring/README.md).
+  #
+  #   host          required, stable URL-safe id (letters, digits, _ . -)
+  #   host_name     display name
+  #   host_role     primary = runs the Velora Compose stack, worker = any other VPS
+  #   host_region   optional, shown on the host card
+  #   host_provider optional, shown on the host card
+  #   docker_port   optional, port of a read-only Docker socket proxy on the
+  #                 VPS; enables the per-container CPU/RAM/disk breakdown
+  #   host_network  optional, `unavailable` when the exporter runs in a bridged
+  #                 container: node_network_* is then the container's own NIC
+  #                 and the dashboard shows no network figures for the host
+  #
+  # Exactly one host must be `primary`: service CPU ratios are fractions of its
+  # cores. Every host query and alert in this repository is scoped by `host`.
   - job_name: node-exporter
     static_configs:
       - targets:
           - node-exporter:9100
+        labels:
+          host: homelab
+          host_name: Homelab
+          host_role: primary
+          host_region: Vietnam
+          # Bridged container (see the compose node-exporter): network figures
+          # would be the exporter container's own traffic, not the machine's.
+          host_network: unavailable
+      # Second VPS (France): agent stack from infra/vps-agent/, running since
+      # 2026-11-13. Keep the target out of the file while the agent is stopped,
+      # otherwise VeloraHostDown fires for the missing exporter.
+      - targets:
+          - 100.86.68.16:9100
+        labels:
+          host: velora-node-2
+          host_name: Velora node 2
+          host_role: worker
+          host_region: France
+          host_provider: Contabo
+          docker_port: '2375'
+    metric_relabel_configs:
+      # Registry-only label: it stays on `up`, which the dashboard reads to build
+      # the host list, but is not copied onto every node_* series. Adding a label
+      # to all series would, for five minutes after Prometheus restarts, show
+      # old and new series of the same host together and double count(...) of
+      # CPUs (halving every service CPU ratio).
+      - action: labeldrop
+        regex: host_network

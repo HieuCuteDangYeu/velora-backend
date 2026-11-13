@@ -30,6 +30,48 @@ export async function findDueNotificationIntents(
   return z.array(candidateSchema).max(limit).parse(result);
 }
 
+// The latest instant MongoDB accepts, so the range below covers every possible
+// next-attempt time.
+const LAST_INSTANT = '9999-12-31T23:59:59.999Z';
+
+// $count answers with an int32, which comes back as a plain number; the wrapped
+// forms are accepted too so a driver change cannot break the gauge.
+const countValue = z.union([
+  z.number().int().nonnegative(),
+  z.object({ $numberInt: z.string() }).transform((v) => Number(v.$numberInt)),
+  z.object({ $numberLong: z.string() }).transform((v) => Number(v.$numberLong)),
+]);
+const pendingSchema = z.array(z.object({ pending: countValue })).max(1);
+
+/**
+ * Number of intents still waiting, for the backlog gauge.
+ *
+ * Do not use `message.count({ where: { notificationNextAttemptAt: { not: null } } })`:
+ * Prisma turns that into $expr, which cannot use the due-date index, so every
+ * sample scanned the whole messages collection (about 0.7 s on an idle system,
+ * seconds under load, growing with every message ever stored) and evicted hot
+ * pages from Mongo's cache. A date-typed range, like the due read above, only
+ * touches the pending rows.
+ */
+export async function countPendingNotificationIntents(
+  prisma: Pick<PrismaService, 'message'>,
+): Promise<number> {
+  const result = await prisma.message.aggregateRaw({
+    pipeline: [
+      {
+        $match: {
+          notificationNextAttemptAt: {
+            $type: 'date',
+            $lte: { $date: LAST_INSTANT },
+          },
+        },
+      },
+      { $count: 'pending' },
+    ],
+  });
+  return pendingSchema.parse(result)[0]?.pending ?? 0;
+}
+
 const intentSchema = z.object({
   id: objectId,
   conversationId: objectId,

@@ -98,9 +98,12 @@ The same summary is added to the Langfuse root output.
 output `enforce` is read as `shadow`.
 
 With the input check enforcing, a message with a **high** input finding is answered with a fixed refusal
-(`RAG_INPUT_REFUSAL_MESSAGE`) before the router, retrieval or any model call. Medium findings are still answered.
-The log line then reads `mode=enforce ... blocked=true`. A refused turn is not sent to RAG telemetry and is not
-summarised or remembered (`HandleConversationTurnCompletedUseCase`), so the refused text cannot return through memory.
+(`RAG_INPUT_REFUSAL_MESSAGE`) before the chat-admission queue, the router, retrieval or any model call, so a refused
+message never takes a model slot. The decision lives in `RefuseRagInputUseCase`, called first by `StreamChatUseCase`;
+the workflow adapter itself stays shadow-only. Medium findings are still answered. The log line is
+`[Guardrail] mode=enforce blocked=true input=<codes>`. A refused turn never reaches RAG telemetry and is not
+summarised or remembered (`HandleConversationTurnCompletedUseCase` asks the same use case), so the refused text cannot
+return through memory. If the check itself fails it fails open.
 
 Know the cost before turning it on: the check is a pattern list, so a quoted attack ("the video says to ignore all
 previous instructions, is that real?") is refused too, and rewordings it has never seen still get through. The measured

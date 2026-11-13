@@ -1,0 +1,65 @@
+name: vps-agent
+# What every additional VPS runs so the Velora dashboard can monitor it.
+# Copy this folder to /opt/velora/vps-agent/ on the VPS and follow README.md.
+#
+# Everything listens on the Tailscale address only (TAILNET_IP), never on the
+# public interface.
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+    mem_limit: 64m
+    # Host networking and PID namespace so network, process and load figures
+    # describe the VPS, not the container.
+    network_mode: host
+    pid: host
+    command:
+      - --web.listen-address=${TAILNET_IP:?set TAILNET_IP in .env}:9100
+      - --path.rootfs=/host
+      - --no-collector.btrfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($|/)
+    volumes:
+      - /:/host:ro,rslave
+
+  # Read-only view of the Docker Engine API for the per-container CPU, RAM and
+  # disk breakdown. Only GET requests to /containers, /info and /system/df are
+  # allowed; everything else, including every POST, is denied.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    container_name: docker-proxy
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      CONTAINERS: 1
+      INFO: 1
+      SYSTEM: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      # The proxy cannot authenticate callers: keep it on the tailnet address.
+      - '${TAILNET_IP:?set TAILNET_IP in .env}:2375:2375'
+
+  # Optional: ship this VPS's container logs to the homelab Loki, tagged with
+  # host=$HOST_ID, so they show up in the dashboard's Logs page.
+  # Start with: docker compose --profile logs up -d
+  alloy:
+    image: grafana/alloy:v1.5.1
+    container_name: alloy
+    restart: unless-stopped
+    mem_limit: 192m
+    profiles: [logs]
+    command:
+      - run
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      HOST_ID: ${HOST_ID:?set HOST_ID in .env}
+      LOKI_PUSH_URL: ${LOKI_PUSH_URL:?set LOKI_PUSH_URL in .env}
+    volumes:
+      - ./alloy.config:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy_data:/var/lib/alloy/data
+
+volumes:
+  alloy_data:

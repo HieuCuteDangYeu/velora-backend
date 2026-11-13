@@ -23,7 +23,12 @@ const entry = (overrides: Partial<LokiLogEntry> = {}): LokiLogEntry => ({
 describe('SystemLogsController', () => {
   const loki = { range: jest.fn() };
   const metrics = { recordRpc: jest.fn() };
-  const controller = new SystemLogsController(loki as never, metrics as never);
+  const hosts = { require: jest.fn() };
+  const controller = new SystemLogsController(
+    loki as never,
+    metrics as never,
+    hosts as never,
+  );
 
   beforeEach(() => {
     jest.resetAllMocks();
@@ -243,5 +248,119 @@ describe('SystemLogsController', () => {
     });
 
     expect(response.mayHaveMore).toBe(false);
+  });
+
+  describe('host filter', () => {
+    const NODE_2 = {
+      id: 'velora-node-2',
+      label: 'velora-node-2',
+      role: 'worker',
+    };
+    const HOME = { id: 'home', label: 'home', role: 'primary' };
+
+    it('selects a worker by its exact host label', async () => {
+      hosts.require.mockResolvedValue(NODE_2);
+      loki.range.mockResolvedValue([]);
+
+      await controller.query({
+        service: 'mongo-replica',
+        host: NODE_2.id,
+        level: 'all',
+        from: FROM,
+        to: TO,
+        limit: 20,
+      });
+
+      expect(loki.range.mock.calls[0][0]).toBe(
+        '{service="mongo-replica",host="velora-node-2"}',
+      );
+    });
+
+    it('also accepts streams that predate the host label for the primary machine', async () => {
+      hosts.require.mockResolvedValue(HOME);
+      loki.range.mockResolvedValue([]);
+
+      await controller.query({
+        service: 'call-service',
+        host: HOME.id,
+        level: 'all',
+        from: FROM,
+        to: TO,
+        limit: 20,
+      });
+
+      expect(loki.range.mock.calls[0][0]).toBe(
+        '{service="call-service",host=~"home|"}',
+      );
+    });
+
+    it('applies the host to every selector of an all-services query', async () => {
+      hosts.require.mockResolvedValue(NODE_2);
+      loki.range.mockResolvedValue([]);
+
+      await controller.query({
+        service: 'all',
+        host: NODE_2.id,
+        level: 'error',
+        from: FROM,
+        to: TO,
+        limit: 20,
+      });
+
+      const queries = loki.range.mock.calls.map(([query]) => query as string);
+      expect(queries.length).toBeGreaterThan(2);
+      expect(
+        queries.every((query) => query.includes('host="velora-node-2"')),
+      ).toBe(true);
+    });
+
+    it('queries every host when none is selected', async () => {
+      loki.range.mockResolvedValue([]);
+
+      await controller.query({
+        service: 'call-service',
+        level: 'all',
+        from: FROM,
+        to: TO,
+        limit: 20,
+      });
+
+      expect(hosts.require).not.toHaveBeenCalled();
+      expect(loki.range.mock.calls[0][0]).toBe('{service="call-service"}');
+    });
+
+    it('rejects an unsafe host before querying Loki', async () => {
+      await expect(
+        controller.query({
+          service: 'call-service',
+          host: 'a"} |= "x',
+          level: 'all',
+          from: FROM,
+          to: TO,
+          limit: 20,
+        }),
+      ).rejects.toMatchObject({ error: { message: 'host is invalid' } });
+      expect(loki.range).not.toHaveBeenCalled();
+    });
+
+    it('can read the logs of the services that run on the extra VPSs', async () => {
+      loki.range.mockResolvedValue([]);
+
+      for (const service of [
+        'mongo-replica',
+        'postgres-replica',
+        'call-media-2',
+      ]) {
+        await expect(
+          controller.query({
+            service,
+            level: 'all',
+            from: FROM,
+            to: TO,
+            limit: 20,
+          }),
+        ).resolves.toMatchObject({ entries: [] });
+      }
+    });
   });
 });

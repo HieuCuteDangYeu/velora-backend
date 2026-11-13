@@ -396,6 +396,31 @@ export class PrismaChatRepository implements IChatRepository {
   }
 
   // --- 2. FIND MESSAGES ---
+  async findMessageById(
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message | null> {
+    if (!this.isValidMessageObjectId(messageId)) {
+      return null;
+    }
+
+    const record = await this.prisma.message.findFirst({
+      where: { id: messageId, conversationId },
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    const domain = ChatMapper.toDomain(record);
+    if (domain.isRecalled) {
+      return this.redactRecalledMessage(domain);
+    }
+
+    domain.content = this.encryptionRepository.decrypt(domain.content);
+    return domain;
+  }
+
   async findMessagesByConversationId(
     conversationId: string,
     limit: number = 20,

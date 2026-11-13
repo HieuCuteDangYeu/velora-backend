@@ -30,6 +30,8 @@ export interface AskQuestionStreamInput {
   userId: string;
   conversationId: string;
   memory?: AiChatMemoryContext;
+  /** Reel the user's message replies to, when it replies to a shared Reel. */
+  replyToReelId?: string;
 }
 
 export interface IAiService {

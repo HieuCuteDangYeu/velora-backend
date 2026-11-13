@@ -61,6 +61,7 @@ import {
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
+import { scopeAccessibleReelsToReplyTarget } from '@ai/domain/services/rag-reply-reel-scope';
 import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
 import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
 
@@ -69,6 +70,7 @@ const RagChatStateSchema = new StateSchema({
   conversationId: z.string(),
   userMessage: z.string(),
   memory: z.any().optional(),
+  replyToReelId: z.string().optional(),
   accessibleReelIds: z.array(z.string()).default([]),
   hasSharedReelContext: z.boolean().default(false),
 
@@ -215,6 +217,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       conversationId: input.conversationId,
       userMessage: input.message,
       memory: input.memory,
+      replyToReelId: input.replyToReelId,
       accessibleReelIds: [],
       hasSharedReelContext: false,
       retrievedChunks: [],
@@ -582,14 +585,14 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
-      const accessibleReelIds = await this.timed(
-        'resolveReelContextNode',
-        nodeTimings,
-        () =>
+      const accessibleReelIds = scopeAccessibleReelsToReplyTarget(
+        await this.timed('resolveReelContextNode', nodeTimings, () =>
           this.contentService.resolveReelContextAccess({
             userId: state.userId,
             conversationId: state.conversationId,
           }),
+        ),
+        state.replyToReelId,
       );
 
       return {
@@ -1257,11 +1260,11 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             ? 'Semantic verifier unavailable; recovered with an exact extractive evidence fallback.'
             : verifierLowConfidenceCandidate
               ? 'Semantic verification confidence was below threshold; recovered with an exact extractive evidence fallback.'
-            : citationCoverageFailed
-              ? 'Citation coverage remained below threshold; recovered with an exact extractive evidence fallback.'
-              : answerGenerationFailedWithSufficientContext
-                ? 'Answer generation failed despite sufficient context; recovered with an exact extractive evidence fallback.'
-                : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive evidence fallback.';
+              : citationCoverageFailed
+                ? 'Citation coverage remained below threshold; recovered with an exact extractive evidence fallback.'
+                : answerGenerationFailedWithSufficientContext
+                  ? 'Answer generation failed despite sufficient context; recovered with an exact extractive evidence fallback.'
+                  : 'Semantic verifier returned an unexplained rejection; recovered with an exact extractive evidence fallback.';
           const verification: RagVerificationResult = {
             passed: true,
             confidence: 1,

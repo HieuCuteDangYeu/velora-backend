@@ -111,6 +111,13 @@ export class CreateNoContextAnswerUseCase {
       if (state.hasSharedReelContext === false) {
         return 'I can’t access that Reel because it hasn’t been shared in this conversation. Share it here and I can help with it.';
       }
+      if (
+        (state.accessibleReelIds?.length ?? 0) > 1 &&
+        state.replyToReelId === undefined
+      ) {
+        // Several Reels are shared and nothing says which one the question is about.
+        return 'I couldn’t tell which of the Reels shared here you mean. Reply to the Reel you want to ask about, or mention its title.';
+      }
       return 'I do not have shared Reel context with the transcript or metadata needed to answer that.';
     }
 

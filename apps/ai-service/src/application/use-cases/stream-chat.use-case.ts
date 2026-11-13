@@ -36,6 +36,7 @@ export class StreamChatUseCase {
     userId: string;
     conversationId: string;
     memory?: AiChatMemoryContext;
+    replyToReelId?: string;
   }): Promise<StreamChatResult> {
     // Checked before admission: a refused message needs neither a model slot nor a place in the queue.
     const refusal = this.refuseRagInputUseCase.execute({
@@ -61,6 +62,7 @@ export class StreamChatUseCase {
         userId: input.userId,
         conversationId: input.conversationId,
         memory: input.memory,
+        ...(input.replyToReelId ? { replyToReelId: input.replyToReelId } : {}),
       } satisfies RagChatWorkflowInput),
     );
 

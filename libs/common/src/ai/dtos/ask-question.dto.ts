@@ -18,6 +18,8 @@ export const AskQuestionPayloadSchema = z.object({
   userId: z.string(),
   conversationId: z.string(),
   memory: AiChatMemoryContextSchema.optional(),
+  /** The Reel the user swipe-replied to, so "this reel" resolves to it. */
+  replyToReelId: z.string().min(1).max(128).optional(),
 });
 
 export class AskQuestionPayload extends createZodDto(

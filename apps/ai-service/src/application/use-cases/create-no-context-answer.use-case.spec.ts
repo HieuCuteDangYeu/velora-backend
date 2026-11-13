@@ -15,6 +15,32 @@ describe('CreateNoContextAnswerUseCase', () => {
     expect(answer).toContain('?');
   });
 
+  it('asks which Reel is meant when several are shared and none was identified', () => {
+    const answer = new CreateNoContextAnswerUseCase().execute({
+      route: { intent: 'REEL_VIDEO_QUESTION' },
+      hasSharedReelContext: true,
+      accessibleReelIds: ['reel-a', 'reel-b', 'reel-c'],
+      contextSufficiency: { missingEvidence: ['TRANSCRIPT', 'METADATA'] },
+    } as unknown as RagChatWorkflowState);
+
+    expect(answer).toMatch(/which of the Reels shared here you mean/i);
+    expect(answer).toMatch(/reply to the Reel/i);
+  });
+
+  it('keeps the missing-context message when the user already named the Reel by replying', () => {
+    const answer = new CreateNoContextAnswerUseCase().execute({
+      route: { intent: 'REEL_VIDEO_QUESTION' },
+      hasSharedReelContext: true,
+      accessibleReelIds: ['reel-a'],
+      replyToReelId: 'reel-a',
+      contextSufficiency: { missingEvidence: ['TRANSCRIPT', 'METADATA'] },
+    } as unknown as RagChatWorkflowState);
+
+    expect(answer).toBe(
+      'I do not have shared Reel context with the transcript or metadata needed to answer that.',
+    );
+  });
+
   it('states that a task action was not carried out when generation fails', () => {
     const useCase = new CreateNoContextAnswerUseCase();
     const answer = useCase.executeAfterAnswerGenerationFailure({

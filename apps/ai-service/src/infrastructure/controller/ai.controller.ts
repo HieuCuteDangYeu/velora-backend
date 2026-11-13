@@ -274,6 +274,7 @@ export class AiController {
         userId: data.userId,
         conversationId: data.conversationId,
         memory: data.memory,
+        ...(data.replyToReelId ? { replyToReelId: data.replyToReelId } : {}),
       });
 
       if (!result.answer || result.answer.trim() === '') {
@@ -297,7 +298,8 @@ export class AiController {
         return {
           error: {
             code: 'AI_BUSY',
-            message: 'Velora AI is busy right now. Please try again in a moment.',
+            message:
+              'Velora AI is busy right now. Please try again in a moment.',
             retryAfterSeconds: err.retryAfterSeconds,
           },
         };

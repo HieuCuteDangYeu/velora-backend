@@ -40,11 +40,14 @@ export class ProcessBotReplyUseCase {
         requesterUserId: userMessage.senderId,
       });
 
+      const replyToReelId = await this.resolveReplyToReelId(userMessage);
+
       const result = await this.aiService.askQuestionStream({
         message: userMessage.content,
         userId: userMessage.senderId,
         conversationId: userMessage.conversationId,
         memory: answerMemory,
+        ...(replyToReelId ? { replyToReelId } : {}),
       });
 
       if (result.answer) {
@@ -116,5 +119,38 @@ export class ProcessBotReplyUseCase {
     }
 
     return { botReply, botError };
+  }
+
+  /**
+   * When the user swipe-replied to a shared Reel, the AI needs to know which one: "What is this
+   * reel about?" is ambiguous once several Reels are shared in the chat. This is a best-effort
+   * hint, so a failed lookup must never block the reply.
+   */
+  private async resolveReplyToReelId(
+    userMessage: Message,
+  ): Promise<string | undefined> {
+    if (!userMessage.replyToId) {
+      return undefined;
+    }
+
+    try {
+      const target = await this.chatRepository.findMessageById(
+        userMessage.conversationId,
+        userMessage.replyToId,
+      );
+
+      if (!target || target.isRecalled) {
+        return undefined;
+      }
+
+      return target.media?.reelId?.trim() || undefined;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Could not resolve the replied-to Reel for message ${userMessage.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return undefined;
+    }
   }
 }

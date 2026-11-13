@@ -63,6 +63,10 @@ export abstract class IChatRepository {
     limit: number,
     cursor?: string,
   ): Promise<Message[]>;
+  abstract findMessageById(
+    conversationId: string,
+    messageId: string,
+  ): Promise<Message | null>;
   abstract findMessageWindowAroundId(
     conversationId: string,
     messageId: string,

@@ -437,6 +437,8 @@ export interface RagChatWorkflowInput {
   userId: string;
   conversationId: string;
   memory?: AiChatMemoryContext;
+  /** Shared Reel the user swipe-replied to; scopes "this reel" to it. */
+  replyToReelId?: string;
 }
 
 export interface RagGenerationEvidence {
@@ -483,6 +485,7 @@ export interface RagChatWorkflowState {
   conversationId: string;
   userMessage: string;
   memory?: AiChatMemoryContext;
+  replyToReelId?: string;
 
   accessibleReelIds?: string[];
   hasSharedReelContext?: boolean;

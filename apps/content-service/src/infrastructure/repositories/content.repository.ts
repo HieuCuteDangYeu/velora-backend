@@ -1127,6 +1127,14 @@ export class ContentRepository
         'encodedFps',
       ] as const) {
         if (current[key] !== null && current[key] !== undefined) {
+          if (
+            key === 'sourceHasAudio' &&
+            current.sourceHasAudio === false &&
+            input.mediaMetadata.sourceHasAudio === true &&
+            input.transcriptionAudioManifestKey
+          ) {
+            continue;
+          }
           delete mediaMetadataData[key];
         }
       }
@@ -1194,7 +1202,9 @@ export class ContentRepository
           input.mediaMetadata.outputDurationMs ??
           input.mediaMetadata.sourceDurationMs!,
         sourceHasAudio:
-          reel.sourceHasAudio ?? input.mediaMetadata.sourceHasAudio,
+          (input.mediaMetadata.sourceHasAudio === true &&
+            Boolean(input.transcriptionAudioManifestKey)) ||
+          (reel.sourceHasAudio ?? input.mediaMetadata.sourceHasAudio ?? false),
         sourceOrientation:
           reel.sourceOrientation ?? input.mediaMetadata.sourceOrientation!,
         sourceLengthClass:

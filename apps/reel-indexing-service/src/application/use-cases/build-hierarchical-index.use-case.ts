@@ -17,6 +17,10 @@ import type { TranscriptSection } from '@indexing/domain/entities/index-checkpoi
 import type { IIndexingAiService } from '@indexing/domain/interfaces/ai-service.interface';
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
+import {
+  appendVietnameseEvidence,
+  joinVietnamese,
+} from '@indexing/domain/services/bilingual-evidence';
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 
@@ -153,12 +157,24 @@ export class BuildHierarchicalIndexUseCase {
           : this.shortChunks
               .execute(segments)
               .map((chunk) => ({ ...chunk, sectionIndex: undefined }));
+      const segmentsBySourceId = new Map<string, TranscriptSegment>();
+      for (const segment of segments) {
+        const id = segment['sourceSegmentId'];
+        if (typeof id === 'string') segmentsBySourceId.set(id, segment);
+      }
       chunks.forEach((chunk, ordinal) => {
         const sectionId =
           chunk.sectionIndex === undefined
             ? undefined
             : `${reelDocumentId}:section:${chunk.sectionIndex}`;
-        const evidenceText = this.normalizeEvidence(chunk.evidenceText);
+        const evidenceText = appendVietnameseEvidence(
+          this.normalizeEvidence(chunk.evidenceText),
+          joinVietnamese(
+            chunk.sourceSegmentIds
+              .map((id) => segmentsBySourceId.get(id))
+              .filter((segment): segment is TranscriptSegment => !!segment),
+          ),
+        );
         drafts.push({
           id: `${reelDocumentId}:chunk:${ordinal}`,
           reelId: input.job.reelId,

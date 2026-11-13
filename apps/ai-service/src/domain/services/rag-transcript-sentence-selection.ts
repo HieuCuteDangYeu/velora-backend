@@ -157,7 +157,7 @@ const NON_TERMINAL_ABBREVIATION =
 
 export function transcriptSentenceSpans(text: string): string[] {
   const spans: string[] = [];
-  for (const raw of text.split(/(?<=[.!?])\s+|\n+/)) {
+  for (const raw of text.split(/(?<=[.!?])\s+|(?<=[。！？])\s*|\n+/)) {
     const span = raw.trim();
     if (!span) continue;
     const previous = spans[spans.length - 1];

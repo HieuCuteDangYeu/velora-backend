@@ -8,6 +8,7 @@ import type {
 } from '@ai/domain/interfaces/transcription.service.interface';
 
 interface GroqTranscriptionPayload {
+  language?: string;
   text?: string;
   segments?: unknown[];
   words?: unknown[];
@@ -109,8 +110,13 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
         }
         this.keyPool.reportSuccess(keyIndex, response.headers, model);
         const text = payload.text?.trim() ?? '';
+        const detectedLanguage =
+          typeof payload.language === 'string' && payload.language.trim()
+            ? payload.language.trim().toLowerCase()
+            : undefined;
         return {
           text,
+          detectedLanguage,
           segments:
             this.normalizeWords(payload.words) ??
             this.normalizeSegments(payload.segments),

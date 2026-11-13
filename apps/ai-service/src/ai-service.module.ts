@@ -32,6 +32,7 @@ import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-cas
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
 import { TranscribeAudioUseCase } from '@ai/application/use-cases/transcribe-audio.use-case';
+import { TranslateTranscriptUseCase } from '@ai/application/use-cases/translate-transcript.use-case';
 import { UpdateConversationMemoryUseCase } from '@ai/application/use-cases/update-conversation-memory.use-case';
 import { UpsertUserMemoriesUseCase } from '@ai/application/use-cases/upsert-user-memories.use-case';
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
@@ -178,6 +179,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     GenerateEmbeddingUseCase,
     GenerateEmbeddingBatchUseCase,
     CountDocumentTokensUseCase,
+    TranslateTranscriptUseCase,
     TranscribeAudioUseCase,
     TranscribeAudioBufferUseCase,
     AnalyzeVisualFrameUseCase,

@@ -3,11 +3,18 @@ export interface TranscriptSegment {
   start: number;
   end: number;
   text: string;
+  textEn?: string;
+  textVi?: string;
+  originalText?: string;
+  detectedLanguage?: string;
   [key: string]: unknown;
 }
 
 export interface TranscriptionResult {
   text: string;
+  textEn?: string;
+  textVi?: string;
+  detectedLanguage?: string;
   vtt?: string;
   segments?: TranscriptSegment[];
   wordCount?: number;
@@ -15,3 +22,4 @@ export interface TranscriptionResult {
   model?: string;
   version?: string;
 }
+

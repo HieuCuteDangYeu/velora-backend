@@ -219,6 +219,21 @@ describe('Message notification outbox', () => {
     jest.useRealTimers();
   });
 
+  it('does not poll the outbox when it is switched off for this replica', () => {
+    const h = makeHarness();
+    process.env.CONVERSATION_NOTIFICATION_OUTBOX = 'off';
+    try {
+      h.createWorker().onModuleInit();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      delete process.env.CONVERSATION_NOTIFICATION_OUTBOX;
+    }
+    const worker = h.createWorker();
+    worker.onModuleInit();
+    expect(jest.getTimerCount()).toBe(1);
+    void worker.onModuleDestroy();
+  });
+
   it('delivers the saved identity after decrypting and excludes removed/new members', async () => {
     const h = makeHarness();
     await h.createWorker().runOnce();

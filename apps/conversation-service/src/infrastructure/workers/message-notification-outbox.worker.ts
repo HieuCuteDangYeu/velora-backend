@@ -57,6 +57,13 @@ export class MessageNotificationOutboxWorker
   ) {}
 
   onModuleInit(): void {
+    // The outbox is shared through Mongo, so one replica is enough to drain it.
+    // A replica that has no route to notification-service (for example one on
+    // another machine) must not claim intents it cannot deliver.
+    if (process.env.CONVERSATION_NOTIFICATION_OUTBOX === 'off') {
+      this.logger.log('Notification outbox worker disabled on this replica');
+      return;
+    }
     this.timer = setInterval(() => {
       void this.runOnce();
     }, POLL_MS);

@@ -483,6 +483,8 @@ describe('message transaction conflicts', () => {
     );
     const settled = Promise.allSettled(writes);
     await expect(writes[100]).rejects.toMatchObject({ status: 429 });
+    // The first batch takes the cross-replica write lock before it starts.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     release();
     const results = await settled;

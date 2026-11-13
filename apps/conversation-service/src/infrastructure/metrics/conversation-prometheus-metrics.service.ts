@@ -5,6 +5,7 @@ export type ChatPhase =
   | 'socket_auth'
   | 'membership'
   | 'queue_wait'
+  | 'lock_wait'
   | 'retry_backoff'
   | 'mongo_write'
   | 'conversation_read'

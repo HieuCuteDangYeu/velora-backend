@@ -16,6 +16,7 @@ import {
   type Conversation as PrismaConversation,
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
+import { ConversationWriteLock } from './conversation-write-lock';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 
@@ -114,6 +115,8 @@ type AnchorBoundary = {
 export class PrismaChatRepository implements IChatRepository {
   private readonly logger = new Logger(PrismaChatRepository.name);
   private readonly messageTransactions = new Map<string, MessageWriteQueue>();
+  // Makes several conversation-service replicas take turns writing one conversation.
+  private readonly writeLock: ConversationWriteLock;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -131,7 +134,19 @@ export class PrismaChatRepository implements IChatRepository {
     private readonly metrics?: ConversationPrometheusMetricsService,
     // Only for reads that tolerate a few seconds of replica lag (see read()).
     private readonly readReplica?: PrismaReadReplicaService,
-  ) {}
+  ) {
+    let timeouts = 0;
+    this.writeLock = new ConversationWriteLock(redis, {
+      enabled: process.env.CONVERSATION_MESSAGE_WRITE_LOCK !== 'off',
+      onTimeout: () => {
+        // Log the first and then every hundredth: a stuck lock must be visible, not noisy.
+        if (timeouts++ % 100 === 0)
+          this.logger.warn(
+            `Conversation write lock wait timed out (${timeouts} so far); writing without it`,
+          );
+      },
+    });
+  }
 
   private measure<T>(
     phase: ChatPhase,
@@ -1645,7 +1660,20 @@ export class PrismaChatRepository implements IChatRepository {
     this.messageTransactions.delete(conversationId);
   }
 
-  private persistMessageBatch(
+  private async persistMessageBatch(
+    writes: PreparedMessageWrite[],
+  ): Promise<PersistedMessageWrite[]> {
+    const lease = await this.measure('lock_wait', () =>
+      this.writeLock.acquire(writes[writes.length - 1].data.conversationId),
+    );
+    try {
+      return await this.persistLockedMessageBatch(writes);
+    } finally {
+      await lease?.release();
+    }
+  }
+
+  private persistLockedMessageBatch(
     writes: PreparedMessageWrite[],
   ): Promise<PersistedMessageWrite[]> {
     return this.retryMessageTransaction(() =>

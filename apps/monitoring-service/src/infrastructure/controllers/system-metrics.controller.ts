@@ -358,6 +358,14 @@ type TimeseriesPayload = {
 // the Docker Engine sampling.
 const CONTAINER_SNAPSHOT_TTL_MS = 2_000;
 
+// Image and volume sizes change slowly but cost the Docker Engine a long walk
+// (13 s on velora-node-2). Keep the last answer and refresh it off the request
+// path so the dialog never waits for it, and so it never competes with the
+// container sampling for the engine.
+const DOCKER_METADATA_TTL_MS = 5 * 60_000;
+// How long the very first request waits before answering without storage.
+const DOCKER_METADATA_FIRST_WAIT_MS = 1_500;
+
 const LOCAL_DOCKER = { key: 'local', endpoint: undefined } as const;
 
 @Controller()
@@ -370,6 +378,15 @@ export class SystemMetricsController {
   private readonly containerSnapshots = new KeyedTtlSingleFlight<
     Awaited<ReturnType<SystemMetricsController['readContainers']>>
   >(CONTAINER_SNAPSHOT_TTL_MS);
+
+  private readonly dockerMetadata = new Map<
+    string,
+    {
+      value: DockerSnapshotMetadata | null;
+      fetchedAt: number;
+      inflight: Promise<void> | null;
+    }
+  >();
 
   constructor(
     private readonly prometheus: PrometheusQueryService,
@@ -428,7 +445,7 @@ export class SystemMetricsController {
         // Sampling every container costs about a second per call and the
         // dialog polls: share one batch between concurrent viewers.
         return await this.containerSnapshots.get(target.key, () =>
-          this.readContainers(target.endpoint),
+          this.readContainers(target.key, target.endpoint),
         );
       } catch {
         return {
@@ -441,11 +458,14 @@ export class SystemMetricsController {
     });
   }
 
-  private async readContainers(endpoint: DockerEndpoint | undefined) {
-    const [snapshot, metadata] = await Promise.all([
-      this.readDockerSnapshot(endpoint),
-      this.readDockerSnapshotMetadata(endpoint),
-    ]);
+  private async readContainers(
+    key: string,
+    endpoint: DockerEndpoint | undefined,
+  ) {
+    // Sample first and read the sizes afterwards: running both at once made the
+    // engine on a busy host answer the container list too late.
+    const snapshot = await this.readDockerSnapshot(endpoint);
+    const metadata = await this.cachedDockerMetadata(key, endpoint);
 
     const metadataFields = metadata
       ? {
@@ -526,6 +546,49 @@ export class SystemMetricsController {
     return Promise.resolve(this.docker.snapshot(endpoint)).then(
       (containers) => ({ containers }),
     );
+  }
+
+  private async cachedDockerMetadata(
+    key: string,
+    endpoint: DockerEndpoint | undefined,
+  ): Promise<DockerSnapshotMetadata | null> {
+    let entry = this.dockerMetadata.get(key);
+    if (!entry) {
+      entry = { value: null, fetchedAt: 0, inflight: null };
+      this.dockerMetadata.set(key, entry);
+    }
+
+    const slot = entry;
+    if (
+      !slot.inflight &&
+      Date.now() - slot.fetchedAt >= DOCKER_METADATA_TTL_MS
+    ) {
+      slot.inflight = this.readDockerSnapshotMetadata(endpoint)
+        .then((value) => {
+          // Keep the last good answer when a refresh fails.
+          if (value) slot.value = value;
+          // A failed read is retried after 30 s, not after the full TTL.
+          slot.fetchedAt = value
+            ? Date.now()
+            : Date.now() - DOCKER_METADATA_TTL_MS + 30_000;
+        })
+        .finally(() => {
+          slot.inflight = null;
+        });
+    }
+
+    if (slot.value === null && slot.inflight) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        slot.inflight,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, DOCKER_METADATA_FIRST_WAIT_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+
+    return slot.value;
   }
 
   private readDockerSnapshotMetadata(

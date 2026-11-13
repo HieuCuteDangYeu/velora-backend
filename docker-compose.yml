@@ -76,22 +76,6 @@ services:
     networks:
       - microservices-net
 
-  friend-service:
-    image: ${DOCKERHUB_USERNAME}/friend-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/friend-service/Dockerfile
-      args:
-        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
-    restart: always
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
   auth-service:
     image: ${DOCKERHUB_USERNAME}/auth-service:${VELORA_IMAGE_TAG:-latest}
     build:
@@ -202,38 +186,6 @@ services:
     networks:
       - microservices-net
 
-  payment-service:
-    image: ${DOCKERHUB_USERNAME}/payment-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/payment-service/Dockerfile
-      args:
-        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
-    restart: always
-    expose:
-      - '3006'
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
-  mail-service:
-    image: ${DOCKERHUB_USERNAME}/mail-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/mail-service/Dockerfile
-    restart: always
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
   conversation-service:
     image: ${DOCKERHUB_USERNAME}/conversation-service:${VELORA_IMAGE_TAG:-latest}
     build:
@@ -332,7 +284,8 @@ services:
       - .env
     environment:
       PROMETHEUS_URL: http://prometheus:9090
-      LOKI_URL: http://loki:3100
+      # Loki runs on velora-node-2 (infra/loki-node/); read it over Tailscale.
+      LOKI_URL: http://100.86.68.16:3100
       DOCKER_ENGINE_SOCKET: ${DOCKER_ENGINE_SOCKET:-/var/run/docker.sock}
       # Two Prisma clients: one connection each, two total on this instance.
       MONITORING_DATABASE_CONNECTION_LIMIT: ${MONITORING_DATABASE_CONNECTION_LIMIT:-1}
@@ -346,8 +299,6 @@ services:
       rabbitmq:
         condition: service_healthy
       prometheus:
-        condition: service_started
-      loki:
         condition: service_started
     networks:
       - microservices-net
@@ -393,20 +344,6 @@ services:
     networks:
       - microservices-net
 
-  loki:
-    image: grafana/loki:latest
-    restart: unless-stopped
-    mem_limit: ${LOKI_MEMORY_LIMIT:-384m}
-    command:
-      - -config.file=/etc/loki/loki-config.yml
-    volumes:
-      - ./infra/monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
-      - loki_data:/loki
-    ports:
-      - '127.0.0.1:3100:3100'
-    networks:
-      - microservices-net
-
   alloy:
     image: grafana/alloy:latest
     restart: unless-stopped
@@ -419,29 +356,6 @@ services:
       - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - alloy_data:/var/lib/alloy/data
-    depends_on:
-      loki:
-        condition: service_started
-    networks:
-      - microservices-net
-
-  grafana:
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    mem_limit: ${GRAFANA_MEMORY_LIMIT:-384m}
-    env_file:
-      - .env
-    environment:
-      GF_PLUGINS_DISABLE_PLUGINS: elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,mssql,mysql,opentsdb,stackdriver,tempo,zipkin,grafana-metricsdrilldown-app,grafana-advisor-app,grafana-pyroscope-app,grafana-exploretraces-app,grafana-lokiexplore-app
-    volumes:
-      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - '127.0.0.1:3001:3000'
-    depends_on:
-      - prometheus
-      - loki
     networks:
       - microservices-net
 
@@ -704,8 +618,6 @@ volumes:
   postgres_data:
   rabbitmq_data:
   prometheus_data:
-  grafana_data:
-  loki_data:
   alloy_data:
   rag_embedding_cache:
   rag_reranker_cache:

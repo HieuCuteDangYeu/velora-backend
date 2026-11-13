@@ -63,6 +63,7 @@ describe('ConversationMicroserviceController realtime group orchestration', () =
       null as never,
       null as never,
       null as never,
+      null as never,
     );
   });
 

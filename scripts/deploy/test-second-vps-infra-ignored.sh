@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Files that describe the second VPS (velora-node-2) must not make the homelab CD
+# Files that describe the other servers (velora-node-2, the Windows laptop) must not make the homelab CD
 # restart anything, while a genuinely unknown path must still reconcile every
 # application service.
 set -Eeuo pipefail
@@ -25,13 +25,30 @@ for file in \
   infra/postgres-replica/compose.yaml \
   infra/call-media-node/compose.yaml \
   infra/call-media-node/README.md \
+  infra/friend-mail-node/compose.yaml \
+  infra/friend-mail-node/deploy.sh \
+  infra/friend-mail-node/README.md \
+  infra/langfuse-node/docker-compose.yml \
+  infra/langfuse-node/node2.yaml \
+  infra/langfuse-node/README.md \
   infra/vps-agent/compose.yaml \
   infra/vps-agent/alloy.config \
   infra/vps-agent/README.md \
   infra/backup-worker/backup.sh \
   infra/backup-worker/velora-backup.service \
   infra/backup-worker/velora-backup.timer \
-  infra/backup-worker/README.md; do
+  infra/backup-worker/README.md \
+  infra/grafana-node/compose.yaml \
+  infra/grafana-node/README.md \
+  infra/grafana-node/provisioning/datasources/prometheus.yml \
+  infra/grafana-node/provisioning/datasources/loki.yml \
+  infra/loki-node/compose.yaml \
+  infra/loki-node/loki-config.yml \
+  infra/loki-node/README.md \
+  infra/windows-node/README.md \
+  infra/windows-node/mongo-replica.compose.yaml \
+  infra/windows-node/postgres-replica.compose.yaml \
+  infra/windows-node/wslconfig.example; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

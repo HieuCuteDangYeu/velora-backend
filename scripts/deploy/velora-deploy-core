@@ -61,14 +61,11 @@ readonly PULL_ATTEMPTS="${VELORA_PULL_ATTEMPTS:-3}"
 readonly -a APP_SERVICES=(
   api-gateway
   user-service
-  friend-service
   auth-service
   media-service
   media-processing-service
   reel-indexing-service
   content-service
-  payment-service
-  mail-service
   conversation-service
   call-service
   monitoring-service
@@ -99,12 +96,9 @@ readonly -a APP_IMAGE_SERVICES=(
 readonly -a FORCE_SAFE_APP_SERVICES=(
   api-gateway
   user-service
-  friend-service
   auth-service
   media-service
   content-service
-  payment-service
-  mail-service
   conversation-service
   call-service
   monitoring-service
@@ -124,7 +118,6 @@ readonly -a MANAGED_INFRA_SERVICES=(
   nginx
   prometheus
   node-exporter
-  grafana
 )
 
 # Services intentionally removed from the Compose topology. They are cleaned
@@ -133,6 +126,14 @@ readonly -a MANAGED_INFRA_SERVICES=(
 readonly -a REMOVED_COMPOSE_SERVICES=(
   cadvisor
   jev-reranker
+  payment-service
+  # friend-service and mail-service moved to velora-node-2 (infra/friend-mail-node).
+  friend-service
+  mail-service
+  # Runs on velora-node-2 now (infra/grafana-node/), reading this host over Tailscale.
+  grafana
+  # Runs on velora-node-2 too (infra/loki-node/); Alloy pushes to it over Tailscale.
+  loki
 )
 
 # Compose changes to these services require deliberate operator handling.
@@ -155,9 +156,7 @@ readonly -a BLOCKED_COMPOSE_SERVICES=(
 readonly -a MANUAL_DB_SERVICES=(
   user-service
   auth-service
-  friend-service
   content-service
-  payment-service
   notification-service
 )
 
@@ -169,15 +168,14 @@ readonly -a SELF_MIGRATING_DB_SERVICES=(
 )
 
 # RabbitMQ RPC server queues. Worker lane queues are intentionally not encoded
-# here because their semantics are owned by worker configuration.
+# here because their semantics are owned by worker configuration. friend_queue and
+# mail_queue are served from velora-node-2, which this script does not manage, so a
+# node-2 outage must not fail or roll back a homelab release.
 readonly -A RMQ_QUEUE_BY_SERVICE=(
   [auth-service]="auth_queue"
   [user-service]="user_queue"
-  [friend-service]="friend_queue"
   [media-service]="media_queue"
   [content-service]="content_queue"
-  [payment-service]="payment_queue"
-  [mail-service]="mail_queue"
   [conversation-service]="conversation_queue"
   [call-service]="call_queue"
   [monitoring-service]="monitoring_queue"
@@ -1300,7 +1298,6 @@ plan_from_changed_files() {
     add_unique nginx INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
-    add_unique grafana INFRA_RECONCILE_SERVICES
     return
   fi
 
@@ -1329,9 +1326,10 @@ plan_from_changed_files() {
         ;;
       scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
         ;;
-      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/vps-agent/*|infra/backup-worker/*)
-        # Notes and compose files for the second VPS (velora-node-2). That host is
-        # managed by hand over SSH and nothing here is deployed on the homelab.
+      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/friend-mail-node/*|infra/langfuse-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*|infra/loki-node/*|infra/windows-node/*)
+        # Notes and compose files for the other servers (velora-node-2 and the
+        # Windows laptop). Those hosts are managed by hand over SSH and nothing
+        # here is deployed on the homelab.
         ;;
       infra/nginx/*)
         add_unique nginx INFRA_RECONCILE_SERVICES
@@ -1342,7 +1340,7 @@ plan_from_changed_files() {
         ;;
 
       infra/monitoring/grafana/*)
-        add_unique grafana INFRA_RECONCILE_SERVICES
+        # Grafana runs on velora-node-2 and is updated by hand (infra/grafana-node/README.md).
         ;;
 
       infra/monitoring/node-exporter-textfile/*)
@@ -1761,10 +1759,6 @@ reconcile_infrastructure() {
         log "==> Force-recreating Prometheus to refresh config bind mount..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps prometheus
         ;;
-      grafana)
-        log "==> Force-recreating Grafana to refresh provisioning/dashboard bind mounts..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps grafana
-        ;;
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
@@ -2002,7 +1996,6 @@ verify_deployment_health() {
   check_http "API Gateway via Nginx" "http://127.0.0.1/" "200 404" api-gateway || return 1
   check_http "Conversation Socket.IO" "http://127.0.0.1/socket.io/?EIO=4&transport=polling" "200" conversation-service || return 1
   check_http "Call Socket.IO" "http://127.0.0.1/call/socket.io/?EIO=4&transport=polling" "200" call-service || return 1
-  check_internal_http_from_service payment-service 3006 "200 201 202 204 400 401 403 404 405" || return 1
   check_internal_http_from_service notification-service 3015 "200 201 202 204 400 401 403 404 405" || return 1
   verify_gateway_replicas || return 1
   verify_monitoring_stack || {

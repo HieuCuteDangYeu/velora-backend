@@ -45,8 +45,14 @@ on, or for services that run on the VPS.
 ### Replica reads in conversation-service
 
 `PrismaReadReplicaService` is a second Prisma client used only by reads that
-tolerate a few seconds of lag. It is off by default. Today one read uses it:
-`get_reaction_details` (who reacted to a message).
+tolerate a few seconds of lag. It is off by default. Today two reads use it:
+`get_reaction_details` (who reacted to a message) and `findPresenceAudienceUserIds`
+(who hears the online/offline event, run on every socket connect and disconnect;
+routed as `presence_audience`). With two secondaries (this VPS and the Windows
+laptop, `../windows-node/`), `secondaryPreferred` picks the nearest one (the
+driver keeps members within 15 ms of the lowest round trip), so these reads go to
+the laptop and only reach France if the laptop is down; with no secondary at all
+they fall back to the primary.
 
 | Setting | Effect |
 | --- | --- |

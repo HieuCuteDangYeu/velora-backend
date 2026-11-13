@@ -1,3 +1,4 @@
+import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { CreateMessageDto } from '@common/conversation/dtos/create-message.dto';
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import {
@@ -708,6 +709,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private async isUserOnline(userId: string): Promise<boolean> {
     if (!userId) {
       return false;
+    }
+
+    // The Velora AI bot is a server-side participant with no socket of its own,
+    // so socket membership would always report it offline. It is always on.
+    if (userId === BOT_USER_ID) {
+      return true;
     }
 
     const sockets = await this.server.in(this.userRooms(userId)).fetchSockets();

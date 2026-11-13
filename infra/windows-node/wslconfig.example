@@ -1,0 +1,13 @@
+# C:\Users\<user>\.wslconfig on the Windows node (7.9 GB RAM laptop)
+[wsl2]
+memory=5GB
+processors=6
+swap=2GB
+networkingMode=mirrored
+dnsTunneling=true
+firewall=true
+autoProxy=true
+
+[experimental]
+autoMemoryReclaim=gradual
+hostAddressLoopback=true

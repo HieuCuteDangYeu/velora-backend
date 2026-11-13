@@ -895,6 +895,7 @@ describe('message idempotency', () => {
       { execute: jest.fn().mockResolvedValue({}) } as never,
       repository as never,
       {} as never,
+      {} as never,
     );
     const response = await controller.handleCreateMessage(
       createMessage() as never,
@@ -1084,6 +1085,7 @@ describe('message idempotency', () => {
       { server: { to: serverTo } } as never,
       triggerBotReplyUseCase as never,
       chatRepository as never,
+      {} as never,
       {} as never,
     );
 

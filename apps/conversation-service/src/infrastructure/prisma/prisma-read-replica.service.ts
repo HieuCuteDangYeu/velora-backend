@@ -8,8 +8,8 @@ import {
 } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from './prisma.service';
 
-// Reads that can run on a replica only need the message delegate for now.
-export type ReadClient = Pick<PrismaClient, 'message'>;
+// Reads that can run on a replica only need the message and conversation delegates.
+export type ReadClient = Pick<PrismaClient, 'message' | 'conversation'>;
 
 const PREFERENCES = {
   secondarypreferred: 'secondaryPreferred',

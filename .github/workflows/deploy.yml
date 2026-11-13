@@ -52,14 +52,11 @@ jobs:
           all_services=(
             api-gateway
             user-service
-            friend-service
             auth-service
             media-service
             media-processing-service
             reel-indexing-service
             content-service
-            payment-service
-            mail-service
             conversation-service
             call-service
             monitoring-service
@@ -132,6 +129,16 @@ jobs:
           if [ "$build_all" != true ]; then
             while IFS= read -r changed_file; do
               [ -z "$changed_file" ] && continue
+
+              # friend-service and mail-service run on velora-node-2: the Homelab CD
+              # builds their amd64 images itself (infra/friend-mail-node), so they are
+              # not Compose build services. Their code is still linted and tested by
+              # the validate job.
+              case "$changed_file" in
+                apps/friend-service/*|apps/mail-service/*|infra/friend-mail-node/*|infra/langfuse-node/*)
+                  continue
+                  ;;
+              esac
 
               case "$changed_file" in
                 docker-compose.yml|docker-compose.yaml|docker-compose.*.yml|docker-compose.*.yaml|compose.yml|compose.yaml|infra/nginx/*|.env.example|.github/*|docs/*|scripts/diagrams/*|eval/rag/*|libs/*|scripts/ops/provider-reliability-characterization.cjs|scripts/ops/provider-reliability-characterization.test.cjs|README.md|QWEN.md|CLAUDE.md|LICENSE*|*.md|.gitignore|.prettierrc|eslint.config.mjs|jest.config.cjs|.vscode/*)
@@ -272,7 +279,6 @@ jobs:
       FRIEND_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/friend?schema=public
       MONITORING_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/monitoring?schema=public
       NOTIFICATION_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/notification?schema=public
-      PAYMENT_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/payment?schema=public
       RABBITMQ_URL: amqp://127.0.0.1:5672
       REEL_INDEXING_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/reel_indexing?schema=public
       USER_DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/user?schema=public

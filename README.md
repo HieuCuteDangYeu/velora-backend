@@ -1,6 +1,6 @@
 # Velora Backend
 
-A production-ready microservices architecture built with NestJS, featuring authentication, user management, media uploads, payments, and email notifications.
+A production-ready microservices architecture built with NestJS, featuring authentication, user management, media uploads, and email notifications.
 
 ## Architecture Overview
 
@@ -10,8 +10,7 @@ This project implements a microservices architecture with the following componen
 - **User Service** - Manages user data and profiles
 - **Auth Service** - Handles authentication, authorization, and role management
 - **Media Service** - Manages file uploads to AWS S3
-- **Payment Service** - Processes payments via Stripe
-- **Mail Service** - Sends transactional emails via SendGrid
+- **Mail Service** - Sends transactional emails via SendGrid (runs on velora-node-2, see `infra/friend-mail-node`)
 
 ### Communication
 
@@ -43,13 +42,6 @@ This project implements a microservices architecture with the following componen
 - Image upload support (JPEG, PNG, WebP)
 - Automatic avatar update notifications
 
-### Payment Service
-
-- Stripe integration
-- Payment intent creation
-- Webhook handling for payment status updates
-- Support for multiple currencies
-
 ### Email Service
 
 - Transactional email via SendGrid
@@ -67,7 +59,6 @@ This project implements a microservices architecture with the following componen
 - **Cache**: Redis
 - **Job Queue**: BullMQ
 - **Storage**: AWS S3
-- **Payment**: Stripe
 - **Email**: SendGrid
 - **Validation**: Zod with nestjs-zod
 - **Authentication**: Passport.js (JWT & Google OAuth2)
@@ -81,7 +72,6 @@ This project implements a microservices architecture with the following componen
 │   ├── auth-service/         # Authentication & Authorization
 │   ├── user-service/         # User Management
 │   ├── media-service/        # File Upload & Storage
-│   ├── payment-service/      # Payment Processing
 │   └── mail-service/         # Email Notifications
 ├── libs/
 │   └── common/               # Shared DTOs, interfaces, and utilities
@@ -106,7 +96,6 @@ Each service follows Clean Architecture principles:
 - RabbitMQ instance
 - Redis instance
 - AWS S3 bucket
-- Stripe account
 - SendGrid account
 
 ## Environment Variables
@@ -125,7 +114,6 @@ FRONTEND_URL=http://localhost:3000
 USER_DATABASE_URL=postgresql://user:password@localhost:5432/user_db
 AUTH_DATABASE_URL=postgresql://user:password@localhost:5432/auth_db
 MEDIA_DATABASE_URL=postgresql://user:password@localhost:5432/media_db
-PAYMENT_DATABASE_URL=postgresql://user:password@localhost:5432/payment_db
 
 # RabbitMQ
 RABBITMQ_URL=amqp://localhost:5672
@@ -140,10 +128,6 @@ AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
 AWS_BUCKET_NAME=your_bucket_name
-
-# Stripe
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
 
 # SendGrid
 SENDGRID_API_KEY=SG....
@@ -186,7 +170,6 @@ pnpm prisma:generate:all
 pnpm migrate:user
 pnpm migrate:auth
 pnpm migrate:media
-pnpm migrate:payment
 
 # Seed default admin user and roles
 pnpm seed:all
@@ -214,7 +197,6 @@ pnpm start:user
 pnpm start:auth
 pnpm start:mail
 pnpm start:media
-pnpm start:payment
 ```
 
 The API Gateway will be available at `http://localhost:3000/api`
@@ -242,7 +224,6 @@ pnpm build:all
 pnpm migrate:user:prod
 pnpm migrate:auth:prod
 pnpm migrate:media:prod
-pnpm migrate:payment:prod
 
 # Seed data
 pnpm seed:all
@@ -253,7 +234,6 @@ pnpm start:prod:user
 pnpm start:prod:auth
 pnpm start:prod:mail
 pnpm start:prod:media
-pnpm start:prod:payment
 ```
 
 ## API Documentation
@@ -286,11 +266,6 @@ Swagger documentation is available at `http://localhost:3000/api` when running t
 - `POST /media/upload-url` - Get pre-signed S3 URL
 - `POST /media/confirm` - Confirm upload and update avatar
 
-**Payments**
-
-- `POST /payments` - Create payment intent
-- `POST /payments/webhook` - Stripe webhook endpoint
-
 ## Database Management
 
 ```bash
@@ -301,13 +276,11 @@ pnpm prisma:generate:all
 pnpm migrate:user
 pnpm migrate:auth
 pnpm migrate:media
-pnpm migrate:payment
 
 # Open Prisma Studio for database GUI
 pnpm studio:user
 pnpm studio:auth
 pnpm studio:media
-pnpm studio:payment
 ```
 
 ## Deployment
@@ -388,7 +361,6 @@ External services are wrapped in adapters:
 
 - `UserServiceAdapter` - Communicates with User Service via RabbitMQ
 - `MailServiceAdapter` - Sends emails via Mail Service
-- `StripeAdapter` - Integrates with Stripe API
 
 ## Security Features
 
@@ -400,7 +372,6 @@ External services are wrapped in adapters:
 - Email verification required
 - Secure password reset flow
 - Environment-based security settings
-- Stripe webhook signature verification
 
 ## Monitoring & Logging
 

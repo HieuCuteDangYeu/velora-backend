@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    # Loki on this same VPS (infra/loki-node), reached on the tailnet address.
+    url: http://100.86.68.16:3100
+    editable: false

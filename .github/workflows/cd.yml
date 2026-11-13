@@ -89,14 +89,11 @@ jobs:
           all_services=(
             api-gateway
             user-service
-            friend-service
             auth-service
             media-service
             media-processing-service
             reel-indexing-service
             content-service
-            payment-service
-            mail-service
             conversation-service
             call-service
             monitoring-service
@@ -273,3 +270,76 @@ jobs:
 
           echo 'homelab-deploy promotion failed after bounded retries.' >&2
           exit 1
+
+  # friend-service and mail-service run on velora-node-2 (x86_64), not on the homelab,
+  # so they are built for linux/amd64 here and rolled out over SSH instead of by the
+  # homelab deploy controller. See infra/friend-mail-node/README.md.
+  build-and-push-node2-images:
+    needs: prepare-release
+    if: needs.prepare-release.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - friend-service
+          - mail-service
+    steps:
+      - name: Checkout approved commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.target_sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push AMD64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/${{ matrix.service }}/Dockerfile
+          platforms: linux/amd64
+          outputs: type=image,push=true,rewrite-timestamp=true
+          build-args: |
+            SOURCE_DATE_EPOCH=1767225600
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ needs.prepare-release.outputs.target_sha }}-amd64
+          cache-from: type=gha,scope=${{ matrix.service }}-amd64
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-amd64
+
+  # Independent of promote-homelab: a node-2 problem must not hold back the homelab
+  # release, and the other way round. The key can only run the forced command
+  # /usr/local/sbin/velora-friend-mail-deploy (deploy <sha> | status).
+  deploy-node2:
+    needs:
+      - prepare-release
+      - build-and-push-node2-images
+    if: >-
+      always() &&
+      needs.prepare-release.result == 'success' &&
+      needs.prepare-release.outputs.should_release == 'true' &&
+      needs.build-and-push-node2-images.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Roll out friend-service and mail-service on velora-node-2
+        env:
+          TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
+          NODE2_SSH_KEY: ${{ secrets.NODE2_DEPLOY_SSH_KEY }}
+          NODE2_KNOWN_HOSTS: ${{ secrets.NODE2_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$NODE2_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          install -m 600 /dev/null ~/.ssh/node2_deploy
+          printf '%s\n' "$NODE2_SSH_KEY" > ~/.ssh/node2_deploy
+          trap 'rm -f ~/.ssh/node2_deploy' EXIT
+          ssh -i ~/.ssh/node2_deploy \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 \
+            velora-deploy@144.91.101.1 "deploy ${TARGET_SHA}"

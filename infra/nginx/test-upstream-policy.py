@@ -15,7 +15,7 @@ config = source.read_text().replace(
     'server api-gateway:3000 resolve;',
     'server 127.0.0.1:8091; server 127.0.0.1:8092;',
 )
-for service, port in [('conversation-service', 3005), ('call-service', 3007), ('payment-service', 3006)]:
+for service, port in [('conversation-service', 3005), ('call-service', 3007)]:
     config = config.replace(f'server {service}:{port} resolve;', f'server 127.0.0.1:{port};')
 mock = '''
     server {

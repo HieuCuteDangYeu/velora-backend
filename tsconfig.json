@@ -29,7 +29,6 @@
       "@gateway/*": ["apps/api-gateway/src/*"],
       "@mail/*": ["apps/mail-service/src/*"],
       "@media/*": ["apps/media-service/src/*"],
-      "@payment/*": ["apps/payment-service/src/*"],
       "@monitoring/*": ["apps/monitoring-service/src/*"],
       "@prisma/auth-client": ["node_modules/@prisma/auth-client"],
       "@prisma/content-client": ["node_modules/@prisma/content-client"],
@@ -42,7 +41,6 @@
       "@prisma/notification-client": [
         "node_modules/@prisma/notification-client"
       ],
-      "@prisma/payment-client": ["node_modules/@prisma/payment-client"],
       "@prisma/user-client": ["node_modules/@prisma/user-client"],
       "@processing/*": ["apps/media-processing-service/src/*"],
       "@indexing/*": ["apps/reel-indexing-service/src/*"],

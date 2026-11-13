@@ -64,8 +64,8 @@ compare_compose_models() {
   # Keep the existing safety invariant for volumes, with deliberate migration
   # exceptions for Loki/Alloy, the reranker cutover and the MongoDB/Redis/PostgreSQL additions.
   if ! jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
-    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data))
-      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data))
+    (($a[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data, .grafana_data, .loki_data))
+      == (($b[0].volumes // {}) | del(.rag_reranker_cache, .jev_reranker_models, .mongo_data, .mongo_config, .redis_data, .postgres_data, .grafana_data, .loki_data))
   ' >/dev/null; then
     fail "top-level Compose volumes changed outside the approved reranker/MongoDB/Redis/PostgreSQL migrations"
   fi
@@ -125,7 +125,7 @@ compare_compose_models() {
       continue
     fi
 
-    if contains "$service" "${MANAGED_INFRA_SERVICES[@]}" || [[ "$service" == "loki" || "$service" == "alloy" ]]; then
+    if contains "$service" "${MANAGED_INFRA_SERVICES[@]}" || [[ "$service" == "alloy" ]]; then
       add_unique "$service" INFRA_RECONCILE_SERVICES
       continue
     fi
@@ -149,9 +149,7 @@ plan_from_changed_files() {
     add_unique nginx INFRA_RECONCILE_SERVICES
     add_unique prometheus INFRA_RECONCILE_SERVICES
     add_unique node-exporter INFRA_RECONCILE_SERVICES
-    add_unique loki INFRA_RECONCILE_SERVICES
     add_unique alloy INFRA_RECONCILE_SERVICES
-    add_unique grafana INFRA_RECONCILE_SERVICES
     return
   fi
 
@@ -186,10 +184,7 @@ plan_from_changed_files() {
         add_unique prometheus INFRA_RECONCILE_SERVICES
         ;;
       infra/monitoring/grafana/*)
-        add_unique grafana INFRA_RECONCILE_SERVICES
-        ;;
-      infra/monitoring/loki/*)
-        add_unique loki INFRA_RECONCILE_SERVICES
+        # Grafana runs on velora-node-2 and is updated by hand (infra/grafana-node/README.md).
         ;;
       infra/monitoring/alloy/*)
         add_unique alloy INFRA_RECONCILE_SERVICES
@@ -331,10 +326,6 @@ reconcile_infrastructure() {
         log "==> Force-recreating Prometheus to refresh config bind mount..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps prometheus
         ;;
-      grafana)
-        log "==> Force-recreating Grafana to refresh provisioning/dashboard bind mounts..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps grafana
-        ;;
       node-exporter)
         log "==> Recreating node-exporter..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps node-exporter
@@ -357,10 +348,6 @@ reconcile_infrastructure() {
         # Never force-recreate the cache/presence store: only create or converge it.
         log "==> Ensuring self-hosted Redis is running..."
         VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --no-deps redis
-        ;;
-      loki)
-        log "==> Force-recreating Loki to refresh logging configuration..."
-        VELORA_IMAGE_TAG="$TARGET_SHA" docker compose up -d --force-recreate --no-deps loki
         ;;
       alloy)
         log "==> Force-recreating Alloy to refresh log collection configuration..."

@@ -1,0 +1,25 @@
+name: mongo-replica
+services:
+  mongo-replica:
+    image: mongo:8.0.34
+    container_name: mongo-replica
+    restart: unless-stopped
+    # Host networking: a replica set member must be able to reach its own address
+    # (100.104.227.44:27017) to recognise itself. Behind a published port the
+    # container cannot, and the member stays in STARTUP forever. Listening only on
+    # loopback and the tailnet address keeps it off the Wi-Fi/LAN interface.
+    network_mode: host
+    command: ["mongod", "--replSet", "rs0", "--keyFile", "/etc/mongo/keyfile", "--bind_ip", "127.0.0.1,100.104.227.44", "--wiredTigerCacheSizeGB", "1"]
+    extra_hosts:
+      - "mongo:100.102.228.48"
+    volumes:
+      - mongo_replica_data:/data/db
+      - /opt/velora/mongo-replica/keyfile:/etc/mongo/keyfile:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand({ping:1}).ok\" | grep -q 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+volumes:
+  mongo_replica_data:

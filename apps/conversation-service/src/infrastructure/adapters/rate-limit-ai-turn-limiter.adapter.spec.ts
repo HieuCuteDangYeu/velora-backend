@@ -47,6 +47,10 @@ describe('RateLimitAiTurnLimiterAdapter', () => {
         RateLimitService,
         { provide: 'IAiTurnLimiter', useClass: RateLimitAiTurnLimiterAdapter },
         { provide: 'IChatRepository', useValue: {} },
+        {
+          provide: 'IBotTypingNotifier',
+          useValue: { start: jest.fn(), stop: jest.fn() },
+        },
         { provide: ProcessBotReplyUseCase, useValue: { execute: jest.fn() } },
         TriggerBotReplyUseCase,
       ],

@@ -20,7 +20,6 @@ import { FriendController } from '@gateway/friends/friend.controller';
 import { MediaController } from '@gateway/media/media.controller';
 import { MonitoringController } from '@gateway/monitoring/monitoring.controller';
 import { NotificationController } from '@gateway/notifications/notification.controller';
-import { PaymentController } from '@gateway/payment/payment.controller';
 import { RecommendationController } from '@gateway/recommendation/recommendation.controller';
 import { SearchController } from '@gateway/search/search.controller';
 import { UserController } from '@gateway/users/user.controller';
@@ -68,7 +67,6 @@ function createRmqClientRegistration(name: string, queue: string) {
       createRmqClientRegistration('USER_SERVICE', 'user_queue'),
       createRmqClientRegistration('AUTH_SERVICE', 'auth_queue'),
       createRmqClientRegistration('MEDIA_SERVICE', 'media_queue'),
-      createRmqClientRegistration('PAYMENT_SERVICE', 'payment_queue'),
       createRmqClientRegistration('CONVERSATION_SERVICE', 'conversation_queue'),
       createRmqClientRegistration('CONTENT_SERVICE', 'content_queue'),
       createRmqClientRegistration('AI_SERVICE', 'ai_queue'),
@@ -82,7 +80,6 @@ function createRmqClientRegistration(name: string, queue: string) {
     AuthController,
     FriendController,
     MediaController,
-    PaymentController,
     ConversationController,
     GroupMembersV2Controller,
     MessageController,

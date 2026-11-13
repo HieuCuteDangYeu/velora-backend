@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Message } from '../../domain/entities/message.entity';
 import { Conversation } from '../../domain/entities/conversation.entity';
 import type { BotError } from '../../domain/interfaces/ai-service.interface';
+import type { IBotTypingNotifier } from '../../domain/interfaces/bot-typing-notifier.interface';
 import type { IAiTurnLimiter } from '../../domain/interfaces/ai-turn-limiter.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import { ProcessBotReplyUseCase } from './process-bot-reply.use-case';
@@ -21,6 +22,8 @@ export class TriggerBotReplyUseCase {
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     private readonly processBotReplyUseCase: ProcessBotReplyUseCase,
     @Inject('IAiTurnLimiter') private readonly aiTurnLimiter: IAiTurnLimiter,
+    @Inject('IBotTypingNotifier')
+    private readonly botTypingNotifier: IBotTypingNotifier,
   ) {}
 
   async execute(
@@ -56,6 +59,8 @@ export class TriggerBotReplyUseCase {
       };
     }
 
+    // Show the bot as typing for the whole turn, like a person composing a reply.
+    this.botTypingNotifier.start(userMessage.conversationId);
     try {
       const result = await this.processBotReplyUseCase.execute(userMessage);
 
@@ -71,6 +76,8 @@ export class TriggerBotReplyUseCase {
         triggered: false,
         botError: { code: 'UNKNOWN', message: msg },
       };
+    } finally {
+      this.botTypingNotifier.stop(userMessage.conversationId);
     }
   }
 }

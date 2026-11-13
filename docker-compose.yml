@@ -332,7 +332,8 @@ services:
       - .env
     environment:
       PROMETHEUS_URL: http://prometheus:9090
-      LOKI_URL: http://loki:3100
+      # Loki runs on velora-node-2 (infra/loki-node/); read it over Tailscale.
+      LOKI_URL: http://100.86.68.16:3100
       DOCKER_ENGINE_SOCKET: ${DOCKER_ENGINE_SOCKET:-/var/run/docker.sock}
       # Two Prisma clients: one connection each, two total on this instance.
       MONITORING_DATABASE_CONNECTION_LIMIT: ${MONITORING_DATABASE_CONNECTION_LIMIT:-1}
@@ -346,8 +347,6 @@ services:
       rabbitmq:
         condition: service_healthy
       prometheus:
-        condition: service_started
-      loki:
         condition: service_started
     networks:
       - microservices-net
@@ -393,20 +392,6 @@ services:
     networks:
       - microservices-net
 
-  loki:
-    image: grafana/loki:latest
-    restart: unless-stopped
-    mem_limit: ${LOKI_MEMORY_LIMIT:-384m}
-    command:
-      - -config.file=/etc/loki/loki-config.yml
-    volumes:
-      - ./infra/monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
-      - loki_data:/loki
-    ports:
-      - '127.0.0.1:3100:3100'
-    networks:
-      - microservices-net
-
   alloy:
     image: grafana/alloy:latest
     restart: unless-stopped
@@ -419,9 +404,6 @@ services:
       - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - alloy_data:/var/lib/alloy/data
-    depends_on:
-      loki:
-        condition: service_started
     networks:
       - microservices-net
 
@@ -684,7 +666,6 @@ volumes:
   postgres_data:
   rabbitmq_data:
   prometheus_data:
-  loki_data:
   alloy_data:
   rag_embedding_cache:
   rag_reranker_cache:

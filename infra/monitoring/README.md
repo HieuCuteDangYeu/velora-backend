@@ -1,8 +1,12 @@
 # Velora monitoring stack
 
-This directory contains the Prometheus, Loki, Alloy and Grafana configuration. Prometheus,
-Loki, Alloy and `monitoring-service` are part of the default homelab Compose topology so the
-existing CD service can reconcile them without a separate overlay command.
+This directory contains the Prometheus, Alloy and Grafana configuration. Prometheus, Alloy and
+`monitoring-service` are part of the default homelab Compose topology so the existing CD
+service can reconcile them without a separate overlay command.
+
+**Loki no longer runs on the homelab either.** Since 2026-11-13 it runs on velora-node-2 and
+Alloy pushes to it over Tailscale (`../loki-node/README.md`); its config moved to
+`../loki-node/loki-config.yml`.
 
 **Grafana no longer runs on the homelab.** Since 2026-11-13 it runs on velora-node-2 (France),
 reading the homelab Prometheus and Loki over Tailscale, to free about 240 MiB of RAM. See
@@ -39,7 +43,7 @@ Prometheus is defined directly in the root Compose file, so a normal deployment 
 automatically. To start only the monitoring components manually:
 
 ```bash
-docker compose up -d monitoring-service prometheus loki alloy
+docker compose up -d monitoring-service prometheus alloy
 ```
 
 ## Verify

@@ -10,29 +10,28 @@ service names (`conversation-service:3005` and so on), which are not reachable f
 | Where | `/opt/velora/grafana/` on velora-node-2 (France), managed by hand over SSH |
 | Image | `grafana/grafana:13.2.2`, the version the homelab ran |
 | Listens on | the Tailscale address only, port 3001 |
-| Reads | homelab Prometheus `100.102.228.48:9090`, homelab Loki `100.102.228.48:3100` |
+| Reads | homelab Prometheus `100.102.228.48:9090`, Loki on this VPS `100.86.68.16:3100` (since phase 2) |
 | Dashboards | `infra/monitoring/grafana/dashboards`, copied at install time |
 
 ## Why this helps, and what it does not do
 
 - The homelab gets about 240 MiB back (Grafana's usage was 238 MiB).
 - Every panel now crosses a 217 ms link, so dashboards open more slowly than before.
-- If the homelab goes down, Grafana stays up but has no data: Prometheus and Loki are still on
-  the homelab. Moving Loki (phase 2) keeps the last log lines from before an outage.
+- If the homelab goes down, Grafana stays up and still shows logs (Loki moved here in phase 2,
+  see `../loki-node/README.md`) but has no metrics: Prometheus is still on the homelab.
 - The dashboard's own Grafana-free pages (Servers, Calls, Logs) are not affected: the
   monitoring-service reads Prometheus and Loki directly.
 
 ## Install
 
-1. On the **homelab**, publish Prometheus and Loki on the tailnet (needs `sudo`; the services
+1. On the **homelab**, publish Prometheus on the tailnet (Loki is no longer on the homelab) (needs `sudo`; the services
    still only listen on `127.0.0.1`, `tailscale serve` forwards the tailnet address to them):
 
    ```sh
    sudo tailscale serve --bg --tcp 9090 tcp://localhost:9090
-   sudo tailscale serve --bg --tcp 3100 tcp://localhost:3100
    ```
 
-   Neither service authenticates callers. Limit both ports to the VPS with a Tailscale ACL.
+   Prometheus does not authenticate callers. Limit the port to the VPS with a Tailscale ACL.
 
 2. Copy the files to the VPS:
 

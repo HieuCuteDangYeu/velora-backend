@@ -43,11 +43,12 @@ loki.source.docker "velora" {
 
 loki.process "velora" {
   stage.decolorize {}
-  forward_to = [loki.write.local.receiver]
+  forward_to = [loki.write.node2.receiver]
 }
 
-loki.write "local" {
+// Loki runs on velora-node-2 (France), reached over Tailscale (infra/loki-node/).
+loki.write "node2" {
   endpoint {
-    url = "http://loki:3100/loki/api/v1/push"
+    url = "http://100.86.68.16:3100/loki/api/v1/push"
   }
 }

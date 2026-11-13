@@ -1,0 +1,23 @@
+name: loki-node
+# Loki for the Velora logs, running on velora-node-2 (France) so the homelab does not spend
+# ~150 MiB of RAM on it, and so the last log lines before a homelab outage are still readable.
+# Copy this folder to /opt/velora/loki/ on the VPS and follow README.md. Managed by hand over
+# SSH, not by CI.
+#
+# It listens on the Tailscale address only (TAILNET_IP). Loki has no authentication.
+services:
+  loki:
+    image: grafana/loki:3.7.8
+    container_name: loki
+    restart: unless-stopped
+    mem_limit: 384m
+    command:
+      - -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - '${TAILNET_IP:?set TAILNET_IP in .env}:3100:3100'
+
+volumes:
+  loki_data:

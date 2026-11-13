@@ -35,7 +35,10 @@ for file in \
   infra/grafana-node/compose.yaml \
   infra/grafana-node/README.md \
   infra/grafana-node/provisioning/datasources/prometheus.yml \
-  infra/grafana-node/provisioning/datasources/loki.yml; do
+  infra/grafana-node/provisioning/datasources/loki.yml \
+  infra/loki-node/compose.yaml \
+  infra/loki-node/loki-config.yml \
+  infra/loki-node/README.md; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

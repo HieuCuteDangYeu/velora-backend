@@ -51,8 +51,8 @@ grep -q "'grafana' removal is an approved migration" <<<"$out" || { printf '%s\n
 grep -q 'RECONCILE= INFRA=$' <<<"$out" || { printf '%s\n' "$out" >&2; exit 1; }
 
 # 2. Other removals are still blocked.
-jq 'del(.services.loki)' "$tmp_dir/without.json" >"$tmp_dir/no-loki.json"
-if out="$(run_compare "$tmp_dir/without.json" "$tmp_dir/no-loki.json" 2>&1)"; then
+jq 'del(.services.prometheus)' "$tmp_dir/without.json" >"$tmp_dir/no-prom.json"
+if out="$(run_compare "$tmp_dir/without.json" "$tmp_dir/no-prom.json" 2>&1)"; then
   printf 'expected another service removal to be blocked\n%s\n' "$out" >&2
   exit 1
 fi

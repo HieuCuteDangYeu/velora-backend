@@ -134,6 +134,8 @@ readonly -a REMOVED_COMPOSE_SERVICES=(
   jev-reranker
   # Runs on velora-node-2 now (infra/grafana-node/), reading this host over Tailscale.
   grafana
+  # Runs on velora-node-2 too (infra/loki-node/); Alloy pushes to it over Tailscale.
+  loki
 )
 
 # Compose changes to these services require deliberate operator handling.
@@ -1329,7 +1331,7 @@ plan_from_changed_files() {
         ;;
       scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
         ;;
-      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*)
+      infra/mongo-replica/*|infra/postgres-replica/*|infra/call-media-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*|infra/loki-node/*)
         # Notes and compose files for the second VPS (velora-node-2). That host is
         # managed by hand over SSH and nothing here is deployed on the homelab.
         ;;

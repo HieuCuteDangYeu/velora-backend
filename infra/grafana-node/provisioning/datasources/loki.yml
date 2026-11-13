@@ -5,6 +5,6 @@ datasources:
     uid: loki
     type: loki
     access: proxy
-    # Homelab Loki, published on the tailnet with `tailscale serve` (see README.md).
-    url: http://100.102.228.48:3100
+    # Loki on this same VPS (infra/loki-node), reached on the tailnet address.
+    url: http://100.86.68.16:3100
     editable: false

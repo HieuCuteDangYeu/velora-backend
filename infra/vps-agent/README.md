@@ -6,7 +6,7 @@ Every VPS that should appear in the Velora dashboard runs the stack in `compose.
 | --- | --- | --- |
 | `node-exporter` | `9100` | Host CPU, memory, disk, load and network. Scraped by the homelab Prometheus. |
 | `docker-proxy` | `2375` | Read-only Docker Engine API for the per-container breakdown. |
-| `alloy` (profile `logs`) | none | Pushes the VPS's container logs to the homelab Loki. |
+| `alloy` (profile `logs`) | none | Pushes the VPS's container logs to Loki (`infra/loki-node`, on this VPS). |
 
 This folder is for hosts managed by hand over SSH. The homelab deploy script ignores it.
 How the dashboard uses the data is described in `infra/monitoring/README.md`
@@ -30,7 +30,7 @@ Create `/opt/velora/vps-agent/.env` on the VPS (mode 600) with:
 ```text
 TAILNET_IP=100.86.68.16
 HOST_ID=velora-node-2
-LOKI_PUSH_URL=http://100.102.228.48:3100/loki/api/v1/push
+LOKI_PUSH_URL=http://100.86.68.16:3100/loki/api/v1/push
 ```
 
 `HOST_ID` and `LOKI_PUSH_URL` are only read by the optional log shipper. Then start it:
@@ -51,15 +51,14 @@ The last command must print `403`: the proxy denies everything that is not a rea
 
 ### Optional: logs
 
-Loki listens on `127.0.0.1:3100` on the homelab, so expose it to the tailnet once (needs sudo
-there), then start the `logs` profile on the VPS:
+Loki runs on velora-node-2 itself (`../loki-node/README.md`), so start it there first, then the
+`logs` profile on the VPS:
 
 ```sh
-sudo tailscale serve --bg --tcp 3100 tcp://localhost:3100
 cd /opt/velora/vps-agent && docker compose --profile logs up -d
 ```
 
-The first command runs on the homelab, the second on the VPS. Services that run on a VPS need
+Services that run on a VPS need
 to be in the log service list of `monitoring-service` (`STANDARD_LOG_SERVICES` in
 `system-logs.controller.ts`) before the Logs page offers them.
 

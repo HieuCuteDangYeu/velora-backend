@@ -40,7 +40,7 @@ services:
       # The proxy cannot authenticate callers: keep it on the tailnet address.
       - '${TAILNET_IP:?set TAILNET_IP in .env}:2375:2375'
 
-  # Optional: ship this VPS's container logs to the homelab Loki, tagged with
+  # Optional: ship this VPS's container logs to Loki (on this VPS, infra/loki-node), tagged with
   # host=$HOST_ID, so they show up in the dashboard's Logs page.
   # Start with: docker compose --profile logs up -d
   alloy:

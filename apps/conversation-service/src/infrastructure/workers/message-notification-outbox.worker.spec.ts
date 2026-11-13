@@ -44,6 +44,7 @@ const makeHarness = (records = [makeRecord()]) => {
     createdAt: NOW,
     updatedAt: NOW,
   };
+  const backlogReads = jest.fn<void, [unknown]>();
   const message = {
     findRaw: jest.fn(
       ({
@@ -77,8 +78,18 @@ const makeHarness = (records = [makeRecord()]) => {
       }: {
         pipeline: {
           $match?: { _id: { $oid: string }; notificationClaimId: string };
+          $count?: string;
         }[];
       }) => {
+        // The backlog gauge: a date-typed range plus $count, answered like Mongo
+        // (no document at all when nothing is pending).
+        if (pipeline.some((stage) => stage.$count !== undefined)) {
+          backlogReads(pipeline);
+          const pending = records.filter(
+            (r) => r.notificationNextAttemptAt instanceof Date,
+          ).length;
+          return Promise.resolve(pending > 0 ? [{ pending }] : []);
+        }
         const match = pipeline[0].$match!;
         const record = records.find(
           (r) =>
@@ -97,11 +108,6 @@ const makeHarness = (records = [makeRecord()]) => {
             : [],
         );
       },
-    ),
-    count: jest.fn(() =>
-      Promise.resolve(
-        records.filter((r) => r.notificationNextAttemptAt).length,
-      ),
     ),
   };
   const runCommand = jest.fn(
@@ -178,6 +184,7 @@ const makeHarness = (records = [makeRecord()]) => {
   return {
     records,
     message,
+    backlogReads,
     runCommand,
     notifications,
     chats,
@@ -247,7 +254,12 @@ describe('Message notification outbox', () => {
       return result;
     });
     await h.createWorker().runOnce();
-    expect(h.message.aggregateRaw).toHaveBeenCalledTimes(1);
+    // One intent lookup; the backlog gauge's $count pipeline is a separate call.
+    expect(
+      h.message.aggregateRaw.mock.calls.filter(
+        ([arg]) => !arg.pipeline.some((stage) => stage.$count !== undefined),
+      ),
+    ).toHaveLength(1);
     expect(h.message.aggregateRaw).toHaveBeenCalledWith(
       expect.objectContaining({
         pipeline: expect.arrayContaining([
@@ -550,7 +562,40 @@ describe('Message notification outbox', () => {
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
     );
-    expect(h.message.count).toHaveBeenCalledTimes(1);
+    expect(h.backlogReads).toHaveBeenCalledTimes(1);
+  });
+
+  it('samples the backlog with a date-typed range on the due-date index, never a null comparison', async () => {
+    const h = makeHarness([makeRecord(1), makeRecord(2)]);
+    await h.createWorker().runOnce();
+    const [pipeline] = h.backlogReads.mock.calls[0] as [
+      { $match?: { notificationNextAttemptAt: Record<string, unknown> } }[],
+    ];
+    // Prisma's `not: null` becomes $expr and scans every message; this shape is
+    // the one the due-date read already proves can use the index.
+    expect(pipeline[0].$match?.notificationNextAttemptAt).toEqual({
+      $type: 'date',
+      $lte: { $date: expect.any(String) as string },
+    });
+    expect(h.message).not.toHaveProperty('count');
+    expect(h.metrics.setNotificationOutboxPending).toHaveBeenCalledWith(0);
+  });
+
+  it('a failing backlog gauge read never interrupts delivery or counts as a poll error', async () => {
+    const h = makeHarness([makeRecord(1)]);
+    const original = h.message.aggregateRaw.getMockImplementation()!;
+    h.message.aggregateRaw.mockImplementation((arg) =>
+      arg.pipeline.some((stage) => stage.$count !== undefined)
+        ? Promise.reject(new Error('count failed'))
+        : original(arg),
+    );
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+    expect(h.records[0].notificationNextAttemptAt).toBeNull();
+    expect(h.metrics.recordNotificationOutbox).not.toHaveBeenCalledWith(
+      'poll_error',
+    );
+    expect(h.metrics.setNotificationOutboxPending).not.toHaveBeenCalled();
   });
 
   it('keeps draining a long backlog in one run while every batch is full', async () => {

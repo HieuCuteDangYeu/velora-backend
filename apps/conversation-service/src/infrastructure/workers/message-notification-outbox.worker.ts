@@ -15,6 +15,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Message } from '../../domain/entities/message.entity';
 import { Conversation } from '../../domain/entities/conversation.entity';
 import {
+  countPendingNotificationIntents,
   findDueNotificationIntents,
   readNotificationIntent,
 } from '../repositories/notification-intent.reader';
@@ -120,15 +121,18 @@ export class MessageNotificationOutboxWorker
       }),
     );
     if (!this.stopped && Date.now() >= this.nextBacklogSampleAt) {
-      const pending = await this.metrics.measurePhase(
-        'outbox_backlog_read',
-        () =>
-          this.prisma.message.count({
-            where: { notificationNextAttemptAt: { not: null } },
-          }),
-      );
-      this.metrics.setNotificationOutboxPending(pending);
-      this.nextBacklogSampleAt = Date.now() + 10_000;
+      try {
+        const pending = await this.metrics.measurePhase(
+          'outbox_backlog_read',
+          () => countPendingNotificationIntents(this.prisma),
+        );
+        this.metrics.setNotificationOutboxPending(pending);
+      } catch {
+        // The gauge is only a measurement; it must not interrupt delivery.
+        this.logger.warn('Notification outbox backlog sample failed');
+      } finally {
+        this.nextBacklogSampleAt = Date.now() + 10_000;
+      }
     }
     return !this.stopped && candidates.length === BATCH_SIZE && allCompleted;
   }

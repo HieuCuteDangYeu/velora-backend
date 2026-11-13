@@ -13,6 +13,7 @@ import type { ReelContextSearchResult } from '@common/content/interfaces/reel-co
 
 export type RagChatIntent =
   | 'NORMAL_CHAT'
+  | 'OFF_TOPIC'
   | 'REEL_VIDEO_QUESTION'
   | 'CONVERSATION_MEMORY_QUESTION'
   | 'USER_MEMORY_QUESTION'

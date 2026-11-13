@@ -110,6 +110,24 @@ previous instructions, is that real?") is refused too, and rewordings it has nev
 catch and false-positive rates are in `eval/rag/README.md`. To roll back, unset `AI_GUARDRAIL_INPUT_MODE` (or set it
 to `shadow`) and redeploy; nothing is stored.
 
+## Scope: staying on topic
+
+Velora AI only helps with Velora: Reels and videos, finding something to watch, the user's own chat and saved memory,
+and using the app. A message about anything else (general knowledge, coding, maths, writing, translation, advice,
+live data) is answered with one fixed redirect, `OFF_TOPIC_REDIRECT_MESSAGE`, and the question is not answered.
+
+- The router (`QueryRouterAgentUseCase`) has an `OFF_TOPIC` intent. It adds no model call. The graph sends that intent
+  straight to `noContextAnswerNode`: no retrieval, memory, tools or verifier. It is reported as `finalFailureSource=NONE`
+  (not a failure) in telemetry.
+- A router error still falls back to ordinary chat, so a model outage cannot make the bot refuse everything.
+- `AI_SCOPE_MODE=enforce|off` (default `enforce`). `off` demotes `OFF_TOPIC` to normal chat and restores the open
+  general-knowledge instruction in the draft step. Rollback is an `.env` change plus recreating ai-service.
+- The draft step also carries a scope instruction, but it is weak: on `gemma4:e2b` about two thirds of the unrelated
+  prompts that reach it are still answered. The router is the gate.
+
+Measured on the production model (`eval/rag/README.md`): 76 of 79 unrelated messages caught, 0 of 143 in-scope messages
+refused. Unrelated messages that slip through (advice and "suggest" style requests) are answered normally.
+
 ## After every deploy
 
 1. A green "Homelab CD" run only means images were built and `homelab-deploy` was promoted. The homelab deploys by

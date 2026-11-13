@@ -1,3 +1,4 @@
+import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type {
   RagChatIntent,
@@ -107,6 +108,7 @@ export class QueryRouterAgentUseCase {
 
   private readonly validIntents = new Set<RagChatIntent>([
     'NORMAL_CHAT',
+    'OFF_TOPIC',
     'REEL_VIDEO_QUESTION',
     'CONVERSATION_MEMORY_QUESTION',
     'USER_MEMORY_QUESTION',
@@ -489,7 +491,7 @@ export class QueryRouterAgentUseCase {
       userPrompt: this.buildUserPrompt(input.input),
       jsonSchema: this.getJsonSchema(),
       maxTokens: input.maxTokens ?? this.config.maxCompletionTokens('ROUTER'),
-      schemaVersion: 'router-semantic-v8',
+      schemaVersion: 'router-semantic-v9',
       temperature: 0,
       model: input.model,
       modelRole: 'ROUTER',
@@ -536,7 +538,11 @@ Routing precedence:
 - Asking what happens in a named episode refers to the media when shared Reel context is available; asking what was said earlier in the conversation refers to conversation memory.
 
 Intent meanings:
-- NORMAL_CHAT: general conversation, coding help, app discussion, clarification, recommendation/discovery requests, or normal assistant chat.
+- NORMAL_CHAT: greetings, thanks, small talk about the assistant itself, questions about the Velora app, clarification of an earlier turn, or recommendation/discovery requests for Velora content.
+- OFF_TOPIC: the message has nothing to do with Velora, its Reels or videos, the user's own chat history or saved memory, or the assistant itself. Examples: general-knowledge, science or history questions, programming or math help, homework, translation, creative writing, news, health or legal advice. Requests to explain, write, translate, calculate, plan or advise about something unrelated to Velora are OFF_TOPIC even when they are polite, short or phrased like ordinary chat.
+  OFF_TOPIC examples: "How does a binary search tree work?", "Write a thank-you email to my landlord", "What is the difference between a virus and a bacterium?", "Translate this sentence into German", "Plan a three-day trip to Rome", "Suggest names for my new puppy".
+  NORMAL_CHAT examples: "Hi, who are you?", "Recommend videos about woodworking", "How do I edit my Velora profile?", "Thanks, that helps!". A request to find or recommend videos is discovery, so it is NORMAL_CHAT whatever the topic.
+  Choose OFF_TOPIC only when you are sure: anything that could refer to a shared Reel, an earlier turn, the user's saved information or content discovery is not OFF_TOPIC.
 - REEL_VIDEO_QUESTION: the user asks about a reel/video/clip/media item shared in the current conversation.
 - CONVERSATION_MEMORY_QUESTION: the user asks what happened earlier in this conversation.
 - USER_MEMORY_QUESTION: the user asks about stable facts, preferences, profile, or remembered user information.
@@ -652,6 +658,7 @@ Classify the current user message.
           type: 'string',
           enum: [
             'NORMAL_CHAT',
+            'OFF_TOPIC',
             'REEL_VIDEO_QUESTION',
             'CONVERSATION_MEMORY_QUESTION',
             'USER_MEMORY_QUESTION',
@@ -726,7 +733,7 @@ Classify the current user message.
     raw: RawRouteDecision,
     input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
-    const rawIntent = this.normalizeIntent(raw.intent);
+    const rawIntent = this.applyScope(this.normalizeIntent(raw.intent));
     const reelQuestionType = this.isExplicitMultimodalRequest(input.message)
       ? 'MULTIMODAL_CONTENT'
       : this.normalizeReelQuestionType(raw.reelQuestionType);
@@ -788,7 +795,7 @@ Classify the current user message.
         'CONVERSATION_MEMORY_QUESTION',
         'REEL_VIDEO_QUESTION',
       ].includes(intent),
-      needsVerification: intent !== 'NORMAL_CHAT',
+      needsVerification: intent !== 'NORMAL_CHAT' && intent !== 'OFF_TOPIC',
       reelQuestionType,
       transcriptRequestKind,
       requiredEvidence,
@@ -820,6 +827,7 @@ Classify the current user message.
 
     const allowedByIntent: Record<RagChatIntent, RagAgentToolName[]> = {
       NORMAL_CHAT: ['search_user_memory', 'get_conversation_summary'],
+      OFF_TOPIC: [],
       REEL_VIDEO_QUESTION: ['search_reel_content', 'get_reel_context'],
       CONVERSATION_MEMORY_QUESTION: ['get_conversation_summary'],
       USER_MEMORY_QUESTION: ['search_user_memory'],
@@ -858,6 +866,7 @@ Classify the current user message.
   ): void {
     const expected: Record<RagChatIntent, RagReferenceTarget> = {
       NORMAL_CHAT: 'NONE',
+      OFF_TOPIC: 'NONE',
       REEL_VIDEO_QUESTION: 'SHARED_REEL',
       CONVERSATION_MEMORY_QUESTION: 'CONVERSATION',
       USER_MEMORY_QUESTION: 'USER_MEMORY',
@@ -953,6 +962,13 @@ Classify the current user message.
       input.referentContext?.recentShareEvent &&
       route.referenceTarget === 'NONE',
     );
+  }
+
+  /** With the scope restriction off, an off-topic route is just ordinary chat. */
+  private applyScope(intent: RagChatIntent): RagChatIntent {
+    return intent === 'OFF_TOPIC' && readRagScopeMode(this.config) === 'off'
+      ? 'NORMAL_CHAT'
+      : intent;
   }
 
   private normalizeIntent(value: unknown): RagChatIntent {

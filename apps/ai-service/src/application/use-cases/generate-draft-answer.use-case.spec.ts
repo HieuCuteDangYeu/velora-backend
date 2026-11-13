@@ -3674,6 +3674,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     const systemPromptOf = async (
       route: Record<string, unknown>,
       overrides: Record<string, unknown> = {},
+      scopeMode?: string,
     ) => {
       const service = {
         generateObject: jest
@@ -3683,7 +3684,13 @@ describe('GenerateDraftAnswerUseCase', () => {
       const useCase = new GenerateDraftAnswerUseCase(
         service as never,
         promptBuilder,
-        config,
+        scopeMode
+          ? ({
+              ...config,
+              get: (key: string) =>
+                key === 'AI_SCOPE_MODE' ? scopeMode : undefined,
+            } as never)
+          : config,
       );
       await useCase.execute({
         ...chatState(),
@@ -3695,8 +3702,17 @@ describe('GenerateDraftAnswerUseCase', () => {
       ).systemPrompt;
     };
 
-    it('lets a chat turn answer from general knowledge without citing missing context', async () => {
+    it('keeps a chat turn on topic and does not answer from general knowledge', async () => {
       const prompt = await systemPromptOf({ intent: 'NORMAL_CHAT' });
+      expect(prompt).toContain('You only help with Velora');
+      expect(prompt).toContain(
+        'say briefly that you can only help with Velora',
+      );
+      expect(prompt).not.toContain('from your own knowledge');
+    });
+
+    it('lets a chat turn answer from general knowledge when the scope restriction is off', async () => {
+      const prompt = await systemPromptOf({ intent: 'NORMAL_CHAT' }, {}, 'off');
       expect(prompt).toContain('from your own knowledge');
       expect(prompt).toContain('Never mention "the provided context"');
       // It must not weaken the limits on what the assistant cannot know.

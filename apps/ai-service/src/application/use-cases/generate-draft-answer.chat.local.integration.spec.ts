@@ -16,11 +16,26 @@ import { GenerateDraftAnswerUseCase } from './generate-draft-answer.use-case';
  *     npx jest generate-draft-answer.chat.local.integration
  *
  * Production answers with the smallest Gemma (e2b), which is where this used to fail
- * about one chat turn in three. Every dataset prompt must produce an answer; at most 10% of
- * the general-knowledge prompts may be refused for "lack of evidence" (6 of 30 before the
- * chat instruction; 15 of 30 on the larger e4b model); and the prompts the assistant cannot
- * know (an unseen video, private or live data) must still be declined, never invented.
+ * about one chat turn in three. Every dataset prompt must produce an answer without claims.
+ * Scope is strict (AI_SCOPE_MODE defaults to enforce): the router normally turns an unrelated
+ * message away before this step, so this is the second line of defence for one that slips through.
+ *  - in-scope chat (greeting, thanks, capability, smalltalk) is answered;
+ *  - this step only trims leaks: gemma4:e2b ignores a scope instruction in about two thirds of the
+ *    unrelated prompts that reach it (38 of 48, then 31 of 48 with the exact-reply wording), so the
+ *    router is the real gate. The leak rate is reported and capped at DRAFT_MAX_OFF_TOPIC_ANSWERED;
+ *  - none may be refused as "lack of evidence", and the prompts the assistant cannot know
+ *    (an unseen video, private or live data) must still be declined, never invented.
  */
+const IN_SCOPE_CATEGORIES = new Set([
+  'greeting',
+  'thanks',
+  'capability',
+  'smalltalk',
+]);
+const maxAnsweredOffTopic = Number(
+  process.env.DRAFT_MAX_OFF_TOPIC_ANSWERED ?? 0.8,
+);
+const REDIRECTS_TO_VELORA = /\b(Velora|Reels?|videos?)\b/i;
 const localIt = process.env.OLLAMA_LOCAL_INTEGRATION === '1' ? it : it.skip;
 const model = process.env.OLLAMA_LOCAL_MODEL || 'gemma4:e2b-it-qat';
 
@@ -102,23 +117,31 @@ describe('chat answers from the real local model (opt-in)', () => {
       );
 
       const failures: string[] = [];
-      const refusedGeneralKnowledge: string[] = [];
+      const refusedForEvidence: string[] = [];
       const notDeclined: string[] = [];
-      let generalKnowledge = 0;
+      const answeredOffTopic: string[] = [];
+      let offTopic = 0;
       for (const { id, prompt, category, expect: expected } of rows) {
-        if (category === 'general-knowledge') generalKnowledge += 1;
+        const isOffTopic =
+          expected === 'answer' && !IN_SCOPE_CATEGORIES.has(category);
+        if (isOffTopic) offTopic += 1;
         try {
           const draft = await useCase.execute(chatState(prompt));
           if (!draft.answer.trim()) failures.push(`${id}: empty answer`);
           if (draft.claims.length > 0)
             failures.push(`${id}: unexpected claims`);
-          if (
-            category === 'general-knowledge' &&
-            EVIDENCE_REFUSAL.test(draft.answer)
-          ) {
-            refusedGeneralKnowledge.push(`${id}: ${draft.answer.slice(0, 80)}`);
+          if (isOffTopic && EVIDENCE_REFUSAL.test(draft.answer)) {
+            refusedForEvidence.push(`${id}: ${draft.answer.slice(0, 80)}`);
           }
-          if (expected === 'decline' && !DECLINES.test(draft.answer)) {
+          if (isOffTopic && !REDIRECTS_TO_VELORA.test(draft.answer)) {
+            answeredOffTopic.push(`${id}: ${draft.answer.slice(0, 80)}`);
+          }
+          // Live data (weather, prices) is now off-topic, so the Velora redirect counts as a decline.
+          if (
+            expected === 'decline' &&
+            !DECLINES.test(draft.answer) &&
+            !REDIRECTS_TO_VELORA.test(draft.answer)
+          ) {
             notDeclined.push(`${id}: ${draft.answer.slice(0, 80)}`);
           }
         } catch (error: unknown) {
@@ -128,12 +151,17 @@ describe('chat answers from the real local model (opt-in)', () => {
         }
       }
 
-      expect(generalKnowledge).toBeGreaterThanOrEqual(30);
+      expect(offTopic).toBeGreaterThanOrEqual(40);
+      console.log(
+        JSON.stringify({ offTopic, answeredOffTopic: answeredOffTopic.length }),
+      );
+      console.log(answeredOffTopic.join('\n'));
       expect(failures).toEqual([]);
       // Never invent an answer to something the assistant cannot know.
       expect(notDeclined).toEqual([]);
-      expect(refusedGeneralKnowledge.length).toBeLessThanOrEqual(
-        Math.floor(generalKnowledge * 0.1),
+      expect(refusedForEvidence).toEqual([]);
+      expect(answeredOffTopic.length).toBeLessThanOrEqual(
+        Math.floor(offTopic * maxAnsweredOffTopic),
       );
     },
   );

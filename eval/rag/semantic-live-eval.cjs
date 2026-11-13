@@ -11,7 +11,7 @@
  *   docker cp eval/rag/semantic-live-eval.cjs eval/rag/semantic-live-eval-lib.cjs \
  *     eval/rag/datasets/rag-semantic-live-v1.jsonl <content-service>:/usr/src/app/
  *   docker exec <content-service> node semantic-live-eval.cjs run \
- *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50]
+ *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50] [--rerank-top 12] [--search-limit 30]
  *   docker cp <content-service>:/tmp/run-a.json .benchmarks/semantic-live-run-a.json
  *   docker exec -u root <content-service> rm /usr/src/app/semantic-live-eval*.cjs \
  *     /usr/src/app/rag-semantic-live-v1.jsonl /tmp/run-a.json
@@ -35,8 +35,10 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const lib = require('./semantic-live-eval-lib.cjs');
 
-const SEARCH_LIMIT = 30;
-const RERANK_TOP = 12;
+const DEFAULT_SEARCH_LIMIT = 30;
+// Matches AI_RAG_NEURAL_RERANK_CANDIDATE_LIMIT in production.
+const DEFAULT_RERANK_TOP = 12;
+const RERANK_RPC_MAX_ITEMS = 50;
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -118,6 +120,19 @@ async function run(args, deps = rabbitDeps()) {
     }
   };
 
+  const searchLimit = Number(args['search-limit'] ?? DEFAULT_SEARCH_LIMIT);
+  const rerankTop = Number(args['rerank-top'] ?? DEFAULT_RERANK_TOP);
+  if (!Number.isInteger(searchLimit) || searchLimit < 1)
+    throw new Error('--search-limit must be a positive integer');
+  if (
+    !Number.isInteger(rerankTop) ||
+    rerankTop < 2 ||
+    rerankTop > Math.min(searchLimit, RERANK_RPC_MAX_ITEMS)
+  )
+    throw new Error(
+      `--rerank-top must be an integer from 2 to min(search-limit, ${RERANK_RPC_MAX_ITEMS})`,
+    );
+
   const raw = fs.readFileSync(args.cases, 'utf8');
   const cases = selectCases(lib.parseJsonl(raw), args);
   if (!cases.length)
@@ -136,8 +151,8 @@ async function run(args, deps = rabbitDeps()) {
     startedAt: new Date().toISOString(),
     indexVersions: new Set(),
     embedding: null,
-    searchLimit: SEARCH_LIMIT,
-    rerankTop: RERANK_TOP,
+    searchLimit,
+    rerankTop,
   };
   const delay = Number(args['delay-ms'] ?? 150);
   const perCase = [];
@@ -170,7 +185,7 @@ async function run(args, deps = rabbitDeps()) {
           queryEmbedding: embedding.values,
           queryEmbeddingModel: embedding.model,
           queryEmbeddingVersion: embedding.version,
-          limit: SEARCH_LIMIT,
+          limit: searchLimit,
           candidateLimit: 200,
         },
         15000,
@@ -182,11 +197,11 @@ async function run(args, deps = rabbitDeps()) {
       const retrieval = hits.map((h) => h.id);
       entry.retrieval = {
         ranked: retrieval,
-        ...lib.caseMetrics(retrieval, grades, { cutoff: SEARCH_LIMIT }),
+        ...lib.caseMetrics(retrieval, grades, { cutoff: searchLimit }),
       };
 
       if (!args['no-rerank'] && hits.length > 1) {
-        const top = hits.slice(0, RERANK_TOP);
+        const top = hits.slice(0, rerankTop);
         const { scores } = await rpc(
           ai,
           'ai.rerank_texts',
@@ -205,10 +220,10 @@ async function run(args, deps = rabbitDeps()) {
           .map((h, k) => ({ id: h.id, s: scores[k] }))
           .sort((a, b) => b.s - a.s)
           .map((x) => x.id)
-          .concat(hits.slice(RERANK_TOP).map((h) => h.id));
+          .concat(hits.slice(rerankTop).map((h) => h.id));
         entry.rerank = {
           ranked: reranked,
-          ...lib.caseMetrics(reranked, grades, { cutoff: SEARCH_LIMIT }),
+          ...lib.caseMetrics(reranked, grades, { cutoff: searchLimit }),
         };
       }
     } catch (error) {

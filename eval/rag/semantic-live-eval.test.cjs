@@ -148,6 +148,28 @@ test('run retries a transient failure and still reports a persistent one as unav
   assert.equal(strict.meta.retriedCalls, 0);
 });
 
+test('run records and validates the search and rerank depth', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'semlive-'));
+  const cases = path.join(dir, 'cases.jsonl');
+  fs.writeFileSync(cases, lib.toJsonl([mk(1)]));
+  const base = { cases, out: path.join(dir, 'o.json'), 'delay-ms': 0 };
+  const result = await run(
+    { ...base, 'search-limit': 20, 'rerank-top': 5 },
+    fakeDeps([]),
+  );
+  assert.equal(result.meta.searchLimit, 20);
+  assert.equal(result.meta.rerankTop, 5);
+  assert.equal((await run(base, fakeDeps([]))).meta.rerankTop, 12);
+  await assert.rejects(
+    run({ ...base, 'rerank-top': 40 }, fakeDeps([])),
+    /--rerank-top/,
+  );
+  await assert.rejects(
+    run({ ...base, 'search-limit': 0 }, fakeDeps([])),
+    /--search-limit/,
+  );
+});
+
 test('run refuses to score when no reviewed case exists', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'semlive-'));
   const cases = path.join(dir, 'cases.jsonl');

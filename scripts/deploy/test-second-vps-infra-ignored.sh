@@ -49,7 +49,13 @@ for file in \
   infra/windows-node/mongo-replica.compose.yaml \
   infra/windows-node/postgres-replica.compose.yaml \
   infra/windows-node/vps-agent.override.yaml \
-  infra/windows-node/wslconfig.example; do
+  infra/windows-node/wslconfig.example \
+  scripts/ops/CHAT-STRESS-FIXTURES.md \
+  scripts/ops/seed-chat-stress-users.cjs \
+  scripts/ops/prepare-chat-stress-rooms.cjs \
+  scripts/ops/prepare-chat-stress-rooms.test.cjs \
+  scripts/ops/generate-chat-stress-scale-fixtures.cjs \
+  scripts/ops/generate-chat-stress-scale-fixtures.test.cjs; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2
@@ -68,4 +74,4 @@ if ((${#RECONCILE_SERVICES[@]} == 0)) || ! grep -q 'unknown tracked change' "$tm
   exit 1
 fi
 
-echo "second VPS infra files are ignored by the homelab CD"
+echo "second VPS infra files and operator fixture tools are ignored by the homelab CD"

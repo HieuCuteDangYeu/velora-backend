@@ -37,15 +37,24 @@ docker compose pull && docker compose up -d     # after changing the image tags 
 
 ## Using it from a laptop
 
-The laptop is not on the tailnet, so forward the port and keep using `localhost:13000`:
+The UI only works on the address in `NEXTAUTH_URL` (`http://100.86.68.16:13000`): the sign-in
+form posts there, so a plain `ssh -L 13000:...` to `localhost:13000` loads the page but login
+fails. Either:
 
-```sh
-ssh -N -L 127.0.0.1:13000:100.86.68.16:13000 root@144.91.101.1
-```
+- put the laptop on the tailnet and open `http://100.86.68.16:13000` directly (also the
+  simplest way for scripts: set `LANGFUSE_BASE_URL` to that address), or
+- without Tailscale, route the browser through node-2 with a SOCKS proxy and open the same
+  address:
 
-The benchmark scripts then work unchanged. Bulk ingestion (experiment replay with
-`flushAt: 200`) crosses the roughly 220 ms homelab or laptop to France link, so it is slower
-than it was against a local container.
+  ```sh
+  ssh -N -D 127.0.0.1:1080 root@144.91.101.1   # then set the browser proxy to SOCKS5 127.0.0.1:1080
+  ```
+
+Scripts that only use the API with the project keys can use a port forward instead
+(`ssh -N -L 127.0.0.1:13000:100.86.68.16:13000 root@144.91.101.1`, then
+`LANGFUSE_BASE_URL=http://localhost:13000`). Bulk ingestion (experiment replay with
+`flushAt: 200`) crosses the roughly 220 ms link to France, so it is slower than it was against
+a local container.
 
 ## Migration notes (2026-11-13)
 

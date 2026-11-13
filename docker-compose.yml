@@ -76,22 +76,6 @@ services:
     networks:
       - microservices-net
 
-  friend-service:
-    image: ${DOCKERHUB_USERNAME}/friend-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/friend-service/Dockerfile
-      args:
-        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
-    restart: always
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
   auth-service:
     image: ${DOCKERHUB_USERNAME}/auth-service:${VELORA_IMAGE_TAG:-latest}
     build:
@@ -193,38 +177,6 @@ services:
       dockerfile: ./apps/content-service/Dockerfile
       args:
         ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
-    restart: always
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
-  payment-service:
-    image: ${DOCKERHUB_USERNAME}/payment-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/payment-service/Dockerfile
-      args:
-        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
-    restart: always
-    expose:
-      - '3006'
-    env_file:
-      - .env
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - microservices-net
-
-  mail-service:
-    image: ${DOCKERHUB_USERNAME}/mail-service:${VELORA_IMAGE_TAG:-latest}
-    build:
-      context: .
-      dockerfile: ./apps/mail-service/Dockerfile
     restart: always
     env_file:
       - .env

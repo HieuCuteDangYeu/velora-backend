@@ -25,6 +25,9 @@ for file in \
   infra/postgres-replica/compose.yaml \
   infra/call-media-node/compose.yaml \
   infra/call-media-node/README.md \
+  infra/friend-mail-node/compose.yaml \
+  infra/friend-mail-node/deploy.sh \
+  infra/friend-mail-node/README.md \
   infra/vps-agent/compose.yaml \
   infra/vps-agent/alloy.config \
   infra/vps-agent/README.md \

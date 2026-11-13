@@ -118,16 +118,6 @@
         "webpack": false
       }
     },
-    "payment-service": {
-      "type": "application",
-      "root": "apps/payment-service",
-      "entryFile": "main",
-      "sourceRoot": "apps/payment-service/src",
-      "compilerOptions": {
-        "tsConfigPath": "apps/payment-service/tsconfig.app.json",
-        "webpack": false
-      }
-    },
     "media-processing-service": {
       "type": "application",
       "root": "apps/media-processing-service",

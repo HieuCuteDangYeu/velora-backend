@@ -24,7 +24,6 @@ const STANDARD_LOG_SERVICES = [
   'reel-indexing-service',
   'reel-indexing-long-service',
   'content-service',
-  'payment-service',
   'mail-service',
   'conversation-service',
   'call-service',

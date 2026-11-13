@@ -1,0 +1,33 @@
+name: friend-mail
+services:
+  friend-service:
+    image: ${DOCKERHUB_USERNAME}/friend-service:${FRIEND_SERVICE_TAG}
+    container_name: friend-service
+    restart: unless-stopped
+    # linux/amd64 image built by the Homelab CD (job build-and-push-node2-images) and
+    # rolled out by deploy.sh. It consumes friend_queue on the homelab RabbitMQ and
+    # reads the Aiven friend database; there is no HTTP port.
+    env_file:
+      - .env # RABBITMQ_URL, FRIEND_DATABASE_URL, DEFAULT_ADMIN_ID and BOT_USER_ID only
+    extra_hosts:
+      - 'rabbitmq:100.102.228.48'
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '3'
+
+  mail-service:
+    image: ${DOCKERHUB_USERNAME}/mail-service:${MAIL_SERVICE_TAG}
+    container_name: mail-service
+    restart: unless-stopped
+    # Consumes mail_queue and sends through Resend over HTTPS.
+    env_file:
+      - .env # RABBITMQ_URL, RESEND_API_KEY and RESEND_FROM_EMAIL only
+    extra_hosts:
+      - 'rabbitmq:100.102.228.48'
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '3'

@@ -28,7 +28,7 @@ export type MongoCommand =
   | 'conversation_update';
 
 // Which Mongo member answered a read that may be routed to a replica.
-export type RoutedReadOperation = 'reaction_details';
+export type RoutedReadOperation = 'reaction_details' | 'presence_audience';
 export type RoutedReadTarget = 'primary' | 'replica' | 'fallback' | 'miss';
 
 type SendMessageStatus = 'success' | 'rejected' | 'error';

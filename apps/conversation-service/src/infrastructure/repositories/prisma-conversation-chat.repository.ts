@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/conversation-client';
 import Redis from 'ioredis';
 
@@ -9,6 +15,7 @@ import type { IEncryptionRepository } from '../../domain/interfaces/encryption.r
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PrismaReadReplicaService } from '../prisma/prisma-read-replica.service';
 import { ConversationMapper } from './conversation.mapper';
 import { PrismaChatRepository } from './prisma-chat.repository';
 
@@ -88,6 +95,7 @@ export class PrismaConversationChatRepository
     @Inject('IUserService') userService: IUserService,
     @Inject('IChatMediaService') chatMediaService: IChatMediaService,
     metrics?: ConversationPrometheusMetricsService,
+    @Optional() readReplica?: PrismaReadReplicaService,
   ) {
     super(
       conversationPrisma,
@@ -96,6 +104,7 @@ export class PrismaConversationChatRepository
       userService,
       chatMediaService,
       metrics,
+      readReplica,
     );
   }
 

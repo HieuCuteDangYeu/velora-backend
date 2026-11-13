@@ -46,6 +46,10 @@ import {
   type ChatPhase,
 } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  PrismaReadReplicaService,
+  type ReadClient,
+} from '../prisma/prisma-read-replica.service';
 import { stressMessageTiming } from '../metrics/stress-message-timing';
 
 // Mappers
@@ -125,6 +129,8 @@ export class PrismaChatRepository implements IChatRepository {
     @Inject('IChatMediaService')
     private readonly chatMediaService: IChatMediaService,
     private readonly metrics?: ConversationPrometheusMetricsService,
+    // Only for reads that tolerate a few seconds of replica lag (see read()).
+    private readonly readReplica?: PrismaReadReplicaService,
   ) {}
 
   private measure<T>(
@@ -790,10 +796,18 @@ export class PrismaChatRepository implements IChatRepository {
   }
 
   async findPresenceAudienceUserIds(userId: string): Promise<string[]> {
-    const conversations = await this.prisma.conversation.findMany({
-      where: { participantIds: { has: userId } },
-      select: { participantIds: true },
-    });
+    // Runs on every socket connect and disconnect to decide who hears the
+    // online/offline event. Nobody waits on the answer and a few seconds of lag
+    // only delays the notice for a member added in that moment, so it is routed
+    // to a replica when one is configured (primary otherwise, or on any error).
+    const query = (client: ReadClient) =>
+      client.conversation.findMany({
+        where: { participantIds: { has: userId } },
+        select: { participantIds: true },
+      });
+    const conversations = this.readReplica
+      ? await this.readReplica.read('presence_audience', query)
+      : await query(this.prisma);
 
     return [
       ...new Set(

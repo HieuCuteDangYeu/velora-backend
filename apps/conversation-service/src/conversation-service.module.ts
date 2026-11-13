@@ -44,6 +44,7 @@ import { PrismaConversationMemberRepository } from 'apps/conversation-service/sr
 import { PrismaGroupManagementV2Repository } from 'apps/conversation-service/src/infrastructure/repositories/prisma-group-management-v2.repository';
 import { SendMessageUseCase } from './application/use-cases/send-message.use-case';
 import { ChatGateway } from './infrastructure/gateways/chat.gateway';
+import { PresenceRegistry } from './infrastructure/gateways/presence-registry';
 import { MessageNotificationOutboxWorker } from './infrastructure/workers/message-notification-outbox.worker';
 
 @Module({
@@ -200,6 +201,16 @@ import { MessageNotificationOutboxWorker } from './infrastructure/workers/messag
     {
       provide: 'IBotTypingNotifier',
       useClass: GatewayBotTypingNotifierAdapter,
+    },
+    {
+      // Who is online lives in Redis so a connect never queries every replica.
+      // CONVERSATION_PRESENCE_REGISTRY=off goes back to asking the sockets.
+      provide: PresenceRegistry,
+      inject: ['REDIS_CLIENT'],
+      useFactory: (redis: Redis) =>
+        new PresenceRegistry(redis, {
+          enabled: process.env.CONVERSATION_PRESENCE_REGISTRY !== 'off',
+        }),
     },
     {
       provide: 'REDIS_CLIENT',

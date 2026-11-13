@@ -6,6 +6,8 @@ import {
   Inject,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import {
@@ -13,6 +15,7 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
@@ -32,6 +35,7 @@ import { IChatRepository } from '../../domain/interfaces/chat.repository.interfa
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
+import { PresenceRegistry } from './presence-registry';
 import {
   stressFixtureNamespace,
   stressMessageTiming,
@@ -44,7 +48,13 @@ interface PresencePayload {
 }
 
 @WebSocketGateway({ cors: { origin: '*' } })
-export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatGateway
+  implements
+    OnGatewayInit,
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnModuleDestroy
+{
   @WebSocketServer()
   server!: Server;
 
@@ -58,7 +68,27 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @Inject('IChatRepository') private readonly chatRepository: IChatRepository,
     @Inject('AUTH_SERVICE_RMQ') private readonly authClient: ClientProxy,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
+    // Optional so a gateway built without it keeps asking the sockets directly.
+    @Optional() private readonly presence?: PresenceRegistry,
   ) {}
+
+  afterInit(): void {
+    this.presence?.startHeartbeat(
+      () => this.localSockets(),
+      () => this.logger.warn('Presence refresh failed; retrying next cycle'),
+    );
+  }
+
+  onModuleDestroy(): void {
+    this.presence?.stopHeartbeat();
+  }
+
+  private *localSockets(): Iterable<{ userId: string; socketId: string }> {
+    for (const socket of this.server?.sockets?.sockets?.values() ?? []) {
+      const userId = this.getResolvedUserId(socket);
+      if (userId) yield { userId, socketId: socket.id };
+    }
+  }
 
   // --- 1. HANDLE CONNECTION ---
   async handleConnection(client: Socket) {
@@ -70,7 +100,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         client.disconnect(true);
         return;
       }
-      const wasOnlineBefore = await this.isUserOnline(userId);
+      const wasOnlineBefore = await this.registerSocket(userId, client.id);
       await client.join(this.userRooms(userId));
       try {
         await this.clearLastSeenAt(userId);
@@ -94,7 +124,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       const userId = this.getResolvedUserId(client);
       if (userId) {
-        const isStillOnline = await this.isUserOnline(userId);
+        const isStillOnline = await this.unregisterSocket(userId, client.id);
         if (!isStillOnline) {
           const lastSeenAt = new Date().toISOString();
           await this.setLastSeenAt(userId, lastSeenAt);
@@ -717,8 +747,49 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return true;
     }
 
+    if (this.presence?.enabled) {
+      try {
+        return await this.presence.isOnline(userId);
+      } catch {
+        // Redis hiccup: fall back to asking the sockets, as before the registry.
+      }
+    }
+    return this.isUserOnlineBySockets(userId);
+  }
+
+  private async isUserOnlineBySockets(userId: string): Promise<boolean> {
     const sockets = await this.server.in(this.userRooms(userId)).fetchSockets();
     return sockets.length > 0;
+  }
+
+  /** Records a new socket and says whether the user was already online. */
+  private async registerSocket(
+    userId: string,
+    socketId: string,
+  ): Promise<boolean> {
+    if (this.presence?.enabled) {
+      try {
+        return await this.presence.connect(userId, socketId);
+      } catch {
+        // Fall through to the socket query below.
+      }
+    }
+    return this.isUserOnline(userId);
+  }
+
+  /** Forgets a socket and says whether the user still has another one. */
+  private async unregisterSocket(
+    userId: string,
+    socketId: string,
+  ): Promise<boolean> {
+    if (this.presence?.enabled) {
+      try {
+        return await this.presence.disconnect(userId, socketId);
+      } catch {
+        // Fall through to the socket query below.
+      }
+    }
+    return this.isUserOnline(userId);
   }
 
   private extractAccessToken(client: Socket): string | null {

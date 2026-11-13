@@ -913,7 +913,7 @@ describe('QueryRouterAgentUseCase', () => {
       ]).toEqual(flags);
       const input = service.generateObject.mock
         .calls[0][0] as GenerateStructuredObjectInput;
-      expect(input.schemaVersion).toBe('router-semantic-v8');
+      expect(input.schemaVersion).toBe('router-semantic-v9');
       expect(input.jsonSchema.required).toEqual([
         'intent',
         'reelQuestionType',
@@ -1746,5 +1746,74 @@ describe('QueryRouterAgentUseCase', () => {
     expect(request.userPrompt.length).toBeLessThan(3_500);
     expect(request.userPrompt).not.toContain('query-tail');
     expect(request.userPrompt).not.toContain('history-tail');
+  });
+
+  describe('OFF_TOPIC scope', () => {
+    const routeFor = async (
+      scopeMode: string | undefined,
+      overrides: Record<string, unknown> = {},
+    ) => {
+      const service = {
+        generateObject: jest
+          .fn()
+          .mockResolvedValue(response({ intent: 'OFF_TOPIC', ...overrides })),
+      };
+      const scopedConfig = {
+        ...config,
+        get: jest.fn((key: string) =>
+          key === 'AI_SCOPE_MODE' ? scopeMode : undefined,
+        ),
+      } as unknown as IAiApplicationConfig;
+      const useCase = new QueryRouterAgentUseCase(
+        service as never,
+        scopedConfig,
+      );
+      const route = await useCase.execute({
+        message: 'What is the capital of France?',
+        hasSharedReelContext: false,
+      });
+      return { route, service };
+    };
+
+    it('routes an unrelated message with no retrieval, memory, tools or verification', async () => {
+      const { route } = await routeFor(undefined);
+
+      expect(route).toMatchObject({
+        intent: 'OFF_TOPIC',
+        referenceTarget: 'NONE',
+        needsRetrieval: false,
+        needsUserMemory: false,
+        needsConversationSummary: false,
+        needsVerification: false,
+        reelQuestionType: 'NONE',
+        requiredEvidence: ['NONE'],
+        recommendationAction: { type: 'NONE' },
+        toolPlan: { allowedTools: [], requiredTools: [] },
+      });
+    });
+
+    it('treats it as ordinary chat when the scope restriction is off', async () => {
+      const { route } = await routeFor('off');
+
+      expect(route.intent).toBe('NORMAL_CHAT');
+    });
+
+    it('rejects an off-topic route that also names a reel question', async () => {
+      await expect(
+        routeFor(undefined, { reelQuestionType: 'TRANSCRIPT_CONTENT' }),
+      ).rejects.toBeInstanceOf(Error);
+    });
+
+    it('tells the model what is in scope and no longer lists coding help as chat', async () => {
+      const { service } = await routeFor(undefined);
+      const request = service.generateObject.mock.calls[0][0] as {
+        systemPrompt: string;
+        jsonSchema: { properties: { intent: { enum: string[] } } };
+      };
+
+      expect(request.jsonSchema.properties.intent.enum).toContain('OFF_TOPIC');
+      expect(request.systemPrompt).toContain('- OFF_TOPIC:');
+      expect(request.systemPrompt).not.toContain('coding help');
+    });
   });
 });

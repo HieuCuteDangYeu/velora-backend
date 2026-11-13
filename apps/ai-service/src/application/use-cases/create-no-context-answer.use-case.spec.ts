@@ -228,4 +228,16 @@ describe('CreateNoContextAnswerUseCase', () => {
       expect(answerFor(['VISUAL'], true)).toMatch(/visual evidence/i);
     });
   });
+
+  it('redirects an off-topic message to what the assistant can help with', () => {
+    const answer = new CreateNoContextAnswerUseCase().execute({
+      userMessage: 'What is the capital of France?',
+      route: { intent: 'OFF_TOPIC', reelQuestionType: 'NONE' },
+    } as RagChatWorkflowState);
+
+    expect(answer).toMatch(/only help with Velora/i);
+    expect(answer).toMatch(/Reels/);
+    // It must not answer, apologise for missing evidence, or echo the question.
+    expect(answer).not.toMatch(/Paris|France|evidence|context/i);
+  });
 });

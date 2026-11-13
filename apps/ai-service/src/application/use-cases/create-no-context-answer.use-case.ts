@@ -2,6 +2,7 @@ import type {
   RagChatWorkflowState,
   RagRequiredEvidence,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import { OFF_TOPIC_REDIRECT_MESSAGE } from '@ai/application/services/rag-off-topic-redirect';
 import { Injectable } from '@nestjs/common';
 
 @Injectable()
@@ -40,6 +41,10 @@ export class CreateNoContextAnswerUseCase {
   }
 
   private buildAnswer(state: RagChatWorkflowState): string {
+    if (state.route?.intent === 'OFF_TOPIC') {
+      return OFF_TOPIC_REDIRECT_MESSAGE;
+    }
+
     if (state.route?.intent === 'TASK_ACTION_REQUEST') {
       return this.taskActionLimitation(state.userMessage);
     }

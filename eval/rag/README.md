@@ -90,6 +90,31 @@ Known limits that no pattern fix removes:
 - Asking about other users' data ("what did the previous user ask") is only `medium`; the real
   control is server-side scope.
 
+## Router scope (strict, 2026-11-13)
+
+`datasets/rag-router-scope-v1.jsonl` (122 rows, English and Vietnamese) labels messages `OFF_TOPIC` or `IN_SCOPE`.
+The opt-in `query-router-agent.scope.local.integration.spec.ts` runs the real router on `gemma4:e2b-it-qat` over those
+rows plus every router fixture of `rag-generalization-v1`. Eleven of those fixtures (`normal-01..10`, `multi-04`: coding,
+explanations, writing, translation) were labelled `NORMAL_CHAT` under the old open-chat policy and are counted as
+off-topic here; the shared dataset keeps its labels because other specs rely on them.
+
+```sh
+OLLAMA_LOCAL_INTEGRATION=1 npx jest query-router-agent.scope.local.integration
+```
+
+| Run                                    | Off-topic caught                   | In-scope refused |
+| -------------------------------------- | ---------------------------------- | ---------------- |
+| First prompt                           | 46 / 50 own, 4 / 11 benchmark rows | 0 / 91           |
+| After adding examples and wording      | 60 / 61 (10 / 11 benchmark rows)   | 0 / 130          |
+| 31 fresh prompts never used for tuning | 16 / 18                            | 0 / 13           |
+| All rows, final                        | 76 / 79                            | 0 / 143          |
+
+Read with care: 143 in-scope rows with no refusal only bounds the true refusal rate near 2% (rule of three), the
+prompt was tuned on the first run's misses, and only one small model was measured. Misses were advice and suggestion
+requests ("tips for a job interview", "a good name for a bakery", "dinner ideas"). When the router misses, the draft
+step's scope instruction rarely holds on this model (31 of 48 unrelated prompts still answered), so treat the router as
+the only real gate. `generate-draft-answer.chat.local.integration.spec.ts` reports that leak rate.
+
 ## Evaluation v2
 
 New runs store a frozen input/reference snapshot and an evaluator version. The

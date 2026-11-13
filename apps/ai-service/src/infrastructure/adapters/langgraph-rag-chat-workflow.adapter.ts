@@ -1416,7 +1416,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           supportedClaimCount: 0,
           unsupportedClaims: [],
         },
-        finalFailureSource: 'NO_CONTEXT',
+        // Turning an off-topic message away is the intended outcome, not a missing-context failure.
+        finalFailureSource:
+          state.route?.intent === 'OFF_TOPIC' ? 'NONE' : 'NO_CONTEXT',
       };
     };
   }
@@ -1552,7 +1554,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     if (state.route?.recommendationAction.type !== 'NONE') {
       return ['reelRecommendationNode'];
     }
-    if (state.route?.reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE') {
+    if (
+      state.route?.intent === 'OFF_TOPIC' ||
+      state.route?.reelQuestionType === 'AMBIGUOUS_REEL_REFERENCE'
+    ) {
       return ['noContextAnswerNode'];
     }
 
@@ -1815,6 +1820,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     const details: RagRouterSemanticInconsistencyDetails = {};
     const actualIntent = this.canonicalSemanticEnum(record.actualIntent, [
       'NORMAL_CHAT',
+      'OFF_TOPIC',
       'REEL_VIDEO_QUESTION',
       'CONVERSATION_MEMORY_QUESTION',
       'USER_MEMORY_QUESTION',

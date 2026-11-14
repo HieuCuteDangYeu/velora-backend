@@ -22,4 +22,3 @@ export interface TranscriptionResult {
   model?: string;
   version?: string;
 }
-

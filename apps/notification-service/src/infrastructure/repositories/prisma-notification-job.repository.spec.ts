@@ -1,20 +1,6 @@
 import { Prisma } from '@prisma/notification-client';
 import { PrismaNotificationJobRepository } from './prisma-notification-job.repository';
 
-type QueryCondition = {
-  status?: string;
-  nextAttemptAt?: { lte: Date };
-  updatedAt?: { lte: Date };
-  expiresAt?: { gt: Date } | null;
-};
-
-type FindManyInput = {
-  where: { AND: Array<{ OR: QueryCondition[] }> };
-  orderBy: Array<
-    { expiresAt: { sort: 'asc'; nulls: 'last' } } | { createdAt: 'asc' }
-  >;
-};
-
 describe('PrismaNotificationJobRepository', () => {
   it('samples unfinished jobs in one indexed-status query through its owned client', async () => {
     const old = new Date('2026-10-09T00:00:00Z');
@@ -187,39 +173,57 @@ describe('PrismaNotificationJobRepository', () => {
     expect(findUniqueOrThrow).not.toHaveBeenCalled();
   });
 
-  it('reclaims only notification jobs whose processing lease has expired', async () => {
-    const findMany = jest.fn().mockResolvedValue([]);
+  const retryableCall = async (limit: number) => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+    const findMany = jest.fn();
     const repository = new PrismaNotificationJobRepository({
+      $queryRaw: queryRaw,
       notificationJob: { findMany },
     } as never);
     const before = Date.now();
+    await repository.findRetryable(limit);
+    expect(findMany).not.toHaveBeenCalled();
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const [strings, ...values] = queryRaw.mock.calls[0] as [
+      TemplateStringsArray,
+      Date,
+      Date,
+      Date,
+      number,
+    ];
+    return { sql: strings.join('?'), values, before };
+  };
 
-    await repository.findRetryable(20);
+  it('reclaims only notification jobs whose processing lease has expired', async () => {
+    const { sql, values, before } = await retryableCall(20);
+    const [dueAt, leaseExpiry, now, limit] = values;
 
-    const where = (findMany.mock.calls[0]?.[0] as FindManyInput).where;
-    const reclaimCondition = where.AND[0].OR.find(
-      (condition: { status?: string }) => condition.status === 'processing',
-    );
-    const leaseExpiry = reclaimCondition.updatedAt.lte;
-
+    expect(sql).toContain("j.status = 'pending'");
+    expect(sql).toContain("j.status = 'failed' AND j.next_attempt_at <= ?");
+    expect(sql).toContain("j.status = 'processing' AND j.updated_at <= ?");
+    expect(sql).toContain('j.expires_at IS NULL OR j.expires_at > ?');
     expect(leaseExpiry).toBeInstanceOf(Date);
     expect(leaseExpiry.getTime()).toBeGreaterThanOrEqual(before - 300_100);
     expect(leaseExpiry.getTime()).toBeLessThanOrEqual(Date.now() - 299_900);
+    expect(now).toEqual(dueAt);
+    expect(limit).toBe(20);
   });
 
   it('prioritizes expiring notification jobs before durable non-expiring jobs', async () => {
-    const findMany = jest.fn().mockResolvedValue([]);
-    const repository = new PrismaNotificationJobRepository({
-      notificationJob: { findMany },
-    } as never);
+    const { sql } = await retryableCall(100);
+    expect(sql).toContain(
+      'ORDER BY j.expires_at ASC NULLS LAST, j.created_at ASC',
+    );
+    expect(sql.trimEnd().endsWith('LIMIT ?')).toBe(true);
+  });
 
-    await repository.findRetryable(20);
-
-    const input = findMany.mock.calls[0]?.[0] as FindManyInput;
-    expect(input.orderBy).toEqual([
-      { expiresAt: { sort: 'asc', nulls: 'last' } },
-      { createdAt: 'asc' },
-    ]);
+  it('names the unfinished statuses in the query text so the partial retry index applies', async () => {
+    // PostgreSQL proves that a query fits a partial index from the query text.
+    // Statuses sent as bound parameters would make it sort the whole backlog.
+    const { sql, values } = await retryableCall(100);
+    expect(sql).toContain("j.status IN ('pending', 'failed', 'processing')");
+    expect(values).toHaveLength(4);
+    expect(values.some((value) => typeof value === 'string')).toBe(false);
   });
 
   it('clears the retry time of a failed job that gets no further attempt', async () => {

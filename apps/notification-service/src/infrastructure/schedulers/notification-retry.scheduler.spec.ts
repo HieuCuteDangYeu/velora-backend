@@ -99,26 +99,63 @@ describe('NotificationRetryScheduler', () => {
     expect(metrics.recordRetrySchedulerRun).toHaveBeenCalledWith('success');
   });
 
-  it('drains up to five full batches per poll and then yields', async () => {
+  const emptyBacklog = {
+    readBacklog: jest.fn().mockResolvedValue({
+      counts: { pending: 0, failed: 0, processing: 0 },
+      oldestCreatedAt: null,
+    }),
+  };
+
+  it('keeps draining full batches of 100 until one comes back short', async () => {
     const retry = {
       execute: jest
         .fn()
-        .mockResolvedValue({ attemptedCount: 20, failures: [] }),
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 100, failures: [] })
+        .mockResolvedValueOnce({ attemptedCount: 37, failures: [] }),
     };
     const metrics = createMetrics();
     const scheduler = new NotificationRetryScheduler(
       retry as never,
       metrics as never,
-      {
-        readBacklog: jest.fn().mockResolvedValue({
-          counts: { pending: 0, failed: 0, processing: 0 },
-          oldestCreatedAt: null,
-        }),
-      } as never,
+      emptyBacklog as never,
     );
     await scheduler.handleRetries();
-    expect(retry.execute).toHaveBeenCalledTimes(5);
-    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(100, 0);
+    // More than the five batches of 20 a poll used to be limited to.
+    expect(retry.execute).toHaveBeenCalledTimes(7);
+    expect(retry.execute).toHaveBeenCalledWith(100);
+    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(637, 0);
+    expect(metrics.recordRetrySchedulerCompletion).toHaveBeenCalledTimes(1);
+  });
+
+  it('yields after twenty seconds of full batches so the poll completes and the stalled alert stays quiet', async () => {
+    let now = 1_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const retry = {
+      execute: jest.fn().mockImplementation(() => {
+        now += 6_000;
+        return Promise.resolve({ attemptedCount: 100, failures: [] });
+      }),
+    };
+    const metrics = createMetrics();
+    const scheduler = new NotificationRetryScheduler(
+      retry as never,
+      metrics as never,
+      emptyBacklog as never,
+    );
+    await scheduler.handleRetries();
+    // 6 s, 12 s, 18 s are inside the budget; the batch that ends at 24 s is the last.
+    expect(retry.execute).toHaveBeenCalledTimes(4);
+    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(400, 0);
+    expect(metrics.recordRetrySchedulerCompletion).toHaveBeenCalledTimes(1);
+
+    // The backlog is still there; the next poll carries on.
+    await scheduler.handleRetries();
+    expect(retry.execute).toHaveBeenCalledTimes(8);
   });
 
   it('stops draining on a failed batch so DB/provider failures do not spin', async () => {
@@ -126,7 +163,7 @@ describe('NotificationRetryScheduler', () => {
     const retry = {
       execute: jest
         .fn()
-        .mockResolvedValue({ attemptedCount: 20, failures: [failure] }),
+        .mockResolvedValue({ attemptedCount: 100, failures: [failure] }),
     };
     const metrics = createMetrics();
     const scheduler = new NotificationRetryScheduler(
@@ -141,7 +178,7 @@ describe('NotificationRetryScheduler', () => {
     );
     await scheduler.handleRetries();
     expect(retry.execute).toHaveBeenCalledTimes(1);
-    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(20, 1);
+    expect(metrics.recordRetryJobs).toHaveBeenCalledWith(100, 1);
   });
 
   it('records an internal scheduler failure without throwing from the interval callback', async () => {

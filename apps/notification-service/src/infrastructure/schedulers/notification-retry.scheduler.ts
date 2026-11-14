@@ -13,6 +13,11 @@ import { NotificationPrometheusMetricsService } from '../metrics/notification-pr
 const DEFAULT_RETRY_POLL_INTERVAL_MS = 3_000;
 const MIN_RETRY_POLL_INTERVAL_MS = 1_000;
 const MAX_RETRY_POLL_INTERVAL_MS = 60_000;
+const RETRY_BATCH_SIZE = 100;
+// One poll keeps draining while batches come back full, for at most this long.
+// It must stay well under the 60 s of VeloraNotificationRetrySchedulerStalled,
+// which watches the time since a poll last completed.
+const MAX_DRAIN_MS = 20_000;
 const DATABASE_OUTAGE_CODES = new Set(['P1001', 'P1002', 'P1008', 'P1017']);
 
 @Injectable()
@@ -58,14 +63,20 @@ export class NotificationRetryScheduler
           ReturnType<RetryNotificationJobsUseCase['execute']>
         >['failures'],
       };
-      // Drain a bounded backlog without adding a three-second pause after
-      // every full batch. isRunning still prevents overlapping polls.
-      for (let batch = 0; batch < 5; batch++) {
-        const next = await this.retryNotificationJobs.execute(20);
+      // Message notifications are only queued at intake; this poll is what
+      // delivers them. A fixed five batches of 20 per three-second poll capped
+      // delivery at 33 jobs a second whatever the database could do, so drain
+      // for as long as batches come back full, within a time budget. A failed
+      // batch still ends the poll, so a DB or provider outage does not spin,
+      // and isRunning still prevents overlapping polls.
+      const drainStartedAt = Date.now();
+      do {
+        const next = await this.retryNotificationJobs.execute(RETRY_BATCH_SIZE);
         result.attemptedCount += next.attemptedCount;
         result.failures.push(...next.failures);
-        if (next.attemptedCount < 20 || next.failures.length > 0) break;
-      }
+        if (next.attemptedCount < RETRY_BATCH_SIZE || next.failures.length > 0)
+          break;
+      } while (Date.now() - drainStartedAt < MAX_DRAIN_MS);
 
       if (this.databaseUnavailable) {
         this.databaseUnavailable = false;

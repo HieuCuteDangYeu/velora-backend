@@ -231,58 +231,34 @@ export class PrismaNotificationJobRepository implements INotificationJobReposito
     const processingLeaseExpiredAt = new Date(
       now.getTime() - PROCESSING_LEASE_MS,
     );
-    const records = await this.prisma.notificationJob.findMany({
-      where: {
-        AND: [
-          {
-            OR: [
-              {
-                status: 'pending',
-              },
-              {
-                status: 'failed',
-                nextAttemptAt: {
-                  lte: now,
-                },
-              },
-              {
-                // A process can exit after claiming a job and before it writes
-                // a terminal job result. Reclaim only an old lease so an
-                // in-flight push is not normally processed twice.
-                status: 'processing',
-                updatedAt: {
-                  lte: processingLeaseExpiredAt,
-                },
-              },
-            ],
-          },
-          {
-            OR: [
-              {
-                expiresAt: null,
-              },
-              {
-                expiresAt: {
-                  gt: now,
-                },
-              },
-            ],
-          },
-        ],
-      },
-      orderBy: [
-        {
-          expiresAt: {
-            sort: 'asc',
-            nulls: 'last',
-          },
-        },
-        {
-          createdAt: 'asc',
-        },
-      ],
-      take: limit,
-    });
+    // Raw SQL with the three statuses written out. The partial index
+    // notification_jobs_retry_order_idx holds only unfinished jobs in this
+    // ORDER BY, and PostgreSQL uses it only when it can see the statuses in the
+    // query text. With Prisma's bound parameters it read and sorted the whole
+    // backlog for every batch, which made draining a large backlog quadratic.
+    //
+    // A process can exit after claiming a job and before it writes a terminal
+    // job result. Reclaim only an old lease so an in-flight push is not
+    // normally processed twice. Expiring jobs go before durable ones.
+    const records = await this.prisma.$queryRaw<PrismaNotificationJob[]>`
+      SELECT j.id, j.type, j.recipient_user_id AS "recipientUserId",
+        j.actor_user_id AS "actorUserId", j.conversation_id AS "conversationId",
+        j.message_id AS "messageId", j.call_id AS "callId", j.title, j.body,
+        j.data_json AS "dataJson", j.expires_at AS "expiresAt", j.status,
+        j.idempotency_key AS "idempotencyKey", j.attempt_count AS "attemptCount",
+        j.next_attempt_at AS "nextAttemptAt", j.last_error AS "lastError",
+        j.created_at AS "createdAt", j.updated_at AS "updatedAt", j.sent_at AS "sentAt"
+      FROM notification_jobs j
+      WHERE j.status IN ('pending', 'failed', 'processing')
+        AND (
+          j.status = 'pending'
+          OR (j.status = 'failed' AND j.next_attempt_at <= ${now})
+          OR (j.status = 'processing' AND j.updated_at <= ${processingLeaseExpiredAt})
+        )
+        AND (j.expires_at IS NULL OR j.expires_at > ${now})
+      ORDER BY j.expires_at ASC NULLS LAST, j.created_at ASC
+      LIMIT ${limit}
+    `;
 
     return records.map((record) => this.toDomain(record));
   }

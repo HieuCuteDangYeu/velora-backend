@@ -1,5 +1,7 @@
 import { PrismaClient, type Prisma } from '@prisma/notification-client';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ProcessNotificationJobUseCase } from '../../application/use-cases/process-notification-job.use-case';
 import { PrismaNotificationJobRepository } from './prisma-notification-job.repository';
 import { PrismaPushTokenRepository } from './prisma-push-token.repository';
@@ -13,6 +15,8 @@ integration('Notification claim on isolated PostgreSQL', () => {
   let repository: PrismaNotificationJobRepository;
   let created = false;
   const queries: string[] = [];
+  // The text of the last retry-batch query, with $n placeholders and no values.
+  let retryBatchSql = '';
 
   beforeAll(async () => {
     const url = new URL(uri!);
@@ -33,6 +37,9 @@ integration('Notification claim on isolated PostgreSQL', () => {
     prisma.$on('query', (event) => {
       // Retain command kinds only, never SQL parameters or token values.
       queries.push(event.query.trim().split(/\s/)[0]);
+      if (event.query.includes('ORDER BY j.expires_at')) {
+        retryBatchSql = event.query;
+      }
     });
     const existing = await prisma.$queryRaw<
       Array<{ jobs: string | null; tokens: string | null }>
@@ -63,6 +70,16 @@ integration('Notification claim on isolated PostgreSQL', () => {
     )`);
     await prisma.$executeRawUnsafe(
       'CREATE INDEX ON push_tokens (user_id, is_active)',
+    );
+    // The retry index, from the migration file itself so the two cannot drift.
+    await prisma.$executeRawUnsafe(
+      readFileSync(
+        join(
+          __dirname,
+          '../../../prisma/migrations/20261114000000_add_notification_job_retry_order_index/migration.sql',
+        ),
+        'utf8',
+      ),
     );
     repository = new PrismaNotificationJobRepository(prisma as never);
   });
@@ -238,6 +255,94 @@ integration('Notification claim on isolated PostgreSQL', () => {
         });
       else expect(result).toBeNull();
     }
+  });
+
+  it('returns a retry batch with expiring jobs first, then oldest first, and leaves out expired and terminal jobs', async () => {
+    const base = Date.now();
+    const job = (index: number, extra: Record<string, unknown> = {}) => ({
+      type: 'NEW_MESSAGE',
+      recipientUserId: 'recipient',
+      title: 'Fixture',
+      body: 'Fixture',
+      messageId: `pending-${index}`,
+      createdAt: new Date(base - 600_000 + index * 1_000),
+      ...extra,
+    });
+    await prisma.notificationJob.createMany({
+      data: [
+        ...Array.from({ length: 300 }, (_, index) => job(index)),
+        ...Array.from({ length: 300 }, (_, index) =>
+          job(index, {
+            status: 'sent',
+            sentAt: new Date(base),
+            messageId: `sent-${index}`,
+          }),
+        ),
+      ],
+    });
+    const expiring = await prisma.notificationJob.create({
+      data: job(599, {
+        expiresAt: new Date(base + 60_000),
+        messageId: 'expiring',
+      }),
+    });
+    const expired = await prisma.notificationJob.create({
+      data: job(0, {
+        expiresAt: new Date(base - 60_000),
+        messageId: 'expired',
+      }),
+    });
+
+    const batch = await repository.findRetryable(100);
+
+    expect(batch).toHaveLength(100);
+    expect(batch[0].id).toBe(expiring.id);
+    expect(batch.some(({ id }) => id === expired.id)).toBe(false);
+    expect(batch.every(({ status }) => status === 'pending')).toBe(true);
+    // The job that expires goes first although it is the newest; the rest
+    // follow from the oldest.
+    expect(batch.slice(1).map(({ messageId }) => messageId)).toEqual(
+      Array.from({ length: 99 }, (_, index) => `pending-${index}`),
+    );
+    expect(batch[1]).toMatchObject({
+      type: 'NEW_MESSAGE',
+      recipientUserId: 'recipient',
+      title: 'Fixture',
+      attemptCount: 0,
+      nextAttemptAt: null,
+      expiresAt: null,
+    });
+  });
+
+  it('can answer the retry batch from the partial index under a generic plan, without sorting the backlog', async () => {
+    retryBatchSql = '';
+    await repository.findRetryable(100);
+    expect(retryBatchSql).toContain('FROM notification_jobs j');
+
+    // Prisma prepares its statements, so PostgreSQL may plan this query without
+    // knowing the parameter values. The index must still be provably usable then,
+    // which is what a forced generic plan of the same text shows. Sequential and
+    // bitmap scans are switched off for this one transaction so the check does not
+    // depend on how small the test table is.
+    const results = await prisma.$transaction([
+      prisma.$executeRawUnsafe('SET LOCAL enable_seqscan = off'),
+      prisma.$executeRawUnsafe('SET LOCAL enable_bitmapscan = off'),
+      prisma.$executeRawUnsafe(
+        'SET LOCAL plan_cache_mode = force_generic_plan',
+      ),
+      prisma.$executeRawUnsafe(
+        `PREPARE retry_batch_plan (timestamp, timestamp, timestamp, bigint) AS ${retryBatchSql}`,
+      ),
+      prisma.$queryRawUnsafe<unknown[]>(
+        'EXPLAIN (FORMAT JSON) EXECUTE retry_batch_plan (LOCALTIMESTAMP, LOCALTIMESTAMP, LOCALTIMESTAMP, 100)',
+      ),
+      prisma.$executeRawUnsafe('DEALLOCATE retry_batch_plan'),
+    ]);
+    const text = JSON.stringify(results[4]);
+    expect(text).toContain('notification_jobs_retry_order_idx');
+    expect(text).not.toContain('"Node Type":"Sort"');
+    // Guard the check itself: the plan really is the generic one.
+    expect(text).toContain('$1');
   });
 
   it('preserves retry metadata on active-token claims and rejects terminal replays', async () => {

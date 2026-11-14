@@ -52,6 +52,10 @@ model NotificationJob {
   updatedAt       DateTime  @updatedAt @map("updated_at")
   sentAt          DateTime? @map("sent_at")
 
+  // The database also has the partial index notification_jobs_retry_order_idx
+  // (expires_at NULLS LAST, created_at) WHERE status is unfinished, created by
+  // migration 20261114000000. Prisma 5 cannot express it here; findRetryable
+  // depends on it, so a generated migration must not drop it.
   @@index([status, nextAttemptAt])
   @@index([recipientUserId, createdAt])
   @@index([type, createdAt])

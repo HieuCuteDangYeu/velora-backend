@@ -18,6 +18,7 @@ const { validateManifest } = require('./seed-chat-stress-users.cjs');
 const ROOM_ID = /^[a-f0-9]{24}$/;
 const ROOMS_PER_BATCH = 5;
 const JOBS_PER_BATCH = 20000;
+const MESSAGES_PER_DELETE = 5000;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -58,8 +59,13 @@ async function purgeMessages(db, input, { apply = false, pauseMs = 250, wait = s
   for (const group of chunk(existing, ROOMS_PER_BATCH)) {
     const where = { conversationId: { in: group } };
     counted += await db.message.count({ where });
-    if (apply) {
-      deleted += (await db.message.deleteMany({ where })).count;
+    if (!apply) continue;
+    // A room can hold tens of thousands of messages, so a delete never covers more than
+    // MESSAGES_PER_DELETE ids: each one is a small oplog burst, followed by a pause.
+    for (;;) {
+      const batch = await db.message.findMany({ where, select: { id: true }, take: MESSAGES_PER_DELETE });
+      if (batch.length === 0) break;
+      deleted += (await db.message.deleteMany({ where: { id: { in: batch.map(row => row.id) } } })).count;
       if (pauseMs > 0) await wait(pauseMs);
     }
   }

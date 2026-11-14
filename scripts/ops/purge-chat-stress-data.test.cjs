@@ -11,12 +11,16 @@ const manifest = (users = 20) => {
 };
 
 const fakeConversationDb = (input, { messagesPerRoom = 3, renamed = [], missing = [] } = {}) => {
-  const calls = { count: [], delete: [] };
+  const calls = { count: [], delete: [], find: [] };
   const rooms = input.rooms.filter(r => !missing.includes(r.id)).map(r => ({ id: r.id, name: renamed.includes(r.id) ? 'someone else' : r.name }));
-  return { calls, conversation: { findMany: async () => rooms },
+  // Each room starts with messagesPerRoom messages; ids are 'roomId:n'.
+  const store = new Map();
+  for (const r of rooms) for (let n = 0; n < messagesPerRoom; n++) store.set(`${r.id}:${n}`, r.id);
+  return { calls, store, conversation: { findMany: async () => rooms },
     message: {
-      count: async ({ where }) => { calls.count.push(where.conversationId.in); return where.conversationId.in.length * messagesPerRoom },
-      deleteMany: async ({ where }) => { calls.delete.push(where.conversationId.in); return { count: where.conversationId.in.length * messagesPerRoom } },
+      count: async ({ where }) => { calls.count.push(where.conversationId.in); return [...store.values()].filter(r => where.conversationId.in.includes(r)).length },
+      findMany: async ({ where, take }) => { calls.find.push(take); return [...store].filter(([, r]) => where.conversationId.in.includes(r)).slice(0, take).map(([id]) => ({ id })) },
+      deleteMany: async ({ where }) => { calls.delete.push(where.id.in); where.id.in.forEach(id => store.delete(id)); return { count: where.id.in.length } },
     } };
 };
 
@@ -27,18 +31,23 @@ test('counts only unless --apply, and never touches rooms outside the manifest',
   assert.equal(result.messages, 8 * 3);
   assert.equal(result.deleted, 0);
   assert.equal(db.calls.delete.length, 0);
+  assert.equal(db.calls.find.length, 0);
   const asked = new Set(db.calls.count.flat());
   assert.deepEqual([...asked].sort(), input.rooms.map(r => r.id).sort());
 });
 
-test('deletes batch by batch with a pause between batches', async () => {
+test('deletes in bounded batches with a pause after each one, never more than 5000 ids at a time', async () => {
   const input = manifest();
-  const db = fakeConversationDb(input);
+  const db = fakeConversationDb(input, { messagesPerRoom: 2600 });
   const waits = [];
   const result = await purgeMessages(db, input, { apply: true, pauseMs: 40, wait: ms => waits.push(ms) });
-  assert.equal(result.deleted, 8 * 3);
-  assert.deepEqual(db.calls.delete.map(g => g.length), [5, 3]);
-  assert.deepEqual(waits, [40, 40]);
+  assert.equal(result.deleted, 8 * 2600);
+  assert.ok(db.calls.delete.every(ids => ids.length <= 5000));
+  assert.ok(db.calls.find.every(take => take === 5000));
+  assert.equal(db.store.size, 0);
+  // a group of five rooms holds 13,000 messages: three deletes, then the group of three: two.
+  assert.deepEqual(db.calls.delete.map(ids => ids.length), [5000, 5000, 3000, 5000, 2800]);
+  assert.equal(waits.length, db.calls.delete.length);
 });
 
 test('a room that exists under another name blocks every delete', async () => {
@@ -53,7 +62,7 @@ test('rooms that no longer exist are skipped, not deleted blindly', async () => 
   const db = fakeConversationDb(input, { missing: [input.rooms[0].id] });
   const result = await purgeMessages(db, input, { apply: true, pauseMs: 0 });
   assert.equal(result.rooms, 7);
-  assert.ok(!db.calls.delete.flat().includes(input.rooms[0].id));
+  assert.ok(!db.calls.delete.flat().some(id => id.startsWith(input.rooms[0].id)));
 });
 
 test('a manifest room outside the namespace or with a bad id is refused', () => {

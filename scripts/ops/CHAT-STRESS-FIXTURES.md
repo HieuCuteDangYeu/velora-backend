@@ -98,6 +98,17 @@ and one pair per block (2.5 members on average, every account in exactly one
 room). `--limit N` creates only the first N rooms, which is how to try the
 procedure on a small batch before running it in full.
 
+To make an existing crowd bigger, extend its manifest instead of creating a second
+namespace. The accounts and rooms it already has are kept and new accounts are
+appended, so steps 2 and 3 only create the new rows and the rooms of the new blocks:
+
+```bash
+node scripts/ops/generate-chat-stress-scale-fixtures.cjs --extend /private/scale-manifest.json \
+  --users 5000 --out /private/scale-manifest-5000.json
+```
+
+The extended manifest has no user receipt, so run the users phase before the roles phase.
+
 In `Velora-dashboard` the tools accept this manifest. The Mixed tool lets only a
 bounded cohort send chat (`--chat-users`, default 200, on a block boundary,
 which keeps whole rooms); the other accounts stay online through the connections

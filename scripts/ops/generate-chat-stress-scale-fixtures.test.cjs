@@ -3,8 +3,34 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { generate, main } = require('./generate-chat-stress-scale-fixtures.cjs');
+const { generate, extend, main } = require('./generate-chat-stress-scale-fixtures.cjs');
 const { validateManifest } = require('./seed-chat-stress-users.cjs');
+
+test('extends a crowd in the same namespace, keeping its accounts and rooms and dropping the stale receipt', () => {
+  const small = generate({ users: 20, baseUrl: 'https://velora.test' });
+  small.rooms = [{ id: 'room-1', participantIds: small.accounts.slice(0, 3).map(a => a.id) }];
+  small.provisioning = { verifiedUserIds: small.accounts.map(a => a.id) };
+  const big = extend({ manifest: small, users: 50 });
+  assert.equal(big.fixtureNamespace, small.fixtureNamespace);
+  assert.deepEqual(big.accounts.slice(0, 20), small.accounts);
+  assert.deepEqual(big.rooms, small.rooms);
+  assert.equal(big.provisioning, undefined);
+  assert.equal(big.accounts.length, 50);
+  assert.equal(new Set(big.accounts.map(a => a.id)).size, 50);
+  assert.ok(big.accounts[20].email.includes('.021@') && big.accounts[49].email.includes('.050@'));
+  assert.equal(big.stages[0].users, 50);
+  assert.equal(validateManifest(big).accounts.length, 50);
+  assert.equal(small.accounts.length, 20, 'the source manifest is not changed');
+});
+
+test('refuses to extend a demo manifest, a renumbered one, or to a size that is not bigger', () => {
+  const small = generate({ users: 20, baseUrl: 'https://velora.test' });
+  const demo = { ...small }; delete demo.fixtureProfile;
+  assert.throws(() => extend({ manifest: demo, users: 50 }), /scale manifest/);
+  const shuffled = { ...small, accounts: [small.accounts[1], small.accounts[0], ...small.accounts.slice(2)] };
+  assert.throws(() => extend({ manifest: shuffled, users: 50 }), /manifest order/);
+  for (const users of [20, 15, 52, 5005]) assert.throws(() => extend({ manifest: small, users }), /--users must be/, String(users));
+});
 
 test('generates an isolated scale namespace the seed script accepts', () => {
   const manifest = generate({ users: 2000, baseUrl: 'https://velora.test' });

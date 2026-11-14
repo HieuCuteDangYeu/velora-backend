@@ -24,23 +24,52 @@ function generate({ users, baseUrl, random = randomBytes, uuid = randomUUID }) {
     throw new Error('--base-url must be an HTTPS origin');
   }
   const fixtureNamespace = `mu-${random(6).toString('hex')}`;
-  const bare = fixtureNamespace.slice(3);
-  const accounts = Array.from({ length: users }, (_, index) => {
-    const suffix = String(index + 1).padStart(3, '0');
-    return {
-      id: uuid(),
-      email: `${fixtureNamespace}.${suffix}@velora-stress.invalid`,
-      username: `vstress_${bare}_${suffix}`,
-      fullName: `Velora load ${fixtureNamespace} ${suffix}`,
-      password: random(24).toString('base64url'),
-    };
-  });
   return {
     baseUrl: origin.origin,
     fixtureNamespace,
     fixtureProfile: 'scale',
-    accounts,
+    accounts: Array.from({ length: users }, (_, index) => account(fixtureNamespace, index, random, uuid)),
     rooms: [],
+    stages: [{ name: 'crowd', users, rps: 5, seconds: 60 }],
+  };
+}
+
+const suffixOf = index => String(index + 1).padStart(3, '0');
+
+function account(fixtureNamespace, index, random, uuid) {
+  const suffix = suffixOf(index);
+  return {
+    id: uuid(),
+    email: `${fixtureNamespace}.${suffix}@velora-stress.invalid`,
+    username: `vstress_${fixtureNamespace.slice(3)}_${suffix}`,
+    fullName: `Velora load ${fixtureNamespace} ${suffix}`,
+    password: random(24).toString('base64url'),
+  };
+}
+
+// A bigger crowd in the SAME namespace: the accounts and rooms that already exist are kept
+// as they are and new accounts are appended, so only the new rows have to be seeded. Rooms
+// come in blocks of five accounts in manifest order, so the existing rooms stay valid and
+// prepare-chat-stress-rooms.cjs only creates the rooms of the new blocks. The user receipt
+// (`provisioning`) is dropped: it covers the old accounts only, and the roles phase must not
+// run until the users phase has verified every account again.
+function extend({ manifest, users, random = randomBytes, uuid = randomUUID }) {
+  const namespace = manifest?.fixtureNamespace;
+  if (manifest?.fixtureProfile !== 'scale' || !/^mu-[a-f0-9]{12}$/.test(namespace ?? '') || !Array.isArray(manifest.accounts)) {
+    throw new Error('--extend needs a scale manifest');
+  }
+  const current = manifest.accounts.length;
+  if (manifest.accounts.some((a, index) => a?.email !== `${namespace}.${suffixOf(index)}@velora-stress.invalid`)) {
+    throw new Error('--extend needs accounts numbered in manifest order');
+  }
+  if (!Number.isInteger(users) || users <= current || users > MAX_USERS || users % 5 !== 0 || current % 5 !== 0) {
+    throw new Error(`--users must be a multiple of 5 above ${current} and at most ${MAX_USERS}`);
+  }
+  const { provisioning: _stale, ...kept } = manifest;
+  return {
+    ...kept,
+    accounts: [...manifest.accounts,
+      ...Array.from({ length: users - current }, (_, offset) => account(namespace, current + offset, random, uuid))],
     stages: [{ name: 'crowd', users, rps: 5, seconds: 60 }],
   };
 }
@@ -50,9 +79,13 @@ function main(args = process.argv.slice(2)) {
   const out = value('--out');
   if (args.includes('--help') || !out) {
     console.log('node generate-chat-stress-scale-fixtures.cjs --users N --base-url https://host --out /private/manifest.json');
+    console.log('node generate-chat-stress-scale-fixtures.cjs --extend /private/manifest.json --users N --out /private/bigger-manifest.json');
     return;
   }
-  const manifest = generate({ users: Number(value('--users')), baseUrl: value('--base-url') });
+  const source = value('--extend');
+  const manifest = source
+    ? extend({ manifest: JSON.parse(fs.readFileSync(source, 'utf8')), users: Number(value('--users')) })
+    : generate({ users: Number(value('--users')), baseUrl: value('--base-url') });
   // wx: never overwrite an existing manifest (its passwords may already be in the database).
   const fd = fs.openSync(out, 'wx', 0o600);
   try {
@@ -70,4 +103,4 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-module.exports = { generate, main, MIN_USERS, MAX_USERS };
+module.exports = { generate, extend, main, MIN_USERS, MAX_USERS };

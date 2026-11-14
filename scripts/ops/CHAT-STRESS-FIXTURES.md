@@ -104,6 +104,25 @@ which keeps whole rooms); the other accounts stay online through the connections
 tool. There is no script that deletes a crowd: fixtures are isolated by
 namespace and are never updated or removed by these tools.
 
+## Removing what a stress run leaves behind
+
+Messages and notification jobs pile up (millions after a day of stress runs) and slow
+Mongo, Postgres, the nightly backups and the replication to the other servers.
+`purge-chat-stress-data.cjs` removes them for one manifest and keeps the users and rooms:
+
+```sh
+# Inside the service containers (the Prisma clients and database URLs live there).
+node purge-chat-stress-data.cjs --phase messages [--apply] < /private/manifest.json   # conversation-service
+node purge-chat-stress-data.cjs --phase jobs     [--apply] < /private/manifest.json   # notification-service
+```
+
+It only counts unless `--apply` is given. Messages are deleted per batch of five fixture
+rooms, jobs 20,000 at a time, with a pause (`--pause-ms`, default 250) so the oplog and WAL
+replicated over Tailscale are not flooded. A room is only touched when it exists under the
+exact name the manifest recorded; a mismatch aborts before any delete. Run the `jobs` phase
+first if a backlog is still pending, and run each phase for every manifest you used
+(the 50-user demo and any crowd).
+
 ## Local checks
 
 ```sh

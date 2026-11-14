@@ -55,7 +55,9 @@ for file in \
   scripts/ops/prepare-chat-stress-rooms.cjs \
   scripts/ops/prepare-chat-stress-rooms.test.cjs \
   scripts/ops/generate-chat-stress-scale-fixtures.cjs \
-  scripts/ops/generate-chat-stress-scale-fixtures.test.cjs; do
+  scripts/ops/generate-chat-stress-scale-fixtures.test.cjs \
+  scripts/ops/purge-chat-stress-data.cjs \
+  scripts/ops/purge-chat-stress-data.test.cjs; do
   plan_for "$file"
   if ((${#PULL_SERVICES[@]} + ${#RECONCILE_SERVICES[@]} + ${#INFRA_RECONCILE_SERVICES[@]} != 0)); then
     echo "FAIL: $file must not schedule any service" >&2

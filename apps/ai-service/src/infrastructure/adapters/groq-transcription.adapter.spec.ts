@@ -62,6 +62,41 @@ describe('GroqTranscriptionAdapter timed transcription', () => {
       text: () => Promise.resolve(JSON.stringify({ text: 'hi' })),
     }) as Response;
 
+  it('drops the invented subscribe line and collapses a looped word', async () => {
+    const chars = (text: string, from: number) =>
+      Array.from(text).map((word, index) => ({
+        start: from + index,
+        end: from + index + 1,
+        word,
+      }));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            text: '我走请不吝点赞订阅转发打赏支持明镜与点栏目你你你你你你你你来了',
+            words: [
+              ...chars('我走', 0),
+              ...chars('请不吝点赞订阅转发打赏支持明镜与点栏目', 2),
+              ...chars('你你你你你你你你来了', 22),
+            ],
+          }),
+        ),
+    } as Response);
+
+    const result = await adapter().transcribeAudio(Buffer.from('audio'));
+
+    expect(result.text).toBe('我走 你你你你你你你你来了');
+    expect(result.segments?.map((item) => item.text)).toEqual([
+      '我',
+      '走',
+      '你',
+      '来',
+      '了',
+    ]);
+  });
+
   it('uploads Opus audio under its real .ogg name and type', async () => {
     const fetchMock = jest
       .spyOn(global, 'fetch')

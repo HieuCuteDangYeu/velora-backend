@@ -9,7 +9,8 @@ so tracing was silently dropped whenever the laptop was off.
 | --- | --- |
 | Stack | `/opt/velora/langfuse/`: the three compose files in this folder, plus `.env` (mode 600, not in the repo) |
 | Compose project | `velora-langfuse` (the Logs page selectors in `monitoring-service` expect this name) |
-| UI and API | `http://100.86.68.16:13000` (Tailscale address only) |
+| UI | `https://langfuse.velora-app.me` (Cloudflare tunnel from the homelab, behind a Cloudflare Access policy; sign-up is disabled) |
+| API for services | `http://100.86.68.16:13000` (Tailscale address only; used by the homelab `ai-service`) |
 | MinIO (media and exports) | `http://100.86.68.16:19090` (Tailscale address only) |
 | Databases | ClickHouse, Postgres, Redis stay on the private Compose network, nothing published |
 | Memory | about 1.3 GB in use; limits in `limits.yaml` add up to 6 GB at most |
@@ -19,8 +20,8 @@ Files: `docker-compose.yml` is upstream Langfuse with the image tags pinned (its
 upstream placeholders), `limits.yaml` sets memory/CPU limits and log rotation, `node2.yaml`
 binds the published ports to the Tailscale address. The homelab deploy script ignores this folder.
 
-`.env` is the previous local `langfuse.env` with `COMPOSE_PROJECT_NAME`, `NEXTAUTH_URL`,
-`LANGFUSE_BASE_URL` and the two MinIO endpoints changed to the node-2 addresses, plus
+`.env` is the previous local `langfuse.env` with `COMPOSE_PROJECT_NAME`,
+`NEXTAUTH_URL` (the public address), `LANGFUSE_BASE_URL` and the two MinIO endpoints changed, plus
 `TAILNET_IP` and `COMPOSE_FILE=docker-compose.yml:limits.yaml:node2.yaml`. `SALT`,
 `ENCRYPTION_KEY` and `NEXTAUTH_SECRET` must stay the same as they were: changing them breaks
 the existing API keys and stored credentials.
@@ -35,26 +36,22 @@ docker compose logs --tail=100 langfuse-web langfuse-worker
 docker compose pull && docker compose up -d     # after changing the image tags in docker-compose.yml
 ```
 
-## Using it from a laptop
+## Using it
 
-The UI only works on the address in `NEXTAUTH_URL` (`http://100.86.68.16:13000`): the sign-in
-form posts there, so a plain `ssh -L 13000:...` to `localhost:13000` loads the page but login
-fails. Either:
-
-- put the laptop on the tailnet and open `http://100.86.68.16:13000` directly (also the
-  simplest way for scripts: set `LANGFUSE_BASE_URL` to that address), or
-- without Tailscale, route the browser through node-2 with a SOCKS proxy and open the same
-  address:
-
-  ```sh
-  ssh -N -D 127.0.0.1:1080 root@144.91.101.1   # then set the browser proxy to SOCKS5 127.0.0.1:1080
-  ```
-
-Scripts that only use the API with the project keys can use a port forward instead
-(`ssh -N -L 127.0.0.1:13000:100.86.68.16:13000 root@144.91.101.1`, then
-`LANGFUSE_BASE_URL=http://localhost:13000`). Bulk ingestion (experiment replay with
-`flushAt: 200`) crosses the roughly 220 ms link to France, so it is slower than it was against
-a local container.
+- **Dashboard (UI):** open `https://langfuse.velora-app.me`. Cloudflare Access asks for your
+  email first, then Langfuse has its own login. `NEXTAUTH_URL` is that address, so the UI does
+  not work through the tailnet IP or a port forward (the sign-in form posts to the public URL).
+  Users are added in Settings > Members; sign-up is disabled (`AUTH_DISABLE_SIGNUP` in `node2.yaml`).
+- **Tunnel route:** the Cloudflare tunnel on the homelab publishes `langfuse.velora-app.me`
+  to `http://100.86.68.16:13000`, so it depends on the homelab reaching node-2 over Tailscale.
+- **Scripts and services:** use the API with the project keys on the tailnet address
+  (`LANGFUSE_BASE_URL=http://100.86.68.16:13000`, as the homelab does). The public hostname is
+  behind Access, so scripts would need a service token. From a laptop without Tailscale,
+  `ssh -N -L 127.0.0.1:13000:100.86.68.16:13000 root@144.91.101.1` gives API access on
+  `http://localhost:13000` (not the UI). Bulk ingestion (experiment replay with `flushAt: 200`)
+  crosses the roughly 220 ms link to France, so it is slower than against a local container.
+- MinIO (media uploads and batch exports) is only on the tailnet, so those two UI features do
+  not work through the public hostname.
 
 ## Migration notes (2026-11-13)
 

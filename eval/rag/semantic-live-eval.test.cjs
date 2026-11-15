@@ -218,3 +218,52 @@ test('compareRuns pairs shared cases, warns on index drift and small n', async (
     /fewer than 2/,
   );
 });
+
+test('run sends the per-case reel scope to the search and refuses incomplete scope files', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'semlive-'));
+  const cases = path.join(dir, 'cases.jsonl');
+  fs.writeFileSync(cases, lib.toJsonl([mk(1), mk(2)]));
+  const scopes = path.join(dir, 'scopes.json');
+  fs.writeFileSync(
+    scopes,
+    JSON.stringify({ 'sem-live-1': ['r1', 'rx'], 'sem-live-2': ['r2'] }),
+  );
+  const base = { cases, out: path.join(dir, 'o.json'), 'delay-ms': 0 };
+
+  const searches = [];
+  const deps = fakeDeps([]);
+  const inner = deps.client;
+  deps.client = (queue) => {
+    const c = inner(queue);
+    const send = c.send.bind(c);
+    c.send = (pattern, data) => {
+      if (pattern === 'index.search_chunks') searches.push(data);
+      return send(pattern, data);
+    };
+    return c;
+  };
+  const result = await run({ ...base, scopes }, deps);
+  assert.deepEqual(
+    searches.map((s) => s.filters.reelIds),
+    [['r1', 'rx'], ['r2']],
+  );
+  assert.match(result.meta.scopesSha256, /^[0-9a-f]{64}$/);
+
+  const plain = [];
+  const deps2 = fakeDeps([]);
+  const inner2 = deps2.client;
+  deps2.client = (queue) => {
+    const c = inner2(queue);
+    const send = c.send.bind(c);
+    c.send = (pattern, data) => {
+      if (pattern === 'index.search_chunks') plain.push(data);
+      return send(pattern, data);
+    };
+    return c;
+  };
+  await run(base, deps2);
+  assert.ok(plain.every((s) => !('filters' in s)));
+
+  fs.writeFileSync(scopes, JSON.stringify({ 'sem-live-1': ['r1'] }));
+  await assert.rejects(run({ ...base, scopes }, fakeDeps([])), /--scopes/);
+});

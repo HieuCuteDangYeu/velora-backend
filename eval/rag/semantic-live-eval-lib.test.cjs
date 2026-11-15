@@ -278,6 +278,47 @@ test('buildCandidateRows drops leaky, duplicate and failed questions determinist
   );
 });
 
+test('buildScopes is deterministic and mixes the requested number of foreign-script reels', () => {
+  const mkItem = (reelId, title, text) => ({
+    id: `reel:${reelId}:chunk:0`,
+    reelId,
+    title,
+    text,
+  });
+  const items = [
+    mkItem('g', 'Gold Show Episode 1', 'plain english words'),
+    ...Array.from({ length: 6 }, (_, i) =>
+      mkItem(`e${i}`, `Other ${i} Episode 1`, 'more english words'),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      mkItem(`z${i}`, `Zh Show Episode ${i}`, '你 就 是 这 样 叫 远 山'),
+    ),
+    mkItem('it', '[IT:fixture] short', '你 好 你 好'),
+  ];
+  const cases = [
+    row({ relevant: [{ evidenceId: 'reel:g:chunk:0', grade: 2 }] }),
+  ];
+  const a = lib.buildScopes({ items, cases, size: 5, foreign: 2 });
+  assert.deepEqual(a, lib.buildScopes({ items, cases, size: 5, foreign: 2 }));
+  const ids = a['sem-live-1'];
+  assert.equal(ids.length, 5);
+  assert.equal(ids[0], 'g');
+  assert.equal(ids.filter((r) => r.startsWith('z')).length, 2);
+  assert.ok(!ids.includes('it'));
+  assert.notDeepEqual(
+    a,
+    lib.buildScopes({ items, cases, size: 5, foreign: 2, seed: 'other' }),
+  );
+  assert.throws(
+    () => lib.buildScopes({ items, cases, size: 5, foreign: 5 }),
+    /foreign/,
+  );
+  assert.throws(
+    () => lib.buildScopes({ items, cases, size: 12, foreign: 0 }),
+    /only/,
+  );
+});
+
 test('a series is fresh only when all of its reels are newer than the cutoff', async () => {
   const mk = (id, title, at) => ({
     id: `reel:${id}:chunk:0`,

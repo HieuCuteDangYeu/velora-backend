@@ -11,7 +11,7 @@
  *   docker cp eval/rag/semantic-live-eval.cjs eval/rag/semantic-live-eval-lib.cjs \
  *     eval/rag/datasets/rag-semantic-live-v1.jsonl <content-service>:/usr/src/app/
  *   docker exec <content-service> node semantic-live-eval.cjs run \
- *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50] [--rerank-top 12] [--search-limit 30]
+ *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50] [--rerank-top 12] [--search-limit 30] [--scopes scopes.json]
  *   docker cp <content-service>:/tmp/run-a.json .benchmarks/semantic-live-run-a.json
  *   docker exec -u root <content-service> rm /usr/src/app/semantic-live-eval*.cjs \
  *     /usr/src/app/rag-semantic-live-v1.jsonl /tmp/run-a.json
@@ -31,6 +31,9 @@
  *    chat retrieval is scoped to the reels shared in the conversation. The
  *    planner also picks its own limits (search 1-20, default 8; rerank 1-10).
  *    Use the set to compare two builds, not to quote an absolute score.
+ *  - `--scopes` (see scripts/ops/build-semantic-live-scopes.cjs) restricts each
+ *    search to a per-case set of reels, which models a conversation that shared
+ *    those reels; without it the whole index is searched.
  *  - Calls are sequential: the TEI reranker admits one request at a time and
  *    shares capacity with live chat. Run off-peak.
  *  - Never tune on the `heldout` or `fresh` splits; report them separately.
@@ -143,6 +146,20 @@ async function run(args, deps = rabbitDeps()) {
     throw new Error(
       'no cases selected (REVIEWED only unless --include-candidates)',
     );
+  // --scopes <file.json>: {caseId: [reelId, ...]} restricts each search to the
+  // reels "shared in the conversation", like chat retrieval does.
+  let scopes = null;
+  let scopesSha256 = null;
+  if (args.scopes) {
+    const rawScopes = fs.readFileSync(args.scopes, 'utf8');
+    scopes = JSON.parse(rawScopes);
+    scopesSha256 = crypto.createHash('sha256').update(rawScopes).digest('hex');
+    const missing = cases.filter(
+      (c) => !Array.isArray(scopes[c.id]) || !scopes[c.id].length,
+    );
+    if (missing.length)
+      throw new Error(`--scopes has no reels for ${missing.length} case(s)`);
+  }
 
   const meta = {
     datasetVersion: lib.DATASET_VERSION,
@@ -157,6 +174,7 @@ async function run(args, deps = rabbitDeps()) {
     embedding: null,
     searchLimit,
     rerankTop,
+    scopesSha256,
   };
   const delay = Number(args['delay-ms'] ?? 150);
   const perCase = [];
@@ -191,6 +209,7 @@ async function run(args, deps = rabbitDeps()) {
           queryEmbeddingVersion: embedding.version,
           limit: searchLimit,
           candidateLimit: 200,
+          ...(scopes ? { filters: { reelIds: scopes[c.id] } } : {}),
         },
         15000,
       );

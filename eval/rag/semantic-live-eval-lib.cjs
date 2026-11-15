@@ -519,10 +519,87 @@ function claudeJson(
   return e.structured_output;
 }
 
+// Conversation-scoped evaluation: chat retrieval only searches the reels shared
+// in the conversation, so build a deterministic scope per case = the gold reel
+// plus `size - 1` other reels from OTHER series, `foreign` of them in the
+// non-Latin pool (mostly CJK text) and the rest in the Latin pool. Scopes are
+// sampled by a seeded hash so the same inputs always give the same scopes.
+const CJK = /[\u3400-\u9fff]/gu;
+
+function reelScriptPool(items) {
+  const reels = new Map();
+  for (const item of items) {
+    if (String(item.title ?? '').startsWith('[IT:')) continue;
+    const r = reels.get(item.reelId) ?? {
+      series: seriesOf(item.title),
+      cjk: 0,
+      all: 0,
+    };
+    const text = String(item.text ?? '').replace(/\s+/gu, '');
+    r.all += text.length;
+    r.cjk += (text.match(CJK) ?? []).length;
+    reels.set(item.reelId, r);
+  }
+  for (const r of reels.values()) r.foreign = r.all > 0 && r.cjk / r.all > 0.5;
+  return reels;
+}
+
+function buildScopes({
+  items,
+  cases,
+  seed = 'scope-v1',
+  size = 5,
+  foreign = 0,
+}) {
+  if (!Number.isInteger(size) || size < 1)
+    throw new Error('size must be a positive integer');
+  if (!Number.isInteger(foreign) || foreign < 0 || foreign > size - 1)
+    throw new Error('foreign must be an integer from 0 to size - 1');
+  const reels = reelScriptPool(items);
+  const order = (caseId, reelId) =>
+    crypto
+      .createHash('sha256')
+      .update(`${seed}|${caseId}|${reelId}`)
+      .digest('hex');
+  const scopes = {};
+  for (const c of cases) {
+    const goldReel = /^reel:([^:]+):chunk:/u.exec(
+      c.relevant[0].evidenceId,
+    )?.[1];
+    const gold = reels.get(goldReel);
+    if (!gold)
+      throw new Error(`${c.id}: gold reel ${goldReel} is not in the snapshot`);
+    const pick = (wantForeign, n) => {
+      const pool = [...reels.entries()]
+        .filter(
+          ([id, r]) =>
+            r.foreign === wantForeign &&
+            r.series !== gold.series &&
+            id !== goldReel,
+        )
+        .sort((a, b) => (order(c.id, a[0]) < order(c.id, b[0]) ? -1 : 1))
+        .slice(0, n)
+        .map(([id]) => id);
+      if (pool.length < n)
+        throw new Error(
+          `${c.id}: only ${pool.length} reels available, need ${n}`,
+        );
+      return pool;
+    };
+    scopes[c.id] = [
+      goldReel,
+      ...pick(true, foreign),
+      ...pick(false, size - 1 - foreign),
+    ];
+  }
+  return scopes;
+}
+
 module.exports = {
   DATASET_VERSION,
   assignSplit,
   buildCandidateRows,
+  buildScopes,
   caseMetrics,
   claudeJson,
   isLeaky,

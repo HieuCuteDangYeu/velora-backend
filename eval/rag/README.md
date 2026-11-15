@@ -298,6 +298,10 @@ node scripts/ops/review-semantic-live-cases.cjs sheet --items .benchmarks/semant
 node scripts/ops/review-semantic-live-cases.cjs apply --sheet .benchmarks/semantic-live-review.csv --reviewer <id>
 # 4. score against the live index (content-service container, see the script header; write --out under /tmp, the app dir is read-only) and compare
 node eval/rag/semantic-live-eval.cjs compare .benchmarks/run-a.json .benchmarks/run-b.json --stage rerank
+# 4b. conversation-scoped run: each case searches only its gold reel plus 4 other reels
+#     (--foreign N of them mostly-CJK), like chat does; build the scope files locally,
+#     copy them into the container next to the runner and pass --scopes
+node scripts/ops/build-semantic-live-scopes.cjs --items .benchmarks/semantic-live-items.json --cases eval/rag/datasets/rag-semantic-live-v1.jsonl --size 5 --foreign 2 --out .benchmarks/scopes-5-2.json
 # 5. after any reindex
 node scripts/ops/build-semantic-live-cases.cjs check-stale --items .benchmarks/semantic-live-items.json
 ```

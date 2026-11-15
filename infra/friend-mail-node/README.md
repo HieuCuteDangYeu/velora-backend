@@ -39,6 +39,11 @@ it keeps its ffmpeg workspace in the container's `/tmp`.
   the Mongo and Postgres replicas and `call-media-2` on this host win when a transcode runs.
 - A job that is running when a container is recreated is not acknowledged and RabbitMQ
   redelivers it, the same as on the homelab.
+- The homelab no longer runs `media-processing-long-service` (removed from `docker-compose.yml`,
+  listed in `REMOVED_COMPOSE_SERVICES`): **the LONG lane exists only here**, so long jobs wait in
+  `reel_media_long_jobs` while this node is down. The homelab keeps `media-processing-service`
+  (SHORT), so short jobs have two consumers. To bring the LONG lane back on the homelab,
+  revert that compose removal.
 - Monitoring needs nothing new: the `reel_media_*` queue alerts count consumers on the
   broker, so they cover both hosts.
 

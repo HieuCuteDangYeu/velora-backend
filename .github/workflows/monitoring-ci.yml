@@ -99,6 +99,7 @@ jobs:
           bash scripts/deploy/test-call-media-compose-addition.sh
           bash scripts/deploy/test-grafana-compose-removal.sh
           bash scripts/deploy/test-loki-compose-removal.sh
+          bash scripts/deploy/test-media-long-compose-removal.sh
           bash scripts/deploy/test-second-vps-infra-ignored.sh
           bash -n scripts/ops/check-monitoring-stack.sh
 

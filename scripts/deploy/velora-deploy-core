@@ -86,7 +86,6 @@ readonly -a CALL_MEDIA_SERVICES=(
 
 readonly -a APP_IMAGE_SERVICES=(
   "${APP_SERVICES[@]}"
-  media-processing-long-service
   reel-indexing-long-service
   "${CALL_MEDIA_SERVICES[@]}"
 )
@@ -134,6 +133,9 @@ readonly -a REMOVED_COMPOSE_SERVICES=(
   grafana
   # Runs on velora-node-2 too (infra/loki-node/); Alloy pushes to it over Tailscale.
   loki
+  # The LONG media lane runs only on velora-node-2 (infra/friend-mail-node); the homelab
+  # keeps the SHORT media-processing-service.
+  media-processing-long-service
 )
 
 # Compose changes to these services require deliberate operator handling.
@@ -146,7 +148,6 @@ readonly -a BLOCKED_COMPOSE_SERVICES=(
   rag-reranker
   rag-vision
   media-processing-service
-  media-processing-long-service
   reel-indexing-service
   reel-indexing-long-service
 )
@@ -1127,9 +1128,6 @@ add_app_and_worker_companions() {
   add_unique "$service" RECONCILE_SERVICES
 
   case "$service" in
-    media-processing-service)
-      add_unique "media-processing-long-service" RECONCILE_SERVICES
-      ;;
     reel-indexing-service)
       add_unique "reel-indexing-long-service" RECONCILE_SERVICES
       ;;
@@ -1619,7 +1617,6 @@ verify_running_app_release_snapshot() {
 
   for service in "${RECONCILE_SERVICES[@]}"; do
     case "$service" in
-      media-processing-long-service) image_service=media-processing-service ;;
       reel-indexing-long-service) image_service=reel-indexing-service ;;
       *) image_service="$service" ;;
     esac

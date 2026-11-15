@@ -101,6 +101,18 @@ compare_compose_models() {
       continue
     fi
 
+    # The LONG media lane left the homelab on 2026-11-15 and came back the same day (the
+    # node-2 test showed 0.29x realtime). Re-adding the removed service is an approved
+    # migration that pulls and reconciles only that service.
+    if [[ "$service" == "media-processing-long-service" ]] \
+      && ! jq -e --arg service "$service" '.services[$service] != null' "$base_normal" >/dev/null \
+      && jq -e --arg service "$service" '.services[$service] != null' "$target_normal" >/dev/null; then
+      log "Compose service '$service' addition is an approved media lane migration."
+      add_unique "$service" PULL_SERVICES
+      add_unique "$service" RECONCILE_SERVICES
+      continue
+    fi
+
     if contains "$service" "${CALL_MEDIA_SERVICES[@]}"; then
       log "Compose service '$service' is a call media node; reconciling it with call-service."
       add_app_and_worker_companions call-service

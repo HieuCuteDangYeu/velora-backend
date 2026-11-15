@@ -24,9 +24,13 @@
  *  - Only REVIEWED cases count by default (`--include-candidates` for a smoke run).
  *  - A case whose embedding, search or rerank call fails is `unavailable` and
  *    left out of the means; the denominator is reported, never scored as a miss.
- *  - The query is the question text as typed. Production also uses the planner's
- *    rewritten keyword query, so absolute numbers are a floor for the real
- *    path; use the set to compare two builds, not to quote an absolute score.
+ *  - The query is the question text as typed and the search covers the whole
+ *    index. Production differs in two ways: an LLM planner may rewrite the
+ *    query or split it into up to 3 (its prompt rewrites only conversational or
+ *    ambiguous messages, so standalone questions are mostly kept as typed), and
+ *    chat retrieval is scoped to the reels shared in the conversation. The
+ *    planner also picks its own limits (search 1-20, default 8; rerank 1-10).
+ *    Use the set to compare two builds, not to quote an absolute score.
  *  - Calls are sequential: the TEI reranker admits one request at a time and
  *    shares capacity with live chat. Run off-peak.
  *  - Never tune on the `heldout` or `fresh` splits; report them separately.

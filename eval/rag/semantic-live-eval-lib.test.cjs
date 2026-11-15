@@ -116,6 +116,59 @@ test('markStale flags a vanished primary chunk and restores it when it returns',
   assert.equal(back[1].status, 'CANDIDATE');
 });
 
+test('markStale catches a chunk whose id survived a reindex but whose text changed', () => {
+  const hash = lib.textHash('the original passage');
+  const rows = [
+    row({
+      relevant: [{ evidenceId: 'reel:a:chunk:0', grade: 2, textHash: hash }],
+    }),
+    row({
+      id: 'sem-live-2',
+      question: 'Second question here?',
+      relevant: [{ evidenceId: 'reel:b:chunk:1', grade: 2 }],
+    }),
+  ];
+  const same = new Map([
+    ['reel:a:chunk:0', lib.textHash('the  original\npassage ')],
+    ['reel:b:chunk:1', lib.textHash('anything')],
+  ]);
+  assert.deepEqual(
+    lib.markStale(rows, same).map((r) => r.status),
+    ['CANDIDATE', 'CANDIDATE'],
+    'whitespace is not a change; a row without a hash is only checked by id',
+  );
+  const changed = new Map(same).set(
+    'reel:a:chunk:0',
+    lib.textHash('different text now'),
+  );
+  const stale = lib.markStale(rows, changed);
+  assert.equal(stale[0].status, 'STALE');
+  assert.equal(stale[0].staleReason, 'changed');
+  assert.equal(stale[1].status, 'CANDIDATE');
+  const back = lib.markStale(stale, same);
+  assert.equal(back[0].status, 'CANDIDATE');
+  assert.equal('staleReason' in back[0], false);
+  const gone = lib.markStale(rows, new Map([['reel:b:chunk:1', 'x']]));
+  assert.equal(gone[0].staleReason, 'missing');
+});
+
+test('validateRow rejects a malformed textHash', () => {
+  const ok = row({
+    relevant: [
+      {
+        evidenceId: 'reel:a:chunk:0',
+        grade: 2,
+        textHash: lib.textHash('x'),
+      },
+    ],
+  });
+  assert.deepEqual(lib.validateRow(ok), []);
+  const bad = row({
+    relevant: [{ evidenceId: 'reel:a:chunk:0', grade: 2, textHash: 'nope' }],
+  });
+  assert.ok(lib.validateRow(bad).some((e) => e.includes('textHash')));
+});
+
 test('caseMetrics scores rank, recall and graded nDCG', () => {
   const grades = new Map([
     ['gold', 2],
@@ -204,6 +257,10 @@ test('buildCandidateRows drops leaky, duplicate and failed questions determinist
     });
   const out = await run();
   assert.equal(out.rows.length, 5);
+  for (const r of out.rows) {
+    const item = items.find((i) => i.id === r.relevant[0].evidenceId);
+    assert.equal(r.relevant[0].textHash, lib.textHash(item.text));
+  }
   assert.equal(out.stats.leaky, 1);
   assert.equal(out.stats.failed, 1);
   const perSeries = {};

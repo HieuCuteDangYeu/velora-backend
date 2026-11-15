@@ -10,8 +10,12 @@
  *     --dataset eval/rag/datasets/rag-semantic-live-v1.jsonl \
  *     --total 100 [--fresh-after 2026-11-12T00:00:00Z] [--seed 1] [--split-seed v1] [--heldout-percent 40]
  *
- *   # flag cases whose gold chunk is no longer active, restore ones that came back
+ *   # flag cases whose gold chunk is gone or whose text changed, restore ones that came back
  *   node scripts/ops/build-semantic-live-cases.cjs check-stale --items ... --dataset ...
+ *
+ *   # one-off: add the text fingerprint to rows written without one, from the
+ *   # snapshot they were generated from
+ *   node scripts/ops/build-semantic-live-cases.cjs backfill-hashes --items ... --dataset ...
  *
  *   # validate the dataset file
  *   node scripts/ops/build-semantic-live-cases.cjs validate --dataset ...
@@ -94,7 +98,11 @@ async function main() {
   const existing = readRows(dataset);
 
   if (command === 'check-stale') {
-    const next = lib.markStale(existing, new Set(items.map((i) => i.id)));
+    // id -> text fingerprint, so a re-chunked reel is caught, not only a deleted one
+    const next = lib.markStale(
+      existing,
+      new Map(items.map((i) => [i.id, lib.textHash(i.text)])),
+    );
     const changed = next.filter((r, i) => r.status !== existing[i].status);
     writeAtomic(dataset, lib.toJsonl(next));
     console.log(
@@ -102,8 +110,36 @@ async function main() {
         checked: existing.length,
         changed: changed.length,
         stale: next.filter((r) => r.status === 'STALE').length,
+        staleChanged: next.filter((r) => r.staleReason === 'changed').length,
+        withoutHash: next.filter((r) =>
+          r.relevant.some((x) => x.grade === 2 && !x.textHash),
+        ).length,
       }),
     );
+    return;
+  }
+
+  if (command === 'backfill-hashes') {
+    // One-off for rows written before textHash existed. Use the snapshot the
+    // rows were generated from; a different snapshot would bake in new text.
+    const byId = new Map(items.map((i) => [i.id, i.text]));
+    let filled = 0;
+    const next = existing.map((r) => ({
+      ...r,
+      relevant: r.relevant.map((x) => {
+        if (x.textHash) return x;
+        if (!byId.has(x.evidenceId))
+          throw new Error(`${r.id}: ${x.evidenceId} is not in the snapshot`);
+        filled += 1;
+        return { ...x, textHash: lib.textHash(byId.get(x.evidenceId)) };
+      }),
+    }));
+    const errors = lib.validateDataset(
+      next.filter((r) => r.status !== 'REJECTED'),
+    );
+    if (errors.length) throw new Error(errors.slice(0, 10).join('\n'));
+    writeAtomic(dataset, lib.toJsonl(next));
+    console.log(JSON.stringify({ filled, rows: next.length }));
     return;
   }
 
@@ -140,7 +176,7 @@ async function main() {
   }
 
   throw new Error(
-    'usage: build-semantic-live-cases.cjs generate|check-stale|validate [options]',
+    'usage: build-semantic-live-cases.cjs generate|check-stale|backfill-hashes|validate [options]',
   );
 }
 

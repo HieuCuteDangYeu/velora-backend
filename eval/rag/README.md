@@ -307,5 +307,10 @@ Tests (offline, no provider): `node --test eval/rag/ scripts/ops/review-semantic
 A run reports a failed embed, search or rerank as `unavailable` and leaves it out of the
 means. `compare` runs a paired bootstrap on the shared cases and warns when the index
 version differs between runs or fewer than 150 cases are shared. The query is the raw
-question, without the planner's keyword rewrite, so use the set to compare builds rather
-than to quote an absolute score.
+question over the whole index. Production lets an LLM planner rewrite or split the query
+(it keeps most standalone questions as typed) and scopes chat retrieval to the reels shared
+in the conversation, so use the set to compare builds rather than to quote an absolute score.
+
+Each gold chunk stores a `textHash`. `build-semantic-live-cases.cjs check-stale` compares it
+with a fresh index export and marks a case `STALE` (`staleReason` `missing` or `changed`)
+when the chunk is gone or a reindex put different text under the same id.

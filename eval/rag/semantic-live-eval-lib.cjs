@@ -168,6 +168,13 @@ function validateRow(row) {
     'relevant must list evidenceId with grade 1 or 2',
   );
   need(
+    Array.isArray(row.relevant) &&
+      row.relevant.every(
+        (r) => r.textHash === undefined || /^[0-9a-f]{16}$/.test(r.textHash),
+      ),
+    'textHash must be 16 hex characters',
+  );
+  need(
     Array.isArray(row.relevant) && row.relevant.some((r) => r.grade === 2),
     'relevant needs at least one grade 2 item',
   );
@@ -207,21 +214,58 @@ function validateDataset(rows) {
  * Cases whose primary evidence is no longer an active chunk are STALE, not
  * retrieval misses, so a reindex cannot silently lower the score.
  */
-function markStale(rows, activeIds) {
-  const active = activeIds instanceof Set ? activeIds : new Set(activeIds);
+/**
+ * Short fingerprint of a chunk's text. A chunk id like `reel:x:chunk:3` stays
+ * the same when a reindex re-chunks the reel, so the id alone cannot tell that
+ * a label now points at different text.
+ */
+function textHash(text) {
+  return crypto
+    .createHash('sha256')
+    .update(String(text).replace(/\s+/g, ' ').trim())
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * `active` is a Set of live chunk ids, or a Map of id -> textHash. With a Map,
+ * a gold chunk whose text no longer matches its stored `textHash` is stale too.
+ * Rows without a `textHash` are only checked by id.
+ */
+function markStale(rows, active) {
+  const hashes = active instanceof Map ? active : null;
+  const live = hashes
+    ? new Set(hashes.keys())
+    : active instanceof Set
+      ? active
+      : new Set(active);
+  const gone = (r) =>
+    !live.has(r.evidenceId)
+      ? 'missing'
+      : hashes && r.textHash && hashes.get(r.evidenceId) !== r.textHash
+        ? 'changed'
+        : null;
   return rows.map((row) => {
     if (row.status === 'REJECTED') return row;
-    const primaryGone = row.relevant
+    const reason = row.relevant
       .filter((r) => r.grade === 2)
-      .some((r) => !active.has(r.evidenceId));
-    if (primaryGone && row.status !== 'STALE')
-      return { ...row, status: 'STALE', staleFrom: row.status };
-    if (!primaryGone && row.status === 'STALE')
+      .map(gone)
+      .find(Boolean);
+    if (reason && (row.status !== 'STALE' || row.staleReason !== reason))
       return {
         ...row,
+        status: 'STALE',
+        staleFrom: row.status === 'STALE' ? row.staleFrom : row.status,
+        staleReason: reason,
+      };
+    if (!reason && row.status === 'STALE') {
+      const { staleReason, ...rest } = row;
+      return {
+        ...rest,
         status: row.staleFrom ?? 'CANDIDATE',
         staleFrom: undefined,
       };
+    }
     return row;
   });
 }
@@ -335,7 +379,9 @@ async function buildCandidateRows({
         language === 'vi' ? 'vi' : 'paraphrase',
         ...(reelsBySeries.get(seriesId).size > 1 ? ['same-series'] : []),
       ],
-      relevant: [{ evidenceId: item.id, grade: 2 }],
+      relevant: [
+        { evidenceId: item.id, grade: 2, textHash: textHash(item.text) },
+      ],
       indexVersion: item.indexVersion ?? null,
       createdAt: now.toISOString(),
       generator,
@@ -489,6 +535,7 @@ module.exports = {
   shuffle,
   summarize,
   summarizeBy,
+  textHash,
   toJsonl,
   validateDataset,
   validateRow,

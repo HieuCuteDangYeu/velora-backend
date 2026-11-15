@@ -125,7 +125,15 @@ export class TranscribeAudioManifestUseCase {
     );
   }
 
+  // The English title, description and tags steer Whisper toward English: on
+  // Chinese speech it replaced correct output with English gibberish, so the
+  // prompt is opt-in. Set INDEX_TRANSCRIPTION_METADATA_PROMPT=true to send it.
   private buildPrompt(job: ReelIndexJob): string | undefined {
+    if (
+      this.config.get<string>('INDEX_TRANSCRIPTION_METADATA_PROMPT') !== 'true'
+    ) {
+      return undefined;
+    }
     const values = [job.title, job.description, ...job.tags]
       .map((value) => value?.trim())
       .filter((value): value is string => Boolean(value));

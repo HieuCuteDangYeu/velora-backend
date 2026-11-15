@@ -1,6 +1,10 @@
 import type { TranscriptionResult } from '@common/ai/interfaces/transcription-result.interface';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  removeTranscriptionArtifacts,
+  stripTranscriptionArtifactsFromText,
+} from '@ai/domain/services/transcription-artifacts';
 import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 import type {
   ITranscriptionService,
@@ -123,7 +127,7 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
           );
         }
         this.keyPool.reportSuccess(keyIndex, response.headers, model);
-        const text = payload.text?.trim() ?? '';
+        const text = stripTranscriptionArtifactsFromText(payload.text ?? '');
         const detectedLanguage =
           typeof payload.language === 'string' && payload.language.trim()
             ? payload.language.trim().toLowerCase()
@@ -131,9 +135,10 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
         return {
           text,
           detectedLanguage,
-          segments:
+          segments: this.withoutArtifacts(
             this.normalizeWords(payload.words) ??
-            this.normalizeSegments(payload.segments),
+              this.normalizeSegments(payload.segments),
+          ),
           wordCount: text ? text.split(/\s+/u).length : 0,
           provider: 'groq',
           model,
@@ -155,6 +160,14 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
     }
 
     throw new Error('Groq transcription exceeded max retry attempts');
+  }
+
+  private withoutArtifacts<
+    T extends { start: number; end: number; text: string },
+  >(items: T[] | undefined): T[] | undefined {
+    if (!items) return undefined;
+    const cleaned = removeTranscriptionArtifacts(items);
+    return cleaned.length > 0 ? cleaned : undefined;
   }
 
   private normalizeWords(

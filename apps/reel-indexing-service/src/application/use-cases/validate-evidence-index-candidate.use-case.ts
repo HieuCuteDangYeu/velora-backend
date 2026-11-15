@@ -2,6 +2,7 @@ import type { TranscriptSegment } from '@common/ai/interfaces/transcription-resu
 import type { ReelEvidenceDocument } from '@common/processing/interfaces/reel-index-document.interface';
 import type { ReelIndexJob } from '@common/processing/interfaces/reel-index-job.interface';
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
+import { normalizeEvidenceText } from '@indexing/domain/services/evidence-text';
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 
@@ -199,7 +200,7 @@ export class ValidateEvidenceIndexCandidateUseCase {
   }
 
   private normalize(value: string): string {
-    return value.normalize('NFKC').replace(/\s+/g, ' ').trim();
+    return normalizeEvidenceText(value);
   }
 
   private sourceSegmentId(segment: TranscriptSegment, ordinal: number): string {

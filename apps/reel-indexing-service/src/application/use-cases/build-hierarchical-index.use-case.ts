@@ -17,6 +17,7 @@ import type { TranscriptSection } from '@indexing/domain/entities/index-checkpoi
 import type { IIndexingAiService } from '@indexing/domain/interfaces/ai-service.interface';
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
+import { normalizeEvidenceText } from '@indexing/domain/services/evidence-text';
 import { Inject, Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 
@@ -577,13 +578,13 @@ export class BuildHierarchicalIndexUseCase {
   }
 
   private normalizeEvidence(text: string): string {
-    return text.normalize('NFKC').replace(/\s+/g, ' ').trim();
+    return normalizeEvidenceText(text);
   }
 
   private transcriptVersion(): string {
     return (
       this.config.get<string>('INDEX_TRANSCRIPT_VERSION') ||
-      'normalized-transcript-v1'
+      'normalized-transcript-v2'
     );
   }
 

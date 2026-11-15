@@ -18,16 +18,22 @@ They are not in the homelab compose file and the homelab deploy script ignores t
 | Database | Aiven `friend-service` database; mail has none |
 | Mail provider | Resend over HTTPS |
 
-## Reel media workers (added 2026-11-15)
+## Reel media worker, LONG lane only (added 2026-11-15)
 
-The same stack also runs two copies of `media-processing-service`, one per lane
-(`media-processing-service` = `SHORT`, `media-processing-long-service` = `LONG`), built from
-the same Dockerfile for `linux/amd64`. They consume `reel_media_short_jobs`, `processing_queue`
-and `reel_media_long_jobs` on the homelab RabbitMQ as **competing consumers** next to the
-homelab workers: RabbitMQ hands each job to whichever worker is free (prefetch 1), so no
-queue, routing key or message format changes. A worker needs only RabbitMQ and Cloudflare R2;
-it keeps its ffmpeg workspace in the container's `/tmp`.
+The stack runs `media-processing-long-service`: `media-processing-service` built for
+`linux/amd64`, with `MEDIA_WORKER_LANE=LONG`. It consumes `reel_media_long_jobs` on the
+homelab RabbitMQ and is the **only** consumer of that queue; the homelab keeps the SHORT
+worker (`reel_media_short_jobs`, `processing_queue`). A worker needs only RabbitMQ and
+Cloudflare R2; it keeps its ffmpeg workspace in the container's `/tmp`.
 
+- **Why not the SHORT lane here:** both hosts ran it for a while as competing consumers.
+  Measured on the same series (5 jobs each, logs of 2026-11-15) a short job took 246 s here
+  against 137 s on the homelab (audio 24.6 s vs 8.3 s, 24 visual frames 88 s vs 20 s) and
+  the container was CPU-throttled in 22% of its periods. This host is shared with Langfuse
+  and the database replicas (load average about 4.9 on 6 vCPUs) and its cores are slower
+  than the M1's, so sending half of the short jobs here made uploads slower. The long lane
+  is the heavy one the M1 should not run. A synthetic single-process ffmpeg run had looked
+  comparable (9.6 s vs 8 s); do not size this host from that.
 - `media.env` (mode 640 `root:velora-deploy`, not in the repo) holds only `RABBITMQ_URL`,
   the `R2_*` keys, `FFMPEG_PATH` and the `MEDIA_*` HLS tuning keys, copied from the homelab
   `.env`. Keep the `MEDIA_*` values equal on both hosts or HLS output depends on which
@@ -35,15 +41,14 @@ it keeps its ffmpeg workspace in the container's `/tmp`.
 - `TIKTOK_CDN_ENABLED=false` is set in the compose file. Jobs handled here upload to R2
   (the same fallback the homelab uses when the TikTok CDN upload fails); the TikTok session
   cookie stays tied to the homelab address.
-- Each container is capped at 2 CPUs and 2 GB with a low CPU weight (`cpu_shares: 256`), so
+- The container is capped at 2 CPUs and 2 GB with a low CPU weight (`cpu_shares: 256`), so
   the Mongo and Postgres replicas and `call-media-2` on this host win when a transcode runs.
-- A job that is running when a container is recreated is not acknowledged and RabbitMQ
-  redelivers it, the same as on the homelab.
 - The homelab no longer runs `media-processing-long-service` (removed from `docker-compose.yml`,
   listed in `REMOVED_COMPOSE_SERVICES`): **the LONG lane exists only here**, so long jobs wait in
-  `reel_media_long_jobs` while this node is down. The homelab keeps `media-processing-service`
-  (SHORT), so short jobs have two consumers. To bring the LONG lane back on the homelab,
-  revert that compose removal.
+  `reel_media_long_jobs` while this node is down. To bring it back on the homelab, revert that
+  compose removal.
+- A job that is running when the container is recreated is not acknowledged and RabbitMQ
+  redelivers it, the same as on the homelab.
 - Monitoring needs nothing new: the `reel_media_*` queue alerts count consumers on the
   broker, so they cover both hosts.
 
@@ -58,7 +63,7 @@ it keeps its ffmpeg workspace in the container's `/tmp`.
    to run `/usr/local/sbin/velora-friend-mail-deploy` (a copy of `deploy.sh`) and sends
    `deploy <sha>`.
 
-`deploy.sh` then, for each image (the media image has two containers, which it treats as one unit): pulls the image, **skips it if the running container
+`deploy.sh` then, for each image (the media image runs as the single container `media-processing-long-service`): pulls the image, **skips it if the running container
 already has the same image id**, otherwise records the new tag in `release.env`, recreates
 only that container, and waits until it is running, has not restarted and logged
 `Nest microservice successfully started`. If that does not happen within 90 s it puts the
@@ -115,7 +120,7 @@ two UUIDs). Change a value here and on the homelab together.
 ssh root@144.91.101.1
 cd /opt/velora/friend-mail
 docker compose --env-file release.env ps
-docker compose --env-file release.env logs --tail=100 friend-service mail-service media-processing-service media-processing-long-service
+docker compose --env-file release.env logs --tail=100 friend-service mail-service media-processing-long-service
 docker compose --env-file release.env stop      # consumers leave; requests wait in RabbitMQ
 ```
 

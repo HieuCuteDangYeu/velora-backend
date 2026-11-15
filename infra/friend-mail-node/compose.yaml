@@ -32,32 +32,12 @@ services:
         max-size: 20m
         max-file: '3'
 
-  # Reel media workers: the same image as the homelab arm64 one, built for amd64. They
-  # compete with the homelab workers for the reel_media_* queues and processing_queue on
-  # the homelab RabbitMQ, download and transcode with ffmpeg in /tmp, and upload to R2.
-  # CPU is capped and given a low weight so the database replicas and the call media
-  # failover node on this host keep priority when a long transcode runs.
-  media-processing-service:
-    image: ${DOCKERHUB_USERNAME}/media-processing-service:${MEDIA_PROCESSING_SERVICE_TAG}
-    container_name: media-processing-service
-    restart: unless-stopped
-    env_file:
-      - media.env # RABBITMQ_URL, R2_* and the MEDIA_* tuning keys only
-    environment:
-      MEDIA_WORKER_LANE: SHORT
-      MEDIA_WORKER_PREFETCH: '1'
-      TIKTOK_CDN_ENABLED: 'false' # the TikTok session belongs to the homelab address
-    cpus: 2
-    cpu_shares: 256
-    mem_limit: 2g
-    extra_hosts:
-      - 'rabbitmq:100.102.228.48'
-    logging:
-      driver: json-file
-      options:
-        max-size: 20m
-        max-file: '3'
-
+  # Reel media worker for the LONG lane (reel_media_long_jobs), the only media worker on this
+  # node: same image as the homelab arm64 one, built for amd64. The homelab runs the SHORT
+  # worker; measured on 2026-11-15, short jobs took 246 s here against 137 s on the homelab
+  # (CPU-bound, this host is shared with Langfuse and the DB replicas), so it does not take
+  # short jobs. It downloads and transcodes with ffmpeg in /tmp and uploads to R2. CPU is
+  # capped and given a low weight so the replicas and call-media-2 keep priority.
   media-processing-long-service:
     image: ${DOCKERHUB_USERNAME}/media-processing-service:${MEDIA_PROCESSING_SERVICE_TAG}
     container_name: media-processing-long-service

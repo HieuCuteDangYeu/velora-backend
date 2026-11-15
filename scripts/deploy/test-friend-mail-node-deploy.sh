@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exercises infra/friend-mail-node/deploy.sh against a fake docker: input validation,
-# a changed image, an unchanged image, a two-container image (the media workers) and
+# a changed image, an unchanged image, an image whose container has another name (the LONG media worker) and
 # automatic rollback of an unhealthy one.
 set -Eeuo pipefail
 
@@ -65,7 +65,7 @@ acme/mail-service:${sha_new}-amd64=id-mail-boot
 acme/friend-service:${sha_bad}-amd64=id-friend-bad
 acme/mail-service:${sha_bad}-amd64=id-mail-bad
 IMG
-printf 'friend-service=id-friend-boot\nmail-service=id-mail-boot\nmedia-processing-service=id-media-boot\nmedia-processing-long-service=id-media-boot\n' >"$tmp/fake/running"
+printf 'friend-service=id-friend-boot\nmail-service=id-mail-boot\nmedia-processing-long-service=id-media-boot\n' >"$tmp/fake/running"
 printf 'id-friend-bad\nid-mail-bad\nid-media-bad\n' >"$tmp/fake/bad"
 : >"$tmp/fake/calls"
 
@@ -85,8 +85,8 @@ grep -q "^FRIEND_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail
 grep -q "^MAIL_SERVICE_TAG=boot$" "$tmp/stack/release.env" || fail "mail tag must stay"
 grep -q "rmi acme/friend-service:boot" "$tmp/fake/calls" && fail "previous image must be kept for rollback"
 
-# The media image runs as two containers; both are recreated on the same tag.
-grep -q "^up media-processing-service acme/media-processing-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "short media worker was not recreated"
+# The media image runs only as the LONG worker; the SHORT lane must never be started here.
+grep -q "^up media-processing-service " "$tmp/fake/calls" && fail "the short media worker must not run on this node"
 grep -q "^up media-processing-long-service acme/media-processing-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "long media worker was not recreated"
 grep -q "^MEDIA_PROCESSING_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "media tag not recorded"
 

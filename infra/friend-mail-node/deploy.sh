@@ -12,7 +12,7 @@ STACK_DIR="${VELORA_STACK_DIR:-/opt/velora/friend-mail}"
 HEALTH_TIMEOUT="${VELORA_HEALTH_TIMEOUT:-90}"
 STABLE_SECONDS="${VELORA_STABLE_SECONDS:-10}"
 READY_PATTERN='Nest microservice successfully started'
-# One image per entry; the media-processing image runs as two containers (one per lane).
+# One image per entry; a service name can differ from its container (see containers_of).
 SERVICES=(friend-service mail-service media-processing-service)
 RELEASE_ENV="$STACK_DIR/release.env"
 
@@ -21,7 +21,7 @@ die() { log "ERROR: $*" >&2; exit 1; }
 
 containers_of() {
   case "$1" in
-    media-processing-service) printf '%s\n' media-processing-service media-processing-long-service ;;
+    media-processing-service) printf '%s\n' media-processing-long-service ;; # image runs as the LONG lane only
     *) printf '%s\n' "$1" ;;
   esac
 }

@@ -23,6 +23,13 @@ export interface IIndexCheckpointRepository {
     artifacts: TranscriptionAudioArtifact[],
     transcriptionIdentity: string,
   ): Promise<void>;
+  // Copies the newest finished transcript of the same audio (matched by checksum)
+  // from an earlier attempt of this reel into the pending segments of this
+  // attempt, and returns how many segments were filled.
+  reuseStoredAudioSegments(input: {
+    reelId: string;
+    indexAttemptId: string;
+  }): Promise<number>;
   listAudioSegments(indexAttemptId: string): Promise<AudioSegmentCheckpoint[]>;
   markAudioSegmentProcessing(
     indexAttemptId: string,

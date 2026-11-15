@@ -21,7 +21,10 @@ const pendingSegment = {
   attemptCount: 0,
 } as AudioSegmentCheckpoint;
 
-const build = (env: Record<string, string>) => {
+const build = (
+  env: Record<string, string>,
+  stored: { reusable: boolean } = { reusable: false },
+) => {
   const config: IIndexingApplicationConfig = {
     get: <T = string>(key: string) => env[key] as T | undefined,
     transcriptionIdentity: () => ({
@@ -38,6 +41,23 @@ const build = (env: Record<string, string>) => {
   const ai = {
     transcribeAudioKey: jest.fn().mockResolvedValue({ text: 'hello' }),
   };
+  const checkpoints = {
+    initializeAudioSegments: jest.fn(),
+    reuseStoredAudioSegments: jest
+      .fn()
+      .mockResolvedValue(stored.reusable ? 1 : 0),
+    // After a successful reuse the segment is already COMPLETED in this attempt.
+    listAudioSegments: jest
+      .fn()
+      .mockResolvedValue([
+        stored.reusable
+          ? { ...pendingSegment, status: 'COMPLETED' }
+          : pendingSegment,
+      ]),
+    markAudioSegmentProcessing: jest.fn(),
+    completeAudioSegment: jest.fn(),
+    failAudioSegment: jest.fn(),
+  };
   const useCase = new TranscribeAudioManifestUseCase(
     config,
     {
@@ -48,15 +68,9 @@ const build = (env: Record<string, string>) => {
       }),
     } as never,
     ai as never,
-    {
-      initializeAudioSegments: jest.fn(),
-      listAudioSegments: jest.fn().mockResolvedValue([pendingSegment]),
-      markAudioSegmentProcessing: jest.fn(),
-      completeAudioSegment: jest.fn(),
-      failAudioSegment: jest.fn(),
-    } as never,
+    checkpoints as never,
   );
-  return { useCase, ai };
+  return { useCase, ai, checkpoints };
 };
 
 describe('TranscribeAudioManifestUseCase metadata prompt', () => {
@@ -78,5 +92,31 @@ describe('TranscribeAudioManifestUseCase metadata prompt', () => {
       audioKey: 'audio_000000.wav',
       initialPrompt: expect.stringContaining('narto-drama'),
     });
+  });
+});
+
+describe('TranscribeAudioManifestUseCase stored transcripts', () => {
+  const visualRerun = { ...job, requireVisualAnalysis: true } as ReelIndexJob;
+
+  it('reuses the stored transcript instead of calling Whisper on a visual re-analysis run', async () => {
+    const { useCase, ai, checkpoints } = build({}, { reusable: true });
+    await useCase.execute(visualRerun);
+    expect(checkpoints.reuseStoredAudioSegments).toHaveBeenCalledWith({
+      reelId: 'reel-1',
+      indexAttemptId: 'attempt-1',
+    });
+    expect(ai.transcribeAudioKey).not.toHaveBeenCalled();
+  });
+
+  it('still transcribes a visual re-analysis run when no transcript is stored', async () => {
+    const { useCase, ai } = build({}, { reusable: false });
+    await useCase.execute(visualRerun);
+    expect(ai.transcribeAudioKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reuses a stored transcript for a normal index job', async () => {
+    const { useCase, checkpoints } = build({}, { reusable: true });
+    await useCase.execute(job);
+    expect(checkpoints.reuseStoredAudioSegments).not.toHaveBeenCalled();
   });
 });

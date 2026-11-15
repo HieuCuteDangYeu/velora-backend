@@ -186,6 +186,22 @@ function authHeaders(auth) {
   return { Cookie: auth.cookie };
 }
 
+// Access tokens expire after about 15 minutes, shorter than a ramp. On a 401 log in again once
+// (shared by all concurrent jobs) and retry; a fixed VELORA_TEST_ACCESS_TOKEN cannot be refreshed.
+async function fetchAuthed(baseUrl, auth, url, options = {}) {
+  const send = () => fetchJson(url, { ...options, headers: { ...(options.headers || {}), ...authHeaders(auth) } });
+  try {
+    return await send();
+  } catch (error) {
+    if (!/failed \(401\)/.test(String(error?.message)) || auth.bearer) throw error;
+    auth.refreshing ||= authenticate(baseUrl)
+      .then((fresh) => { auth.cookie = fresh.cookie; })
+      .finally(() => { auth.refreshing = null; });
+    await auth.refreshing;
+    return send();
+  }
+}
+
 async function authenticate(baseUrl) {
   const token = process.env.VELORA_TEST_ACCESS_TOKEN?.trim();
   if (token) return { bearer: token };
@@ -210,13 +226,13 @@ async function authenticate(baseUrl) {
   return { cookie };
 }
 
-async function verifyAuthentication(baseUrl, auth) { await fetchJson(apiUrl(baseUrl, '/auth/me'), { headers: authHeaders(auth) }); }
+async function verifyAuthentication(baseUrl, auth) { await fetchAuthed(baseUrl, auth, apiUrl(baseUrl, '/auth/me')); }
 
 async function getUploadUrl(baseUrl, auth, mimeType) {
   const started = Date.now();
-  const { body } = await fetchJson(apiUrl(baseUrl, '/media/upload-url'), {
+  const { body } = await fetchAuthed(baseUrl, auth, apiUrl(baseUrl, '/media/upload-url'), {
     method: 'POST',
-    headers: { ...authHeaders(auth), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileType: mimeType, purpose: 'reel' }),
   });
   return { ...body, latencyMs: Date.now() - started };
@@ -251,16 +267,16 @@ async function createReel(baseUrl, auth, fixture, key, id, ordinal) {
     visibility: 'private',
     ...(fixture.durationSeconds ? { clientObservedDurationMs: Math.max(1, Math.round(fixture.durationSeconds * 1000)) } : {}),
   };
-  const { body } = await fetchJson(apiUrl(baseUrl, '/content/reels'), {
+  const { body } = await fetchAuthed(baseUrl, auth, apiUrl(baseUrl, '/content/reels'), {
     method: 'POST',
-    headers: { ...authHeaders(auth), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
   return { reel: body, latencyMs: Date.now() - started };
 }
 
 async function status(baseUrl, auth, reelId) {
-  const { body } = await fetchJson(apiUrl(baseUrl, `/content/reels/${reelId}/status`), { headers: authHeaders(auth) });
+  const { body } = await fetchAuthed(baseUrl, auth, apiUrl(baseUrl, `/content/reels/${reelId}/status`));
   return body;
 }
 

@@ -1,4 +1,10 @@
-export type TranscriptionAudioFormat = 'wav' | 'flac';
+export type TranscriptionAudioFormat = 'wav' | 'flac' | 'opus';
+
+// Opus is stored in an Ogg container; Groq accepts it as .ogg.
+export const TRANSCRIPTION_AUDIO_EXTENSION: Record<
+  TranscriptionAudioFormat,
+  string
+> = { wav: 'wav', flac: 'flac', opus: 'ogg' };
 
 export interface TranscriptionAudioArtifact {
   key: string;

@@ -63,7 +63,7 @@ describe('TranscribeAudioUseCase', () => {
     );
     expect(transcriptionService.transcribeAudio).toHaveBeenCalledWith(
       Buffer.from('dummy audio'),
-      undefined,
+      { fileName: '0.wav' },
     );
     expect(translateTranscript.execute).toHaveBeenCalledWith(rawResult);
     expect(result).toBe(translatedResult);

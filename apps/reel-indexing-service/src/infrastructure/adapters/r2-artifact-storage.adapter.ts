@@ -165,7 +165,9 @@ export class R2ArtifactStorageAdapter implements IArtifactStorage {
       typeof record['reelId'] === 'string' &&
       typeof record['mediaAttemptId'] === 'string' &&
       typeof record['totalDurationMs'] === 'number' &&
-      (record['format'] === 'wav' || record['format'] === 'flac') &&
+      (record['format'] === 'wav' ||
+        record['format'] === 'flac' ||
+        record['format'] === 'opus') &&
       record['version'] === 1 &&
       Array.isArray(record['artifacts']) &&
       record['artifacts'].every((artifact) => {

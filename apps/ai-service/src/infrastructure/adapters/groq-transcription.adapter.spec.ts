@@ -49,4 +49,42 @@ describe('GroqTranscriptionAdapter timed transcription', () => {
       { id: 1, start: 0.55, end: 0.9, text: 'world' },
     ]);
   });
+
+  const adapter = () =>
+    new GroqTranscriptionAdapter({
+      getOrThrow: () => 'whisper-large-v3-turbo',
+      get: (key: string) => ({ AI_TRANSCRIPTION_TIMEOUT_MS: '1000' })[key],
+    } as unknown as ConfigService);
+  const okResponse = () =>
+    ({
+      ok: true,
+      status: 200,
+      text: () => Promise.resolve(JSON.stringify({ text: 'hi' })),
+    }) as Response;
+
+  it('uploads Opus audio under its real .ogg name and type', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(okResponse());
+    await adapter().transcribeAudio(Buffer.from('audio'), {
+      fileName: 'audio_000000.ogg',
+    });
+    const file = (fetchMock.mock.calls[0]?.[1]?.body as FormData).get(
+      'file',
+    ) as File;
+    expect(file.name).toBe('audio_000000.ogg');
+    expect(file.type).toBe('audio/ogg');
+  });
+
+  it('keeps the audio.wav default when no file name is given', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(okResponse());
+    await adapter().transcribeAudio(Buffer.from('audio'));
+    const file = (fetchMock.mock.calls[0]?.[1]?.body as FormData).get(
+      'file',
+    ) as File;
+    expect(file.name).toBe('audio.wav');
+    expect(file.type).toBe('audio/wav');
+  });
 });

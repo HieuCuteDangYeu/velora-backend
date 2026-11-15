@@ -3,6 +3,7 @@ import {
   buildHlsMaterializationArguments,
   buildHlsTranscodeArguments,
   buildThumbnailArguments,
+  buildTranscriptionAudioArguments,
 } from './ffmpeg-arguments';
 
 const variant = {
@@ -30,16 +31,29 @@ const crop = { x: 320, y: 0, width: 608, height: 1080 };
 
 describe('FFmpeg reel arguments', () => {
   it('preserves input timestamps only for opted-in Reel replacements', () => {
-    const input = { inputPath: '/tmp/source.mp4', outputDir: '/tmp/hls', profile: baseProfile };
+    const input = {
+      inputPath: '/tmp/source.mp4',
+      outputDir: '/tmp/hls',
+      profile: baseProfile,
+    };
     const normal = buildHlsTranscodeArguments(input);
-    const replacement = buildHlsTranscodeArguments({ ...input, preserveInputTimestamps: true });
+    const replacement = buildHlsTranscodeArguments({
+      ...input,
+      preserveInputTimestamps: true,
+    });
 
     expect(normal).not.toContain('-copyts');
     expect(normal).not.toContain('-start_at_zero');
-    expect(normal.slice(normal.indexOf('-vsync'), normal.indexOf('-vsync') + 2)).toEqual(['-vsync', '1']);
+    expect(
+      normal.slice(normal.indexOf('-vsync'), normal.indexOf('-vsync') + 2),
+    ).toEqual(['-vsync', '1']);
     expect(replacement).not.toContain('-vsync');
-    expect(replacement.slice(replacement.indexOf('-y') + 1, replacement.indexOf('-i')))
-      .toEqual(['-copyts', '-start_at_zero']);
+    expect(
+      replacement.slice(
+        replacement.indexOf('-y') + 1,
+        replacement.indexOf('-i'),
+      ),
+    ).toEqual(['-copyts', '-start_at_zero']);
   });
   it('materializes local HLS playlists with remote nonstandard segment URLs', () => {
     expect(
@@ -139,5 +153,41 @@ describe('FFmpeg reel arguments', () => {
     expect(thumbnailArgs.slice(0, thumbnailArgs.indexOf('-i'))).toContain(
       '3.500',
     );
+  });
+});
+
+describe('buildTranscriptionAudioArguments', () => {
+  const segment = {
+    outputPath: '/tmp/audio_000000.ogg',
+    startMs: 0,
+    endMs: 10_000,
+    overlapBeforeMs: 0,
+  };
+
+  it('encodes speech as 32 kbps mono Opus (audio mode) in an Ogg container', () => {
+    const args = buildTranscriptionAudioArguments({
+      inputPath: '/tmp/in.mp4',
+      segment,
+      format: 'opus',
+    });
+    const joined = args.join(' ');
+    expect(joined).toContain('-c:a libopus -b:a 32k -application audio -f ogg');
+    expect(joined).toContain('-ac 1 -ar 16000');
+    expect(args.at(-1)).toBe('/tmp/audio_000000.ogg');
+  });
+
+  it('keeps WAV and FLAC encoding unchanged', () => {
+    const wav = buildTranscriptionAudioArguments({
+      inputPath: '/tmp/in.mp4',
+      segment,
+      format: 'wav',
+    }).join(' ');
+    const flac = buildTranscriptionAudioArguments({
+      inputPath: '/tmp/in.mp4',
+      segment,
+      format: 'flac',
+    }).join(' ');
+    expect(wav).toContain('-c:a pcm_s16le -f wav');
+    expect(flac).toContain('-c:a flac -f flac');
   });
 });

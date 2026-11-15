@@ -3,6 +3,7 @@ import type {
   TranscriptionAudioFormat,
   TranscriptionAudioManifest,
 } from '@common/processing/interfaces/transcription-audio-manifest.interface';
+import { TRANSCRIPTION_AUDIO_EXTENSION } from '@common/processing/interfaces/transcription-audio-manifest.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as path from 'node:path';
@@ -163,7 +164,7 @@ export class BuildTranscriptionAudioManifestUseCase {
       segments.push({
         outputPath: path.join(
           outputDir,
-          `audio_${index.toString().padStart(6, '0')}.${format}`,
+          `audio_${index.toString().padStart(6, '0')}.${TRANSCRIPTION_AUDIO_EXTENSION[format]}`,
         ),
         startMs,
         endMs,
@@ -175,12 +176,11 @@ export class BuildTranscriptionAudioManifestUseCase {
   }
 
   private getAudioFormat(): TranscriptionAudioFormat {
-    return this.configService
+    const configured = this.configService
       .get<string>('MEDIA_TRANSCRIPTION_AUDIO_FORMAT')
       ?.trim()
-      .toLowerCase() === 'flac'
-      ? 'flac'
-      : 'wav';
+      .toLowerCase();
+    return configured === 'flac' || configured === 'opus' ? configured : 'wav';
   }
 
   private getPositiveInt(

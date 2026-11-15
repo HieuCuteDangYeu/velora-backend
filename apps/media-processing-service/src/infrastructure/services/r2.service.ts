@@ -65,6 +65,10 @@ const getContentType = (fileName: string): string => {
     return 'audio/flac';
   }
 
+  if (lowerName.endsWith('.ogg')) {
+    return 'audio/ogg';
+  }
+
   if (lowerName.endsWith('.json')) {
     return 'application/json';
   }

@@ -59,3 +59,31 @@ describe('BuildTranscriptionAudioManifestUseCase trim propagation', () => {
     });
   });
 });
+
+describe('BuildTranscriptionAudioManifestUseCase audio format', () => {
+  const build = (format?: string) =>
+    new BuildTranscriptionAudioManifestUseCase(
+      {
+        get: jest.fn((key: string) =>
+          key === 'MEDIA_TRANSCRIPTION_AUDIO_FORMAT' ? format : undefined,
+        ),
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+  it('names Opus segments .ogg so Groq detects the container', () => {
+    const [segment] = build('opus').planSegments(60_000, '/tmp/audio');
+    expect(segment.outputPath).toBe('/tmp/audio/audio_000000.ogg');
+  });
+
+  it('defaults to WAV and still honours FLAC', () => {
+    expect(build().planSegments(60_000, '/tmp/a')[0].outputPath).toMatch(
+      /\.wav$/,
+    );
+    expect(build('flac').planSegments(60_000, '/tmp/a')[0].outputPath).toMatch(
+      /\.flac$/,
+    );
+  });
+});

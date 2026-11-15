@@ -2,6 +2,8 @@ import { TranscriptionResult } from '@common/ai/interfaces/transcription-result.
 
 export interface TranscriptionOptions {
   initialPrompt?: string;
+  // File name with the real extension, so the provider detects the audio format.
+  fileName?: string;
 }
 
 export interface ITranscriptionService {

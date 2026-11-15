@@ -239,10 +239,30 @@ export function buildTranscriptionAudioArguments(input: {
     '16000',
     '-af',
     'highpass=f=80,lowpass=f=8000,loudnorm',
-    '-c:a',
-    input.format === 'flac' ? 'flac' : 'pcm_s16le',
-    '-f',
-    input.format,
+    ...transcriptionCodecArguments(input.format),
     input.segment.outputPath,
   ];
+}
+
+// Opus at 32 kbps is ~4 KB/s against 32 KB/s for WAV, which keeps the Groq
+// upload small on a slow uplink. Measured on a Chinese reel: 24 kbps in voip
+// mode made Whisper drop the first sentence and invent a "like and subscribe"
+// line, while 32 kbps and 48 kbps in audio mode transcribed the opening like
+// the lossless audio.
+function transcriptionCodecArguments(
+  format: TranscriptionAudioFormat,
+): string[] {
+  if (format === 'opus') {
+    return [
+      '-c:a',
+      'libopus',
+      '-b:a',
+      '32k',
+      '-application',
+      'audio',
+      '-f',
+      'ogg',
+    ];
+  }
+  return ['-c:a', format === 'flac' ? 'flac' : 'pcm_s16le', '-f', format];
 }

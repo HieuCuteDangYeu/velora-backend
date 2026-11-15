@@ -14,6 +14,17 @@ interface GroqTranscriptionPayload {
   words?: unknown[];
 }
 
+const AUDIO_MIME_TYPES: Record<string, string> = {
+  flac: 'audio/flac',
+  ogg: 'audio/ogg',
+  wav: 'audio/wav',
+};
+
+function audioMimeType(fileName: string): string {
+  const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
+  return AUDIO_MIME_TYPES[extension] ?? 'audio/wav';
+}
+
 @Injectable()
 export class GroqTranscriptionAdapter implements ITranscriptionService {
   private readonly keyPool: GroqKeyPool;
@@ -38,10 +49,13 @@ export class GroqTranscriptionAdapter implements ITranscriptionService {
   ): Promise<TranscriptionResult> {
     const model = this.config.getOrThrow<string>('AI_TRANSCRIPTION_MODEL');
     const form = new FormData();
+    const fileName = options?.fileName?.trim() || 'audio.wav';
     form.append(
       'file',
-      new Blob([new Uint8Array(audioBuffer)], { type: 'audio/wav' }),
-      'audio.wav',
+      new Blob([new Uint8Array(audioBuffer)], {
+        type: audioMimeType(fileName),
+      }),
+      fileName,
     );
     form.append('model', model);
     form.append('response_format', 'verbose_json');

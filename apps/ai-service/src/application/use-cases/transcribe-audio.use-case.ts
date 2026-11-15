@@ -25,7 +25,10 @@ export class TranscribeAudioUseCase {
     const audioBuffer = await this.audioStorageService.downloadAudio(audioKey);
     const result = await this.transcriptionService.transcribeAudio(
       audioBuffer,
-      options,
+      {
+        ...options,
+        fileName: audioKey.split('/').pop(),
+      },
     );
     if (this.translateTranscript) {
       return await this.translateTranscript.execute(result);

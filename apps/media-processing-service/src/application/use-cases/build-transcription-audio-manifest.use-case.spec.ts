@@ -49,7 +49,7 @@ describe('BuildTranscriptionAudioManifestUseCase trim propagation', () => {
           endMs: 9000,
         }),
       ],
-      'wav',
+      'opus',
     );
     expect(result.manifest.totalDurationMs).toBe(4000);
     expect(result.manifest.artifacts[0]).toMatchObject({
@@ -78,8 +78,11 @@ describe('BuildTranscriptionAudioManifestUseCase audio format', () => {
     expect(segment.outputPath).toBe('/tmp/audio/audio_000000.ogg');
   });
 
-  it('defaults to WAV and still honours FLAC', () => {
+  it('defaults to Opus and still honours WAV and FLAC', () => {
     expect(build().planSegments(60_000, '/tmp/a')[0].outputPath).toMatch(
+      /\.ogg$/,
+    );
+    expect(build('wav').planSegments(60_000, '/tmp/a')[0].outputPath).toMatch(
       /\.wav$/,
     );
     expect(build('flac').planSegments(60_000, '/tmp/a')[0].outputPath).toMatch(

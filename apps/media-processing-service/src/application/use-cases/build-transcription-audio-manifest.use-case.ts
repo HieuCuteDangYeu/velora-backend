@@ -180,7 +180,7 @@ export class BuildTranscriptionAudioManifestUseCase {
       .get<string>('MEDIA_TRANSCRIPTION_AUDIO_FORMAT')
       ?.trim()
       .toLowerCase();
-    return configured === 'flac' || configured === 'opus' ? configured : 'wav';
+    return configured === 'wav' || configured === 'flac' ? configured : 'opus';
   }
 
   private getPositiveInt(

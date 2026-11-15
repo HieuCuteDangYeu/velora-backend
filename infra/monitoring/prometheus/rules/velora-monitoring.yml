@@ -605,6 +605,30 @@ groups:
           summary: user_queue has backlog with no consumers
           description: User requests are queued but user_queue has no consumers for two minutes.
 
+      - alert: VeloraFriendServiceNoConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="friend_queue"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: friend-service
+          host: velora-node-2
+        annotations:
+          summary: friend-service has no consumers
+          description: friend_queue has had no RabbitMQ consumer for two minutes, so friend requests from the gateway will time out. friend-service runs on velora-node-2, so check that host and its Tailscale link to the broker.
+
+      - alert: VeloraMailServiceNoConsumers
+        expr: |
+          sum(rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="mail_queue"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: mail-service
+          host: velora-node-2
+        annotations:
+          summary: mail-service has no consumers
+          description: mail_queue has had no RabbitMQ consumer for two minutes, so verification and reset emails will wait in the queue. mail-service runs on velora-node-2, so check that host and its Tailscale link to the broker.
+
       - alert: VeloraUserHighInternalErrorRate
         expr: |
           (

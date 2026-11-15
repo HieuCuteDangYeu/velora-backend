@@ -185,6 +185,17 @@ Notes:
 - Logs: the homelab Alloy tags its lines with `host="homelab"`; Alloy on a VPS tags its own.
   Lines without a `host` label count as the primary machine.
 
+### Services that run on another VPS
+
+friend-service and mail-service run on `velora-node-2` (`infra/friend-mail-node`) and expose no
+metrics, and the deploy script no longer waits for their queues. Their health signal is the
+RabbitMQ consumer count of `friend_queue` and `mail_queue`, scraped by the
+`rabbitmq-friend-mail` job. `VeloraFriendServiceNoConsumers` and `VeloraMailServiceNoConsumers`
+fire after two minutes without a consumer and carry `host: velora-node-2`, so the dashboard
+shows where to look. Their containers and logs appear under the node-2 host on the Servers
+and Logs pages like any other workload there. Langfuse on node-2 (`infra/langfuse-node`) has
+no Prometheus metrics; use its logs and the container list.
+
 ## Retention and scrape interval
 
 The default uses a 5-second scrape and rule evaluation interval, a 3-second

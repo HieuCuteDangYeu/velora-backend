@@ -655,6 +655,66 @@ tests:
               summary: user_queue has backlog with no consumers
               description: User requests are queued but user_queue has no consumers for two minutes.
 
+  - name: Friend queue with no consumers becomes critical and names its host
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="friend_queue"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraFriendServiceNoConsumers
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VeloraFriendServiceNoConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: friend-service
+              host: velora-node-2
+            exp_annotations:
+              summary: friend-service has no consumers
+              description: friend_queue has had no RabbitMQ consumer for two minutes, so friend requests from the gateway will time out. friend-service runs on velora-node-2, so check that host and its Tailscale link to the broker.
+
+  - name: Friend queue with a consumer stays quiet
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="friend_queue"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraFriendServiceNoConsumers
+        exp_alerts: []
+
+  - name: Mail queue with no consumers becomes critical and names its host
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="mail_queue"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraMailServiceNoConsumers
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VeloraMailServiceNoConsumers
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: mail-service
+              host: velora-node-2
+            exp_annotations:
+              summary: mail-service has no consumers
+              description: mail_queue has had no RabbitMQ consumer for two minutes, so verification and reset emails will wait in the queue. mail-service runs on velora-node-2, so check that host and its Tailscale link to the broker.
+
+  - name: Mail queue with a consumer stays quiet
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_consumers{job="rabbitmq-friend-mail",queue="mail_queue"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraMailServiceNoConsumers
+        exp_alerts: []
+
   - name: one-minute mean CPU above seventy percent must hold sixty seconds
     interval: 5s
     input_series:

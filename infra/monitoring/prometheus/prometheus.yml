@@ -101,6 +101,24 @@ scrape_configs:
         regex: 'up;|rabbitmq_detailed_.*;(auth_queue|user_queue)'
         action: keep
 
+  # friend-service and mail-service run on velora-node-2 and expose no metrics, so the
+  # RabbitMQ consumer count of their queues is their health signal (see the
+  # VeloraFriendServiceNoConsumers and VeloraMailServiceNoConsumers alerts).
+  - job_name: rabbitmq-friend-mail
+    metrics_path: /metrics/detailed
+    params:
+      family:
+        - queue_coarse_metrics
+        - queue_consumer_count
+    static_configs:
+      - targets:
+          - rabbitmq:15692
+    metric_relabel_configs:
+      - source_labels: [__name__, queue]
+        separator: ';'
+        regex: 'up;|rabbitmq_detailed_.*;(friend_queue|mail_queue)'
+        action: keep
+
   # One node-exporter per VPS. The labels on each target are the host registry:
   # the dashboard lists every target of this job and reads its name, role and
   # region from these labels, so adding a VPS is one more block here and

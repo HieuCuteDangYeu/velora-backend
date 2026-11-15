@@ -164,6 +164,37 @@ export class PrismaIndexCheckpointRepository implements IIndexCheckpointReposito
     }
   }
 
+  async reuseStoredAudioSegments(input: {
+    reelId: string;
+    indexAttemptId: string;
+  }): Promise<number> {
+    return await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "AudioSegmentCheckpoint" AS current
+      SET
+        "provider" = previous."provider",
+        "transcriptionModel" = previous."transcriptionModel",
+        "transcriptionVersion" = previous."transcriptionVersion",
+        "transcriptText" = previous."transcriptText",
+        "transcriptSegments" = previous."transcriptSegments",
+        "status" = 'COMPLETED',
+        "attemptCount" = GREATEST(previous."attemptCount", 1),
+        "lastError" = NULL
+      FROM (
+        SELECT DISTINCT ON (c."artifactChecksum") c.*
+        FROM "AudioSegmentCheckpoint" c
+        JOIN "IndexingAttempt" a ON a."indexAttemptId" = c."indexAttemptId"
+        WHERE a."reelId" = ${input.reelId}
+          AND c."indexAttemptId" <> ${input.indexAttemptId}
+          AND c."status" = 'COMPLETED'
+          AND c."transcriptText" IS NOT NULL
+        ORDER BY c."artifactChecksum", c."updatedAt" DESC
+      ) AS previous
+      WHERE current."indexAttemptId" = ${input.indexAttemptId}
+        AND current."status" <> 'COMPLETED'
+        AND current."artifactChecksum" = previous."artifactChecksum"
+    `);
+  }
+
   async listAudioSegments(
     indexAttemptId: string,
   ): Promise<AudioSegmentCheckpoint[]> {
@@ -320,7 +351,7 @@ export class PrismaIndexCheckpointRepository implements IIndexCheckpointReposito
         indexVersion: record.indexVersion,
         chunkingVersion: record.chunkingVersion,
         summaryVersion: record.summaryVersion,
-        embedding: vector as number[],
+        embedding: vector,
       };
     });
   }

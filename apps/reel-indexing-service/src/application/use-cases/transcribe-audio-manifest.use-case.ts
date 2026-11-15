@@ -5,11 +5,13 @@ import type { IIndexingAiService } from '@indexing/domain/interfaces/ai-service.
 import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-storage.interface';
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
 import type { IIndexingApplicationConfig } from '@indexing/domain/interfaces/indexing-application-config.interface';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'crypto';
 
 @Injectable()
 export class TranscribeAudioManifestUseCase {
+  private readonly logger = new Logger(TranscribeAudioManifestUseCase.name);
+
   constructor(
     @Inject('IIndexingApplicationConfig')
     private readonly config: IIndexingApplicationConfig,
@@ -42,6 +44,19 @@ export class TranscribeAudioManifestUseCase {
       manifest.artifacts,
       this.transcriptionIdentity(manifest.artifacts),
     );
+    // A run that only needs fresh visual analysis keeps the stored transcript:
+    // transcribing the same audio again can replace good text with a worse run.
+    if (job.requireVisualAnalysis === true) {
+      const reused = await this.checkpoints.reuseStoredAudioSegments({
+        reelId: job.reelId,
+        indexAttemptId: job.indexAttemptId,
+      });
+      if (reused > 0) {
+        this.logger.log(
+          `Reusing ${reused} stored transcript segment(s) for reel ${job.reelId}`,
+        );
+      }
+    }
     const current = await this.checkpoints.listAudioSegments(
       job.indexAttemptId,
     );

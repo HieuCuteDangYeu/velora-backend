@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Rolls friend-service and mail-service on velora-node-2 to the images the Homelab CD
-# built for one commit. Installed as /usr/local/sbin/velora-friend-mail-deploy and
+# Rolls friend-service, mail-service and the media-processing workers on velora-node-2 to
+# the images the Homelab CD built for one commit. Installed as /usr/local/sbin/velora-friend-mail-deploy and
 # used as the SSH forced command of the velora-deploy user, so the only things the CD
 # key can do are:
 #   deploy <40-hex commit sha>   pull <user>/<service>:<sha>-amd64 and recreate what changed
@@ -12,11 +12,19 @@ STACK_DIR="${VELORA_STACK_DIR:-/opt/velora/friend-mail}"
 HEALTH_TIMEOUT="${VELORA_HEALTH_TIMEOUT:-90}"
 STABLE_SECONDS="${VELORA_STABLE_SECONDS:-10}"
 READY_PATTERN='Nest microservice successfully started'
-SERVICES=(friend-service mail-service)
+# One image per entry; the media-processing image runs as two containers (one per lane).
+SERVICES=(friend-service mail-service media-processing-service)
 RELEASE_ENV="$STACK_DIR/release.env"
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
+
+containers_of() {
+  case "$1" in
+    media-processing-service) printf '%s\n' media-processing-service media-processing-long-service ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
 
 tag_var() { local v="${1^^}_TAG"; printf '%s' "${v//-/_}"; }
 
@@ -40,6 +48,22 @@ write_release() { # write_release <service> <tag>
 compose() { docker compose --env-file "$RELEASE_ENV" -f "$STACK_DIR/compose.yaml" "$@"; }
 
 running_image_id() { docker inspect --format '{{.Image}}' "$1" 2>/dev/null || true; }
+
+# Every container of the service already runs image id $2.
+all_on_image() { # all_on_image <service> <image id>
+  local c
+  while read -r c; do [[ "$(running_image_id "$c")" == "$2" ]] || return 1; done < <(containers_of "$1")
+}
+
+recreate() { # recreate <service>
+  local c
+  while read -r c; do compose up -d --no-deps --no-build "$c" >/dev/null; done < <(containers_of "$1")
+}
+
+all_healthy() { # all_healthy <service>
+  local c
+  while read -r c; do wait_healthy "$c" || return 1; done < <(containers_of "$1")
+}
 
 wait_healthy() { # wait_healthy <container>
   local c="$1" deadline=$((SECONDS + HEALTH_TIMEOUT)) state
@@ -70,7 +94,7 @@ case "$cmd" in
     read_release
     for s in "${SERVICES[@]}"; do
       var="$(tag_var "$s")"
-      printf '%s tag=%s image=%s\n' "$s" "${!var:-}" "$(running_image_id "$s")"
+      printf '%s tag=%s image=%s\n' "$s" "${!var:-}" "$(running_image_id "$(containers_of "$s" | head -n1)")"
     done
     exit 0
     ;;
@@ -96,23 +120,23 @@ for service in "${SERVICES[@]}"; do
     || { log "ERROR: cannot pull $image" >&2; failed=1; continue; }
 
   new_id="$(docker image inspect --format '{{.Id}}' "$image")"
-  if [[ "$(running_image_id "$service")" == "$new_id" ]]; then
+  if all_on_image "$service" "$new_id"; then
     log "$service: image unchanged, keeping tag $current_tag"
     continue
   fi
 
   log "$service: $current_tag -> $new_tag"
   write_release "$service" "$new_tag"
-  compose up -d --no-deps --no-build "$service" >/dev/null
-  if wait_healthy "$service"; then
+  recreate "$service"
+  if all_healthy "$service"; then
     log "$service: healthy on $new_tag"
     prune_images "$service" "$new_tag" "$current_tag"
   else
     log "ERROR: $service did not become healthy; rolling back to $current_tag" >&2
-    docker logs --tail 20 "$service" >&2 || true
+    containers_of "$service" | while read -r c; do docker logs --tail 20 "$c" >&2 || true; done
     write_release "$service" "$current_tag"
-    compose up -d --no-deps --no-build "$service" >/dev/null || true
-    wait_healthy "$service" && log "$service: rolled back to $current_tag" || log "ERROR: rollback of $service is not healthy" >&2
+    recreate "$service" || true
+    all_healthy "$service" && log "$service: rolled back to $current_tag" || log "ERROR: rollback of $service is not healthy" >&2
     failed=1
   fi
 done

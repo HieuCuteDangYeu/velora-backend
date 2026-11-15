@@ -1,4 +1,4 @@
-# friend-service and mail-service on velora-node-2
+# friend-service, mail-service and media workers on velora-node-2
 
 Since 2026-11-13 these two services run on `velora-node-2` (France, `144.91.101.1`,
 tailnet `100.86.68.16`) instead of the homelab. Neither needs the lowest latency: both are
@@ -18,18 +18,42 @@ They are not in the homelab compose file and the homelab deploy script ignores t
 | Database | Aiven `friend-service` database; mail has none |
 | Mail provider | Resend over HTTPS |
 
+## Reel media workers (added 2026-11-15)
+
+The same stack also runs two copies of `media-processing-service`, one per lane
+(`media-processing-service` = `SHORT`, `media-processing-long-service` = `LONG`), built from
+the same Dockerfile for `linux/amd64`. They consume `reel_media_short_jobs`, `processing_queue`
+and `reel_media_long_jobs` on the homelab RabbitMQ as **competing consumers** next to the
+homelab workers: RabbitMQ hands each job to whichever worker is free (prefetch 1), so no
+queue, routing key or message format changes. A worker needs only RabbitMQ and Cloudflare R2;
+it keeps its ffmpeg workspace in the container's `/tmp`.
+
+- `media.env` (mode 640 `root:velora-deploy`, not in the repo) holds only `RABBITMQ_URL`,
+  the `R2_*` keys, `FFMPEG_PATH` and the `MEDIA_*` HLS tuning keys, copied from the homelab
+  `.env`. Keep the `MEDIA_*` values equal on both hosts or HLS output depends on which
+  host took the job. friend and mail do not get the R2 keys.
+- `TIKTOK_CDN_ENABLED=false` is set in the compose file. Jobs handled here upload to R2
+  (the same fallback the homelab uses when the TikTok CDN upload fails); the TikTok session
+  cookie stays tied to the homelab address.
+- Each container is capped at 2 CPUs and 2 GB with a low CPU weight (`cpu_shares: 256`), so
+  the Mongo and Postgres replicas and `call-media-2` on this host win when a transcode runs.
+- A job that is running when a container is recreated is not acknowledged and RabbitMQ
+  redelivers it, the same as on the homelab.
+- Monitoring needs nothing new: the `reel_media_*` queue alerts count consumers on the
+  broker, so they cover both hosts.
+
 ## Release pipeline
 
 `.github/workflows/cd.yml` (Homelab CD, after Homelab CI passes on `master`):
 
-1. `build-and-push-node2-images` builds `friend-service` and `mail-service` for
+1. `build-and-push-node2-images` builds `friend-service`, `mail-service` and `media-processing-service` for
    `linux/amd64` (node-2 is x86_64, the homelab images are arm64) and pushes
    `<user>/<service>:<commit sha>-amd64` to Docker Hub.
 2. `deploy-node2` connects as `velora-deploy@144.91.101.1` with a key that is only allowed
    to run `/usr/local/sbin/velora-friend-mail-deploy` (a copy of `deploy.sh`) and sends
    `deploy <sha>`.
 
-`deploy.sh` then, for each service: pulls the image, **skips it if the running container
+`deploy.sh` then, for each image (the media image has two containers, which it treats as one unit): pulls the image, **skips it if the running container
 already has the same image id**, otherwise records the new tag in `release.env`, recreates
 only that container, and waits until it is running, has not restarted and logged
 `Nest microservice successfully started`. If that does not happen within 90 s it puts the
@@ -49,7 +73,7 @@ The two jobs are independent of `promote-homelab`: neither can hold back the oth
   ed25519 host key, read from the node itself). Rotate by generating a new key, replacing
   the `authorized_keys` line and the secret.
 - `/opt/velora/friend-mail` is group-writable by `velora-deploy`; `.env` is `640 root:velora-deploy`.
-- `release.env` holds `DOCKERHUB_USERNAME`, `FRIEND_SERVICE_TAG` and `MAIL_SERVICE_TAG`.
+- `release.env` holds `DOCKERHUB_USERNAME`, `FRIEND_SERVICE_TAG`, `MAIL_SERVICE_TAG` and `MEDIA_PROCESSING_SERVICE_TAG`.
   The first containers ran a locally built image that was tagged `boot`.
 
 ### Changing the script or the compose file
@@ -86,7 +110,7 @@ two UUIDs). Change a value here and on the homelab together.
 ssh root@144.91.101.1
 cd /opt/velora/friend-mail
 docker compose --env-file release.env ps
-docker compose --env-file release.env logs --tail=100 friend-service mail-service
+docker compose --env-file release.env logs --tail=100 friend-service mail-service media-processing-service media-processing-long-service
 docker compose --env-file release.env stop      # consumers leave; requests wait in RabbitMQ
 ```
 

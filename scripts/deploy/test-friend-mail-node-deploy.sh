@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Exercises infra/friend-mail-node/deploy.sh against a fake docker: input validation,
-# a changed image, an unchanged image, and automatic rollback of an unhealthy one.
+# a changed image, an unchanged image, a two-container image (the media workers) and
+# automatic rollback of an unhealthy one.
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -35,7 +36,7 @@ case "$1" in
     svc="${@: -1}"; env_file="$(sed -n 's/.*--env-file \([^ ]*\).*/\1/p' <<<"$*")"
     # shellcheck disable=SC1090
     source "$env_file"
-    var="$(tr 'a-z-' 'A-Z_' <<<"$svc")_TAG"; ref="$DOCKERHUB_USERNAME/$svc:${!var}"
+    var="$(tr 'a-z-' 'A-Z_' <<<"${svc/-long/}")_TAG"; ref="$DOCKERHUB_USERNAME/${svc/-long/}:${!var}"
     id="$(grep -m1 "^$ref=" "$f/images" | cut -d= -f2)"
     sed -i "/^$svc=/d" "$f/running"; echo "$svc=$id" >>"$f/running"
     echo "up $svc $ref" >>"$f/calls" ;;
@@ -51,17 +52,21 @@ cat >"$tmp/stack/release.env" <<ENV
 DOCKERHUB_USERNAME=acme
 FRIEND_SERVICE_TAG=boot
 MAIL_SERVICE_TAG=boot
+MEDIA_PROCESSING_SERVICE_TAG=boot
 ENV
 cat >"$tmp/fake/images" <<IMG
 acme/friend-service:boot=id-friend-boot
 acme/mail-service:boot=id-mail-boot
+acme/media-processing-service:boot=id-media-boot
+acme/media-processing-service:${sha_new}-amd64=id-media-new
+acme/media-processing-service:${sha_bad}-amd64=id-media-bad
 acme/friend-service:${sha_new}-amd64=id-friend-new
 acme/mail-service:${sha_new}-amd64=id-mail-boot
 acme/friend-service:${sha_bad}-amd64=id-friend-bad
 acme/mail-service:${sha_bad}-amd64=id-mail-bad
 IMG
-printf 'friend-service=id-friend-boot\nmail-service=id-mail-boot\n' >"$tmp/fake/running"
-printf 'id-friend-bad\nid-mail-bad\n' >"$tmp/fake/bad"
+printf 'friend-service=id-friend-boot\nmail-service=id-mail-boot\nmedia-processing-service=id-media-boot\nmedia-processing-long-service=id-media-boot\n' >"$tmp/fake/running"
+printf 'id-friend-bad\nid-mail-bad\nid-media-bad\n' >"$tmp/fake/bad"
 : >"$tmp/fake/calls"
 
 run() { SSH_ORIGINAL_COMMAND="$1" bash "$script" >"$tmp/out" 2>&1; }
@@ -80,6 +85,11 @@ grep -q "^FRIEND_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail
 grep -q "^MAIL_SERVICE_TAG=boot$" "$tmp/stack/release.env" || fail "mail tag must stay"
 grep -q "rmi acme/friend-service:boot" "$tmp/fake/calls" && fail "previous image must be kept for rollback"
 
+# The media image runs as two containers; both are recreated on the same tag.
+grep -q "^up media-processing-service acme/media-processing-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "short media worker was not recreated"
+grep -q "^up media-processing-long-service acme/media-processing-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "long media worker was not recreated"
+grep -q "^MEDIA_PROCESSING_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "media tag not recorded"
+
 # Repeating the same release is a no-op.
 : >"$tmp/fake/calls"; run "deploy $sha_new" || fail "repeat must succeed"
 [[ ! -s "$tmp/fake/calls" ]] || fail "repeat must not recreate anything"
@@ -89,6 +99,8 @@ if run "deploy $sha_bad"; then fail "unhealthy release must exit non-zero"; fi
 grep -q "^FRIEND_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "friend must roll back to its previous tag"
 grep -q "^MAIL_SERVICE_TAG=boot$" "$tmp/stack/release.env" || fail "mail must roll back to its previous tag"
 grep -q "^friend-service=id-friend-new$" "$tmp/fake/running" || fail "friend must be running the old image"
+grep -q "^MEDIA_PROCESSING_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "media must roll back to its previous tag"
+grep -q "^media-processing-long-service=id-media-new$" "$tmp/fake/running" || fail "long media worker must be running the old image"
 
 # Missing image: reported, other service still handled, non-zero exit.
 if run "deploy $(printf 'd%.0s' {1..40})"; then fail "missing image must exit non-zero"; fi

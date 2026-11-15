@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Rolls friend-service, mail-service and the media-processing workers on velora-node-2 to
-# the images the Homelab CD built for one commit. Installed as /usr/local/sbin/velora-friend-mail-deploy and
+# Rolls friend-service and mail-service on velora-node-2 to the images the Homelab CD
+# built for one commit. Installed as /usr/local/sbin/velora-friend-mail-deploy and
 # used as the SSH forced command of the velora-deploy user, so the only things the CD
 # key can do are:
 #   deploy <40-hex commit sha>   pull <user>/<service>:<sha>-amd64 and recreate what changed
@@ -12,19 +12,14 @@ STACK_DIR="${VELORA_STACK_DIR:-/opt/velora/friend-mail}"
 HEALTH_TIMEOUT="${VELORA_HEALTH_TIMEOUT:-90}"
 STABLE_SECONDS="${VELORA_STABLE_SECONDS:-10}"
 READY_PATTERN='Nest microservice successfully started'
-# One image per entry; a service name can differ from its container (see containers_of).
-SERVICES=(friend-service mail-service media-processing-service)
+# One image and one container per entry (containers_of keeps the multi-container hook).
+SERVICES=(friend-service mail-service)
 RELEASE_ENV="$STACK_DIR/release.env"
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }
 
-containers_of() {
-  case "$1" in
-    media-processing-service) printf '%s\n' media-processing-long-service ;; # image runs as the LONG lane only
-    *) printf '%s\n' "$1" ;;
-  esac
-}
+containers_of() { printf '%s\n' "$1"; } # one container per image here
 
 tag_var() { local v="${1^^}_TAG"; printf '%s' "${v//-/_}"; }
 

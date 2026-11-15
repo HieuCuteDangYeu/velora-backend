@@ -127,6 +127,20 @@ services:
     networks:
       - microservices-net
 
+  media-processing-long-service:
+    image: ${DOCKERHUB_USERNAME}/media-processing-service:${VELORA_IMAGE_TAG:-latest}
+    restart: always
+    env_file:
+      - .env
+    environment:
+      MEDIA_WORKER_LANE: LONG
+      MEDIA_WORKER_PREFETCH: ${MEDIA_WORKER_PREFETCH:-1}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - microservices-net
+
   reel-indexing-service:
     image: ${DOCKERHUB_USERNAME}/reel-indexing-service:${VELORA_IMAGE_TAG:-latest}
     build:

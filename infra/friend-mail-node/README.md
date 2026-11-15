@@ -1,4 +1,4 @@
-# friend-service, mail-service and media workers on velora-node-2
+# friend-service and mail-service on velora-node-2
 
 Since 2026-11-13 these two services run on `velora-node-2` (France, `144.91.101.1`,
 tailnet `100.86.68.16`) instead of the homelab. Neither needs the lowest latency: both are
@@ -18,52 +18,39 @@ They are not in the homelab compose file and the homelab deploy script ignores t
 | Database | Aiven `friend-service` database; mail has none |
 | Mail provider | Resend over HTTPS |
 
-## Reel media worker, LONG lane only (added 2026-11-15)
+## Media workers do not run here (tried 2026-11-15, removed)
 
-The stack runs `media-processing-long-service`: `media-processing-service` built for
-`linux/amd64`, with `MEDIA_WORKER_LANE=LONG`. It consumes `reel_media_long_jobs` on the
-homelab RabbitMQ and is the **only** consumer of that queue; the homelab keeps the SHORT
-worker (`reel_media_short_jobs`, `processing_queue`). A worker needs only RabbitMQ and
-Cloudflare R2; it keeps its ffmpeg workspace in the container's `/tmp`.
+`media-processing-service` ran on this node for a day, first as an extra SHORT and LONG consumer,
+then LONG only. It was removed again because the host is too slow for transcoding. Measured with
+the production HLS command (360p/540p/720p, x264 `faster`, 4 s segments) on a 178 s 1080x1920
+Narto Drama episode:
 
-- **Why not the SHORT lane here:** both hosts ran it for a while as competing consumers.
-  Measured on the same series (5 jobs each, logs of 2026-11-15) a short job took 246 s here
-  against 137 s on the homelab (audio 24.6 s vs 8.3 s, 24 visual frames 88 s vs 20 s) and
-  the container was CPU-throttled in 22% of its periods. This host is shared with Langfuse
-  and the database replicas (load average about 4.9 on 6 vCPUs) and its cores are slower
-  than the M1's, so sending half of the short jobs here made uploads slower. The long lane
-  is the heavy one the M1 should not run. A synthetic single-process ffmpeg run had looked
-  comparable (9.6 s vs 8 s); do not size this host from that.
-- `media.env` (mode 640 `root:velora-deploy`, not in the repo) holds only `RABBITMQ_URL`,
-  the `R2_*` keys, `FFMPEG_PATH` and the `MEDIA_*` HLS tuning keys, copied from the homelab
-  `.env`. Keep the `MEDIA_*` values equal on both hosts or HLS output depends on which
-  host took the job. friend and mail do not get the R2 keys.
-- `TIKTOK_CDN_ENABLED=false` is set in the compose file. Jobs handled here upload to R2
-  (the same fallback the homelab uses when the TikTok CDN upload fails); the TikTok session
-  cookie stays tied to the homelab address.
-- The container is capped at 2 CPUs and 2 GB with a low CPU weight (`cpu_shares: 256`), so
-  the Mongo and Postgres replicas and `call-media-2` on this host win when a transcode runs.
-- The homelab no longer runs `media-processing-long-service` (removed from `docker-compose.yml`,
-  listed in `REMOVED_COMPOSE_SERVICES`): **the LONG lane exists only here**, so long jobs wait in
-  `reel_media_long_jobs` while this node is down. To bring it back on the homelab, revert that
-  compose removal.
-- A job that is running when the container is recreated is not acknowledged and RabbitMQ
-  redelivers it, the same as on the homelab.
-- Monitoring needs nothing new: the `reel_media_*` queue alerts count consumers on the
-  broker, so they cover both hosts.
+| Host | 1 job | 2 jobs in parallel |
+| --- | --- | --- |
+| Homelab (M1, 8 CPUs in the Docker VM) | 85 s (2.1x realtime) | 148 s each |
+| Developer laptop (i7-12650H, 16 threads) | 85 s | 119 s each |
+| This node, under a 2 CPU cap | 610 s (0.29x) | not run |
+
+Real SHORT jobs took 246 s here against 137 s on the homelab. A vCPU here is about a third of an
+M1 core and the 2 CPU cap throttled the six x264 threads; the neighbours are not the cause
+(Langfuse's ClickHouse is already capped at 1.5 CPUs and used 76% of one core). The worker kills
+a transcode after 3x the video length plus 5 minutes and RabbitMQ stops waiting for an
+acknowledgement after 30 minutes, so at 0.29x anything over about 10 minutes of video fails.
+A synthetic single-process ffmpeg run had looked comparable (9.6 s vs 8 s); do not size this
+host from that. The amd64 image is still built by the CD (it is what a laptop worker runs).
 
 ## Release pipeline
 
 `.github/workflows/cd.yml` (Homelab CD, after Homelab CI passes on `master`):
 
-1. `build-and-push-node2-images` builds `friend-service`, `mail-service` and `media-processing-service` for
+1. `build-and-push-node2-images` builds `friend-service`, `mail-service` and (for other amd64 hosts, not this node) `media-processing-service` for
    `linux/amd64` (node-2 is x86_64, the homelab images are arm64) and pushes
    `<user>/<service>:<commit sha>-amd64` to Docker Hub.
 2. `deploy-node2` connects as `velora-deploy@144.91.101.1` with a key that is only allowed
    to run `/usr/local/sbin/velora-friend-mail-deploy` (a copy of `deploy.sh`) and sends
    `deploy <sha>`.
 
-`deploy.sh` then, for each image (the media image runs as the single container `media-processing-long-service`): pulls the image, **skips it if the running container
+`deploy.sh` then, for each image (the node runs friend and mail only): pulls the image, **skips it if the running container
 already has the same image id**, otherwise records the new tag in `release.env`, recreates
 only that container, and waits until it is running, has not restarted and logged
 `Nest microservice successfully started`. If that does not happen within 90 s it puts the
@@ -83,7 +70,7 @@ The two jobs are independent of `promote-homelab`: neither can hold back the oth
   ed25519 host key, read from the node itself). Rotate by generating a new key, replacing
   the `authorized_keys` line and the secret.
 - `/opt/velora/friend-mail` is group-writable by `velora-deploy`; `.env` is `640 root:velora-deploy`.
-- `release.env` holds `DOCKERHUB_USERNAME`, `FRIEND_SERVICE_TAG`, `MAIL_SERVICE_TAG` and `MEDIA_PROCESSING_SERVICE_TAG`.
+- `release.env` holds `DOCKERHUB_USERNAME`, `FRIEND_SERVICE_TAG`, `MAIL_SERVICE_TAG` and .
   The first containers ran a locally built image that was tagged `boot`.
 
 ### Changing the script or the compose file
@@ -120,7 +107,7 @@ two UUIDs). Change a value here and on the homelab together.
 ssh root@144.91.101.1
 cd /opt/velora/friend-mail
 docker compose --env-file release.env ps
-docker compose --env-file release.env logs --tail=100 friend-service mail-service media-processing-long-service
+docker compose --env-file release.env logs --tail=100 friend-service mail-service
 docker compose --env-file release.env stop      # consumers leave; requests wait in RabbitMQ
 ```
 

@@ -6,6 +6,11 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+// Rolling daily allowance: wait what Groq says, but never hammer (30 s) and never park a key for the whole day.
+const ROLLING_DAILY_DEFAULT_WAIT_MS = 15 * 60_000;
+const ROLLING_DAILY_MIN_WAIT_MS = 30_000;
+const ROLLING_DAILY_MAX_WAIT_MS = 6 * 3_600_000;
+
 /** Per-key runtime state tracked by the pool. */
 interface KeyState {
   /** The raw API key string. */
@@ -34,10 +39,16 @@ export class GroqKeyPoolExhaustedError extends Error {
     readonly totalKeys: number,
     readonly exhaustedKeys: number,
     readonly cooldownKeys: number,
+    /** Milliseconds until the first key can be used again, when known. */
+    readonly retryInMs?: number,
   ) {
     super(
-      `All ${totalKeys} Groq API keys are unavailable ` +
-        `(${exhaustedKeys} TPD-exhausted, ${cooldownKeys} in cooldown)`,
+      // "rate limited" is what the indexing service matches to tell a spent quota from a real failure.
+      `All ${totalKeys} Groq API keys are rate limited or out of quota ` +
+        `(${exhaustedKeys} TPD-exhausted, ${cooldownKeys} in cooldown` +
+        (retryInMs === undefined
+          ? ')'
+          : `; next one free in ${Math.ceil(retryInMs / 1000)}s)`),
     );
     this.name = 'GroqKeyPoolExhaustedError';
   }
@@ -147,7 +158,12 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    throw new GroqKeyPoolExhaustedError(total, exhaustedCount, cooldownCount);
+    throw new GroqKeyPoolExhaustedError(
+      total,
+      exhaustedCount,
+      cooldownCount,
+      this.msUntilAnyKeyFree(keys, now),
+    );
   }
 
   /**
@@ -239,6 +255,22 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
         'reset-tokens > 1h';
       this.reportTPDExhausted(index, reason, model);
       return true;
+    }
+
+    // Daily allowance of a free key, rolling: Groq says "tokens per day (TPD) ... Please try again in
+    // 11m16s", i.e. how long until this request fits again. Waiting that long is right; the 30 s cap
+    // used for per-minute limits made a spent key come back, fail and cool down again all day long.
+    const dailyWaitMs = this.rollingDailyWaitMs(headers, responseBody);
+    if (dailyWaitMs !== undefined) {
+      const wasAvailable = state.cooldownUntil <= Date.now();
+      state.cooldownUntil = Date.now() + dailyWaitMs;
+      state.remainingTokens = 0;
+      if (wasAvailable) {
+        this.logger.warn(
+          `Key #${index} has used its daily token allowance; skipping it for ${Math.round(dailyWaitMs / 1000)}s`,
+        );
+      }
+      return false;
     }
 
     // TPM cooldown: use retry-after or x-ratelimit-reset-tokens.
@@ -461,6 +493,50 @@ export class GroqKeyPool implements OnModuleInit, OnModuleDestroy {
     }
 
     return false;
+  }
+
+  /**
+   * How long to leave a key alone after Groq reported that its per-day allowance (tokens or requests)
+   * is used up, or undefined when the 429 is not about a daily limit. The hard "spent until UTC
+   * midnight" case is handled by isTPDExhaustion; this one is the rolling window, whose message also
+   * carries the time until the request fits again.
+   */
+  private rollingDailyWaitMs(
+    headers?: Headers,
+    responseBody?: string,
+  ): number | undefined {
+    if (!responseBody) return undefined;
+    const text = responseBody
+      .replace(/https?:\/\/[^\s"',)]+/gi, '')
+      .toLowerCase();
+    if (!/\bon (tokens|requests) per day\b|\((tpd|rpd)\)/.test(text)) {
+      return undefined;
+    }
+    const fromHeader = this.parseRetryAfterMs(
+      headers?.get?.('retry-after') ?? null,
+    );
+    const stated = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/.exec(text);
+    const fromBody = stated ? this.parseDurationMs(stated[1]) : undefined;
+    const waitMs = fromHeader ?? fromBody ?? ROLLING_DAILY_DEFAULT_WAIT_MS;
+    return Math.min(
+      Math.max(waitMs + 2_000, ROLLING_DAILY_MIN_WAIT_MS),
+      ROLLING_DAILY_MAX_WAIT_MS,
+    );
+  }
+
+  /** Time until the first key that is not out for the day comes back, or until the next UTC midnight. */
+  private msUntilAnyKeyFree(keys: KeyState[], now: number): number | undefined {
+    const todayUtc = this.utcDateString(now);
+    const midnight = Date.parse(`${todayUtc}T00:00:00.000Z`) + 86_400_000;
+    let soonest = Infinity;
+    for (const state of keys) {
+      const freeAt =
+        state.exhaustedOnUtcDate && state.exhaustedOnUtcDate >= todayUtc
+          ? midnight
+          : state.cooldownUntil;
+      soonest = Math.min(soonest, freeAt);
+    }
+    return Number.isFinite(soonest) ? Math.max(0, soonest - now) : undefined;
   }
 
   private parseCooldownMs(headers?: Headers): number {

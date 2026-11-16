@@ -217,6 +217,75 @@ describe('GroqKeyPool', () => {
     });
   });
 
+  describe('rolling daily allowance', () => {
+    const DAILY =
+      'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_x` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199171, Requested 2394. Please try again in 11m16.08s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing';
+
+    it('keeps a key with a spent daily allowance aside for the time Groq states, not 30 s', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      expect(pool.reportRateLimited(0, fakeHeaders(), DAILY)).toBe(false);
+      const waitMs = (pool as any).keys[0].cooldownUntil - Date.now();
+      // 11m16s + 2s margin
+      expect(waitMs).toBeGreaterThan(676_000);
+      expect(waitMs).toBeLessThanOrEqual(679_000);
+      expect(pool.acquire().key).toBe('gsk_b');
+      expect(pool.acquire().key).toBe('gsk_b');
+      pool.onModuleDestroy();
+    });
+
+    it('prefers the retry-after header and clamps absurd values', () => {
+      const pool = initPool('gsk_a,gsk_b,gsk_c');
+      pool.reportRateLimited(0, fakeHeaders({ 'retry-after': '120' }), DAILY);
+      pool.reportRateLimited(1, fakeHeaders({ 'retry-after': '3600' }), DAILY);
+      pool.reportRateLimited(
+        2,
+        fakeHeaders({ 'retry-after': '1' }),
+        'on tokens per day (TPD): Limit 200000',
+      );
+      const now = Date.now();
+      const keys = (pool as any).keys;
+      expect(keys[0].cooldownUntil - now).toBeLessThanOrEqual(122_000);
+      expect(keys[0].cooldownUntil - now).toBeGreaterThan(119_000);
+      expect(keys[1].cooldownUntil - now).toBeLessThanOrEqual(3_602_000);
+      // below the 30 s floor
+      expect(keys[2].cooldownUntil - now).toBeGreaterThan(29_000);
+      pool.onModuleDestroy();
+    });
+
+    it('does not mistake a per-minute limit that mentions daily limits for a daily one', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      pool.reportRateLimited(
+        0,
+        fakeHeaders({ 'retry-after': '3' }),
+        'Rate limit reached on tokens per minute (TPM): Limit 8000, Used 7500. Please try again in 3s. See https://console.groq.com/docs/rate-limits for daily limits.',
+      );
+      expect((pool as any).keys[0].cooldownUntil - Date.now()).toBeLessThan(
+        31_000,
+      );
+      pool.onModuleDestroy();
+    });
+
+    it('says when the next key frees up once every key is spent', () => {
+      const pool = initPool('gsk_a,gsk_b');
+      pool.reportRateLimited(0, fakeHeaders({ 'retry-after': '600' }), DAILY);
+      pool.reportRateLimited(1, fakeHeaders({ 'retry-after': '300' }), DAILY);
+      try {
+        pool.acquire();
+        throw new Error('expected the pool to be exhausted');
+      } catch (e) {
+        const error = e as GroqKeyPoolExhaustedError;
+        expect(error).toBeInstanceOf(GroqKeyPoolExhaustedError);
+        expect(error.cooldownKeys).toBe(2);
+        expect(error.retryInMs).toBeGreaterThan(299_000);
+        expect(error.retryInMs).toBeLessThanOrEqual(302_000);
+        // the indexing service recognises this wording as a spent quota
+        expect(error.message).toMatch(/rate limit/i);
+        expect(error.message).toMatch(/next one free in 30[0-2]s/);
+      }
+      pool.onModuleDestroy();
+    });
+  });
+
   describe('success reporting', () => {
     it('records remaining tokens from headers', () => {
       const pool = initPool('gsk_a');

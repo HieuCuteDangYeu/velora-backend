@@ -230,11 +230,46 @@ describe('GroqVisionAdapter', () => {
       ),
     );
     const adapter = new GroqVisionAdapter(
-      config({ GROQ_API_KEYS: 'k1,k2,k3,k4,k5,k6,k7,k8,k9,k10' }),
+      config({
+        GROQ_API_KEYS: Array.from({ length: 20 }, (_, i) => `k${i + 1}`).join(
+          ',',
+        ),
+      }),
     );
     await expect(adapter.analyzeImage(image)).rejects.toThrow(
-      /rate limited on 8 key\(s\) tried \(status 429\)/,
+      /rate limited on 16 key\(s\) tried \(status 429\)/,
     );
-    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(fetchMock).toHaveBeenCalledTimes(16);
+  });
+
+  it('remembers a key whose daily allowance is used up instead of asking it again', async () => {
+    const spent = () =>
+      Promise.resolve(
+        new Response(
+          '{"error":{"message":"Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_x` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199171, Requested 2394. Please try again in 11m16.08s. Need more tokens? Upgrade to Dev Tier today at https://console.groq.com/settings/billing"}}',
+          { status: 429, headers: { 'retry-after': '676' } },
+        ),
+      );
+    const fine = () =>
+      Promise.resolve(
+        answer(JSON.stringify({ caption: 'A room.', objects: [] })),
+      );
+    fetchMock
+      .mockImplementationOnce(spent)
+      .mockImplementationOnce(fine)
+      .mockImplementationOnce(fine)
+      .mockImplementationOnce(fine);
+    const adapter = new GroqVisionAdapter(config({ GROQ_API_KEYS: 'k1,k2' }));
+    await adapter.analyzeImage(image);
+    await adapter.analyzeImage(image);
+    await adapter.analyzeImage(image);
+    // k1 was asked once (the 429); the other two frames went straight to k2.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map(authOf)).toEqual([
+      'Bearer k1',
+      'Bearer k2',
+      'Bearer k2',
+      'Bearer k2',
+    ]);
   });
 });

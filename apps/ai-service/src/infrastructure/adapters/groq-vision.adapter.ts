@@ -4,7 +4,7 @@ import type { VisualFrameAnalysis } from '@common/ai/interfaces/visual-analysis.
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-const MAX_ATTEMPTS = 8;
+const MAX_ATTEMPTS = 16;
 const TOTAL_BUDGET_MS = 100_000;
 const MIN_ATTEMPT_MS = 3_000;
 
@@ -60,6 +60,8 @@ export class GroqVisionAdapter implements IVisionService {
     // A rate-limited key answers in well under a second, so walking several keys is cheap. The pool
     // forgets which keys are spent whenever the service restarts, so the first frames afterwards meet
     // exhausted keys one by one; three attempts used to give up while most of 16 keys were still fine.
+    // Keys the pool already knows to be spent (a rolling daily allowance is remembered for as long as Groq
+    // says) are skipped without a request, so only unknown ones cost an attempt.
     // The total stays inside the indexing RPC timeout (120 s) because every attempt shares one budget.
     const attempts = Math.min(MAX_ATTEMPTS, Math.max(1, this.keyPool.size));
     const startedAt = Date.now();

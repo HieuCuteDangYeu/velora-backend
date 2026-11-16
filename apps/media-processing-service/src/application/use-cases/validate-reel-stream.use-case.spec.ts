@@ -57,4 +57,45 @@ describe('ValidateReelStreamUseCase', () => {
 
     objects.set('reels/user-1/attempt-1/high/high-1.ts', 'binary');
   });
+
+  it('checks segments concurrently but reports the first missing object in playlist order', async () => {
+    const segments = Array.from({ length: 40 }, (_, i) => `seg-${i}.ts`);
+    const playlist = `#EXTM3U\n${segments.map((s) => `#EXTINF:2,\n${s}`).join('\n')}`;
+    const stored = new Map<string, string>([
+      [masterKey, '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow/index.m3u8'],
+      ['reels/user-1/attempt-1/low/index.m3u8', playlist],
+      ['reels/user-1/attempt-1/thumbnail.jpg', 'binary'],
+    ]);
+    // seg-30 and seg-12 are missing; seg-12 comes first in the playlist.
+    segments
+      .filter((s) => s !== 'seg-30.ts' && s !== 'seg-12.ts')
+      .forEach((s) => stored.set(`reels/user-1/attempt-1/low/${s}`, 'binary'));
+
+    let inFlight = 0;
+    let peak = 0;
+    const useCase = new ValidateReelStreamUseCase({
+      objectExists: jest.fn(async (key: string) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return stored.has(key);
+      }),
+      getObjectText: jest.fn((key: string) =>
+        Promise.resolve(stored.get(key) ?? ''),
+      ),
+    } as never);
+
+    await expect(
+      useCase.execute({
+        reelId: 'reel-1',
+        s3Prefix: 'reels/user-1/attempt-1',
+        thumbnailKey: 'reels/user-1/attempt-1/thumbnail.jpg',
+      }),
+    ).rejects.toMatchObject({
+      technicalReason: expect.stringContaining('low/seg-12.ts'),
+    });
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(16);
+  });
 });

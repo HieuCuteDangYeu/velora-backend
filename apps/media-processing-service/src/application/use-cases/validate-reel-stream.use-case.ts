@@ -17,6 +17,8 @@ interface PlaylistReference {
   key: string;
 }
 
+const STREAM_VALIDATION_CONCURRENCY = 16;
+
 const SAFE_STREAM_VALIDATION_MESSAGE =
   'Streaming files could not be prepared. Please try again.';
 
@@ -79,13 +81,15 @@ export class ValidateReelStreamUseCase {
         variantReference.key,
         variantText,
       );
-      for (const reference of [...segmentReferences, ...uriReferences]) {
-        if (!(await this.referenceExists(reference))) {
-          throw this.validationError(
-            data.reelId,
-            `required HLS object is missing: ${reference.key}`,
-          );
-        }
+      const missing = await this.findFirstMissingReference([
+        ...segmentReferences,
+        ...uriReferences,
+      ]);
+      if (missing) {
+        throw this.validationError(
+          data.reelId,
+          `required HLS object is missing: ${missing.key}`,
+        );
       }
     }
 
@@ -152,6 +156,34 @@ export class ValidateReelStreamUseCase {
     reference: PlaylistReference,
   ): Promise<string | null> {
     return this.readOptionalPlaylist(reference);
+  }
+
+  /**
+   * Checks references a batch at a time instead of one request after another.
+   * A one-by-one loop made validation cost one storage round trip per segment
+   * (3 renditions of a 100 s reel is ~150 sequential calls), which dominated
+   * the media stage for short clips. The first missing object in playlist
+   * order is still the one reported.
+   */
+  private async findFirstMissingReference(
+    references: PlaylistReference[],
+  ): Promise<PlaylistReference | undefined> {
+    for (
+      let start = 0;
+      start < references.length;
+      start += STREAM_VALIDATION_CONCURRENCY
+    ) {
+      const batch = references.slice(
+        start,
+        start + STREAM_VALIDATION_CONCURRENCY,
+      );
+      const results = await Promise.all(
+        batch.map((reference) => this.referenceExists(reference)),
+      );
+      const missingIndex = results.indexOf(false);
+      if (missingIndex !== -1) return batch[missingIndex];
+    }
+    return undefined;
   }
 
   private async referenceExists(

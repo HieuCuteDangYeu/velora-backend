@@ -765,3 +765,128 @@ describe('GetRecommendedReelsUseCase neural rerank', () => {
     });
   });
 });
+
+describe('GetRecommendedReelsUseCase while the personalized refill is building', () => {
+  const makeReels = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      reel(
+        `reel-${index + 1}`,
+        new Date(Date.UTC(2026, 8, 15 - index, 10)).toISOString(),
+      ),
+    );
+  const incompleteSession = (reels: Reel[]): RecommendationFeedSession => ({
+    ...sessionFor(reels),
+    personalizedRefillComplete: false,
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('serves the last slate page immediately and keeps the feed open instead of waiting for the refill', async () => {
+    const reels = makeReels(3);
+    const cachedSession = incompleteSession(reels);
+    const harness = createHarness({ cachedSession, reels });
+
+    const result = await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: cachedSession.feedSessionId,
+      limit: 3,
+    });
+
+    expect(result.items.map((item) => item.id)).toEqual([
+      'reel-1',
+      'reel-2',
+      'reel-3',
+    ]);
+    expect(result.nextCursor?.id).toBe('reel-3');
+    // One session read only: no polling and no inline pipeline run.
+    expect(harness.feedSessionRepository.get).toHaveBeenCalledTimes(1);
+    expect(
+      harness.recommendationRepository.findRecentQualityCandidates,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('returns the refilled items when the refill lands during the short wait', async () => {
+    const reels = makeReels(4);
+    const cachedSession = incompleteSession(reels.slice(0, 3));
+    const refilled: RecommendationFeedSession = {
+      ...sessionFor(reels),
+      personalizedRefillComplete: true,
+    };
+    const harness = createHarness({ cachedSession, reels });
+    let reads = 0;
+    harness.feedSessionRepository.get.mockImplementation(() => {
+      reads += 1;
+      return Promise.resolve(reads <= 3 ? cachedSession : refilled);
+    });
+
+    const result = await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: cachedSession.feedSessionId,
+      cursor: { createdAt: reels[2].createdAt, id: 'reel-3' },
+      limit: 3,
+    });
+
+    expect(result.items.map((item) => item.id)).toEqual(['reel-4']);
+  });
+
+  it('gives the same cursor back, not an error, when the refill is still building after the wait', async () => {
+    jest.useFakeTimers();
+    const reels = makeReels(3);
+    const cachedSession = incompleteSession(reels);
+    const harness = createHarness({ cachedSession, reels });
+    const cursor = { createdAt: reels[2].createdAt, id: 'reel-3' };
+
+    const pending = harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: cachedSession.feedSessionId,
+      cursor,
+      limit: 3,
+    });
+    await jest.advanceTimersByTimeAsync(3_000);
+    const result = await pending;
+
+    expect(result.items).toEqual([]);
+    expect(result.nextCursor).toEqual(cursor);
+  });
+
+  it('runs at most two candidate-source queries at a time during a refill', async () => {
+    const reels = makeReels(4);
+    const harness = createHarness({ reels, refillLock: 'lock-token' });
+    let active = 0;
+    let peak = 0;
+    const slow = () =>
+      jest.fn().mockImplementation(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        return [];
+      });
+    const repository = harness.recommendationRepository;
+    repository.findRecentQualityCandidates = slow();
+    repository.findTrendingCandidates = slow();
+    repository.findTagAffinityCandidates = slow();
+    repository.findCreatorAffinityCandidates = slow();
+    repository.findContentSimilarityCandidates = slow();
+    repository.findSocialCandidates = slow();
+    repository.findExplorationCandidates = slow();
+
+    await harness.useCase.execute({ viewerId: 'viewer-1', limit: 2 });
+    for (
+      let attempt = 0;
+      attempt < 100 &&
+      harness.feedSessionRepository.releaseRefillLock.mock.calls.length === 0;
+      attempt += 1
+    ) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(
+      harness.feedSessionRepository.releaseRefillLock,
+    ).toHaveBeenCalledTimes(1);
+    expect(peak).toBeGreaterThanOrEqual(1);
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+});

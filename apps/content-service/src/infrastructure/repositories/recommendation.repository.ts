@@ -80,8 +80,17 @@ interface PositiveProfile {
   creatorWeights: Map<string, number>;
 }
 
+// One refill asks for the same viewer profile from several candidate sources within
+// moments of each other; share the result instead of re-reading 600 events each time.
+const POSITIVE_PROFILE_MEMO_TTL_MS = 10_000;
+
 @Injectable()
 export class RecommendationRepository implements IRecommendationRepository {
+  private readonly positiveProfileMemo = new Map<
+    string,
+    { expiresAt: number; profile: Promise<PositiveProfile> }
+  >();
+
   constructor(private readonly prisma: PrismaService) {}
 
   async findRecentQualityCandidates(
@@ -1031,7 +1040,34 @@ export class RecommendationRepository implements IRecommendationRepository {
     };
   }
 
-  private async loadPositiveProfile(
+  private loadPositiveProfile(
+    viewerId: string,
+    days: number,
+  ): Promise<PositiveProfile> {
+    const now = Date.now();
+    const key = `${viewerId}:${days}`;
+    const cached = this.positiveProfileMemo.get(key);
+    if (cached && cached.expiresAt > now) return cached.profile;
+
+    for (const [memoKey, entry] of this.positiveProfileMemo) {
+      if (entry.expiresAt <= now) this.positiveProfileMemo.delete(memoKey);
+    }
+
+    const profile = this.queryPositiveProfile(viewerId, days);
+    this.positiveProfileMemo.set(key, {
+      expiresAt: now + POSITIVE_PROFILE_MEMO_TTL_MS,
+      profile,
+    });
+    // A failed read must not be served to the next caller.
+    profile.catch(() => {
+      if (this.positiveProfileMemo.get(key)?.profile === profile) {
+        this.positiveProfileMemo.delete(key);
+      }
+    });
+    return profile;
+  }
+
+  private async queryPositiveProfile(
     viewerId: string,
     days: number,
   ): Promise<PositiveProfile> {

@@ -42,4 +42,14 @@ describe('TtlPromiseCache', () => {
 
     expect(a).toHaveBeenCalledTimes(2);
   });
+
+  it('can refuse to remember chosen results', async () => {
+    const cache = new TtlPromiseCache<boolean>(1_000, 10, Date.now, (v) => v);
+    const load = jest.fn().mockResolvedValue(false);
+
+    await cache.get('k', load);
+    await cache.get('k', load);
+
+    expect(load).toHaveBeenCalledTimes(2);
+  });
 });

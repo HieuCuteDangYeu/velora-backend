@@ -1,7 +1,8 @@
 /**
  * Tiny in-process cache of in-flight/settled promises with a fixed TTL.
  * Concurrent callers for one key share a single load, and a failed load is
- * dropped so the next caller retries instead of replaying the error.
+ * dropped so the next caller retries instead of replaying the error. `shouldCache`
+ * can also keep chosen results (say, denials) from being remembered.
  */
 export class TtlPromiseCache<T> {
   private readonly entries = new Map<
@@ -13,6 +14,7 @@ export class TtlPromiseCache<T> {
     private readonly ttlMs: number,
     private readonly maxEntries = 2_000,
     private readonly now: () => number = Date.now,
+    private readonly shouldCache: (value: T) => boolean = () => true,
   ) {}
 
   get(key: string, load: () => Promise<T>): Promise<T> {
@@ -23,9 +25,12 @@ export class TtlPromiseCache<T> {
     this.evict(now);
     const value = load();
     this.entries.set(key, { expiresAt: now + this.ttlMs, value });
-    value.catch(() => {
+    const drop = () => {
       if (this.entries.get(key)?.value === value) this.entries.delete(key);
-    });
+    };
+    value.then((resolved) => {
+      if (!this.shouldCache(resolved)) drop();
+    }, drop);
     return value;
   }
 

@@ -14,12 +14,21 @@ import { catchError, firstValueFrom, of, throwError, timeout } from 'rxjs';
 // feeds up to this long later. A recommendation session already keeps its own audience
 // snapshot for the whole session, so this is tighter than what feeds had before.
 export const FEED_AUDIENCE_CACHE_TTL_MS = 15_000;
+// Same window for "this viewer may open this owner's reels". Only a yes is remembered, so
+// a newly allowed viewer gets in at once and only a new block can lag, by up to this long.
+export const REEL_ACCESS_CACHE_TTL_MS = 15_000;
 
 @Injectable()
 export class FriendContentAccessAdapter implements IFriendContentAccessService {
   private readonly logger = new Logger(FriendContentAccessAdapter.name);
   private readonly audienceCache =
     new TtlPromiseCache<FriendFeedAudienceResponse>(FEED_AUDIENCE_CACHE_TTL_MS);
+  private readonly accessCache = new TtlPromiseCache<boolean>(
+    REEL_ACCESS_CACHE_TTL_MS,
+    5_000,
+    Date.now,
+    (allowed) => allowed,
+  );
 
   constructor(
     @Inject('FRIEND_SERVICE_RMQ')
@@ -63,6 +72,22 @@ export class FriendContentAccessAdapter implements IFriendContentAccessService {
   }
 
   async canView(input: {
+    viewerId: string;
+    ownerId: string;
+    visibility: 'public' | 'friends' | 'private';
+  }): Promise<boolean> {
+    // friend-service answers these two before it touches its database, so answer them
+    // here and skip the round trip to the other node (about 225 ms) with the same result.
+    if (input.viewerId === input.ownerId) return true;
+    if (input.visibility === 'private') return false;
+
+    return await this.accessCache.get(
+      `${input.viewerId}|${input.ownerId}|${input.visibility}`,
+      () => this.fetchCanView(input),
+    );
+  }
+
+  private async fetchCanView(input: {
     viewerId: string;
     ownerId: string;
     visibility: 'public' | 'friends' | 'private';

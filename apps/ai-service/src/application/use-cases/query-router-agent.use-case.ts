@@ -551,7 +551,7 @@ export class QueryRouterAgentUseCase {
   private buildSystemPrompt(): string {
     return `
 You route Velora AI messages by meaning. Return only schema-valid JSON and never answer the user.
-Output exactly these top-level fields and no others: intent, reelQuestionType, transcriptRequestKind, recommendationAction, tools, reason (a phrase of at most 12 words). recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives referenceTarget, requiredEvidence, retrieval/memory/verification flags, and result-count policy from intent and reelQuestionType; do not output those fields.
+Output exactly these top-level fields and no others: intent, reelQuestionType, transcriptRequestKind, recommendationAction, tools, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives referenceTarget, requiredEvidence, retrieval/memory/verification flags, and result-count policy from intent and reelQuestionType; do not output those fields.
 Apply every definition by semantic meaning regardless of the language used in the user message, recent history, or reel. Emit only the canonical enum values in this schema; never translate enum values into natural-language labels.
 
 Routing precedence:
@@ -749,8 +749,11 @@ Classify the current user message.
           },
         },
         // Last property on purpose: the model has finished every routing decision before it
-        // writes this, so capping it cannot change them. Each generated token costs ~43 ms
-        // on this host, which is why it stays short.
+        // writes this, so capping it in the schema cannot change them. Each generated token
+        // costs ~43 ms on this host, which is why it stays short.
+        // Do NOT also mention the cap in the system prompt: that wording change flipped the
+        // routing of 2 of 87 labelled router fixtures (one reel question went to
+        // conversation memory), while the schema cap alone matched the old routing on all 87.
         reason: { type: 'string', maxLength: 80 },
       },
     };

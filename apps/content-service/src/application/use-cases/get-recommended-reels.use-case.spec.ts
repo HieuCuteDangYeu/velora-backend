@@ -851,6 +851,77 @@ describe('GetRecommendedReelsUseCase while the personalized refill is building',
     expect(result.nextCursor).toEqual(cursor);
   });
 
+  it('pages from the slate as soon as the audience snapshot lands, without waiting for the whole refill', async () => {
+    const reels = makeReels(4);
+    const withoutAudience: RecommendationFeedSession = {
+      ...incompleteSession(reels),
+    };
+    delete withoutAudience.excludedUserIds;
+    const withAudience: RecommendationFeedSession = {
+      ...incompleteSession(reels),
+      excludedUserIds: [],
+    };
+    const harness = createHarness({ cachedSession: withoutAudience, reels });
+    let reads = 0;
+    harness.feedSessionRepository.get.mockImplementation(() => {
+      reads += 1;
+      return Promise.resolve(reads <= 2 ? withoutAudience : withAudience);
+    });
+
+    const result = await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: withoutAudience.feedSessionId,
+      limit: 2,
+    });
+
+    expect(result.items.map((item) => item.id)).toEqual(['reel-1', 'reel-2']);
+    expect(result.nextCursor?.id).toBe('reel-2');
+  });
+
+  it('saves the audience snapshot while the candidate pipeline is still running', async () => {
+    const reels = makeReels(4);
+    const harness = createHarness({ reels, refillLock: 'lock-token' });
+    let finishPipeline!: (value: []) => void;
+    harness.recommendationRepository.findRecentQualityCandidates.mockReturnValue(
+      new Promise<[]>((resolve) => {
+        finishPipeline = resolve;
+      }),
+    );
+
+    const first = await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      limit: 2,
+    });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    const saved = harness.feedSessionRepository.save.mock.calls.map(
+      ([session]) => session,
+    );
+    expect(
+      saved.some(
+        (session) =>
+          Array.isArray(session.excludedUserIds) &&
+          session.personalizedRefillComplete === false,
+      ),
+    ).toBe(true);
+    expect(
+      harness.feedSessionRepository.releaseRefillLock,
+    ).not.toHaveBeenCalled();
+    expect(first.items.length).toBeGreaterThan(0);
+
+    finishPipeline([]);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (
+        harness.feedSessionRepository.releaseRefillLock.mock.calls.length > 0
+      ) {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+  });
+
   it('runs at most two candidate-source queries at a time during a refill', async () => {
     const reels = makeReels(4);
     const harness = createHarness({ reels, refillLock: 'lock-token' });

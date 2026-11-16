@@ -63,7 +63,7 @@ const PERSONALIZED_REFILL_LOCK_TTL_SECONDS = 60;
 const PERSONALIZED_REFILL_PAGE_WAIT_MS = 2_000;
 // Refills are background work that share a 3-connection Prisma pool with foreground
 // reads, so they run one at a time per process and fan their sources out only two wide.
-const PERSONALIZED_REFILL_MAX_QUEUED = 16;
+const PERSONALIZED_REFILL_MAX_QUEUED = 6;
 const PERSONALIZED_REFILL_GATE = new ConcurrencyGate(
   readBoundedIntEnv('REEL_REFILL_MAX_CONCURRENCY', 1, 4),
   PERSONALIZED_REFILL_MAX_QUEUED,
@@ -274,16 +274,7 @@ export class GetRecommendedReelsUseCase {
         page.nextCursor === null &&
         session.personalizedRefillComplete === false
       ) {
-        if (page.items.length > 0) {
-          // The slate ran out while the personalized refill is still building. Serve
-          // what we have and let the client continue from the last item: the refill
-          // only appends ids after the existing ones, so this cursor stays valid.
-          const lastReel = page.items[page.items.length - 1].reel;
-          page = {
-            ...page,
-            nextCursor: { createdAt: lastReel.createdAt, id: lastReel.id },
-          };
-        } else {
+        if (page.items.length === 0) {
           const refillInput = {
             viewerId,
             feedSessionId,
@@ -292,10 +283,19 @@ export class GetRecommendedReelsUseCase {
             excludeRecentlySeen: input.excludeRecentlySeen,
           };
           this.triggerPersonalizedRefill(refillInput);
-          const refilled = await this.awaitPersonalizedRefill(refillInput);
+          // A session without its audience snapshot yet only needs that snapshot (a cheap
+          // lookup) to start paging from its slate; otherwise wait for the refill itself.
+          const needsAudience = !Array.isArray(session.excludedUserIds);
+          const ready = await this.awaitPersonalizedSession(
+            refillInput,
+            (candidate) =>
+              needsAudience
+                ? Array.isArray(candidate.excludedUserIds)
+                : candidate.personalizedRefillComplete === true,
+          );
 
-          if (refilled) {
-            session = refilled;
+          if (ready) {
+            session = ready;
             page = await this.pageFromSession(
               session,
               input.cursor,
@@ -305,9 +305,22 @@ export class GetRecommendedReelsUseCase {
                 ...(session.excludedUserIds ?? []),
               ]),
             );
-          } else if (input.cursor) {
-            // Still building: hand the same cursor back so the client retries on
-            // its next scroll instead of treating the feed as finished.
+          }
+        }
+
+        if (session.personalizedRefillComplete !== true) {
+          if (page.items.length > 0 && page.nextCursor === null) {
+            // The slate ran out while the refill is still building. Serve what we have
+            // and let the client continue from the last item: the refill only appends
+            // ids after the existing ones, so this cursor stays valid.
+            const lastReel = page.items[page.items.length - 1].reel;
+            page = {
+              ...page,
+              nextCursor: { createdAt: lastReel.createdAt, id: lastReel.id },
+            };
+          } else if (page.items.length === 0 && input.cursor) {
+            // Still building: hand the same cursor back so the client retries on its
+            // next scroll instead of treating the feed as finished.
             page = { ...page, nextCursor: input.cursor };
           }
         }
@@ -604,20 +617,8 @@ export class GetRecommendedReelsUseCase {
     if (!lockToken) return false;
 
     try {
-      const release = await PERSONALIZED_REFILL_GATE.acquire();
-      if (!release) {
-        this.logger.warn(
-          `Deferring recommendation refill for ${input.feedSessionId}: ${PERSONALIZED_REFILL_MAX_QUEUED} refills already queued`,
-        );
-        return false;
-      }
-
-      try {
-        await this.buildAndAppendPersonalizedItems(input);
-        return true;
-      } finally {
-        release();
-      }
+      await this.buildAndAppendPersonalizedItems(input);
+      return true;
     } finally {
       await this.feedSessionRepository.releaseRefillLock(
         input.feedSessionId,
@@ -627,15 +628,19 @@ export class GetRecommendedReelsUseCase {
   }
 
   /**
-   * Polls for a refill started elsewhere (see triggerPersonalizedRefill). It never
-   * builds the pipeline itself, so a page request cannot be held past the wait
-   * budget. Returns null when the refill is not done in time or the session expired.
+   * Polls the session until `isReady` holds, for a refill started elsewhere (see
+   * triggerPersonalizedRefill). It never builds the pipeline itself, so a page request
+   * cannot be held past the wait budget. Returns null when the session is not ready in
+   * time or has expired.
    */
-  private async awaitPersonalizedRefill(input: {
-    viewerId: string;
-    feedSessionId: string;
-    algorithmVersion: string;
-  }): Promise<RecommendationFeedSession | null> {
+  private async awaitPersonalizedSession(
+    input: {
+      viewerId: string;
+      feedSessionId: string;
+      algorithmVersion: string;
+    },
+    isReady: (session: RecommendationFeedSession) => boolean,
+  ): Promise<RecommendationFeedSession | null> {
     const deadline = Date.now() + PERSONALIZED_REFILL_PAGE_WAIT_MS;
 
     while (Date.now() < deadline) {
@@ -647,7 +652,7 @@ export class GetRecommendedReelsUseCase {
       ) {
         return null;
       }
-      if (session.personalizedRefillComplete === true) return session;
+      if (isReady(session)) return session;
 
       await new Promise<void>((resolve) =>
         setTimeout(resolve, PERSONALIZED_REFILL_POLL_MS),
@@ -655,7 +660,7 @@ export class GetRecommendedReelsUseCase {
     }
 
     this.logger.warn(
-      `Recommendation refill ${input.feedSessionId} not ready within ${PERSONALIZED_REFILL_PAGE_WAIT_MS}ms; returning without it`,
+      `Recommendation session ${input.feedSessionId} not ready within ${PERSONALIZED_REFILL_PAGE_WAIT_MS}ms; returning without it`,
     );
     return null;
   }
@@ -697,15 +702,30 @@ export class GetRecommendedReelsUseCase {
       this.recommendationConfig.getFeedSessionTtlSeconds(),
     );
 
-    const pipeline = await this.buildPipeline({
-      viewerId: input.viewerId,
-      limit: this.recommendationConfig.getFeedSlateSize(),
-      excludedUserIds,
-      excludedReelIds: audienceSession.items.map((item) => item.reelId),
-      friendUserIds: audience.friendUserIds,
-      excludeRecentlySeen: input.excludeRecentlySeen,
-      feedSessionId: input.feedSessionId,
-    });
+    // The audience snapshot above is what lets a session page past its slate, so it is
+    // saved before queueing; only the heavy candidate pipeline waits for a slot.
+    const release = await PERSONALIZED_REFILL_GATE.acquire();
+    if (!release) {
+      this.logger.warn(
+        `Deferring recommendation refill for ${input.feedSessionId}: ${PERSONALIZED_REFILL_MAX_QUEUED} refills already queued`,
+      );
+      return;
+    }
+
+    let pipeline: RecommendationPipelineResult;
+    try {
+      pipeline = await this.buildPipeline({
+        viewerId: input.viewerId,
+        limit: this.recommendationConfig.getFeedSlateSize(),
+        excludedUserIds,
+        excludedReelIds: audienceSession.items.map((item) => item.reelId),
+        friendUserIds: audience.friendUserIds,
+        excludeRecentlySeen: input.excludeRecentlySeen,
+        feedSessionId: input.feedSessionId,
+      });
+    } finally {
+      release();
+    }
 
     const existingIds = new Set(
       audienceSession.items.map((item) => item.reelId),

@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import type {
   IContentRepository,
   ReelSearchResult,
@@ -7,6 +7,8 @@ import type { ISemanticReelSearchService } from '@content/domain/interfaces/sema
 
 @Injectable()
 export class SearchPublicReelsUseCase {
+  private readonly logger = new Logger(SearchPublicReelsUseCase.name);
+
   constructor(
     @Inject('IContentRepository')
     private readonly contentRepository: IContentRepository,
@@ -30,9 +32,20 @@ export class SearchPublicReelsUseCase {
       query,
       limit,
     });
-    const reels = await this.contentRepository.findSearchablePublicReels(
-      candidates.map((candidate) => candidate.reelId),
-    );
+    let reels: Awaited<
+      ReturnType<IContentRepository['findSearchablePublicReels']>
+    >;
+    try {
+      reels = await this.contentRepository.findSearchablePublicReels(
+        candidates.map((candidate) => candidate.reelId),
+      );
+    } catch (error: unknown) {
+      // A slow or exhausted database must not turn search into an HTTP 500.
+      this.logger.warn(
+        `Reel search hydration failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
+    }
     const reelById = new Map(reels.map((reel) => [reel.id, reel]));
     return candidates.flatMap((candidate) => {
       const reel = reelById.get(candidate.reelId);

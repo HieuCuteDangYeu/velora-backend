@@ -37,4 +37,14 @@ describe('SearchReelTagsUseCase', () => {
 
     expect(searchReelTags).toHaveBeenCalledWith({ limit: 12 });
   });
+
+  it('reuses an identical query within the cache window', async () => {
+    const { useCase, searchReelTags } = build();
+
+    await useCase.execute({ query: 'Pets', limit: 10 });
+    await useCase.execute({ query: '#pets', limit: 10 });
+    await useCase.execute({ query: 'pets', limit: 5 });
+
+    expect(searchReelTags).toHaveBeenCalledTimes(2);
+  });
 });

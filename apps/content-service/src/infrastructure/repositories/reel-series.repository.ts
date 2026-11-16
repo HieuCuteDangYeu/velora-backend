@@ -149,7 +149,8 @@ export class ReelSeriesRepository {
       episodeNumber: { not: null },
       ...(query.onlyCompleted ? { mediaStatus: 'COMPLETED' } : {}),
     };
-    const episodeCount = await this.prisma.reel.count({ where });
+    // The total is independent of the window, so it is read alongside it below.
+    const countEpisodes = () => this.prisma.reel.count({ where });
     const orderByAscending: Prisma.ReelOrderByWithRelationInput[] = [
       { episodeNumber: 'asc' },
       { id: 'asc' },
@@ -158,7 +159,10 @@ export class ReelSeriesRepository {
       { episodeNumber: 'desc' },
       { id: 'desc' },
     ];
-    const serializeCursor = (record: { id: string; episodeNumber: number | null }) =>
+    const serializeCursor = (record: {
+      id: string;
+      episodeNumber: number | null;
+    }) =>
       record.episodeNumber === null
         ? null
         : { id: record.id, episodeNumber: record.episodeNumber };
@@ -190,20 +194,27 @@ export class ReelSeriesRepository {
                 },
               ],
             };
-      const records = await this.prisma.reel.findMany({
-        where: { ...where, ...positionFilter },
-        orderBy:
-          query.direction === 'previous' ? orderByDescending : orderByAscending,
-        take: query.limit + 1,
-        select: REEL_LIST_SELECT,
-      });
+      const [records, episodeCount] = await Promise.all([
+        this.prisma.reel.findMany({
+          where: { ...where, ...positionFilter },
+          orderBy:
+            query.direction === 'previous'
+              ? orderByDescending
+              : orderByAscending,
+          take: query.limit + 1,
+          select: REEL_LIST_SELECT,
+        }),
+        countEpisodes(),
+      ]);
       const hasMoreInDirection = records.length > query.limit;
       const boundedRecords = records.slice(0, query.limit);
       const pageRecords =
         query.direction === 'previous'
           ? boundedRecords.reverse()
           : boundedRecords;
-      const firstCursor = pageRecords[0] ? serializeCursor(pageRecords[0]) : null;
+      const firstCursor = pageRecords[0]
+        ? serializeCursor(pageRecords[0])
+        : null;
       const lastRecord = pageRecords[pageRecords.length - 1];
       const lastCursor = lastRecord ? serializeCursor(lastRecord) : null;
 
@@ -225,12 +236,15 @@ export class ReelSeriesRepository {
       };
     }
 
-    const anchor = query.aroundReelId
-      ? await this.prisma.reel.findFirst({
-          where: { ...where, id: query.aroundReelId },
-          select: { episodeNumber: true },
-        })
-      : null;
+    const [anchor, episodeCount] = await Promise.all([
+      query.aroundReelId
+        ? this.prisma.reel.findFirst({
+            where: { ...where, id: query.aroundReelId },
+            select: { episodeNumber: true },
+          })
+        : Promise.resolve(null),
+      countEpisodes(),
+    ]);
 
     if (!anchor?.episodeNumber) {
       const records = await this.prisma.reel.findMany({

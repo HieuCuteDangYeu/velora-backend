@@ -32,11 +32,15 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ClientProxy } from '@nestjs/microservices';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { catchError, lastValueFrom } from 'rxjs';
+import { catchError, lastValueFrom, timeout } from 'rxjs';
 
 type SearchableReel = Reel & {
   searchScore?: number;
 };
+
+// One slow search leg (semantic index, tag aggregation, user lookup) must not hold
+// the whole response, nor fail it, when the client asked for everything.
+const SEARCH_LEG_TIMEOUT_MS = 5_000;
 
 @ApiTags('Search')
 @Controller('search')
@@ -73,24 +77,36 @@ export class SearchController {
 
     const [users, reels, tags] = await Promise.all([
       shouldSearchUsers
-        ? this.searchUsers({
-            query: searchText,
-            limit,
-            excludeUserId: request.user!.id,
-          })
+        ? this.degradeWhenAll(
+            type,
+            'users',
+            this.searchUsers({
+              query: searchText,
+              limit,
+              excludeUserId: request.user!.id,
+            }),
+          )
         : Promise.resolve([]),
       shouldSearchReels
-        ? this.searchReels({
-            query: searchText,
-            limit,
-            viewerId: request.user!.id,
-          })
+        ? this.degradeWhenAll(
+            type,
+            'reels',
+            this.searchReels({
+              query: searchText,
+              limit,
+              viewerId: request.user!.id,
+            }),
+          )
         : Promise.resolve([]),
       shouldSearchTags
-        ? this.searchTags({
-            query: searchText,
-            limit: type === 'tags' ? limit : Math.min(limit, 6),
-          })
+        ? this.degradeWhenAll(
+            type,
+            'tags',
+            this.searchTags({
+              query: searchText,
+              limit: type === 'tags' ? limit : Math.min(limit, 6),
+            }),
+          )
         : Promise.resolve([]),
     ]);
 
@@ -173,7 +189,10 @@ export class SearchController {
           query: input.query,
           limit: input.limit,
         })
-        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+        .pipe(
+          timeout(SEARCH_LEG_TIMEOUT_MS),
+          catchError((error) => this.handleMicroserviceError(error)),
+        ),
     );
 
     return result.tags;
@@ -191,7 +210,10 @@ export class SearchController {
           limit: input.limit,
           excludeUserId: input.excludeUserId,
         })
-        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+        .pipe(
+          timeout(SEARCH_LEG_TIMEOUT_MS),
+          catchError((error) => this.handleMicroserviceError(error)),
+        ),
     );
   }
 
@@ -207,7 +229,10 @@ export class SearchController {
           limit: input.limit,
           viewerId: input.viewerId,
         })
-        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+        .pipe(
+          timeout(SEARCH_LEG_TIMEOUT_MS),
+          catchError((error) => this.handleMicroserviceError(error)),
+        ),
     );
   }
 
@@ -295,6 +320,28 @@ export class SearchController {
       extIndex !== -1 ? mediaKey.substring(0, extIndex) : mediaKey;
 
     return `${this.cdnDomain}/${folderPath}/master.m3u8`;
+  }
+
+  /**
+   * For a combined search a failed leg yields an empty list so the other legs
+   * still answer; a single-type search keeps surfacing its own error.
+   */
+  private async degradeWhenAll<T>(
+    type: 'all' | 'users' | 'reels' | 'tags',
+    leg: string,
+    pending: Promise<T[]>,
+  ): Promise<T[]> {
+    if (type !== 'all') {
+      return await pending;
+    }
+
+    try {
+      return await pending;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Search ${leg} leg degraded to empty: ${message}`);
+      return [];
+    }
   }
 
   private handleMicroserviceError(error: unknown): never {

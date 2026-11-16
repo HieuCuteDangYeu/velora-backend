@@ -218,6 +218,16 @@ async function run(args, deps = rabbitDeps()) {
         (h) => h.indexVersion && meta.indexVersions.add(h.indexVersion),
       );
       const retrieval = hits.map((h) => h.id);
+      // Per-hit signals, kept so fusion and score-floor variants can be
+      // replayed offline without another run. `rerankScore` is only present for
+      // the first `rerankTop` hits (the ones sent to the reranker).
+      entry.hits = hits.map((h) => ({
+        id: h.id,
+        rrfScore: h.rrfScore ?? null,
+        vectorDistance: h.vectorDistance ?? null,
+        vectorRank: h.vectorRank ?? null,
+        keywordRank: h.keywordRank ?? null,
+      }));
       entry.retrieval = {
         ranked: retrieval,
         ...lib.caseMetrics(retrieval, grades, { cutoff: searchLimit }),
@@ -239,6 +249,9 @@ async function run(args, deps = rabbitDeps()) {
         );
         if (!Array.isArray(scores) || scores.length !== top.length)
           throw new Error('rerank returned the wrong number of scores');
+        scores.forEach((score, k) => {
+          entry.hits[k].rerankScore = score;
+        });
         const reranked = top
           .map((h, k) => ({ id: h.id, s: scores[k] }))
           .sort((a, b) => b.s - a.s)

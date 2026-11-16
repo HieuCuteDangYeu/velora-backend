@@ -272,7 +272,7 @@ function markStale(rows, active) {
 
 const PROMPTS = {
   en: (text) =>
-    `Below is a passage from a short video's transcript. Write ONE natural question a viewer might ask about what is said or happens in this passage, answerable from the passage. Do not quote it verbatim and avoid reusing its distinctive phrases; paraphrase the idea. Do not mention timestamps, seconds, "segment", "passage" or episode numbers. Keep it under 25 words.\n\nPASSAGE:\n${text.slice(0, 900)}`,
+    `Below is a passage from a short video's transcript. Write ONE natural question IN ENGLISH a viewer might ask about what is said or happens in this passage, answerable from the passage. Do not quote it verbatim and avoid reusing its distinctive phrases; paraphrase the idea. Do not mention timestamps, seconds, "segment", "passage" or episode numbers. Keep it under 25 words.\n\nPASSAGE:\n${text.slice(0, 900)}`,
   vi: (text) =>
     `Below is a passage from a short video's transcript. Write ONE natural question IN VIETNAMESE a viewer might ask about what is said or happens in this passage, answerable from the passage. Paraphrase the idea; do not mention timestamps, "segment", "passage" or episode numbers. Keep it under 25 words.\n\nPASSAGE:\n${text.slice(0, 900)}`,
 };
@@ -550,6 +550,9 @@ function buildScopes({
   seed = 'scope-v1',
   size = 5,
   foreign = 0,
+  // Let the foreign-script picks come from the gold reel's own series (needed
+  // when the gold reel itself is foreign-script, e.g. cross-lingual cases).
+  foreignSameSeries = false,
 }) {
   if (!Number.isInteger(size) || size < 1)
     throw new Error('size must be a positive integer');
@@ -574,7 +577,7 @@ function buildScopes({
         .filter(
           ([id, r]) =>
             r.foreign === wantForeign &&
-            r.series !== gold.series &&
+            (r.series !== gold.series || (wantForeign && foreignSameSeries)) &&
             id !== goldReel,
         )
         .sort((a, b) => (order(c.id, a[0]) < order(c.id, b[0]) ? -1 : 1))

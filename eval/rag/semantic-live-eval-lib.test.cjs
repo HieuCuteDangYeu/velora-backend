@@ -319,6 +319,39 @@ test('buildScopes is deterministic and mixes the requested number of foreign-scr
   );
 });
 
+test('buildScopes can draw foreign reels from the gold reel series when asked', () => {
+  const mkItem = (reelId, title, text) => ({
+    id: `reel:${reelId}:chunk:0`,
+    reelId,
+    title,
+    text,
+  });
+  const items = [
+    ...Array.from({ length: 4 }, (_, i) =>
+      mkItem(`z${i}`, `Zh Show Episode ${i}`, '你就是这样叫远山的'),
+    ),
+    ...Array.from({ length: 4 }, (_, i) =>
+      mkItem(`e${i}`, `Other ${i} Episode 1`, 'plain english words'),
+    ),
+  ];
+  const cases = [
+    row({ relevant: [{ evidenceId: 'reel:z0:chunk:0', grade: 2 }] }),
+  ];
+  const ids = lib.buildScopes({
+    items,
+    cases,
+    size: 5,
+    foreign: 2,
+    foreignSameSeries: true,
+  })['sem-live-1'];
+  assert.equal(ids[0], 'z0');
+  assert.equal(ids.filter((r) => r.startsWith('z')).length, 3);
+  assert.throws(
+    () => lib.buildScopes({ items, cases, size: 5, foreign: 2 }),
+    /only/,
+  );
+});
+
 test('a series is fresh only when all of its reels are newer than the cutoff', async () => {
   const mk = (id, title, at) => ({
     id: `reel:${id}:chunk:0`,

@@ -152,6 +152,7 @@ async function main() {
       total: Number(args.total ?? 100),
       perSeriesMax: Number(args['per-series-max'] ?? 6),
       viShare: Number(args['vi-share'] ?? 0.2),
+      ...(args['min-chars'] ? { minChars: Number(args['min-chars']) } : {}),
       freshAfter: args['fresh-after'],
       splitSeed: String(args['split-seed'] ?? 'v1'),
       heldoutPercent: Number(args['heldout-percent'] ?? 40),

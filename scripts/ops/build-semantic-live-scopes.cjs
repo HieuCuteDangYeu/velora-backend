@@ -31,6 +31,7 @@ function main(argv) {
     seed: args.seed ?? 'scope-v1',
     size: Number(args.size ?? 5),
     foreign: Number(args.foreign ?? 0),
+    foreignSameSeries: args['same-series'] === 'true',
   });
   fs.writeFileSync(args.out, JSON.stringify(scopes, null, 2));
   process.stdout.write(

@@ -114,6 +114,16 @@ test('run scores retrieval and rerank, and reports failed cases as unavailable',
   assert.equal(result.stages.rerank.bySplit.dev.n, 2);
   assert.ok(result.stages.rerank.byTag.paraphrase);
   assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')).cases, 3);
+  // Per-hit signals are kept for offline fusion experiments.
+  const case1 = result.perCase.find((c) => c.id === 'sem-live-1');
+  assert.deepEqual(
+    case1.hits.map((h) => h.id),
+    ['reel:x:chunk:9', 'reel:r1:chunk:0'],
+  );
+  assert.deepEqual(
+    case1.hits.map((h) => h.rerankScore),
+    [0.1, 0.9],
+  );
   assert.ok(log.includes('reel_index_query:index.search_chunks'));
 
   const none = await run(

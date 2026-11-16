@@ -364,6 +364,10 @@ export class BuildHierarchicalIndexUseCase {
         .filter((draft) => !returnedIds.has(draft.id))
         .map((draft) => draft.id);
       if (result.errors.length || missingIds.length || invalidIds.length) {
+        // Keep the vectors that did succeed so the retried job only embeds the
+        // items that failed instead of repeating the whole batch.
+        if (completed.length) await this.checkpoints.saveEmbeddings(completed);
+        const cause = result.errors[0]?.error;
         throw new Error(
           `Batch embedding failed for ${
             new Set([
@@ -371,7 +375,7 @@ export class BuildHierarchicalIndexUseCase {
               ...missingIds,
               ...invalidIds,
             ]).size
-          } items`,
+          } items${cause ? `: ${cause.slice(0, 300)}` : ''}`,
         );
       }
       await this.checkpoints.saveEmbeddings(completed);

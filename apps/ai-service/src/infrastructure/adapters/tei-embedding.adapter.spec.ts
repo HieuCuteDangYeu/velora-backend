@@ -60,4 +60,60 @@ describe('TeiEmbeddingAdapter', () => {
       '1024 finite values',
     );
   });
+
+  describe('overload handling', () => {
+    const config = () =>
+      new ConfigService({
+        TEI_EMBEDDING_BASE_URL: 'http://rag-embedding:80',
+        AI_EMBEDDING_DIMENSIONS: '1024',
+        AI_EMBEDDING_OVERLOAD_BACKOFF_MS: '1',
+      });
+    const vector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0,
+    );
+    const overloaded = () =>
+      new Response(
+        '{"error":"Model is overloaded","error_type":"Overloaded"}',
+        {
+          status: 429,
+        },
+      );
+
+    it('retries a 429 from TEI and succeeds once capacity frees up', async () => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(overloaded())
+        .mockResolvedValueOnce(overloaded())
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify([vector]), { status: 200 }),
+        );
+      const adapter = new TeiEmbeddingAdapter(config());
+      await expect(
+        adapter.generateVector({ text: 'hello' }),
+      ).resolves.toMatchObject({ dimensions: 1024 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('gives up after the configured number of retries', async () => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockImplementation(() => Promise.resolve(overloaded()));
+      const adapter = new TeiEmbeddingAdapter(config());
+      await expect(adapter.generateVector({ text: 'hello' })).rejects.toThrow(
+        'status 429',
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+    });
+
+    it('does not retry a client error that is not an overload', async () => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(new Response('bad request', { status: 400 }));
+      const adapter = new TeiEmbeddingAdapter(config());
+      await expect(adapter.generateVector({ text: 'hello' })).rejects.toThrow(
+        'status 400',
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
 });

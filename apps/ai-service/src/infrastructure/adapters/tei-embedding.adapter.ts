@@ -45,6 +45,34 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
   }
 
   private async fetchEmbedding(text: string): Promise<unknown> {
+    const retries = this.nonNegativeInt('AI_EMBEDDING_OVERLOAD_RETRIES', 4);
+    const baseDelayMs = this.positiveInt(
+      'AI_EMBEDDING_OVERLOAD_BACKOFF_MS',
+      500,
+    );
+    for (let attempt = 0; ; attempt += 1) {
+      const outcome = await this.requestEmbedding(text);
+      if (outcome.kind === 'ok') return outcome.payload;
+      // TEI answers 429/503 when it is past TEI_*_MAX_CONCURRENT_REQUESTS; the
+      // request was not processed, so waiting and retrying is safe.
+      if (!outcome.overloaded || attempt >= retries) throw outcome.error;
+      const backoff = Math.min(baseDelayMs * 2 ** attempt, 15_000);
+      const delayMs = Math.max(outcome.retryAfterMs ?? 0, backoff);
+      await new Promise((resolve) =>
+        setTimeout(resolve, delayMs + Math.random() * baseDelayMs),
+      );
+    }
+  }
+
+  private async requestEmbedding(text: string): Promise<
+    | { kind: 'ok'; payload: unknown }
+    | {
+        kind: 'error';
+        error: Error;
+        overloaded: boolean;
+        retryAfterMs?: number;
+      }
+  > {
     const controller = new AbortController();
     const timeoutMs = this.positiveInt('AI_EMBEDDING_TIMEOUT_MS', 120_000);
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -60,12 +88,22 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
         signal: controller.signal,
       });
       const raw = await response.text();
-      if (!response.ok)
-        throw new Error(
-          `TEI embedding failed with status ${response.status}: ${raw.slice(0, 500)}`,
-        );
+      if (!response.ok) {
+        const retryAfterSeconds = Number(response.headers.get('retry-after'));
+        return {
+          kind: 'error',
+          error: new Error(
+            `TEI embedding failed with status ${response.status}: ${raw.slice(0, 500)}`,
+          ),
+          overloaded: response.status === 429 || response.status === 503,
+          retryAfterMs:
+            Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+              ? Math.min(retryAfterSeconds * 1000, 30_000)
+              : undefined,
+        };
+      }
       try {
-        return JSON.parse(raw) as unknown;
+        return { kind: 'ok', payload: JSON.parse(raw) as unknown };
       } catch {
         throw new Error('TEI embedding returned invalid JSON');
       }
@@ -115,6 +153,13 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
     const value = Number(this.config.get<string>(key) ?? fallback);
     return Number.isInteger(value) && value > 0
       ? Math.min(value, 600_000)
+      : fallback;
+  }
+
+  private nonNegativeInt(key: string, fallback: number): number {
+    const value = Number(this.config.get<string>(key) ?? fallback);
+    return Number.isInteger(value) && value >= 0
+      ? Math.min(value, 10)
       : fallback;
   }
 }

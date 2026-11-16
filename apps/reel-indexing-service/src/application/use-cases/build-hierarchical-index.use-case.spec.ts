@@ -115,4 +115,72 @@ describe('BuildHierarchicalIndexUseCase embedding cache identity', () => {
       }),
     );
   });
+
+  it('keeps the vectors that succeeded and names the cause when part of a batch fails', async () => {
+    const config: IIndexingApplicationConfig = {
+      get: <T = string>(key: string) =>
+        (key === 'INDEX_EMBEDDING_PROVIDER' ? 'self-hosted-tei' : undefined) as
+          | T
+          | undefined,
+      transcriptionIdentity: () => ({
+        provider: 'groq',
+        model: 'whisper',
+        version: 'v1',
+      }),
+      embeddingIdentity: () => ({
+        model: 'BAAI/bge-m3',
+        dimensions: 1024,
+        version: 'bge-m3-tei-v1',
+      }),
+    };
+    const saveEmbeddings = jest.fn().mockResolvedValue(undefined);
+    const useCase = new BuildHierarchicalIndexUseCase(
+      config,
+      {} as never,
+      {} as never,
+      {
+        generateEmbeddingBatch: jest
+          .fn()
+          .mockImplementation(({ items }: { items: Array<{ id: string }> }) =>
+            Promise.resolve({
+              embeddings: [
+                {
+                  id: items[0].id,
+                  values: Array.from({ length: 1024 }, () => 0.1),
+                  model: 'BAAI/bge-m3',
+                  dimensions: 1024,
+                  provider: 'self-hosted-tei',
+                  version: 'bge-m3-tei-v1',
+                },
+              ],
+              errors: [
+                {
+                  id: items[1].id,
+                  error:
+                    'TEI embedding failed with status 429: Model is overloaded',
+                },
+              ],
+            }),
+          ),
+      } as never,
+      {
+        findReusableEmbeddings: jest.fn().mockResolvedValue([]),
+        saveEmbeddings,
+      } as never,
+    );
+    const [first] = useCase.buildDocumentDrafts({
+      job,
+      metadata,
+      sections: [],
+    });
+    const second = { ...first, id: 'second', cacheKey: 'second-key' };
+
+    await expect(
+      useCase.generateMissingEmbeddings([first, second]),
+    ).rejects.toThrow(
+      'Batch embedding failed for 1 items: TEI embedding failed with status 429',
+    );
+    expect(saveEmbeddings).toHaveBeenCalledTimes(1);
+    expect(saveEmbeddings.mock.calls[0][0]).toHaveLength(1);
+  });
 });

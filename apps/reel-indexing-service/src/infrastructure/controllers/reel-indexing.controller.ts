@@ -54,17 +54,21 @@ export class ReelIndexingController {
       }
       if (result.status === 'PERMANENT_FAILURE' || result.status === 'RETRY') {
         if (isDeferredProviderQuotaFailure(result.error)) {
-          // Not a retry problem: the AI provider's daily allowance is spent, and minutes of
-          // queue retries cannot change that. The attempt is recorded as failed and the job
-          // waits in the dead-letter queue until the index is re-run after the quota recovers.
+          // Not a failure of the job and not a retry problem: the AI provider's allowance is spent,
+          // and minutes of queue retries cannot change that. The attempt is already recorded as
+          // FAILED with the reason, the half-built index was discarded and the previous index is
+          // untouched, so the message is acknowledged instead of piling up in a dead-letter queue
+          // nobody reads. The deferred visual retry worker, or a manual re-index, runs it again
+          // once the quota has recovered.
           this.logger.warn(
-            `Index job ${payload.jobId} for reel ${payload.reelId} dead-lettered from ${queue.queue}: visual provider quota exhausted; re-run the index once the quota recovers`,
+            `Index job ${payload.jobId} for reel ${payload.reelId} on ${queue.queue} not run: visual provider quota exhausted; the attempt is recorded as failed, re-run the index once the quota recovers`,
           );
-        } else {
-          this.logger.error(
-            `Index job ${payload.jobId} exhausted retries on ${queue.queue}: ${result.error.slice(0, 300)}`,
-          );
+          channel.ack(message);
+          return;
         }
+        this.logger.error(
+          `Index job ${payload.jobId} exhausted retries on ${queue.queue}: ${result.error.slice(0, 300)}`,
+        );
         channel.nack(message, false, false);
         return;
       }

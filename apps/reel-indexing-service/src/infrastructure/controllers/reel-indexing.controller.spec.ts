@@ -19,7 +19,7 @@ const job = {
   schemaVersion: REEL_INDEX_JOB_SCHEMA_VERSION,
 };
 
-describe('ReelIndexingController dead-lettering', () => {
+describe('ReelIndexingController failed jobs', () => {
   const channel = { ack: jest.fn(), nack: jest.fn() };
   const message = { fields: { redelivered: false }, properties: {} };
   const context = {
@@ -40,14 +40,15 @@ describe('ReelIndexingController dead-lettering', () => {
     jest.clearAllMocks();
   });
 
-  it('dead-letters a provider quota failure with an accurate warning, not an error', async () => {
+  it('acknowledges a provider quota failure with a warning instead of dead-lettering it', async () => {
     await controllerReturning({
       status: 'PERMANENT_FAILURE',
       error:
         'Visual provider rate limit or quota exhausted; retry this index attempt later: Groq 429',
     }).handle(job, context);
 
-    expect(channel.nack).toHaveBeenCalledWith(message, false, false);
+    expect(channel.ack).toHaveBeenCalledWith(message);
+    expect(channel.nack).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('visual provider quota exhausted'),
     );

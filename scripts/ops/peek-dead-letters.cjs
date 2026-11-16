@@ -11,7 +11,7 @@
  * The queue only says THAT a job died and where. The reason is in the reel-indexing database
  * ("IndexingAttempt"."lastError", matched on reelId) for index jobs, and in the media worker log
  * for media jobs. The usual causes seen so far:
- *   - "Visual provider rate limit or quota exhausted": the Groq daily token allowance of every
+ *   - (before 2026-11-17) "Visual provider rate limit or quota exhausted": the Groq daily token allowance of every
  *     organization was spent while an index job required visual analysis. Retrying in the queue
  *     cannot help; re-run the index for that reel after the quota recovers.
  *   - an embedding or database error that survived the retry lane.

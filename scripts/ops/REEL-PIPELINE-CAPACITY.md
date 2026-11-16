@@ -116,8 +116,8 @@ decision, not a tuning knob, and with 16 organizations it is not needed for capa
 ## Dead-letter queues
 
 `reel_index_*_dlq` and `reel_media_*_dlq` have no consumer. A job lands there when the worker
-rejects it for good: retries exhausted, a malformed message, or (index jobs) a provider quota that
-retrying cannot fix. The dashboard "Velora / Reel Pipeline" shows the depth and the alert
+rejects it for good: retries exhausted or a malformed message. A provider quota failure is not one of
+them any more (see below). The dashboard "Velora / Reel Pipeline" shows the depth and the alert
 `VeloraReelDeadLetters` fires after 30 minutes with anything in them.
 
 - **See what is in them:** `scripts/ops/peek-dead-letters.cjs` (read-only, puts each message back).
@@ -126,11 +126,15 @@ retrying cannot fix. The dashboard "Velora / Reel Pipeline" shows the depth and 
 - **Seen on 2026-11-16:** five re-index jobs (visual analysis required) died within minutes with
   `Visual provider rate limit or quota exhausted`: every Groq organization the worker tried had spent
   its 200,000 tokens/day (used 197,560-199,633). `isDeferredProviderQuotaFailure` skips the queue
-  retries on purpose, because they only burn requests; the attempt is recorded as failed, the
-  half-built index is discarded (the previous active index stays), and the job waits in the DLQ. Fix
-  by re-running the index for that reel after the quota recovers; the old message can then be purged.
-  The log line for this case is now a warning that says so; "exhausted retries" is reserved for real
-  failures and carries the cause.
+  retries on purpose, because they only burn requests. The attempt is recorded as failed with the
+  reason, the half-built index is discarded and the previous active index stays. Until the indexer
+  was rebuilt on 2026-11-17 the message then went to the DLQ, where nothing could use it.
+  **Now** the indexer acknowledges such a job with a warning ("not run: visual provider quota
+  exhausted"), so the DLQ and its alert only show real failures. To run it again, re-index the reel
+  after the quota recovered (`reindex-visual-cohort.cjs`, or the deferred visual retry worker for
+  reels that have no visual scenes). "Exhausted retries" is reserved for real failures and carries the
+  cause. Indexer code is only live when the overlay pin in `index-rollout.yml` points at an image built
+  from it (see `docs/reel-indexing-qdrant-overlay-ci-gap-20261106.md`).
 - Uploads are not affected: without `requireVisualAnalysis` a rate-limited frame is skipped and the
   deferred visual retry worker (once a day, 00:15 UTC, built around a midnight reset) tries it again.
   Groq's limit is a rolling window, so that single daily run can find the quota still spent.

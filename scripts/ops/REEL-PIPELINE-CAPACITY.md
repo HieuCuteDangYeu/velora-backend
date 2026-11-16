@@ -55,13 +55,14 @@ almost linearly; indexing then becomes the limit.
 6. **TikTok CDN.** Uploads were all rejected (error 40102) until the session credentials were
    refreshed, and jobs fell back to R2 instantly. With a valid session, three runs of a 96 s reel on
    the homelab gave: a hang (the upload request had no timeout, three connections sat idle and the
-   worker, which takes one job at a time, was lost to the lane), a stalled segment that fell back to
-   R2 after the 20 s timeout (upload stage 47 s), and a clean upload of 151 segments in 24 s. Each
-   request now times out after 20 s (`TIKTOK_CDN_REQUEST_TIMEOUT_MS`) and the whole CDN upload has
-   120 s (`TIKTOK_CDN_UPLOAD_BUDGET_MS`), after which the job falls back to R2. A healthy CDN answers a
-   150 KB upload in 0.3-0.5 s. Stalls appear intermittently, possibly tied to the 3 parallel uploads;
-   not established. The keep-alive job logs `TikTok CDN session keep-alive failed` when the session
-   dies again; watch for it.
+   worker, which takes one job at a time, was lost to the lane), a stalled segment that sent the whole
+   reel to R2 (upload stage 47 s), and a clean upload of 151 segments in 24 s. Stalls are
+   intermittent and hit the first few segments; the cause is not established. A healthy upload takes
+   0.3-0.5 s, so a request is now cut after 10 s (`TIKTOK_CDN_REQUEST_TIMEOUT_MS`) and tried again up
+   to twice (`TIKTOK_CDN_UPLOAD_RETRIES`, 300 ms then 600 ms apart); only transport problems and HTTP
+   5xx/429 are retried, a rejection such as the permission error is final. The whole CDN upload still
+   has 120 s (`TIKTOK_CDN_UPLOAD_BUDGET_MS`), after which the job falls back to R2. The keep-alive job
+   logs `TikTok CDN session keep-alive failed` when the session dies again; watch for it.
 
 ## Groq vision budget
 
@@ -82,6 +83,37 @@ keys share an organization the figure is lower. Skipped frames are retried by th
 retry worker. To stretch the budget: lower `MEDIA_VISUAL_MAX_FRAMES` (12 halves the cost), raise
 `MEDIA_VISUAL_PERIODIC_INTERVAL_SECONDS` (4 to 8 s), add organizations, or configure the vision
 fallback provider. Evaluation runs and tests draw from the same budget.
+
+A vision request now walks up to 8 keys (it used to stop after 3) within one 100 s budget, because a
+restarted ai-service forgets which organizations are spent and meets them one by one. The 429 text
+says how many keys were really tried.
+
+Frames are sent at full size (1080x1920 for portrait video, about 2,450 tokens each). Sending them at
+half the linear size would cut the cost by roughly half or more, at the price of less readable
+on-screen text; that changes the visual evidence the search index is built from, so it is a product
+decision, not a tuning knob.
+
+## Dead-letter queues
+
+`reel_index_*_dlq` and `reel_media_*_dlq` have no consumer. A job lands there when the worker
+rejects it for good: retries exhausted, a malformed message, or (index jobs) a provider quota that
+retrying cannot fix. The dashboard "Velora / Reel Pipeline" shows the depth and the alert
+`VeloraReelDeadLetters` fires after 30 minutes with anything in them.
+
+- **See what is in them:** `scripts/ops/peek-dead-letters.cjs` (read-only, puts each message back).
+  The reason is not in the message. For index jobs it is `"IndexingAttempt"."lastError"` in the
+  reel-indexing database, matched on `reelId`; for media jobs it is the media worker log.
+- **Seen on 2026-11-16:** four re-index jobs (visual analysis required) died within minutes with
+  `Visual provider rate limit or quota exhausted`: every Groq organization the worker tried had spent
+  its 200,000 tokens/day (used 197,560-199,633). `isDeferredProviderQuotaFailure` skips the queue
+  retries on purpose, because they only burn requests; the attempt is recorded as failed, the
+  half-built index is discarded (the previous active index stays), and the job waits in the DLQ. Fix
+  by re-running the index for that reel after the quota recovers; the old message can then be purged.
+  The log line for this case is now a warning that says so; "exhausted retries" is reserved for real
+  failures and carries the cause.
+- Uploads are not affected: without `requireVisualAnalysis` a rate-limited frame is skipped and the
+  deferred visual retry worker (once a day, 00:15 UTC, built around a midnight reset) tries it again.
+  Groq's limit is a rolling window, so that single daily run can find the quota still spent.
 
 ## Postgres connection budget (Aiven)
 

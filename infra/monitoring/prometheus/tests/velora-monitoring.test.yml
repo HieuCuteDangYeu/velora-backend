@@ -1114,3 +1114,25 @@ tests:
             exp_annotations:
               summary: the model server is answering slowly
               description: The model server has taken more than two seconds to answer a health probe for five minutes, which usually means the laptop is overloaded, thermally throttled or swapping.
+
+  - name: dead letters warn after thirty minutes
+    interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{queue="reel_index_short_dlq"}'
+        values: '0+0x9 3+0x39'
+      - series: 'rabbitmq_detailed_queue_messages{queue="reel_media_short_dlq"}'
+        values: '0+0x49'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VeloraReelDeadLetters
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: VeloraReelDeadLetters
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-pipeline
+              queue: reel_index_short_dlq
+            exp_annotations:
+              summary: Reel jobs are waiting in a dead-letter queue
+              description: A reel media or index job exhausted its retries (or hit an AI provider quota that retrying cannot fix) and has sat in a dead-letter queue for thirty minutes. Nothing consumes these queues; inspect them with scripts/ops/peek-dead-letters.cjs and re-run the affected reels.

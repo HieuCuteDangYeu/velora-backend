@@ -336,6 +336,16 @@ groups:
           summary: Reel pipeline has stalled work
           description: At least one queued or processing Reel has not changed for more than ten minutes.
 
+      - alert: VeloraReelDeadLetters
+        expr: sum by (queue) (rabbitmq_detailed_queue_messages{queue=~"reel_(media|index)_(short|long)_dlq"}) > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: reel-pipeline
+        annotations:
+          summary: Reel jobs are waiting in a dead-letter queue
+          description: A reel media or index job exhausted its retries (or hit an AI provider quota that retrying cannot fix) and has sat in a dead-letter queue for thirty minutes. Nothing consumes these queues; inspect them with scripts/ops/peek-dead-letters.cjs and re-run the affected reels.
+
       - alert: VeloraReelPipelineRecentFailures
         expr: velora_reel_pipeline_recent_failures{service="content-service"} > 0
         for: 1m

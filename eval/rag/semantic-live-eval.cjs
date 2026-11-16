@@ -11,7 +11,7 @@
  *   docker cp eval/rag/semantic-live-eval.cjs eval/rag/semantic-live-eval-lib.cjs \
  *     eval/rag/datasets/rag-semantic-live-v1.jsonl <content-service>:/usr/src/app/
  *   docker exec <content-service> node semantic-live-eval.cjs run \
- *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50] [--rerank-top 12] [--search-limit 30] [--scopes scopes.json]
+ *     --cases rag-semantic-live-v1.jsonl --out /tmp/run-a.json [--split heldout] [--limit 50] [--rerank-top 12] [--search-limit 30] [--scopes scopes.json] [--rerank-format production --titles titles.json]
  *   docker cp <content-service>:/tmp/run-a.json .benchmarks/semantic-live-run-a.json
  *   docker exec -u root <content-service> rm /usr/src/app/semantic-live-eval*.cjs \
  *     /usr/src/app/rag-semantic-live-v1.jsonl /tmp/run-a.json
@@ -103,6 +103,19 @@ function rabbitDeps() {
   };
 }
 
+// ai.rerank_texts refuses a text over 4000 characters (RERANK_TEXTS_MAX_TEXT_LENGTH).
+// The reranker truncates to about 512 tokens anyway, so this never changes what it sees.
+const RERANK_TEXT_MAX_CHARS = 4000;
+
+function rerankText(hit, titles) {
+  const evidence = String(hit.evidenceText ?? hit.text);
+  if (!titles) return evidence.slice(0, 1500);
+  const reelId = /^reel:([^:]+):chunk:/u.exec(hit.id)?.[1];
+  const title = titles[reelId] ?? '';
+  const room = RERANK_TEXT_MAX_CHARS - (title ? title.length + 1 : 0);
+  return [evidence.slice(0, room), title].filter(Boolean).join('\n');
+}
+
 async function run(args, deps = rabbitDeps()) {
   const ai = deps.client('ai_queue');
   const index = deps.client('reel_index_query');
@@ -148,6 +161,17 @@ async function run(args, deps = rabbitDeps()) {
     );
   // --scopes <file.json>: {caseId: [reelId, ...]} restricts each search to the
   // reels "shared in the conversation", like chat retrieval does.
+  // --rerank-format production: send the reranker what chat sends it
+  // (TeiRerankerAdapter.context): the evidence text, a newline and the reel
+  // title. Titles come from --titles <file.json> ({reelId: title}); the service
+  // truncates by tokens exactly as in chat. Default keeps the old evidence-only text.
+  const productionFormat = args['rerank-format'] === 'production';
+  let titles = null;
+  if (productionFormat) {
+    if (!args.titles)
+      throw new Error('--rerank-format production needs --titles');
+    titles = JSON.parse(fs.readFileSync(args.titles, 'utf8'));
+  }
   let scopes = null;
   let scopesSha256 = null;
   if (args.scopes) {
@@ -175,6 +199,7 @@ async function run(args, deps = rabbitDeps()) {
     searchLimit,
     rerankTop,
     scopesSha256,
+    rerankFormat: productionFormat ? 'production' : 'evidence-only',
   };
   const delay = Number(args['delay-ms'] ?? 150);
   const perCase = [];
@@ -240,9 +265,7 @@ async function run(args, deps = rabbitDeps()) {
           'ai.rerank_texts',
           {
             queryText: c.question,
-            texts: top.map((h) =>
-              String(h.evidenceText ?? h.text).slice(0, 1500),
-            ),
+            texts: top.map((h) => rerankText(h, titles)),
             budgetMs: 8000,
           },
           12000,

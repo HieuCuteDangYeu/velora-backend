@@ -388,3 +388,13 @@ test('the committed dataset, when present, passes validation', () => {
     [],
   );
 });
+
+test('sharesCjkRun flags a copied Chinese phrase but not a paraphrase', () => {
+  const passage = '你就是这样叫远山的我只能自己去镇守前程为了爹的骄傲';
+  assert.equal(lib.sharesCjkRun('为什么说我只能自己去镇守前程', passage), true);
+  assert.equal(lib.sharesCjkRun('她为何要上战场拼命', passage), false);
+});
+
+test('validateRow accepts zh questions', () => {
+  assert.deepEqual(lib.validateRow(row({ language: 'zh' })), []);
+});

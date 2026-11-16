@@ -15,7 +15,7 @@ const DATASET_VERSION = 'rag-semantic-live-v1';
 const SOURCES = new Set(['synthetic', 'traffic', 'regression', 'hand']);
 const STATUSES = new Set(['CANDIDATE', 'REVIEWED', 'REJECTED', 'STALE']);
 const SPLITS = new Set(['dev', 'heldout', 'fresh']);
-const LANGUAGES = new Set(['en', 'vi']);
+const LANGUAGES = new Set(['en', 'vi', 'zh']);
 
 const STOP = new Set(
   'a an and are as at be by for from has have he her his i in is it its of on or she that the their them they this to was were what when where which who why how with you your me my we our do does did about say says said'.split(
@@ -74,6 +74,19 @@ const isLeaky = (
   const l = leakage(question, passage);
   return l.containment > maxContainment || l.longestRun >= maxRun;
 };
+
+/**
+ * True when a Chinese question copies 8+ consecutive CJK characters from the
+ * passage (the whitespace tokenizer used by `leakage` cannot see this).
+ */
+function sharesCjkRun(question, passage, run = 8) {
+  const strip = (t) => String(t ?? '').replace(/[^\u3400-\u9fff]/gu, '');
+  const q = strip(question);
+  const p = strip(passage);
+  for (let i = 0; i + run <= q.length; i += 1)
+    if (p.includes(q.slice(i, i + run))) return true;
+  return false;
+}
 
 /** "Pet Chat Group Episode 22" and "... Episode 23" are one series. */
 function seriesOf(title) {
@@ -275,6 +288,8 @@ const PROMPTS = {
     `Below is a passage from a short video's transcript. Write ONE natural question IN ENGLISH a viewer might ask about what is said or happens in this passage, answerable from the passage. Do not quote it verbatim and avoid reusing its distinctive phrases; paraphrase the idea. Do not mention timestamps, seconds, "segment", "passage" or episode numbers. Keep it under 25 words.\n\nPASSAGE:\n${text.slice(0, 900)}`,
   vi: (text) =>
     `Below is a passage from a short video's transcript. Write ONE natural question IN VIETNAMESE a viewer might ask about what is said or happens in this passage, answerable from the passage. Paraphrase the idea; do not mention timestamps, "segment", "passage" or episode numbers. Keep it under 25 words.\n\nPASSAGE:\n${text.slice(0, 900)}`,
+  zh: (text) =>
+    `Below is a passage from a short video's transcript. Write ONE natural question IN SIMPLIFIED CHINESE a viewer might ask about what is said or happens in this passage, answerable from the passage. Paraphrase the idea instead of copying phrases; do not mention timestamps, "segment", "passage" or episode numbers. Keep it under 40 characters.\n\nPASSAGE:\n${text.slice(0, 900)}`,
 };
 
 /**
@@ -289,6 +304,9 @@ async function buildCandidateRows({
   total = 100,
   perSeriesMax = 6,
   viShare = 0.2,
+  // Force every question into one language ('en' | 'vi' | 'zh'), e.g. 'zh' for
+  // the reverse cross-lingual direction (Chinese question, any-language chunk).
+  forceLanguage = null,
   freshAfter,
   heldoutPercent = 40,
   splitSeed = 'v1',
@@ -328,7 +346,7 @@ async function buildCandidateRows({
     if (rows.length >= total) break;
     const seriesId = seriesOf(item.title);
     if ((perSeries.get(seriesId) ?? 0) >= perSeriesMax) continue;
-    const language = random() < viShare ? 'vi' : 'en';
+    const language = forceLanguage ?? (random() < viShare ? 'vi' : 'en');
     let question;
     stats.asked += 1;
     try {
@@ -346,7 +364,10 @@ async function buildCandidateRows({
     // Vietnamese questions over English text are cross-lingual by construction,
     // so the lexical filter only applies to same-language questions.
     const lk = leakage(question, item.text);
-    if (language === 'en' && isLeaky(question, item.text)) {
+    if (
+      (language === 'en' && isLeaky(question, item.text)) ||
+      (language === 'zh' && sharesCjkRun(question, item.text))
+    ) {
       stats.leaky += 1;
       continue;
     }
@@ -376,7 +397,7 @@ async function buildCandidateRows({
       // `same-series`: other reels of this series are in the index, so the
       // question must be told apart from near-identical sibling episodes.
       tags: [
-        language === 'vi' ? 'vi' : 'paraphrase',
+        language === 'vi' || language === 'zh' ? language : 'paraphrase',
         ...(reelsBySeries.get(seriesId).size > 1 ? ['same-series'] : []),
       ],
       relevant: [
@@ -612,6 +633,7 @@ module.exports = {
   parseJsonl,
   rng,
   seriesOf,
+  sharesCjkRun,
   shuffle,
   summarize,
   summarizeBy,

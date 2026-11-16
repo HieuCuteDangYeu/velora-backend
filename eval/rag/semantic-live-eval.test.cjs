@@ -277,3 +277,36 @@ test('run sends the per-case reel scope to the search and refuses incomplete sco
   fs.writeFileSync(scopes, JSON.stringify({ 'sem-live-1': ['r1'] }));
   await assert.rejects(run({ ...base, scopes }, fakeDeps([])), /--scopes/);
 });
+
+test('run can send the reranker the production text (evidence, newline, reel title)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'semlive-'));
+  const cases = path.join(dir, 'cases.jsonl');
+  fs.writeFileSync(cases, lib.toJsonl([mk(1)]));
+  const titles = path.join(dir, 'titles.json');
+  fs.writeFileSync(titles, JSON.stringify({ r1: 'Show One Episode 1' }));
+  const base = { cases, out: path.join(dir, 'o.json'), 'delay-ms': 0 };
+
+  const texts = [];
+  const deps = fakeDeps([]);
+  const inner = deps.client;
+  deps.client = (queue) => {
+    const c = inner(queue);
+    const send = c.send.bind(c);
+    c.send = (pattern, data) => {
+      if (pattern === 'ai.rerank_texts') texts.push(data.texts);
+      return send(pattern, data);
+    };
+    return c;
+  };
+  const result = await run(
+    { ...base, 'rerank-format': 'production', titles },
+    deps,
+  );
+  assert.equal(result.meta.rerankFormat, 'production');
+  // The fake index returns the unrelated chunk first, then the gold chunk r1.
+  assert.deepEqual(texts[0], ['unrelated', 'GOLD passage\nShow One Episode 1']);
+  await assert.rejects(
+    run({ ...base, 'rerank-format': 'production' }, fakeDeps([])),
+    /--titles/,
+  );
+});

@@ -138,4 +138,74 @@ describe('TikTok adaptive playlist upload', () => {
     // The first batch of three was allowed to start; later batches were not.
     expect((global.fetch as jest.Mock).mock.calls.length).toBe(3);
   });
+
+  const ok = (url = 'https://cdn.example/ok.png') =>
+    new Response(JSON.stringify({ code: 0, data: { url } }));
+
+  it('retries a stalled request on a new attempt instead of abandoning the CDN', async () => {
+    let calls = 0;
+    global.fetch = jest.fn((_url: unknown, init?: RequestInit) => {
+      calls += 1;
+      // The very first request never answers; every later one succeeds.
+      if (calls === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(init.signal?.reason as Error),
+          );
+        });
+      }
+      return Promise.resolve(ok());
+    });
+
+    const result = await service({
+      TIKTOK_CDN_REQUEST_TIMEOUT_MS: '40',
+    }).uploadHlsDirectory(directory);
+
+    expect(result.segmentCount).toBe(2);
+    // two segments plus the one retry
+    expect(calls).toBe(3);
+  });
+
+  it('retries a 503', async () => {
+    let calls = 0;
+    global.fetch = jest.fn(() => {
+      calls += 1;
+      return Promise.resolve(
+        calls <= 2 ? new Response('busy', { status: 503 }) : ok(),
+      );
+    });
+    await expect(
+      service().uploadHlsDirectory(directory),
+    ).resolves.toMatchObject({ segmentCount: 2 });
+  });
+
+  it('does not retry a rejection from TikTok', async () => {
+    let calls = 0;
+    global.fetch = jest.fn(() => {
+      calls += 1;
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ code: 40102, msg: "You don't have permission" }),
+        ),
+      );
+    });
+    await expect(service().uploadHlsDirectory(directory)).rejects.toThrow(
+      /rejected upload/,
+    );
+    // the two segments started together; neither was tried again
+    expect(calls).toBe(2);
+  });
+
+  it('gives up after the configured number of retries', async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(new Response('down', { status: 502 })),
+    );
+    await expect(
+      service({ TIKTOK_CDN_UPLOAD_RETRIES: '1' }).uploadHlsDirectory(directory),
+    ).rejects.toThrow(/HTTP 502/);
+    // the failing segment is tried twice (1 try + 1 retry); its sibling started alongside it
+    expect(
+      (global.fetch as jest.Mock).mock.calls.length,
+    ).toBeGreaterThanOrEqual(3);
+  });
 });

@@ -4,6 +4,10 @@ import type { VisualFrameAnalysis } from '@common/ai/interfaces/visual-analysis.
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+const MAX_ATTEMPTS = 8;
+const TOTAL_BUDGET_MS = 100_000;
+const MIN_ATTEMPT_MS = 3_000;
+
 const DEFAULT_MODEL = 'qwen/qwen3.8-27b';
 const DEFAULT_VERSION = 'groq-qwen3.8-27b-vision-2026-11';
 
@@ -53,16 +57,28 @@ export class GroqVisionAdapter implements IVisionService {
   }): Promise<VisualFrameAnalysis> {
     const imageBase64 = Buffer.from(input.image).toString('base64');
     const timeoutMs = this.timeoutMs();
-    // Each attempt gets its own budget so one slow response cannot starve the retry on another key.
-    const attempts = Math.min(3, Math.max(1, this.keyPool.size));
+    // A rate-limited key answers in well under a second, so walking several keys is cheap. The pool
+    // forgets which keys are spent whenever the service restarts, so the first frames afterwards meet
+    // exhausted keys one by one; three attempts used to give up while most of 16 keys were still fine.
+    // The total stays inside the indexing RPC timeout (120 s) because every attempt shares one budget.
+    const attempts = Math.min(MAX_ATTEMPTS, Math.max(1, this.keyPool.size));
+    const startedAt = Date.now();
+    let triedKeys = 0;
     let rateLimited = false;
     let lastMessage = 'no capacity';
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const remainingMs = TOTAL_BUDGET_MS - (Date.now() - startedAt);
+      if (attempt > 0 && remainingMs < MIN_ATTEMPT_MS) break;
       // Throws GroqKeyPoolExhaustedError (message matches the rate-limit check) when every key is spent.
       const { key, index } = await this.keyPool.acquireAsync(5_000, this.model);
+      triedKeys += 1;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const attemptTimeoutMs = Math.min(
+        timeoutMs,
+        Math.max(remainingMs, 1_000),
+      );
+      const timer = setTimeout(() => controller.abort(), attemptTimeoutMs);
       timer.unref();
       try {
         const response = await fetch(`${this.baseUrl()}/chat/completions`, {
@@ -127,7 +143,7 @@ export class GroqVisionAdapter implements IVisionService {
         this.keyPool.reportTransientFailure(index, this.model);
         rateLimited = false;
         lastMessage = timedOut
-          ? `timed out after ${timeoutMs}ms`
+          ? `timed out after ${attemptTimeoutMs}ms`
           : `network error: ${error instanceof Error ? error.message : String(error)}`;
       } finally {
         clearTimeout(timer);
@@ -135,8 +151,8 @@ export class GroqVisionAdapter implements IVisionService {
     }
     throw new Error(
       rateLimited
-        ? `Groq vision rate limited on every key (status 429): ${lastMessage}`
-        : `Groq vision request failed after ${attempts} attempts: ${lastMessage}`,
+        ? `Groq vision rate limited on ${triedKeys} key(s) tried (status 429): ${lastMessage}`
+        : `Groq vision request failed after ${triedKeys} attempts: ${lastMessage}`,
     );
   }
 

@@ -20,8 +20,13 @@ const PNG_MASK_SIZE = 67;
 // A stalled CDN request used to wait for Node's own 5 minute default, and the worker takes one job
 // at a time, so one stall froze the whole lane. A reel's segments must upload within the budget or
 // the caller falls back to R2, which is far quicker than waiting.
-const DEFAULT_CDN_REQUEST_TIMEOUT_MS = 20_000;
+// A healthy upload answers in 0.3-0.5 s, so 10 s is a stall. A stalled request is cut and tried again
+// on a fresh connection (stalls were intermittent, one in three 96 s reels, mostly on the first
+// segments), and only repeated failures send the reel to R2.
+const DEFAULT_CDN_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_CDN_UPLOAD_BUDGET_MS = 120_000;
+const DEFAULT_CDN_UPLOAD_RETRIES = 2;
+const CDN_RETRY_BACKOFF_MS = 300;
 const CDN_PING_TIMEOUT_MS = 15_000;
 
 interface SegmentUploadResult {
@@ -44,6 +49,9 @@ interface TikTokUploadApiResponse {
   };
 }
 
+/** A failure of the connection or of TikTok itself that is worth another attempt. */
+class CdnTransportError extends Error {}
+
 @Injectable()
 export class TikTokCdnService implements ITikTokCdnService {
   private readonly logger = new Logger(TikTokCdnService.name);
@@ -55,6 +63,7 @@ export class TikTokCdnService implements ITikTokCdnService {
   private readonly ffmpegPath: string;
   private readonly requestTimeoutMs: number;
   private readonly uploadBudgetMs: number;
+  private readonly uploadRetries: number;
 
   constructor(private readonly configService: ConfigService) {
     this.uploadEndpoint =
@@ -87,6 +96,13 @@ export class TikTokCdnService implements ITikTokCdnService {
       'TIKTOK_CDN_UPLOAD_BUDGET_MS',
       DEFAULT_CDN_UPLOAD_BUDGET_MS,
     );
+    const retries = Number(
+      this.configService.get<string>('TIKTOK_CDN_UPLOAD_RETRIES'),
+    );
+    this.uploadRetries =
+      Number.isInteger(retries) && retries >= 0 && retries <= 5
+        ? retries
+        : DEFAULT_CDN_UPLOAD_RETRIES;
   }
 
   private positiveMs(key: string, fallback: number): number {
@@ -383,7 +399,47 @@ export class TikTokCdnService implements ITikTokCdnService {
   }
 
   // Sends multipart upload directly to TikTok Ads API.
+  /**
+   * Sends one file, retrying a stalled or failed connection a couple of times. Only transport
+   * problems (timeout, dropped connection, HTTP 5xx/429) are retried; a response that rejects the
+   * upload (HTTP 4xx, `code` other than 0, for example the permission error of an expired session)
+   * is final, because trying again cannot change the answer.
+   */
   private async sendMultipartUpload(
+    filename: string,
+    fileBuffer: Buffer,
+    contentType: string,
+    deadline?: number,
+  ): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= this.uploadRetries; attempt += 1) {
+      try {
+        return await this.sendMultipartUploadOnce(
+          filename,
+          fileBuffer,
+          contentType,
+          deadline,
+        );
+      } catch (error) {
+        if (!(error instanceof CdnTransportError)) throw error;
+        lastError = error;
+        const backoff = CDN_RETRY_BACKOFF_MS * (attempt + 1);
+        if (
+          attempt === this.uploadRetries ||
+          (deadline !== undefined && Date.now() + backoff >= deadline)
+        ) {
+          break;
+        }
+        this.logger.warn(
+          `TikTok CDN upload of ${filename} failed (${error.message}); retry ${attempt + 1}/${this.uploadRetries}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private async sendMultipartUploadOnce(
     filename: string,
     fileBuffer: Buffer,
     contentType: string,
@@ -420,14 +476,19 @@ export class TikTokCdnService implements ITikTokCdnService {
       bodyText = await response.text();
     } catch (error) {
       if ((error as { name?: string } | null)?.name === 'TimeoutError') {
-        throw new Error(
+        throw new CdnTransportError(
           `TikTok CDN upload of ${filename} timed out after ${timeoutMs} ms`,
         );
       }
-      throw error;
+      throw new CdnTransportError(
+        `TikTok CDN upload of ${filename} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     if (!response.ok) {
-      throw new Error(`TikTok CDN HTTP ${response.status}: ${bodyText}`);
+      const message = `TikTok CDN HTTP ${response.status}: ${bodyText}`;
+      throw response.status >= 500 || response.status === 429
+        ? new CdnTransportError(message)
+        : new Error(message);
     }
 
     let parsed: TikTokUploadApiResponse;

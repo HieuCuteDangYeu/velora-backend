@@ -192,4 +192,49 @@ describe('GroqVisionAdapter', () => {
     await expect(failure).rejects.not.toThrow(/429|rate limit/i);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('walks past several spent keys to find one that still has quota', async () => {
+    const limited = () =>
+      Promise.resolve(
+        new Response('{"error":{"message":"tokens per day (TPD)"}}', {
+          status: 429,
+          headers: { 'retry-after': '2' },
+        }),
+      );
+    fetchMock
+      .mockImplementationOnce(limited)
+      .mockImplementationOnce(limited)
+      .mockImplementationOnce(limited)
+      .mockImplementationOnce(limited)
+      .mockImplementationOnce(() =>
+        Promise.resolve(
+          answer(JSON.stringify({ caption: 'A room.', objects: [] })),
+        ),
+      );
+    const adapter = new GroqVisionAdapter(
+      config({ GROQ_API_KEYS: 'k1,k2,k3,k4,k5,k6' }),
+    );
+    await expect(adapter.analyzeImage(image)).resolves.toMatchObject({
+      caption: 'A room.',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('names how many keys it actually tried when they are all limited', async () => {
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(
+        new Response('{"error":{"message":"rate_limit_exceeded"}}', {
+          status: 429,
+          headers: { 'retry-after': '2' },
+        }),
+      ),
+    );
+    const adapter = new GroqVisionAdapter(
+      config({ GROQ_API_KEYS: 'k1,k2,k3,k4,k5,k6,k7,k8,k9,k10' }),
+    );
+    await expect(adapter.analyzeImage(image)).rejects.toThrow(
+      /rate limited on 8 key\(s\) tried \(status 429\)/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+  });
 });

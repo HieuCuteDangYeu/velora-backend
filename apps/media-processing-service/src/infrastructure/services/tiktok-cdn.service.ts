@@ -17,6 +17,13 @@ const PNG_HEX =
 const PNG_MASK = Buffer.from(PNG_HEX, 'hex');
 const PNG_MASK_SIZE = 67;
 
+// A stalled CDN request used to wait for Node's own 5 minute default, and the worker takes one job
+// at a time, so one stall froze the whole lane. A reel's segments must upload within the budget or
+// the caller falls back to R2, which is far quicker than waiting.
+const DEFAULT_CDN_REQUEST_TIMEOUT_MS = 20_000;
+const DEFAULT_CDN_UPLOAD_BUDGET_MS = 120_000;
+const CDN_PING_TIMEOUT_MS = 15_000;
+
 interface SegmentUploadResult {
   filename: string;
   localPath: string;
@@ -46,6 +53,8 @@ export class TikTokCdnService implements ITikTokCdnService {
   private readonly cookie: string;
   private readonly defaultSegmentDuration: number;
   private readonly ffmpegPath: string;
+  private readonly requestTimeoutMs: number;
+  private readonly uploadBudgetMs: number;
 
   constructor(private readonly configService: ConfigService) {
     this.uploadEndpoint =
@@ -70,6 +79,19 @@ export class TikTokCdnService implements ITikTokCdnService {
         '5',
     );
     this.ffmpegPath = this.configService.get<string>('FFMPEG_PATH') || 'ffmpeg';
+    this.requestTimeoutMs = this.positiveMs(
+      'TIKTOK_CDN_REQUEST_TIMEOUT_MS',
+      DEFAULT_CDN_REQUEST_TIMEOUT_MS,
+    );
+    this.uploadBudgetMs = this.positiveMs(
+      'TIKTOK_CDN_UPLOAD_BUDGET_MS',
+      DEFAULT_CDN_UPLOAD_BUDGET_MS,
+    );
+  }
+
+  private positiveMs(key: string, fallback: number): number {
+    const value = Number(this.configService.get<string>(key));
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
   }
 
   validateConfig(): boolean {
@@ -93,6 +115,7 @@ export class TikTokCdnService implements ITikTokCdnService {
 
       const response = await fetch(pingUrl, {
         method: 'GET',
+        signal: AbortSignal.timeout(CDN_PING_TIMEOUT_MS),
         headers: {
           'x-ttam-uuid': this.uuid,
           'x-csrftoken': this.csrfToken,
@@ -170,13 +193,14 @@ export class TikTokCdnService implements ITikTokCdnService {
 
     const uploadResults: SegmentUploadResult[] = [];
     const concurrency = 3;
+    const deadline = Date.now() + this.uploadBudgetMs;
 
     for (let i = 0; i < tsFiles.length; i += concurrency) {
       const batch = tsFiles.slice(i, i + concurrency);
       const batchResults = await Promise.all(
         batch.map(async (filePath) => {
           const filename = path.basename(filePath);
-          return await this.uploadSegment(filePath, filename);
+          return await this.uploadSegment(filePath, filename, deadline);
         }),
       );
       uploadResults.push(...batchResults);
@@ -306,6 +330,7 @@ export class TikTokCdnService implements ITikTokCdnService {
   private async uploadSegment(
     filePath: string,
     filename: string,
+    deadline?: number,
   ): Promise<SegmentUploadResult> {
     let tsData = fs.readFileSync(filePath);
     if (tsData.includes('FFmpeg')) {
@@ -324,6 +349,7 @@ export class TikTokCdnService implements ITikTokCdnService {
       uploadFilename,
       spoofed,
       'image/png',
+      deadline,
     );
 
     return {
@@ -361,7 +387,17 @@ export class TikTokCdnService implements ITikTokCdnService {
     filename: string,
     fileBuffer: Buffer,
     contentType: string,
+    deadline?: number,
   ): Promise<string> {
+    const timeoutMs =
+      deadline === undefined
+        ? this.requestTimeoutMs
+        : Math.min(this.requestTimeoutMs, deadline - Date.now());
+    if (timeoutMs <= 0) {
+      throw new Error(
+        `TikTok CDN upload budget of ${this.uploadBudgetMs} ms exceeded before ${filename}`,
+      );
+    }
     const form = new FormData();
     const blob = new Blob([new Uint8Array(fileBuffer)], { type: contentType });
     form.append('Filedata', blob, filename);
@@ -372,13 +408,24 @@ export class TikTokCdnService implements ITikTokCdnService {
       Cookie: this.cookie,
     };
 
-    const response = await fetch(this.uploadEndpoint, {
-      method: 'POST',
-      headers,
-      body: form,
-    });
-
-    const bodyText = await response.text();
+    let bodyText: string;
+    let response: Response;
+    try {
+      response = await fetch(this.uploadEndpoint, {
+        method: 'POST',
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      bodyText = await response.text();
+    } catch (error) {
+      if ((error as { name?: string } | null)?.name === 'TimeoutError') {
+        throw new Error(
+          `TikTok CDN upload of ${filename} timed out after ${timeoutMs} ms`,
+        );
+      }
+      throw error;
+    }
     if (!response.ok) {
       throw new Error(`TikTok CDN HTTP ${response.status}: ${bodyText}`);
     }

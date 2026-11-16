@@ -159,31 +159,45 @@ export class ValidateReelStreamUseCase {
   }
 
   /**
-   * Checks references a batch at a time instead of one request after another.
-   * A one-by-one loop made validation cost one storage round trip per segment
-   * (3 renditions of a 100 s reel is ~150 sequential calls), which dominated
-   * the media stage for short clips. The first missing object in playlist
-   * order is still the one reported.
+   * Storage keys are checked a batch at a time instead of one request after another: a 100 s reel
+   * with three renditions has ~150 segments, and a one-by-one loop cost one storage round trip each.
+   * CDN URLs stay sequential because the TikTok CDN answered four parallel requests in 1.5 s against
+   * 0.13 s each when asked one by one. The first missing object in playlist order is still reported.
    */
   private async findFirstMissingReference(
     references: PlaylistReference[],
   ): Promise<PlaylistReference | undefined> {
+    const isUrl = (reference: PlaylistReference) =>
+      /^https?:\/\//i.test(reference.line) ||
+      /^https?:\/\//i.test(reference.key);
+    const keys = references.filter((reference) => !isUrl(reference));
+    const urls = references.filter(isUrl);
+
+    const missing: PlaylistReference[] = [];
     for (
       let start = 0;
-      start < references.length;
+      start < keys.length;
       start += STREAM_VALIDATION_CONCURRENCY
     ) {
-      const batch = references.slice(
-        start,
-        start + STREAM_VALIDATION_CONCURRENCY,
-      );
+      const batch = keys.slice(start, start + STREAM_VALIDATION_CONCURRENCY);
       const results = await Promise.all(
         batch.map((reference) => this.referenceExists(reference)),
       );
-      const missingIndex = results.indexOf(false);
-      if (missingIndex !== -1) return batch[missingIndex];
+      const index = results.indexOf(false);
+      if (index !== -1) {
+        missing.push(batch[index]);
+        break;
+      }
     }
-    return undefined;
+    for (const reference of urls) {
+      if (!(await this.referenceExists(reference))) {
+        missing.push(reference);
+        break;
+      }
+    }
+    return missing.sort(
+      (a, b) => references.indexOf(a) - references.indexOf(b),
+    )[0];
   }
 
   private async referenceExists(

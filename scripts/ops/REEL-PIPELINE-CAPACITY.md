@@ -38,16 +38,24 @@ almost linearly; indexing then becomes the limit.
    homelab sets `MEDIA_HLS_X264_PRESET` explicitly, so the new code default only applies once that
    line is changed (the laptop `media.env` must follow, see `LAPTOP-MEDIA-WORKER.md`).
    `MEDIA_HLS_MAX_VARIANTS=2` is the next lever and drops the 720p rendition.
-2. **Stream validation used one storage call per segment, one after another.** It cost 14 s on a 6 s
-   clip and grows with duration (about 150 calls for a 100 s reel, 500 for 708 s). It now checks 16 at
-   a time.
+2. **Stream validation.** It checked every HLS object with its own request, one after another. On a
+   6 s clip that is about 19 calls at 0.2-0.3 s, so a steady 4.6-5.3 s on every one of 12 test reels
+   (the share of the media stage grows with duration: about 150 calls for a 100 s reel, 500 for 708 s).
+   Storage keys are now checked 16 at a time. CDN URLs are still checked one by one because four
+   parallel requests to the TikTok CDN took 1.5 s against 0.13 s each in sequence. The speed-up on
+   CDN-hosted reels was not visible on 6 s clips (4.6 and 6.6 s after, 4.6-5.3 s before), so treat the
+   benefit as unproven there and measure it on a long reel.
 3. **Groq vision, a daily token budget.** See below.
 4. **Embedding service.** TEI answers 429 above `TEI_EMBEDDING_MAX_CONCURRENT_REQUESTS` (8); ai-service
    retries with backoff (`AI_EMBEDDING_OVERLOAD_RETRIES`, default 4).
 5. **Shared Postgres connections.** See below.
 6. **TikTok CDN.** Uploads were all rejected (error 40102) until the session credentials were
-   refreshed; jobs fell back to R2, which works but skips the free CDN. The keep-alive job logs
-   `TikTok CDN session keep-alive failed` when the session dies again; watch for it.
+   refreshed, and jobs fell back to R2 instantly. With a valid session the first 96 s reel then hung:
+   the upload request had no timeout, three connections sat idle and, because a worker takes one job
+   at a time, the lane lost that worker. Each request now times out after 20 s
+   (`TIKTOK_CDN_REQUEST_TIMEOUT_MS`) and the whole CDN upload has 120 s (`TIKTOK_CDN_UPLOAD_BUDGET_MS`),
+   after which the job falls back to R2. A healthy CDN answers a 150 KB upload in 0.3-0.5 s. The
+   keep-alive job logs `TikTok CDN session keep-alive failed` when the session dies again; watch for it.
 
 ## Groq vision budget
 

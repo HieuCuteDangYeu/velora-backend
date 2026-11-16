@@ -30,13 +30,14 @@ describe('TikTok adaptive playlist upload', () => {
     fs.rmSync(directory, { recursive: true, force: true });
   });
 
-  function service() {
+  function service(extra: Record<string, string> = {}) {
     return new TikTokCdnService(
       new ConfigService({
         TIKTOK_CDN_UPLOAD_ENDPOINT: 'https://upload.example',
         TIKTOK_CDN_CSRF_TOKEN: 'test',
         TIKTOK_CDN_UUID: 'test',
         TIKTOK_CDN_COOKIE: 'test',
+        ...extra,
       }),
     );
   }
@@ -82,5 +83,59 @@ describe('TikTok adaptive playlist upload', () => {
     expect(
       fs.readFileSync(path.join(directory, '1/stream.m3u8'), 'utf8'),
     ).toContain('segment_000000.ts');
+  });
+
+  it('gives up on a request that never answers so the caller can fall back to R2', async () => {
+    global.fetch = jest.fn(
+      (_url: unknown, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(init.signal?.reason as Error),
+          );
+        }),
+    );
+
+    await expect(
+      service({ TIKTOK_CDN_REQUEST_TIMEOUT_MS: '40' }).uploadHlsDirectory(
+        directory,
+      ),
+    ).rejects.toThrow(/timed out after 40 ms/);
+    expect(fs.existsSync(path.join(directory, '0/segment_000000.ts'))).toBe(
+      true,
+    );
+  });
+
+  it('stops starting new segment uploads once the overall budget is spent', async () => {
+    for (let i = 1; i <= 4; i += 1) {
+      fs.writeFileSync(
+        path.join(directory, '0', `segment_00000${i}.ts`),
+        `extra-${i}`,
+      );
+    }
+    global.fetch = jest.fn(
+      () =>
+        new Promise<Response>((resolve) =>
+          setTimeout(
+            () =>
+              resolve(
+                new Response(
+                  JSON.stringify({
+                    code: 0,
+                    data: { url: 'https://cdn.example/x.png' },
+                  }),
+                ),
+              ),
+            40,
+          ),
+        ),
+    );
+
+    await expect(
+      service({ TIKTOK_CDN_UPLOAD_BUDGET_MS: '30' }).uploadHlsDirectory(
+        directory,
+      ),
+    ).rejects.toThrow(/budget of 30 ms exceeded/);
+    // The first batch of three was allowed to start; later batches were not.
+    expect((global.fetch as jest.Mock).mock.calls.length).toBe(3);
   });
 });

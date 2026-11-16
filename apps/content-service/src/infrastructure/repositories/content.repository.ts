@@ -26,6 +26,7 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SearchTagItem } from '@common/search/interfaces/search-tag.interface';
 import { Prisma, PrismaClient } from '@prisma/content-client';
+import { contentPrismaOptions } from '../prisma/content-database-pool';
 import { randomUUID } from 'crypto';
 import { createHash } from 'node:crypto';
 import {
@@ -91,7 +92,7 @@ export class ContentRepository
     @Inject('IStorageService')
     private readonly storageService: IStorageService,
   ) {
-    super();
+    super(contentPrismaOptions());
   }
 
   async onModuleInit() {

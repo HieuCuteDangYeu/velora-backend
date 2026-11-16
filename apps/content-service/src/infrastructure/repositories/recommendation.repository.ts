@@ -1,4 +1,3 @@
-import type { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import type { Reel } from '@content/domain/entities/reel.entity';
 import type { ReelMediaEdit } from '@common/content/schemas/reel-edit.schema';
 import type {
@@ -66,7 +65,7 @@ const REEL_SELECT = {
       title: true,
     },
   },
-  transcriptSegments: true,
+  // No transcriptSegments: feed items are cached in Redis and serialised on every page.
   createdAt: true,
   updatedAt: true,
 } as const satisfies Prisma.ReelSelect;
@@ -1362,8 +1361,6 @@ export class RecommendationRepository implements IRecommendationRepository {
               episodeNumber,
             }
           : undefined,
-      transcriptSegments:
-        (record.transcriptSegments as TranscriptSegment[] | null) ?? undefined,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     };

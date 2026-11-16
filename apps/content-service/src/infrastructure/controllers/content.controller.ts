@@ -269,6 +269,7 @@ export class ContentController {
     const result = this.toSerializable(reel);
     delete result['transcript'];
     delete result['transcriptVtt'];
+    delete result['transcriptSegments'];
     delete result['transcriptionAudioManifestKey'];
     return result;
   }
@@ -1417,7 +1418,7 @@ export class ContentController {
         },
         selectedId: context.selectedId,
         selectedIndex: context.selectedIndex,
-        items: context.items.map((item) => this.toSerializable(item)),
+        items: context.items.map((item) => this.toListSerializable(item)),
         previousCursor: this.serializeCursor(context.previousCursor),
         nextCursor: this.serializeCursor(context.nextCursor),
       };
@@ -1459,7 +1460,7 @@ export class ContentController {
     });
 
     return results.map((result) => ({
-      ...this.toSerializable(result.reel),
+      ...this.toListSerializable(result.reel),
       searchScore: result.score,
     }));
   }

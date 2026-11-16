@@ -154,3 +154,40 @@ describe('ContentController reel series dispatch', () => {
     },
   );
 });
+
+describe('ContentController list vs detail serialization', () => {
+  const reel = {
+    id: 'reel-1',
+    userId: 'user-1',
+    viewCount: 3n,
+    transcript: 'full text',
+    transcriptVtt: 'WEBVTT',
+    transcriptionAudioManifestKey: 'reels/reel-1/audio.json',
+    transcriptSegments: [{ start: 0, end: 1, text: 'hello' }],
+  };
+  type Serializer = (this: unknown, input: unknown) => Record<string, unknown>;
+  const proto = ContentController.prototype as unknown as Record<
+    'toSerializable' | 'toListSerializable',
+    Serializer
+  >;
+  const serialize = (method: 'toSerializable' | 'toListSerializable') =>
+    proto[method].call(
+      { toSerializable: proto.toSerializable },
+      reel,
+    ) as Record<string, unknown>;
+
+  it('keeps the transcript fields for a single reel (detail)', () => {
+    const detail = serialize('toSerializable');
+    expect(detail['transcript']).toBe('full text');
+    expect(detail['transcriptSegments']).toEqual(reel.transcriptSegments);
+  });
+
+  it('drops every transcript field from list items', () => {
+    const item = serialize('toListSerializable');
+    expect(item).not.toHaveProperty('transcript');
+    expect(item).not.toHaveProperty('transcriptVtt');
+    expect(item).not.toHaveProperty('transcriptSegments');
+    expect(item).not.toHaveProperty('transcriptionAudioManifestKey');
+    expect(item['id']).toBe('reel-1');
+  });
+});

@@ -34,6 +34,7 @@ export class ReelFeedRepository {
         mediaStatus: 'COMPLETED',
         indexStatus: 'COMPLETED',
       },
+      select: REEL_LIST_SELECT,
     });
     return records.map((record) => toReelDomain(record));
   }

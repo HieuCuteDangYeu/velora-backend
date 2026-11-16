@@ -1,4 +1,4 @@
-import { toReelDomain } from './reel-record.mapper';
+import { REEL_LIST_SELECT, toReelDomain } from './reel-record.mapper';
 
 describe('Legacy Reel playback metadata', () => {
   it('keeps an already completed imported HLS playlist playable', () => {
@@ -23,4 +23,18 @@ describe('Legacy Reel playback metadata', () => {
       ).toBeUndefined();
     },
   );
+});
+
+describe('REEL_LIST_SELECT', () => {
+  it('does not load transcript columns that list responses never return', () => {
+    expect(REEL_LIST_SELECT).not.toHaveProperty('transcriptSegments');
+    expect(REEL_LIST_SELECT).not.toHaveProperty('transcript');
+    expect(REEL_LIST_SELECT).not.toHaveProperty('transcriptVtt');
+  });
+
+  it('maps a record without transcript segments', () => {
+    expect(
+      toReelDomain({ id: 'r', mediaKey: 'reels/r.mp4' }).transcriptSegments,
+    ).toBeUndefined();
+  });
 });

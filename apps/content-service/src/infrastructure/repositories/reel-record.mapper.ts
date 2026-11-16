@@ -61,7 +61,8 @@ export const REEL_LIST_SELECT = {
       title: true,
     },
   },
-  transcriptSegments: true,
+  // transcriptSegments is deliberately absent: it is ~95% of a list payload and the
+  // client only needs it for the active reel, which it loads from GET /content/reels/:id.
   createdAt: true,
   updatedAt: true,
 } as const;

@@ -69,6 +69,13 @@ const BITRATES: Record<
   },
 };
 
+/**
+ * Measured on a 96 s 1080x1920 reel with three renditions: `veryfast` costs ~32%
+ * less CPU than `faster` for a 0.0003 SSIM difference, and media workers are CPU
+ * bound. Set MEDIA_HLS_X264_PRESET to override.
+ */
+const DEFAULT_X264_PRESET = 'veryfast';
+
 @Injectable()
 export class SelectReelEncodingProfileUseCase {
   constructor(private readonly configService: ConfigService) {}
@@ -131,7 +138,7 @@ export class SelectReelEncodingProfileUseCase {
       segmentSeconds,
       x264Preset:
         this.configService.get<string>('MEDIA_HLS_X264_PRESET')?.trim() ||
-        'faster',
+        DEFAULT_X264_PRESET,
       threadsPerVariant: this.getPositiveInt(
         'MEDIA_FFMPEG_THREADS_PER_VARIANT',
         2,

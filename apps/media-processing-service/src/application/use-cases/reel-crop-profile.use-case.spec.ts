@@ -66,3 +66,27 @@ describe('SelectReelEncodingProfileUseCase crop mode', () => {
     });
   });
 });
+
+describe('SelectReelEncodingProfileUseCase x264 preset', () => {
+  const source = {
+    width: 1080,
+    height: 1920,
+    durationMs: 60_000,
+    fps: 30,
+    hasAudio: true,
+  };
+  const build = (preset?: string) =>
+    new SelectReelEncodingProfileUseCase({
+      get: jest.fn((key: string) =>
+        key === 'MEDIA_HLS_X264_PRESET' ? preset : undefined,
+      ),
+    } as never);
+
+  it('defaults to veryfast', () => {
+    expect(build().execute(source).x264Preset).toBe('veryfast');
+  });
+
+  it('honours MEDIA_HLS_X264_PRESET', () => {
+    expect(build(' faster ').execute(source).x264Preset).toBe('faster');
+  });
+});

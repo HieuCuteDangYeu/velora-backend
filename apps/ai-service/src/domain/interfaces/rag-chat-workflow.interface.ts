@@ -540,6 +540,8 @@ export interface RagChatWorkflowState {
   retryCount: number;
   retrievalRetryCount: number;
   citationRetryCount: number;
+  /** Epoch ms when the workflow started; drives the verification time budget. */
+  workflowStartedAt?: number;
   retrievalExecution?: RagRetrievalExecutionDiagnostics;
   contextToolExecution?: RagContextToolExecutionDiagnostics;
 }

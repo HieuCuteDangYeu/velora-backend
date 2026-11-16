@@ -511,6 +511,101 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
     ).toBe('citationNode');
   });
 
+  describe('verification time budget', () => {
+    const overBudget = () => ({ workflowStartedAt: Date.now() - 46_000 });
+    const withinBudget = () => ({ workflowStartedAt: Date.now() - 5_000 });
+    const budgetNodes = workflow as unknown as {
+      createAcceptDraftNode: () => (
+        state: RagChatWorkflowState,
+      ) => Partial<RagChatWorkflowState>;
+      createVerifierNode: (
+        nodeTimings: Record<string, number>,
+      ) => (
+        state: RagChatWorkflowState,
+      ) => Promise<Partial<RagChatWorkflowState>>;
+    };
+    const failedVerification = {
+      passed: false,
+      confidence: 0.2,
+      issues: ['Unsupported claim.'],
+      requiresRevision: true,
+    };
+
+    it('accepts a failed draft instead of revising it once the budget has passed', () => {
+      expect(
+        routeAfterVerifier.routeAfterVerifier(
+          state({ ...overBudget(), verification: failedVerification }),
+        ),
+      ).toBe('acceptDraftNode');
+    });
+
+    it('still revises a failed draft while the budget has time left', () => {
+      expect(
+        routeAfterVerifier.routeAfterVerifier(
+          state({ ...withinBudget(), verification: failedVerification }),
+        ),
+      ).toBe('prepareAnswerRevisionNode');
+    });
+
+    it('keeps a passing verification on the normal path after the budget', () => {
+      expect(
+        routeAfterVerifier.routeAfterVerifier(
+          state({
+            ...overBudget(),
+            verification: {
+              passed: true,
+              confidence: 0.9,
+              issues: [],
+              requiresRevision: false,
+            },
+          }),
+        ),
+      ).toBe('citationNode');
+    });
+
+    it('converts the failed verification so citations are still built', () => {
+      const result = budgetNodes.createAcceptDraftNode()(
+        state({ ...overBudget(), verification: failedVerification }),
+      );
+      expect(result.verification).toMatchObject({
+        passed: true,
+        requiresRevision: false,
+        answerQualityPassed: true,
+      });
+      expect(result.verification?.issues).toEqual([
+        'Unsupported claim.',
+        expect.stringContaining('budget exhausted'),
+      ]);
+    });
+
+    it('skips the verifier call when the draft finishes after the budget', async () => {
+      const result = await budgetNodes.createVerifierNode({})(
+        state({ ...overBudget(), answer: 'A late draft.' }),
+      );
+      expect(result.verification).toMatchObject({
+        passed: true,
+        requiresRevision: false,
+      });
+    });
+
+    it('returns the draft instead of a citation revision after the budget', () => {
+      expect(
+        routeAfterVerifier.routeAfterCitationCoverage(
+          state({
+            ...overBudget(),
+            citationCoverage: {
+              mode: 'LLM',
+              coverage: 0,
+              factualClaimCount: 1,
+              supportedClaimCount: 0,
+              unsupportedClaims: ['unsupported'],
+            },
+          }),
+        ),
+      ).toBe('finalAnswerNode');
+    });
+  });
+
   it('routes an exhausted verifier failure to the generic refusal', () => {
     expect(
       routeAfterVerifier.routeAfterVerifier(

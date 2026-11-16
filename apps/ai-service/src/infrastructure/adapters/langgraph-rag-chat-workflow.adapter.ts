@@ -124,6 +124,7 @@ const RagChatStateSchema = new StateSchema({
   retryCount: z.number().default(0),
   retrievalRetryCount: z.number().default(0),
   citationRetryCount: z.number().default(0),
+  workflowStartedAt: z.number().optional(),
 });
 
 @Injectable()
@@ -236,6 +237,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       citationAttempts: [],
       nextDraftSource: 'INITIAL',
       finalFailureSource: 'UNKNOWN',
+      workflowStartedAt: startedAt,
     };
 
     let result: RagChatWorkflowState = initialState;
@@ -470,6 +472,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       .addNode('answerContextJoinNode', () => ({}))
       .addNode('draftAnswerNode', this.createDraftAnswerNode(nodeTimings))
       .addNode('verifierNode', this.createVerifierNode(nodeTimings))
+      .addNode('acceptDraftNode', this.createAcceptDraftNode())
       .addNode(
         'prepareAnswerRevisionNode',
         this.createPrepareAnswerRevisionNode(),
@@ -534,9 +537,11 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       .addEdge('draftAnswerNode', 'verifierNode')
       .addConditionalEdges('verifierNode', this.routeAfterVerifier, [
         'citationNode',
+        'acceptDraftNode',
         'prepareAnswerRevisionNode',
         'verificationFailureNode',
       ])
+      .addEdge('acceptDraftNode', 'citationNode')
       .addEdge('prepareAnswerRevisionNode', 'draftAnswerNode')
       .addEdge('citationNode', 'citationCoverageGateNode')
       .addConditionalEdges(
@@ -1025,6 +1030,13 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         return { verification: state.verification };
       }
 
+      if (this.verificationBudgetExhausted(state)) {
+        this.logger.warn(
+          '[RagGraph] verification budget exhausted before the verifier ran; returning the draft unverified',
+        );
+        return { verification: this.budgetAcceptedVerification(undefined) };
+      }
+
       const verification = await this.timed('verifierNode', nodeTimings, () =>
         this.verifierAgentUseCase.execute(state),
       );
@@ -1039,6 +1051,56 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
 
       return { verification };
     };
+  }
+
+  /**
+   * Past the verification budget a draft that failed verification is returned as it is: the revision and the
+   * extractive recovery would each add another model round-trip on an answer that is already late. Citations
+   * require `verification.passed`, so the failed result is converted instead of being routed around.
+   */
+  private createAcceptDraftNode() {
+    return (state: RagChatWorkflowState): Partial<RagChatWorkflowState> => {
+      this.logger.warn(
+        '[RagGraph] verification budget exhausted; accepting the draft without revision',
+      );
+      return {
+        verification: this.budgetAcceptedVerification(state.verification),
+      };
+    };
+  }
+
+  private budgetAcceptedVerification(
+    original: RagVerificationResult | undefined,
+  ): RagVerificationResult {
+    return {
+      ...original,
+      passed: true,
+      confidence: Math.max(original?.confidence ?? 0, 1),
+      issues: [
+        ...(original?.issues ?? []),
+        'Verification time budget exhausted; draft returned without further verification or revision.',
+      ],
+      answerQualityPassed: true,
+      requiresRevision: false,
+    };
+  }
+
+  /**
+   * AI_RAG_VERIFICATION_BUDGET_MS is measured from the start of the workflow. Once it has passed, no further
+   * verification or revision round-trips start; the work already running is not interrupted. 0 disables it.
+   */
+  private verificationBudgetExhausted(state: RagChatWorkflowState): boolean {
+    const budgetMs = this.integer(
+      'AI_RAG_VERIFICATION_BUDGET_MS',
+      45_000,
+      0,
+      600_000,
+    );
+    return (
+      budgetMs > 0 &&
+      state.workflowStartedAt !== undefined &&
+      Date.now() - state.workflowStartedAt >= budgetMs
+    );
   }
 
   private createPrepareAnswerRevisionNode() {
@@ -1640,6 +1702,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     state: RagChatWorkflowState,
   ):
     | 'citationNode'
+    | 'acceptDraftNode'
     | 'prepareAnswerRevisionNode'
     | 'verificationFailureNode' => {
     const minimumConfidence = this.number(
@@ -1648,6 +1711,12 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       0,
       1,
     );
+    if (this.verificationBudgetExhausted(state)) {
+      return state.verification?.passed &&
+        state.verification.confidence >= minimumConfidence
+        ? 'citationNode'
+        : 'acceptDraftNode';
+    }
     if (
       state.verification?.passed &&
       state.verification.answerQualityPassed === false
@@ -1702,6 +1771,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       1,
     );
     if (coverage.coverage >= threshold) return 'finalAnswerNode';
+    if (this.verificationBudgetExhausted(state)) return 'finalAnswerNode';
 
     if (
       state.citationRetryCount <

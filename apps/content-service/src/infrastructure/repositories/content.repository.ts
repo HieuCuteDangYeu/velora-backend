@@ -35,6 +35,14 @@ import {
   type ReelHlsReplacementResult,
 } from '@common/content/reel-hls-replacement';
 
+/**
+ * The content database allows a single pooled connection (connection_limit=1),
+ * so concurrent upload transactions queue for it. Prisma's default 2 s maxWait
+ * turned a burst of publishes into 500s ("Unable to start a transaction in the
+ * given time"); queue them instead.
+ */
+const UPLOAD_TRANSACTION_OPTIONS = { maxWait: 20_000, timeout: 20_000 };
+
 const MEDIA_ATTEMPT_LEASE_MS = 6 * 60 * 60 * 1000;
 import { Reel } from '../../domain/entities/reel.entity';
 import {
@@ -554,7 +562,7 @@ export class ContentRepository
           cleanupCompletedAt: null,
         },
       });
-    });
+    }, UPLOAD_TRANSACTION_OPTIONS);
   }
 
   async listExpiredReelUploadLeases(now: Date) {
@@ -829,7 +837,7 @@ export class ContentRepository
       });
 
       return record;
-    });
+    }, UPLOAD_TRANSACTION_OPTIONS);
 
     return toReelDomain(savedRecord);
   }

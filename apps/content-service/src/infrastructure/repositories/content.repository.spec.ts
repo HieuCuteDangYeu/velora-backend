@@ -254,7 +254,9 @@ describe('ContentRepository existing HLS evidence indexing', () => {
     expect(
       transaction.reel.updateMany.mock.calls[0][0].data.sourceHasAudio,
     ).toBe(true);
-    expect(outboxCreate.mock.calls[0][0].data.payload.sourceHasAudio).toBe(true);
+    expect(outboxCreate.mock.calls[0][0].data.payload.sourceHasAudio).toBe(
+      true,
+    );
   });
 });
 
@@ -474,5 +476,43 @@ describe('ContentRepository late media event fences', () => {
         mediaStatus: 'COMPLETED',
       }),
     );
+  });
+});
+
+describe('ContentRepository upload transaction queueing', () => {
+  // The content database runs with connection_limit=1, so concurrent publishes
+  // queue for the connection; Prisma's default 2 s maxWait made bursts fail.
+  const maxWaitOf = (transaction: jest.Mock): number => {
+    const options = transaction.mock.calls[0]?.[1] as
+      | { maxWait?: number }
+      | undefined;
+    return options?.maxWait ?? 0;
+  };
+
+  it('lets a Reel upload lease reservation wait for the pooled connection', async () => {
+    const $transaction = jest.fn().mockResolvedValue(undefined);
+    await ContentRepository.prototype.reserveReelUploadLease.call(
+      { $transaction } as unknown as ContentRepository,
+      {
+        userId: 'user-1',
+        publishIntentId: 'intent-1',
+        mediaKey: 'reels/user-1/source.mp4',
+        fileType: 'video/mp4',
+        expiresAt: new Date(0),
+      },
+    );
+    expect(maxWaitOf($transaction)).toBeGreaterThanOrEqual(10_000);
+  });
+
+  it('lets Reel creation wait for the pooled connection', async () => {
+    const $transaction = jest.fn().mockRejectedValue(new Error('stop'));
+    await expect(
+      ContentRepository.prototype.createReelWithMediaJob.call(
+        { $transaction } as unknown as ContentRepository,
+        { id: 'reel-1' },
+        {} as never,
+      ),
+    ).rejects.toThrow('stop');
+    expect(maxWaitOf($transaction)).toBeGreaterThanOrEqual(10_000);
   });
 });

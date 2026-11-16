@@ -38,24 +38,29 @@ almost linearly; indexing then becomes the limit.
    homelab sets `MEDIA_HLS_X264_PRESET` explicitly, so the new code default only applies once that
    line is changed (the laptop `media.env` must follow, see `LAPTOP-MEDIA-WORKER.md`).
    `MEDIA_HLS_MAX_VARIANTS=2` is the next lever and drops the 720p rendition.
-2. **Stream validation.** It checked every HLS object with its own request, one after another. On a
-   6 s clip that is about 19 calls at 0.2-0.3 s, so a steady 4.6-5.3 s on every one of 12 test reels
-   (the share of the media stage grows with duration: about 150 calls for a 100 s reel, 500 for 708 s).
-   Storage keys are now checked 16 at a time. CDN URLs are still checked one by one because four
-   parallel requests to the TikTok CDN took 1.5 s against 0.13 s each in sequence. The speed-up on
-   CDN-hosted reels was not visible on 6 s clips (4.6 and 6.6 s after, 4.6-5.3 s before), so treat the
-   benefit as unproven there and measure it on a long reel.
+2. **Stream validation.** It checked every HLS object with its own request, one after another. A
+   96 s reel has 151 objects, so on R2 (0.2-0.3 s per call) it took 39 s with the old code (laptop) and
+   9 s with storage keys checked 16 at a time (homelab). 6 s clips only have ~19 objects, which is why
+   they showed a steady 4.6-5.3 s either way.
+   Reels whose segments are on the TikTok CDN are different: their 147 URLs are still checked one by
+   one and took 36 s (0.25-0.5 s each on a cold CDN edge). Four parallel requests to the CDN once got
+   a TLS "internal error" back, and a failed fetch counts as a missing segment, so this stays
+   sequential. If that 36 s matters, check a sample of CDN URLs (the upload API already confirmed each
+   one) instead of all of them; that trades completeness for time, so it needs a decision.
 3. **Groq vision, a daily token budget.** See below.
 4. **Embedding service.** TEI answers 429 above `TEI_EMBEDDING_MAX_CONCURRENT_REQUESTS` (8); ai-service
    retries with backoff (`AI_EMBEDDING_OVERLOAD_RETRIES`, default 4).
 5. **Shared Postgres connections.** See below.
 6. **TikTok CDN.** Uploads were all rejected (error 40102) until the session credentials were
-   refreshed, and jobs fell back to R2 instantly. With a valid session the first 96 s reel then hung:
-   the upload request had no timeout, three connections sat idle and, because a worker takes one job
-   at a time, the lane lost that worker. Each request now times out after 20 s
-   (`TIKTOK_CDN_REQUEST_TIMEOUT_MS`) and the whole CDN upload has 120 s (`TIKTOK_CDN_UPLOAD_BUDGET_MS`),
-   after which the job falls back to R2. A healthy CDN answers a 150 KB upload in 0.3-0.5 s. The
-   keep-alive job logs `TikTok CDN session keep-alive failed` when the session dies again; watch for it.
+   refreshed, and jobs fell back to R2 instantly. With a valid session, three runs of a 96 s reel on
+   the homelab gave: a hang (the upload request had no timeout, three connections sat idle and the
+   worker, which takes one job at a time, was lost to the lane), a stalled segment that fell back to
+   R2 after the 20 s timeout (upload stage 47 s), and a clean upload of 151 segments in 24 s. Each
+   request now times out after 20 s (`TIKTOK_CDN_REQUEST_TIMEOUT_MS`) and the whole CDN upload has
+   120 s (`TIKTOK_CDN_UPLOAD_BUDGET_MS`), after which the job falls back to R2. A healthy CDN answers a
+   150 KB upload in 0.3-0.5 s. Stalls appear intermittently, possibly tied to the 3 parallel uploads;
+   not established. The keep-alive job logs `TikTok CDN session keep-alive failed` when the session
+   dies again; watch for it.
 
 ## Groq vision budget
 

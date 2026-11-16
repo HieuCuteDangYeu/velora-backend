@@ -19,6 +19,12 @@ interface PlaylistReference {
 
 const STREAM_VALIDATION_CONCURRENCY = 16;
 
+// A CDN-hosted rendition has ~50 segment URLs, and each check costs 0.25-0.5 s on a cold edge (36 s
+// for a 96 s reel), while parallel requests to that CDN can fail. The upload API already confirmed
+// every segment (code 0 and a URL), so URLs are spot-checked: the first, the last and evenly spaced
+// ones in between. Objects stored in R2 are still checked in full.
+const CDN_SEGMENT_SAMPLE_SIZE = 6;
+
 const SAFE_STREAM_VALIDATION_MESSAGE =
   'Streaming files could not be prepared. Please try again.';
 
@@ -161,8 +167,8 @@ export class ValidateReelStreamUseCase {
   /**
    * Storage keys are checked a batch at a time instead of one request after another: a 100 s reel
    * with three renditions has ~150 segments, and a one-by-one loop cost one storage round trip each.
-   * CDN URLs stay sequential because the TikTok CDN answered four parallel requests in 1.5 s against
-   * 0.13 s each when asked one by one. The first missing object in playlist order is still reported.
+   * CDN URLs are spot-checked one at a time (see CDN_SEGMENT_SAMPLE_SIZE). The first missing object
+   * in playlist order is still reported.
    */
   private async findFirstMissingReference(
     references: PlaylistReference[],
@@ -171,7 +177,10 @@ export class ValidateReelStreamUseCase {
       /^https?:\/\//i.test(reference.line) ||
       /^https?:\/\//i.test(reference.key);
     const keys = references.filter((reference) => !isUrl(reference));
-    const urls = references.filter(isUrl);
+    const urls = this.sampleEvenly(
+      references.filter(isUrl),
+      CDN_SEGMENT_SAMPLE_SIZE,
+    );
 
     const missing: PlaylistReference[] = [];
     for (
@@ -198,6 +207,15 @@ export class ValidateReelStreamUseCase {
     return missing.sort(
       (a, b) => references.indexOf(a) - references.indexOf(b),
     )[0];
+  }
+
+  private sampleEvenly<T>(items: T[], count: number): T[] {
+    if (items.length <= count) return items;
+    const picked = new Set<number>();
+    for (let i = 0; i < count; i += 1) {
+      picked.add(Math.round((i * (items.length - 1)) / (count - 1)));
+    }
+    return [...picked].sort((a, b) => a - b).map((index) => items[index]);
   }
 
   private async referenceExists(

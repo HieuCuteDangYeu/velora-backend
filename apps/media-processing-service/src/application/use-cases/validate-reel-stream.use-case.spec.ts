@@ -98,4 +98,74 @@ describe('ValidateReelStreamUseCase', () => {
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(16);
   });
+
+  describe('CDN-hosted segments', () => {
+    const prefix = 'reels/user-1/attempt-1';
+    const urls = Array.from(
+      { length: 48 },
+      (_, i) => `https://cdn.example/seg-${i}.png`,
+    );
+    const originalFetch = global.fetch;
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    const build = () =>
+      new ValidateReelStreamUseCase({
+        objectExists: jest.fn((key: string) =>
+          Promise.resolve(
+            key === `${prefix}/thumbnail.jpg` ||
+              key.endsWith('master.m3u8') ||
+              key.endsWith('index.m3u8'),
+          ),
+        ),
+        getObjectText: jest.fn((key: string) =>
+          Promise.resolve(
+            key.endsWith('master.m3u8')
+              ? '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nlow/index.m3u8'
+              : `#EXTM3U\n${urls.map((u) => `#EXT-X-BYTERANGE:10@67\n${u}`).join('\n')}`,
+          ),
+        ),
+      } as never);
+    const run = () =>
+      build().execute({
+        reelId: 'reel-1',
+        s3Prefix: prefix,
+        thumbnailKey: `${prefix}/thumbnail.jpg`,
+      });
+
+    it('spot-checks six URLs per rendition, including the first and the last, one at a time', async () => {
+      const seen: string[] = [];
+      let inFlight = 0;
+      let peak = 0;
+      global.fetch = jest.fn(async (url: string) => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        seen.push(url);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        inFlight -= 1;
+        return new Response(null, { status: 206 });
+      });
+
+      await expect(run()).resolves.toBeUndefined();
+      expect(seen).toHaveLength(6);
+      expect(seen[0]).toBe(urls[0]);
+      expect(seen[5]).toBe(urls[47]);
+      expect(peak).toBe(1);
+    });
+
+    it('fails when a sampled URL is not reachable', async () => {
+      global.fetch = jest.fn((url: string) =>
+        Promise.resolve(
+          new Response(null, {
+            status: url.endsWith('seg-47.png') ? 404 : 206,
+          }),
+        ),
+      );
+
+      await expect(run()).rejects.toMatchObject({
+        technicalReason: expect.stringContaining('seg-47.png'),
+      });
+    });
+  });
 });

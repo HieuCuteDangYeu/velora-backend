@@ -34,19 +34,20 @@ almost linearly; indexing then becomes the limit.
    | veryfast | 2 | 111 | -66% | not measured |
 
    Size is set by the bitrate targets, so presets barely change it (59 MB for the 3-rendition ladder).
-   The clip was a looped 6 s sample; use real content before trusting the absolute figures. The
-   homelab sets `MEDIA_HLS_X264_PRESET` explicitly, so the new code default only applies once that
-   line is changed (the laptop `media.env` must follow, see `LAPTOP-MEDIA-WORKER.md`).
+   The clip was a looped 6 s sample; use real content before trusting the absolute figures. Since
+   2026-11-16 the homelab `.env` and the laptop `media.env` both set `MEDIA_HLS_X264_PRESET=veryfast`
+   (keep them equal, see `LAPTOP-MEDIA-WORKER.md`).
    `MEDIA_HLS_MAX_VARIANTS=2` is the next lever and drops the 720p rendition.
 2. **Stream validation.** It checked every HLS object with its own request, one after another. A
    96 s reel has 151 objects, so on R2 (0.2-0.3 s per call) it took 39 s with the old code (laptop) and
    9 s with storage keys checked 16 at a time (homelab). 6 s clips only have ~19 objects, which is why
    they showed a steady 4.6-5.3 s either way.
-   Reels whose segments are on the TikTok CDN are different: their 147 URLs are still checked one by
-   one and took 36 s (0.25-0.5 s each on a cold CDN edge). Four parallel requests to the CDN once got
-   a TLS "internal error" back, and a failed fetch counts as a missing segment, so this stays
-   sequential. If that 36 s matters, check a sample of CDN URLs (the upload API already confirmed each
-   one) instead of all of them; that trades completeness for time, so it needs a decision.
+   Reels whose segments are on the TikTok CDN are different: their 147 URLs took 36 s when checked
+   one by one (0.25-0.5 s each on a cold CDN edge), and four parallel requests once got a TLS
+   "internal error" back, which would count as a missing segment. The upload API already confirms each
+   segment (code 0 and a URL), so CDN URLs are now spot-checked, six per rendition (first, last and
+   evenly spaced), one at a time; R2 objects are still checked in full (decision of 2026-11-16).
+   Change `CDN_SEGMENT_SAMPLE_SIZE` in `validate-reel-stream.use-case.ts` to check more.
 3. **Groq vision, a daily token budget.** See below.
 4. **Embedding service.** TEI answers 429 above `TEI_EMBEDDING_MAX_CONCURRENT_REQUESTS` (8); ai-service
    retries with backoff (`AI_EMBEDDING_OVERLOAD_RETRIES`, default 4).

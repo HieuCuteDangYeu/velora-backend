@@ -138,4 +138,4 @@ jobs:
             test rules /etc/prometheus/tests/velora-monitoring.test.yml
 
       - name: Validate Grafana dashboard JSON
-        run: jq -e . infra/monitoring/grafana/dashboards/velora-monitoring.json >/dev/null
+        run: for f in infra/monitoring/grafana/dashboards/*.json; do jq -e . "$f" >/dev/null; done

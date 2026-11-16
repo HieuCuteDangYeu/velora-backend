@@ -1,7 +1,8 @@
-# Media worker on the developer laptop (LONG lane)
+# Media workers on the developer laptop (LONG and SHORT lanes)
 
-Since 2026-11-16 the developer laptop can run an extra `media-processing-service` consumer for
-`reel_media_long_jobs`. It competes with the homelab worker on the same queue (RabbitMQ gives each
+Since 2026-11-16 the developer laptop can run extra `media-processing-service` consumers for
+`reel_media_long_jobs` (unit `velora-media-long-worker`) and `reel_media_short_jobs` (unit
+`velora-media-short-worker`). It competes with the homelab worker on the same queue (RabbitMQ gives each
 job to whichever consumer is free, prefetch 1), so no routing or code changes are involved, and
 the homelab keeps its own LONG and SHORT workers. When the laptop sleeps or goes off, its
 connection drops, RabbitMQ re-delivers any unacknowledged job and the homelab worker takes it,
@@ -73,16 +74,38 @@ It is capped at 8 CPUs, 3 GB and a low CPU weight so the laptop stays usable.
 `TIKTOK_CDN_ENABLED=false` keeps the TikTok session tied to the homelab address, so jobs handled here
 upload to R2. The heartbeat is 30 s so a sleeping laptop is noticed within about a minute.
 
+## Short-lane unit
+
+`~/.config/systemd/user/velora-media-short-worker.service` is the long-worker unit with the name,
+`ExecStartPre`/`ExecStop` container name and `-e MEDIA_WORKER_LANE=LONG` changed to
+`velora-media-short-worker` and `-e MEDIA_WORKER_LANE=SHORT`; everything else (8 CPUs, 3 GB, low CPU
+weight, `TIKTOK_CDN_ENABLED=false`, heartbeat 30 s) is identical. Both units share `media.env` and
+`image.env`.
+
+Which lane a job takes is decided by content-service from `clientObservedDurationMs` (up to
+`MEDIA_SHORT_MAX_DURATION_SECONDS`, 180 s, is SHORT). A publish with no duration is queued as LONG,
+so a test that must reach the short workers has to send the real duration.
+
+Measured on 2026-11-16 (4 concurrent 106 s reels): 710-870 s with one short consumer, 429-510 s with
+the laptop as a second consumer. Failover: a hard `docker kill` of the short worker 50 s into an
+encode left the job unacknowledged, RabbitMQ redelivered it, the homelab worker took it with a new
+attempt id and the reel completed about 3 minutes after the kill with nothing in the dead-letter
+queue. The containers run with `--rm`, so their logs disappear when they are killed; copy them first
+if you need them.
+
+Remember that the encoder settings come from `media.env`: when the homelab `MEDIA_HLS_X264_PRESET`
+changes, change it here in the same step.
+
 ## Operate
 
 ```sh
-systemctl --user enable --now velora-rmq-tunnel velora-media-long-worker
-systemctl --user stop velora-media-long-worker velora-rmq-tunnel   # leave the queue
-docker logs -f velora-media-long-worker
+systemctl --user enable --now velora-rmq-tunnel velora-media-long-worker velora-media-short-worker
+systemctl --user stop velora-media-long-worker velora-media-short-worker velora-rmq-tunnel   # leave the queues
+docker logs -f velora-media-short-worker
 ```
 
 Update: pull the new image, put its tag in `image.env`, then
-`systemctl --user restart velora-media-long-worker`. Keep it close to the homelab release, since the
+`systemctl --user restart velora-media-long-worker velora-media-short-worker`. Keep it close to the homelab release, since the
 job message format is shared. The user units start at login; run `loginctl enable-linger $USER` to
 keep them running without a session.
 

@@ -223,6 +223,71 @@ describe('QueryRouterAgentUseCase', () => {
     expect(structuredLlmService.generateObject).not.toHaveBeenCalled();
   });
 
+  describe('greeting and thanks shortcut (AI_ROUTER_RULES_ENABLED)', () => {
+    const rulesConfig = (enabled: boolean) =>
+      ({
+        ...config,
+        get: jest.fn((key: string) =>
+          key === 'AI_ROUTER_RULES_ENABLED' && enabled ? 'true' : undefined,
+        ),
+      }) as unknown as IAiApplicationConfig;
+    const build = (enabled: boolean) => {
+      const generateObject = jest.fn().mockResolvedValue(response());
+      const useCase = new QueryRouterAgentUseCase(
+        { generateObject } as never,
+        rulesConfig(enabled),
+      );
+      return { useCase, generateObject };
+    };
+
+    it('answers a bare greeting without calling the router model when enabled', async () => {
+      const { useCase, generateObject } = build(true);
+
+      await expect(
+        useCase.execute({ message: 'Hello!' }),
+      ).resolves.toMatchObject({
+        intent: 'NORMAL_CHAT',
+        needsRetrieval: false,
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'STRUCTURAL',
+        },
+      });
+      expect(generateObject).not.toHaveBeenCalled();
+    });
+
+    it('still calls the router when disabled (default)', async () => {
+      const { useCase, generateObject } = build(false);
+
+      await useCase.execute({ message: 'Hello!' });
+
+      expect(generateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      'thanks, but which episode shows the abandoned girl?',
+      'hi, recommend a reel about pets',
+    ])('never short-circuits a message that also asks: %s', async (message) => {
+      const { useCase, generateObject } = build(true);
+
+      await useCase.execute({ message });
+
+      expect(generateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves greetings to the model when a shared Reel is in play', async () => {
+      const { useCase, generateObject } = build(true);
+
+      await useCase.execute({
+        message: 'thanks',
+        hasSharedReelContext: true,
+        sharedReelCount: 1,
+      });
+
+      expect(generateObject).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('keeps explicit visual-plus-speech summaries on multimodal classification', async () => {
     const structuredLlmService = {
       generateObject: jest.fn().mockResolvedValue(

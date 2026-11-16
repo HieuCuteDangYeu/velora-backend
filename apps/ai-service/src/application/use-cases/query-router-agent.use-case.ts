@@ -1,3 +1,7 @@
+import {
+  isGreetingOrThanksOnly,
+  readRouterRulesEnabled,
+} from '@ai/domain/services/rag-greeting-shortcut';
 import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type {
@@ -243,6 +247,26 @@ export class QueryRouterAgentUseCase {
       );
       return {
         ...transcriptSummaryRoute,
+        diagnostics: {
+          modelRole: 'ROUTER',
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'STRUCTURAL',
+        },
+      };
+    }
+
+    // Optional (AI_ROUTER_RULES_ENABLED): a bare greeting or thanks needs no retrieval,
+    // so skip the ~5 s router model call. Never applies when a Reel is in play.
+    if (
+      readRouterRulesEnabled(this.config) &&
+      boundedInput.hasSharedReelContext !== true &&
+      accessibleSharedReelCount === 0 &&
+      isGreetingOrThanksOnly(boundedInput.message)
+    ) {
+      return {
+        ...this.createNormalChatRoute(
+          'Greeting or thanks only; no router call.',
+        ),
         diagnostics: {
           modelRole: 'ROUTER',
           providerStatus: 'NOT_CALLED',

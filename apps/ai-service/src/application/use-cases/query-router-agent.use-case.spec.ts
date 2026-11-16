@@ -978,7 +978,7 @@ describe('QueryRouterAgentUseCase', () => {
       ]).toEqual(flags);
       const input = service.generateObject.mock
         .calls[0][0] as GenerateStructuredObjectInput;
-      expect(input.schemaVersion).toBe('router-semantic-v9');
+      expect(input.schemaVersion).toBe('router-semantic-v10');
       expect(input.jsonSchema.required).toEqual([
         'intent',
         'reelQuestionType',

@@ -515,7 +515,7 @@ export class QueryRouterAgentUseCase {
       userPrompt: this.buildUserPrompt(input.input),
       jsonSchema: this.getJsonSchema(),
       maxTokens: input.maxTokens ?? this.config.maxCompletionTokens('ROUTER'),
-      schemaVersion: 'router-semantic-v9',
+      schemaVersion: 'router-semantic-v10',
       temperature: 0,
       model: input.model,
       modelRole: 'ROUTER',
@@ -551,7 +551,7 @@ export class QueryRouterAgentUseCase {
   private buildSystemPrompt(): string {
     return `
 You route Velora AI messages by meaning. Return only schema-valid JSON and never answer the user.
-Output exactly these top-level fields and no others: intent, reelQuestionType, transcriptRequestKind, recommendationAction, tools, reason. recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives referenceTarget, requiredEvidence, retrieval/memory/verification flags, and result-count policy from intent and reelQuestionType; do not output those fields.
+Output exactly these top-level fields and no others: intent, reelQuestionType, transcriptRequestKind, recommendationAction, tools, reason (a phrase of at most 12 words). recommendationAction contains exactly: type, query, allowPersonalizedFallback, suggestedQueries. The application derives referenceTarget, requiredEvidence, retrieval/memory/verification flags, and result-count policy from intent and reelQuestionType; do not output those fields.
 Apply every definition by semantic meaning regardless of the language used in the user message, recent history, or reel. Emit only the canonical enum values in this schema; never translate enum values into natural-language labels.
 
 Routing precedence:
@@ -748,7 +748,10 @@ Classify the current user message.
             ],
           },
         },
-        reason: { type: 'string', maxLength: 240 },
+        // Last property on purpose: the model has finished every routing decision before it
+        // writes this, so capping it cannot change them. Each generated token costs ~43 ms
+        // on this host, which is why it stays short.
+        reason: { type: 'string', maxLength: 80 },
       },
     };
   }

@@ -147,7 +147,10 @@ export class ProcessReelUseCase {
       let failedMessage = 'Video processing failed';
       let failureDetail = '';
       let failureMediaMetadata: ReelProcessingMediaMetadata | undefined;
-      let inlineEvidence: Promise<InlineEvidence> | undefined;
+      let deferredEvidence:
+        | { hlsMasterKey: string; mediaMetadata: ReelProcessingMediaMetadata }
+        | undefined;
+      let keepWorkspace = false;
 
       try {
         const isExistingHls = data.sourceMode === 'EXISTING_HLS';
@@ -205,25 +208,11 @@ export class ProcessReelUseCase {
                       'evidence-input.mp4',
                     ),
                     onReady: ({ hlsMasterKey, mediaMetadata: encoded }) => {
-                      inlineEvidence = this.buildInlineEvidence({
-                        reelId,
-                        processingAttemptId,
+                      // Built after the reel is reported ready, once no encode is waiting.
+                      deferredEvidence = {
                         hlsMasterKey,
-                        inputPath: path.join(
-                          workspace.workDir,
-                          'evidence-input.mp4',
-                        ),
-                        audioOutputDir: workspace.audioOutputDir,
-                        visualOutputDir: path.join(
-                          workspace.workDir,
-                          'visual-frames',
-                        ),
-                        metricsContext,
                         mediaMetadata: encoded,
-                      });
-                      // Nobody may be waiting for it yet; the result is picked up after the reel
-                      // is reported ready, and a failure only means the evidence job does the work.
-                      inlineEvidence.catch(() => undefined);
+                      };
                     },
                   },
                 }
@@ -255,14 +244,23 @@ export class ProcessReelUseCase {
             mediaOnlyWorker: true,
             reusedHls: false,
           });
-          if (inlineEvidence) {
+          if (deferredEvidence) {
             this.logger.log(
-              `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; building evidence here`,
+              `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; evidence follows on this worker`,
             );
-            await this.persistInlineEvidence({
+            // The job ends here so its slot goes to the next waiting encode; the evidence runs
+            // afterwards, and the workspace is removed when it is done.
+            keepWorkspace = true;
+            this.deferEvidence({
               reelId,
               processingAttemptId,
-              inlineEvidence,
+              hlsMasterKey: deferredEvidence.hlsMasterKey,
+              mediaMetadata: deferredEvidence.mediaMetadata,
+              inputPath: path.join(workspace.workDir, 'evidence-input.mp4'),
+              audioOutputDir: workspace.audioOutputDir,
+              visualOutputDir: path.join(workspace.workDir, 'visual-frames'),
+              workDir: workspace.workDir,
+              metricsContext,
             });
           } else {
             this.logger.log(
@@ -378,9 +376,10 @@ export class ProcessReelUseCase {
           errorDetail: failureDetail,
         };
       } finally {
-        // The inline evidence reads the workspace; let it finish before the files go.
-        await inlineEvidence?.catch(() => undefined);
-        this.tempFileService.removeDirIfExists(workspace.workDir);
+        // When evidence follows, it reads the workspace and removes it when it is done.
+        if (!keepWorkspace) {
+          this.tempFileService.removeDirIfExists(workspace.workDir);
+        }
       }
     };
 
@@ -474,10 +473,10 @@ export class ProcessReelUseCase {
   private async persistInlineEvidence(input: {
     reelId: string;
     processingAttemptId: string;
-    inlineEvidence: Promise<InlineEvidence>;
+    build: () => Promise<InlineEvidence>;
   }): Promise<void> {
     try {
-      const evidence = await input.inlineEvidence;
+      const evidence = await input.build();
       const applied = await this.contentService.persistExistingHlsEvidence({
         reelId: input.reelId,
         processingAttemptId: input.processingAttemptId,
@@ -493,6 +492,87 @@ export class ProcessReelUseCase {
         `[Reel ${input.reelId}] Inline evidence failed, the evidence job will build it: ${formatProcessingError(error).message}`,
       );
     }
+  }
+
+  private readonly deferredEvidence = new Set<Promise<void>>();
+
+  /** Resolves when every evidence run started by finished jobs is done (shutdown and tests). */
+  async drainDeferredEvidence(): Promise<void> {
+    while (this.deferredEvidence.size > 0) {
+      await Promise.all([...this.deferredEvidence]);
+    }
+  }
+
+  /**
+   * Builds the evidence of a reel that is already playable, behind every encode that waits for a
+   * slot. The short pause lets a job that RabbitMQ is about to deliver ask for the slot first. When
+   * the slot does not come free in time (a backlog of encodes) the work is dropped here, because
+   * the evidence job that content-service queues as a fallback does the same thing.
+   */
+  private deferEvidence(input: {
+    reelId: string;
+    processingAttemptId: string;
+    hlsMasterKey: string;
+    mediaMetadata: ReelProcessingMediaMetadata;
+    inputPath: string;
+    audioOutputDir: string;
+    visualOutputDir: string;
+    workDir: string;
+    metricsContext: ReelPipelineMetricContext;
+  }): void {
+    const deadline =
+      Date.now() +
+      this.getNonNegativeNumber('MEDIA_INLINE_EVIDENCE_MAX_WAIT_MS', 540_000);
+    const task = (async () => {
+      try {
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            this.getNonNegativeNumber('MEDIA_INLINE_EVIDENCE_DEFER_MS', 1_000),
+          ),
+        );
+        await this.jobConcurrencyLimiter.runExclusive(
+          async () => {
+            if (Date.now() > deadline) {
+              this.logger.warn(
+                `[Reel ${input.reelId}] No free slot for the evidence in time; the evidence job will build it`,
+              );
+              return;
+            }
+            await this.persistInlineEvidence({
+              reelId: input.reelId,
+              processingAttemptId: input.processingAttemptId,
+              build: () =>
+                this.buildInlineEvidence({
+                  reelId: input.reelId,
+                  processingAttemptId: input.processingAttemptId,
+                  hlsMasterKey: input.hlsMasterKey,
+                  inputPath: input.inputPath,
+                  audioOutputDir: input.audioOutputDir,
+                  visualOutputDir: input.visualOutputDir,
+                  metricsContext: input.metricsContext,
+                  mediaMetadata: input.mediaMetadata,
+                }),
+            });
+          },
+          this.getConcurrencyLimit(),
+          'LOW',
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          `[Reel ${input.reelId}] Deferred evidence stopped: ${formatProcessingError(error).message}`,
+        );
+      } finally {
+        this.tempFileService.removeDirIfExists(input.workDir);
+      }
+    })();
+    this.deferredEvidence.add(task);
+    void task.finally(() => this.deferredEvidence.delete(task));
+  }
+
+  private getNonNegativeNumber(key: string, fallback: number): number {
+    const parsed = Number(this.configService.get<string>(key));
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
 
   private getConcurrencyLimit(): number {

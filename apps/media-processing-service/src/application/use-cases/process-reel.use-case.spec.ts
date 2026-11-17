@@ -102,6 +102,7 @@ const makeUseCase = (
     prepareReelMediaUseCase,
     prepareExistingHlsEvidenceUseCase,
     buildVisualFrameManifestUseCase,
+    tempFileService,
     ...overrides,
   };
 };
@@ -200,10 +201,11 @@ describe('ProcessReelUseCase readiness split', () => {
       );
 
     it('reports the reel ready first, then hands over the evidence it built locally', async () => {
-      const fakes = makeUseCase();
+      const fakes = makeUseCase({}, { MEDIA_INLINE_EVIDENCE_DEFER_MS: '0' });
       readyAfterEncode(fakes);
 
       await expect(run(fakes)).resolves.toEqual({ status: 'COMPLETED' });
+      await fakes.instance.drainDeferredEvidence();
 
       const order = [
         fakes.contentService.persistMediaCompleted.mock.invocationCallOrder[0],
@@ -235,13 +237,14 @@ describe('ProcessReelUseCase readiness split', () => {
     });
 
     it('still completes the job when the local evidence fails, leaving it to the evidence job', async () => {
-      const fakes = makeUseCase();
+      const fakes = makeUseCase({}, { MEDIA_INLINE_EVIDENCE_DEFER_MS: '0' });
       readyAfterEncode(fakes);
       fakes.prepareExistingHlsEvidenceUseCase.executeFromLocalMedia.mockRejectedValue(
         new Error('ffmpeg exploded'),
       );
 
       await expect(run(fakes)).resolves.toEqual({ status: 'COMPLETED' });
+      await fakes.instance.drainDeferredEvidence();
 
       expect(
         fakes.contentService.persistExistingHlsEvidence,
@@ -260,6 +263,58 @@ describe('ProcessReelUseCase readiness split', () => {
       expect(
         fakes.prepareReelMediaUseCase.execute.mock.calls[0][0],
       ).not.toHaveProperty('inlineEvidence');
+    });
+
+    it('ends the job before the evidence work starts and removes the workspace only afterwards', async () => {
+      const fakes = makeUseCase({}, { MEDIA_INLINE_EVIDENCE_DEFER_MS: '0' });
+      readyAfterEncode(fakes);
+      let finishEvidence!: () => void;
+      fakes.prepareExistingHlsEvidenceUseCase.executeFromLocalMedia.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finishEvidence = () =>
+              resolve({
+                mediaMetadata: { sourceDurationMs: 100_000 },
+                transcriptionAudioManifestKey: 'audio.json',
+              });
+          }),
+      );
+
+      await expect(run(fakes)).resolves.toEqual({ status: 'COMPLETED' });
+      for (let i = 0; i < 50 && !finishEvidence; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(fakes.tempFileService.removeDirIfExists).not.toHaveBeenCalled();
+      finishEvidence();
+      await fakes.instance.drainDeferredEvidence();
+      expect(fakes.tempFileService.removeDirIfExists).toHaveBeenCalledWith(
+        '/tmp/reel',
+      );
+    });
+
+    it('drops the evidence when no slot came free in time, leaving it to the evidence job', async () => {
+      const fakes = makeUseCase(
+        {},
+        {
+          MEDIA_INLINE_EVIDENCE_DEFER_MS: '5',
+          MEDIA_INLINE_EVIDENCE_MAX_WAIT_MS: '0',
+        },
+      );
+      readyAfterEncode(fakes);
+
+      await run(fakes);
+      await fakes.instance.drainDeferredEvidence();
+
+      expect(
+        fakes.prepareExistingHlsEvidenceUseCase.executeFromLocalMedia,
+      ).not.toHaveBeenCalled();
+      expect(
+        fakes.contentService.persistExistingHlsEvidence,
+      ).not.toHaveBeenCalled();
+      expect(fakes.tempFileService.removeDirIfExists).toHaveBeenCalledWith(
+        '/tmp/reel',
+      );
     });
   });
 });

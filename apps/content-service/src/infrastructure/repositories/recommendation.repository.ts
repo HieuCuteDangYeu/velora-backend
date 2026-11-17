@@ -10,6 +10,7 @@ import type {
 import type { IRecommendationRepository } from '@content/domain/interfaces/recommendation.repository.interface';
 import { mapReelLegacyStatus } from '@content/domain/reel-status-compatibility.mapper';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
+import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/content-client';
 
@@ -83,6 +84,8 @@ interface PositiveProfile {
 // One refill asks for the same viewer profile from several candidate sources within
 // moments of each other; share the result instead of re-reading 600 events each time.
 const POSITIVE_PROFILE_MEMO_TTL_MS = 10_000;
+// Trending is a week of events; a minute of staleness does not change what is trending.
+const TRENDING_SCORES_TTL_MS = 60_000;
 
 @Injectable()
 export class RecommendationRepository implements IRecommendationRepository {
@@ -90,6 +93,13 @@ export class RecommendationRepository implements IRecommendationRepository {
     string,
     { expiresAt: number; profile: Promise<PositiveProfile> }
   >();
+
+  // The trending scan reads up to 10,000 view events and is the same for every viewer, so
+  // concurrent and back-to-back refills share one load. Per-viewer exclusions are applied after it.
+  private readonly trendingScores = new TtlPromiseCache<Map<string, number>>(
+    TRENDING_SCORES_TTL_MS,
+    1,
+  );
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -138,9 +148,7 @@ export class RecommendationRepository implements IRecommendationRepository {
     }));
   }
 
-  async findTrendingCandidates(
-    query: RecommendationCandidateQuery,
-  ): Promise<RecommendationCandidateEvidence[]> {
+  private async loadTrendingScores(): Promise<Map<string, number>> {
     const events = await this.prisma.reelViewEvent.findMany({
       where: {
         occurredAt: {
@@ -189,6 +197,16 @@ export class RecommendationRepository implements IRecommendationRepository {
           this.trendingEventWeight(event),
       );
     }
+
+    return scoreByReelId;
+  }
+
+  async findTrendingCandidates(
+    query: RecommendationCandidateQuery,
+  ): Promise<RecommendationCandidateEvidence[]> {
+    const scoreByReelId = await this.trendingScores.get('global', () =>
+      this.loadTrendingScores(),
+    );
 
     const excludedReelIds = new Set(query.excludedReelIds ?? []);
     const rankedIds = [...scoreByReelId.entries()]

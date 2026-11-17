@@ -64,3 +64,72 @@ describe('RecommendationRepository positive profile sharing', () => {
     expect(findMany).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('RecommendationRepository trending scan sharing', () => {
+  const trendingEvent = (reelId: string, count: number) =>
+    Array.from({ length: count }, () => ({
+      reelId,
+      eventType: 'WATCH_END',
+      watchMs: 5000,
+      percentageWatched: 100,
+      completed: true,
+      replayed: false,
+      skipped: false,
+    }));
+  const query = (excludedReelIds: string[]) => ({
+    viewerId: 'viewer-1',
+    limit: 20,
+    excludedUserIds: [],
+    excludedReelIds,
+    friendUserIds: [],
+  });
+
+  function trendingRepository() {
+    const eventFindMany = jest
+      .fn()
+      .mockResolvedValue([
+        ...trendingEvent('reel-a', 3),
+        ...trendingEvent('reel-b', 2),
+      ]);
+    const reelFindMany = jest
+      .fn()
+      .mockImplementation(
+        ({ where }: { where: { AND: Array<{ id?: { in: string[] } }> } }) =>
+          Promise.resolve((where.AND[1].id?.in ?? []).map((id) => ({ id }))),
+      );
+    const repository = new RecommendationRepository({
+      reelViewEvent: { findMany: eventFindMany },
+      reel: { findMany: reelFindMany },
+    } as never);
+    return { repository, eventFindMany };
+  }
+
+  it('reads the view events once for back-to-back refills of different viewers', async () => {
+    const { repository, eventFindMany } = trendingRepository();
+
+    await Promise.all([
+      repository.findTrendingCandidates(query([])),
+      repository.findTrendingCandidates({ ...query([]), viewerId: 'viewer-2' }),
+    ]);
+    await repository.findTrendingCandidates(query([]));
+
+    expect(eventFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('still removes the reels already in the caller session after the shared scan', async () => {
+    const { repository } = trendingRepository();
+
+    const fresh = await repository.findTrendingCandidates(query([]));
+    const withSession = await repository.findTrendingCandidates(
+      query(['reel-a']),
+    );
+
+    expect(fresh.map((candidate) => candidate.reelId).sort()).toEqual([
+      'reel-a',
+      'reel-b',
+    ]);
+    expect(withSession.map((candidate) => candidate.reelId)).toEqual([
+      'reel-b',
+    ]);
+  });
+});

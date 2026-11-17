@@ -68,6 +68,21 @@ const PERSONALIZED_REFILL_GATE = new ConcurrencyGate(
   readBoundedIntEnv('REEL_REFILL_MAX_CONCURRENCY', 1, 4),
   PERSONALIZED_REFILL_MAX_QUEUED,
 );
+// The cross-encoder behind the rerank (TEI) answers one request at a time and returns 429 to
+// the rest, so reranks are serialised here instead of competing for a refill's database slot.
+// A rerank that would wait behind more than two others is skipped (the feature order stands).
+const RERANK_GATE = new ConcurrencyGate(
+  readBoundedIntEnv('REEL_RERANK_MAX_CONCURRENCY', 1, 4),
+  2,
+);
+// A new authenticated session starts with this many slate reels (never fewer than a page plus
+// the refill threshold). Personalized items are appended after them, so a larger seed is
+// buffer against a slow or deferred refill at the cost of personalization arriving later.
+const FEED_SESSION_SEED_SIZE = readBoundedIntEnv(
+  'REEL_FEED_SESSION_SEED_SIZE',
+  24,
+  100,
+);
 const PIPELINE_SOURCE_CONCURRENCY = readBoundedIntEnv(
   'REEL_PIPELINE_SOURCE_CONCURRENCY',
   2,
@@ -162,8 +177,11 @@ export class GetRecommendedReelsUseCase {
             )
           : this.emptyPage();
 
+        // A refill that was deferred or lost (queue full, process restart) is retried on every
+        // page, not only near the end of the seed; the refill lock keeps retries from overlapping.
         const shouldRefill =
           !audienceReady ||
+          session.personalizedRefillComplete === false ||
           (page.nextCursor !== null &&
             page.remainingCount <= PERSONALIZED_REFILL_THRESHOLD);
         if (authenticated && shouldRefill) {
@@ -210,7 +228,10 @@ export class GetRecommendedReelsUseCase {
                 0,
                 Math.min(
                   globalSlate.items.length,
-                  limit + PERSONALIZED_REFILL_THRESHOLD,
+                  Math.max(
+                    limit + PERSONALIZED_REFILL_THRESHOLD,
+                    FEED_SESSION_SEED_SIZE,
+                  ),
                 ),
               )
             : globalSlate.items
@@ -678,6 +699,7 @@ export class GetRecommendedReelsUseCase {
     const audience = await this.friendContentAccessService.getFeedAudience(
       input.viewerId,
     );
+    const audienceMs = Date.now() - startedAt;
     const latest = await this.feedSessionRepository.get(input.feedSessionId);
 
     if (
@@ -704,6 +726,13 @@ export class GetRecommendedReelsUseCase {
 
     // The audience snapshot above is what lets a session page past its slate, so it is
     // saved before queueing; only the heavy candidate pipeline waits for a slot.
+    const snapshotMs = Date.now() - startedAt;
+    if (snapshotMs >= PERSONALIZED_REFILL_PAGE_WAIT_MS) {
+      this.logger.warn(
+        `Audience snapshot for ${input.feedSessionId} took ${snapshotMs}ms (friend audience ${audienceMs}ms); pages wait at most ${PERSONALIZED_REFILL_PAGE_WAIT_MS}ms for it`,
+      );
+    }
+    const gateRequestedAt = Date.now();
     const release = await PERSONALIZED_REFILL_GATE.acquire();
     if (!release) {
       this.logger.warn(
@@ -712,6 +741,8 @@ export class GetRecommendedReelsUseCase {
       return;
     }
 
+    const pipelineStartedAt = Date.now();
+    const gateWaitMs = pipelineStartedAt - gateRequestedAt;
     let pipeline: RecommendationPipelineResult;
     try {
       pipeline = await this.buildPipeline({
@@ -722,6 +753,9 @@ export class GetRecommendedReelsUseCase {
         friendUserIds: audience.friendUserIds,
         excludeRecentlySeen: input.excludeRecentlySeen,
         feedSessionId: input.feedSessionId,
+        // The rerank is a network wait on the cross-encoder, not database work, so the
+        // database slot goes to the next refill before it starts.
+        onDatabaseWorkDone: release,
       });
     } finally {
       release();
@@ -753,6 +787,9 @@ export class GetRecommendedReelsUseCase {
       this.recommendationConfig.getFeedSessionTtlSeconds(),
     );
 
+    this.logger.debug(
+      `Refill ${input.feedSessionId}: snapshot ${snapshotMs}ms (audience ${audienceMs}ms), gate wait ${gateWaitMs}ms, pipeline ${Date.now() - pipelineStartedAt}ms, total ${Date.now() - startedAt}ms, +${appended.length} reels`,
+    );
     this.publishSourceTelemetry({
       sourceCounts: pipeline.sourceCounts,
       algorithmVersion: input.algorithmVersion,
@@ -798,6 +835,7 @@ export class GetRecommendedReelsUseCase {
     friendUserIds: string[];
     excludeRecentlySeen?: boolean;
     feedSessionId: string;
+    onDatabaseWorkDone?: () => void;
   }): Promise<RecommendationPipelineResult> {
     const candidateLimit = Math.min(Math.max(input.limit * 6, 60), 300);
     const candidateQuery: RecommendationCandidateQuery = {
@@ -975,6 +1013,7 @@ export class GetRecommendedReelsUseCase {
     const featureRankedUnseenItems = rankedItems.filter(
       (item) => !recentlySeenReelIds.has(item.reel.id),
     );
+    input.onDatabaseWorkDone?.();
     const rankedUnseenItems = await this.applyNeuralRerank(
       featureRankedUnseenItems,
       loadInterestTags,
@@ -1055,12 +1094,25 @@ export class GetRecommendedReelsUseCase {
         return items;
       }
 
+      const releaseRerank = await RERANK_GATE.acquire();
+      if (!releaseRerank) {
+        this.logger.debug(
+          'Neural rerank skipped: reranker busy with other refills',
+        );
+        return items;
+      }
+
       const startedAt = Date.now();
       const head = items.slice(0, settings.topK);
-      const scores = await this.rerankerService.scoreDocuments({
-        queryText: interestTags.join(' '),
-        documents: head.map((item) => this.rerankDocument(item.reel)),
-      });
+      let scores: number[] | null;
+      try {
+        scores = await this.rerankerService.scoreDocuments({
+          queryText: interestTags.join(' '),
+          documents: head.map((item) => this.rerankDocument(item.reel)),
+        });
+      } finally {
+        releaseRerank();
+      }
 
       if (!scores) {
         return items;

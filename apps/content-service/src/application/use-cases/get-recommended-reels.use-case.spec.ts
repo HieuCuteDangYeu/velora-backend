@@ -961,3 +961,191 @@ describe('GetRecommendedReelsUseCase while the personalized refill is building',
     expect(peak).toBeLessThanOrEqual(2);
   });
 });
+
+describe('GetRecommendedReelsUseCase refill capacity', () => {
+  const makeReels = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      reel(
+        `reel-${index + 1}`,
+        new Date(Date.UTC(2026, 8, 15 - index, 10)).toISOString(),
+      ),
+    );
+  const pipelineInput = {
+    viewerId: 'viewer-1',
+    limit: 15,
+    excludedUserIds: [],
+    excludedReelIds: [],
+    friendUserIds: [],
+    feedSessionId: '2f628c36-e32d-4b0c-8df5-c1f91087a001',
+  };
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  const until = async (condition: () => boolean) => {
+    for (let attempt = 0; attempt < 200 && !condition(); attempt += 1) {
+      await settle();
+    }
+  };
+
+  it('seeds a new authenticated session with 24 slate reels so paging outlasts a slow refill', async () => {
+    const reels = makeReels(40);
+    const harness = createHarness({ reels });
+
+    await harness.useCase.execute({ viewerId: 'viewer-1', limit: 6 });
+
+    const seeded = harness.feedSessionRepository.save.mock.calls[0][0];
+    expect(seeded.items).toHaveLength(24);
+  });
+
+  it('keeps the whole slate for an anonymous viewer', async () => {
+    const reels = makeReels(40);
+    const harness = createHarness({ reels });
+
+    await harness.useCase.execute({ viewerId: 'anonymous', limit: 6 });
+
+    const seeded = harness.feedSessionRepository.save.mock.calls[0][0];
+    expect(seeded.items).toHaveLength(40);
+  });
+
+  it('retries an unfinished refill on the next page even while the seed still has plenty left', async () => {
+    const reels = makeReels(24);
+    const cachedSession = {
+      ...sessionFor(reels),
+      personalizedRefillComplete: false,
+    };
+    const harness = createHarness({ cachedSession, reels });
+
+    await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: cachedSession.feedSessionId,
+      limit: 2,
+    });
+
+    expect(
+      harness.feedSessionRepository.tryAcquireRefillLock,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a refill for a complete session with plenty of seed left', async () => {
+    const reels = makeReels(24);
+    const cachedSession = {
+      ...sessionFor(reels),
+      personalizedRefillComplete: true,
+    };
+    const harness = createHarness({ cachedSession, reels });
+
+    await harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: cachedSession.feedSessionId,
+      limit: 2,
+    });
+
+    expect(
+      harness.feedSessionRepository.tryAcquireRefillLock,
+    ).not.toHaveBeenCalled();
+  });
+
+  describe('rerank stage', () => {
+    // 40 reels: the refill excludes the 24 already seeded and still has 16 to rerank.
+    function rerankHarness() {
+      const harness = createHarness({ reels: makeReels(40) });
+      harness.reranker.getSettings.mockReturnValue({
+        enabled: true,
+        topK: 5,
+        weight: 0.15,
+        timeoutMs: 3000,
+        experimentEnabled: false,
+        treatmentPercent: 50,
+      });
+      harness.recommendationRepository.findViewerInterestTags.mockResolvedValue(
+        ['cooking'],
+      );
+      return harness;
+    }
+
+    it('hands the database slot back before the rerank starts', async () => {
+      const harness = rerankHarness();
+      const onDatabaseWorkDone = jest.fn();
+      harness.reranker.scoreDocuments.mockResolvedValue(null);
+
+      await harness.useCase['buildPipeline']({
+        ...pipelineInput,
+        onDatabaseWorkDone,
+      });
+
+      expect(onDatabaseWorkDone).toHaveBeenCalledTimes(1);
+      expect(onDatabaseWorkDone.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.reranker.scoreDocuments.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('lets the next refill query the database while the previous one waits on the cross-encoder', async () => {
+      const harness = rerankHarness();
+      harness.feedSessionRepository.tryAcquireRefillLock.mockResolvedValue(
+        'lock-token',
+      );
+      const releases: Array<() => void> = [];
+      harness.reranker.scoreDocuments.mockImplementation(
+        () =>
+          new Promise<null>((resolve) => {
+            releases.push(() => resolve(null));
+          }),
+      );
+
+      await harness.useCase.execute({ viewerId: 'viewer-1', limit: 2 });
+      await until(() => releases.length === 1);
+      await harness.useCase.execute({ viewerId: 'viewer-2', limit: 2 });
+      await until(
+        () =>
+          harness.recommendationRepository.findRecentQualityCandidates.mock
+            .calls.length === 2,
+      );
+
+      expect(
+        harness.recommendationRepository.findRecentQualityCandidates,
+      ).toHaveBeenCalledTimes(2);
+      expect(harness.reranker.scoreDocuments).toHaveBeenCalledTimes(1);
+
+      while (releases.length > 0) {
+        releases.shift()?.();
+        await settle();
+        await settle();
+      }
+      await until(
+        () =>
+          harness.feedSessionRepository.releaseRefillLock.mock.calls.length ===
+          2,
+      );
+    });
+
+    it('sends one rerank at a time to the cross-encoder and skips one that would queue behind two others', async () => {
+      const harness = rerankHarness();
+      let active = 0;
+      let peak = 0;
+      const releases: Array<() => void> = [];
+      harness.reranker.scoreDocuments.mockImplementation(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active -= 1;
+        return null;
+      });
+
+      const runs = Array.from({ length: 4 }, () =>
+        harness.useCase['buildPipeline'](pipelineInput),
+      );
+      await until(() => releases.length === 1);
+      // Let the other three reach the gate: two queue, the fourth is turned away.
+      for (let tick = 0; tick < 20; tick += 1) await settle();
+      expect(harness.reranker.scoreDocuments).toHaveBeenCalledTimes(1);
+
+      while (releases.length > 0 || active > 0) {
+        releases.shift()?.();
+        await settle();
+        await settle();
+      }
+      await Promise.all(runs);
+
+      expect(peak).toBe(1);
+      expect(harness.reranker.scoreDocuments).toHaveBeenCalledTimes(3);
+    });
+  });
+});

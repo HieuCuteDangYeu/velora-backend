@@ -38,6 +38,7 @@ export class ReelSeriesRepository {
 
   async findReelSeriesById(id: string): Promise<ReelSeries | null> {
     const record = await this.prisma.reelSeries.findUnique({
+      relationLoadStrategy: 'join',
       where: { id },
       include: {
         reels: {
@@ -196,6 +197,7 @@ export class ReelSeriesRepository {
             };
       const [records, episodeCount] = await Promise.all([
         this.prisma.reel.findMany({
+          relationLoadStrategy: 'join',
           where: { ...where, ...positionFilter },
           orderBy:
             query.direction === 'previous'
@@ -248,6 +250,7 @@ export class ReelSeriesRepository {
 
     if (!anchor?.episodeNumber) {
       const records = await this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where,
         orderBy: orderByAscending,
         take: query.limit + 1,
@@ -268,6 +271,7 @@ export class ReelSeriesRepository {
 
     const [olderRecords, newerRecords] = await Promise.all([
       this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where: {
           ...where,
           episodeNumber: { lt: anchor.episodeNumber },
@@ -277,6 +281,7 @@ export class ReelSeriesRepository {
         select: REEL_LIST_SELECT,
       }),
       this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where: {
           ...where,
           episodeNumber: { gte: anchor.episodeNumber },
@@ -329,6 +334,7 @@ export class ReelSeriesRepository {
       : {};
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where: {
         userId: query.ownerId,
         visibility: query.visibility,

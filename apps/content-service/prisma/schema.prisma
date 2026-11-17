@@ -1,7 +1,10 @@
 generator client {
-  provider      = "prisma-client-js"
-  output        = "../../../node_modules/@prisma/content-client"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  provider        = "prisma-client-js"
+  output          = "../../../node_modules/@prisma/content-client"
+  binaryTargets   = ["native", "linux-musl-openssl-3.0.x"]
+  // Lets a query load a relation in the same SQL statement (relationLoadStrategy: 'join')
+  // instead of a second round trip. Needs no migration; queries opt in one by one.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

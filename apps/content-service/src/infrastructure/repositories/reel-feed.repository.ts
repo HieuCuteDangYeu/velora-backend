@@ -28,6 +28,7 @@ export class ReelFeedRepository {
     const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
     if (uniqueIds.length === 0) return [];
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where: {
         id: { in: uniqueIds },
         visibility: 'public',
@@ -318,6 +319,7 @@ export class ReelFeedRepository {
     };
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: query.limit + 1,
@@ -392,6 +394,7 @@ export class ReelFeedRepository {
     }
 
     const candidateRecords = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: candidateLimit + 1,
@@ -730,6 +733,7 @@ export class ReelFeedRepository {
       }
 
       const records = await this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where,
         orderBy: [{ episodeNumber: 'asc' }],
         take: limit + 1,
@@ -765,6 +769,7 @@ export class ReelFeedRepository {
     }
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: limit + 1,
@@ -812,6 +817,7 @@ export class ReelFeedRepository {
     }
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: input.limit + 1,
@@ -982,6 +988,7 @@ export class ReelFeedRepository {
 
     const [beforeRecords, afterRecords] = await Promise.all([
       this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where: {
           ...scopeWhere,
           OR: [
@@ -997,6 +1004,7 @@ export class ReelFeedRepository {
         select: REEL_LIST_SELECT,
       }),
       this.prisma.reel.findMany({
+        relationLoadStrategy: 'join',
         where: {
           ...scopeWhere,
           OR: [
@@ -1070,6 +1078,7 @@ export class ReelFeedRepository {
     }
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where: {
         userId: {
           in: eligibleFriendIds,

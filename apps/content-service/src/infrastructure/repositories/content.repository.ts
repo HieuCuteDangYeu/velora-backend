@@ -849,6 +849,7 @@ export class ContentRepository
     publishIntentId: string,
   ): Promise<Reel | null> {
     const record = await this.reel.findUnique({
+      relationLoadStrategy: 'join',
       where: {
         userId_publishIntentId: {
           userId,
@@ -1828,6 +1829,7 @@ export class ContentRepository
 
   async findById(id: string): Promise<Reel | null> {
     const record = await this.reel.findUnique({
+      relationLoadStrategy: 'join',
       where: { id },
       include: {
         series: {
@@ -2042,6 +2044,7 @@ export class ContentRepository
     userId: string,
   ): Promise<Reel | null> {
     const reel = await this.reel.findUnique({
+      relationLoadStrategy: 'join',
       where: { id },
       include: { series: { select: { visibility: true } } },
     });

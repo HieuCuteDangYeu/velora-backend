@@ -127,6 +127,7 @@ export class RecommendationRepository implements IRecommendationRepository {
     query: RecommendationCandidateQuery,
   ): Promise<RecommendationCandidateEvidence[]> {
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where: {
         AND: [
           this.baseReelWhere(query),
@@ -628,6 +629,7 @@ export class RecommendationRepository implements IRecommendationRepository {
     }
 
     const records = await this.prisma.reel.findMany({
+      relationLoadStrategy: 'join',
       where: {
         id: {
           in: reelIds,

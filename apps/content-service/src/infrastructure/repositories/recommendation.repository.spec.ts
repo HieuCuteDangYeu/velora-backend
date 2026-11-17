@@ -175,3 +175,18 @@ describe('RecommendationRepository engagement sharing', () => {
     expect(engagementCalls()).toBe(2);
   });
 });
+
+describe('RecommendationRepository relation loading', () => {
+  it('loads the series of eligible reels in the same statement, not a second round trip', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const repository = new RecommendationRepository({
+      reel: { findMany },
+    } as never);
+
+    await repository.findEligibleReelsByIds(['a', 'b'], []);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ relationLoadStrategy: 'join' }),
+    );
+  });
+});

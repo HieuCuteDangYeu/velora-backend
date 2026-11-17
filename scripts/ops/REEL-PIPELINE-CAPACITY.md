@@ -55,21 +55,37 @@ encodes, so under load it made later reels wait.
   upload budget (`TIKTOK_CDN_UPLOAD_BUDGET_MS`) starts when the encode ends. The R2-only and
   fallback paths still upload after the encode. Switch: `MEDIA_HLS_STREAM_UPLOAD=false`.
 - **The encode job builds the evidence itself.** After it has reported the reel ready it copies the
-  local HLS into one file (0.1 s, no download), builds the transcript audio and visual frames from it
-  while still holding the worker slot, and hands them to content-service. The reel's evidence job is
-  then only a fallback, queued 10 minutes later (`REEL_INLINE_EVIDENCE_FALLBACK_DELAY_MS`); if the
-  inline path failed, that job builds the evidence from the stored HLS as before, and when it was not
-  needed the job finds the evidence done and ends in about a second. The reel is playable at the same
-  moment as before. Switch: `MEDIA_INLINE_EVIDENCE=false` (workers). Deploy content-service first.
+  local HLS into one file (0.1 s, no download), ends, and builds the transcript audio and visual
+  frames as a low-priority task on the same worker, behind every encode that is waiting (a first
+  version kept the worker slot for the ~20 s of evidence work and made waiting reels slower; this is
+  the second version). Work that gets no slot within 9 minutes (`MEDIA_INLINE_EVIDENCE_MAX_WAIT_MS`)
+  is dropped. The reel's evidence job is then only a fallback, queued 10 minutes later
+  (`REEL_INLINE_EVIDENCE_FALLBACK_DELAY_MS`): if the inline path failed or was dropped, it builds the
+  evidence from the stored HLS as before, and when it was not needed it finds the evidence done and
+  ends in about a second. The reel is playable at the same moment as before. Switch:
+  `MEDIA_INLINE_EVIDENCE=false` (workers). Deploy content-service first.
 - **Evidence jobs have their own queues** (`reel_media_short_evidence_jobs`, `reel_media_long_evidence_jobs`,
   same dead-letter queues as the lane) and a worker starts a waiting encode before a waiting evidence
   job. A backfill of old reels therefore cannot sit in front of a new upload. Retried evidence jobs
   return to the normal lane queue. Switch: `REEL_MEDIA_EVIDENCE_QUEUE_ENABLED=false` (content-service).
   Workers must be updated before content-service publishes to the new queues; an alert for ready work
   without consumers on those queues is the safety net.
+- **The laptop workers use the TikTok CDN too** (`TIKTOK_CDN_ENABLED=true` in both units, the four
+  `TIKTOK_CDN_*` values copied into `media.env`), so reels they encode get the same streaming upload.
 
-Not yet re-measured after these changes: repeat the ramp with `scripts/ops/reel-create-burst.cjs`-style
-bursts (see the notes of 2026-11-17 in the memory file) and compare against the table above.
+Measured after all of this (2026-11-17, same method, both workers on the final image; all 28 reels
+playable and indexed, playlist checks all passed):
+
+| Reels at once | Before (first / median / last) | After (first / median / last) |
+| ------------- | ------------------------------ | ----------------------------- |
+| 1             | 50 s                           | 44 s                          |
+| 4             | 51 / 100 / 147 s               | 44 / 61 / 105 s               |
+| 8             | 97 / 205 / 315 s               | 46 / 88 / 238 s               |
+| 16            | 216 / 455 / 1,062 s            | 45 / 246 / 552 s              |
+
+About 34 s per reel at 16 at once (roughly 105 an hour, from about 90). The 8-reel step overlapped a
+deploy by another session. The "before" 16-reel step was also disturbed by deploys, so compare its
+15th reel (654 s) with the 15th now (517 s) for a fair figure.
 
 ## Where the time goes and what limits it
 

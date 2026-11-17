@@ -71,8 +71,14 @@ WantedBy=default.target
 ```
 
 It is capped at 8 CPUs, 3 GB and a low CPU weight so the laptop stays usable.
-`TIKTOK_CDN_ENABLED=false` keeps the TikTok session tied to the homelab address, so jobs handled here
-upload to R2. The heartbeat is 30 s so a sleeping laptop is noticed within about a minute.
+Since 2026-11-17 the units run with `TIKTOK_CDN_ENABLED=true` and `media.env` holds the four
+`TIKTOK_CDN_*` values of the homelab `.env` (copied without their quotes, because `docker --env-file`
+keeps quotes; the values contain `&`, so do not `source` the file in a shell). Jobs handled here then
+stream their segments to the TikTok CDN like the homelab ones (the laptop's keep-alive ping answered
+"Session active"). If uploads start failing with a permission error, go back to
+`TIKTOK_CDN_ENABLED=false` (jobs then upload to R2): the same session cookie is shared with the
+homelab, so a refresh must be copied to both places. Before that change this said: `TIKTOK_CDN_ENABLED=false`
+kept the TikTok session tied to the homelab address, so jobs handled here uploaded to R2. The heartbeat is 30 s so a sleeping laptop is noticed within about a minute.
 
 ## Short-lane unit
 

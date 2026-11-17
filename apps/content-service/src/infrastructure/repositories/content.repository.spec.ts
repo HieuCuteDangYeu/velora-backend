@@ -581,3 +581,78 @@ describe('ContentRepository upload transaction queueing', () => {
     expect(maxWaitOf($transaction)).toBeGreaterThanOrEqual(10_000);
   });
 });
+
+describe('ContentRepository failIndexing', () => {
+  const build = (counts: number[]) => {
+    const updateMany = jest.fn();
+    for (const count of counts) updateMany.mockResolvedValueOnce({ count });
+    const repository = {
+      reel: {
+        updateMany,
+        findUnique: jest.fn().mockResolvedValue({ mediaAttemptId: 'media-1' }),
+      },
+      reelMediaAttemptLease: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      recommendationFeedCacheRepository: {
+        invalidateReels: jest.fn().mockResolvedValue(undefined),
+      },
+    } as unknown as ContentRepository;
+    return { repository, updateMany };
+  };
+  const input = {
+    reelId: 'reel-1',
+    indexAttemptId: 'index-1',
+    errorDetail: 'Visual provider rate limit or quota exhausted',
+  };
+  type UpdateCall = [
+    {
+      where: Record<string, unknown>;
+      data: Record<string, unknown>;
+    },
+  ];
+
+  it('keeps a reel that was indexed before searchable when a re-index fails', async () => {
+    const { repository, updateMany } = build([1]);
+
+    await expect(
+      ContentRepository.prototype.failIndexing.call(repository, input),
+    ).resolves.toBe(true);
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const [{ where, data }] = updateMany.mock.calls[0] as UpdateCall;
+    expect(where).toMatchObject({
+      indexCompletedAt: { not: null },
+      indexChunkCount: { gt: 0 },
+    });
+    expect(data).toMatchObject({
+      indexStatus: 'COMPLETED',
+      processingErrorCode: 'REINDEX_FAILED',
+      processingErrorDetail: expect.stringContaining('quota exhausted'),
+    });
+  });
+
+  it('marks a reel that never had an index as failed', async () => {
+    const { repository, updateMany } = build([0, 1]);
+
+    await expect(
+      ContentRepository.prototype.failIndexing.call(repository, input),
+    ).resolves.toBe(true);
+
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    const [{ where, data }] = updateMany.mock.calls[1] as UpdateCall;
+    expect(where).not.toHaveProperty('indexCompletedAt');
+    expect(data).toMatchObject({
+      indexStatus: 'FAILED',
+      processingErrorCode: 'INDEXING_FAILED',
+    });
+  });
+
+  it('does nothing for a stale attempt', async () => {
+    const { repository } = build([0, 0]);
+
+    await expect(
+      ContentRepository.prototype.failIndexing.call(repository, input),
+    ).resolves.toBe(false);
+  });
+});

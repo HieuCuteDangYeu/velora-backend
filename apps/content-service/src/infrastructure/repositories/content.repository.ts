@@ -1515,24 +1515,45 @@ export class ContentRepository
     indexAttemptId: string;
     errorDetail: string;
   }): Promise<boolean> {
-    const result = await this.reel.updateMany({
+    const failureData = {
+      status: 'COMPLETED' as const,
+      processingStage: 'READY',
+      processingMessage: 'Video is ready to watch',
+      processingProgress: 100,
+      processingFailedAt: new Date(),
+      processingErrorDetail: input.errorDetail.slice(0, 4000),
+    };
+    const waitingForIndex = {
+      id: input.reelId,
+      indexAttemptId: input.indexAttemptId,
+      mediaStatus: 'COMPLETED' as const,
+      indexStatus: { in: ['PENDING' as const, 'PROCESSING' as const] },
+    };
+    // A re-index that fails (for example the AI provider's quota is spent) leaves the previous
+    // index active, so a reel that was indexed before stays searchable: search only returns reels
+    // whose index status is COMPLETED. The reason is kept in the error fields.
+    let result = await this.reel.updateMany({
       where: {
-        id: input.reelId,
-        indexAttemptId: input.indexAttemptId,
-        mediaStatus: 'COMPLETED',
-        indexStatus: { in: ['PENDING', 'PROCESSING'] },
+        ...waitingForIndex,
+        indexCompletedAt: { not: null },
+        indexChunkCount: { gt: 0 },
       },
       data: {
-        status: 'COMPLETED',
-        indexStatus: 'FAILED',
-        processingStage: 'READY',
-        processingMessage: 'Video is ready to watch',
-        processingProgress: 100,
-        processingFailedAt: new Date(),
-        processingErrorCode: 'INDEXING_FAILED',
-        processingErrorDetail: input.errorDetail.slice(0, 4000),
+        ...failureData,
+        indexStatus: 'COMPLETED',
+        processingErrorCode: 'REINDEX_FAILED',
       },
     });
+    if (result.count === 0) {
+      result = await this.reel.updateMany({
+        where: waitingForIndex,
+        data: {
+          ...failureData,
+          indexStatus: 'FAILED',
+          processingErrorCode: 'INDEXING_FAILED',
+        },
+      });
+    }
     const failed = result.count > 0;
     if (failed) {
       const reel = await this.reel.findUnique({

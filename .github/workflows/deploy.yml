@@ -56,6 +56,7 @@ jobs:
           all_services=(
             api-gateway
             user-service
+            friend-service
             auth-service
             media-service
             media-processing-service

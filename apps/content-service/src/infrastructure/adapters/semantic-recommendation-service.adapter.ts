@@ -1,3 +1,5 @@
+import type { GenerateEmbeddingResult } from '@common/ai/interfaces/generate-embedding.interface';
+import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
 import type { IAiEmbeddingService } from '@content/application/use-cases/ai-embedding.service.interface';
 import type {
   ISemanticRecommendationService,
@@ -12,11 +14,23 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import { firstValueFrom, timeout } from 'rxjs';
 
+// A viewer's interest tags change slowly, but every new feed session (every app open, and each
+// session of a burst) embeds the same text again on the CPU embedding server it shares with
+// indexing. Reusing the vector for a few minutes takes that load off it and the wait out of the refill.
+const QUERY_EMBEDDING_TTL_MS = 10 * 60_000;
+// The semantic source only enriches the feed. When the embedder is overloaded the AI service
+// retries with backoff for up to ~8 s; the refill stops waiting after this and carries on
+// without the source (the embedding still lands in the cache for the next session).
+const QUERY_EMBEDDING_WAIT_MS = 2_500;
+
 @Injectable()
 export class SemanticRecommendationServiceAdapter implements ISemanticRecommendationService {
   private readonly logger = new Logger(
     SemanticRecommendationServiceAdapter.name,
   );
+
+  private readonly queryEmbeddings =
+    new TtlPromiseCache<GenerateEmbeddingResult>(QUERY_EMBEDDING_TTL_MS, 500);
 
   constructor(
     @Inject('IAiEmbeddingService')
@@ -34,10 +48,15 @@ export class SemanticRecommendationServiceAdapter implements ISemanticRecommenda
 
     try {
       const interestText = interestTags.join(' ');
-      const embedding = await this.embeddingService.generateEmbedding({
-        text: interestText,
-        taskType: 'RETRIEVAL_QUERY',
-      });
+      const embedding = await this.withinWait(
+        this.queryEmbeddings.get(interestText, () =>
+          this.embeddingService.generateEmbedding({
+            text: interestText,
+            taskType: 'RETRIEVAL_QUERY',
+          }),
+        ),
+        QUERY_EMBEDDING_WAIT_MS,
+      );
       const searchLimit = Math.min(Math.max(Math.floor(input.limit), 1), 100);
       const hasEmbeddingIdentity = Boolean(
         embedding.model?.trim() && embedding.version?.trim(),
@@ -98,6 +117,24 @@ export class SemanticRecommendationServiceAdapter implements ISemanticRecommenda
         `Semantic recommendation source unavailable: ${message}. Continuing without semantic candidates.`,
       );
       return [];
+    }
+  }
+
+  private async withinWait<T>(work: Promise<T>, waitMs: number): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(new Error(`query embedding not ready within ${waitMs}ms`)),
+            waitMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 

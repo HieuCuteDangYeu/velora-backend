@@ -94,4 +94,73 @@ describe('SemanticRecommendationServiceAdapter', () => {
       }),
     );
   });
+  describe('query embedding reuse', () => {
+    const embedding = {
+      values: [0.1, 0.2],
+      model: 'BAAI/bge-m3',
+      dimensions: 2,
+      provider: 'test',
+      version: 'bge-m3-tei-v1',
+    };
+    const build = (generateEmbedding: jest.Mock) =>
+      new SemanticRecommendationServiceAdapter({ generateEmbedding }, {
+        send: jest.fn().mockReturnValue(of([])),
+      } as unknown as ClientProxy);
+    const input = {
+      viewerId: 'viewer-1',
+      interestTags: ['cooking'],
+      limit: 20,
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('embeds the same interest tags once for a burst of sessions', async () => {
+      const generateEmbedding = jest.fn().mockResolvedValue(embedding);
+      const adapter = build(generateEmbedding);
+
+      await Promise.all([
+        adapter.findCandidates(input),
+        adapter.findCandidates({ ...input, viewerId: 'viewer-2' }),
+      ]);
+      await adapter.findCandidates(input);
+
+      expect(generateEmbedding).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not remember a failed embedding', async () => {
+      const generateEmbedding = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('TEI overloaded'))
+        .mockResolvedValue(embedding);
+      const adapter = build(generateEmbedding);
+
+      await expect(adapter.findCandidates(input)).resolves.toEqual([]);
+      await adapter.findCandidates(input);
+
+      expect(generateEmbedding).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops waiting for a slow embedding after 2.5 s but keeps its result for the next session', async () => {
+      jest.useFakeTimers();
+      let finish!: (value: typeof embedding) => void;
+      const generateEmbedding = jest.fn().mockReturnValue(
+        new Promise<typeof embedding>((resolve) => {
+          finish = resolve;
+        }),
+      );
+      const adapter = build(generateEmbedding);
+
+      const first = adapter.findCandidates(input);
+      await jest.advanceTimersByTimeAsync(2_600);
+      await expect(first).resolves.toEqual([]);
+
+      finish(embedding);
+      await jest.advanceTimersByTimeAsync(0);
+      await adapter.findCandidates(input);
+
+      expect(generateEmbedding).toHaveBeenCalledTimes(1);
+    });
+  });
 });

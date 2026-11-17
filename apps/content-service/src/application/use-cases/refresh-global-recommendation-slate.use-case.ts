@@ -31,9 +31,14 @@ export class RefreshGlobalRecommendationSlateUseCase {
       excludedUserIds: [],
       friendUserIds: [],
     };
+    // Recent-quality only looks 14 days back and trending needs view events, so a catalog with
+    // no new uploads yields a handful of reels. Exploration (newest first, no profile for the
+    // placeholder viewer) backfills the slate so a new session has enough to page through
+    // while its personalized refill builds; its lower scores keep it behind the other two.
     const settled = await Promise.allSettled([
       this.recommendationRepository.findRecentQualityCandidates(query),
       this.recommendationRepository.findTrendingCandidates(query),
+      this.recommendationRepository.findExplorationCandidates(query),
     ]);
     const fulfilled = settled.filter(
       (

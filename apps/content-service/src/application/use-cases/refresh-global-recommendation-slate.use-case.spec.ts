@@ -51,6 +51,7 @@ describe('RefreshGlobalRecommendationSlateUseCase', () => {
           reasons: [],
         },
       ]),
+      findExplorationCandidates: jest.fn().mockResolvedValue([]),
       findEligibleReelsByIds: jest.fn().mockResolvedValue(reels),
     } as unknown as jest.Mocked<IRecommendationRepository>;
     const feedCacheRepository: jest.Mocked<IRecommendationFeedCacheRepository> =
@@ -88,5 +89,78 @@ describe('RefreshGlobalRecommendationSlateUseCase', () => {
       slate,
       10 * 60,
     );
+  });
+  function slateHarness(options: {
+    exploration: () => Promise<unknown>;
+    reels: Reel[];
+  }) {
+    const recommendationRepository = {
+      findRecentQualityCandidates: jest.fn().mockResolvedValue([]),
+      findTrendingCandidates: jest.fn().mockResolvedValue([
+        {
+          reelId: 'trending',
+          source: 'TRENDING',
+          sourceScore: 0.9,
+          reasons: [],
+        },
+      ]),
+      findExplorationCandidates: jest
+        .fn()
+        .mockImplementation(options.exploration),
+      findEligibleReelsByIds: jest.fn().mockResolvedValue(options.reels),
+    } as unknown as jest.Mocked<IRecommendationRepository>;
+    const feedCacheRepository: jest.Mocked<IRecommendationFeedCacheRepository> =
+      {
+        getGlobalSlate: jest.fn(),
+        saveGlobalSlate: jest.fn().mockResolvedValue(undefined),
+        getReels: jest.fn(),
+        saveReels: jest.fn().mockResolvedValue(undefined),
+        invalidateReels: jest.fn(),
+      };
+    return new RefreshGlobalRecommendationSlateUseCase(
+      recommendationRepository,
+      feedCacheRepository,
+    );
+  }
+
+  it('backfills the slate with exploration reels when there are no recent uploads', async () => {
+    const useCase = slateHarness({
+      reels: [reel('trending'), reel('old-1'), reel('old-2')],
+      exploration: () =>
+        Promise.resolve([
+          {
+            reelId: 'old-1',
+            source: 'EXPLORATION',
+            sourceScore: 0.4,
+            reasons: [],
+          },
+          {
+            reelId: 'old-2',
+            source: 'EXPLORATION',
+            sourceScore: 0.3,
+            reasons: [],
+          },
+        ]),
+    });
+
+    const slate = await useCase.execute();
+
+    expect(slate.items.map((item) => item.reelId)).toEqual([
+      'trending',
+      'old-1',
+      'old-2',
+    ]);
+    expect(slate.items[1].primarySource).toBe('EXPLORATION');
+  });
+
+  it('still builds the slate when the exploration backfill fails', async () => {
+    const useCase = slateHarness({
+      reels: [reel('trending')],
+      exploration: () => Promise.reject(new Error('pool timeout')),
+    });
+
+    const slate = await useCase.execute();
+
+    expect(slate.items.map((item) => item.reelId)).toEqual(['trending']);
   });
 });

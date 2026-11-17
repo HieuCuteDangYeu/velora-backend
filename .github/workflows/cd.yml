@@ -336,10 +336,11 @@ jobs:
           echo 'homelab-deploy promotion failed after bounded retries.' >&2
           exit 1
 
-  # friend-service, mail-service and the media-processing workers run on velora-node-2
-  # (x86_64) besides or instead of the homelab, so they are built for linux/amd64 here and
-  # rolled out over SSH instead of by the homelab deploy controller. The homelab keeps its
-  # own arm64 media-processing image. See infra/friend-mail-node/README.md.
+  # mail-service and the media-processing workers run on velora-node-2 (x86_64) besides or
+  # instead of the homelab, so they are built for linux/amd64 here and rolled out over SSH
+  # instead of by the homelab deploy controller. The homelab keeps its own arm64
+  # media-processing image, and friend-service is a homelab arm64 image again (2026-11-17).
+  # See infra/friend-mail-node/README.md.
   build-and-push-node2-images:
     needs: prepare-release
     if: needs.prepare-release.outputs.should_release == 'true'
@@ -348,7 +349,6 @@ jobs:
       fail-fast: false
       matrix:
         service:
-          - friend-service
           - mail-service
           - media-processing-service
     steps:
@@ -429,7 +429,7 @@ jobs:
       needs.build-and-push-node2-images.result == 'success'
     runs-on: ubuntu-24.04
     steps:
-      - name: Roll out friend, mail and media workers on velora-node-2
+      - name: Roll out mail and media workers on velora-node-2
         env:
           TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
           NODE2_SSH_KEY: ${{ secrets.NODE2_DEPLOY_SSH_KEY }}

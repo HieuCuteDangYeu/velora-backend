@@ -61,6 +61,7 @@ readonly PULL_ATTEMPTS="${VELORA_PULL_ATTEMPTS:-3}"
 readonly -a APP_SERVICES=(
   api-gateway
   user-service
+  friend-service
   auth-service
   media-service
   media-processing-service
@@ -96,6 +97,7 @@ readonly -a APP_IMAGE_SERVICES=(
 readonly -a FORCE_SAFE_APP_SERVICES=(
   api-gateway
   user-service
+  friend-service
   auth-service
   media-service
   content-service
@@ -127,8 +129,8 @@ readonly -a REMOVED_COMPOSE_SERVICES=(
   cadvisor
   jev-reranker
   payment-service
-  # friend-service and mail-service moved to velora-node-2 (infra/friend-mail-node).
-  friend-service
+  # mail-service runs on velora-node-2 (infra/friend-mail-node). friend-service is back
+  # on the homelab: the cross-node hop cost 250-550 ms per friend request.
   mail-service
   # Runs on velora-node-2 now (infra/grafana-node/), reading this host over Tailscale.
   grafana
@@ -156,6 +158,7 @@ readonly -a BLOCKED_COMPOSE_SERVICES=(
 readonly -a MANUAL_DB_SERVICES=(
   user-service
   auth-service
+  friend-service
   content-service
   notification-service
 )
@@ -168,12 +171,13 @@ readonly -a SELF_MIGRATING_DB_SERVICES=(
 )
 
 # RabbitMQ RPC server queues. Worker lane queues are intentionally not encoded
-# here because their semantics are owned by worker configuration. friend_queue and
-# mail_queue are served from velora-node-2, which this script does not manage, so a
-# node-2 outage must not fail or roll back a homelab release.
+# here because their semantics are owned by worker configuration. mail_queue is
+# served from velora-node-2, which this script does not manage, so a node-2 outage
+# must not fail or roll back a homelab release.
 readonly -A RMQ_QUEUE_BY_SERVICE=(
   [auth-service]="auth_queue"
   [user-service]="user_queue"
+  [friend-service]="friend_queue"
   [media-service]="media_queue"
   [content-service]="content_queue"
   [conversation-service]="conversation_queue"

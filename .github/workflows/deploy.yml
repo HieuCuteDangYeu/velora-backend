@@ -134,12 +134,11 @@ jobs:
             while IFS= read -r changed_file; do
               [ -z "$changed_file" ] && continue
 
-              # friend-service and mail-service run on velora-node-2: the Homelab CD
-              # builds their amd64 images itself (infra/friend-mail-node), so they are
-              # not Compose build services. Their code is still linted and tested by
-              # the validate job.
+              # mail-service runs on velora-node-2: the Homelab CD builds its amd64
+              # image itself (infra/friend-mail-node), so it is not a Compose build
+              # service. Its code is still linted and tested by the validate job.
               case "$changed_file" in
-                apps/friend-service/*|apps/mail-service/*|infra/friend-mail-node/*|infra/langfuse-node/*)
+                apps/mail-service/*|infra/friend-mail-node/*|infra/langfuse-node/*)
                   continue
                   ;;
               esac

@@ -76,6 +76,27 @@ services:
     networks:
       - microservices-net
 
+  friend-service:
+    image: ${DOCKERHUB_USERNAME}/friend-service:${VELORA_IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: ./apps/friend-service/Dockerfile
+      args:
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-https://dl-cdn.alpinelinux.org/alpine}
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # .env carries connection_limit=1, which runs the two audience queries (friends,
+      # blocks) one after the other, each a ~75 ms round trip to the shared Aiven server
+      # (17 client connections in all). Two let them run together.
+      FRIEND_DATABASE_CONNECTION_LIMIT: ${FRIEND_DATABASE_CONNECTION_LIMIT:-2}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - microservices-net
+
   auth-service:
     image: ${DOCKERHUB_USERNAME}/auth-service:${VELORA_IMAGE_TAG:-latest}
     build:

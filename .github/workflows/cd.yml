@@ -95,6 +95,7 @@ jobs:
           all_services=(
             api-gateway
             user-service
+            friend-service
             auth-service
             media-service
             media-processing-service
@@ -177,7 +178,7 @@ jobs:
           if [ -n "$base_sha" ]; then
             rebuild_services="$(
               git diff --name-only "$base_sha" "$target_sha" \
-                | bash scripts/ci/select-rebuild-services.sh "${all_services[@]}" friend-service mail-service
+                | bash scripts/ci/select-rebuild-services.sh "${all_services[@]}" mail-service
             )"
           fi
           echo "Previous release: ${base_sha:-none}; images to rebuild: ${rebuild_services:-none}"

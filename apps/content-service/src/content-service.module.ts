@@ -2,6 +2,8 @@ import { ReelCommentsController } from './infrastructure/controllers/reel-commen
 import { ReelCommentRepository } from './infrastructure/repositories/reel-comment.repository';
 import { ReelSubtitleTrackRepository } from './infrastructure/repositories/reel-subtitle-track.repository';
 import { ReelSubtitlesController } from './infrastructure/controllers/reel-subtitles.controller';
+import { ReelSubtitleTranslator } from './application/services/reel-subtitle-translator.service';
+import { PreTranslateReelSubtitlesUseCase } from './application/use-cases/pre-translate-reel-subtitles.use-case';
 import { GetReelSubtitlesUseCase } from './application/use-cases/get-reel-subtitles.use-case';
 import { AiSubtitleTranslationAdapter } from './infrastructure/adapters/ai-subtitle-translation.adapter';
 import {
@@ -167,7 +169,9 @@ function createRmqClientRegistration(name: string, queue: string) {
       provide: 'ISubtitleTranslationService',
       useClass: AiSubtitleTranslationAdapter,
     },
+    ReelSubtitleTranslator,
     GetReelSubtitlesUseCase,
+    PreTranslateReelSubtitlesUseCase,
     CreateReelCommentUseCase,
     ListReelCommentsUseCase,
     UpdateReelCommentUseCase,

@@ -4,6 +4,7 @@ import type {
   IContentRepository,
   ReelProcessingMediaMetadata,
 } from '../../domain/interfaces/content.repository.interface';
+import { PreTranslateReelSubtitlesUseCase } from './pre-translate-reel-subtitles.use-case';
 
 @Injectable()
 export class UpdateReelStatusUseCase {
@@ -12,6 +13,7 @@ export class UpdateReelStatusUseCase {
   constructor(
     @Inject('IContentRepository')
     private readonly contentRepository: IContentRepository,
+    private readonly subtitles: PreTranslateReelSubtitlesUseCase,
   ) {}
 
   async execute(
@@ -89,7 +91,7 @@ export class UpdateReelStatusUseCase {
       nextMessage ??= 'Video processing failed';
     }
 
-    return await this.contentRepository.updateReelStatus(
+    const updated = await this.contentRepository.updateReelStatus(
       reelId,
       status,
       sanitizedTranscript,
@@ -108,6 +110,11 @@ export class UpdateReelStatusUseCase {
       mediaMetadata,
       sourceMode,
     );
+
+    if (status === 'COMPLETED' && sanitizedTranscriptSegments?.length) {
+      void this.subtitles.execute(reelId);
+    }
+    return updated;
   }
 
   private normalizeProgress(progress?: number): number | undefined {

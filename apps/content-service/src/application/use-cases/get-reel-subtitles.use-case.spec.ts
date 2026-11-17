@@ -1,6 +1,7 @@
 import type { TranslateSubtitleCuesRequest } from '@common/ai/interfaces/subtitle-translation.interface';
 import type { TranscriptSegment } from '@common/ai/interfaces/transcription-result.interface';
 import type { StoredSubtitleTrack } from '@content/domain/interfaces/reel-subtitle-track.repository.interface';
+import { ReelSubtitleTranslator } from '@content/application/services/reel-subtitle-translator.service';
 import {
   GetReelSubtitlesUseCase,
   InvalidSubtitleLanguageError,
@@ -43,9 +44,8 @@ function build(options: {
         })),
       }),
     );
-  const useCase = new GetReelSubtitlesUseCase(getReel as never, tracks, {
-    translate,
-  });
+  const translator = new ReelSubtitleTranslator(tracks, { translate });
+  const useCase = new GetReelSubtitlesUseCase(getReel as never, translator);
   return { useCase, getReel, tracks, translate };
 }
 

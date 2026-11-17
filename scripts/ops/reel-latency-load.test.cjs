@@ -55,3 +55,32 @@ test('SLO evaluation applies the api default to api_* scenarios and flags errors
   assert.equal(byName['s1/stream_startup errorRate'], false);
   assert.equal('s1/hls_master p95' in byName, false);
 });
+
+test('screens opened on purpose use the secondary limit, the swipe path keeps the primary one', () => {
+  const stats = (p95) => ({ count: 30, p95, errorRate: 0 });
+  const report = {
+    stages: {
+      s1: {
+        api_feed_ranked: stats(650),
+        api_reel_detail: stats(650),
+        api_reel_context: stats(650),
+        api_series_detail: stats(650),
+        api_series_episodes: stats(850),
+      },
+    },
+  };
+  const checks = evaluateSlos(report, { api: 500, secondary: 800, errorRate: 0.01 });
+  const result = Object.fromEntries(checks.filter((c) => c.name.endsWith('p95')).map((c) => [c.name.split('/')[1].replace(' p95', ''), c]));
+  assert.equal(result.api_feed_ranked.pass, false);
+  assert.equal(result.api_reel_detail.pass, false);
+  assert.equal(result.api_reel_context.pass, true);
+  assert.equal(result.api_series_detail.pass, true);
+  assert.equal(result.api_series_episodes.pass, false);
+  assert.equal(result.api_reel_context.limit, 800);
+});
+
+test('without a secondary limit every API call keeps the primary one', () => {
+  const report = { stages: { s1: { api_reel_context: { count: 30, p95: 650, errorRate: 0 } } } };
+  const [check] = evaluateSlos(report, { api: 500, errorRate: 0.01 });
+  assert.equal(check.limit, 500);
+});

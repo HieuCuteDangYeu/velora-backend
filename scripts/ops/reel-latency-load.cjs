@@ -19,6 +19,11 @@
  * view counts are not polluted. RAG is opt-in because every turn spends the shared
  * AI budget (ai_turn_minute 10, ai_turn_day 300 per user) and the model host.
  *
+ * Limits (p95): 500 ms for the API calls on the swipe path (feeds, reel detail, tags, friends),
+ * 800 ms (--slo-secondary-p95) for the screens a viewer opens on purpose and that pay a cold
+ * friend-access check or read a whole series (reel context, series detail, series episodes).
+ * With 20 s stages a p95 is one or two requests; use --stage-seconds 60 or more to judge.
+ *
  * Usage:
  *   VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... \
  *   node scripts/ops/reel-latency-load.cjs --base-url https://velora-app.me \
@@ -127,6 +132,10 @@ function parseMediaPlaylist(text, baseUrl) {
   return { init, segment };
 }
 
+// Opened on purpose (profile reel, series screen) and cold on the first request, not part of
+// the swipe loop: they get the looser secondary limit.
+const SECONDARY_API_SCENARIOS = ['api_reel_context', 'api_series_detail', 'api_series_episodes'];
+
 function evaluateSlos(report, slos) {
   const checks = [];
   const add = (name, actual, limit) => {
@@ -135,7 +144,9 @@ function evaluateSlos(report, slos) {
   };
   for (const [stage, rows] of Object.entries(report.stages)) {
     for (const [scenario, stats] of Object.entries(rows)) {
-      const limit = slos[scenario] ?? (scenario.startsWith('api_') ? slos.api : undefined);
+      const limit = slos[scenario]
+        ?? (SECONDARY_API_SCENARIOS.includes(scenario) && slos.secondary !== undefined ? slos.secondary : undefined)
+        ?? (scenario.startsWith('api_') ? slos.api : undefined);
       add(`${stage}/${scenario} p95`, stats.p95, limit);
       if (stats.count) add(`${stage}/${scenario} errorRate`, stats.errorRate, slos.errorRate);
     }
@@ -575,6 +586,7 @@ async function main() {
   const queries = String(args.queries || 'love,revenge,family,fight,pet').split(',').map((q) => q.trim()).filter(Boolean);
   const slos = {
     api: intArg(args['slo-api-p95'], 500, '--slo-api-p95', 1, 600000),
+    secondary: intArg(args['slo-secondary-p95'], 800, '--slo-secondary-p95', 1, 600000),
     stream_startup: intArg(args['slo-stream-p95'], 1200, '--slo-stream-p95', 1, 600000),
     first_frame: intArg(args['slo-first-frame-p95'], 1800, '--slo-first-frame-p95', 1, 600000),
     first_frame_ranked: intArg(args['slo-first-frame-p95'], 1800, '--slo-first-frame-p95', 1, 600000),

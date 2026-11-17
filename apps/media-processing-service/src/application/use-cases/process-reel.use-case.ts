@@ -33,6 +33,12 @@ export type ProcessReelResult =
       errorDetail: string;
     };
 
+interface InlineEvidence {
+  mediaMetadata: ReelProcessingMediaMetadata;
+  transcriptionAudioManifestKey: string;
+  visualFrameManifestKey: string;
+}
+
 @Injectable()
 export class ProcessReelUseCase {
   private readonly logger = new Logger(ProcessReelUseCase.name);
@@ -70,7 +76,7 @@ export class ProcessReelUseCase {
     allowRetry?: boolean;
     edit?: ReelMediaEdit;
   }): Promise<ProcessReelResult> {
-    return await this.jobConcurrencyLimiter.runExclusive(async () => {
+    const run = async (): Promise<ProcessReelResult> => {
       const { reelId, mediaKey, processingAttemptId } = data;
 
       if (!processingAttemptId) {
@@ -141,6 +147,7 @@ export class ProcessReelUseCase {
       let failedMessage = 'Video processing failed';
       let failureDetail = '';
       let failureMediaMetadata: ReelProcessingMediaMetadata | undefined;
+      let inlineEvidence: Promise<InlineEvidence> | undefined;
 
       try {
         const isExistingHls = data.sourceMode === 'EXISTING_HLS';
@@ -190,6 +197,37 @@ export class ProcessReelUseCase {
             thumbnailPath: workspace.thumbnailPath,
             metricsContext,
             edit: data.edit,
+            ...(this.isInlineEvidenceEnabled()
+              ? {
+                  inlineEvidence: {
+                    materializedPath: path.join(
+                      workspace.workDir,
+                      'evidence-input.mp4',
+                    ),
+                    onReady: ({ hlsMasterKey, mediaMetadata: encoded }) => {
+                      inlineEvidence = this.buildInlineEvidence({
+                        reelId,
+                        processingAttemptId,
+                        hlsMasterKey,
+                        inputPath: path.join(
+                          workspace.workDir,
+                          'evidence-input.mp4',
+                        ),
+                        audioOutputDir: workspace.audioOutputDir,
+                        visualOutputDir: path.join(
+                          workspace.workDir,
+                          'visual-frames',
+                        ),
+                        metricsContext,
+                        mediaMetadata: encoded,
+                      });
+                      // Nobody may be waiting for it yet; the result is picked up after the reel
+                      // is reported ready, and a failure only means the evidence job does the work.
+                      inlineEvidence.catch(() => undefined);
+                    },
+                  },
+                }
+              : {}),
           });
           mediaMetadata = mediaResult.mediaMetadata;
         }
@@ -217,9 +255,20 @@ export class ProcessReelUseCase {
             mediaOnlyWorker: true,
             reusedHls: false,
           });
-          this.logger.log(
-            `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; evidence queued`,
-          );
+          if (inlineEvidence) {
+            this.logger.log(
+              `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; building evidence here`,
+            );
+            await this.persistInlineEvidence({
+              reelId,
+              processingAttemptId,
+              inlineEvidence,
+            });
+          } else {
+            this.logger.log(
+              `[Reel ${reelId}] Media attempt ${processingAttemptId} completed; evidence queued`,
+            );
+          }
           return { status: 'COMPLETED' };
         }
 
@@ -234,27 +283,14 @@ export class ProcessReelUseCase {
           message: 'Sampling visual scenes for search',
           progress: currentProgress,
         });
-        const visualTimer = this.processingMetrics.startStage(
+        const visualResult = await this.buildVisualEvidence({
+          reelId,
+          processingAttemptId,
+          hlsMasterKey: data.hlsMasterKey!,
+          inputPath: workspace.inputPath,
+          outputDir: path.join(workspace.workDir, 'visual-frames'),
+          mediaMetadata,
           metricsContext,
-          'VISUAL_FRAME_ARTIFACTS',
-        );
-        const visualResult = await this.buildVisualFrameManifestUseCase.execute(
-          {
-            reelId,
-            mediaAttemptId: processingAttemptId,
-            inputPath: workspace.inputPath,
-            outputDir: path.join(workspace.workDir, 'visual-frames'),
-            storagePrefix: path.posix.dirname(data.hlsMasterKey!),
-            metadata: {
-              durationMs:
-                mediaMetadata.outputDurationMs ??
-                mediaMetadata.sourceDurationMs,
-            },
-          },
-        );
-        visualTimer.succeed({
-          visualFrameCount: visualResult.manifest.artifacts.length,
-          visualFrameBytes: visualResult.totalFrameBytes,
         });
         currentProgress = 100;
         const applied = await this.contentService.persistExistingHlsEvidence({
@@ -342,9 +378,121 @@ export class ProcessReelUseCase {
           errorDetail: failureDetail,
         };
       } finally {
+        // The inline evidence reads the workspace; let it finish before the files go.
+        await inlineEvidence?.catch(() => undefined);
         this.tempFileService.removeDirIfExists(workspace.workDir);
       }
-    }, this.getConcurrencyLimit());
+    };
+
+    // Evidence work for an already playable reel never goes before an encode that is waiting.
+    return await this.jobConcurrencyLimiter.runExclusive(
+      run,
+      this.getConcurrencyLimit(),
+      data.sourceMode === 'EXISTING_HLS' ? 'LOW' : 'NORMAL',
+    );
+  }
+
+  private isInlineEvidenceEnabled(): boolean {
+    return this.configService.get<string>('MEDIA_INLINE_EVIDENCE') !== 'false';
+  }
+
+  private async buildInlineEvidence(input: {
+    reelId: string;
+    processingAttemptId: string;
+    hlsMasterKey: string;
+    inputPath: string;
+    audioOutputDir: string;
+    visualOutputDir: string;
+    metricsContext: ReelPipelineMetricContext;
+    mediaMetadata: ReelProcessingMediaMetadata;
+  }): Promise<InlineEvidence> {
+    const audio =
+      await this.prepareExistingHlsEvidenceUseCase.executeFromLocalMedia({
+        reelId: input.reelId,
+        mediaAttemptId: input.processingAttemptId,
+        hlsMasterKey: input.hlsMasterKey,
+        inputPath: input.inputPath,
+        audioOutputDir: input.audioOutputDir,
+        metricsContext: input.metricsContext,
+        fallbackOrientation: input.mediaMetadata.sourceOrientation,
+        fallbackLengthClass: input.mediaMetadata.sourceLengthClass,
+        preservedSourceDurationMs: input.mediaMetadata.sourceDurationMs,
+      });
+    const visual = await this.buildVisualEvidence({
+      reelId: input.reelId,
+      processingAttemptId: input.processingAttemptId,
+      hlsMasterKey: input.hlsMasterKey,
+      inputPath: input.inputPath,
+      outputDir: input.visualOutputDir,
+      mediaMetadata: audio.mediaMetadata,
+      metricsContext: input.metricsContext,
+    });
+    return {
+      mediaMetadata: audio.mediaMetadata,
+      transcriptionAudioManifestKey: audio.transcriptionAudioManifestKey,
+      visualFrameManifestKey: visual.manifestKey,
+    };
+  }
+
+  private async buildVisualEvidence(input: {
+    reelId: string;
+    processingAttemptId: string;
+    hlsMasterKey: string;
+    inputPath: string;
+    outputDir: string;
+    mediaMetadata: ReelProcessingMediaMetadata;
+    metricsContext: ReelPipelineMetricContext;
+  }) {
+    const visualTimer = this.processingMetrics.startStage(
+      input.metricsContext,
+      'VISUAL_FRAME_ARTIFACTS',
+    );
+    const visualResult = await this.buildVisualFrameManifestUseCase.execute({
+      reelId: input.reelId,
+      mediaAttemptId: input.processingAttemptId,
+      inputPath: input.inputPath,
+      outputDir: input.outputDir,
+      storagePrefix: path.posix.dirname(input.hlsMasterKey),
+      metadata: {
+        durationMs:
+          input.mediaMetadata.outputDurationMs ??
+          input.mediaMetadata.sourceDurationMs,
+      },
+    });
+    visualTimer.succeed({
+      visualFrameCount: visualResult.manifest.artifacts.length,
+      visualFrameBytes: visualResult.totalFrameBytes,
+    });
+    return visualResult;
+  }
+
+  /**
+   * Hands the evidence built next to the encode to the content service. It never fails the job:
+   * the reel is already playable, and when this does not go through the delayed evidence job
+   * builds it from the stored HLS instead.
+   */
+  private async persistInlineEvidence(input: {
+    reelId: string;
+    processingAttemptId: string;
+    inlineEvidence: Promise<InlineEvidence>;
+  }): Promise<void> {
+    try {
+      const evidence = await input.inlineEvidence;
+      const applied = await this.contentService.persistExistingHlsEvidence({
+        reelId: input.reelId,
+        processingAttemptId: input.processingAttemptId,
+        transcriptionAudioManifestKey: evidence.transcriptionAudioManifestKey,
+        visualFrameManifestKey: evidence.visualFrameManifestKey,
+        mediaMetadata: evidence.mediaMetadata,
+      });
+      this.logger.log(
+        `[Reel ${input.reelId}] Inline evidence ${applied ? 'queued for indexing' : 'was not needed (already handled)'}`,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        `[Reel ${input.reelId}] Inline evidence failed, the evidence job will build it: ${formatProcessingError(error).message}`,
+      );
+    }
   }
 
   private getConcurrencyLimit(): number {

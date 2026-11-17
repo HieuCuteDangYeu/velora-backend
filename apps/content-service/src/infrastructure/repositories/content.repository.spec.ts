@@ -327,6 +327,71 @@ describe('ContentRepository early Reel media readiness', () => {
     expect(event.payload).not.toHaveProperty('transcriptionAudioManifestKey');
   });
 
+  it('delays the fallback evidence job when the media worker builds the evidence itself', async () => {
+    const outboxCreate = jest.fn().mockResolvedValue({});
+    const transaction = {
+      reel: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'reel-1',
+          userId: 'user-1',
+          mediaKey: 'reels/user-1/source.mp4',
+          indexAttemptId: 'index-attempt-1',
+          title: null,
+          description: null,
+          tags: [],
+        }),
+      },
+      outboxEvent: { create: outboxCreate },
+    };
+    const repository = {
+      $transaction: jest.fn((callback: (tx: typeof transaction) => unknown) =>
+        callback(transaction),
+      ),
+      getInlineEvidenceFallbackDelayMs: () => 600_000,
+      recommendationFeedCacheRepository: {
+        invalidateReels: jest.fn().mockResolvedValue(undefined),
+      },
+      toMediaMetadataData: jest.fn().mockReturnValue({}),
+    } as unknown as ContentRepository;
+    const output = (evidenceInline: boolean) => ({
+      hlsMasterKey: 'reels/user-1/attempt-1/master.m3u8',
+      thumbnailKey: 'reels/user-1/attempt-1/thumbnail.jpg',
+      sourceHasAudio: true,
+      sourceLengthClass: 'SHORT' as const,
+      variants: [],
+      hlsObjectCount: 4,
+      hlsTotalBytes: 100,
+      evidenceInline,
+      checksums: {
+        sourceSha256: 'source',
+        hlsMasterSha256: 'hls',
+        thumbnailSha256: 'thumb',
+      },
+    });
+
+    for (const inline of [true, false]) {
+      outboxCreate.mockClear();
+      await ContentRepository.prototype.completeMediaProcessing.call(
+        repository,
+        {
+          reelId: 'reel-1',
+          mediaAttemptId: 'media-attempt-1',
+          mediaMetadata: { sourceDurationMs: 90_000 },
+          mediaOutput: output(inline),
+        },
+      );
+      const event = (
+        outboxCreate.mock.calls[0] as [
+          { data: { nextAttemptAt: Date; createdAt: Date } },
+        ]
+      )[0].data;
+      expect(event.nextAttemptAt.getTime() - event.createdAt.getTime()).toBe(
+        inline ? 600_000 : 0,
+      );
+    }
+  });
+
   it('does not emit a second evidence job for a stale duplicate completion', async () => {
     const outboxCreate = jest.fn().mockResolvedValue({});
     const transaction = {

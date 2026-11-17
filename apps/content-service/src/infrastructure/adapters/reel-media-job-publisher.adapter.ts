@@ -1,9 +1,11 @@
 import type { ReelMediaJob } from '@common/processing/interfaces/reel-media-job.interface';
 import { REEL_MEDIA_JOB_PATTERN } from '@common/processing/interfaces/reel-media-job.interface';
 import {
+  getReelMediaEvidenceQueue,
   getReelMediaPrimaryQueue,
   REEL_MEDIA_DEAD_LETTER_EXCHANGE,
   REEL_MEDIA_DEAD_LETTER_QUEUES,
+  REEL_MEDIA_EVIDENCE_QUEUES,
   REEL_MEDIA_EXCHANGE,
   REEL_MEDIA_PRIMARY_QUEUES,
   REEL_MEDIA_RETRY_QUEUES,
@@ -64,7 +66,14 @@ export class ReelMediaJobPublisherAdapter
       throw new Error('Reel media publisher is not initialized');
     }
 
-    const queue = getReelMediaPrimaryQueue(job.expectedLengthClass);
+    // Evidence jobs wait in their own queue, behind nothing that a viewer is waiting for.
+    // REEL_MEDIA_EVIDENCE_QUEUE_ENABLED=false sends them down the encode queue again.
+    const queue =
+      job.sourceMode === 'EXISTING_HLS' &&
+      this.configService.get<string>('REEL_MEDIA_EVIDENCE_QUEUE_ENABLED') !==
+        'false'
+        ? getReelMediaEvidenceQueue(job.expectedLengthClass)
+        : getReelMediaPrimaryQueue(job.expectedLengthClass);
     const packet = Buffer.from(
       JSON.stringify({ pattern: REEL_MEDIA_JOB_PATTERN, data: job }),
     );
@@ -89,7 +98,10 @@ export class ReelMediaJobPublisherAdapter
       durable: true,
     });
 
-    for (const definition of REEL_MEDIA_PRIMARY_QUEUES) {
+    for (const definition of [
+      ...REEL_MEDIA_PRIMARY_QUEUES,
+      ...REEL_MEDIA_EVIDENCE_QUEUES,
+    ]) {
       await channel.assertQueue(definition.queue, {
         durable: true,
         arguments: {

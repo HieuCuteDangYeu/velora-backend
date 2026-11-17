@@ -8,6 +8,8 @@ export const REEL_MEDIA_DEAD_LETTER_EXCHANGE = 'reel_media_dead_letter';
 export const REEL_MEDIA_QUEUE_NAMES = {
   SHORT_JOBS: 'reel_media_short_jobs',
   LONG_JOBS: 'reel_media_long_jobs',
+  SHORT_EVIDENCE_JOBS: 'reel_media_short_evidence_jobs',
+  LONG_EVIDENCE_JOBS: 'reel_media_long_evidence_jobs',
   SHORT_RETRY_30S: 'reel_media_short_retry_30s',
   SHORT_RETRY_5M: 'reel_media_short_retry_5m',
   SHORT_DLQ: 'reel_media_short_dlq',
@@ -170,6 +172,8 @@ export function getReelIndexRetryQueue(
 export const REEL_MEDIA_ROUTING_KEYS = {
   SHORT: 'reel.media.short',
   LONG: 'reel.media.long',
+  SHORT_EVIDENCE: 'reel.media.short.evidence',
+  LONG_EVIDENCE: 'reel.media.long.evidence',
   SHORT_DLQ: 'reel.media.short.dlq',
   LONG_DLQ: 'reel.media.long.dlq',
 } as const;
@@ -207,6 +211,28 @@ export const REEL_MEDIA_PRIMARY_QUEUES: readonly ReelMediaPrimaryQueueDefinition
       lengthClass: 'LONG',
       queue: REEL_MEDIA_QUEUE_NAMES.LONG_JOBS,
       routingKey: REEL_MEDIA_ROUTING_KEYS.LONG,
+      deadLetterRoutingKey: REEL_MEDIA_ROUTING_KEYS.LONG_DLQ,
+    },
+  ];
+
+/**
+ * Evidence jobs (transcript audio and visual frames from an already encoded reel) go to their own
+ * queues so a backlog of them, for example a backfill of old reels, never sits in front of the
+ * encode of a new upload. The workers run encode jobs before evidence jobs when both are waiting.
+ * They share the lane's dead-letter queue.
+ */
+export const REEL_MEDIA_EVIDENCE_QUEUES: readonly ReelMediaPrimaryQueueDefinition[] =
+  [
+    {
+      lengthClass: 'SHORT',
+      queue: REEL_MEDIA_QUEUE_NAMES.SHORT_EVIDENCE_JOBS,
+      routingKey: REEL_MEDIA_ROUTING_KEYS.SHORT_EVIDENCE,
+      deadLetterRoutingKey: REEL_MEDIA_ROUTING_KEYS.SHORT_DLQ,
+    },
+    {
+      lengthClass: 'LONG',
+      queue: REEL_MEDIA_QUEUE_NAMES.LONG_EVIDENCE_JOBS,
+      routingKey: REEL_MEDIA_ROUTING_KEYS.LONG_EVIDENCE,
       deadLetterRoutingKey: REEL_MEDIA_ROUTING_KEYS.LONG_DLQ,
     },
   ];
@@ -273,6 +299,16 @@ export function getReelMediaPrimaryQueue(
   )!;
 }
 
+export function getReelMediaEvidenceQueue(
+  lengthClass: ReelMediaLengthClass,
+): ReelMediaPrimaryQueueDefinition {
+  const resolved = resolveReelMediaLengthClass(lengthClass);
+
+  return REEL_MEDIA_EVIDENCE_QUEUES.find(
+    (definition) => definition.lengthClass === resolved,
+  )!;
+}
+
 export function getReelMediaRetryQueue(
   lengthClass: ReelMediaLengthClass,
   retryNumber: 1 | 2,
@@ -299,6 +335,18 @@ export function parseReelMediaWorkerLane(value?: string): ReelMediaWorkerLane {
 
   throw new Error(
     `MEDIA_WORKER_LANE must be SHORT, LONG, or BOTH; received ${value}`,
+  );
+}
+
+export function getEvidenceQueuesForWorkerLane(
+  lane: ReelMediaWorkerLane,
+): readonly ReelMediaPrimaryQueueDefinition[] {
+  if (lane === 'BOTH') {
+    return REEL_MEDIA_EVIDENCE_QUEUES;
+  }
+
+  return REEL_MEDIA_EVIDENCE_QUEUES.filter(
+    (definition) => definition.lengthClass === lane,
   );
 }
 

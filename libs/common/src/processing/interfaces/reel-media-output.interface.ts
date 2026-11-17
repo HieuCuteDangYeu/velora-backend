@@ -14,6 +14,12 @@ export interface ReelMediaOutput {
   thumbnailKey: string;
   transcriptionAudioManifestKey?: string;
   visualFrameManifestKey?: string;
+  /**
+   * The media worker builds the transcript audio and visual frames itself right after reporting
+   * the reel ready, from the files it just encoded. The evidence job is then only a fallback and
+   * is queued with a delay.
+   */
+  evidenceInline?: boolean;
   sourceHasAudio: boolean;
   sourceLengthClass: ReelSourceLengthClass;
   variants: ReelEncodingVariantOutput[];

@@ -21,6 +21,18 @@ import type { ITempFileService } from '../../domain/interfaces/temp-file.service
 import { BuildTranscriptionAudioManifestUseCase } from './build-transcription-audio-manifest.use-case';
 import { ClassifyReelMediaUseCase } from './classify-reel-media.use-case';
 
+export interface EvidenceInput {
+  reelId: string;
+  mediaAttemptId: string;
+  hlsMasterKey: string;
+  inputPath: string;
+  audioOutputDir: string;
+  metricsContext: ReelPipelineMetricContext;
+  fallbackOrientation?: ReelSourceOrientation;
+  fallbackLengthClass?: ReelSourceLengthClass;
+  preservedSourceDurationMs?: number;
+}
+
 export interface ExistingHlsEvidenceResult {
   mediaMetadata: ReelProcessingMediaMetadata;
   transcriptionAudioManifestKey: string;
@@ -35,20 +47,14 @@ export function rewriteHlsPlaylistReferences(
   const baseDir = path.posix.dirname(baseKey);
 
   const rewriteReference = (reference: string): string => {
-    if (
-      !reference ||
-      /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(reference)
-    ) {
+    if (!reference || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(reference)) {
       return reference;
     }
 
     const separatorIndex = reference.search(/[?#]/);
     const pathname =
-      separatorIndex === -1
-        ? reference
-        : reference.slice(0, separatorIndex);
-    const suffix =
-      separatorIndex === -1 ? '' : reference.slice(separatorIndex);
+      separatorIndex === -1 ? reference : reference.slice(0, separatorIndex);
+    const suffix = separatorIndex === -1 ? '' : reference.slice(separatorIndex);
     const resolvedKey = path.posix.normalize(
       path.posix.join(baseDir, pathname),
     );
@@ -65,8 +71,7 @@ export function rewriteHlsPlaylistReferences(
     .map((line) => {
       const rewrittenAttributes = line.replace(
         /URI="([^"]+)"/gu,
-        (_match, reference: string) =>
-          `URI="${rewriteReference(reference)}"`,
+        (_match, reference: string) => `URI="${rewriteReference(reference)}"`,
       );
       const trimmed = rewrittenAttributes.trim();
       if (!trimmed || trimmed.startsWith('#')) return rewrittenAttributes;
@@ -92,17 +97,7 @@ export class PrepareExistingHlsEvidenceUseCase {
     private readonly processingMetrics: IProcessingMetrics,
   ) {}
 
-  async execute(input: {
-    reelId: string;
-    mediaAttemptId: string;
-    hlsMasterKey: string;
-    inputPath: string;
-    audioOutputDir: string;
-    metricsContext: ReelPipelineMetricContext;
-    fallbackOrientation?: ReelSourceOrientation;
-    fallbackLengthClass?: ReelSourceLengthClass;
-    preservedSourceDurationMs?: number;
-  }): Promise<ExistingHlsEvidenceResult> {
+  async execute(input: EvidenceInput): Promise<ExistingHlsEvidenceResult> {
     await this.contentService.emitProcessingStarted({
       reelId: input.reelId,
       status: 'PROCESSING',
@@ -116,14 +111,30 @@ export class PrepareExistingHlsEvidenceUseCase {
     const playlistText = await fs.readFile(playlistPath, 'utf8');
     await fs.writeFile(
       playlistPath,
-      rewriteHlsPlaylistReferences(
-        playlistText,
-        input.hlsMasterKey,
-        (key) => this.mediaStorage.getPublicUrl(key),
+      rewriteHlsPlaylistReferences(playlistText, input.hlsMasterKey, (key) =>
+        this.mediaStorage.getPublicUrl(key),
       ),
     );
     await this.videoProcessing.materializeHls(playlistPath, input.inputPath);
 
+    return await this.buildEvidence(input, true);
+  }
+
+  /**
+   * Same evidence from a media file that is already on this worker's disk (the encode job
+   * materializes its own local HLS), so nothing is downloaded and the reel's processing state
+   * is not touched.
+   */
+  async executeFromLocalMedia(
+    input: EvidenceInput,
+  ): Promise<ExistingHlsEvidenceResult> {
+    return await this.buildEvidence(input, false);
+  }
+
+  private async buildEvidence(
+    input: EvidenceInput,
+    emitProgress: boolean,
+  ): Promise<ExistingHlsEvidenceResult> {
     const metadata = await this.videoProcessing.getVideoMetadata(
       input.inputPath,
     );
@@ -179,14 +190,16 @@ export class PrepareExistingHlsEvidenceUseCase {
       sourceEffectiveHeight: classification.effectiveHeight,
     };
 
-    await this.contentService.emitProcessingProgress({
-      reelId: input.reelId,
-      status: 'PROCESSING',
-      processingAttemptId: input.mediaAttemptId,
-      stage: 'BUILDING_AUDIO_MANIFEST',
-      message: 'Preparing transcription audio',
-      progress: 55,
-    });
+    if (emitProgress) {
+      await this.contentService.emitProcessingProgress({
+        reelId: input.reelId,
+        status: 'PROCESSING',
+        processingAttemptId: input.mediaAttemptId,
+        stage: 'BUILDING_AUDIO_MANIFEST',
+        message: 'Preparing transcription audio',
+        progress: 55,
+      });
+    }
     const audioTimer = this.processingMetrics.startStage(
       input.metricsContext,
       'AUDIO_ARTIFACTS',

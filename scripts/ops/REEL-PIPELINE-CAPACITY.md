@@ -20,6 +20,57 @@ Do not run them while a model benchmark is using the same machines.
 One media worker handles roughly 30 short reels per hour. Adding a consumer scales the media stage
 almost linearly; indexing then becomes the limit.
 
+## Publish to playable (measured 2026-11-17)
+
+What a viewer waits for: the reel is playable as soon as `mediaStatus` is `COMPLETED`. Indexing,
+transcripts and the Groq quota come later and never hold it up (feed and playback only filter on
+`mediaStatus`; only AI search also needs `indexStatus`). 96 s clips, N published at the same moment
+below the gateway, two short media workers (homelab and laptop), before the changes of the next
+section:
+
+| Reels at once | Playable | First | Median | Last                |
+| ------------- | -------- | ----- | ------ | ------------------- |
+| 1             | 1/1      | 50 s  | -      | 50 s                |
+| 4             | 4/4      | 51 s  | 100 s  | 147 s               |
+| 8             | 8/8      | 97 s  | 205 s  | 315 s               |
+| 16            | 16/16    | 216 s | 455 s  | 1,062 s (see below) |
+
+The pace was about one reel per 35-40 s, roughly 90 an hour. Creating 16 reels at once took a median
+of 3.3 s (max 5.6 s). The 16-reel step was disturbed: two deploys by other sessions restarted
+content-service (one job needed a retry, the 1,062 s one; the other 15 finished within 654 s) and
+the previous step's follow-up jobs were still queued. Playlist checks (master, variant, first
+segment) passed except for 5 of 24 that timed out at 15 s on the TikTok CDN; one was re-checked and
+played fine.
+
+The follow-up "evidence" job (transcript audio and visual frames of an already encoded reel) used to
+be a second job on the same queue: about 25 s of worker time per reel, queued behind other reels'
+encodes, so under load it made later reels wait.
+
+### What changed afterwards
+
+- **Segments are uploaded while ffmpeg encodes.** HLS segments are written under a temporary name and
+  renamed when complete (`-hls_flags independent_segments+temp_file`); a background uploader sends
+  finished segments to the TikTok CDN, so only the last few are left when the encode ends (measured on
+  a 96 s clip with real ffmpeg: 141 segments appear between 0.9 s and 26.6 s of a 27 s encode). The
+  upload budget (`TIKTOK_CDN_UPLOAD_BUDGET_MS`) starts when the encode ends. The R2-only and
+  fallback paths still upload after the encode. Switch: `MEDIA_HLS_STREAM_UPLOAD=false`.
+- **The encode job builds the evidence itself.** After it has reported the reel ready it copies the
+  local HLS into one file (0.1 s, no download), builds the transcript audio and visual frames from it
+  while still holding the worker slot, and hands them to content-service. The reel's evidence job is
+  then only a fallback, queued 10 minutes later (`REEL_INLINE_EVIDENCE_FALLBACK_DELAY_MS`); if the
+  inline path failed, that job builds the evidence from the stored HLS as before, and when it was not
+  needed the job finds the evidence done and ends in about a second. The reel is playable at the same
+  moment as before. Switch: `MEDIA_INLINE_EVIDENCE=false` (workers). Deploy content-service first.
+- **Evidence jobs have their own queues** (`reel_media_short_evidence_jobs`, `reel_media_long_evidence_jobs`,
+  same dead-letter queues as the lane) and a worker starts a waiting encode before a waiting evidence
+  job. A backfill of old reels therefore cannot sit in front of a new upload. Retried evidence jobs
+  return to the normal lane queue. Switch: `REEL_MEDIA_EVIDENCE_QUEUE_ENABLED=false` (content-service).
+  Workers must be updated before content-service publishes to the new queues; an alert for ready work
+  without consumers on those queues is the safety net.
+
+Not yet re-measured after these changes: repeat the ramp with `scripts/ops/reel-create-burst.cjs`-style
+bursts (see the notes of 2026-11-17 in the memory file) and compare against the table above.
+
 ## Where the time goes and what limits it
 
 1. **Media transcode CPU.** The HLS encode is x264 on three renditions (360p, 540p, 720p). CPU seconds for

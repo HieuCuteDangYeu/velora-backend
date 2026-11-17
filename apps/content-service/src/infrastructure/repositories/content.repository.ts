@@ -45,6 +45,7 @@ import {
 const UPLOAD_TRANSACTION_OPTIONS = { maxWait: 20_000, timeout: 20_000 };
 
 const MEDIA_ATTEMPT_LEASE_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_INLINE_EVIDENCE_FALLBACK_DELAY_MS = 10 * 60_000;
 import { Reel } from '../../domain/entities/reel.entity';
 import {
   FriendsReelsQuery,
@@ -1091,7 +1092,15 @@ export class ContentRepository
           eventType: REEL_MEDIA_JOB_EVENT_TYPE,
           payload: evidenceJob as unknown as Prisma.InputJsonValue,
           createdAt: completedAt,
-          nextAttemptAt: completedAt,
+          // A worker that builds the evidence itself usually finishes within a minute; this job is
+          // the safety net for when it did not. Without the delay another worker would pick the
+          // job up at once and redo the same work.
+          nextAttemptAt: new Date(
+            completedAt.getTime() +
+              (input.mediaOutput.evidenceInline
+                ? this.getInlineEvidenceFallbackDelayMs()
+                : 0),
+          ),
         },
       });
 
@@ -1104,6 +1113,15 @@ export class ContentRepository
       ]);
     }
     return completed;
+  }
+
+  private getInlineEvidenceFallbackDelayMs(): number {
+    const configured = Number(
+      this.configService?.get<string>('REEL_INLINE_EVIDENCE_FALLBACK_DELAY_MS'),
+    );
+    return Number.isFinite(configured) && configured >= 0
+      ? configured
+      : DEFAULT_INLINE_EVIDENCE_FALLBACK_DELAY_MS;
   }
 
   async completeExistingHlsEvidence(
@@ -1156,6 +1174,7 @@ export class ContentRepository
           indexStatus: 'PENDING',
           processingStage: {
             in: [
+              'MEDIA_READY',
               'EVIDENCE_PROCESSING',
               'LOADING_EXISTING_HLS',
               'BUILDING_AUDIO_MANIFEST',

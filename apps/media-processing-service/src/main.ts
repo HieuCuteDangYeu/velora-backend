@@ -1,4 +1,5 @@
 import {
+  getEvidenceQueuesForWorkerLane,
   getPrimaryQueuesForWorkerLane,
   parseReelMediaWorkerLane,
   REEL_MEDIA_DEAD_LETTER_EXCHANGE,
@@ -13,7 +14,10 @@ async function bootstrap() {
   const prefetch =
     Number.isInteger(parsedPrefetch) && parsedPrefetch > 0 ? parsedPrefetch : 1;
   const lane = parseReelMediaWorkerLane(process.env.MEDIA_WORKER_LANE);
-  const primaryQueues = getPrimaryQueuesForWorkerLane(lane);
+  const primaryQueues = [
+    ...getPrimaryQueuesForWorkerLane(lane),
+    ...getEvidenceQueuesForWorkerLane(lane),
+  ];
   const queueDefinitions: Array<{
     queue: string;
     deadLetterRoutingKey?: string;

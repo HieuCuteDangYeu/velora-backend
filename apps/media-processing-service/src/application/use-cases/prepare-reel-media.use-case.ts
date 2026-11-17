@@ -112,6 +112,18 @@ export class PrepareReelMediaUseCase {
     thumbnailPath: string;
     metricsContext: ReelPipelineMetricContext;
     edit?: ReelMediaEdit;
+    /**
+     * Copies the freshly encoded local HLS into one media file and calls `onReady`, so the caller
+     * can build the transcript audio and visual frames from it while the upload and checks run.
+     * Must happen before the CDN upload removes the local segments.
+     */
+    inlineEvidence?: {
+      materializedPath: string;
+      onReady: (info: {
+        hlsMasterKey: string;
+        mediaMetadata: ReelProcessingMediaMetadata;
+      }) => void;
+    };
   }): Promise<{
     mediaMetadata: ReelProcessingMediaMetadata;
     mediaOutput: ReelMediaOutput;
@@ -302,6 +314,23 @@ export class PrepareReelMediaUseCase {
       const storagePrefix = `${data.mediaKey.replace(/\.[^.]+$/, '')}/${data.processingAttemptId}`;
       const hlsMasterKey = `${storagePrefix}/master.m3u8`;
 
+      let evidenceInline = false;
+      if (data.inlineEvidence) {
+        try {
+          await this.videoProcessingService.materializeHls(
+            localMasterPath,
+            data.inlineEvidence.materializedPath,
+          );
+          data.inlineEvidence.onReady({ hlsMasterKey, mediaMetadata });
+          evidenceInline = true;
+        } catch (error: unknown) {
+          // Not fatal: the evidence job that follows the reel does the same work from the stored HLS.
+          this.logger.warn(
+            `[Reel ${data.reelId}] Could not prepare local media for inline evidence: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+
       currentProgress = 60;
       currentStage = 'UPLOADING_STREAM';
       currentErrorCode = 'STREAM_UPLOAD_FAILED';
@@ -434,6 +463,7 @@ export class PrepareReelMediaUseCase {
         variants: transcodeResult.variants,
         hlsObjectCount: hlsStats.fileCount,
         hlsTotalBytes: hlsStats.totalBytes,
+        ...(evidenceInline ? { evidenceInline: true } : {}),
         checksums: {
           sourceSha256: sourceChecksum,
           hlsMasterSha256: hlsMasterChecksum,

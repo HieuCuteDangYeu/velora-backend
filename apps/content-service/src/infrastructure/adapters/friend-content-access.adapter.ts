@@ -4,7 +4,13 @@ import type {
 } from '@common/friend/interfaces/friend-content-access.interface';
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
 import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
 import {
   TimeoutError,
@@ -28,9 +34,23 @@ export const FEED_AUDIENCE_CACHE_TTL_MS = 15_000;
 // a newly allowed viewer gets in at once and only a new block can lag, by up to this long.
 export const REEL_ACCESS_CACHE_TTL_MS = 15_000;
 
+// friend-service runs on another node and keeps its own database connections. After a few
+// minutes without traffic the first audience lookup measured 1.2-2.6 s instead of 0.6-0.8 s
+// (60 s and 120 s idle were fine, 240 s was not), which left a new feed session without its
+// audience snapshot while the app was already asking for page 2. A cheap lookup for a user
+// that has no friends keeps those connections warm. 0 turns it off.
+const WARMUP_INTERVAL_MS = (() => {
+  const parsed = Number(process.env.REEL_FRIEND_WARMUP_INTERVAL_MS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 60_000;
+})();
+export const FRIEND_WARMUP_USER_ID = '00000000-0000-4000-8000-000000000000';
+
 @Injectable()
-export class FriendContentAccessAdapter implements IFriendContentAccessService {
+export class FriendContentAccessAdapter
+  implements IFriendContentAccessService, OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(FriendContentAccessAdapter.name);
+  private warmupTimer: NodeJS.Timeout | undefined;
   private readonly audienceCache =
     new TtlPromiseCache<FriendFeedAudienceResponse>(FEED_AUDIENCE_CACHE_TTL_MS);
   private readonly accessCache = new TtlPromiseCache<boolean>(
@@ -103,6 +123,37 @@ export class FriendContentAccessAdapter implements IFriendContentAccessService {
       `${input.viewerId}|${input.ownerId}|${input.visibility}`,
       () => this.fetchCanView(input),
     );
+  }
+
+  onModuleInit(): void {
+    if (WARMUP_INTERVAL_MS <= 0) return;
+
+    this.warmupTimer = setInterval(() => {
+      void this.warmUp();
+    }, WARMUP_INTERVAL_MS);
+    this.warmupTimer.unref();
+    void this.warmUp();
+  }
+
+  onModuleDestroy(): void {
+    if (this.warmupTimer) clearInterval(this.warmupTimer);
+    this.warmupTimer = undefined;
+  }
+
+  private async warmUp(): Promise<void> {
+    try {
+      await firstValueFrom(
+        this.friendClient
+          .send('friend.get_reel_feed_audience', {
+            userId: FRIEND_WARMUP_USER_ID,
+          })
+          .pipe(timeout(5000)),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        `Friend-service warm-up skipped: ${this.describeError(error)}`,
+      );
+    }
   }
 
   private async fetchCanView(input: {

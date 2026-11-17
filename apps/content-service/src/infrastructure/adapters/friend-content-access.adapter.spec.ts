@@ -1,6 +1,9 @@
 import type { ClientProxy } from '@nestjs/microservices';
 import { NEVER, defer, of, throwError } from 'rxjs';
-import { FriendContentAccessAdapter } from './friend-content-access.adapter';
+import {
+  FRIEND_WARMUP_USER_ID,
+  FriendContentAccessAdapter,
+} from './friend-content-access.adapter';
 
 describe('FriendContentAccessAdapter', () => {
   it('propagates feed-audience RPC failures instead of returning empty exclusions', async () => {
@@ -184,6 +187,54 @@ describe('FriendContentAccessAdapter', () => {
       await expect(adapter.canView(viewing)).resolves.toBe(false);
       await expect(adapter.canView(viewing)).resolves.toBe(false);
       expect(send).toHaveBeenCalledTimes(2);
+    });
+  });
+  describe('friend-service warm-up', () => {
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('asks friend-service for an empty audience on start and then every minute, without caching it', async () => {
+      jest.useFakeTimers();
+      const send = jest
+        .fn()
+        .mockReturnValue(of({ friendUserIds: [], excludedUserIds: [] }));
+      const adapter = new FriendContentAccessAdapter({
+        send,
+      } as unknown as ClientProxy);
+
+      adapter.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith('friend.get_reel_feed_audience', {
+        userId: FRIEND_WARMUP_USER_ID,
+      });
+
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(send).toHaveBeenCalledTimes(3);
+
+      adapter.onModuleDestroy();
+      await jest.advanceTimersByTimeAsync(120_000);
+      expect(send).toHaveBeenCalledTimes(3);
+    });
+
+    it('never lets a failed warm-up reach a caller or the audience cache', async () => {
+      jest.useFakeTimers();
+      const send = jest
+        .fn()
+        .mockReturnValueOnce(throwError(() => new Error('node down')))
+        .mockReturnValue(of({ friendUserIds: ['f1'], excludedUserIds: [] }));
+      const adapter = new FriendContentAccessAdapter({
+        send,
+      } as unknown as ClientProxy);
+
+      adapter.onModuleInit();
+      await jest.advanceTimersByTimeAsync(0);
+      adapter.onModuleDestroy();
+
+      await expect(adapter.getFeedAudience('viewer-1')).resolves.toMatchObject({
+        friendUserIds: ['f1'],
+      });
     });
   });
 });

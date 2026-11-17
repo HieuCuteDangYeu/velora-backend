@@ -1,5 +1,5 @@
 import type { ClientProxy } from '@nestjs/microservices';
-import { of, throwError } from 'rxjs';
+import { NEVER, defer, of, throwError } from 'rxjs';
 import { FriendContentAccessAdapter } from './friend-content-access.adapter';
 
 describe('FriendContentAccessAdapter', () => {
@@ -31,6 +31,74 @@ describe('FriendContentAccessAdapter', () => {
 
     expect(second.excludedUserIds).toEqual(['b1']);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  // ClientProxy.send returns a cold observable that publishes a message per subscription.
+  it('asks again when the first audience request gets no answer within 2 s', async () => {
+    jest.useFakeTimers();
+    try {
+      let published = 0;
+      const send = jest.fn().mockReturnValue(
+        defer(() => {
+          published += 1;
+          return published === 1
+            ? NEVER
+            : of({ friendUserIds: ['f1'], excludedUserIds: ['b1'] });
+        }),
+      );
+      const adapter = new FriendContentAccessAdapter({
+        send,
+      } as unknown as ClientProxy);
+
+      const pending = adapter.getFeedAudience('viewer-1');
+      await jest.advanceTimersByTimeAsync(2_100);
+
+      await expect(pending).resolves.toMatchObject({
+        excludedUserIds: ['b1'],
+      });
+      expect(published).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails after two unanswered requests instead of waiting the old 5 s', async () => {
+    jest.useFakeTimers();
+    try {
+      let published = 0;
+      const send = jest.fn().mockReturnValue(
+        defer(() => {
+          published += 1;
+          return NEVER;
+        }),
+      );
+      const adapter = new FriendContentAccessAdapter({
+        send,
+      } as unknown as ClientProxy);
+
+      const pending = adapter.getFeedAudience('viewer-1');
+      const settled = expect(pending).rejects.toThrow();
+      await jest.advanceTimersByTimeAsync(4_100);
+
+      await settled;
+      expect(published).toBe(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not retry an error that is not a timeout', async () => {
+    const send = jest
+      .fn()
+      .mockReturnValue(throwError(() => new Error('friend-service down')));
+    const adapter = new FriendContentAccessAdapter({
+      send,
+    } as unknown as ClientProxy);
+
+    await expect(adapter.getFeedAudience('viewer-1')).rejects.toThrow(
+      'friend-service down',
+    );
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('does not cache a failed lookup', async () => {

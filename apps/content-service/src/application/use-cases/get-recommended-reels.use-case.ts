@@ -61,6 +61,10 @@ const PERSONALIZED_REFILL_LOCK_TTL_SECONDS = 60;
 // A page request only waits this long for a background refill. Anything longer used
 // to hit the 10 s RPC/pool timeout and surface as HTTP 500.
 const PERSONALIZED_REFILL_PAGE_WAIT_MS = 2_000;
+// The audience snapshot is a cheap lookup that the mobile app's first prefetch of page 2 needs
+// within moments of page 1 (two lookup attempts of 2 s at most), so that wait is longer. The
+// app's request timeout is 10 s.
+const AUDIENCE_SNAPSHOT_PAGE_WAIT_MS = 4_500;
 // Refills are background work that share a 3-connection Prisma pool with foreground
 // reads, so they run one at a time per process and fan their sources out only two wide.
 const PERSONALIZED_REFILL_MAX_QUEUED = 6;
@@ -313,6 +317,9 @@ export class GetRecommendedReelsUseCase {
               needsAudience
                 ? Array.isArray(candidate.excludedUserIds)
                 : candidate.personalizedRefillComplete === true,
+            needsAudience
+              ? AUDIENCE_SNAPSHOT_PAGE_WAIT_MS
+              : PERSONALIZED_REFILL_PAGE_WAIT_MS,
           );
 
           if (ready) {
@@ -661,8 +668,9 @@ export class GetRecommendedReelsUseCase {
       algorithmVersion: string;
     },
     isReady: (session: RecommendationFeedSession) => boolean,
+    waitMs: number = PERSONALIZED_REFILL_PAGE_WAIT_MS,
   ): Promise<RecommendationFeedSession | null> {
-    const deadline = Date.now() + PERSONALIZED_REFILL_PAGE_WAIT_MS;
+    const deadline = Date.now() + waitMs;
 
     while (Date.now() < deadline) {
       const session = await this.feedSessionRepository.get(input.feedSessionId);
@@ -681,7 +689,7 @@ export class GetRecommendedReelsUseCase {
     }
 
     this.logger.warn(
-      `Recommendation session ${input.feedSessionId} not ready within ${PERSONALIZED_REFILL_PAGE_WAIT_MS}ms; returning without it`,
+      `Recommendation session ${input.feedSessionId} not ready within ${waitMs}ms; returning without it`,
     );
     return null;
   }
@@ -729,7 +737,7 @@ export class GetRecommendedReelsUseCase {
     const snapshotMs = Date.now() - startedAt;
     if (snapshotMs >= PERSONALIZED_REFILL_PAGE_WAIT_MS) {
       this.logger.warn(
-        `Audience snapshot for ${input.feedSessionId} took ${snapshotMs}ms (friend audience ${audienceMs}ms); pages wait at most ${PERSONALIZED_REFILL_PAGE_WAIT_MS}ms for it`,
+        `Audience snapshot for ${input.feedSessionId} took ${snapshotMs}ms (friend audience ${audienceMs}ms); pages wait at most ${AUDIENCE_SNAPSHOT_PAGE_WAIT_MS}ms for it`,
       );
     }
     const gateRequestedAt = Date.now();

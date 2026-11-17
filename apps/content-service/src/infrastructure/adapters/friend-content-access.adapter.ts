@@ -6,7 +6,17 @@ import type { IFriendContentAccessService } from '@content/domain/interfaces/fri
 import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ClientProxy } from '@nestjs/microservices';
-import { catchError, firstValueFrom, of, throwError, timeout } from 'rxjs';
+import {
+  TimeoutError,
+  catchError,
+  firstValueFrom,
+  of,
+  retry,
+  throwError,
+  timeout,
+} from 'rxjs';
+
+const FEED_AUDIENCE_ATTEMPT_TIMEOUT_MS = 2_000;
 
 // The audience (friends plus blocked/blocking users) is fetched from friend-service on
 // every friends feed, tag page and recommendation refill. Reusing it for a few seconds
@@ -57,7 +67,15 @@ export class FriendContentAccessAdapter implements IFriendContentAccessService {
           userId: viewerId,
         })
         .pipe(
-          timeout(5000),
+          // The lookup answers in about 0.8 s, but a request is now and then lost or stuck
+          // behind the other node for the whole old 5 s timeout while a feed page waits for it.
+          // A second attempt after 2 s usually succeeds; any other error is not retried.
+          timeout(FEED_AUDIENCE_ATTEMPT_TIMEOUT_MS),
+          retry({
+            count: 1,
+            delay: (error: unknown) =>
+              error instanceof TimeoutError ? of(0) : throwError(() => error),
+          }),
           catchError((error: unknown) => {
             this.logger.warn(
               `Friend feed audience lookup failed: ${this.describeError(

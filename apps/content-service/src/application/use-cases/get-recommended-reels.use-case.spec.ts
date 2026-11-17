@@ -878,6 +878,35 @@ describe('GetRecommendedReelsUseCase while the personalized refill is building',
     expect(result.nextCursor?.id).toBe('reel-2');
   });
 
+  it('waits up to 4.5 s for a missing audience snapshot, longer than for the refill itself', async () => {
+    jest.useFakeTimers();
+    const reels = makeReels(4);
+    const withoutAudience: RecommendationFeedSession = {
+      ...incompleteSession(reels),
+    };
+    delete withoutAudience.excludedUserIds;
+    const withAudience: RecommendationFeedSession = {
+      ...incompleteSession(reels),
+      excludedUserIds: [],
+    };
+    const harness = createHarness({ cachedSession: withoutAudience, reels });
+    // The snapshot lands about 3 s in: past the 2 s refill wait, inside the audience wait.
+    const landsAt = Date.now() + 3_000;
+    harness.feedSessionRepository.get.mockImplementation(() =>
+      Promise.resolve(Date.now() >= landsAt ? withAudience : withoutAudience),
+    );
+
+    const pending = harness.useCase.execute({
+      viewerId: 'viewer-1',
+      feedSessionId: withoutAudience.feedSessionId,
+      limit: 2,
+    });
+    await jest.advanceTimersByTimeAsync(3_500);
+    const result = await pending;
+
+    expect(result.items.map((item) => item.id)).toEqual(['reel-1', 'reel-2']);
+  });
+
   it('saves the audience snapshot while the candidate pipeline is still running', async () => {
     const reels = makeReels(4);
     const harness = createHarness({ reels, refillLock: 'lock-token' });

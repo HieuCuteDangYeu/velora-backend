@@ -5,8 +5,11 @@ import {
 } from '@content/application/use-cases/get-reel-subtitles.use-case';
 import { ReelSubtitlesController } from './reel-subtitles.controller';
 
-const build = (execute: jest.Mock) =>
-  new ReelSubtitlesController({ execute } as never);
+const build = (execute: jest.Mock, preTranslate: jest.Mock = jest.fn()) =>
+  new ReelSubtitlesController(
+    { execute } as never,
+    { execute: preTranslate } as never,
+  );
 
 const payload = { reelId: 'r1', viewerId: 'u1', language: 'vi' };
 
@@ -74,5 +77,27 @@ describe('ReelSubtitlesController', () => {
       statusCode: 502,
       message: 'Subtitles could not be prepared: model down',
     });
+  });
+
+  describe('preTranslate', () => {
+    it('hands the reel to the pre-translation use case and returns its result', async () => {
+      const result = { translated: ['vi'], alreadyStored: ['en'], failed: [] };
+      const preTranslate = jest.fn().mockResolvedValue(result);
+      await expect(
+        build(jest.fn(), preTranslate).preTranslate({ reelId: ' r1 ' }),
+      ).resolves.toEqual(result);
+      expect(preTranslate).toHaveBeenCalledWith('r1');
+    });
+
+    it.each([undefined, {}, { reelId: '' }, { reelId: 'r1', extra: true }])(
+      'answers 400 for %p',
+      async (data) => {
+        const preTranslate = jest.fn();
+        expect(
+          await statusOf(build(jest.fn(), preTranslate).preTranslate(data)),
+        ).toMatchObject({ statusCode: 400 });
+        expect(preTranslate).not.toHaveBeenCalled();
+      },
+    );
   });
 });

@@ -91,6 +91,7 @@
     "ops:reindex:status": "node scripts/ops/reindex-status.cjs",
     "ops:reindex:visual-cohort": "node scripts/ops/reindex-visual-cohort.cjs",
     "ops:enrich:hls": "node scripts/ops/enrich-existing-hls.cjs",
+    "ops:pretranslate:subtitles": "node scripts/ops/pretranslate-reel-subtitles.cjs",
     "ops:rag:benchmark": "node scripts/ops/rag-hierarchy-benchmark.cjs",
     "ops:rag:readiness": "node scripts/ops/rag-production-readiness.cjs",
     "ops:rag:live-boundary": "node scripts/ops/validate-rag-live-boundary.cjs",

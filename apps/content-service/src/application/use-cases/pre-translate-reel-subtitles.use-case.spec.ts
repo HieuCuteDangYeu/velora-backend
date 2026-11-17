@@ -96,25 +96,64 @@ describe('PreTranslateReelSubtitlesUseCase', () => {
     expect(second.translate).not.toHaveBeenCalled();
   });
 
+  it('reports what it translated and what was already stored', async () => {
+    const { useCase } = build();
+    await expect(useCase.execute('reel-1')).resolves.toEqual({
+      translated: ['vi', 'en'],
+      alreadyStored: [],
+      failed: [],
+    });
+
+    const first = build();
+    await first.translator.track(
+      reelWith(chinese),
+      first.translator.sourceOf(reelWith(chinese)) as never,
+      'vi',
+    );
+    const saved = first.tracks.save.mock.calls[0][2] as StoredSubtitleTrack;
+    const second = build({ stored: saved });
+    // The stub returns the same stored track for every language.
+    await expect(second.useCase.execute('reel-1')).resolves.toEqual({
+      translated: [],
+      alreadyStored: ['vi', 'en'],
+      failed: [],
+    });
+    expect(second.translate).not.toHaveBeenCalled();
+  });
+
   it('never rejects: no reel, no transcript, a failing model or a failing lookup are all absorbed', async () => {
+    const empty = { translated: [], alreadyStored: [], failed: [] };
+
     const missing = build({ reel: null });
-    await expect(missing.useCase.execute('reel-1')).resolves.toBeUndefined();
+    await expect(missing.useCase.execute('reel-1')).resolves.toEqual({
+      ...empty,
+      skipped: 'reel_not_found',
+    });
 
     const silent = build({ reel: reelWith(undefined) });
-    await expect(silent.useCase.execute('reel-1')).resolves.toBeUndefined();
+    await expect(silent.useCase.execute('reel-1')).resolves.toEqual({
+      ...empty,
+      skipped: 'no_transcript',
+    });
     expect(silent.translate).not.toHaveBeenCalled();
 
     const failing = build({
       translate: jest.fn().mockRejectedValue(new Error('boom')),
     });
-    await expect(failing.useCase.execute('reel-1')).resolves.toBeUndefined();
     // One failed language does not stop the next one.
+    await expect(failing.useCase.execute('reel-1')).resolves.toEqual({
+      ...empty,
+      failed: ['vi', 'en'],
+    });
     expect(failing.translate).toHaveBeenCalledTimes(2);
     expect(failing.tracks.save).not.toHaveBeenCalled();
 
     const broken = build();
     broken.repository.findById.mockRejectedValue(new Error('db down'));
-    await expect(broken.useCase.execute('reel-1')).resolves.toBeUndefined();
+    await expect(broken.useCase.execute('reel-1')).resolves.toEqual({
+      ...empty,
+      skipped: 'error',
+    });
   });
 
   it('translates one reel at a time', async () => {

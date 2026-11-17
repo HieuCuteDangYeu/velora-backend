@@ -50,6 +50,16 @@ export class ReelSubtitleTranslator {
     };
   }
 
+  /** Whether a stored translation already matches the reel's current transcript. */
+  async hasCurrent(
+    reel: SubtitleTranslationReel,
+    source: SubtitleSource,
+    language: SubtitleTargetLanguage,
+  ): Promise<boolean> {
+    const stored = await this.tracks.find(reel.id, language);
+    return stored?.sourceHash === this.hashSource(source);
+  }
+
   /** The stored translation when it still matches the transcript, otherwise a fresh one that is stored. */
   async track(
     reel: SubtitleTranslationReel,

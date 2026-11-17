@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Exercises infra/friend-mail-node/deploy.sh against a fake docker: input validation,
 # a changed image, an unchanged image, and automatic rollback of an unhealthy one.
+# mail-service is the only service the node runs; a leftover friend-service entry in
+# release.env or on the node must never be pulled, recreated or reported.
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -49,19 +51,18 @@ sha_old="$(printf 'a%.0s' {1..40})"; sha_new="$(printf 'b%.0s' {1..40})"; sha_ba
 
 cat >"$tmp/stack/release.env" <<ENV
 DOCKERHUB_USERNAME=acme
-FRIEND_SERVICE_TAG=boot
+FRIEND_SERVICE_TAG=old
 MAIL_SERVICE_TAG=boot
 ENV
 cat >"$tmp/fake/images" <<IMG
-acme/friend-service:boot=id-friend-boot
-acme/mail-service:boot=id-mail-boot
+acme/friend-service:old=id-friend-old
 acme/friend-service:${sha_new}-amd64=id-friend-new
-acme/mail-service:${sha_new}-amd64=id-mail-boot
-acme/friend-service:${sha_bad}-amd64=id-friend-bad
+acme/mail-service:boot=id-mail-boot
+acme/mail-service:${sha_new}-amd64=id-mail-new
 acme/mail-service:${sha_bad}-amd64=id-mail-bad
 IMG
-printf 'friend-service=id-friend-boot\nmail-service=id-mail-boot\n' >"$tmp/fake/running"
-printf 'id-friend-bad\nid-mail-bad\n' >"$tmp/fake/bad"
+printf 'friend-service=id-friend-old\nmail-service=id-mail-boot\n' >"$tmp/fake/running"
+printf 'id-mail-bad\n' >"$tmp/fake/bad"
 : >"$tmp/fake/calls"
 
 run() { SSH_ORIGINAL_COMMAND="$1" bash "$script" >"$tmp/out" 2>&1; }
@@ -72,27 +73,27 @@ for bad in "" "deploy" "deploy latest" "deploy ${sha_new%?}" "deploy ${sha_new};
 done
 [[ ! -s "$tmp/fake/calls" ]] || fail "rejected commands must not touch docker"
 
-# New friend image, mail image id unchanged: only friend is recreated.
+# New mail image: only mail is recreated; friend (not managed here) is never touched.
 run "deploy $sha_new" || fail "deploy of a healthy release must succeed"
-grep -q "^up friend-service acme/friend-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "friend was not recreated"
-grep -q "^up mail-service" "$tmp/fake/calls" && fail "mail has the same image and must not restart"
-grep -q "^FRIEND_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "friend tag not recorded"
-grep -q "^MAIL_SERVICE_TAG=boot$" "$tmp/stack/release.env" || fail "mail tag must stay"
-grep -q "rmi acme/friend-service:boot" "$tmp/fake/calls" && fail "previous image must be kept for rollback"
+grep -q "^up mail-service acme/mail-service:${sha_new}-amd64$" "$tmp/fake/calls" || fail "mail was not recreated"
+grep -q "friend-service" "$tmp/fake/calls" && fail "friend-service must not be touched"
+grep -q "^MAIL_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "mail tag not recorded"
+grep -q "^FRIEND_SERVICE_TAG=old$" "$tmp/stack/release.env" || fail "friend tag must stay as it was"
+grep -q "rmi acme/mail-service:boot" "$tmp/fake/calls" && fail "previous image must be kept for rollback"
 
 # Repeating the same release is a no-op.
 : >"$tmp/fake/calls"; run "deploy $sha_new" || fail "repeat must succeed"
 [[ ! -s "$tmp/fake/calls" ]] || fail "repeat must not recreate anything"
 
-# Unhealthy release: both services roll back and the run fails.
+# Unhealthy release: mail rolls back to its previous image and the run fails.
 if run "deploy $sha_bad"; then fail "unhealthy release must exit non-zero"; fi
-grep -q "^FRIEND_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "friend must roll back to its previous tag"
-grep -q "^MAIL_SERVICE_TAG=boot$" "$tmp/stack/release.env" || fail "mail must roll back to its previous tag"
-grep -q "^friend-service=id-friend-new$" "$tmp/fake/running" || fail "friend must be running the old image"
+grep -q "^MAIL_SERVICE_TAG=${sha_new}-amd64$" "$tmp/stack/release.env" || fail "mail must roll back to its previous tag"
+grep -q "^mail-service=id-mail-new$" "$tmp/fake/running" || fail "mail must be running the previous image"
 
-# Missing image: reported, other service still handled, non-zero exit.
+# Missing image: reported and non-zero exit.
 if run "deploy $(printf 'd%.0s' {1..40})"; then fail "missing image must exit non-zero"; fi
 
 run status || fail "status must succeed"
-grep -q '^friend-service tag=' "$tmp/out" || fail "status output"
+grep -q '^mail-service tag=' "$tmp/out" || fail "status output"
+grep -q 'friend-service' "$tmp/out" && fail "status must not report friend-service"
 echo "friend-mail node deploy script behaves as designed"

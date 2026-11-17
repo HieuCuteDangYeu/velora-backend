@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Rolls friend-service and mail-service on velora-node-2 to the images the Homelab CD
-# built for one commit. Installed as /usr/local/sbin/velora-friend-mail-deploy and
+# Rolls mail-service on velora-node-2 to the image the Homelab CD built for one commit
+# (friend-service moved back to the homelab on 2026-11-17 and is not touched here). Installed as /usr/local/sbin/velora-friend-mail-deploy and
 # used as the SSH forced command of the velora-deploy user, so the only things the CD
 # key can do are:
 #   deploy <40-hex commit sha>   pull <user>/<service>:<sha>-amd64 and recreate what changed
@@ -13,7 +13,7 @@ HEALTH_TIMEOUT="${VELORA_HEALTH_TIMEOUT:-90}"
 STABLE_SECONDS="${VELORA_STABLE_SECONDS:-10}"
 READY_PATTERN='Nest microservice successfully started'
 # One image and one container per entry (containers_of keeps the multi-container hook).
-SERVICES=(friend-service mail-service)
+SERVICES=(mail-service)
 RELEASE_ENV="$STACK_DIR/release.env"
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }

@@ -1,21 +1,26 @@
-# friend-service and mail-service on velora-node-2
+# mail-service on velora-node-2
 
-Since 2026-11-13 these two services run on `velora-node-2` (France, `144.91.101.1`,
-tailnet `100.86.68.16`) instead of the homelab. Neither needs the lowest latency: both are
-RabbitMQ RPC consumers (`friend_queue`, `mail_queue`) with no HTTP port, so moving them
-only adds the homelab to node-2 round trip (about 220 ms) to each friend or mail request.
+Since 2026-11-13 `mail-service` runs on `velora-node-2` (France, `144.91.101.1`, tailnet
+`100.86.68.16`) instead of the homelab. It does not need the lowest latency: it is a RabbitMQ RPC
+consumer (`mail_queue`) with no HTTP port, so the move only adds the homelab to node-2 round trip
+(about 220 ms) to each mail request.
 
-They are not in the homelab compose file and the homelab deploy script ignores this folder
-(`infra/friend-mail-node/*`). The deploy script no longer checks `friend_queue` or
-`mail_queue` consumers either, so a node-2 outage cannot fail or roll back a homelab release.
+**friend-service is back on the homelab (2026-11-17).** It answers the audience and access lookups
+behind the reel feeds, tag pages and context windows. A probe over RabbitMQ with no database work
+took 240-570 ms to reach it on node-2, and its database round trips were slower than the homelab's.
+It is a normal Compose service again (`FRIEND_DATABASE_CONNECTION_LIMIT`, default 2) and the deploy
+controller checks `friend_queue` again. The folder name stays for history.
+
+`mail-service` is not in the homelab compose file and the homelab deploy script ignores this folder
+(`infra/friend-mail-node/*`). The deploy script does not check `mail_queue` consumers either, so a
+node-2 outage cannot fail or roll back a homelab release.
 
 | Item | Value |
 | --- | --- |
 | Stack | `/opt/velora/friend-mail/`: `compose.yaml` (this folder), `.env`, `release.env`, `.deploy.lock` |
-| Images | `<dockerhub user>/friend-service:<sha>-amd64` and `.../mail-service:<sha>-amd64`, built by the Homelab CD |
-| Containers | `friend-service`, `mail-service` (names match the Compose service names Loki labels use) |
+| Image | `<dockerhub user>/mail-service:<sha>-amd64`, built by the Homelab CD |
+| Container | `mail-service` (the name matches the Compose service name Loki labels use) |
 | Broker | homelab RabbitMQ, reached as `rabbitmq` through `extra_hosts` to `100.102.228.48` (tailnet) |
-| Database | Aiven `friend-service` database; mail has none |
 | Mail provider | Resend over HTTPS |
 
 ## Media workers do not run here (tried 2026-11-15, removed)
@@ -43,14 +48,14 @@ host from that. The amd64 image is still built by the CD (it is what a laptop wo
 
 `.github/workflows/cd.yml` (Homelab CD, after Homelab CI passes on `master`):
 
-1. `build-and-push-node2-images` builds `friend-service`, `mail-service` and (for other amd64 hosts, not this node) `media-processing-service` for
+1. `build-and-push-node2-images` builds `mail-service` and (for other amd64 hosts, not this node) `media-processing-service` for
    `linux/amd64` (node-2 is x86_64, the homelab images are arm64) and pushes
    `<user>/<service>:<commit sha>-amd64` to Docker Hub.
 2. `deploy-node2` connects as `velora-deploy@144.91.101.1` with a key that is only allowed
    to run `/usr/local/sbin/velora-friend-mail-deploy` (a copy of `deploy.sh`) and sends
    `deploy <sha>`.
 
-`deploy.sh` then, for each image (the node runs friend and mail only): pulls the image, **skips it if the running container
+`deploy.sh` then, for each image (the node runs mail only): pulls the image, **skips it if the running container
 already has the same image id**, otherwise records the new tag in `release.env`, recreates
 only that container, and waits until it is running, has not restarted and logged
 `Nest microservice successfully started`. If that does not happen within 90 s it puts the
@@ -70,7 +75,7 @@ The two jobs are independent of `promote-homelab`: neither can hold back the oth
   ed25519 host key, read from the node itself). Rotate by generating a new key, replacing
   the `authorized_keys` line and the secret.
 - `/opt/velora/friend-mail` is group-writable by `velora-deploy`; `.env` is `640 root:velora-deploy`.
-- `release.env` holds `DOCKERHUB_USERNAME`, `FRIEND_SERVICE_TAG`, `MAIL_SERVICE_TAG` and .
+- `release.env` holds `DOCKERHUB_USERNAME` and `MAIL_SERVICE_TAG`.
   The first containers ran a locally built image that was tagged `boot`.
 
 ### Changing the script or the compose file
@@ -91,15 +96,11 @@ ssh root@144.91.101.1 'install -m 755 /tmp/deploy.sh /usr/local/sbin/velora-frie
 
 ```text
 RABBITMQ_URL=...            # same value the homelab uses (host name rabbitmq)
-FRIEND_DATABASE_URL=...     # friend-service
 RESEND_API_KEY=...          # mail-service
 RESEND_FROM_EMAIL=...       # mail-service
-DEFAULT_ADMIN_ID=...        # friend-service: system user UUIDs required by libs/common
-BOT_USER_ID=...             # seed constants (same values as the homelab; not secrets)
 ```
 
-Nothing else from the homelab `.env` is needed (friend-service refuses to start without the
-two UUIDs). Change a value here and on the homelab together.
+Nothing else from the homelab `.env` is needed. Change a value here and on the homelab together.
 
 ## Operate
 
@@ -107,11 +108,29 @@ two UUIDs). Change a value here and on the homelab together.
 ssh root@144.91.101.1
 cd /opt/velora/friend-mail
 docker compose --env-file release.env ps
-docker compose --env-file release.env logs --tail=100 friend-service mail-service
+docker compose --env-file release.env logs --tail=100 mail-service
 docker compose --env-file release.env stop      # consumers leave; requests wait in RabbitMQ
 ```
 
 Roll back by hand: edit the tag in `release.env`, then
-`docker compose --env-file release.env up -d`. While the stack is stopped, friend requests
-from the gateway time out and queued mail waits in `mail_queue` until a consumer returns.
+`docker compose --env-file release.env up -d`. While the stack is stopped, queued mail waits in
+`mail_queue` until a consumer returns.
 Logs reach the Velora Logs page through the node's Alloy shipper (`infra/vps-agent`).
+
+## Moving friend-service back to the homelab (2026-11-17), one-time steps on this node
+
+The node still ran the old friend container, a competing consumer on `friend_queue`, until
+this was done by hand as root (the CD key cannot do it):
+
+```sh
+cd /opt/velora/friend-mail
+docker compose --env-file release.env stop friend-service      # the homelab one now serves it
+scp infra/friend-mail-node/compose.yaml root@144.91.101.1:/opt/velora/friend-mail/compose.yaml   # from the repo
+scp infra/friend-mail-node/deploy.sh root@144.91.101.1:/tmp/deploy.sh
+ssh root@144.91.101.1 'install -m 755 /tmp/deploy.sh /usr/local/sbin/velora-friend-mail-deploy && rm /tmp/deploy.sh'
+docker compose --env-file release.env up -d --remove-orphans   # removes the stopped friend container
+```
+
+The friend lines in `.env` and `release.env` are unused afterwards and can stay or go.
+Rollback: `docker compose` a friend service back into this folder's compose file and restore the
+homelab one's removal (git history: ea7a43d3 moved it here).

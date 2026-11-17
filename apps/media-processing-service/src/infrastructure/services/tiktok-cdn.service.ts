@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+  HlsStreamingUpload,
   ITikTokCdnService,
   TikTokCdnImageResult,
   TikTokCdnPingResult,
@@ -25,6 +26,8 @@ const PNG_MASK_SIZE = 67;
 // segments), and only repeated failures send the reel to R2.
 const DEFAULT_CDN_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_CDN_UPLOAD_BUDGET_MS = 120_000;
+const CDN_UPLOAD_CONCURRENCY = 3;
+const CDN_STREAMING_POLL_MS = 300;
 const DEFAULT_CDN_UPLOAD_RETRIES = 2;
 const CDN_RETRY_BACKOFF_MS = 300;
 const CDN_PING_TIMEOUT_MS = 15_000;
@@ -208,18 +211,114 @@ export class TikTokCdnService implements ITikTokCdnService {
     }
 
     const uploadResults: SegmentUploadResult[] = [];
-    const concurrency = 3;
     const deadline = Date.now() + this.uploadBudgetMs;
-
-    for (let i = 0; i < tsFiles.length; i += concurrency) {
-      const batch = tsFiles.slice(i, i + concurrency);
-      const batchResults = await Promise.all(
-        batch.map(async (filePath) => {
-          const filename = path.basename(filePath);
-          return await this.uploadSegment(filePath, filename, deadline);
-        }),
+    for (let i = 0; i < tsFiles.length; i += CDN_UPLOAD_CONCURRENCY) {
+      uploadResults.push(
+        ...(await this.uploadSegmentBatch(
+          tsFiles.slice(i, i + CDN_UPLOAD_CONCURRENCY),
+          deadline,
+        )),
       );
-      uploadResults.push(...batchResults);
+    }
+
+    return this.finishHlsUpload(hlsDir, uploadResults);
+  }
+
+  /**
+   * Sends the segments of a directory that ffmpeg is still filling. The encoder writes a segment
+   * under a temporary name and renames it when it is complete (hls_flags temp_file), so every
+   * `.ts` file seen here is whole. Segments go out while the rest of the reel is encoded, and
+   * `finish()` only has the last few left to send.
+   *
+   * While the encoder runs, a request is bounded by its own timeout and retries; the total budget
+   * (`TIKTOK_CDN_UPLOAD_BUDGET_MS`) starts when `finish()` is called, so a long reel is not cut off
+   * just because encoding it takes longer than the budget.
+   */
+  startHlsStreamingUpload(hlsDir: string): HlsStreamingUpload {
+    if (!this.validateConfig()) {
+      throw new Error('TikTok CDN credentials are not configured.');
+    }
+
+    const uploaded = new Map<string, SegmentUploadResult>();
+    let stopped = false;
+    let failure: unknown;
+    let deadline: number | undefined;
+
+    const sendNewSegments = async (honourStop: boolean): Promise<void> => {
+      const waiting = this.findFilesRecursively(hlsDir, '.ts').filter(
+        (file) => !uploaded.has(path.resolve(file)),
+      );
+      for (let i = 0; i < waiting.length; i += CDN_UPLOAD_CONCURRENCY) {
+        if (honourStop && stopped) return;
+        const results = await this.uploadSegmentBatch(
+          waiting.slice(i, i + CDN_UPLOAD_CONCURRENCY),
+          deadline,
+        );
+        for (const result of results) uploaded.set(result.localPath, result);
+      }
+    };
+
+    const background = (async () => {
+      while (!stopped) {
+        try {
+          await sendNewSegments(true);
+        } catch (error: unknown) {
+          failure = error;
+          return;
+        }
+        if (!stopped) await this.pause(CDN_STREAMING_POLL_MS);
+      }
+    })();
+
+    return {
+      finish: async () => {
+        stopped = true;
+        await background;
+        if (failure !== undefined) throw failure;
+        deadline = Date.now() + this.uploadBudgetMs;
+        await sendNewSegments(false);
+        return this.finishHlsUpload(hlsDir, [...uploaded.values()]);
+      },
+      abort: () => {
+        stopped = true;
+      },
+    };
+  }
+
+  private async uploadSegmentBatch(
+    files: string[],
+    deadline: number | undefined,
+  ): Promise<SegmentUploadResult[]> {
+    return await Promise.all(
+      files.map((filePath) =>
+        this.uploadSegment(filePath, path.basename(filePath), deadline),
+      ),
+    );
+  }
+
+  private pause(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // Points the playlists at the uploaded segments and removes the local copies.
+  private finishHlsUpload(
+    hlsDir: string,
+    uploadResults: SegmentUploadResult[],
+  ): TikTokCdnUploadResult {
+    const tsFiles = this.findFilesRecursively(hlsDir, '.ts');
+    if (tsFiles.length === 0) {
+      throw new Error(`No .ts segments found in directory: ${hlsDir}`);
+    }
+    const missing = tsFiles.filter(
+      (file) =>
+        !uploadResults.some(
+          (result) => result.localPath === path.resolve(file),
+        ),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `${missing.length} segment(s) were not uploaded to the TikTok CDN, first: ${path.basename(missing[0])}`,
+      );
     }
 
     const m3u8Files = this.findFilesRecursively(hlsDir, '.m3u8');
@@ -246,13 +345,10 @@ export class TikTokCdnService implements ITikTokCdnService {
       m3u8Files.find((f) => path.basename(f) === 'index.m3u8') ||
       m3u8Files[0];
 
-    const masterContent = fs.readFileSync(masterFile, 'utf8');
-    const segmentUrls = uploadResults.map((r) => r.remoteUrl);
-
     return {
-      playlistContent: masterContent,
+      playlistContent: fs.readFileSync(masterFile, 'utf8'),
       segmentCount: uploadResults.length,
-      segmentUrls,
+      segmentUrls: uploadResults.map((r) => r.remoteUrl),
     };
   }
 

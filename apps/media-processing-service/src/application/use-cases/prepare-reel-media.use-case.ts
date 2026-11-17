@@ -19,7 +19,10 @@ import type {
   VideoMetadata,
 } from '../../domain/interfaces/video-processing.service.interface';
 import * as path from 'node:path';
-import type { ITikTokCdnService } from '../../domain/interfaces/tiktok-cdn.service.interface';
+import type {
+  HlsStreamingUpload,
+  ITikTokCdnService,
+} from '../../domain/interfaces/tiktok-cdn.service.interface';
 import { formatProcessingError } from '../utils/format-processing-error';
 import {
   ClassifyReelMediaUseCase,
@@ -123,6 +126,7 @@ export class PrepareReelMediaUseCase {
     let classification: ReelMediaClassification | undefined;
     let processingClassification: ReelMediaClassification | undefined;
     let processingTrim: ReelMediaTrim | undefined;
+    let streamUpload: HlsStreamingUpload | undefined;
     const totalMediaTimer = this.processingMetrics.startStage(
       data.metricsContext,
       'TOTAL_MEDIA',
@@ -260,6 +264,19 @@ export class PrepareReelMediaUseCase {
         data.metricsContext,
         'FFMPEG_TRANSCODE',
       );
+      const isTikTokCdnEnabled =
+        this.configService.get<string>('TIKTOK_CDN_ENABLED') !== 'false' &&
+        this.tiktokCdnService.validateConfig();
+      // Finished segments go to the CDN while ffmpeg is still encoding the rest, so only the last
+      // few are left to send once the encode ends.
+      if (
+        isTikTokCdnEnabled &&
+        this.configService.get<string>('MEDIA_HLS_STREAM_UPLOAD') !== 'false'
+      ) {
+        streamUpload = this.tiktokCdnService.startHlsStreamingUpload(
+          data.hlsOutputDir,
+        );
+      }
       const transcodeResult = await this.videoProcessingService.transcodeToHls(
         data.inputPath,
         data.hlsOutputDir,
@@ -300,15 +317,11 @@ export class PrepareReelMediaUseCase {
         'HLS_UPLOAD',
       );
 
-      const isTikTokCdnEnabled =
-        this.configService.get<string>('TIKTOK_CDN_ENABLED') !== 'false' &&
-        this.tiktokCdnService.validateConfig();
-
       if (isTikTokCdnEnabled) {
         try {
-          const cdnResult = await this.tiktokCdnService.uploadHlsDirectory(
-            data.hlsOutputDir,
-          );
+          const cdnResult = streamUpload
+            ? await streamUpload.finish()
+            : await this.tiktokCdnService.uploadHlsDirectory(data.hlsOutputDir);
           await this.mediaStorageService.uploadHlsDirectory(
             data.hlsOutputDir,
             storagePrefix,
@@ -317,6 +330,7 @@ export class PrepareReelMediaUseCase {
             hlsObjectCount: cdnResult.segmentCount,
             hlsTotalBytes: hlsStats.totalBytes,
             tiktokCdn: true,
+            streamedDuringEncode: Boolean(streamUpload),
           });
         } catch (error: unknown) {
           this.logger.warn(
@@ -440,6 +454,7 @@ export class PrepareReelMediaUseCase {
         trim: encodingProfile.trim,
       };
     } catch (error: unknown) {
+      streamUpload?.abort();
       totalMediaTimer.fail(
         error instanceof ReelSourceMediaValidationError
           ? error.errorCode

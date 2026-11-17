@@ -209,3 +209,117 @@ describe('TikTok adaptive playlist upload', () => {
     ).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe('TikTok streaming upload while ffmpeg encodes', () => {
+  let directory: string;
+  const originalFetch = global.fetch;
+  const wait = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'velora-cdn-stream-'));
+    fs.mkdirSync(path.join(directory, '0'));
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+
+  const service = () =>
+    new TikTokCdnService(
+      new ConfigService({
+        TIKTOK_CDN_UPLOAD_ENDPOINT: 'https://upload.example',
+        TIKTOK_CDN_CSRF_TOKEN: 'test',
+        TIKTOK_CDN_UUID: 'test',
+        TIKTOK_CDN_COOKIE: 'test',
+        TIKTOK_CDN_UPLOAD_RETRIES: '0',
+      }),
+    );
+
+  const writeSegment = (index: number) =>
+    fs.writeFileSync(
+      path.join(directory, '0', `live_00000${index}.ts`),
+      `transport-${index}`,
+    );
+
+  it('sends segments as they are finished, ignores unfinished ones, and finishes the playlists at the end', async () => {
+    const sent: string[] = [];
+    global.fetch = jest.fn((_url, init) => {
+      const name = (init?.body as FormData).get('Filedata') as File;
+      if (name.name.startsWith('live_')) sent.push(name.name);
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            code: 0,
+            data: { url: `https://cdn.example/${sent.length}.png` },
+          }),
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    const upload = service().startHlsStreamingUpload(directory);
+    writeSegment(0);
+    // ffmpeg writes a segment under a temporary name until it is complete.
+    fs.writeFileSync(
+      path.join(directory, '0', 'live_000001.ts.tmp'),
+      'partial',
+    );
+    await wait(900);
+    expect(sent).toEqual(['live_000000.png']);
+
+    writeSegment(1);
+    fs.rmSync(path.join(directory, '0', 'live_000001.ts.tmp'));
+    fs.writeFileSync(
+      path.join(directory, '0', 'stream.m3u8'),
+      '#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:2,\nlive_000000.ts\n#EXTINF:2,\nlive_000001.ts\n#EXT-X-ENDLIST\n',
+    );
+    fs.writeFileSync(
+      path.join(directory, 'master.m3u8'),
+      '#EXTM3U\n0/stream.m3u8\n',
+    );
+
+    const result = await upload.finish();
+
+    expect(sent).toEqual(['live_000000.png', 'live_000001.png']);
+    expect(result.segmentCount).toBe(2);
+    const playlist = fs.readFileSync(
+      path.join(directory, '0/stream.m3u8'),
+      'utf8',
+    );
+    expect(playlist).toContain('https://cdn.example/1.png');
+    expect(playlist).toContain('https://cdn.example/2.png');
+    expect(fs.existsSync(path.join(directory, '0/live_000000.ts'))).toBe(false);
+  });
+
+  it('rejects when a segment was refused and leaves the files for the R2 fallback', async () => {
+    global.fetch = jest.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ code: 40102, msg: 'permission' })),
+      ),
+    ) as unknown as typeof fetch;
+
+    const upload = service().startHlsStreamingUpload(directory);
+    writeSegment(0);
+    fs.writeFileSync(
+      path.join(directory, '0', 'stream.m3u8'),
+      '#EXTM3U\nlive_000000.ts\n',
+    );
+    fs.writeFileSync(
+      path.join(directory, 'master.m3u8'),
+      '#EXTM3U\n0/stream.m3u8\n',
+    );
+    await wait(700);
+
+    await expect(upload.finish()).rejects.toThrow();
+    expect(fs.existsSync(path.join(directory, '0/live_000000.ts'))).toBe(true);
+  });
+
+  it('stops polling after abort', async () => {
+    global.fetch = jest.fn() as unknown as typeof fetch;
+    const upload = service().startHlsStreamingUpload(directory);
+    upload.abort();
+    writeSegment(0);
+    await wait(700);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});

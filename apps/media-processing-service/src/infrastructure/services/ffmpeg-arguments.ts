@@ -158,7 +158,9 @@ export function buildHlsTranscodeArguments(input: {
     '-hls_segment_type',
     'mpegts',
     '-hls_flags',
-    'independent_segments',
+    // temp_file: a segment only gets its final name once it is complete, so the CDN uploader can
+    // send finished segments while ffmpeg is still encoding the rest of the reel.
+    'independent_segments+temp_file',
     '-hls_list_size',
     '0',
     '-hls_segment_filename',

@@ -133,3 +133,45 @@ describe('RecommendationRepository trending scan sharing', () => {
     ]);
   });
 });
+
+describe('RecommendationRepository engagement sharing', () => {
+  function snapshotRepository() {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const repository = new RecommendationRepository({
+      reelViewEvent: { findMany },
+      reel: { findMany: jest.fn().mockResolvedValue([]) },
+    } as never);
+    const engagementCalls = () =>
+      findMany.mock.calls.filter(
+        ([args]) =>
+          args.where.reelId !== undefined && args.where.userId === undefined,
+      ).length;
+    return { repository, engagementCalls };
+  }
+  const request = (viewerId: string, reelIds: string[]) => ({
+    viewerId,
+    reelIds,
+    feedSessionId: '2f628c36-e32d-4b0c-8df5-c1f91087a001',
+  });
+
+  it('reads one week of engagement once for viewers whose candidates are the same reels', async () => {
+    const { repository, engagementCalls } = snapshotRepository();
+
+    await Promise.all([
+      repository.loadRankingSnapshot(request('viewer-1', ['a', 'b', 'c'])),
+      repository.loadRankingSnapshot(request('viewer-2', ['c', 'b', 'a'])),
+    ]);
+    await repository.loadRankingSnapshot(request('viewer-3', ['a', 'b', 'c']));
+
+    expect(engagementCalls()).toBe(1);
+  });
+
+  it('reads engagement again for a different set of reels', async () => {
+    const { repository, engagementCalls } = snapshotRepository();
+
+    await repository.loadRankingSnapshot(request('viewer-1', ['a', 'b']));
+    await repository.loadRankingSnapshot(request('viewer-1', ['a', 'b', 'c']));
+
+    expect(engagementCalls()).toBe(2);
+  });
+});

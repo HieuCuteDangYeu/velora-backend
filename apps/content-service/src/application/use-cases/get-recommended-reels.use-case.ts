@@ -971,13 +971,27 @@ export class GetRecommendedReelsUseCase {
     }
 
     const mergedCandidates = this.mergeCandidates(allCandidates);
-    const recentlySeenReelIds =
+    const mergedReelIds = mergedCandidates.map((candidate) => candidate.reelId);
+    // None of these three needs another's result, and each is a few round trips to a database
+    // 70 ms away, so they run together instead of one after the other. The ranking snapshot is
+    // asked about every merged candidate; the few that turn out ineligible are never ranked.
+    const [recentlySeenReelIds, eligibleReels, snapshot] = await Promise.all([
       input.excludeRecentlySeen === false
-        ? new Set<string>()
-        : await this.recommendationRepository.findRecentlySeenReelIds(
+        ? Promise.resolve(new Set<string>())
+        : this.recommendationRepository.findRecentlySeenReelIds(
             input.viewerId,
             new Date(Date.now() - 24 * 60 * 60 * 1000),
-          );
+          ),
+      this.recommendationRepository.findEligibleReelsByIds(
+        mergedReelIds,
+        input.excludedUserIds,
+      ),
+      this.recommendationRepository.loadRankingSnapshot({
+        viewerId: input.viewerId,
+        reelIds: mergedReelIds,
+        feedSessionId: input.feedSessionId,
+      }),
+    ]);
     const unseenCandidates = mergedCandidates.filter(
       (candidate) => !recentlySeenReelIds.has(candidate.reelId),
     );
@@ -988,11 +1002,6 @@ export class GetRecommendedReelsUseCase {
       input.excludeRecentlySeen === false
         ? mergedCandidates
         : [...unseenCandidates, ...seenFallbackCandidates];
-    const eligibleReels =
-      await this.recommendationRepository.findEligibleReelsByIds(
-        eligibleCandidates.map((candidate) => candidate.reelId),
-        input.excludedUserIds,
-      );
     const reelById = new Map(eligibleReels.map((reel) => [reel.id, reel]));
     const candidatesWithReels = eligibleCandidates
       .map((candidate) => {
@@ -1008,11 +1017,6 @@ export class GetRecommendedReelsUseCase {
           reel: Reel;
         } => item !== null,
       );
-    const snapshot = await this.recommendationRepository.loadRankingSnapshot({
-      viewerId: input.viewerId,
-      reelIds: candidatesWithReels.map((item) => item.reel.id),
-      feedSessionId: input.feedSessionId,
-    });
     const rankedItems = candidatesWithReels
       .map(({ candidate, reel }) =>
         this.rankCandidate(reel, candidate, snapshot),

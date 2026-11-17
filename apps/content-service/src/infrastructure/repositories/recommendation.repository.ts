@@ -12,6 +12,7 @@ import { mapReelLegacyStatus } from '@content/domain/reel-status-compatibility.m
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
 import { Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/content-client';
 
 const REEL_SELECT = {
@@ -86,6 +87,16 @@ interface PositiveProfile {
 const POSITIVE_PROFILE_MEMO_TTL_MS = 10_000;
 // Trending is a week of events; a minute of staleness does not change what is trending.
 const TRENDING_SCORES_TTL_MS = 60_000;
+const ENGAGEMENT_EVENTS_TTL_MS = 60_000;
+
+interface EngagementEventRow {
+  reelId: string;
+  eventType: string;
+  percentageWatched: number | null;
+  completed: boolean;
+  replayed: boolean;
+  skipped: boolean;
+}
 
 @Injectable()
 export class RecommendationRepository implements IRecommendationRepository {
@@ -99,6 +110,15 @@ export class RecommendationRepository implements IRecommendationRepository {
   private readonly trendingScores = new TtlPromiseCache<Map<string, number>>(
     TRENDING_SCORES_TTL_MS,
     1,
+  );
+
+  // Engagement over the last week of the candidate reels does not depend on the viewer, and
+  // for a small catalog every viewer's candidates are the same reels, so concurrent and
+  // back-to-back refills share the load (up to 20,000 rows). A minute of staleness is
+  // invisible in completion and skip rates.
+  private readonly engagementEvents = new TtlPromiseCache<EngagementEventRow[]>(
+    ENGAGEMENT_EVENTS_TTL_MS,
+    4,
   );
 
   constructor(private readonly prisma: PrismaService) {}
@@ -659,6 +679,12 @@ export class RecommendationRepository implements IRecommendationRepository {
     return new Set(events.map((event) => event.reelId));
   }
 
+  private engagementKey(reelIds: string[]): string {
+    return createHash('sha1')
+      .update([...new Set(reelIds)].sort().join(','))
+      .digest('hex');
+  }
+
   async loadRankingSnapshot(
     request: RecommendationRankingRequest,
   ): Promise<RecommendationRankingSnapshot> {
@@ -742,25 +768,27 @@ export class RecommendationRepository implements IRecommendationRepository {
         },
       }),
 
-      this.prisma.reelViewEvent.findMany({
-        where: {
-          reelId: {
-            in: request.reelIds,
+      this.engagementEvents.get(this.engagementKey(request.reelIds), () =>
+        this.prisma.reelViewEvent.findMany({
+          where: {
+            reelId: {
+              in: request.reelIds,
+            },
+            occurredAt: {
+              gte: engagementSince,
+            },
           },
-          occurredAt: {
-            gte: engagementSince,
+          take: 20_000,
+          select: {
+            reelId: true,
+            eventType: true,
+            percentageWatched: true,
+            completed: true,
+            replayed: true,
+            skipped: true,
           },
-        },
-        take: 20_000,
-        select: {
-          reelId: true,
-          eventType: true,
-          percentageWatched: true,
-          completed: true,
-          replayed: true,
-          skipped: true,
-        },
-      }),
+        }),
+      ),
 
       this.prisma.reelViewEvent.findMany({
         where: {

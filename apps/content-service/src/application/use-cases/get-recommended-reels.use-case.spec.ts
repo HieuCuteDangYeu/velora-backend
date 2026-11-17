@@ -1072,6 +1072,35 @@ describe('GetRecommendedReelsUseCase refill capacity', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it('asks for recently seen reels, eligibility and the ranking snapshot at the same time', async () => {
+    const harness = createHarness({ reels: makeReels(40) });
+    let releaseSeen!: (value: Set<string>) => void;
+    harness.recommendationRepository.findRecentlySeenReelIds.mockReturnValue(
+      new Promise<Set<string>>((resolve) => {
+        releaseSeen = resolve;
+      }),
+    );
+
+    const run = harness.useCase['buildPipeline'](pipelineInput);
+    await until(
+      () =>
+        harness.recommendationRepository.loadRankingSnapshot.mock.calls
+          .length === 1,
+    );
+
+    // The slowest of the three is still pending and the others are already on their way.
+    expect(
+      harness.recommendationRepository.findEligibleReelsByIds,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      harness.recommendationRepository.loadRankingSnapshot,
+    ).toHaveBeenCalledTimes(1);
+
+    releaseSeen(new Set());
+    const result = await run;
+    expect(result.items.length).toBeGreaterThan(0);
+  });
+
   describe('rerank stage', () => {
     // 40 reels: the refill excludes the 24 already seeded and still has 16 to rerank.
     function rerankHarness() {

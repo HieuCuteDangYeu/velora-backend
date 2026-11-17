@@ -5,6 +5,10 @@ services:
   langfuse-web:
     ports: !override
       - ${TAILNET_IP:?set TAILNET_IP in .env}:13000:3000
+    environment:
+      # The UI is published on a public hostname through the Cloudflare tunnel, so
+      # nobody may create their own account. Add users from Settings > Members.
+      AUTH_DISABLE_SIGNUP: 'true'
   langfuse-worker:
     ports: !reset []
   clickhouse:

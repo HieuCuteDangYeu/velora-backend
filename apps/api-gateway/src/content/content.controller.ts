@@ -11,6 +11,7 @@ import {
   UpdateReelSeriesDto,
 } from '@common/content/dtos/reel-series.dto';
 import { FriendsReelsQueryDto } from '@common/content/dtos/friends-reels-query.dto';
+import type { ReelSubtitlesResponse } from '@common/content/interfaces/reel-subtitles.interface';
 import { GetReelContextQueryDto } from '@common/content/dtos/get-reel-context.dto';
 import { ListReelSeriesQueryDto } from '@common/content/dtos/list-reel-series.dto';
 import { ListReelsQueryDto } from '@common/content/dtos/list-reels.dto';
@@ -62,7 +63,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClientProxy } from '@nestjs/microservices';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 import { catchError, lastValueFrom } from 'rxjs';
 import { ReelAuthorService } from './reel-author.service';
 
@@ -554,6 +560,35 @@ export class ContentController {
     }
 
     return this._enrichReel(reel, { includeTranscript: true });
+  }
+
+  @Get('reels/:id/subtitles')
+  @ApiOperation({
+    summary:
+      'Get timed subtitles for a reel in its spoken language ("original") or translated into Vietnamese ("vi") or English ("en")',
+  })
+  @ApiQuery({
+    name: 'lang',
+    required: false,
+    enum: ['original', 'vi', 'en'],
+    description:
+      'Defaults to original. A translation is made on first request and then stored.',
+  })
+  async getReelSubtitles(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') reelId: string,
+    @Query('lang') lang?: string,
+  ) {
+    return lastValueFrom(
+      this.contentClient
+        .send<ReelSubtitlesResponse>('content.get_reel_subtitles', {
+          reelId,
+          viewerId: request.user!.id,
+          isAdmin: request.user!.roles?.includes('ADMIN') === true,
+          language: lang,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
   }
 
   @Get('reels/:id/context')

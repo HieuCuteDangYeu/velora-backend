@@ -83,3 +83,42 @@ describe('AiApplicationConfigAdapter completion budgets', () => {
     },
   );
 });
+
+describe('AiApplicationConfigAdapter subtitle translation role', () => {
+  const adapterWith = (values: Record<string, string>) =>
+    new AiApplicationConfigAdapter({
+      get: jest.fn((key: string) => values[key]),
+    } as never);
+
+  it('uses its own model when configured', () => {
+    expect(
+      adapterWith({
+        AI_SUBTITLE_TRANSLATION_MODEL: ' translator ',
+        AI_ANSWER_MODEL: 'answerer',
+      }).model('SUBTITLE_TRANSLATION'),
+    ).toBe('translator');
+  });
+
+  it('falls back to the answer model so an unset variable cannot stop startup', () => {
+    const adapter = adapterWith({ AI_ANSWER_MODEL: 'answerer' });
+    expect(adapter.model('SUBTITLE_TRANSLATION')).toBe('answerer');
+  });
+
+  it('still fails clearly when neither model is configured', () => {
+    expect(() => adapterWith({}).model('SUBTITLE_TRANSLATION')).toThrow(
+      'Missing required AI configuration: AI_ANSWER_MODEL',
+    );
+  });
+
+  it('allows a long generation by default and a bounded override', () => {
+    expect(adapterWith({}).timeoutMs('SUBTITLE_TRANSLATION')).toBe(90_000);
+    expect(
+      adapterWith({ AI_SUBTITLE_TRANSLATION_TIMEOUT_MS: '45000' }).timeoutMs(
+        'SUBTITLE_TRANSLATION',
+      ),
+    ).toBe(45_000);
+    expect(adapterWith({}).maxCompletionTokens('SUBTITLE_TRANSLATION')).toBe(
+      2_048,
+    );
+  });
+});

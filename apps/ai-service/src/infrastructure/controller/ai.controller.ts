@@ -5,6 +5,10 @@ import { ExtractReelMetadataUseCase } from '@ai/application/use-cases/extract-re
 import { ScoreTextRelevanceUseCase } from '@ai/application/use-cases/score-text-relevance.use-case';
 import { HandleConversationTurnCompletedUseCase } from '@ai/application/use-cases/handle-conversation-turn-completed.use-case';
 import { StreamChatUseCase } from '@ai/application/use-cases/stream-chat.use-case';
+import {
+  InvalidSubtitleTranslationRequestError,
+  TranslateSubtitleCuesUseCase,
+} from '@ai/application/use-cases/translate-subtitle-cues.use-case';
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
 import { TranscribeAudioUseCase } from '@ai/application/use-cases/transcribe-audio.use-case';
 import { ChatBusyError } from '@ai/domain/errors/chat-busy.error';
@@ -21,6 +25,7 @@ import {
   type RerankTextsRequest,
 } from '@common/ai/interfaces/rerank-texts.interface';
 import type { ReelMetadataExtractionInput } from '@common/ai/interfaces/reel-metadata-extraction.interface';
+import type { TranslateSubtitleCuesRequest } from '@common/ai/interfaces/subtitle-translation.interface';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
 import type { AnalyzeVisualFrameRequest } from '@common/ai/interfaces/visual-analysis.interface';
 import { Controller } from '@nestjs/common';
@@ -47,6 +52,7 @@ export class AiController {
     private readonly extractReelMetadataUseCase: ExtractReelMetadataUseCase,
     private readonly backfillUserMemoryEmbeddingsUseCase: BackfillUserMemoryEmbeddingsUseCase,
     private readonly scoreTextRelevanceUseCase: ScoreTextRelevanceUseCase,
+    private readonly translateSubtitleCuesUseCase: TranslateSubtitleCuesUseCase,
   ) {}
 
   @MessagePattern('ai.generate_embedding')
@@ -353,6 +359,22 @@ export class AiController {
         statusCode: 500,
         message: error.message,
       });
+    }
+  }
+
+  @MessagePattern('ai.translate_subtitle_cues')
+  async handleTranslateSubtitleCues(
+    @Payload() data: TranslateSubtitleCuesRequest,
+  ) {
+    try {
+      return await this.translateSubtitleCuesUseCase.execute(data);
+    } catch (err: unknown) {
+      if (err instanceof InvalidSubtitleTranslationRequestError) {
+        throw new RpcException({ statusCode: 400, message: err.message });
+      }
+      const error = err as Error;
+      console.error(`[TranslateSubtitleCues] ${error.message}`);
+      throw new RpcException({ statusCode: 500, message: error.message });
     }
   }
 

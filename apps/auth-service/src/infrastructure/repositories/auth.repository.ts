@@ -149,63 +149,62 @@ export class AuthRepository implements IAuthRepository {
   ): Promise<RefreshTokenRotationResult | null> {
     const replacementId = randomUUID();
     const tokenHash = this.hashToken(token);
-    const persistedToken = await this.prisma.$transaction(
-      async (transaction) => {
-        const rotatedAt = new Date();
-        const consumed = await transaction.refreshToken.updateMany({
-          where: { id, revoked: false },
-          data: {
-            revoked: true,
-            replacedByTokenId: replacementId,
-            rotationRequestId: requestId ?? null,
-            rotationRequestExpiresAt: requestId
-              ? getRefreshRequestExpiresAt(rotatedAt)
-              : null,
-            rotatedAt,
-          },
-        });
+    const rotatedAt = new Date();
 
-        if (consumed.count === 1) {
-          const currentToken = await transaction.refreshToken.findUniqueOrThrow(
-            {
-              where: { id },
-              select: { userId: true },
-            },
-          );
+    // Consuming the old token and creating its replacement is ONE statement, so
+    // it is atomic and costs one database round trip. It used to be an
+    // interactive transaction (BEGIN, three queries, COMMIT = five round trips
+    // holding a connection), which on a ~75 ms link to a one-connection pool
+    // capped token refresh at about two per second and made the rest fail with
+    // P2028. Timestamps go in as UTC text so they do not depend on the
+    // session time zone, exactly as Prisma stores them.
+    const created = await this.prisma.$queryRaw<PrismaRefreshToken[]>`
+      WITH consumed AS (
+        UPDATE "RefreshToken"
+        SET "revoked" = true,
+            "replacedByTokenId" = ${replacementId},
+            "rotationRequestId" = ${requestId ?? null},
+            "rotationRequestExpiresAt" = ${
+              requestId
+                ? getRefreshRequestExpiresAt(rotatedAt).toISOString()
+                : null
+            }::timestamp,
+            "rotatedAt" = ${rotatedAt.toISOString()}::timestamp
+        WHERE "id" = ${id} AND "revoked" = false
+        RETURNING "userId"
+      )
+      INSERT INTO "RefreshToken"
+        ("id", "userId", "token", "encryptedToken", "expiresAt", "revoked")
+      SELECT ${replacementId}, "userId", ${tokenHash},
+             ${this.encryptToken(token)}, ${expiresAt.toISOString()}::timestamp,
+             false
+      FROM consumed
+      RETURNING *`;
 
-          return transaction.refreshToken.create({
-            data: {
-              id: replacementId,
-              userId: currentToken.userId,
-              token: tokenHash,
-              encryptedToken: this.encryptToken(token),
-              expiresAt,
-              revoked: false,
-            },
-          });
-        }
+    let persistedToken: PrismaRefreshToken | null = created[0] ?? null;
 
-        const currentToken = await transaction.refreshToken.findUnique({
-          where: { id },
-        });
+    if (!persistedToken) {
+      // Not consumed here: another request got there first. Its commit is
+      // already visible (a concurrent UPDATE waits for it), so plain reads are
+      // enough to see whether this is the same request retrying.
+      const currentToken = await this.prisma.refreshToken.findUnique({
+        where: { id },
+      });
 
-        if (
-          !requestId ||
-          currentToken?.rotationRequestId !== requestId ||
-          !currentToken.replacedByTokenId ||
-          !currentToken.rotationRequestExpiresAt ||
-          currentToken.rotationRequestExpiresAt <= new Date()
-        ) {
-          return null;
-        }
+      if (
+        !requestId ||
+        currentToken?.rotationRequestId !== requestId ||
+        !currentToken.replacedByTokenId ||
+        !currentToken.rotationRequestExpiresAt ||
+        currentToken.rotationRequestExpiresAt <= new Date()
+      ) {
+        return null;
+      }
 
-        return transaction.refreshToken.findUniqueOrThrow({
-          where: { id: currentToken.replacedByTokenId },
-        });
-      },
-    );
-
-    if (!persistedToken) return null;
+      persistedToken = await this.prisma.refreshToken.findUniqueOrThrow({
+        where: { id: currentToken.replacedByTokenId },
+      });
+    }
 
     return {
       token: this.toDomain(persistedToken),

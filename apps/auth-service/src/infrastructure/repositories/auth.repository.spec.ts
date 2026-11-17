@@ -63,16 +63,46 @@ const setup = () => {
       },
     ),
   };
-  const prisma = {
-    refreshToken: delegate,
-    $transaction: jest.fn(
-      (
-        fn: (transaction: {
-          refreshToken: typeof delegate;
-        }) => Promise<Row | null>,
-      ) => fn({ refreshToken: delegate }),
-    ),
-  };
+  // Rotation is one SQL statement (UPDATE ... RETURNING feeding an INSERT). This
+  // stands in for it; the values arrive in the order they appear in the query.
+  const queryRaw = jest.fn(
+    (
+      _strings: TemplateStringsArray,
+      replacementId: string,
+      requestId: string | null,
+      requestExpiresAt: string | null,
+      rotatedAt: string,
+      id: string,
+      _replacementIdAgain: string,
+      token: string,
+      encryptedToken: string,
+      expiresAt: string,
+    ) => {
+      const old = rows.get(id);
+      if (!old || old.revoked) return Promise.resolve([]);
+      Object.assign(old, {
+        revoked: true,
+        replacedByTokenId: replacementId,
+        rotationRequestId: requestId,
+        rotationRequestExpiresAt: requestExpiresAt
+          ? new Date(requestExpiresAt)
+          : null,
+        rotatedAt: new Date(rotatedAt),
+      });
+      const row: Row = {
+        id: replacementId,
+        userId: old.userId,
+        token,
+        encryptedToken,
+        expiresAt: new Date(expiresAt),
+        revoked: false,
+        createdAt: new Date(),
+      };
+      rows.set(replacementId, row);
+      return Promise.resolve([row]);
+    },
+  );
+  const prisma = { refreshToken: delegate, $queryRaw: queryRaw };
   const repository = new AuthRepository(
     prisma as never,
     new ConfigService({ JWT_SECRET: 'test-only-secret' }),
@@ -84,7 +114,7 @@ const setup = () => {
     createdAt: new Date(),
     expiresAt: new Date(Date.now() + ttl),
   });
-  return { rows, delegate, prisma, repository };
+  return { rows, delegate, prisma, queryRaw, repository };
 };
 
 describe('AuthRepository rolling rotation and recovery contract', () => {
@@ -107,20 +137,17 @@ describe('AuthRepository rolling rotation and recovery contract', () => {
     expect(data.encryptedToken!.split('.')).toHaveLength(3);
   });
 
-  it('consumes once through transactional CAS and recovers the same winner for a concurrent identical request', async () => {
-    const { repository, rows, delegate, prisma } = setup();
+  it('consumes once through a single compare-and-swap statement and recovers the same winner for a concurrent identical request', async () => {
+    const { repository, rows, queryRaw } = setup();
     const expiresAt = new Date(Date.now() + ttl);
     const results = await Promise.all([
       repository.rotateRefreshToken('old', 'candidate-a', expiresAt, 'request'),
       repository.rotateRefreshToken('old', 'candidate-b', expiresAt, 'request'),
     ]);
-    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
-    expect(delegate.updateMany.mock.calls[0][0].where).toEqual({
-      id: 'old',
-      revoked: false,
-    });
-    expect(delegate.create).toHaveBeenCalledTimes(1);
-    expect(rows.get('old').revoked).toBe(true);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(queryRaw.mock.calls[0][0].join('?')).toContain('"revoked" = false');
+    expect([...rows.values()].filter((row) => !row.revoked)).toHaveLength(1);
+    expect(rows.get('old')?.revoked).toBe(true);
     expect(results[0]?.refreshToken).toBe('candidate-a');
     expect(results[1]?.refreshToken).toBe('candidate-a');
     expect(results[0]?.token.expiresAt).toEqual(expiresAt);

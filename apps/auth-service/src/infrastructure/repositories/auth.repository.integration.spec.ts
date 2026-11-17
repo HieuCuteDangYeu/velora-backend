@@ -15,7 +15,9 @@ integration('AuthRepository PostgreSQL integration', () => {
   const userId = 'rolling-test-' + randomUUID();
 
   beforeAll(async () => {
-    prisma = new PrismaService({ datasources: { db: { url: databaseUrl! } } });
+    process.env.AUTH_DATABASE_URL = databaseUrl!;
+    delete process.env.AUTH_DATABASE_CONNECTION_LIMIT;
+    prisma = new PrismaService();
     await prisma.$connect();
     repository = new AuthRepository(
       prisma,
@@ -66,6 +68,35 @@ integration('AuthRepository PostgreSQL integration', () => {
     expect(row.token).toBe(createHash('sha256').update(raw).digest('hex'));
     expect(row.encryptedToken).not.toContain(raw);
     expect((await repository.findRefreshToken(raw))?.id).toBe(created.id);
+  });
+
+  it('rotation stores the replacement with exactly the requested expiry and the same user', async () => {
+    const old = await repository.createRefreshToken(
+      userId,
+      'expiry-' + randomUUID(),
+      new Date(Date.now() + 86400000),
+    );
+    const expiry = new Date(Date.now() + 90 * 86400000);
+    const result = await repository.rotateRefreshToken(
+      old.id,
+      'next-' + randomUUID(),
+      expiry,
+      randomUUID(),
+    );
+    const row = await prisma.refreshToken.findUniqueOrThrow({
+      where: { id: result!.token.id },
+    });
+    expect(row.expiresAt).toEqual(expiry);
+    expect(row.userId).toBe(userId);
+    expect(row.revoked).toBe(false);
+    const consumed = await prisma.refreshToken.findUniqueOrThrow({
+      where: { id: old.id },
+    });
+    expect(consumed.revoked).toBe(true);
+    expect(consumed.replacedByTokenId).toBe(row.id);
+    expect(Math.abs(consumed.rotatedAt!.getTime() - Date.now())).toBeLessThan(
+      60000,
+    );
   });
 
   it('rotates typed tokens once across concurrent same-ID refreshes and recovers retries', async () => {

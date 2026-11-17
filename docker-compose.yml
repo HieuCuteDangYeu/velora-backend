@@ -88,6 +88,11 @@ services:
       - '3017'
     env_file:
       - .env
+    environment:
+      # The shared Aiven server allows 17 client connections in all and every
+      # query costs a ~75 ms round trip, so one connection caps login and token
+      # refresh at about 2 per second. Two roughly triple that.
+      AUTH_DATABASE_CONNECTION_LIMIT: ${AUTH_DATABASE_CONNECTION_LIMIT:-2}
     depends_on:
       rabbitmq:
         condition: service_healthy

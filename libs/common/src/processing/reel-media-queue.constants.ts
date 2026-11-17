@@ -76,6 +76,13 @@ export const REEL_INDEX_PRIMARY_QUEUES: readonly ReelIndexPrimaryQueueDefinition
     },
   ] as const;
 
+/** Header counting how often a quota-failed index job was put back behind the others. */
+export const REEL_INDEX_QUOTA_ROTATION_HEADER = 'x-reel-index-quota-rotation';
+/** Passes on the 30 s/60 s lane before a quota-failed job moves to the 5/10 minute lane. */
+export const REEL_INDEX_QUOTA_ROTATIONS_ON_SHORT_LANE = 4;
+/** A job that still cannot get visual quota after this long is recorded as failed. */
+export const REEL_INDEX_QUOTA_ROTATION_MAX_AGE_MS = 6 * 60 * 60_000;
+
 export const REEL_INDEX_RETRY_QUEUES: readonly ReelIndexRetryQueueDefinition[] =
   [
     {

@@ -6,6 +6,8 @@ import {
   REEL_INDEX_DEAD_LETTER_QUEUES,
   REEL_INDEX_EXCHANGE,
   REEL_INDEX_PRIMARY_QUEUES,
+  REEL_INDEX_QUOTA_ROTATION_HEADER,
+  REEL_INDEX_QUOTA_ROTATIONS_ON_SHORT_LANE,
   REEL_INDEX_RETRY_QUEUES,
 } from '@common/processing/reel-media-queue.constants';
 import type { IReelIndexRetryPublisher } from '@indexing/domain/interfaces/reel-index-retry-publisher.interface';
@@ -70,6 +72,35 @@ export class ReelIndexRetryPublisherAdapter
       timestamp: Date.now(),
       headers: { 'x-reel-index-retry-count': retryNumber },
     });
+  }
+
+  async publishQuotaRotation(
+    job: ReelIndexJob,
+    rotation: number,
+  ): Promise<void> {
+    if (!this.channel)
+      throw new Error('Index retry publisher is not initialized');
+
+    // The short lane for the first few passes, the long one after that, so a quota that stays
+    // spent for hours is polled every few minutes instead of every half minute.
+    const definition = getReelIndexRetryQueue(
+      job.sourceLengthClass,
+      rotation <= REEL_INDEX_QUOTA_ROTATIONS_ON_SHORT_LANE ? 1 : 2,
+    );
+    await this.channel.sendToQueue(
+      definition.queue,
+      Buffer.from(
+        JSON.stringify({ pattern: REEL_INDEX_JOB_PATTERN, data: job }),
+      ),
+      {
+        persistent: true,
+        contentType: 'application/json',
+        messageId: job.jobId,
+        type: REEL_INDEX_JOB_PATTERN,
+        timestamp: Date.now(),
+        headers: { [REEL_INDEX_QUOTA_ROTATION_HEADER]: rotation },
+      },
+    );
   }
 
   private async assertTopology(channel: Channel): Promise<void> {

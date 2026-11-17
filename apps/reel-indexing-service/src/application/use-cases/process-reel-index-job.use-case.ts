@@ -11,7 +11,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 
 export type ProcessReelIndexJobResult =
   | { status: 'COMPLETED' | 'DUPLICATE' | 'STALE' | 'PROJECTION_PENDING' }
-  | { status: 'RETRY' | 'PERMANENT_FAILURE'; error: string };
+  | { status: 'RETRY' | 'PERMANENT_FAILURE' | 'QUOTA_ROTATE'; error: string };
 
 /**
  * Provider quota is a cohort-level condition, so retrying the same Reel in
@@ -44,6 +44,12 @@ export class ProcessReelIndexJobUseCase {
     job: ReelIndexJob;
     allowReclaim: boolean;
     allowRetry: boolean;
+    /**
+     * When the failure is a spent provider quota, hand the job back to be put at the back of its
+     * lane (QUOTA_ROTATE) instead of recording the reel as failed. The caller decides how long
+     * a job may keep rotating.
+     */
+    allowQuotaRotation?: boolean;
     retryNumber?: number;
     queuedAt?: string;
   }): Promise<ProcessReelIndexJobResult> {
@@ -75,7 +81,11 @@ export class ProcessReelIndexJobUseCase {
         })
         .catch(() => undefined);
 
-      if (input.allowRetry && !isDeferredProviderQuotaFailure(detail)) {
+      const quotaFailure = isDeferredProviderQuotaFailure(detail);
+      if (quotaFailure && input.allowQuotaRotation) {
+        return { status: 'QUOTA_ROTATE', error: detail };
+      }
+      if (input.allowRetry && !quotaFailure) {
         return { status: 'RETRY', error: detail };
       }
 

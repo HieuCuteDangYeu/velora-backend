@@ -196,8 +196,12 @@ them any more (see below). The dashboard "Velora / Reel Pipeline" shows the dept
   retries on purpose, because they only burn requests. The attempt is recorded as failed with the
   reason, the half-built index is discarded and the previous active index stays. Until the indexer
   was rebuilt on 2026-11-17 the message then went to the DLQ, where nothing could use it.
-  **Now** the indexer acknowledges such a job with a warning ("not run: visual provider quota
-  exhausted"), so the DLQ and its alert only show real failures. To run it again, re-index the reel
+  **Now** the indexer puts such a job back behind the others (header `x-reel-index-quota-rotation`;
+  the 30 s lane for the first four passes, then the 5 minute lane; the two ordinary retries are not
+  used) and looks again, for up to 6 hours after the job was created. A pass costs no provider request
+  while the keys are spent, but it redoes the stages before the visual one. After 6 hours the attempt
+  is recorded as failed and the message is acknowledged with a warning ("not run: visual provider
+  quota exhausted"), so the DLQ and its alert only show real failures. To run it again, re-index the reel
   after the quota recovered (`reindex-visual-cohort.cjs`, or the deferred visual retry worker for
   reels that have no visual scenes). "Exhausted retries" is reserved for real failures and carries the
   cause. Indexer code is only live when the overlay pin in `index-rollout.yml` points at an image built

@@ -2,7 +2,11 @@ import {
   isReelIndexJob,
   REEL_INDEX_JOB_PATTERN,
 } from '@common/processing/interfaces/reel-index-job.interface';
-import { getReelIndexPrimaryQueue } from '@common/processing/reel-media-queue.constants';
+import {
+  getReelIndexPrimaryQueue,
+  REEL_INDEX_QUOTA_ROTATION_HEADER,
+  REEL_INDEX_QUOTA_ROTATION_MAX_AGE_MS,
+} from '@common/processing/reel-media-queue.constants';
 import {
   isDeferredProviderQuotaFailure,
   ProcessReelIndexJobUseCase,
@@ -38,6 +42,8 @@ export class ReelIndexingController {
     const nextRetryNumber =
       retryNumber < 2 ? ((retryNumber + 1) as 1 | 2) : undefined;
     const queue = getReelIndexPrimaryQueue(payload.sourceLengthClass);
+    const quotaRotation = this.getQuotaRotation(message);
+    const queuedAt = this.getQueuedAt(message, payload.createdAt);
 
     try {
       const result = await this.processJob.execute({
@@ -45,8 +51,23 @@ export class ReelIndexingController {
         allowReclaim: message.fields.redelivered,
         allowRetry: nextRetryNumber !== undefined,
         retryNumber,
-        queuedAt: this.getQueuedAt(message, payload.createdAt),
+        allowQuotaRotation: this.mayKeepRotating(payload.createdAt),
+        queuedAt,
       });
+      if (result.status === 'QUOTA_ROTATE') {
+        // Every Groq organization is out of tokens for now. Do not hold the consumer and do not
+        // use up the ordinary retries: put the job behind the others and look again shortly.
+        // The pool answers at once while the keys are spent, so a pass costs no provider request.
+        await this.retryPublisher.publishQuotaRotation(
+          payload,
+          quotaRotation + 1,
+        );
+        const text = `Index job ${payload.jobId} for reel ${payload.reelId} on ${queue.queue} put back behind the other jobs (pass ${quotaRotation + 1}): visual provider quota exhausted`;
+        if (quotaRotation === 0) this.logger.warn(text);
+        else this.logger.debug(text);
+        channel.ack(message);
+        return;
+      }
       if (result.status === 'RETRY' && nextRetryNumber !== undefined) {
         await this.retryPublisher.publishRetry(payload, nextRetryNumber);
         channel.ack(message);
@@ -87,6 +108,21 @@ export class ReelIndexingController {
       message.properties.headers?.['x-reel-index-retry-count'],
     );
     return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  private getQuotaRotation(message: ConsumeMessage): number {
+    const parsed = Number(
+      message.properties.headers?.[REEL_INDEX_QUOTA_ROTATION_HEADER],
+    );
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  private mayKeepRotating(createdAt: string): boolean {
+    const createdMs = Date.parse(createdAt);
+    return (
+      Number.isFinite(createdMs) &&
+      Date.now() - createdMs < REEL_INDEX_QUOTA_ROTATION_MAX_AGE_MS
+    );
   }
 
   private getQueuedAt(message: ConsumeMessage, fallback: string): string {

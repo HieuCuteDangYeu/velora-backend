@@ -27,13 +27,14 @@ describe('ReelIndexingController failed jobs', () => {
     getMessage: () => message,
   } as unknown as RmqContext;
   const publishRetry = jest.fn();
+  const publishQuotaRotation = jest.fn();
   const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
   const error = jest.spyOn(Logger.prototype, 'error').mockImplementation();
 
   const controllerReturning = (result: unknown) =>
     new ReelIndexingController(
       { execute: jest.fn().mockResolvedValue(result) } as never,
-      { publishRetry },
+      { publishRetry, publishQuotaRotation },
     );
 
   beforeEach(() => {
@@ -64,6 +65,53 @@ describe('ReelIndexingController failed jobs', () => {
     expect(channel.nack).toHaveBeenCalledWith(message, false, false);
     expect(error).toHaveBeenCalledWith(
       expect.stringMatching(/exhausted retries.*Batch embedding failed/),
+    );
+  });
+
+  it('puts a quota-failed job back behind the others and counts the pass', async () => {
+    const processJob = {
+      execute: jest.fn().mockResolvedValue({
+        status: 'QUOTA_ROTATE',
+        error: 'Visual provider rate limit or quota exhausted',
+      }),
+    };
+    const rotatedMessage = {
+      fields: { redelivered: false },
+      properties: { headers: { 'x-reel-index-quota-rotation': 2 } },
+    };
+
+    await new ReelIndexingController(processJob as never, {
+      publishRetry,
+      publishQuotaRotation,
+    }).handle({ ...job, createdAt: new Date().toISOString() }, {
+      getChannelRef: () => channel,
+      getMessage: () => rotatedMessage,
+    } as unknown as RmqContext);
+
+    expect(processJob.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ allowQuotaRotation: true, retryNumber: 0 }),
+    );
+    expect(publishQuotaRotation).toHaveBeenCalledWith(expect.anything(), 3);
+    expect(publishRetry).not.toHaveBeenCalled();
+    expect(channel.ack).toHaveBeenCalledWith(rotatedMessage);
+    expect(channel.nack).not.toHaveBeenCalled();
+  });
+
+  it('stops rotating a job older than the age limit', async () => {
+    const processJob = {
+      execute: jest.fn().mockResolvedValue({ status: 'COMPLETED' }),
+    };
+
+    await new ReelIndexingController(processJob as never, {
+      publishRetry,
+      publishQuotaRotation,
+    }).handle(
+      { ...job, createdAt: new Date(Date.now() - 7 * 3_600_000).toISOString() },
+      context,
+    );
+
+    expect(processJob.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ allowQuotaRotation: false }),
     );
   });
 

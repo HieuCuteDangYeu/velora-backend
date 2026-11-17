@@ -75,6 +75,30 @@ describe('ProcessReelIndexJobUseCase', () => {
     expect(value.workflow.execute).toHaveBeenCalledTimes(1);
   });
 
+  it('hands a quota failure back for rotation without failing the reel while rotation is allowed', async () => {
+    const value = build({
+      error: new Error(
+        'Visual provider rate limit or quota exhausted; retry this index attempt later: Groq 429',
+      ),
+    });
+
+    await expect(
+      value.useCase.execute({
+        job,
+        allowReclaim: false,
+        allowRetry: true,
+        allowQuotaRotation: true,
+      }),
+    ).resolves.toEqual({
+      status: 'QUOTA_ROTATE',
+      error: expect.stringContaining('quota exhausted'),
+    });
+
+    expect(value.checkpoints.fail).toHaveBeenCalled();
+    expect(value.candidateLifecycle.discardCandidate).toHaveBeenCalled();
+    expect(value.content.failIndexing).not.toHaveBeenCalled();
+  });
+
   it('keeps transient indexing failures on the bounded retry path', async () => {
     const value = build({ error: new Error('temporary TEI timeout') });
 

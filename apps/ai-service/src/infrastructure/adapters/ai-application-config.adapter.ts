@@ -18,6 +18,7 @@ const MODEL_ENV_BY_ROLE: Record<AiModelRole, string> = {
   CITATION_ATTRIBUTION: 'AI_CITATION_ATTRIBUTION_MODEL',
   INDEX_QUALITY: 'AI_INDEX_QUALITY_MODEL',
   METADATA_EXTRACTION: 'AI_METADATA_EXTRACTION_MODEL',
+  SUBTITLE_TRANSLATION: 'AI_SUBTITLE_TRANSLATION_MODEL',
   SECTION_SUMMARY: 'AI_SECTION_SUMMARY_MODEL',
   VISION: 'AI_VISION_MODEL',
   TRANSCRIPTION: 'AI_TRANSCRIPTION_MODEL',
@@ -25,6 +26,17 @@ const MODEL_ENV_BY_ROLE: Record<AiModelRole, string> = {
   RERANKER: 'AI_RERANKER_MODEL',
   CONVERSATION_SUMMARY: 'AI_CONVERSATION_SUMMARY_MODEL',
   MEMORY_EXTRACTION: 'AI_MEMORY_EXTRACTION_MODEL',
+};
+
+// A role listed here uses the other role's model until its own setting exists, so adding the role never stops a deployed
+// service from starting.
+const MODEL_FALLBACK_ENV_BY_ROLE: Partial<Record<AiModelRole, string>> = {
+  SUBTITLE_TRANSLATION: 'AI_ANSWER_MODEL',
+};
+
+const DEFAULT_TIMEOUT_MS_BY_ROLE: Partial<Record<AiModelRole, number>> = {
+  // A batch of subtitle lines is a long generation on a small local model.
+  SUBTITLE_TRANSLATION: 90_000,
 };
 
 const TIMEOUT_ENV_BY_ROLE: Partial<Record<AiModelRole, string>> = {
@@ -37,6 +49,7 @@ const TIMEOUT_ENV_BY_ROLE: Partial<Record<AiModelRole, string>> = {
   VERIFIER: 'AI_VERIFIER_TIMEOUT_MS',
   VERIFIER_ESCALATION: 'AI_VERIFIER_ESCALATION_TIMEOUT_MS',
   CITATION_ATTRIBUTION: 'AI_CITATION_TIMEOUT_MS',
+  SUBTITLE_TRANSLATION: 'AI_SUBTITLE_TRANSLATION_TIMEOUT_MS',
   VISION: 'AI_VISION_TIMEOUT_MS',
   TRANSCRIPTION: 'AI_TRANSCRIPTION_TIMEOUT_MS',
   EMBEDDING: 'AI_EMBEDDING_TIMEOUT_MS',
@@ -77,6 +90,10 @@ const MAX_COMPLETION_TOKENS_BY_ROLE: Record<
     fallback: 512,
   },
   SECTION_SUMMARY: { key: 'AI_SECTION_SUMMARY_MAX_TOKENS', fallback: 512 },
+  SUBTITLE_TRANSLATION: {
+    key: 'AI_SUBTITLE_TRANSLATION_MAX_TOKENS',
+    fallback: 2_048,
+  },
   CONVERSATION_SUMMARY: {
     key: 'AI_CONVERSATION_SUMMARY_MAX_TOKENS',
     fallback: 650,
@@ -113,12 +130,18 @@ export class AiApplicationConfigAdapter
   }
 
   model(role: AiModelRole): string {
-    return this.required(MODEL_ENV_BY_ROLE[role]);
+    const own = this.config.get<string>(MODEL_ENV_BY_ROLE[role])?.trim();
+    if (own) return own;
+    const fallbackKey = MODEL_FALLBACK_ENV_BY_ROLE[role];
+    return this.required(fallbackKey ?? MODEL_ENV_BY_ROLE[role]);
   }
 
   timeoutMs(role: AiModelRole): number {
     const key = TIMEOUT_ENV_BY_ROLE[role];
-    return key ? Math.round(this.number(key, 8_000, 500, 120_000)) : 8_000;
+    const fallback = DEFAULT_TIMEOUT_MS_BY_ROLE[role] ?? 8_000;
+    return key
+      ? Math.round(this.number(key, fallback, 500, 120_000))
+      : fallback;
   }
 
   maxCompletionTokens(role: AiCompletionRole): number {

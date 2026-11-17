@@ -7,7 +7,8 @@ const controllerWith = (streamChatUseCase: { execute: jest.Mock }) =>
     // embedding, batch embedding, token count, transcription x2, visual analysis
     ...(Array(6).fill(undefined) as [never, never, never, never, never, never]),
     streamChatUseCase as never,
-    // turn completed, reel metadata, memory backfill, text relevance
+    // turn completed, reel metadata, memory backfill, text relevance, subtitle translation
+    undefined as never,
     undefined as never,
     undefined as never,
     undefined as never,
@@ -68,6 +69,7 @@ describe('AiController rerank texts', () => {
         never,
       ]),
       { execute } as never,
+      undefined as never,
     );
 
   it('scores a valid request through the use case', async () => {

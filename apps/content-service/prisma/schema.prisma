@@ -141,6 +141,7 @@ model Reel {
 
   series       ReelSeries?       @relation(fields: [seriesId], references: [id], onDelete: SetNull)
   comments     ReelComment[]
+  subtitleTracks ReelSubtitleTrack[]
   shares       ReelShare[]
   shareLinks   ReelShareLink[]
   viewEvents   ReelViewEvent[]
@@ -363,4 +364,20 @@ model ReelComment {
 
   @@unique([authorId, clientRequestId])
   @@index([reelId, parentId, createdAt, id])
+}
+
+// A reel's subtitle lines translated into one language. sourceHash ties it to the transcript it was made from, so a
+// re-indexed transcript is translated again instead of served stale.
+model ReelSubtitleTrack {
+  id         String   @id @default(uuid())
+  reelId     String
+  language   String
+  sourceHash String
+  cues       Json
+  model      String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  reel       Reel     @relation(fields: [reelId], references: [id], onDelete: Cascade)
+
+  @@unique([reelId, language])
 }

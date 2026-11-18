@@ -367,10 +367,12 @@ when the chunk is gone or a reindex put different text under the same id.
 Measures whether the bot can answer "do you remember X?" after a long chat. Memory is three
 layers: the last 12 messages (always shown), up to 80 earlier messages (ranked against the
 question, best few shown, see `rank-recalled-messages.ts`), and the user's saved facts. The set is
-generated, not committed (1.6 MB, seeded, identical every time): 264 cases in English and
+generated, not committed (1.7 MB, seeded, identical every time): 300 cases in English and
 Vietnamese, with distractors of the same topic, photo cases (the answer is a photo caption plus
-what the AI saw) and negatives (nothing in the chat answers it). `distance` is how many messages
-sit after the answer; the live window covers 11, the ranker covers up to about 90.
+what the AI saw), `repeat` cases (the same topic was asked earlier and refused, which must not
+crowd the fact out) and negatives (nothing in the chat answers it). `distance` is how many
+messages sit after the answer; the live window covers 11, the ranker covers up to about 90. A hit
+is the exact message that holds the fact.
 
 ```bash
 node eval/rag/conversation-recall-dataset.cjs                    # write datasets/rag-conversation-recall-v1.jsonl
@@ -383,19 +385,52 @@ node eval/rag/conversation-recall-eval.cjs --vectors vectors.json         # scor
 node eval/rag/conversation-recall-eval.cjs --vectors vectors.json --sweep # threshold search
 ```
 
-Measured with real bge-m3 vectors (112 unique texts, about 2 s each through ssh, so run it rarely):
+Three levels of measurement, all rerunnable:
+
+1. **Ranker, real bge-m3 vectors** (above). Distance 14-70, exact fact message recalled:
 
 | | words only | with embeddings (shipped defaults) |
 |---|---|---|
-| recall needed (distance 14-70), hit | 39.4% | **96.8%** (lexical 100, semantic 91.7, Vietnamese 100, photo 100) |
-| noise per case (recalled messages that are not the answer) | 0.00 | 0.04 |
-| negatives with an empty recall | 100% | 81.3% (3 of 16 recalled something) |
-| distance 100 (beyond the 92 messages reach) | 0% | 0% by design |
+| recall needed (191 cases) | 38.2% | **94.2%** (lexical 100, semantic 91.7, Vietnamese 100, photo 80, repeat 91.7) |
+| noise per case (recalled messages that are not the fact) | 0.02 | 0.06 |
+| negatives with an empty recall (16 cases) | 100% | 68.8% (5 of 16 recalled something; the verifier is the backstop) |
+| distance 100, beyond the 92 messages reach | 0% | 0% by design |
 
-Before the change nothing past the 4th message back could be recalled, so every "recall needed" case failed.
-Defaults (`minSemantic 0.5`, `margin 0.05`) come from the sweep; 0.55 gives 0% false recall but only
-86.5% recall. Score statistics: gold cosine median 0.62, other messages median 0.42, p99 0.58, so some
-overlap is inherent. Embedding calls cost about 0.4-4 s each on the shared TEI service and a batched
-request is refused (`429 Model is overloaded`), so only the newest 20 substantive user messages are
-embedded; the rest are matched by words, and a slow service (`AI_RECALL_EMBEDDING_TIMEOUT_MS`, 6 s)
-falls back to words alone.
+   Before the change nothing past the 4th message back could be recalled, so every "recall needed" case failed.
+   Defaults (`minSemantic 0.5`, `margin 0.05`, `questionPenalty 0.15`) come from the sweep and the
+   repeat cases; 0.55 gives fewer false recalls but about 8 points less recall. Gold cosine median is
+   0.62, other messages 0.42 (p99 0.58), so some overlap is inherent. A question the user asked earlier
+   about the same topic is closer in meaning than the fact it asks for, hence the penalty (repeat cases
+   80.6% -> 91.7%). Embedding calls cost 0.4-4 s each on the shared TEI service and a batched request is
+   refused (`429 Model is overloaded`), so only the newest 20 substantive user messages are embedded;
+   the rest match by words, and a slow service (`AI_RECALL_EMBEDDING_TIMEOUT_MS`, 6 s) falls back to words.
+
+2. **Answer step on the real model** (opt-in, no router). Replays the draft and the verifier with the
+   real `gemma4:e2b` on 40 sampled cases using the cached vectors. The model host is shared with
+   production, so keep it small and never load another model on it.
+
+```bash
+RECALL_LOCAL=1 RECALL_VECTORS=vectors.json RECALL_CASES=40 npx jest recall-answers.local.integration
+```
+
+   Measured: 38/40 drafts correct, 34/40 also accepted by the verifier (lexical 17/18, Vietnamese 5/5,
+   semantic 10/12, photo 2/4 of which one is the model answering in Vietnamese). The misses are three
+   correct answers the verifier rejected as too literal ("race" vs "marathon"), one honest "no piano"
+   answer it rejected, and one wrong answer built from a recalled distractor. The same replay found that
+   the bot's own canned replies in the history made the model repeat the scope redirect, so recall turns
+   now leave them out.
+
+3. **Live, through the real gateway** (`conversation-recall-live.cjs`, needs an account you own):
+   plants a typed fact, a Vietnamese fact and a photo, pushes them past the live window with eight
+   unrelated turns, then asks for them in ten ways and two things never said. Each run plants
+   run-unique facts because the chat keeps earlier runs.
+
+```bash
+VELORA_BASE_URL=https://velora-app.me BOT_USER_ID=<bot user id> \
+VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall-live.cjs
+```
+
+   The router is the weak point there: a small model sometimes calls a recall question normal chat or
+   even off topic (a trip, a pet), so explicit recall wording (`recall-cue.ts`) is routed as a
+   conversation-memory question after the model has answered. A recall question with no such wording
+   ("what is my lizard called?") still depends on the router.

@@ -95,17 +95,10 @@ function run(row, options) {
     semantic,
     options,
   });
-  const holds = (list) =>
-    row.expect.length > 0 &&
-    list.some((message) =>
-      row.expect.some((word) =>
-        message.content.toLowerCase().includes(word.toLowerCase()),
-      ),
-    );
-  const gold = (message) =>
-    row.expect.some((word) =>
-      message.content.toLowerCase().includes(word.toLowerCase()),
-    );
+  // A hit is the exact message that holds the fact, not any message that happens to repeat a word of it.
+  const isGold = (message) => message.content === row.gold;
+  const holds = (list) => list.some(isGold);
+  const gold = isGold;
   return {
     inWindow: holds(recent),
     recalledHit: holds(recalled),
@@ -186,14 +179,12 @@ if (args.includes('--sweep')) {
   const score = (r) => r.recall - 0.4 * r.falseRecall - 0.05 * r.noise;
   rows.sort((a, b) => score(b) - score(a));
   console.table(
-    rows
-      .slice(0, 12)
-      .map((r) => ({
-        ...r,
-        recall: pct(r.recall, 1),
-        falseRecall: pct(r.falseRecall, 1),
-        noise: r.noise.toFixed(2),
-      })),
+    rows.slice(0, 12).map((r) => ({
+      ...r,
+      recall: pct(r.recall, 1),
+      falseRecall: pct(r.falseRecall, 1),
+      noise: r.noise.toFixed(2),
+    })),
   );
   process.exit(0);
 }
@@ -206,6 +197,7 @@ for (const key of [
   'limit',
   'embedMax',
   'margin',
+  'questionPenalty',
 ]) {
   if (flag(`--${key}`) !== undefined) options[key] = Number(flag(`--${key}`));
 }

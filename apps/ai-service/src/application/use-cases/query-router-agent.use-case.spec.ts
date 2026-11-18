@@ -1813,6 +1813,60 @@ describe('QueryRouterAgentUseCase', () => {
     expect(request.userPrompt).not.toContain('history-tail');
   });
 
+  describe('explicit recall wording', () => {
+    const route = async (
+      message: string,
+      modelResponse: Record<string, unknown>,
+    ) => {
+      const service = {
+        generateObject: jest.fn().mockResolvedValue(response(modelResponse)),
+      };
+      return new QueryRouterAgentUseCase(service as never, config).execute({
+        message,
+        hasSharedReelContext: false,
+      });
+    };
+
+    it.each(['NORMAL_CHAT', 'OFF_TOPIC'])(
+      'turns a %s label into a conversation-memory question',
+      async (intent) => {
+        const decision = await route('mình nói sẽ đi du lịch ở đâu nhỉ?', {
+          intent,
+        });
+        expect(decision).toMatchObject({
+          intent: 'CONVERSATION_MEMORY_QUESTION',
+          referenceTarget: 'CONVERSATION',
+          needsVerification: true,
+          recommendationAction: { type: 'NONE' },
+        });
+        expect(decision.toolPlan.allowedTools).toEqual([
+          'get_conversation_summary',
+        ]);
+      },
+    );
+
+    it('leaves ordinary chat, and a recall-sounding word inside a reel question, alone', async () => {
+      expect(
+        (await route('how do I share a reel with a friend?', {})).intent,
+      ).toBe('NORMAL_CHAT');
+      expect(
+        (
+          await route('do you remember what the speaker said in this reel?', {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+          })
+        ).intent,
+      ).toBe('REEL_VIDEO_QUESTION');
+    });
+
+    it('keeps an off-topic label when the message has no recall wording', async () => {
+      expect(
+        (await route('What is the capital of France?', { intent: 'OFF_TOPIC' }))
+          .intent,
+      ).toBe('OFF_TOPIC');
+    });
+  });
+
   describe('OFF_TOPIC scope', () => {
     const routeFor = async (
       scopeMode: string | undefined,

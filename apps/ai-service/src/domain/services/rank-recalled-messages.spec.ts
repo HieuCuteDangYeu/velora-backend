@@ -158,4 +158,23 @@ describe('rankRecalledMessages', () => {
     expect(selectEmbeddingCandidates(candidates, 10)).toEqual([3, 5]);
     expect(selectEmbeddingCandidates(candidates, 1)).toEqual([5]);
   });
+
+  it('prefers the statement over a question about the same thing asked earlier', () => {
+    const candidates = [
+      message('I am travelling to Hanoi next month'),
+      message('where am I travelling next month?'),
+    ];
+    const question = 'where did I say I am travelling?';
+    expect(
+      rankRecalledMessages({ question, candidates, semantic: [0.62, 0.7] }),
+    ).toEqual([candidates[0]]);
+    // asking about what was asked is the one case where the earlier question is the answer
+    expect(
+      rankRecalledMessages({
+        question: 'what did I ask you about travelling?',
+        candidates,
+        semantic: [0.62, 0.7],
+      }),
+    ).toEqual([candidates[1]]);
+  });
 });

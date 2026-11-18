@@ -90,23 +90,6 @@ describe('RecallConversationContextUseCase', () => {
     expect(memories.execute).not.toHaveBeenCalled();
   });
 
-  it('also recalls when the router called an explicit recall question normal chat', async () => {
-    const { useCase } = unit({});
-    const cued = state({
-      route: { intent: 'NORMAL_CHAT' },
-      userMessage: 'do you remember the spaghetti I mentioned?',
-    });
-    expect(useCase.isRecallTurn(cued)).toBe(true);
-    expect((await useCase.execute(cued)).recalledMessages).toHaveLength(1);
-
-    const plain = state({
-      route: { intent: 'NORMAL_CHAT' },
-      userMessage: 'how do I edit my profile?',
-    });
-    expect(useCase.isRecallTurn(plain)).toBe(false);
-    expect(await useCase.execute(plain)).toEqual({});
-  });
-
   it('recalls the older message by meaning and adds the user facts', async () => {
     const { useCase } = unit({});
     const result = await useCase.execute(state());

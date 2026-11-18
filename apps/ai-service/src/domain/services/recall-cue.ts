@@ -16,7 +16,6 @@ const ENGLISH: RegExp[] = [
   word(
     '(?:do|did|can|could|would|will) you (?:still |even )?(?:remember|recall)',
   ),
-  word('remember (?:what|when|where|who|which|how|that|about|the|my|me|i)\\b'),
   // "what did I say", "which food did I mention": past tense only, so "how do I share" is not a cue
   word(
     '(?:what|which|where|when|who)(?: \\w+){0,3} (?:did|was|were) (?:i|we) (?:say|said|tell|told|mention|mentioned|ask|asked|talk|talked|discuss|discussed|share|shared|send|sent|upload|uploaded)',
@@ -43,7 +42,6 @@ const VIETNAMESE: RegExp[] = [
   word(
     '(?:mình|tôi|tớ|em|anh|chị|tui) (?:đã |vừa |hồi nãy |lúc nãy |ban nãy )?(?:nói|kể|bảo|nhắc|hỏi|gửi|chia sẻ|đề cập)',
   ),
-  word('(?:hồi nãy|lúc nãy|ban nãy|trước đó|hôm trước|ở trên|phía trên)'),
 ];
 
 /** A Vietnamese cue also needs to be a question, since "mình nói thật" is plain talk. */

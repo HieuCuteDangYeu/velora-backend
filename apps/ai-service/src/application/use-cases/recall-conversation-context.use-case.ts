@@ -12,7 +12,6 @@ import {
   selectEmbeddingCandidates,
 } from '@ai/domain/services/rank-recalled-messages';
 import { isCannedAssistantReply } from '@ai/domain/services/canned-replies';
-import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
 import {
   boundPromptText,
   readRagPromptBounds,
@@ -83,16 +82,9 @@ export class RecallConversationContextUseCase {
     };
   }
 
-  /**
-   * The router names recall questions CONVERSATION_MEMORY_QUESTION. When it calls one normal
-   * chat, explicit recall wording ("do you remember...") still earns the same lookup.
-   */
+  /** The router names recall questions, including ones the model called chat but whose wording is an explicit recall. */
   isRecallTurn(state: RagChatWorkflowState): boolean {
-    const intent = state.route?.intent;
-    return (
-      intent === 'CONVERSATION_MEMORY_QUESTION' ||
-      (intent === 'NORMAL_CHAT' && looksLikeRecallQuestion(state.userMessage))
-    );
+    return state.route?.intent === 'CONVERSATION_MEMORY_QUESTION';
   }
 
   private async recallMessages(

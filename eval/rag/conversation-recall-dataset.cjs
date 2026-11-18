@@ -10,6 +10,7 @@
 //
 // Case kinds: `lexical` (the question repeats a word of the fact), `semantic` (it shares no
 // word), `vietnamese`, `photo` (the answer is a photo caption and the AI's description of it),
+// `repeat` (the same topic was asked earlier and refused, which must not crowd the fact out),
 // `negative` (nothing in the history answers it; the right recall is empty).
 
 const fs = require('node:fs');
@@ -313,6 +314,7 @@ for (const distance of [...INSIDE_WINDOW, ...DISTANCES, ...OUT_OF_REACH]) {
         kind: form,
         distance,
         question: fact[form],
+        gold: fact.say,
         expect: fact.expect,
         history: stamp(history),
       });
@@ -328,6 +330,7 @@ for (const distance of [...INSIDE_WINDOW, ...DISTANCES, ...OUT_OF_REACH]) {
       kind: 'vietnamese',
       distance,
       question: fact.question,
+      gold: fact.say,
       expect: fact.expect,
       history: stamp(history),
     });
@@ -346,7 +349,34 @@ for (const distance of [...INSIDE_WINDOW, ...DISTANCES, ...OUT_OF_REACH]) {
       kind: 'photo',
       distance,
       question: pick(photo.questions),
+      gold: photo.line,
       expect: photo.expect,
+      history: stamp(history),
+    });
+  }
+}
+// The same topic asked earlier and answered with the canned refusal: that earlier question is
+// closer in meaning to the new one than the fact, and must not crowd the fact out.
+for (const distance of [20, 30, 50]) {
+  for (const fact of FACTS) {
+    const history = buildHistory({
+      goldMessages: [{ role: 'user', content: fact.say }],
+      distance,
+      distractors: distractorsFor(fact.expect),
+    });
+    const slot = history.length - Math.floor(distance / 2);
+    history.splice(
+      slot,
+      2,
+      { role: 'user', content: fact.lexical },
+      { role: 'assistant', content: FILLER_BOT[1] },
+    );
+    add({
+      kind: 'repeat',
+      distance,
+      question: fact.semantic,
+      gold: fact.say,
+      expect: fact.expect,
       history: stamp(history),
     });
   }

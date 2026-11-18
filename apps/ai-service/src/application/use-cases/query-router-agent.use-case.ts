@@ -2,6 +2,7 @@ import {
   isGreetingOrThanksOnly,
   readRouterRulesEnabled,
 } from '@ai/domain/services/rag-greeting-shortcut';
+import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
 import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type {
@@ -768,10 +769,19 @@ ${input.message.includes(PHOTO_NOTE_MARKER) ? `${PHOTO_NOTE_GUIDANCE}\n\n` : ''}
     raw: RawRouteDecision,
     input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
-    const rawIntent = this.applyScope(this.normalizeIntent(raw.intent));
+    const modelIntent = this.applyScope(this.normalizeIntent(raw.intent));
     const reelQuestionType = this.isExplicitMultimodalRequest(input.message)
       ? 'MULTIMODAL_CONTENT'
       : this.normalizeReelQuestionType(raw.reelQuestionType);
+    // A small model sometimes calls "do you remember what I said about..." normal chat, or off
+    // topic when the thing recalled is a trip or a pet. Explicit recall wording is a question
+    // about the conversation: it is answered only from the chat and checked against it.
+    const rawIntent: RagChatIntent =
+      reelQuestionType === 'NONE' &&
+      (modelIntent === 'NORMAL_CHAT' || modelIntent === 'OFF_TOPIC') &&
+      looksLikeRecallQuestion(input.message ?? '')
+        ? 'CONVERSATION_MEMORY_QUESTION'
+        : modelIntent;
     const intent =
       ['NORMAL_CHAT', 'CONVERSATION_MEMORY_QUESTION'].includes(rawIntent) &&
       reelQuestionType !== 'NONE'

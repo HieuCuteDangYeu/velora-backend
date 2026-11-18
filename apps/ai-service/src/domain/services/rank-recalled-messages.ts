@@ -19,6 +19,8 @@ export interface RecallRankingOptions {
   semanticWeight: number;
   /** Only messages scoring within this much of the best match are kept, so weak ones do not tag along. */
   margin: number;
+  /** Subtracted from a message the user phrased as a question (see QUESTION_PENALTY). */
+  questionPenalty: number;
 }
 
 export const DEFAULT_RECALL_RANKING: RecallRankingOptions = {
@@ -27,6 +29,7 @@ export const DEFAULT_RECALL_RANKING: RecallRankingOptions = {
   minLexical: 0.5,
   semanticWeight: 0.75,
   margin: 0.05,
+  questionPenalty: 0.15,
 };
 
 /** Words that carry no topic: question scaffolding and recall verbs, English and Vietnamese. */
@@ -125,6 +128,14 @@ export function selectEmbeddingCandidates(
 const PHOTO_QUESTION =
   /\b(photos?|pictures?|pics?|images?|selfies?|screenshots?|hinh|hinh anh|bu?c anh|tam anh)\b/;
 const PHOTO_BONUS = 0.2;
+/**
+ * A user who asked "where am I going?" earlier is closer in meaning to "where did I say I am
+ * going?" than the statement that answers it, so earlier questions are demoted (by
+ * `questionPenalty`) unless the question itself is about what was asked.
+ */
+const ASKED_ABOUT = /\b(ask|asked|asking|hoi|question|questions)\b/;
+const looksLikeQuestion = (message: AiChatMessageContext): boolean =>
+  message.role === 'user' && /[?？]\s*$/.test(message.content.trim());
 
 export const isPhotoQuestion = (question: string): boolean =>
   PHOTO_QUESTION.test(fold(question));
@@ -166,6 +177,7 @@ export function rankRecalledMessages(input: {
     input.candidates.map((candidate) => candidate.content),
   );
   const aboutPhoto = isPhotoQuestion(input.question);
+  const aboutAsking = ASKED_ABOUT.test(fold(input.question));
   const scored = input.candidates.map((message, index) => {
     const meaning = input.semantic?.[index];
     const words = lexical[index];
@@ -179,11 +191,15 @@ export function rankRecalledMessages(input: {
         ? words
         : options.semanticWeight * Math.max(meaning, 0) +
           (1 - options.semanticWeight) * words;
+    const penalty =
+      !aboutAsking && !photo && looksLikeQuestion(message)
+        ? options.questionPenalty
+        : 0;
     return {
       message,
       index,
       relevant,
-      score: blended + (photo ? PHOTO_BONUS : 0),
+      score: blended + (photo ? PHOTO_BONUS : 0) - penalty,
     };
   });
   const relevant = scored

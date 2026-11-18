@@ -3,6 +3,12 @@ import { CloudflareVisionAdapter } from '@ai/infrastructure/adapters/cloudflare-
 import { FallbackVisionAdapter } from '@ai/infrastructure/adapters/fallback-vision.adapter';
 import { GroqVisionAdapter } from '@ai/infrastructure/adapters/groq-vision.adapter';
 import { R2ChatImageStorageService } from '@ai/infrastructure/services/r2-chat-image-storage.service';
+import {
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
 import { config as loadEnv } from 'dotenv';
 import { randomUUID } from 'node:crypto';
@@ -81,6 +87,67 @@ describe('chat image understanding against the real providers (opt-in)', () => {
         }),
       );
       expect(ChatImageUnreadableError).toBeDefined();
+    },
+  );
+
+  // Writes one synthetic object to the configured bucket and always deletes it.
+  const writeIt =
+    process.env.CHAT_IMAGE_LIVE === '1' &&
+    process.env.CHAT_IMAGE_R2_WRITE === '1'
+      ? it
+      : it.skip;
+
+  writeIt(
+    'reads a real uploaded photo from R2 and describes it, then removes it',
+    async () => {
+      loadEnv({ path: `${process.cwd()}/.env` });
+      const config = new ConfigService(process.env);
+      const bucket = config.getOrThrow<string>('R2_BUCKET_NAME');
+      const s3 = new S3Client({
+        region: 'auto',
+        endpoint: `https://${config.getOrThrow<string>('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+        credentials: {
+          accessKeyId: config.getOrThrow<string>('R2_ACCESS_KEY_ID'),
+          secretAccessKey: config.getOrThrow<string>('R2_SECRET_ACCESS_KEY'),
+        },
+        forcePathStyle: true,
+      });
+      const userId = 'live-check-user';
+      const key = `chat-images/${userId}/${randomUUID()}.jpeg`;
+      const bytes = readFileSync(process.env.CHAT_IMAGE_LIVE_FILE as string);
+      const appConfig = { get: () => undefined };
+
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: bytes,
+          ContentType: 'image/jpeg',
+        }),
+      );
+      try {
+        const useCase = new DescribeChatImagesUseCase(
+          new R2ChatImageStorageService(config),
+          new GroqVisionAdapter(config),
+          appConfig as never,
+          new RefuseRagInputUseCase(appConfig as never),
+        );
+        const [context] = await useCase.execute({
+          userId,
+          images: [{ fileKey: key, mimeType: 'image/jpeg' }],
+        });
+        console.log(`[live r2 photo] ${JSON.stringify(context)}`);
+        expect(
+          `${context.description} ${context.ocrText ?? ''} ${context.objects.join(' ')}`,
+        ).toMatch(/bike|bicycle|cycl/i);
+      } finally {
+        await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+      }
+      await expect(
+        s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key })),
+      ).rejects.toMatchObject({
+        name: expect.stringMatching(/NotFound|NoSuchKey/),
+      });
     },
   );
 });

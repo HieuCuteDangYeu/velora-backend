@@ -430,6 +430,54 @@ const FILLERS = [
         ['English', 'which noodle shop did I say I eat lunch at?'],
       ],
     },
+    umbrella: {
+      fact: (w) => `I left my ${w} umbrella at the cinema last week.`,
+      asks: [
+        ['with "remember"', 'do you remember where I left my umbrella?'],
+        ['paraphrase', 'which place did I forget my rain gear at?'],
+        ['Vietnamese', 'mình để quên cây dù ở đâu nhỉ?'],
+      ],
+    },
+    wallet: {
+      fact: (w) => `Mình vừa mất cái ví hiệu ${w} ở chợ.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mất cái ví hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ hiệu ví mình bị mất không?'],
+        ['English', 'which wallet brand did I say I lost?'],
+      ],
+    },
+    tutor: {
+      fact: (w) => `My maths tutor is a lady called ${w}.`,
+      asks: [
+        ['with "remember"', 'do you remember my maths tutor?'],
+        ['paraphrase', 'who teaches me mathematics?'],
+        ['Vietnamese', 'gia sư toán của mình tên gì nhỉ?'],
+      ],
+    },
+    festival: {
+      fact: (w) => `Mình sẽ đi lễ hội ${w} vào tháng mười.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói sẽ đi lễ hội nào nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ lễ hội mình định đi không?'],
+        ['English', 'which festival did I say I will attend?'],
+      ],
+    },
+    neighbor: {
+      fact: (w) => `My neighbour's cat is named ${w}.`,
+      asks: [
+        ['with "remember"', "do you remember my neighbour's cat?"],
+        ['paraphrase', 'what is the feline next door called?'],
+        ['Vietnamese', 'con mèo nhà hàng xóm tên gì nhỉ?'],
+      ],
+    },
+    recipe: {
+      fact: (w) => `Công thức bánh mình hay làm là bánh ${w} chanh.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói hay làm bánh gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ loại bánh mình hay làm không?'],
+        ['English', 'which cake did I say I usually bake?'],
+      ],
+    },
   };
   const chosen = (
     process.env.RECALL_CATEGORIES

@@ -479,3 +479,32 @@ user then gets an honest "not found" or "try again"; two facts of one kind confl
 messages; the cache is per process and starts cold after a restart. An extractive fallback (quote the
 strongest recalled message when the model fails) would remove the model-failure cases and is the next step
 if they show up in production logs.
+
+### Update: quote fallback (`85850a7f`) and what is and is not yet measured on it
+
+The two failure classes the gate runs kept showing (the small model running to its token cap and writing no
+answer; the verifier rejecting a correct answer) are not retrieval failures: the ranker usually had the
+message. `strongRecallMatch` now picks a message that confidently answers the question (from the user,
+never an earlier question of theirs, over the older messages and the live window), and when drafting fails
+or verification rejects the answer the bot quotes it ("Earlier you wrote: ..."; a photo as the photo and
+what it showed) before it says "I could not find that in our conversation."
+
+```bash
+node eval/rag/conversation-recall-eval.cjs --vectors vectors.json --quote
+```
+
+* Ranker, real vectors: a confident quote exists for 79.1% of the 191 positive cases, is the right message in
+  100% of them, and none of the 16 negatives is quoted (a synthetic set, so treat the 100% as optimistic).
+* Real-model replay (40 cases, no router): 37 verified and correct, 38 with the quote fallback; the two
+  that remain are a paraphrase whose true answer scored just under the quote bar, and an answer in Vietnamese
+  that the English-word checker counts wrong although it is right.
+* Live, on the final code: one clean run, 9 of 10 (the quote fired once: umbrella). The miss was a Vietnamese
+  "mình để quên cây dù ở đâu nhỉ?" the router called off topic.
+
+**Not yet measured on this exact code: three live runs.** The second run stopped at `RATE_LIMITED`: the admin
+account's daily AI budget (`ai_turn_day`, 300 turns) was used up by the day's testing, and a rate limit is not
+something to work around. The code since `bb49d077` only adds fallbacks (the three live runs on `bb49d077`
+were 10, 8 and 9 of 10 = 90.0%), but re-run `conversation-recall-live.cjs` once the budget resets, with
+categories not yet used (`neighbor`, `recipe` are the only two left in the runner; add more), to complete the
+gate on the final code.
+

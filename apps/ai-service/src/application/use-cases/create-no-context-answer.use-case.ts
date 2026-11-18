@@ -16,8 +16,13 @@ export class CreateNoContextAnswerUseCase {
       return this.taskActionLimitation(state.userMessage);
     }
 
-    if (state.route?.intent === 'NORMAL_CHAT') {
-      // A chat turn has no retrieved context, so "found relevant context" would be false.
+    if (
+      state.route?.intent === 'NORMAL_CHAT' ||
+      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' ||
+      state.route?.intent === 'USER_MEMORY_QUESTION'
+    ) {
+      // A chat or memory turn has no retrieved reel context, so "found relevant context" would be
+      // false: the model simply failed to write an answer, and asking again is the honest advice.
       return 'Sorry, I couldn’t put together an answer just now. Please try asking again.';
     }
 

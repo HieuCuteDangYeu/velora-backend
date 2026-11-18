@@ -54,6 +54,21 @@ describe('CreateNoContextAnswerUseCase', () => {
     expect(answer).toMatch(/prepare a draft/i);
   });
 
+  it.each(['CONVERSATION_MEMORY_QUESTION', 'USER_MEMORY_QUESTION'])(
+    'asks the user to try again, not "found relevant context", when drafting a %s answer fails',
+    (intent) => {
+      const answer =
+        new CreateNoContextAnswerUseCase().executeAfterAnswerGenerationFailure({
+          route: { intent },
+          contextSufficiency: { sufficient: true },
+        } as RagChatWorkflowState);
+
+      expect(answer).toBe(
+        'Sorry, I couldn’t put together an answer just now. Please try asking again.',
+      );
+    },
+  );
+
   it('does not reuse a sufficiency success reason as the answer when drafting fails', () => {
     const useCase = new CreateNoContextAnswerUseCase();
     const answer = useCase.executeAfterAnswerGenerationFailure({

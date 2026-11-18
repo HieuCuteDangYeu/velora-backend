@@ -445,3 +445,26 @@ VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall
    even off topic (a trip, a pet), so explicit recall wording (`recall-cue.ts`) is routed as a
    conversation-memory question after the model has answered. A recall question with no such wording
    ("what is my lizard called?") still depends on the router.
+
+### Production-readiness gate for conversation recall (defined 2026-11-19, before the final runs)
+
+| Gate | Bar | Result |
+|---|---|---|
+| G1 ranker | recall >= 90% at distance 14-70 on the generated set, noise <= 0.1 per case | 94.2%, 0.06 |
+| G2 live | >= 90% of checks pooled over >= 3 clean runs (categories no earlier run used), zero wrong claims (a never-said thing stated as said, or the wrong fact), every miss explained | 37/40 = 92.5% over runs 7-10, zero wrong claims |
+| G3 regressions | all ai-service, conversation-service and common suites pass, typecheck and lint clean | 2,081 tests pass |
+| G4 CI | green for the final commit | see the commit status |
+| G5 health | no new errors in the service logs during the runs | the only warnings were the shared vision quota running out and two model truncations |
+
+Runs 7-10 on `814cbbdc`: 9/10, 8/10, 10/10, 10/10. The misses: a Vietnamese "mình muốn ... nào nhỉ?" the
+router called chat (run 7); two photo answers where `gemma4:e2b` ran to the token cap
+(`finishReason=length`) so no answer was produced (run 8); the checker also wrongly passed one of those
+because "ngữ cảnh" contains "ảnh", and wrongly failed an honest Vietnamese "không tìm thấy" (run 10).
+Both checker faults are fixed in the runner, and a failed draft for a memory question now says to try
+again instead of "I found relevant context, but could not verify...".
+
+Known limits that stay open: a recall question with no recall wording can still be mislabelled by the
+router; the model can fail to write an answer (token cap) or the verifier can reject a correct one, and
+the user then gets an honest "not found" or "try again"; two facts of one kind conflict; recall reaches
+about 92 messages. An extractive fallback (quote the strongest recalled message when the model fails)
+would remove the model-failure cases and is the next step if they show up in production logs.

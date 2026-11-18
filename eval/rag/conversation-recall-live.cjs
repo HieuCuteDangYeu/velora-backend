@@ -22,7 +22,7 @@ const botUserId = process.env.BOT_USER_ID;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const RUN = Date.now().toString(36);
 const REFUSAL_FALLBACK =
-  /could not verify that answer|I do not have enough verified|could not find that in our conversation|do not have that saved about you|I can only help with Velora/i;
+  /could not verify|I do not have enough verified|could not find that in our conversation|do not have that saved about you|I can only help with Velora|couldn.t put together an answer|không thể xác minh|không tìm thấy|không có thông tin/i;
 
 // --- a small PNG writer, so no image file or dependency is needed ---
 function crc32(buffer) {
@@ -311,6 +311,58 @@ const FILLERS = [
         ['English, "remember"', 'do you remember what I play at weekends?'],
       ],
     },
+    book: {
+      fact: (w) => `The book I am reading now is called ${w} Nights.`,
+      asks: [
+        ['with "remember"', 'do you remember the book I am reading?'],
+        ['paraphrase', 'what novel am I in the middle of?'],
+        ['Vietnamese', 'quyển sách mình đang đọc tên gì nhỉ?'],
+      ],
+    },
+    camera: {
+      fact: (w) => `Mình định mua máy ảnh hiệu ${w} vào tháng sau.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói định mua máy ảnh hiệu gì nhỉ?'],
+        [
+          'Vietnamese, "còn nhớ"',
+          'bạn còn nhớ hiệu máy ảnh mình định mua không?',
+        ],
+        ['English', 'which camera brand did I say I plan to buy?'],
+      ],
+    },
+    band: {
+      fact: (w) => `My favourite band is ${w} Echo.`,
+      asks: [
+        ['with "remember"', 'do you remember my favourite band?'],
+        ['paraphrase', 'which music group do I like the most?'],
+        ['Vietnamese', 'ban nhạc mình thích nhất là gì nhỉ?'],
+      ],
+    },
+    dish: {
+      fact: (w) => `Món mình thích nấu nhất là ${w} chiên giòn.`,
+      asks: [
+        ['Vietnamese', 'món mình thích nấu nhất là gì nhỉ?'],
+        ['English paraphrase', 'what dish do I like cooking the most?'],
+        ['English, "remember"', 'do you remember what I like to cook?'],
+      ],
+    },
+    cactus: {
+      fact: (w) => `I just bought a cactus and named it ${w}.`,
+      asks: [
+        ['with "remember"', 'do you remember what I named my cactus?'],
+        ['paraphrase', 'what did I call my new desert plant?'],
+        ['Vietnamese', 'cây xương rồng của mình tên gì nhỉ?'],
+      ],
+    },
+    watch: {
+      fact: (w) =>
+        `Mình vừa mua một chiếc đồng hồ hiệu ${w} làm quà sinh nhật.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mua đồng hồ hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ hiệu đồng hồ mình mua không?'],
+        ['English', 'which watch brand did I say I bought?'],
+      ],
+    },
   };
   const chosen = (
     process.env.RECALL_CATEGORIES
@@ -382,7 +434,7 @@ const FILLERS = [
     [
       'photo, Vietnamese',
       'bạn còn nhớ tấm ảnh mình gửi không?',
-      (t) => mentions(t, [...photoWords, 'ảnh', 'hình']),
+      (t) => mentions(t, photoWords),
     ],
   ];
   for (const [name, question, correct] of asks) {
@@ -392,7 +444,7 @@ const FILLERS = [
 
   // --- things never said: an honest "not found" passes, a claim fails ---
   const HONEST =
-    /(could not|couldn't|cannot|can't|do not|don't|did not|didn't|not (find|see|have|mention)|no (record|information|mention))/i;
+    /(không tìm thấy|không có thông tin|không thấy|không nhớ|could not|couldn't|cannot|can't|do not|don't|did not|didn't|not (find|see|have|mention)|no (record|information|mention))/i;
   for (const [name, question, topic] of [
     [
       'never said: bread',

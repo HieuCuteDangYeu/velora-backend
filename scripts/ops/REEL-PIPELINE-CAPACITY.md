@@ -251,6 +251,18 @@ Encode-only ceiling is about 2.5 reels/min per machine, best at 2 at once. End t
 
 Stream validation retries each sampled CDN URL three times (8 s timeout, 0.5 s and 1.5 s apart) and logs the last problem, because a single dropped request used to fail the whole media attempt.
 
+### Measured limits, 2026-11-19
+
+| What | Result | How to repeat |
+|---|---|---|
+| Sustained publishes (6 s clips, below the gateway, skip tag set) | 30, 60 and 120 per minute all accepted, 0 errors, create p95 under 0.8 s; media backlog drained in 147 / 267 / 435 s (about 14 short reels/min) | `scripts/ops/reel-publish-rate.cjs` |
+| API reads alone (no video) | 6,000 to 10,900 calls/min; latency collapses past about 100 simultaneous viewers; very noisy because the homelab is shared | `reel-latency-load.cjs --scenarios baseline,list,detail,series,tags` |
+| Full read ramp including video | capped by the test laptop's own link (about 131 Mbit/s of segments), not by the server | |
+| Second content-service replica | no consistent gain over 3 alternating pairs (one pair better, two worse; the only failed requests were on 2 replicas) | |
+| Homelab media worker at 2 reels instead of 1 | last of 16 reels 454 s to 383 s, but first and median reel slower, and API worst p95 172 to 280 ms (1 reel) to 383 ms (2 reels) | |
+
+The homelab keeps `MEDIA_WORKER_PREFETCH=1`, the laptop workers run 2.
+
 ## Not covered yet
 
 Feed, playback and HLS read load; AI chat under load; more than 12 simultaneous creates; a multi-hour

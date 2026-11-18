@@ -46,4 +46,21 @@ describe('HandleConversationTurnCompletedUseCase', () => {
 
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    'I can’t help with that request. Ask me about a Reel or another question and I’ll do my best.',
+    'I can’t share that answer. Ask me about a Reel or another question and I’ll do my best.',
+  ])(
+    'does not learn from a turn answered with a refusal (%#)',
+    async (reply) => {
+      const { execute, useCase } = build();
+
+      await useCase.execute({
+        ...payload('A reworded message no pattern recognises'),
+        assistantMessage: reply,
+      });
+
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 });

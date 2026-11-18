@@ -1,4 +1,7 @@
 import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
+import { ClassifyRagInputUseCase } from '@ai/application/use-cases/classify-rag-input.use-case';
+import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
+import { ScreenRagMemoryUseCase } from '@ai/application/use-cases/screen-rag-memory.use-case';
 import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
 import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
 import { AiServiceModule } from './ai-service.module';
@@ -13,6 +16,9 @@ describe('AiServiceModule guardrail wiring', () => {
     ) as unknown[];
     for (const useCase of [
       ScreenRagInputUseCase,
+      RefuseRagInputUseCase,
+      ClassifyRagInputUseCase,
+      ScreenRagMemoryUseCase,
       ScreenRagResultUseCase,
       BuildRagGuardrailSummaryUseCase,
     ]) {

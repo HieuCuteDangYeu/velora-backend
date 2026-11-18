@@ -280,6 +280,16 @@ export const INPUT_PATTERNS: readonly GuardrailPattern[] = [
   ...INPUT_ONLY_PATTERNS,
 ];
 
+/**
+ * What may be written to long-term memory or a conversation summary. Stored text
+ * is read back later as trusted background, so it must not carry either a user's
+ * attack or a planted line addressed to the assistant.
+ */
+export const MEMORY_PATTERNS: readonly GuardrailPattern[] = [
+  ...INPUT_PATTERNS,
+  ...ASSISTANT_ADDRESSED,
+];
+
 /** What a reel's transcript, OCR text, title or tags must not contain. */
 export const EVIDENCE_PATTERNS: readonly GuardrailPattern[] = [
   ...SHARED,

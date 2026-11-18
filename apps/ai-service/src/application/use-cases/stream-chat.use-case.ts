@@ -2,6 +2,7 @@ import {
   RAG_INPUT_REFUSAL_MESSAGE,
   RefuseRagInputUseCase,
 } from '@ai/application/use-cases/refuse-rag-input.use-case';
+import { ClassifyRagInputUseCase } from '@ai/application/use-cases/classify-rag-input.use-case';
 import type { IChatAdmission } from '@ai/domain/interfaces/chat-admission.interface';
 import type {
   IRagChatWorkflow,
@@ -10,7 +11,7 @@ import type {
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { AiRecommendedReel } from '@common/ai/dtos/ask-question-response.dto';
 import type { AiChatMemoryContext } from '@common/ai/interfaces/chat-memory-context.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 export interface StreamChatResult {
   answer: string;
@@ -29,6 +30,8 @@ export class StreamChatUseCase {
     @Inject('IChatAdmission')
     private readonly chatAdmission: IChatAdmission,
     private readonly refuseRagInputUseCase: RefuseRagInputUseCase,
+    @Optional()
+    private readonly classifyRagInputUseCase?: ClassifyRagInputUseCase,
   ) {}
 
   async execute(input: {
@@ -42,9 +45,16 @@ export class StreamChatUseCase {
     const refusal = this.refuseRagInputUseCase.execute({
       message: input.message,
     });
-    if (refusal.refuse) {
+    // The model-based check runs only when the pattern check let the message through,
+    // so a message the patterns already refuse never costs a model call.
+    const classification = refusal.refuse
+      ? undefined
+      : await this.classifyRagInputUseCase?.execute({
+          message: input.message,
+        });
+    if (refusal.refuse || classification?.refuse) {
       this.logger.warn(
-        `[Guardrail] mode=enforce blocked=true input=${refusal.codes.join(',') || '-'}`,
+        `[Guardrail] mode=enforce blocked=true input=${[...refusal.codes, ...(classification?.codes ?? [])].join(',') || '-'}`,
       );
       return {
         answer: RAG_INPUT_REFUSAL_MESSAGE,

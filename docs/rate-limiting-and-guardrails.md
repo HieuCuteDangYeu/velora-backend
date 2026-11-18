@@ -79,13 +79,17 @@ chain, verify with logins from two different networks.
   same `ai_turn_*` budget in conversation-service, so no client can bypass it. (A `POST /conversations/chat`
   convenience endpoint and its `ai_chat_user` pre-check existed until 2026-11-09; it had no callers and was removed.)
 
-## RAG guardrail (shadow by default, input check can enforce)
+## RAG guardrail (shadow by default, every check can enforce)
 
 In shadow mode it records what a guardrail would block and changes nothing. Code: `apps/ai-service/src/domain/services/rag-guardrail/`
 (rules), `application/use-cases/screen-rag-*.use-case.ts` and `build-rag-guardrail-summary.use-case.ts`.
 
 - Input: instruction override, prompt extraction, jailbreak personas and role tags (English and Vietnamese), including
-  obfuscation (zero-width, homoglyphs, leetspeak, spaced letters, full-width text, base64).
+  obfuscation (zero-width, homoglyphs, leetspeak, spaced letters, full-width text) and re-encodings (base64 and
+  base64url, hex, percent / HTML / unicode escapes, ROT13, reversed text). Both ends of a message over 8,000
+  characters are screened, since the prompt keeps the start and the end of an oversized message.
+- Memory: the same patterns plus text addressed to the assistant, on anything about to be stored as long-term memory
+  or a conversation summary.
 - Evidence: text in reel transcript, OCR or metadata that addresses the assistant.
 - Output: secrets, system-prompt text, leaked IDs, remote-image exfiltration, citations outside the accessible reels.
 
@@ -94,8 +98,38 @@ Each request that produces a finding logs one line with codes only, never text:
 The same summary is added to the Langfuse root output.
 
 `AI_GUARDRAIL_MODE=off|shadow|enforce` (default `shadow`), with per-check overrides `AI_GUARDRAIL_INPUT_MODE`,
-`AI_GUARDRAIL_EVIDENCE_MODE`, `AI_GUARDRAIL_OUTPUT_MODE`. Only the **input** check can enforce; for evidence and
-output `enforce` is read as `shadow`.
+`AI_GUARDRAIL_EVIDENCE_MODE`, `AI_GUARDRAIL_OUTPUT_MODE`, `AI_GUARDRAIL_MEMORY_MODE`. Every one of them can enforce, but
+turn them on one at a time with the override, not `AI_GUARDRAIL_MODE=enforce`: each needs its own replay. All of them
+act only on a **high** finding, fail open if the check itself throws, and log codes only.
+
+| Check | `enforce` does | Where |
+|---|---|---|
+| input | fixed refusal before the router, retrieval or any model call | `RefuseRagInputUseCase`, called first by `StreamChatUseCase` |
+| evidence | drops the retrieved chunk from `rerankedChunks` before any prompt, verifier or citation step sees it | `ScreenRagResultUseCase.filterEvidence`, called by the rerank and context-tool nodes |
+| output | replaces the answer with `RAG_OUTPUT_REFUSAL_MESSAGE` and clears citations, recommendations and suggestions; the refused answer is what traces keep | `StreamFinalAnswerUseCase` (before publishing) and the end of the workflow (citations) |
+| memory | does not store a memory or summary that carries an attack, and leaves such stored text out of the prompt | `ScreenRagMemoryUseCase` in `UpsertUserMemoriesUseCase`, `UpdateConversationMemoryUseCase` and the prompt builder |
+| classifier | refuses a message the model judges an attack (see below) | `ClassifyRagInputUseCase`, after the pattern check |
+
+**Output and streaming.** The answer reaches the client token by token while it is generated, so checking only at the
+end of the workflow would be too late. With the output check enforcing: a prepared (verified) answer is screened in
+full before its first chunk is published; a live-generated answer is released only once 160 characters sit behind the
+head, and publishing stops at the first high finding. A secret, an ID or an image link is complete within that window, so
+it is caught before any part of it goes out. A leak that needs more context than the window (two prompt-heading
+markers far apart) can still release the part before the second marker. `TENANT_VIOLATION` needs the citations, which
+only exist at the end of the workflow, so there it replaces the stored answer after the text has streamed.
+A turn whose reply is a refusal message is not summarised or remembered.
+
+**Classifier.** `AI_GUARDRAIL_CLASSIFIER_MODE=off|shadow|enforce` (default `off`, whatever `AI_GUARDRAIL_MODE` says)
+asks the router model for a verdict (`isAttack`, `confidence`; refuses at `AI_GUARDRAIL_CLASSIFIER_MIN_CONFIDENCE`,
+default 0.8). `AI_GUARDRAIL_CLASSIFIER_SCOPE=borderline` (default) calls it only when the pattern check found something;
+`all` calls it for every message, which is the only setting that helps against a rewording no pattern knows, at the
+price of one extra model call per turn on a server that answers one request at a time. It never lifts a pattern
+refusal, because it reads untrusted text and its "benign" verdict must not be able to override the patterns. A timeout
+(`AI_GUARDRAIL_CLASSIFIER_TIMEOUT_MS`, default 4000) or error fails open. Measured on `gemma4:e2b` (`eval/rag/README.md`):
+it refused 24 of 30 rewordings the patterns missed (the patterns blocked 2 of 30) and 0 of 20 benign messages, but 4 of 72
+benign "sounds like an attack" rows in the older set. In `borderline` scope only 3 of those 30 attacks would have reached
+it. A call takes about 1 s on an idle model host and 15-25 s when it is shared, so under load the default timeout makes
+it fail open.
 
 With the input check enforcing, a message with a **high** input finding is answered with a fixed refusal
 (`RAG_INPUT_REFUSAL_MESSAGE`) before the chat-admission queue, the router, retrieval or any model call, so a refused

@@ -26,6 +26,8 @@ import { ReviewIndexQualityUseCase } from '@ai/application/use-cases/review-inde
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
 import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
 import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
+import { ClassifyRagInputUseCase } from '@ai/application/use-cases/classify-rag-input.use-case';
+import { ScreenRagMemoryUseCase } from '@ai/application/use-cases/screen-rag-memory.use-case';
 import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
 import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
 import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
@@ -209,6 +211,8 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     BuildRagTraceSnapshotUseCase,
     ScreenRagInputUseCase,
     RefuseRagInputUseCase,
+    ClassifyRagInputUseCase,
+    ScreenRagMemoryUseCase,
     ScreenRagResultUseCase,
     BuildRagGuardrailSummaryUseCase,
     MemoryWriterAgentUseCase,

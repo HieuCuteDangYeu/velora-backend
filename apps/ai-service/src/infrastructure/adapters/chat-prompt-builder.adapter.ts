@@ -1,3 +1,8 @@
+import {
+  readRagGuardrailModes,
+  screenRagMemory,
+  shouldBlockRagMemory,
+} from '@ai/domain/services/rag-guardrail/rag-guardrail';
 import type { IChatPromptBuilder } from '@ai/domain/interfaces/chat-prompt-builder.interface';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
@@ -152,7 +157,8 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
   ): string {
     const memories = boundTextItems(
       (state.userMemories?.memories ?? []).filter(
-        (item) => item.userId === state.userId,
+        (item) =>
+          item.userId === state.userId && !this.isBlockedMemory(item.content),
       ),
       (item) => item.content,
       (item, content) => ({ ...item, content }),
@@ -177,7 +183,7 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
       state.conversationMemory?.conversationId === state.conversationId
         ? state.conversationMemory.summary?.trim()
         : undefined;
-    return summary
+    return summary && !this.isBlockedMemory(summary)
       ? truncatePromptText(summary, bounds.maxSummaryChars)
       : 'No conversation summary available.';
   }
@@ -298,6 +304,20 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
       typeof match.endTime === 'number' &&
       Number.isFinite(match.endTime)
     );
+  }
+
+  /**
+   * Stored text is read back as trusted background. With the memory check
+   * enforcing, an entry that carries an attack (written before the write-time
+   * check existed, or by a path that skips it) is left out of the prompt.
+   */
+  private isBlockedMemory(text: string): boolean {
+    try {
+      const modes = readRagGuardrailModes(this.config);
+      return shouldBlockRagMemory(screenRagMemory(text, modes), modes);
+    } catch {
+      return false;
+    }
   }
 
   private cleanInline(value: string): string {

@@ -414,6 +414,22 @@ const FILLERS = [
         ['English', 'which laptop brand did I say I work on?'],
       ],
     },
+    scarf: {
+      fact: (w) => `My grandmother knitted me a ${w} scarf for winter.`,
+      asks: [
+        ['with "remember"', 'do you remember who knitted my scarf?'],
+        ['paraphrase', 'what winter clothing did my grandmother make for me?'],
+        ['Vietnamese', 'bà mình đan cho mình cái gì nhỉ?'],
+      ],
+    },
+    noodle: {
+      fact: (w) => `Quán mì mình hay ăn trưa tên là ${w} Noodle.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói hay ăn trưa ở quán mì nào nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ quán mì mình hay ăn không?'],
+        ['English', 'which noodle shop did I say I eat lunch at?'],
+      ],
+    },
   };
   const chosen = (
     process.env.RECALL_CATEGORIES

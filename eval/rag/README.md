@@ -451,20 +451,31 @@ VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall
 | Gate | Bar | Result |
 |---|---|---|
 | G1 ranker | recall >= 90% at distance 14-70 on the generated set, noise <= 0.1 per case | 94.2%, 0.06 |
-| G2 live | >= 90% of checks pooled over >= 3 clean runs (categories no earlier run used), zero wrong claims (a never-said thing stated as said, or the wrong fact), every miss explained | 37/40 = 92.5% over runs 7-10, zero wrong claims |
-| G3 regressions | all ai-service, conversation-service and common suites pass, typecheck and lint clean | 2,081 tests pass |
-| G4 CI | green for the final commit | see the commit status |
-| G5 health | no new errors in the service logs during the runs | the only warnings were the shared vision quota running out and two model truncations |
+| G2 live | >= 90% of checks pooled over >= 3 clean runs on the final code (categories and never-said topics no earlier run used), zero wrong claims (a never-said thing stated as said, or the wrong fact), every miss explained | **27/30 = 90.0%** over three runs on `bb49d077` (10, 8, 9 of 10), zero wrong claims |
+| G3 regressions | all ai-service, conversation-service and common suites pass, typecheck and lint clean | 2,085 tests pass |
+| G4 CI | green for the code commit | CI and CD green for `bb49d077` |
+| G5 health | no new errors in the service logs during the runs | only the shared vision quota and two earlier model truncations |
 
-Runs 7-10 on `814cbbdc`: 9/10, 8/10, 10/10, 10/10. The misses: a Vietnamese "mình muốn ... nào nhỉ?" the
-router called chat (run 7); two photo answers where `gemma4:e2b` ran to the token cap
-(`finishReason=length`) so no answer was produced (run 8); the checker also wrongly passed one of those
-because "ngữ cảnh" contains "ảnh", and wrongly failed an honest Vietnamese "không tìm thấy" (run 10).
-Both checker faults are fixed in the runner, and a failed draft for a memory question now says to try
-again instead of "I found relevant context, but could not verify...".
+The three misses on `bb49d077`: two photo answers the small verifier rejected (the same photo questions
+passed in the other 10 of 12 photo checks on this code; an experiment with the photo line repeated 1 vs 3
+times showed no difference, 6/6 and 6/6), and one Vietnamese paraphrase ("bà mình đan cho mình cái gì
+nhỉ?") the router called chat. The gate is met exactly at its bar, not above it: expect individual runs
+between 80% and 100%.
+
+What the earlier runs on this branch found, all fixed: the router labelling recall questions normal chat or
+off topic; the normal-chat scope rule overriding recalled evidence; earlier questions crowding the fact out;
+the model copying canned replies; a "never said" probe that stopped being never-said once earlier runs had
+asked it (probe topics are now invented per run); and, the last one found, **the embedding service being
+too slow for the recall timeout**. On `814cbbdc` every recall turn in one run logged `semantic=false` at about
+6 s (twenty single-text embedding calls at about a second each), so paraphrased questions silently fell back
+to word match. The embedding cache, background fill after a timeout and pre-embedding of each user message
+(`bb49d077`) brought it to `semantic=true` on 15 of 16 recall turns at 0.9 s on average. Watch the
+`[Recall] ... semantic=` log lines in production: a run of `semantic=false` means the embedding service is
+degraded and recall is on word match only.
 
 Known limits that stay open: a recall question with no recall wording can still be mislabelled by the
-router; the model can fail to write an answer (token cap) or the verifier can reject a correct one, and
-the user then gets an honest "not found" or "try again"; two facts of one kind conflict; recall reaches
-about 92 messages. An extractive fallback (quote the strongest recalled message when the model fails)
-would remove the model-failure cases and is the next step if they show up in production logs.
+router; the model can fail to write an answer (token cap) or the verifier can reject a correct one, and the
+user then gets an honest "not found" or "try again"; two facts of one kind conflict; recall reaches about 92
+messages; the cache is per process and starts cold after a restart. An extractive fallback (quote the
+strongest recalled message when the model fails) would remove the model-failure cases and is the next step
+if they show up in production logs.

@@ -92,6 +92,10 @@ Known limits that no pattern fix removes:
 
 ## Guardrail hardening measurements (2026-11-18)
 
+Live check against a running environment: `eval/rag/guardrail-smoke.cjs` (usage in its header). On 2026-11-18 it passed 5 of 5
+against production after the deploy: benign answered, plain / hex / ROT13 attacks refused in about 0.1 s, the reworded attack
+answered (a documented gap).
+
 Output, evidence, memory and classifier checks were added (see `docs/rate-limiting-and-guardrails.md`). All default to
 shadow or off. Measured offline, nothing deployed.
 

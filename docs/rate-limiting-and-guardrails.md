@@ -34,6 +34,7 @@ conversation-service replica shares a single budget. Code: `libs/common/src/rate
 | `content_events_user` | 120/min | `POST /content/reels/events` |
 | `friend_request_user` / `friend_write_user` | 30/hour / 60/min | friend requests / accept, reject, block, unfriend |
 | `ai_turn_minute`, `ai_turn_day` | 10/min, 300/day | per-user AI-reply budget (REST and WebSocket) |
+| `ai_image_turn_minute`, `ai_image_turn_day` | 4/min, 60/day | extra budget for a turn that carries a photo (it also spends the AI-turn budget above); a photo costs a cloud vision call whose free quota is shared with reel indexing |
 
 The values are starting estimates. The source of truth is `rate-limit.policies.ts`.
 

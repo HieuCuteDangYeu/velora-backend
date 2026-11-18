@@ -229,6 +229,19 @@ burst has not been measured.
 - Watch the Grafana dashboard "Velora / Reel Pipeline": media and index backlog, jobs in flight,
   consumers per queue, dead-letter depth and publish-to-ready p95.
 
+## Hardware ceiling of the encode step (2026-11-18)
+
+`node scripts/ops/media-encode-capacity.cjs --clip <96s-portrait.mp4> --levels 1,2,3,4` runs the worker's exact ffmpeg command N times at once and prints reels/min and whole-machine CPU %. Run it inside a worker container (`docker cp` the clip and script, `docker exec ... nice -n 19 node ...`) and only when `uptime` is calm: the laptop shares CPU with the AI model and the homelab with mongo/rabbit, and the script prints an "other load before" column to flag noisy runs.
+
+| Reels at once | Homelab (8 cores) reels/min, CPU | Laptop worker (8-core cap) reels/min, CPU |
+|---|---|---|
+| 1 | 2.33, 53 % | 2.13, 40 % |
+| 2 | 2.60, 76 % | 2.75, 65 % |
+| 3 | 2.39, 81 % | 2.13, 77 % |
+| 4 | 2.34, 85 % | 2.31, 65 % |
+
+Encode-only ceiling is about 2.5 reels/min per machine, best at 2 at once. End to end the two workers manage about 1.75 reels/min because each worker takes one reel at a time (`MEDIA_VIDEO_PROCESSING_CONCURRENCY=1`) and only ~27 s of its ~68 s per reel is encoding, so the earlier 4/8/16 ramps filled the worker slots, not the CPUs. Raising the concurrency to 2 per worker is the next lever; measure it with the ramp before changing the homelab.
+
 ## Not covered yet
 
 Feed, playback and HLS read load; AI chat under load; more than 12 simultaneous creates; a multi-hour

@@ -293,6 +293,7 @@ jobs:
           outputs: type=image,push=true,rewrite-timestamp=true
           build-args: |
             SOURCE_DATE_EPOCH=1767225600
+            NODE_IMAGE_REGISTRY=public.ecr.aws/docker/library
           # Links the GHCR package to this repository, which is what lets the
           # GITHUB_TOKEN of later runs read and write it.
           labels: |
@@ -467,6 +468,7 @@ jobs:
           outputs: type=image,push=true,rewrite-timestamp=true
           build-args: |
             SOURCE_DATE_EPOCH=1767225600
+            NODE_IMAGE_REGISTRY=public.ecr.aws/docker/library
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |

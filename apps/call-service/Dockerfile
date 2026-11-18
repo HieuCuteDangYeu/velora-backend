@@ -1,4 +1,8 @@
-FROM node:24-bookworm-slim AS base
+# Where the node base image is pulled from. Docker Hub is the default; the CI and CD builds pass
+# public.ecr.aws/docker/library (the same official images, same digests) because anonymous Docker Hub
+# pulls from shared runners hit 'toomanyrequests' and failed whole releases.
+ARG NODE_IMAGE_REGISTRY=docker.io/library
+FROM ${NODE_IMAGE_REGISTRY}/node:24-bookworm-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   g++ \
@@ -42,7 +46,7 @@ RUN pnpm exec prisma generate --schema=./apps/call-service/prisma/schema.prisma
 RUN pnpm run build call-service
 
 
-FROM node:24-bookworm-slim AS production
+FROM ${NODE_IMAGE_REGISTRY}/node:24-bookworm-slim AS production
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
   openssl \

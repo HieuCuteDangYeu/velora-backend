@@ -592,6 +592,8 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/arm64
           push: false
+          build-args: |
+            NODE_IMAGE_REGISTRY=public.ecr.aws/docker/library
           # Read-only: the CD writes this cache on GHCR. The 10 GB GitHub cache this
           # replaced was over its limit and evicted the call-service build cache
           # (10 min rebuilds).

@@ -1,4 +1,8 @@
-FROM node:20-alpine AS base
+# Where the node base image is pulled from. Docker Hub is the default; the CI and CD builds pass
+# public.ecr.aws/docker/library (the same official images, same digests) because anonymous Docker Hub
+# pulls from shared runners hit 'toomanyrequests' and failed whole releases.
+ARG NODE_IMAGE_REGISTRY=docker.io/library
+FROM ${NODE_IMAGE_REGISTRY}/node:20-alpine AS base
 
 WORKDIR /usr/src/app
 RUN corepack enable
@@ -45,7 +49,7 @@ RUN pnpm exec prisma generate --schema=./apps/monitoring-service/prisma/schema.p
 RUN pnpm run build:monitoring
 
 
-FROM node:20-alpine AS production
+FROM ${NODE_IMAGE_REGISTRY}/node:20-alpine AS production
 
 WORKDIR /usr/src/app
 COPY --from=deps --chown=node:node /usr/src/app/node_modules ./node_modules

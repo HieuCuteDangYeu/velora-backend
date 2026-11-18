@@ -28,6 +28,15 @@ const ENGLISH: RegExp[] = [
   word(
     '(?:earlier|before|previously|above|last time)(?: \\w+){0,4} (?:i|we) (?:said|told|mentioned|asked|shared|sent|uploaded)',
   ),
+  // "what game do I like best?", "which coffee shop do I usually go to?", "where am I travelling?"
+  word(
+    "(?![^?]*\\bor\\b)(?:what|which|who|where|when)(?: [\\w’']+){0,4} (?:do|did|am|was|have|had) (?:i|we)(?: \\w+){0,2} (?:like|love|prefer|enjoy|usually|always|use|drink|eat|play|watch|listen|study|studying|learn|learning|work|live|drive|own|buy|plan|planning|going|travelling|traveling|called|named)",
+  ),
+  // "what is my dog called?", "what's my favourite game?"
+  word(
+    "(?:what|which|who)(?:'s|’s| is| was) my(?: \\w+){1,3} (?:called|named)",
+  ),
+  word("(?:what|which)(?:'s|’s| is| was) my favou?rite"),
   // "the photo I sent", "the picture I uploaded"
   word(
     '(?:photos?|pictures?|images?|pics?|screenshots?|selfies?) (?:that )?(?:i|we) (?:sent|uploaded|shared|attached|posted|gave|showed)',
@@ -38,6 +47,10 @@ const VIETNAMESE: RegExp[] = [
   // nhớ = remember: "bạn còn nhớ ... không", "có nhớ ... không"
   word('(?:còn|có|vẫn) nhớ'),
   word('nhớ (?:không|ko|chứ|gì|lại)'),
+  // "trò chơi mình thích nhất là gì nhỉ?", "mình hay mua cà phê ở quán nào?"
+  word(
+    '(?:mình|tôi|tớ|em|anh|chị|tui) (?:rất |hay |thường |đang |sắp |sẽ |định |vừa )?(?:thích|yêu|ghét|học|tập|mua|ăn|uống|chơi|nghe|xem|làm|sống|đi|ghé)(?: [^\\s?]+){0,6} (?:là )?(?:gì|nào|đâu|ở đâu|bao nhiêu|mấy|ai)',
+  ),
   // "mình nói / kể / hỏi / gửi ... nhỉ|không|gì|đâu|nào"
   word(
     '(?:mình|tôi|tớ|em|anh|chị|tui) (?:đã |vừa |hồi nãy |lúc nãy |ban nãy )?(?:nói|kể|bảo|nhắc|hỏi|gửi|chia sẻ|đề cập)',

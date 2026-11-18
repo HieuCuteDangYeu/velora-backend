@@ -164,11 +164,16 @@ const FILLERS = [
       current.resolve();
     }
   });
+  // After a reconnect the socket is no longer in the chat room and would never hear the replies.
+  socket.on('connect', () => socket.emit('join_conversation', conversationId));
+  socket.on('disconnect', (reason) =>
+    console.log('socket disconnected:', reason),
+  );
   socket.emit('join_conversation', conversationId);
   await sleep(1500);
 
   let counter = 0;
-  const send = async (message) => {
+  const send = async ({ retries = 3, ...message }) => {
     for (let attempt = 1; ; attempt += 1) {
       current = { sent: performance.now() };
       const done = new Promise((resolve) => {
@@ -200,7 +205,7 @@ const FILLERS = [
   };
   const say = (content) => send({ type: 'text', content });
 
-  const sendPhoto = async (caption) => {
+  const sendPhoto = async (caption, { retries = 3 } = {}) => {
     const png = pastaPng();
     const upload = await json('/media/upload-url', {
       fileType: 'image/png',
@@ -217,6 +222,7 @@ const FILLERS = [
       fileType: 'image/png',
     });
     return send({
+      retries,
       type: 'image',
       content: caption,
       media: {
@@ -237,50 +243,51 @@ const FILLERS = [
   const show = (r) =>
     `${r.ms ?? 'TIMEOUT'}ms | ${r.reply.replace(/\s+/g, ' ').slice(0, 200)}`;
 
-  // --- plant: unique facts per run, so facts from earlier runs in this chat cannot pass for these ---
-  const pick = (list) => list[Math.floor(Math.random() * list.length)];
-  const [animal, animalSynonym] = pick([
-    ['gecko', 'lizard'],
-    ['hamster', 'rodent'],
-    ['parrot', 'bird'],
-    ['goldfish', 'fish'],
-    ['tortoise', 'reptile'],
-    ['ferret', 'weasel'],
-    ['rabbit', 'bunny'],
-  ]);
-  const petName = `Pip${RUN.slice(-3)}`;
-  const city = pick([
-    'Sa Pa',
-    'Nha Trang',
-    'Hội An',
-    'Cần Thơ',
-    'Vũng Tàu',
-    'Phú Quốc',
-    'Quy Nhơn',
-  ]);
-  const cityRe = new RegExp(
-    city
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace('đ', 'd')
-      .replace(/ /g, '\\s?'),
-    'i',
-  );
+  // --- plant: invented names, so facts from earlier runs in this chat cannot pass for these ---
+  const syllables = [
+    'zor',
+    'vak',
+    'lim',
+    'pra',
+    'quen',
+    'dub',
+    'tay',
+    'mer',
+    'sko',
+    'nel',
+  ];
+  const invent = () =>
+    Array.from(
+      { length: 3 },
+      () => syllables[Math.floor(Math.random() * syllables.length)],
+    )
+      .join('')
+      .replace(/^./, (c) => c.toUpperCase());
+  const game = invent();
+  const cafe = invent();
   const fold = (t) =>
     t
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
-      .replace(/đ/g, 'd');
-  let r = await say(`My new ${animal} is called ${petName}.`);
-  console.log('plant pet     |', show(r));
-  r = await say(`Tháng sau mình sẽ đi ${city} với gia đình.`);
-  console.log('plant travel  |', show(r));
-  r = await sendPhoto('find reels like this');
+      .replace(/đ/g, 'd')
+      .toLowerCase();
+  const has = (name) => (t) => fold(t).includes(name.toLowerCase());
+
+  let r = await say(`My favourite board game is ${game}.`);
+  console.log('plant game    |', show(r));
+  r = await say(`Mình hay mua cà phê ở quán ${cafe} Cafe.`);
+  console.log('plant cafe    |', show(r));
+  // A photo needs the vision providers; when their daily quota is spent the bot answers "busy".
+  r = await sendPhoto('find reels like this', { retries: 1 });
+  const photoPlanted = !/FAILED/.test(r.reply);
   console.log(
     'plant photo   |',
     show(r),
     '| stored description:',
     r.metadata?.photoDescription ?? '(none in event)',
+    photoPlanted
+      ? ''
+      : '| SKIPPED: vision unavailable, photo recall is checked against an earlier photo',
   );
   const stored = String(r.metadata?.photoDescription ?? '');
 
@@ -290,7 +297,7 @@ const FILLERS = [
     console.log('filler        |', show(r));
   }
 
-  // --- recall: the same three facts, asked in different words and languages ---
+  // --- recall: the same facts, asked in different words and languages ---
   const NOT_FALLBACK = (reply) => !REFUSAL_FALLBACK.test(reply);
   const photoWords = [
     'pasta',
@@ -306,26 +313,28 @@ const FILLERS = [
   ];
   const mentions = (reply, words) =>
     words.some((word) => reply.toLowerCase().includes(word));
-  const hasName = (t) => new RegExp(petName, 'i').test(t);
-  const hasCity = (t) => cityRe.test(fold(t));
   const asks = [
+    ['game, synonym only', 'what tabletop game do I like best?', has(game)],
     [
-      `pet, synonym only (${animalSynonym})`,
-      `what is my ${animalSynonym} called?`,
-      hasName,
-    ],
-    ['pet, "do you remember"', `do you remember my ${animal}’s name?`, hasName],
-    ['pet, Vietnamese', `con ${animal} của mình tên gì nhỉ?`, hasName],
-    ['travel, Vietnamese', 'mình nói sẽ đi du lịch ở đâu nhỉ?', hasCity],
-    [
-      'travel, Vietnamese, other wording',
-      'bạn còn nhớ mình sắp đi đâu không?',
-      hasCity,
+      'game, "do you remember"',
+      'do you remember my favourite board game?',
+      has(game),
     ],
     [
-      'travel, English (fact was Vietnamese)',
-      'where did I say I am travelling next month?',
-      hasCity,
+      'game, Vietnamese (fact was English)',
+      'trò chơi cờ bàn mình thích nhất là gì nhỉ?',
+      has(game),
+    ],
+    ['cafe, Vietnamese', 'mình nói hay mua cà phê ở quán nào nhỉ?', has(cafe)],
+    [
+      'cafe, Vietnamese, "còn nhớ"',
+      'bạn còn nhớ quán cà phê mình hay ghé không?',
+      has(cafe),
+    ],
+    [
+      'cafe, English (fact was Vietnamese)',
+      'which coffee shop did I say I usually go to?',
+      has(cafe),
     ],
     [
       'photo, English',

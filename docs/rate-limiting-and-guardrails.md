@@ -1,6 +1,6 @@
 # Rate limiting and the RAG guardrail
 
-Status: deployed 2026-11-09 (`c3112146`). Rate limits are enforced. The guardrail runs in shadow mode only.
+Status: rate limits are enforced (deployed 2026-11-09, `c3112146`). The RAG guardrail enforces on the homelab: input since 2026-11-12, evidence, output and memory since 2026-11-18 (`afbfc2fe`); the classifier is off.
 
 ## Rate limiting
 
@@ -143,6 +143,38 @@ Know the cost before turning it on: the check is a pattern list, so a quoted att
 previous instructions, is that real?") is refused too, and rewordings it has never seen still get through. The measured
 catch and false-positive rates are in `eval/rag/README.md`. To roll back, unset `AI_GUARDRAIL_INPUT_MODE` (or set it
 to `shadow`) and redeploy; nothing is stored.
+
+### Operating the guardrail in production
+
+Homelab `.env` carries `AI_GUARDRAIL_{INPUT,EVIDENCE,OUTPUT,MEMORY}_MODE=enforce`; the classifier is not set (off). Each
+line is a switch: remove one (or set it to `shadow`) to stop acting on that check. The container reads `.env` through
+`env_file`, so after any edit write the new baseline (`printf '%s\n' "$(shasum -a 256 .env | cut -d' ' -f1)" >
+~/.local/state/velora/env.sha256`) and recreate ai-service
+(`VELORA_IMAGE_TAG=$(cat ~/.local/state/velora/deployed-sha) docker compose up -d --no-deps --no-build ai-service`).
+
+What to watch, from the ai-service log (codes only, never message text):
+
+```sh
+docker logs --since 24h microservices-boilerplate-ai-service-1 2>&1 | grep '\[Guardrail\]'
+```
+
+| Line | Meaning |
+|---|---|
+| `mode=enforce blocked=true input=<codes>` | the input check (or classifier) refused a message |
+| `execution=<id> mode=enforce blockedOutput=true output=<codes>` | the answer was replaced after the workflow finished |
+| `mode=enforce blockedOutput=true stage=publish output=<codes>` | the answer was stopped before it was published |
+| `check=memory source=<memory\|summary> ... blocked=true` | a memory or summary was not stored |
+| `execution=<id> mode=enforce wouldBlock=true ... evidence=<codes>` | a retrieved chunk was dropped before the prompt |
+
+A burst of one code from one user is an attack; the same code on ordinary traffic is a false positive. For a false
+positive, add the message as an `allow` row to `eval/rag/datasets/rag-guardrail-v1.jsonl`, narrow the pattern in
+`rag-guardrail-input-patterns.ts` (or `rag-guardrail-patterns.ts` for shared ones), and rerun
+`npx jest apps/ai-service/src/domain/services/rag-guardrail`. To replay saved traffic before widening anything:
+`GUARDRAIL_REPLAY_DIR=<dir> npx jest rag-guardrail.replay.local`.
+
+Known limits, measured in `eval/rag/README.md`: a reworded attack no pattern knows is answered (the model still deflects
+it; secrets and other users' data are bounded by server-side scope, not by this check), and the classifier that would
+catch most of those is off because a call takes 15-25 s while the model host is shared with other work.
 
 ## Scope: staying on topic
 

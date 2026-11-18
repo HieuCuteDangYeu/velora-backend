@@ -281,4 +281,21 @@ describe('CreateNoContextAnswerUseCase', () => {
     // It must not answer, apologise for missing evidence, or echo the question.
     expect(answer).not.toMatch(/Paris|France|evidence|context/i);
   });
+
+  it('quotes the confident match when the model could not write a memory answer', () => {
+    const answer =
+      new CreateNoContextAnswerUseCase().executeAfterAnswerGenerationFailure({
+        route: { intent: 'CONVERSATION_MEMORY_QUESTION' },
+        contextSufficiency: { sufficient: true },
+        recallQuote: {
+          role: 'user',
+          content: 'My favourite board game is Zorvak.',
+          createdAt: '2026-11-19T00:00:00Z',
+        },
+      } as RagChatWorkflowState);
+
+    expect(answer).toBe(
+      'Earlier you wrote: “My favourite board game is Zorvak.”',
+    );
+  });
 });

@@ -11,6 +11,7 @@ import {
   GenerateDraftAnswerUseCase,
   type RagDraftAnswer,
 } from '@ai/application/use-cases/generate-draft-answer.use-case';
+import { formatRecallQuote } from '@ai/domain/services/rank-recalled-messages';
 import { RecallConversationContextUseCase } from '@ai/application/use-cases/recall-conversation-context.use-case';
 import { MemoryAgentUseCase } from '@ai/application/use-cases/memory-agent.use-case';
 import { PlanRetrievalUseCase } from '@ai/application/use-cases/plan-retrieval.use-case';
@@ -102,6 +103,7 @@ const RagChatStateSchema = new StateSchema({
   userMemories: z.any().optional(),
   memorySelection: z.any().optional(),
   recalledMessages: z.array(z.any()).optional(),
+  recallQuote: z.any().optional(),
   memoryReady: z.boolean().default(false),
 
   answer: z.string().optional(),
@@ -1545,7 +1547,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           : state.route?.intent === 'REEL_VIDEO_QUESTION'
             ? 'I do not have enough verified shared reel evidence to answer that reliably.'
             : state.route?.intent === 'CONVERSATION_MEMORY_QUESTION'
-              ? 'I could not find that in our conversation.'
+              ? state.recallQuote
+                ? formatRecallQuote(state.recallQuote)
+                : 'I could not find that in our conversation.'
               : state.route?.intent === 'USER_MEMORY_QUESTION'
                 ? 'I do not have that saved about you.'
                 : 'I could not verify that answer reliably from the available context.';

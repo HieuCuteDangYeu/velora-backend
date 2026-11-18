@@ -515,6 +515,8 @@ export interface RagChatWorkflowState {
   memorySelection?: RagMemorySelection;
   /** Earlier chat messages picked for a question about the conversation, oldest first. */
   recalledMessages?: AiChatMessageContext[];
+  /** A message that confidently answers the question, quoted back when the model cannot write an answer. */
+  recallQuote?: AiChatMessageContext;
   memoryReady?: boolean;
 
   answer?: string;

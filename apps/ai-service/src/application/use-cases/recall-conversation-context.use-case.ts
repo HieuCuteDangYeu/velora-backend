@@ -12,6 +12,7 @@ import {
   recallTokens,
   rankRecalledMessages,
   selectEmbeddingCandidates,
+  strongRecallMatch,
 } from '@ai/domain/services/rank-recalled-messages';
 import { isCannedAssistantReply } from '@ai/domain/services/canned-replies';
 import {
@@ -65,7 +66,11 @@ export class RecallConversationContextUseCase {
       readRagPromptBounds(this.config).maxUserMessageChars,
     );
     const [recall, userMemories] = await Promise.all([
-      this.recallMessages(question, state.memory?.olderMessages ?? []),
+      this.recallMessages(
+        question,
+        state.memory?.olderMessages ?? [],
+        state.memory?.recentMessages ?? [],
+      ),
       state.userMemories
         ? Promise.resolve(state.userMemories)
         : this.relevantUserMemories(state.userId, question),
@@ -86,6 +91,7 @@ export class RecallConversationContextUseCase {
     };
     return {
       recalledMessages: recall.messages,
+      ...(recall.quote ? { recallQuote: recall.quote } : {}),
       ...(userMemories ? { userMemories } : {}),
       memorySelection: selection,
     };
@@ -122,20 +128,27 @@ export class RecallConversationContextUseCase {
   private async recallMessages(
     question: string,
     older: readonly AiChatMessageContext[],
+    recent: readonly AiChatMessageContext[],
   ): Promise<{
     messages: AiChatMessageContext[];
+    quote?: AiChatMessageContext;
     candidateCount: number;
     semantic: boolean;
   }> {
-    const candidates = older
-      .filter((message) => message.content.trim().length > 0)
-      .filter((message) => !isCannedAssistantReply(message))
-      .filter(
-        (message) =>
-          !this.screenRagMemoryUseCase?.blocks([message.content], 'memory'),
-      )
-      .slice(-MAX_RECALL_CANDIDATES);
-    if (candidates.length === 0 || !question.trim()) {
+    const usable = (messages: readonly AiChatMessageContext[]) =>
+      messages
+        .filter((message) => message.content.trim().length > 0)
+        .filter((message) => !isCannedAssistantReply(message))
+        .filter(
+          (message) =>
+            !this.screenRagMemoryUseCase?.blocks([message.content], 'memory'),
+        );
+    const candidates = usable(older).slice(-MAX_RECALL_CANDIDATES);
+    // The live window is shown to the model anyway; it only joins the search for a quotable answer.
+    const live = usable(recent).filter(
+      (message) => message.eventType !== 'REEL_SHARE',
+    );
+    if (!question.trim() || candidates.length + live.length === 0) {
       return {
         messages: [],
         candidateCount: candidates.length,
@@ -143,11 +156,33 @@ export class RecallConversationContextUseCase {
       };
     }
 
-    const semantic = await this.semanticScores(question, candidates);
+    const embedded =
+      candidates.length > 0
+        ? await this.semanticScores(question, candidates)
+        : undefined;
+    const quoteCandidates = [...candidates, ...live];
+    // The live window's vectors come from the cache only: no extra embedding call for them.
+    const quoteSemantic = quoteCandidates.map((message, index) => {
+      if (!embedded) return undefined;
+      if (index < candidates.length) return embedded.scores[index];
+      const vector = this.cache.get(message.content);
+      return vector && vector.length === embedded.query.length
+        ? cosineSimilarity(embedded.query, vector)
+        : undefined;
+    });
     return {
-      messages: rankRecalledMessages({ question, candidates, semantic }),
+      messages: rankRecalledMessages({
+        question,
+        candidates,
+        semantic: embedded?.scores,
+      }),
+      quote: strongRecallMatch({
+        question,
+        candidates: quoteCandidates,
+        semantic: quoteSemantic,
+      }),
       candidateCount: candidates.length,
-      semantic: semantic !== undefined,
+      semantic: embedded !== undefined,
     };
   }
 
@@ -155,7 +190,9 @@ export class RecallConversationContextUseCase {
   private async semanticScores(
     question: string,
     candidates: readonly AiChatMessageContext[],
-  ): Promise<Array<number | undefined> | undefined> {
+  ): Promise<
+    { scores: Array<number | undefined>; query: number[] } | undefined
+  > {
     const timeoutMs = this.timeoutMs();
     const embedded = selectEmbeddingCandidates(
       candidates,
@@ -198,12 +235,13 @@ export class RecallConversationContextUseCase {
       ]).finally(() => clearTimeout(timer));
       const query = result?.embeddings.find((item) => item.id === QUERY_ID);
       if (!result || !query) return undefined;
-      return candidates.map((message) => {
+      const scores = candidates.map((message) => {
         const vector = this.cache.get(message.content);
         return vector && vector.length === query.values.length
           ? cosineSimilarity(query.values, vector)
           : undefined;
       });
+      return { scores, query: query.values };
     } catch (error: unknown) {
       this.logger.warn(
         `[Recall] embedding failed, using word match only: ${error instanceof Error ? error.message : String(error)}`,

@@ -3,6 +3,7 @@ import type {
   RagRequiredEvidence,
 } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { OFF_TOPIC_REDIRECT_MESSAGE } from '@ai/application/services/rag-off-topic-redirect';
+import { formatRecallQuote } from '@ai/domain/services/rank-recalled-messages';
 import { Injectable } from '@nestjs/common';
 
 @Injectable()
@@ -14,6 +15,14 @@ export class CreateNoContextAnswerUseCase {
   executeAfterAnswerGenerationFailure(state: RagChatWorkflowState): string {
     if (state.route?.intent === 'TASK_ACTION_REQUEST') {
       return this.taskActionLimitation(state.userMessage);
+    }
+
+    if (
+      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' &&
+      state.recallQuote
+    ) {
+      // The model could not write an answer but the chat holds a confident one: quote it.
+      return formatRecallQuote(state.recallQuote);
     }
 
     if (

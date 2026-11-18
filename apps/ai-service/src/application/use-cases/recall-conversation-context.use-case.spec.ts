@@ -218,4 +218,24 @@ describe('RecallConversationContextUseCase', () => {
     useCase.warm('I love making spaghetti carbonara on weekends');
     expect(batch.execute).toHaveBeenCalledTimes(1);
   });
+
+  it('offers a confident quote from the live window too, using only cached vectors', async () => {
+    const { useCase } = unit({});
+    const result = await useCase.execute(
+      state({
+        userMessage: 'what food did I say I like cooking?',
+        memory: {
+          olderMessages: older,
+          recentMessages: [
+            {
+              role: 'user',
+              content: 'I love making spaghetti carbonara on weekends too',
+              createdAt: '2026-11-19T01:00:00Z',
+            },
+          ],
+        },
+      }),
+    );
+    expect(result.recallQuote?.content).toContain('spaghetti carbonara');
+  });
 });

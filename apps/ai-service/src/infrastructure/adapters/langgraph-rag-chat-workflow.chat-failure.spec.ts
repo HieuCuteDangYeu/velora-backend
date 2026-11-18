@@ -76,4 +76,19 @@ describe('final fallback after verification fails', () => {
       (await failureNode()(failedState('USER_MEMORY_QUESTION'))).answer,
     ).toBe('I do not have that saved about you.');
   });
+
+  it('quotes the confident match when verification rejects a recall answer', async () => {
+    const state = {
+      ...failedState('CONVERSATION_MEMORY_QUESTION'),
+      recallQuote: {
+        role: 'user',
+        content: 'Mình hay mua cà phê ở quán Zorvak Cafe.',
+        createdAt: '2026-11-19T00:00:00Z',
+      },
+    } as unknown as RagChatWorkflowState;
+
+    expect((await failureNode()(state)).answer).toBe(
+      'Earlier you wrote: “Mình hay mua cà phê ở quán Zorvak Cafe.”',
+    );
+  });
 });

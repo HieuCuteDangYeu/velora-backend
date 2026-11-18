@@ -189,6 +189,55 @@ if (args.includes('--sweep')) {
   process.exit(0);
 }
 
+// How often a confident quote exists and is the right message, over the live window and the
+// earlier messages together (what the answer step has available).
+function quoteStats() {
+  const stats = {
+    positive: 0,
+    quoted: 0,
+    correct: 0,
+    negative: 0,
+    negativeQuoted: 0,
+  };
+  for (const row of dataset) {
+    if (row.kind !== 'negative' && (row.distance < 12 || row.distance > 70))
+      continue;
+    const messages = row.history.slice(-(LIVE_WINDOW + OLDER_WINDOW));
+    const candidates = messages.filter(
+      (m) => !/^I (can only help|could not|do not have)/.test(m.content),
+    );
+    const embedded = new Set(ranker.selectEmbeddingCandidates(candidates, 40));
+    const semantic = vectors
+      ? candidates.map((m, i) =>
+          embedded.has(i) && vectors[m.content] && vectors[row.question]
+            ? ranker.cosineSimilarity(vectors[row.question], vectors[m.content])
+            : undefined,
+        )
+      : undefined;
+    const quote = ranker.strongRecallMatch({
+      question: row.question,
+      candidates,
+      semantic,
+    });
+    if (row.kind === 'negative') {
+      stats.negative += 1;
+      stats.negativeQuoted += quote ? 1 : 0;
+    } else {
+      stats.positive += 1;
+      stats.quoted += quote ? 1 : 0;
+      stats.correct += quote && quote.content === row.gold ? 1 : 0;
+    }
+  }
+  return stats;
+}
+if (args.includes('--quote')) {
+  const q = quoteStats();
+  console.log(
+    `quote: positive cases ${q.positive}, a confident quote exists for ${q.quoted} (${pct(q.quoted, q.positive)}), the right one in ${q.correct} (${pct(q.correct, q.quoted)} of quotes); negatives ${q.negative}, quoted ${q.negativeQuoted} (${pct(q.negativeQuoted, q.negative)})`,
+  );
+  process.exit(0);
+}
+
 const options = {};
 for (const key of [
   'minSemantic',

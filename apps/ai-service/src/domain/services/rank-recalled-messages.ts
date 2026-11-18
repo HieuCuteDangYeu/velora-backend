@@ -214,3 +214,81 @@ export function rankRecalledMessages(input: {
     .sort((left, right) => left.index - right.index)
     .map((item) => item.message);
 }
+
+/** A match this good may be quoted back as the answer when the model cannot write one. */
+export interface StrongMatchOptions {
+  /** Cosine similarity at or above which a message is a confident match by meaning. */
+  strongSemantic: number;
+  /** Weighted share of the question's content words at or above which it is a confident match by words. */
+  strongLexical: number;
+}
+
+export const DEFAULT_STRONG_MATCH: StrongMatchOptions = {
+  strongSemantic: 0.6,
+  strongLexical: 0.67,
+};
+
+/**
+ * The one message that confidently answers the question, or undefined. It is stricter than the
+ * ranking above: a question the user asked earlier is never an answer (unless the question is
+ * about what was asked), and the match must clear a higher bar by meaning or by words. Used to
+ * quote the user's own words when the model fails to write an answer or the verifier rejects a
+ * correct one, so it must rather stay silent than quote something beside the point.
+ */
+export function strongRecallMatch(input: {
+  question: string;
+  candidates: readonly AiChatMessageContext[];
+  semantic?: ReadonlyArray<number | undefined>;
+  options?: Partial<StrongMatchOptions>;
+}): AiChatMessageContext | undefined {
+  const options = { ...DEFAULT_STRONG_MATCH, ...input.options };
+  const lexical = lexicalRecallScores(
+    input.question,
+    input.candidates.map((candidate) => candidate.content),
+  );
+  const aboutPhoto = isPhotoQuestion(input.question);
+  const aboutAsking = ASKED_ABOUT.test(fold(input.question));
+  let best: { message: AiChatMessageContext; score: number } | undefined;
+  input.candidates.forEach((message, index) => {
+    if (message.role !== 'user') return;
+    if (!aboutAsking && looksLikeQuestion(message)) return;
+    const meaning = input.semantic?.[index];
+    const words = lexical[index];
+    const photo = aboutPhoto && isPhotoLine(message);
+    const strong =
+      photo ||
+      (meaning !== undefined && meaning >= options.strongSemantic) ||
+      words >= options.strongLexical;
+    if (!strong) return;
+    const score = Math.max(meaning ?? 0, words) + (photo ? PHOTO_BONUS : 0);
+    // A newer message wins a tie: the latest thing the user said about it is the one to quote.
+    if (!best || score >= best.score) best = { message, score };
+  });
+  return best?.message;
+}
+
+/** The user's own words (or the photo and what it showed) as a short, quotable answer. */
+export function formatRecallQuote(message: AiChatMessageContext): string {
+  const clip = (text: string, max: number) =>
+    text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+  const photo = /^\[Photo\]\s*(.*?)(?:\s*shows:\s*(.+))?$/su.exec(
+    message.content.trim(),
+  );
+  if (
+    message.role === 'user' &&
+    photo &&
+    message.content.startsWith('[Photo]')
+  ) {
+    const caption = photo[1]?.trim();
+    const shows = photo[2]?.trim();
+    return [
+      caption
+        ? `You sent a photo with the caption “${clip(caption, 120)}”.`
+        : 'You sent a photo.',
+      shows ? `It showed: ${clip(shows, 260)}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+  return `Earlier you wrote: “${clip(message.content.trim(), 260)}”`;
+}

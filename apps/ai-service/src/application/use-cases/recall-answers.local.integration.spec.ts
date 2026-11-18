@@ -6,6 +6,7 @@ import {
   cosineSimilarity,
   rankRecalledMessages,
   selectEmbeddingCandidates,
+  strongRecallMatch,
 } from '@ai/domain/services/rank-recalled-messages';
 import { ConfigService } from '@nestjs/config';
 import { readFileSync } from 'node:fs';
@@ -101,7 +102,13 @@ describe('recall answers from the real local model (opt-in)', () => {
 
     const stats: Record<
       string,
-      { n: number; correct: number; verified: number; both: number }
+      {
+        n: number;
+        correct: number;
+        verified: number;
+        both: number;
+        visible: number;
+      }
     > = {};
     const lines: string[] = [];
     for (const row of sample) {
@@ -179,11 +186,38 @@ describe('recall answers from the real local model (opt-in)', () => {
         correct: 0,
         verified: 0,
         both: 0,
+        visible: 0,
       });
       stat.n += 1;
       stat.correct += correct ? 1 : 0;
       stat.verified += verification.passed ? 1 : 0;
       stat.both += correct && verification.passed ? 1 : 0;
+      // What the user sees: the verified answer, or the quote when the draft failed or was rejected.
+      const quoteCandidates = [
+        ...candidates,
+        ...recent.filter((m) => m.role === 'user'),
+      ];
+      const quote = strongRecallMatch({
+        question: row.question,
+        candidates: quoteCandidates,
+        semantic: quoteCandidates.map((m) =>
+          vectors[m.content] && vectors[row.question]
+            ? cosineSimilarity(vectors[row.question], vectors[m.content])
+            : undefined,
+        ),
+      });
+      const quoteRight = row.kind !== 'negative' && quote?.content === row.gold;
+      const quoteWrong = quote !== undefined && !quoteRight;
+      const answerFine = verification.passed && correct;
+      // A rejected or wrong draft falls back to the quote; a quote that is not the fact counts as wrong.
+      const visibleOk =
+        answerFine ||
+        (!verification.passed
+          ? quoteRight || (row.kind === 'negative' && !quote)
+          : false);
+      stat.visible += visibleOk ? 1 : 0;
+      if (!verification.passed && quoteWrong)
+        lines.push(`   (wrong quote offered: ${quote?.content.slice(0, 70)})`);
       lines.push(
         `${correct ? 'ok ' : 'BAD'} ${verification.passed ? 'verified' : 'REJECTED'} | ${row.kind} d=${row.distance} recalled=${recalled.length} | ${row.question} -> ${draft.answer.replace(/\s+/g, ' ').slice(0, 110)}${verification.passed ? '' : ` | issues: ${verification.issues.join('; ').slice(0, 120)}`}`,
       );
@@ -193,7 +227,10 @@ describe('recall answers from the real local model (opt-in)', () => {
     console.table(stats);
     const total = Object.values(stats).reduce((sum, s) => sum + s.n, 0);
     const good = Object.values(stats).reduce((sum, s) => sum + s.both, 0);
-    console.log(`correct and verified: ${good}/${total}`);
+    const visible = Object.values(stats).reduce((sum, s) => sum + s.visible, 0);
+    console.log(
+      `correct and verified: ${good}/${total}; what the user sees with the quote fallback: ${visible}/${total}`,
+    );
     expect(total).toBeGreaterThan(0);
   });
 });

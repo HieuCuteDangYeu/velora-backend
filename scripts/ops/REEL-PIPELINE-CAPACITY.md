@@ -242,6 +242,15 @@ burst has not been measured.
 
 Encode-only ceiling is about 2.5 reels/min per machine, best at 2 at once. End to end the two workers manage about 1.75 reels/min because each worker takes one reel at a time (`MEDIA_VIDEO_PROCESSING_CONCURRENCY=1`) and only ~27 s of its ~68 s per reel is encoding, so the earlier 4/8/16 ramps filled the worker slots, not the CPUs. Raising the concurrency to 2 per worker is the next lever; measure it with the ramp before changing the homelab.
 
+### Settings added on 2026-11-18
+
+| Variable | Default | Effect |
+|---|---|---|
+| `TIKTOK_CDN_MAX_PARALLEL_UPLOADS` | 4 | Most CDN uploads in flight in one worker process, across all its jobs. One job uses 3, so a single job is unaffected; this stops `MEDIA_VIDEO_PROCESSING_CONCURRENCY` above 1 from multiplying uploads on the one shared TikTok session. |
+| `REEL_INDEX_SKIP_TAG` (content-service) | unset | A reel whose tags contain this value is not sent to the indexer. For media-only load tests (`mediaramp`-style reels carry the tag `integration-test`) so they do not spend the daily Groq vision allowance. Leave it unset in normal operation; any user could otherwise opt a reel out of AI search with the tag. |
+
+Stream validation retries each sampled CDN URL three times (8 s timeout, 0.5 s and 1.5 s apart) and logs the last problem, because a single dropped request used to fail the whole media attempt.
+
 ## Not covered yet
 
 Feed, playback and HLS read load; AI chat under load; more than 12 simultaneous creates; a multi-hour

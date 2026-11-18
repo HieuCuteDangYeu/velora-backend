@@ -9,7 +9,12 @@ import {
   REEL_INDEX_RETRY_QUEUES,
 } from '@common/processing/reel-media-queue.constants';
 import type { IReelIndexJobPublisher } from '@content/domain/interfaces/reel-index-job-publisher.interface';
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   AmqpConnectionManager,
@@ -22,6 +27,7 @@ import { connect } from 'amqp-connection-manager';
 export class ReelIndexJobPublisherAdapter
   implements IReelIndexJobPublisher, OnModuleInit, OnModuleDestroy
 {
+  private readonly logger = new Logger(ReelIndexJobPublisherAdapter.name);
   private connection?: AmqpConnectionManager;
   private channel?: ChannelWrapper;
 
@@ -54,6 +60,18 @@ export class ReelIndexJobPublisherAdapter
   async publish(job: ReelIndexJob): Promise<void> {
     if (!this.channel) {
       throw new Error('Reel index publisher is not initialized');
+    }
+
+    // Opt-in for load tests: a job whose tags contain this value is not indexed, so a media
+    // stress test does not spend the daily vision (Groq) allowance. Unset = every job is indexed.
+    const skipTag = this.configService
+      .get<string>('REEL_INDEX_SKIP_TAG')
+      ?.trim();
+    if (skipTag && job.tags.includes(skipTag)) {
+      this.logger.warn(
+        `Not indexing reel ${job.reelId}: it carries the tag ${skipTag} (REEL_INDEX_SKIP_TAG)`,
+      );
+      return;
     }
 
     const definition = getReelIndexPrimaryQueue(job.sourceLengthClass);

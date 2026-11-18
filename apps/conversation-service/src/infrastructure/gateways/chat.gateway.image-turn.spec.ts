@@ -93,7 +93,10 @@ const build = (aiResult: object) => {
   );
   const roomEmit = jest.fn();
   gateway.server = {
-    to: jest.fn().mockReturnValue({ emit: roomEmit }),
+    to: jest.fn().mockReturnValue({
+      emit: roomEmit,
+      except: jest.fn().mockReturnValue({ emit: roomEmit }),
+    }),
   } as never;
   const socket = {
     id: 'socket-1',

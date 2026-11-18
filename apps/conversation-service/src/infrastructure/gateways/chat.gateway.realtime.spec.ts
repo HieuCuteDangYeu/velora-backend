@@ -36,6 +36,7 @@ describe('ChatGateway realtime membership helpers', () => {
   let socketsLeave: jest.Mock;
   let fetchSockets: jest.Mock;
   let to: jest.Mock;
+  let except: jest.Mock;
   let inRoom: jest.Mock;
 
   beforeEach(() => {
@@ -62,7 +63,8 @@ describe('ChatGateway realtime membership helpers', () => {
     emit = jest.fn();
     socketsLeave = jest.fn();
     fetchSockets = jest.fn().mockResolvedValue([{}]);
-    to = jest.fn().mockReturnValue({ emit });
+    except = jest.fn().mockReturnValue({ emit });
+    to = jest.fn().mockReturnValue({ emit, except });
     inRoom = jest.fn().mockReturnValue({ socketsLeave, fetchSockets });
 
     gateway.server = {
@@ -429,6 +431,11 @@ describe('ChatGateway realtime membership helpers', () => {
     gateway.emitConversationMessageActivity(group, message, OWNER_ID);
 
     expect(to).toHaveBeenCalledWith(memberRooms);
+    // Sockets already in the conversation room got new_message; skip them.
+    expect(except).toHaveBeenCalledWith([
+      CONVERSATION_ID,
+      `conversation:${CONVERSATION_ID}`,
+    ]);
     expect(emit).toHaveBeenCalledWith(
       'conversation_message_activity',
       expect.objectContaining({

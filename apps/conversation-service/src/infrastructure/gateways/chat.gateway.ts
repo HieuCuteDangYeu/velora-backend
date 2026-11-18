@@ -178,7 +178,12 @@ export class ChatGateway
     });
   }
 
-  emitToUsers(userIds: string[], eventName: string, payload: unknown): void {
+  emitToUsers(
+    userIds: string[],
+    eventName: string,
+    payload: unknown,
+    exceptRooms: string[] = [],
+  ): void {
     const rooms = Array.from(
       new Set(
         userIds.filter(Boolean).flatMap((userId) => this.userRooms(userId)),
@@ -189,7 +194,11 @@ export class ChatGateway
       return;
     }
 
-    this.server.to(rooms).emit(eventName, payload);
+    const target = this.server.to(rooms);
+    (exceptRooms.length > 0 ? target.except(exceptRooms) : target).emit(
+      eventName,
+      payload,
+    );
   }
 
   emitConversationCreated(
@@ -223,10 +232,20 @@ export class ChatGateway
       (participantId) => participantId !== actorUserId,
     );
 
-    this.emitToUsers(recipientUserIds, 'conversation_message_activity', {
-      conversation: ChatMapper.conversationToDto(conversation),
-      message: ChatMapper.toDto(message),
-    });
+    // Every caller has already sent `new_message` and `conversation_updated` to
+    // the conversation room, and a client in that room applies the same
+    // preview/unread update from them. Sending the (large) activity payload to
+    // those sockets too is a duplicate write per recipient, so it only goes to
+    // sockets that are NOT in the room yet (not joined, or still reconnecting).
+    this.emitToUsers(
+      recipientUserIds,
+      'conversation_message_activity',
+      {
+        conversation: ChatMapper.conversationToDto(conversation),
+        message: ChatMapper.toDto(message),
+      },
+      this.conversationRooms(conversation.id),
+    );
   }
 
   evictConversationMember(input: {

@@ -1566,15 +1566,14 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           },
         );
 
-        const titles = recommendedReels
-          .map((reel) => reel.title?.replace(/\s+/g, ' ').trim())
-          .filter((title): title is string => Boolean(title));
-        const answer = titles.length
-          ? 'Here are accessible Reels that may match:\n' +
-            titles.map((title) => '- ' + title).join('\n')
-          : recommendedReels.length
-            ? 'I found accessible Reels, but they do not have titles to display.'
-            : 'I could not find accessible Reels for this request.';
+        const topic = action.query?.replace(/\s+/g, ' ').trim();
+        const topicLabel = topic && topic.length <= 60 ? `"${topic}"` : '';
+        // The reel cards already show the titles, so the text stays a short lead-in.
+        const answer = recommendedReels.length
+          ? topicLabel
+            ? `Here are some reels for ${topicLabel}:`
+            : 'Here are some reels you might like:'
+          : "I couldn't find any reels for that. Try a different title or topic?";
 
         return { answer, recommendedReels, suggestedQueries: [] };
       } catch (error: unknown) {
@@ -1583,7 +1582,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           `[RagGraph] recommendation branch failed open: ${message}`,
         );
         return {
-          answer: 'I could not retrieve accessible Reels for this request.',
+          answer:
+            'Something went wrong while searching reels. Please try again.',
           recommendedReels: [],
           suggestedQueries: [],
         };

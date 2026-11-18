@@ -1664,9 +1664,7 @@ describe('LangGraphRagChatWorkflowAdapter diagnostic nodes', () => {
       },
     });
 
-    expect(result.answer).toBe(
-      'Here are accessible Reels that may match:\n- Dogs at the park',
-    );
+    expect(result.answer).toBe('Here are some reels for "dogs":');
     expect(result.answer).not.toContain('sign language');
     expect(result.recommendedReels).toEqual(reels);
     expect(contentService.searchPublicReels).toHaveBeenCalledWith({

@@ -13,6 +13,7 @@ import type { AiRecommendedReel } from '@common/ai/dtos/ask-question-response.dt
 import type { AiChatMemoryContext } from '@common/ai/interfaces/chat-memory-context.interface';
 import { DEFAULT_IMAGE_ONLY_QUESTION } from '@common/ai/chat-image';
 import type { AskQuestionImage } from '@common/ai/dtos/ask-question.dto';
+import { formatRagImageHint } from '@ai/domain/services/rag-image-context';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { DescribeChatImagesUseCase } from './describe-chat-images.use-case';
 
@@ -21,6 +22,7 @@ export interface StreamChatResult {
   citations?: RagCitation[];
   recommendedReels?: AiRecommendedReel[];
   suggestedQueries?: string[];
+  imageDescription?: string;
 }
 
 @Injectable()
@@ -96,11 +98,14 @@ export class StreamChatUseCase {
       } satisfies RagChatWorkflowInput),
     );
 
+    const imageDescription = formatRagImageHint(images, 240);
+
     return {
       answer: result.answer,
       citations: result.citations ?? [],
       recommendedReels: result.recommendedReels ?? [],
       suggestedQueries: result.suggestedQueries ?? [],
+      ...(imageDescription ? { imageDescription } : {}),
     };
   }
 }

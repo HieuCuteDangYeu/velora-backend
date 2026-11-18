@@ -49,7 +49,10 @@ export function ragMemoryEvidence(
       ),
     );
   }
-  if (intent === 'USER_MEMORY_QUESTION') {
+  if (
+    intent === 'USER_MEMORY_QUESTION' ||
+    intent === 'CONVERSATION_MEMORY_QUESTION'
+  ) {
     let remaining = bounds.maxMemoryTotalChars;
     for (const [index, memory] of (state.userMemories?.memories ?? [])
       .filter((m) => m.userId === state.userId)
@@ -63,6 +66,15 @@ export function ragMemoryEvidence(
       add(`user-memory:${memory.id ?? index}`, 'USER_MEMORY', text);
       if (remaining <= 0) break;
     }
+  }
+  // Earlier messages picked for the question come before the live window, as they happened first.
+  for (const [index, message] of (state.recalledMessages ?? []).entries()) {
+    if (intent !== 'CONVERSATION_MEMORY_QUESTION') break;
+    add(
+      `conversation-message:${state.conversationId}:earlier-${index}`,
+      'CONVERSATION_MEMORY',
+      `${message.role}${message.createdAt ? ` at ${message.createdAt}` : ''}: ${message.content}`,
+    );
   }
   for (const [index, message] of boundRecentMessages(
     state.memory?.recentMessages ?? [],

@@ -92,6 +92,12 @@ export interface MessageMetadata {
   suggestedQueries?: string[];
   groupActivity?: GroupSystemActivity;
   callLog?: CallLogMetadata;
+  /**
+   * On a bot reply to a photo: which message carried the photo and what the AI saw in it.
+   * Memory reads it back so the photo can be recalled; clients ignore it.
+   */
+  photoOfMessageId?: string;
+  photoDescription?: string;
 }
 
 export interface RecallMessageResult {

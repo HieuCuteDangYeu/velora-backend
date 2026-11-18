@@ -13,6 +13,7 @@ import { GenerateDraftAnswerUseCase } from '@ai/application/use-cases/generate-d
 import { GenerateEmbeddingUseCase } from '@ai/application/use-cases/generate-embedding.use-case';
 import { GenerateEmbeddingBatchUseCase } from '@ai/application/use-cases/generate-embedding-batch.use-case';
 import { GetConversationMemoryUseCase } from '@ai/application/use-cases/get-conversation-memory.use-case';
+import { RecallConversationContextUseCase } from '@ai/application/use-cases/recall-conversation-context.use-case';
 import { GetRelevantUserMemoriesUseCase } from '@ai/application/use-cases/get-relevant-user-memories.use-case';
 import { HandleConversationTurnCompletedUseCase } from '@ai/application/use-cases/handle-conversation-turn-completed.use-case';
 import { MemoryAgentUseCase } from '@ai/application/use-cases/memory-agent.use-case';
@@ -191,6 +192,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     AnalyzeVisualFrameUseCase,
 
     GetRelevantUserMemoriesUseCase,
+    RecallConversationContextUseCase,
     ExtractUserMemoriesFromTurnUseCase,
     UpsertUserMemoriesUseCase,
     HandleConversationTurnCompletedUseCase,

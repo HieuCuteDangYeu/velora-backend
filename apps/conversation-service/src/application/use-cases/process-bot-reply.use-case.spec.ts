@@ -174,6 +174,56 @@ describe('ProcessBotReplyUseCase photo turns', () => {
     );
   });
 
+  it('keeps what the AI saw in the photo on the reply so memory can recall it', async () => {
+    const created: Message[] = [];
+    const askQuestionStream = jest.fn().mockResolvedValue({
+      answer: 'Here are some reels for "pasta dinner":',
+      imageDescription: 'a plate of pasta',
+    });
+    const useCase = new ProcessBotReplyUseCase(
+      {
+        findMessageById: jest.fn(),
+        createMessage: jest.fn((message: Message) => {
+          created.push(message);
+          return Promise.resolve(message);
+        }),
+      } as never,
+      { askQuestionStream, emitConversationTurnCompleted: jest.fn() },
+      { execute: jest.fn().mockResolvedValue({ recentMessages: [] }) } as never,
+      { execute: jest.fn().mockReturnValue({ recentMessages: [] }) } as never,
+    );
+
+    await useCase.execute(photo('find reels like this'));
+
+    expect(created[0].metadata).toEqual({
+      photoOfMessageId: 'photo-1',
+      photoDescription: 'a plate of pasta',
+    });
+  });
+
+  it('adds no metadata to a plain text reply', async () => {
+    const created: Message[] = [];
+    const useCase = new ProcessBotReplyUseCase(
+      {
+        findMessageById: jest.fn(),
+        createMessage: jest.fn((message: Message) => {
+          created.push(message);
+          return Promise.resolve(message);
+        }),
+      } as never,
+      {
+        askQuestionStream: jest.fn().mockResolvedValue({ answer: 'ok' }),
+        emitConversationTurnCompleted: jest.fn(),
+      },
+      { execute: jest.fn().mockResolvedValue({ recentMessages: [] }) } as never,
+      { execute: jest.fn().mockReturnValue({ recentMessages: [] }) } as never,
+    );
+
+    await useCase.execute(photo('hello'));
+
+    expect(created[0].metadata).toBeUndefined();
+  });
+
   it('sends no words for a bare photo and keeps the placeholder out of memory', async () => {
     const {
       useCase,

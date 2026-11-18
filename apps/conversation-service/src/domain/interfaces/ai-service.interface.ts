@@ -24,6 +24,7 @@ export interface AskQuestionResult {
   citations?: AiRagCitation[];
   recommendedReels?: AiRecommendedReel[];
   suggestedQueries?: string[];
+  imageDescription?: string;
   error?: BotError;
 }
 

@@ -75,18 +75,31 @@ export class ProcessBotReplyUseCase {
           content: result.answer,
           type: 'text',
           createdAt: new Date(),
-          metadata: hasAiMetadata
-            ? {
-                kind:
-                  hasRecommendedReels || hasSuggestedQueries
-                    ? 'velora_ai_reel_recommendations'
-                    : 'velora_ai_response',
-                citations: result.citations ?? [],
-                recommendedReels: result.recommendedReels ?? [],
-                suggestedQueries: result.suggestedQueries ?? [],
-              }
-            : undefined,
+          metadata: {
+            ...(hasAiMetadata
+              ? {
+                  kind:
+                    hasRecommendedReels || hasSuggestedQueries
+                      ? ('velora_ai_reel_recommendations' as const)
+                      : ('velora_ai_response' as const),
+                  citations: result.citations ?? [],
+                  recommendedReels: result.recommendedReels ?? [],
+                  suggestedQueries: result.suggestedQueries ?? [],
+                }
+              : {}),
+            // Lets memory recall what the photo showed; it carries no `kind`, so clients ignore it.
+            ...(result.imageDescription
+              ? {
+                  photoOfMessageId: userMessage.id,
+                  photoDescription: result.imageDescription,
+                }
+              : {}),
+          },
         });
+
+        if (Object.keys(botMessage.metadata ?? {}).length === 0) {
+          botMessage.metadata = undefined;
+        }
 
         botReply = await this.chatRepository.createMessage(botMessage);
 

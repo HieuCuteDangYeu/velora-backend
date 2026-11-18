@@ -46,6 +46,8 @@ export const AskQuestionResponseSchema = z.object({
   citations: z.array(AiRagCitationSchema).optional(),
   recommendedReels: z.array(AiRecommendedReelSchema).optional(),
   suggestedQueries: z.array(z.string()).optional(),
+  /** One line saying what the photo sent with this turn shows, kept so a later question can recall it. */
+  imageDescription: z.string().max(400).optional(),
   error: z
     .object({
       code: z.enum([

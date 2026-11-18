@@ -39,6 +39,7 @@ export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
     const recentHistory = state.memorySelection?.includeRecentHistory
       ? this.formatRecentHistory(state, bounds)
       : 'Recent chat history was not selected for this request.';
+    const recalledHistory = this.formatRecalledMessages(state, bounds);
     const reelContext =
       options?.includeRetrievedEvidence === false
         ? 'Authorized reel evidence is supplied separately with stable evidence IDs.'
@@ -137,7 +138,7 @@ ${longTermMemory}
 CONVERSATION SUMMARY:
 ${conversationSummary}
 
-RECENT CHAT HISTORY:
+${recalledHistory ? `EARLIER MESSAGES THAT MATCH THE QUESTION (older than the recent history):\n${recalledHistory}\n\n` : ''}RECENT CHAT HISTORY:
 ${recentHistory}
 
 RETRIEVED SHARED REEL EVIDENCE:
@@ -198,6 +199,20 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
     return summary && !this.isBlockedMemory(summary)
       ? truncatePromptText(summary, bounds.maxSummaryChars)
       : 'No conversation summary available.';
+  }
+
+  private formatRecalledMessages(
+    state: RagChatWorkflowState,
+    bounds: RagPromptBounds,
+  ): string {
+    if (state.route?.intent !== 'CONVERSATION_MEMORY_QUESTION') return '';
+    return (state.recalledMessages ?? [])
+      .slice(0, 6)
+      .map(
+        (message) =>
+          `${message.role === 'assistant' ? 'ASSISTANT' : 'USER'}: ${truncatePromptText(message.content, bounds.maxRecentMessageChars)}`,
+      )
+      .join('\n');
   }
 
   private formatRecentHistory(

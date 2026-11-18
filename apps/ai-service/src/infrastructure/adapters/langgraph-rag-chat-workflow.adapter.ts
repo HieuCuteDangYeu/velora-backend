@@ -11,6 +11,7 @@ import {
   GenerateDraftAnswerUseCase,
   type RagDraftAnswer,
 } from '@ai/application/use-cases/generate-draft-answer.use-case';
+import { RecallConversationContextUseCase } from '@ai/application/use-cases/recall-conversation-context.use-case';
 import { MemoryAgentUseCase } from '@ai/application/use-cases/memory-agent.use-case';
 import { PlanRetrievalUseCase } from '@ai/application/use-cases/plan-retrieval.use-case';
 import { QueryRouterAgentUseCase } from '@ai/application/use-cases/query-router-agent.use-case';
@@ -100,6 +101,7 @@ const RagChatStateSchema = new StateSchema({
   conversationMemory: z.any().optional(),
   userMemories: z.any().optional(),
   memorySelection: z.any().optional(),
+  recalledMessages: z.array(z.any()).optional(),
   memoryReady: z.boolean().default(false),
 
   answer: z.string().optional(),
@@ -183,6 +185,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     private readonly screenRagResultUseCase?: ScreenRagResultUseCase,
     @Optional()
     private readonly buildRagGuardrailSummaryUseCase?: BuildRagGuardrailSummaryUseCase,
+    @Optional()
+    private readonly recallConversationContextUseCase?: RecallConversationContextUseCase,
   ) {}
 
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
@@ -526,7 +530,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       )
       .addNode('markRetrievalReadyNode', () => ({ retrievalReady: true }))
       .addNode('memorySelectorNode', this.createMemoryNode(nodeTimings))
-      .addNode('answerContextJoinNode', () => ({}))
+      .addNode(
+        'answerContextJoinNode',
+        this.createAnswerContextJoinNode(nodeTimings),
+      )
       .addNode('draftAnswerNode', this.createDraftAnswerNode(nodeTimings))
       .addNode('verifierNode', this.createVerifierNode(nodeTimings))
       .addNode('acceptDraftNode', this.createAcceptDraftNode())
@@ -929,6 +936,30 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         retrievedChunks: [],
         rerankedChunks: [],
       };
+    };
+  }
+
+  /** Every answer path meets here; a question about the conversation adds what the live window cannot show. */
+  private createAnswerContextJoinNode(nodeTimings: Record<string, number>) {
+    return async (
+      state: RagChatWorkflowState,
+    ): Promise<Partial<RagChatWorkflowState>> => {
+      if (
+        !this.recallConversationContextUseCase ||
+        state.route?.intent !== 'CONVERSATION_MEMORY_QUESTION'
+      ) {
+        return {};
+      }
+      try {
+        return await this.timed('conversationRecallNode', nodeTimings, () =>
+          this.recallConversationContextUseCase!.execute(state),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          `[RagGraph] conversation recall failed open: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return {};
+      }
     };
   }
 

@@ -361,3 +361,41 @@ in the conversation, so use the set to compare builds rather than to quote an ab
 Each gold chunk stores a `textHash`. `build-semantic-live-cases.cjs check-stale` compares it
 with a fresh index export and marks a case `STALE` (`staleReason` `missing` or `changed`)
 when the chunk is gone or a reindex put different text under the same id.
+
+## Conversation recall (2026-11-19)
+
+Measures whether the bot can answer "do you remember X?" after a long chat. Memory is three
+layers: the last 12 messages (always shown), up to 80 earlier messages (ranked against the
+question, best few shown, see `rank-recalled-messages.ts`), and the user's saved facts. The set is
+generated, not committed (1.6 MB, seeded, identical every time): 264 cases in English and
+Vietnamese, with distractors of the same topic, photo cases (the answer is a photo caption plus
+what the AI saw) and negatives (nothing in the chat answers it). `distance` is how many messages
+sit after the answer; the live window covers 11, the ranker covers up to about 90.
+
+```bash
+node eval/rag/conversation-recall-dataset.cjs                    # write datasets/rag-conversation-recall-v1.jsonl
+node eval/rag/conversation-recall-eval.cjs                       # words only, no embeddings
+# real vectors: the same TEI service ai-service uses, run inside the ai-service container
+node eval/rag/conversation-recall-eval.cjs --texts > texts.json
+B64=$(base64 -w0 eval/rag/conversation-recall-embed.cjs)
+cat texts.json | ssh velora-homelab "cd ~/GitHub/microservices-boilerplate && docker compose exec -T ai-service sh -c 'echo $B64 | base64 -d > /tmp/e.cjs && node /tmp/e.cjs; rm -f /tmp/e.cjs'" > vectors.json
+node eval/rag/conversation-recall-eval.cjs --vectors vectors.json         # score
+node eval/rag/conversation-recall-eval.cjs --vectors vectors.json --sweep # threshold search
+```
+
+Measured with real bge-m3 vectors (112 unique texts, about 2 s each through ssh, so run it rarely):
+
+| | words only | with embeddings (shipped defaults) |
+|---|---|---|
+| recall needed (distance 14-70), hit | 39.4% | **96.8%** (lexical 100, semantic 91.7, Vietnamese 100, photo 100) |
+| noise per case (recalled messages that are not the answer) | 0.00 | 0.04 |
+| negatives with an empty recall | 100% | 81.3% (3 of 16 recalled something) |
+| distance 100 (beyond the 92 messages reach) | 0% | 0% by design |
+
+Before the change nothing past the 4th message back could be recalled, so every "recall needed" case failed.
+Defaults (`minSemantic 0.5`, `margin 0.05`) come from the sweep; 0.55 gives 0% false recall but only
+86.5% recall. Score statistics: gold cosine median 0.62, other messages median 0.42, p99 0.58, so some
+overlap is inherent. Embedding calls cost about 0.4-4 s each on the shared TEI service and a batched
+request is refused (`429 Model is overloaded`), so only the newest 20 substantive user messages are
+embedded; the rest are matched by words, and a slow service (`AI_RECALL_EMBEDDING_TIMEOUT_MS`, 6 s)
+falls back to words alone.

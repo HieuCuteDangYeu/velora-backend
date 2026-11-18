@@ -320,6 +320,9 @@ export class AiController {
         citations: result.citations ?? [],
         recommendedReels: result.recommendedReels ?? [],
         suggestedQueries: result.suggestedQueries ?? [],
+        ...(result.imageDescription
+          ? { imageDescription: result.imageDescription }
+          : {}),
       };
     } catch (err: unknown) {
       if (err instanceof ChatBusyError) {

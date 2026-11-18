@@ -37,6 +37,7 @@ describe('ragMemoryEvidence', () => {
     const result = ragMemoryEvidence(
       state({
         route: { intent: 'CONVERSATION_MEMORY_QUESTION' },
+        userMemories: undefined,
         conversationMemory: {
           conversationId: 'foreign',
           summary: 'PRIVATE_CANARY',
@@ -115,5 +116,52 @@ describe('ragMemoryEvidence', () => {
     expect(texts('USER_MEMORY_QUESTION').join('\n')).not.toContain(
       'pasta dinner',
     );
+  });
+
+  it('adds matched earlier messages and saved facts for a recall question, before the live window', () => {
+    const result = ragMemoryEvidence(
+      state({
+        route: { intent: 'CONVERSATION_MEMORY_QUESTION' },
+        recalledMessages: [
+          {
+            role: 'user',
+            content: 'I love spaghetti carbonara',
+            createdAt: '2026-11-01T00:00:00Z',
+          },
+        ],
+        memory: {
+          recentMessages: [
+            {
+              role: 'user',
+              content: 'hello',
+              createdAt: '2026-11-19T00:00:00Z',
+            },
+          ],
+        },
+      }),
+      config,
+    );
+    expect(result.map((item) => item.evidenceType)).toEqual([
+      'USER_MEMORY',
+      'CONVERSATION_MEMORY',
+      'CONVERSATION_MEMORY',
+    ]);
+    expect(result[1].sourceId).toBe('conversation-message:current:earlier-0');
+    expect(result[1].evidenceText).toContain('spaghetti carbonara');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
+  });
+
+  it('does not add recalled messages for other intents', () => {
+    expect(
+      ragMemoryEvidence(
+        state({
+          route: { intent: 'USER_MEMORY_QUESTION' },
+          recalledMessages: [
+            { role: 'user', content: 'EARLIER', createdAt: 'x' },
+          ],
+        }),
+        config,
+      ).map((item) => item.evidenceText),
+    ).not.toContain('user at x: EARLIER');
   });
 });

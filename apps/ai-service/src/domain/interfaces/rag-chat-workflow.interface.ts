@@ -2,7 +2,10 @@ import type {
   AiRagCitation,
   AiRecommendedReel,
 } from '@common/ai/dtos/ask-question-response.dto';
-import type { AiChatMemoryContext } from '@common/ai/interfaces/chat-memory-context.interface';
+import type {
+  AiChatMemoryContext,
+  AiChatMessageContext,
+} from '@common/ai/interfaces/chat-memory-context.interface';
 import type { ConversationMemoryContext } from '@common/ai/interfaces/conversation-memory.interface';
 import type { RelevantUserMemoriesContext } from '@common/ai/interfaces/user-memory.interface';
 import type {
@@ -510,6 +513,8 @@ export interface RagChatWorkflowState {
   conversationMemory?: ConversationMemoryContext;
   userMemories?: RelevantUserMemoriesContext;
   memorySelection?: RagMemorySelection;
+  /** Earlier chat messages picked for a question about the conversation, oldest first. */
+  recalledMessages?: AiChatMessageContext[];
   memoryReady?: boolean;
 
   answer?: string;

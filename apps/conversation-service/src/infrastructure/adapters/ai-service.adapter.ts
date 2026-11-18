@@ -42,6 +42,9 @@ export class AiServiceAdapter implements IAiService {
         citations: response.citations ?? [],
         recommendedReels: response.recommendedReels ?? [],
         suggestedQueries: response.suggestedQueries ?? [],
+        ...(response.imageDescription
+          ? { imageDescription: response.imageDescription }
+          : {}),
       };
     } catch (error: unknown) {
       if (isRpcError(error)) {

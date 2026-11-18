@@ -15,6 +15,7 @@ export const AiChatMessageContextSchema = z.object({
 
 export const AiChatMemoryContextSchema = z.object({
   recentMessages: z.array(AiChatMessageContextSchema).default([]),
+  olderMessages: z.array(AiChatMessageContextSchema).max(120).optional(),
 });
 
 export const AskQuestionImageSchema = z.object({

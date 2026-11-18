@@ -17,4 +17,10 @@ export interface AiChatMessageContext {
 
 export interface AiChatMemoryContext {
   recentMessages: AiChatMessageContext[];
+  /**
+   * Earlier messages that no longer fit in `recentMessages`, oldest first and each
+   * shortened. They are never put in a prompt as a block: the AI ranks them against a
+   * question that asks about the earlier conversation and uses only the few that match.
+   */
+  olderMessages?: AiChatMessageContext[];
 }

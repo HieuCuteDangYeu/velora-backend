@@ -2,6 +2,7 @@ import type {
   RagChatWorkflowState,
   RagGenerationEvidence,
 } from '../interfaces/rag-chat-workflow.interface';
+import { isCannedAssistantReply } from './canned-replies';
 import {
   boundPromptText,
   boundRecentMessages,
@@ -82,7 +83,8 @@ export function ragMemoryEvidence(
       ? conversationRecallBounds(bounds)
       : bounds,
   ).entries()) {
-    if (message.eventType === 'REEL_SHARE') continue;
+    if (message.eventType === 'REEL_SHARE' || isCannedAssistantReply(message))
+      continue;
     add(
       `conversation-message:${state.conversationId}:${index}`,
       'CONVERSATION_MEMORY',

@@ -11,6 +11,7 @@ import {
   rankRecalledMessages,
   selectEmbeddingCandidates,
 } from '@ai/domain/services/rank-recalled-messages';
+import { isCannedAssistantReply } from '@ai/domain/services/canned-replies';
 import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
 import {
   boundPromptText,
@@ -104,6 +105,7 @@ export class RecallConversationContextUseCase {
   }> {
     const candidates = older
       .filter((message) => message.content.trim().length > 0)
+      .filter((message) => !isCannedAssistantReply(message))
       .filter(
         (message) =>
           !this.screenRagMemoryUseCase?.blocks([message.content], 'memory'),

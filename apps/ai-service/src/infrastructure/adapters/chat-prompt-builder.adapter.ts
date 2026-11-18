@@ -4,6 +4,7 @@ import {
   shouldBlockRagMemory,
 } from '@ai/domain/services/rag-guardrail/rag-guardrail';
 import type { IChatPromptBuilder } from '@ai/domain/interfaces/chat-prompt-builder.interface';
+import { isCannedAssistantReply } from '@ai/domain/services/canned-replies';
 import { formatRagImageHint } from '@ai/domain/services/rag-image-context';
 import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
@@ -218,12 +219,16 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
     state: RagChatWorkflowState,
     bounds: RagPromptBounds,
   ): string {
-    const messages = boundRecentMessages(
-      state.memory?.recentMessages ?? [],
+    const recall =
       state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' ||
-        state.recalledMessages !== undefined
-        ? conversationRecallBounds(bounds)
-        : bounds,
+      state.recalledMessages !== undefined;
+    const messages = boundRecentMessages(
+      recall
+        ? (state.memory?.recentMessages ?? []).filter(
+            (message) => !isCannedAssistantReply(message),
+          )
+        : (state.memory?.recentMessages ?? []),
+      recall ? conversationRecallBounds(bounds) : bounds,
     );
     if (messages.length === 0) return 'No recent conversation context.';
     return messages

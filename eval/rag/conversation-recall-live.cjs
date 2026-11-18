@@ -19,7 +19,7 @@ const botUserId = process.env.BOT_USER_ID;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const RUN = Date.now().toString(36);
 const REFUSAL_FALLBACK =
-  /could not verify that answer|I do not have enough verified/i;
+  /could not verify that answer|I do not have enough verified|could not find that in our conversation|do not have that saved about you|I can only help with Velora/i;
 
 // --- a small PNG writer, so no image file or dependency is needed ---
 function crc32(buffer) {
@@ -169,24 +169,34 @@ const FILLERS = [
 
   let counter = 0;
   const send = async (message) => {
-    current = { sent: performance.now() };
-    const done = new Promise((resolve) => {
-      current.resolve = resolve;
-    });
-    counter += 1;
-    socket.emit('send_message', {
-      conversationId,
-      clientMessageId: `rc-${RUN}-${counter}`,
-      ...message,
-    });
-    await Promise.race([done, sleep(150000)]);
-    const result = {
-      reply: String(current.reply ?? ''),
-      metadata: current.metadata,
-      ms: current.final ? Math.round(current.final - current.sent) : null,
-    };
-    await sleep(2500);
-    return result;
+    for (let attempt = 1; ; attempt += 1) {
+      current = { sent: performance.now() };
+      const done = new Promise((resolve) => {
+        current.resolve = resolve;
+      });
+      counter += 1;
+      socket.emit('send_message', {
+        conversationId,
+        clientMessageId: `rc-${RUN}-${counter}`,
+        ...message,
+      });
+      await Promise.race([done, sleep(150000)]);
+      const result = {
+        reply: String(current.reply ?? ''),
+        metadata: current.metadata,
+        ms: current.final ? Math.round(current.final - current.sent) : null,
+      };
+      await sleep(2500);
+      // A busy model host is not a recall failure: wait and ask again.
+      if (
+        /FAILED AI_BUSY|FAILED RATE_LIMITED/.test(result.reply) &&
+        attempt < 4
+      ) {
+        await sleep(20000);
+        continue;
+      }
+      return result;
+    }
   };
   const say = (content) => send({ type: 'text', content });
 
@@ -227,11 +237,43 @@ const FILLERS = [
   const show = (r) =>
     `${r.ms ?? 'TIMEOUT'}ms | ${r.reply.replace(/\s+/g, ' ').slice(0, 200)}`;
 
-  // --- plant ---
-  const petName = `Biscuit${RUN.slice(-3)}`;
-  let r = await say(`My dog is a golden retriever called ${petName}.`);
+  // --- plant: unique facts per run, so facts from earlier runs in this chat cannot pass for these ---
+  const pick = (list) => list[Math.floor(Math.random() * list.length)];
+  const [animal, animalSynonym] = pick([
+    ['gecko', 'lizard'],
+    ['hamster', 'rodent'],
+    ['parrot', 'bird'],
+    ['goldfish', 'fish'],
+    ['tortoise', 'reptile'],
+    ['ferret', 'weasel'],
+    ['rabbit', 'bunny'],
+  ]);
+  const petName = `Pip${RUN.slice(-3)}`;
+  const city = pick([
+    'Sa Pa',
+    'Nha Trang',
+    'Hội An',
+    'Cần Thơ',
+    'Vũng Tàu',
+    'Phú Quốc',
+    'Quy Nhơn',
+  ]);
+  const cityRe = new RegExp(
+    city
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace('đ', 'd')
+      .replace(/ /g, '\\s?'),
+    'i',
+  );
+  const fold = (t) =>
+    t
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd');
+  let r = await say(`My new ${animal} is called ${petName}.`);
   console.log('plant pet     |', show(r));
-  r = await say('Tháng sau mình sẽ đi Đà Lạt với gia đình.');
+  r = await say(`Tháng sau mình sẽ đi ${city} với gia đình.`);
   console.log('plant travel  |', show(r));
   r = await sendPhoto('find reels like this');
   console.log(
@@ -258,40 +300,32 @@ const FILLERS = [
     'tomato',
     'spaghetti',
     'noodle',
+    'pizza',
+    'illustration',
     ...(stored.toLowerCase().match(/[a-z]{5,}/g) ?? []),
   ];
   const mentions = (reply, words) =>
     words.some((word) => reply.toLowerCase().includes(word));
+  const hasName = (t) => new RegExp(petName, 'i').test(t);
+  const hasCity = (t) => cityRe.test(fold(t));
   const asks = [
     [
-      'pet, no shared words',
-      'what is my pet called?',
-      (t) => new RegExp(petName, 'i').test(t),
+      `pet, synonym only (${animalSynonym})`,
+      `what is my ${animalSynonym} called?`,
+      hasName,
     ],
-    [
-      'pet, "do you remember"',
-      'do you remember my dog’s name?',
-      (t) => new RegExp(petName, 'i').test(t),
-    ],
-    [
-      'pet, Vietnamese',
-      'chó của mình tên gì nhỉ?',
-      (t) => new RegExp(petName, 'i').test(t),
-    ],
-    [
-      'travel, Vietnamese',
-      'mình nói sẽ đi du lịch ở đâu nhỉ?',
-      (t) => /đà lạt|da lat/i.test(t),
-    ],
+    ['pet, "do you remember"', `do you remember my ${animal}’s name?`, hasName],
+    ['pet, Vietnamese', `con ${animal} của mình tên gì nhỉ?`, hasName],
+    ['travel, Vietnamese', 'mình nói sẽ đi du lịch ở đâu nhỉ?', hasCity],
     [
       'travel, Vietnamese, other wording',
-      'mình sắp đi du lịch ở đâu ấy nhỉ?',
-      (t) => /đà lạt|da lat/i.test(t),
+      'bạn còn nhớ mình sắp đi đâu không?',
+      hasCity,
     ],
     [
-      'travel, English',
+      'travel, English (fact was Vietnamese)',
       'where did I say I am travelling next month?',
-      (t) => /đà lạt|da lat/i.test(t),
+      hasCity,
     ],
     [
       'photo, English',
@@ -301,7 +335,7 @@ const FILLERS = [
     [
       'photo, Vietnamese',
       'bạn còn nhớ tấm ảnh mình gửi không?',
-      (t) => mentions(t, [...photoWords, 'pizza', 'ảnh', 'hình']),
+      (t) => mentions(t, [...photoWords, 'ảnh', 'hình']),
     ],
   ];
   for (const [name, question, correct] of asks) {
@@ -309,20 +343,19 @@ const FILLERS = [
     check(name, correct(r.reply) && NOT_FALLBACK(r.reply), show(r));
   }
 
-  // --- things never said: the answer must not claim them ---
-  for (const [name, question, pattern] of [
+  // --- things never said: an honest "not found" passes, a claim fails ---
+  const HONEST =
+    /(could not|couldn't|cannot|can't|do not|don't|did not|didn't|not (find|see|have|mention)|no (record|information|mention))/i;
+  for (const [name, question, topic] of [
     [
       'never said: bread',
       'do you remember what I told you about the sourdough bread?',
       /sourdough/i,
     ],
-    ['never said: guitar', 'what did I tell you about my guitar?', /guitar/i],
+    ['never said: kayak', 'what did I tell you about my kayak trip?', /kayak/i],
   ]) {
     r = await say(question);
-    const claims = new RegExp(
-      `(yes|you (mentioned|said|told))[^.]*${pattern.source}`,
-      'i',
-    ).test(r.reply);
+    const claims = topic.test(r.reply) && !HONEST.test(r.reply);
     check(name, !claims && r.ms !== null, show(r));
   }
 

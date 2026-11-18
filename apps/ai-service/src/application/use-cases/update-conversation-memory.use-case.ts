@@ -1,6 +1,7 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ScreenRagMemoryUseCase } from '@ai/application/use-cases/screen-rag-memory.use-case';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { IConversationMemoryRepository } from '../../domain/interfaces/conversation-memory.repository.interface';
 import type { IConversationSummarizerService } from '../../domain/interfaces/conversation-summarizer.service.interface';
 
@@ -22,6 +23,9 @@ export class UpdateConversationMemoryUseCase {
 
     @Inject('IConversationSummarizerService')
     private readonly conversationSummarizerService: IConversationSummarizerService,
+
+    @Optional()
+    private readonly screenRagMemoryUseCase?: ScreenRagMemoryUseCase,
   ) {}
 
   async execute(
@@ -77,6 +81,16 @@ export class UpdateConversationMemoryUseCase {
         if (!summary) {
           this.logger.warn(
             `[ConversationMemory] skipped empty summary conversationId=${payload.conversationId}`,
+          );
+        } else if (
+          this.screenRagMemoryUseCase?.blocks(
+            [payload.userMessage, summary],
+            'summary',
+          )
+        ) {
+          // Keep the previous summary: the new one would carry the attack into later prompts.
+          this.logger.warn(
+            `[ConversationMemory] skipped guardrail-blocked summary conversationId=${payload.conversationId}`,
           );
         } else {
           nextSummary = summary;

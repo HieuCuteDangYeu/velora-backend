@@ -129,9 +129,15 @@ describe('StreamChatUseCase photo turns', () => {
   it('describes the photo before the workflow and passes it on', async () => {
     const execute = jest.fn().mockResolvedValue({ answer: 'ok' });
     const describe = jest.fn().mockResolvedValue(described);
-    const useCase = new StreamChatUseCase({ execute }, { run }, shadow, {
-      execute: describe,
-    } as never);
+    const useCase = new StreamChatUseCase(
+      { execute },
+      { run },
+      shadow,
+      undefined,
+      {
+        execute: describe,
+      } as never,
+    );
 
     await useCase.execute({
       ...input,
@@ -153,9 +159,15 @@ describe('StreamChatUseCase photo turns', () => {
 
   it('asks the Velora-scoped default question for a photo with no words', async () => {
     const execute = jest.fn().mockResolvedValue({ answer: 'ok' });
-    const useCase = new StreamChatUseCase({ execute }, { run }, shadow, {
-      execute: jest.fn().mockResolvedValue(described),
-    } as never);
+    const useCase = new StreamChatUseCase(
+      { execute },
+      { run },
+      shadow,
+      undefined,
+      {
+        execute: jest.fn().mockResolvedValue(described),
+      } as never,
+    );
 
     await useCase.execute({ ...input, message: '', images: [photo] });
 
@@ -167,9 +179,15 @@ describe('StreamChatUseCase photo turns', () => {
   it('does not read the photo of a refused turn', async () => {
     const execute = jest.fn();
     const describe = jest.fn();
-    const useCase = new StreamChatUseCase({ execute }, { run }, enforcing, {
-      execute: describe,
-    } as never);
+    const useCase = new StreamChatUseCase(
+      { execute },
+      { run },
+      enforcing,
+      undefined,
+      {
+        execute: describe,
+      } as never,
+    );
 
     const result = await useCase.execute({
       ...input,
@@ -177,6 +195,35 @@ describe('StreamChatUseCase photo turns', () => {
       images: [photo],
     });
 
+    expect(result.answer).toBe(RAG_INPUT_REFUSAL_MESSAGE);
+    expect(describe).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('lets the input classifier turn a captioned photo away before the photo is read', async () => {
+    const describe = jest.fn();
+    const classify = jest.fn().mockResolvedValue({
+      refuse: true,
+      codes: ['CLASSIFIER_HIT'],
+    });
+    const execute = jest.fn();
+    const useCase = new StreamChatUseCase(
+      { execute },
+      { run },
+      shadow,
+      { execute: classify } as never,
+      { execute: describe } as never,
+    );
+
+    const result = await useCase.execute({
+      ...input,
+      message: 'a caption the classifier refuses',
+      images: [photo],
+    });
+
+    expect(classify).toHaveBeenCalledWith({
+      message: 'a caption the classifier refuses',
+    });
     expect(result.answer).toBe(RAG_INPUT_REFUSAL_MESSAGE);
     expect(describe).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
@@ -194,6 +241,7 @@ describe('StreamChatUseCase photo turns', () => {
         },
       },
       shadow,
+      undefined,
       {
         execute: jest.fn().mockImplementation(() => {
           order.push('describe');

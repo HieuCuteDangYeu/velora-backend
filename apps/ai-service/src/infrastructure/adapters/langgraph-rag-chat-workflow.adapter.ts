@@ -20,7 +20,10 @@ import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-
 import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
 import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
 import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
-import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
+import {
+  RAG_OUTPUT_REFUSAL_MESSAGE,
+  ScreenRagResultUseCase,
+} from '@ai/application/use-cases/screen-rag-result.use-case';
 import { StreamFinalAnswerUseCase } from '@ai/application/use-cases/stream-final-answer.use-case';
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
 import type {
@@ -143,6 +146,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       retrievalPlan?: RagRetrievalPlan;
       retrievalExecution?: RagRetrievalExecutionDiagnostics;
       tokenUsage: RagTelemetryTokenUsage[];
+      /** Evidence the guardrail dropped before the prompt (only when the evidence check enforces). */
+      guardrailFindings: GuardrailFinding[];
     }
   >();
 
@@ -213,7 +218,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       retrievalPlan?: RagRetrievalPlan;
       retrievalExecution?: RagRetrievalExecutionDiagnostics;
       tokenUsage: RagTelemetryTokenUsage[];
-    } = { tokenUsage: [] };
+      guardrailFindings: GuardrailFinding[];
+    } = { tokenUsage: [], guardrailFindings: [] };
     this.executionContexts.set(nodeTimings, executionContext);
     const graph = this.buildGraph(nodeTimings);
     const startedAt = Date.now();
@@ -249,8 +255,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     let result: RagChatWorkflowState = initialState;
     let outcome: RagTelemetryEvent['outcome'] = 'FAILED';
 
-    // Shadow guardrails only record what they would have done; they never
-    // alter routing, evidence or the answer, and can never fail a request.
+    // In shadow mode guardrails only record what they would have done. A check
+    // that enforces (evidence: drops a chunk, output: replaces the answer) acts
+    // only on a high-severity finding, and no guardrail can fail a request.
     const guardrailFindings: GuardrailFinding[] = [];
     this.recordGuardrail(guardrailFindings, () =>
       this.screenRagInputUseCase?.execute({ message: input.message }),
@@ -268,6 +275,23 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           evidence: result.rerankedChunks ?? [],
         }),
       );
+
+      if (
+        this.screenRagResultUseCase?.blocksAnswer(guardrailFindings) ||
+        result.answer === RAG_OUTPUT_REFUSAL_MESSAGE
+      ) {
+        // The refused answer is also what traces and telemetry keep, so a leak is not stored.
+        this.logger.warn(
+          `[Guardrail] execution=${productionExecutionId} mode=enforce blockedOutput=true output=${[...new Set(guardrailFindings.filter((f) => f.check === 'output').map((f) => f.code))].join(',')}`,
+        );
+        result = {
+          ...result,
+          answer: RAG_OUTPUT_REFUSAL_MESSAGE,
+          citations: [],
+          recommendedReels: [],
+          suggestedQueries: [],
+        };
+      }
 
       return {
         answer: result.answer?.trim() ?? '',
@@ -298,6 +322,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     } finally {
       const latencyMs = Date.now() - startedAt;
       const tokenUsage = executionContext.tokenUsage;
+      guardrailFindings.push(...executionContext.guardrailFindings);
       const guardrail =
         this.buildRagGuardrailSummaryUseCase?.execute(guardrailFindings);
       if (guardrail && guardrail.findingCount > 0) {
@@ -333,6 +358,32 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         this.logger.warn('Langfuse RAG diagnostics capture failed');
       }
       this.publishRagTelemetry(result, latencyMs, outcome, tokenUsage);
+    }
+  }
+
+  /**
+   * Evidence that may reach the prompt. A no-op unless the evidence check
+   * enforces; a failure keeps the evidence, since the guardrail must never fail a request.
+   */
+  private guardEvidence<T extends TranscriptMatch>(
+    chunks: T[],
+    nodeTimings: Record<string, number>,
+  ): T[] {
+    if (!this.screenRagResultUseCase || chunks.length === 0) return chunks;
+    try {
+      const { kept, findings } =
+        this.screenRagResultUseCase.filterEvidence(chunks);
+      if (findings.length > 0) {
+        this.executionContexts
+          .get(nodeTimings)
+          ?.guardrailFindings.push(...findings);
+      }
+      return kept;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Guardrail evidence filtering failed: ${this.errorMessage(error)}`,
+      );
+      return chunks;
     }
   }
 
@@ -760,7 +811,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
 
       return {
         retrievedChunks: result.retrievedChunks,
-        rerankedChunks: result.rerankedChunks,
+        rerankedChunks: this.guardEvidence(result.rerankedChunks, nodeTimings),
         retrievalPlan,
         retrievalExecution: result.retrievalExecution,
         conversationMemory: result.conversationMemory,
@@ -826,6 +877,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
               );
       }
 
+      rerankedChunks = this.guardEvidence(rerankedChunks, nodeTimings);
       this.logger.log(`[RagGraph] reranked=${rerankedChunks.length}`);
       const executionContext = this.executionContexts.get(nodeTimings);
       if (executionContext) {

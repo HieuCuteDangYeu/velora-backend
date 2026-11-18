@@ -1,6 +1,10 @@
 import { MemoryWriterAgentUseCase } from '@ai/application/use-cases/memory-writer-agent.use-case';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
-import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
+import {
+  RAG_INPUT_REFUSAL_MESSAGE,
+  RefuseRagInputUseCase,
+} from '@ai/application/use-cases/refuse-rag-input.use-case';
+import { RAG_OUTPUT_REFUSAL_MESSAGE } from '@ai/application/use-cases/screen-rag-result.use-case';
 import { Injectable, Optional } from '@nestjs/common';
 
 @Injectable()
@@ -23,7 +27,12 @@ export class HandleConversationTurnCompletedUseCase {
 
     // A turn the input check refused must not be summarised or remembered, or the
     // refused text would come back through memory on a later turn.
-    if (this.wasRefused(payload.userMessage)) {
+    // The classifier and output check refuse after the fact, so the reply itself is the signal.
+    if (
+      this.wasRefused(payload.userMessage) ||
+      payload.assistantMessage.trim() === RAG_INPUT_REFUSAL_MESSAGE ||
+      payload.assistantMessage.trim() === RAG_OUTPUT_REFUSAL_MESSAGE
+    ) {
       return;
     }
 

@@ -2,6 +2,7 @@ import {
   RAG_INPUT_REFUSAL_MESSAGE,
   RefuseRagInputUseCase,
 } from '@ai/application/use-cases/refuse-rag-input.use-case';
+import { ClassifyRagInputUseCase } from '@ai/application/use-cases/classify-rag-input.use-case';
 import type { IChatAdmission } from '@ai/domain/interfaces/chat-admission.interface';
 import type {
   IRagChatWorkflow,
@@ -33,6 +34,8 @@ export class StreamChatUseCase {
     private readonly chatAdmission: IChatAdmission,
     private readonly refuseRagInputUseCase: RefuseRagInputUseCase,
     @Optional()
+    private readonly classifyRagInputUseCase?: ClassifyRagInputUseCase,
+    @Optional()
     private readonly describeChatImagesUseCase?: DescribeChatImagesUseCase,
   ) {}
 
@@ -51,9 +54,14 @@ export class StreamChatUseCase {
 
     // Checked before admission: a refused message needs neither a model slot nor a place in the queue.
     const refusal = this.refuseRagInputUseCase.execute({ message });
-    if (refusal.refuse) {
+    // The model-based check runs only when the pattern check let the message through,
+    // so a message the patterns already refuse never costs a model call.
+    const classification = refusal.refuse
+      ? undefined
+      : await this.classifyRagInputUseCase?.execute({ message });
+    if (refusal.refuse || classification?.refuse) {
       this.logger.warn(
-        `[Guardrail] mode=enforce blocked=true input=${refusal.codes.join(',') || '-'}`,
+        `[Guardrail] mode=enforce blocked=true input=${[...refusal.codes, ...(classification?.codes ?? [])].join(',') || '-'}`,
       );
       return {
         answer: RAG_INPUT_REFUSAL_MESSAGE,

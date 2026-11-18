@@ -7,7 +7,8 @@ import type {
 } from '@ai/domain/interfaces/user-memory.repository.interface';
 import type { ExtractedUserMemoryCandidate } from '@common/ai/interfaces/extract-user-memory.interface';
 import type { UserMemoryType } from '@common/ai/interfaces/user-memory.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ScreenRagMemoryUseCase } from '@ai/application/use-cases/screen-rag-memory.use-case';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 @Injectable()
 export class UpsertUserMemoriesUseCase {
@@ -34,6 +35,9 @@ export class UpsertUserMemoriesUseCase {
 
     @Inject('IEmbeddingService')
     private readonly embeddingService: IEmbeddingService,
+
+    @Optional()
+    private readonly screenRagMemoryUseCase?: ScreenRagMemoryUseCase,
   ) {}
 
   async execute(input: {
@@ -42,6 +46,11 @@ export class UpsertUserMemoriesUseCase {
     userMessage: string;
     memories: ExtractedUserMemoryCandidate[];
   }) {
+    // A message the guardrail would turn away must not seed memory either.
+    if (this.screenRagMemoryUseCase?.blocks([input.userMessage], 'memory')) {
+      return [];
+    }
+
     const userMessageComparable = this.toComparable(input.userMessage);
 
     const uniqueMemories = new Map<
@@ -64,6 +73,15 @@ export class UpsertUserMemoriesUseCase {
       };
 
       if (!this.isValidMemoryCandidate(memory, userMessageComparable)) {
+        continue;
+      }
+
+      if (
+        this.screenRagMemoryUseCase?.blocks(
+          [memory.content, memory.evidence],
+          'memory',
+        )
+      ) {
         continue;
       }
 

@@ -1,4 +1,9 @@
-export type GuardrailCheckName = 'input' | 'evidence' | 'output';
+export type GuardrailCheckName =
+  | 'input'
+  | 'evidence'
+  | 'output'
+  | 'memory'
+  | 'classifier';
 
 /**
  * - `high`: a payload or leak with no benign reading; would be blocked or
@@ -9,9 +14,10 @@ export type GuardrailSeverity = 'medium' | 'high';
 
 /**
  * `shadow` records what a check would have done and never changes behaviour.
- * `enforce` is supported for the input check only: a high-severity finding
- * makes the request return a fixed refusal. Evidence and output checks stay
- * shadow until they have their own replay gate.
+ * `enforce` acts on a high-severity finding: the input check refuses the
+ * request, the evidence check drops the chunk before the prompt, the output
+ * check replaces the answer, the memory check refuses to store the text and
+ * the classifier refuses a message it judges an attack.
  */
 export type GuardrailMode = 'off' | 'shadow' | 'enforce';
 
@@ -34,4 +40,6 @@ export interface RagGuardrailSummary {
   inputCodes: string[];
   evidenceCodes: string[];
   outputCodes: string[];
+  memoryCodes: string[];
+  classifierCodes: string[];
 }

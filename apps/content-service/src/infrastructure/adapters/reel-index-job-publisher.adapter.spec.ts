@@ -38,9 +38,11 @@ describe('ReelIndexJobPublisherAdapter skip tag', () => {
     const { adapter, publish } = build({
       REEL_INDEX_SKIP_TAG: 'integration-test',
     });
-    await adapter.publish(job(['integration-test', 'run-1']));
+    await expect(
+      adapter.publish(job(['integration-test', 'run-1'])),
+    ).resolves.toBe('skipped');
     expect(publish).not.toHaveBeenCalled();
-    await adapter.publish(job(['cooking']));
+    await expect(adapter.publish(job(['cooking']))).resolves.toBeUndefined();
     expect(publish).toHaveBeenCalledTimes(1);
   });
 });

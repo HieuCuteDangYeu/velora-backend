@@ -1509,6 +1509,60 @@ export class ContentRepository
     return completed;
   }
 
+  async markIndexSkipped(input: {
+    reelId: string;
+    indexAttemptId: string;
+  }): Promise<boolean> {
+    // No index job will ever report back for a skipped reel, so without this it would stay
+    // INDEX_QUEUED/PENDING forever and be counted as stalled work. A reel indexed earlier keeps
+    // its index and stays searchable; any other reel is simply not indexed.
+    const waitingForIndex = {
+      id: input.reelId,
+      indexAttemptId: input.indexAttemptId,
+      mediaStatus: 'COMPLETED' as const,
+      indexStatus: 'PENDING' as const,
+    };
+    const readyData = {
+      status: 'COMPLETED' as const,
+      processingStage: 'READY',
+      processingMessage: 'Video is ready to watch',
+      processingProgress: 100,
+      processingFailedAt: null,
+      processingErrorCode: null,
+      processingErrorDetail: null,
+    };
+    let result = await this.reel.updateMany({
+      where: {
+        ...waitingForIndex,
+        indexCompletedAt: { not: null },
+        indexChunkCount: { gt: 0 },
+      },
+      data: { ...readyData, indexStatus: 'COMPLETED' },
+    });
+    if (result.count === 0) {
+      result = await this.reel.updateMany({
+        where: waitingForIndex,
+        data: { ...readyData, indexStatus: 'NOT_REQUESTED' },
+      });
+    }
+    if (result.count === 0) return false;
+
+    const reel = await this.reel.findUnique({
+      where: { id: input.reelId },
+      select: { mediaAttemptId: true },
+    });
+    if (reel?.mediaAttemptId) {
+      await this.reelMediaAttemptLease.updateMany({
+        where: { attemptId: reel.mediaAttemptId, completedAt: null },
+        data: { completedAt: new Date() },
+      });
+    }
+    await this.recommendationFeedCacheRepository.invalidateReels([
+      input.reelId,
+    ]);
+    return true;
+  }
+
   async failIndexing(input: {
     reelId: string;
     indexAttemptId: string;

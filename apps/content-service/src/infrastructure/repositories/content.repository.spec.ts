@@ -656,3 +656,72 @@ describe('ContentRepository failIndexing', () => {
     ).resolves.toBe(false);
   });
 });
+
+describe('ContentRepository markIndexSkipped', () => {
+  const build = (counts: number[]) => {
+    const updateMany = jest.fn();
+    for (const count of counts) updateMany.mockResolvedValueOnce({ count });
+    const leaseUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const invalidateReels = jest.fn().mockResolvedValue(undefined);
+    const repository = {
+      reel: {
+        updateMany,
+        findUnique: jest.fn().mockResolvedValue({ mediaAttemptId: 'media-1' }),
+      },
+      reelMediaAttemptLease: { updateMany: leaseUpdateMany },
+      recommendationFeedCacheRepository: { invalidateReels },
+    } as unknown as ContentRepository;
+    return { repository, updateMany, leaseUpdateMany, invalidateReels };
+  };
+  const input = { reelId: 'reel-1', indexAttemptId: 'index-1' };
+  type UpdateCall = [
+    { where: Record<string, unknown>; data: Record<string, unknown> },
+  ];
+
+  it('finishes a never-indexed reel as READY without an index', async () => {
+    const { repository, updateMany, leaseUpdateMany, invalidateReels } = build([
+      0, 1,
+    ]);
+
+    await expect(
+      ContentRepository.prototype.markIndexSkipped.call(repository, input),
+    ).resolves.toBe(true);
+
+    const [{ where, data }] = updateMany.mock.calls[1] as UpdateCall;
+    expect(where).toMatchObject({
+      id: 'reel-1',
+      indexAttemptId: 'index-1',
+      indexStatus: 'PENDING',
+    });
+    expect(data).toMatchObject({
+      indexStatus: 'NOT_REQUESTED',
+      processingStage: 'READY',
+      processingProgress: 100,
+    });
+    expect(leaseUpdateMany).toHaveBeenCalledTimes(1);
+    expect(invalidateReels).toHaveBeenCalledWith(['reel-1']);
+  });
+
+  it('keeps the index of a reel that was indexed before', async () => {
+    const { repository, updateMany } = build([1]);
+
+    await expect(
+      ContentRepository.prototype.markIndexSkipped.call(repository, input),
+    ).resolves.toBe(true);
+
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const [{ where, data }] = updateMany.mock.calls[0] as UpdateCall;
+    expect(where).toMatchObject({ indexCompletedAt: { not: null } });
+    expect(data).toMatchObject({ indexStatus: 'COMPLETED' });
+  });
+
+  it('does nothing for a stale attempt', async () => {
+    const { repository, leaseUpdateMany, invalidateReels } = build([0, 0]);
+
+    await expect(
+      ContentRepository.prototype.markIndexSkipped.call(repository, input),
+    ).resolves.toBe(false);
+    expect(leaseUpdateMany).not.toHaveBeenCalled();
+    expect(invalidateReels).not.toHaveBeenCalled();
+  });
+});

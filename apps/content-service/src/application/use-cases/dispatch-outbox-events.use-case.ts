@@ -10,6 +10,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { REEL_HLS_CACHE_EVENT_TYPE } from '@common/content/reel-hls-replacement';
 import type { IRecommendationFeedCacheRepository } from '../../domain/interfaces/recommendation-feed-cache.repository.interface';
+import type { IContentRepository } from '../../domain/interfaces/content.repository.interface';
 import type { IOutboxRepository } from '../../domain/interfaces/outbox.repository.interface';
 import type { IReelMediaJobPublisher } from '../../domain/interfaces/reel-media-job-publisher.interface';
 import type { IReelIndexJobPublisher } from '../../domain/interfaces/reel-index-job-publisher.interface';
@@ -34,6 +35,8 @@ export class DispatchOutboxEventsUseCase {
     private readonly reelIndexJobPublisher: IReelIndexJobPublisher,
     @Inject('IRecommendationFeedCacheRepository')
     private readonly feedCache: IRecommendationFeedCacheRepository,
+    @Inject('IContentRepository')
+    private readonly contentRepository: IContentRepository,
   ) {}
 
   async execute(input: {
@@ -65,7 +68,15 @@ export class DispatchOutboxEventsUseCase {
           event.eventType === REEL_INDEX_JOB_EVENT_TYPE &&
           isReelIndexJob(event.payload)
         ) {
-          await this.reelIndexJobPublisher.publish(event.payload);
+          const outcome = await this.reelIndexJobPublisher.publish(
+            event.payload,
+          );
+          if (outcome === 'skipped') {
+            await this.contentRepository.markIndexSkipped({
+              reelId: event.payload.reelId,
+              indexAttemptId: event.payload.indexAttemptId,
+            });
+          }
         } else if (
           event.eventType === REEL_HLS_CACHE_EVENT_TYPE &&
           typeof event.payload === 'object' &&

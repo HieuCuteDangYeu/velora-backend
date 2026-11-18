@@ -364,6 +364,12 @@ export interface IContentRepository {
     errorDetail: string;
   }): Promise<boolean>;
 
+  /** Finishes a reel whose index job was deliberately not sent (REEL_INDEX_SKIP_TAG). */
+  markIndexSkipped(input: {
+    reelId: string;
+    indexAttemptId: string;
+  }): Promise<boolean>;
+
   queueReelIndexingAttempt(
     reelId: string,
     options?: { requireVisualAnalysis?: boolean },

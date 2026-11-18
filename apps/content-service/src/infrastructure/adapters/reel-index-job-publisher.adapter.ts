@@ -57,7 +57,7 @@ export class ReelIndexJobPublisherAdapter
     await this.connection?.close();
   }
 
-  async publish(job: ReelIndexJob): Promise<void> {
+  async publish(job: ReelIndexJob): Promise<void | 'skipped'> {
     if (!this.channel) {
       throw new Error('Reel index publisher is not initialized');
     }
@@ -71,7 +71,7 @@ export class ReelIndexJobPublisherAdapter
       this.logger.warn(
         `Not indexing reel ${job.reelId}: it carries the tag ${skipTag} (REEL_INDEX_SKIP_TAG)`,
       );
-      return;
+      return 'skipped';
     }
 
     const definition = getReelIndexPrimaryQueue(job.sourceLengthClass);

@@ -1,4 +1,5 @@
 import type { ReelMediaOutput } from '@common/processing/interfaces/reel-media-output.interface';
+import type { IHlsCacheWarmer } from '@content/domain/interfaces/hls-cache-warmer.interface';
 import type { IOutboxDispatchTrigger } from '@content/domain/interfaces/outbox-dispatch-trigger.interface';
 import { Inject, Injectable } from '@nestjs/common';
 import type {
@@ -13,6 +14,8 @@ export class CompleteReelMediaProcessingUseCase {
     private readonly contentRepository: IContentRepository,
     @Inject('IOutboxDispatchTrigger')
     private readonly outboxDispatchTrigger: IOutboxDispatchTrigger,
+    @Inject('IHlsCacheWarmer')
+    private readonly hlsCacheWarmer: IHlsCacheWarmer,
   ) {}
 
   async execute(input: {
@@ -39,6 +42,7 @@ export class CompleteReelMediaProcessingUseCase {
 
     if (completed) {
       this.outboxDispatchTrigger.trigger();
+      this.hlsCacheWarmer.warm(input.mediaOutput.hlsMasterKey);
     }
 
     return completed;

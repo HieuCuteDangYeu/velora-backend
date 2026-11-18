@@ -79,6 +79,7 @@ import { REEL_INDEX_QUERY_QUEUE } from '@common/processing/interfaces/semantic-i
 import { UserServiceAdapter } from '@content/infrastructure/adapters/user-service.adapter';
 import { ContentController } from '@content/infrastructure/controllers/content.controller';
 import { IndexingAttemptGuardController } from '@content/infrastructure/controllers/indexing-attempt-guard.controller';
+import { CdnHlsCacheWarmerAdapter } from '@content/infrastructure/adapters/cdn-hls-cache-warmer.adapter';
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
 import { RecommendationGlobalSlateRefreshService } from '@content/infrastructure/jobs/recommendation-global-slate-refresh.service';
 import { ReelMediaCleanupService } from '@content/infrastructure/jobs/reel-media-cleanup.service';
@@ -298,6 +299,10 @@ function createRmqClientRegistration(name: string, queue: string) {
     {
       provide: 'IOutboxRepository',
       useExisting: OutboxRepository,
+    },
+    {
+      provide: 'IHlsCacheWarmer',
+      useClass: CdnHlsCacheWarmerAdapter,
     },
     {
       provide: 'IOutboxDispatchTrigger',

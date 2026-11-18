@@ -16,25 +16,31 @@ describe('CompleteReelMediaProcessingUseCase', () => {
   it('triggers the dispatcher once after media completion commits', async () => {
     const completeMediaProcessing = jest.fn().mockResolvedValue(true);
     const trigger = jest.fn();
+    const warm = jest.fn();
     const useCase = new CompleteReelMediaProcessingUseCase(
       { completeMediaProcessing } as any,
       { trigger },
+      { warm },
     );
 
     await expect(useCase.execute(input)).resolves.toBe(true);
 
     expect(trigger).toHaveBeenCalledTimes(1);
+    expect(warm).toHaveBeenCalledWith('reels/reel-1/master.m3u8');
   });
 
   it('does not trigger when the completion was not applied', async () => {
     const trigger = jest.fn();
+    const warm = jest.fn();
     const useCase = new CompleteReelMediaProcessingUseCase(
       { completeMediaProcessing: jest.fn().mockResolvedValue(false) } as any,
       { trigger },
+      { warm },
     );
 
     await expect(useCase.execute(input)).resolves.toBe(false);
 
     expect(trigger).not.toHaveBeenCalled();
+    expect(warm).not.toHaveBeenCalled();
   });
 });

@@ -430,6 +430,17 @@ VELORA_BASE_URL=https://velora-app.me BOT_USER_ID=<bot user id> \
 VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall-live.cjs
 ```
 
+   Measured on the homelab (2026-11-19, final code `814cbbdc`): the last clean run passed 9 of 10
+   (fact recall in both languages and by paraphrase, a freshly planted photo recalled from its stored
+   description, an old photo, both never-said questions answered "I could not find that in our
+   conversation."); the miss was a Vietnamese "mình muốn ... nào nhỉ?" the router called chat. Earlier
+   runs found and led to fixes for: the router labelling recall questions normal chat or off topic, the
+   normal-chat scope rule overriding recalled evidence, earlier questions crowding the fact out, and the
+   model copying canned replies. Each run needs categories no earlier run used, otherwise two facts of
+   one kind legitimately conflict. Recall turns take 20-30 s, mostly the router and verifier on the shared
+   model host; photo planting needs the vision providers (their daily quota can run out, then the bot
+   answers "busy").
+
    The router is the weak point there: a small model sometimes calls a recall question normal chat or
    even off topic (a trip, a pet), so explicit recall wording (`recall-cue.ts`) is routed as a
    conversation-memory question after the model has answered. A recall question with no such wording

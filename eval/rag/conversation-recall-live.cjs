@@ -1,9 +1,12 @@
 // Live check that Velora AI remembers earlier turns, through the real gateway and Socket.IO.
-// One login, one bot conversation, about 22 turns: three facts are planted (two typed, one
-// photo), eight unrelated turns push them beyond the 12-message live window, then ten questions
-// ask for them back in different words and languages, and two ask for things never said (the
-// answer must not claim them). It needs an account you own: the turns count against its AI
-// budget and the messages stay in its bot chat.
+// One login, one bot conversation, about 25 turns: two facts in invented names (English or
+// Vietnamese, from categories earlier runs did not use) and a photo are planted, eight unrelated
+// turns push them beyond the 12-message live window, then each fact is asked back three ways
+// (explicit "do you remember", a paraphrase with no recall wording, the other language), the photo
+// two ways, and two things never said are asked (the answer must not claim them). It needs an
+// account you own: the turns count against its AI budget and the messages stay in its bot chat.
+// RECALL_CATEGORIES=tea,museum picks the categories; the photo plant is skipped when the vision
+// providers are out of daily quota.
 //
 //   VELORA_BASE_URL=https://velora-app.me BOT_USER_ID=<bot user id> \
 //   VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall-live.cjs
@@ -263,8 +266,6 @@ const FILLERS = [
     )
       .join('')
       .replace(/^./, (c) => c.toUpperCase());
-  const game = invent();
-  const cafe = invent();
   const fold = (t) =>
     t
       .normalize('NFD')
@@ -273,10 +274,62 @@ const FILLERS = [
       .toLowerCase();
   const has = (name) => (t) => fold(t).includes(name.toLowerCase());
 
-  let r = await say(`My favourite board game is ${game}.`);
-  console.log('plant game    |', show(r));
-  r = await say(`Mình hay mua cà phê ở quán ${cafe} Cafe.`);
-  console.log('plant cafe    |', show(r));
+  // Each category holds one fact (stated in English or Vietnamese) and three ways to ask for it:
+  // with explicit recall wording, with a paraphrase and no cue, and in the other language.
+  // The chat keeps earlier runs, so a category must not repeat: RECALL_CATEGORIES picks them,
+  // and the default is two at random from those no earlier run has used.
+  const CATEGORIES = {
+    tea: {
+      fact: (w) => `My favourite tea is ${w} oolong.`,
+      asks: [
+        ['with "remember"', 'do you remember my favourite tea?'],
+        ['paraphrase', 'which tea do I like the most?'],
+        ['Vietnamese', 'loại trà mình thích nhất là gì nhỉ?'],
+      ],
+    },
+    bike: {
+      fact: (w) => `Mình vừa mua một chiếc xe đạp hiệu ${w}.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mua xe đạp hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ hiệu xe đạp mình mua không?'],
+        ['English', 'what brand of bicycle did I say I bought?'],
+      ],
+    },
+    museum: {
+      fact: (w) => `I want to visit the ${w} Museum someday.`,
+      asks: [
+        ['with "remember"', 'do you remember the museum I mentioned?'],
+        ['paraphrase', 'which museum do I want to visit?'],
+        ['Vietnamese', 'mình muốn đến bảo tàng nào nhỉ?'],
+      ],
+    },
+    sport: {
+      fact: (w) => `Cuối tuần mình hay chơi môn ${w} với bạn bè.`,
+      asks: [
+        ['Vietnamese', 'mình hay chơi môn gì vào cuối tuần nhỉ?'],
+        ['English paraphrase', 'what sport do I usually play on weekends?'],
+        ['English, "remember"', 'do you remember what I play at weekends?'],
+      ],
+    },
+  };
+  const chosen = (
+    process.env.RECALL_CATEGORIES
+      ? process.env.RECALL_CATEGORIES.split(',')
+      : Object.keys(CATEGORIES)
+          .sort(() => Math.random() - 0.5)
+          .slice(0, 2)
+  ).filter((name) => CATEGORIES[name]);
+  const planted = chosen.map((name) => ({
+    name,
+    word: invent(),
+    ...CATEGORIES[name],
+  }));
+
+  let r;
+  for (const item of planted) {
+    r = await say(item.fact(item.word));
+    console.log(`plant ${item.name.padEnd(8)}|`, show(r));
+  }
   // A photo needs the vision providers; when their daily quota is spent the bot answers "busy".
   r = await sendPhoto('find reels like this', { retries: 1 });
   const photoPlanted = !/FAILED/.test(r.reply);
@@ -314,28 +367,13 @@ const FILLERS = [
   const mentions = (reply, words) =>
     words.some((word) => reply.toLowerCase().includes(word));
   const asks = [
-    ['game, synonym only', 'what tabletop game do I like best?', has(game)],
-    [
-      'game, "do you remember"',
-      'do you remember my favourite board game?',
-      has(game),
-    ],
-    [
-      'game, Vietnamese (fact was English)',
-      'trò chơi cờ bàn mình thích nhất là gì nhỉ?',
-      has(game),
-    ],
-    ['cafe, Vietnamese', 'mình nói hay mua cà phê ở quán nào nhỉ?', has(cafe)],
-    [
-      'cafe, Vietnamese, "còn nhớ"',
-      'bạn còn nhớ quán cà phê mình hay ghé không?',
-      has(cafe),
-    ],
-    [
-      'cafe, English (fact was Vietnamese)',
-      'which coffee shop did I say I usually go to?',
-      has(cafe),
-    ],
+    ...planted.flatMap((item) =>
+      item.asks.map(([how, question]) => [
+        `${item.name}, ${how}`,
+        question,
+        has(item.word),
+      ]),
+    ),
     [
       'photo, English',
       'do you remember what was in the photo I sent?',

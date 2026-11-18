@@ -19,10 +19,19 @@
  * view counts are not polluted. RAG is opt-in because every turn spends the shared
  * AI budget (ai_turn_minute 10, ai_turn_day 300 per user) and the model host.
  *
- * Limits (p95): 500 ms for the API calls on the swipe path (feeds, reel detail, tags, friends),
- * 800 ms (--slo-secondary-p95) for the screens a viewer opens on purpose and that pay a cold
- * friend-access check or read a whole series (reel context, series detail, series episodes).
- * With 20 s stages a p95 is one or two requests; use --stage-seconds 60 or more to judge.
+ * Limits (p95), calibrated on 2026-11-18 after the databases moved (auth and content on the
+ * homelab Postgres, about 2 ms away; user, friend and AI on Aiven Singapore, about 35 ms away;
+ * before, everything was on Aiven Bangalore, about 70 ms away):
+ *   350 ms (--slo-api-p95)        API calls on the swipe path: feeds, reel detail, tags, friends.
+ *                                 Measured steady-state p95 at 1/3/6 viewers: 105-210 ms.
+ *   500 ms (--slo-secondary-p95)  screens opened on purpose that pay a cold friend-access check or
+ *                                 read a whole series: reel context, series detail, series episodes.
+ *                                 Measured: 130-245 ms.
+ * The first request of a cold run can be far slower (one cold reel-context call took 1.3 s) and
+ * the first HLS touches miss the CDN edge (stream_startup p95 1.5-1.7 s at 1-3 viewers, 0.26 s at 6),
+ * so judge a run by its larger stages. A p95 over fewer than about 20 samples is one request: use
+ * --stage-seconds 90 --think-ms 100 for 30-600 samples per scenario, and check the homelab load
+ * (uptime) is under 2 first, because another stress test shows up as 1-40 s tails.
  *
  * Usage:
  *   VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... \
@@ -585,8 +594,8 @@ async function main() {
   const includeAi = scenarioList.some((item) => AI_GROUPS.includes(item) || GROUPS['feed'].includes(item) || GROUPS.search.includes(item) || GROUPS['startup-ai'].includes(item));
   const queries = String(args.queries || 'love,revenge,family,fight,pet').split(',').map((q) => q.trim()).filter(Boolean);
   const slos = {
-    api: intArg(args['slo-api-p95'], 500, '--slo-api-p95', 1, 600000),
-    secondary: intArg(args['slo-secondary-p95'], 800, '--slo-secondary-p95', 1, 600000),
+    api: intArg(args['slo-api-p95'], 350, '--slo-api-p95', 1, 600000),
+    secondary: intArg(args['slo-secondary-p95'], 500, '--slo-secondary-p95', 1, 600000),
     stream_startup: intArg(args['slo-stream-p95'], 1200, '--slo-stream-p95', 1, 600000),
     first_frame: intArg(args['slo-first-frame-p95'], 1800, '--slo-first-frame-p95', 1, 600000),
     first_frame_ranked: intArg(args['slo-first-frame-p95'], 1800, '--slo-first-frame-p95', 1, 600000),

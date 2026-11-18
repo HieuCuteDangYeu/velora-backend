@@ -84,3 +84,30 @@ test('without a secondary limit every API call keeps the primary one', () => {
   const [check] = evaluateSlos(report, { api: 500, errorRate: 0.01 });
   assert.equal(check.limit, 500);
 });
+
+test('a p95 over too few samples is skipped, not failed, and error rates still count', () => {
+  const report = {
+    stages: {
+      s1: {
+        api_feed_cold: { count: 12, p95: 900, errorRate: 0 },
+        api_feed_friends: { count: 40, p95: 900, errorRate: 0 },
+        api_reel_detail: { count: 12, p95: 100, errorRate: 0.2 },
+      },
+    },
+  };
+  const checks = evaluateSlos(report, { api: 350, errorRate: 0.01, minSamples: 30 });
+  const byName = Object.fromEntries(checks.map((c) => [c.name, c]));
+  assert.equal(byName['s1/api_feed_cold p95'].skipped, true);
+  assert.equal(byName['s1/api_feed_cold p95'].pass, true);
+  assert.equal(byName['s1/api_feed_cold p95'].samples, 12);
+  assert.equal(byName['s1/api_feed_friends p95'].skipped, undefined);
+  assert.equal(byName['s1/api_feed_friends p95'].pass, false);
+  assert.equal(byName['s1/api_reel_detail errorRate'].pass, false);
+});
+
+test('without minSamples every p95 is checked as before', () => {
+  const report = { stages: { s1: { api_feed_cold: { count: 3, p95: 900, errorRate: 0 } } } };
+  const [check] = evaluateSlos(report, { api: 350, errorRate: 0.01 });
+  assert.equal(check.pass, false);
+  assert.equal(check.skipped, undefined);
+});

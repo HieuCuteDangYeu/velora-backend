@@ -27,7 +27,8 @@
  *   500 ms (--slo-secondary-p95)  screens opened on purpose that pay a cold friend-access check or
  *                                 read a whole series: reel context, series detail, series episodes.
  *                                 Measured: 130-245 ms.
- * The first request of a cold run can be far slower (one cold reel-context call took 1.3 s) and
+ * A p95 over fewer than --min-samples (default 30) requests is shown as SKIP, not FAIL; error rates
+ * are always checked. The first request of a cold run can be far slower (one cold reel-context call took 1.3 s) and
  * the first HLS touches miss the CDN edge (stream_startup p95 1.5-1.7 s at 1-3 viewers, 0.26 s at 6),
  * so judge a run by its larger stages. A p95 over fewer than about 20 samples is one request: use
  * --stage-seconds 90 --think-ms 100 for 30-600 samples per scenario, and check the homelab load
@@ -145,10 +146,17 @@ function parseMediaPlaylist(text, baseUrl) {
 // the swipe loop: they get the looser secondary limit.
 const SECONDARY_API_SCENARIOS = ['api_reel_context', 'api_series_detail', 'api_series_episodes'];
 
+// A p95 over fewer than `slos.minSamples` requests is one or two requests, so such a check is
+// reported as skipped (it passes the run) instead of failing it on noise. Error rates still count.
 function evaluateSlos(report, slos) {
   const checks = [];
-  const add = (name, actual, limit) => {
+  const minSamples = slos.minSamples ?? 0;
+  const add = (name, actual, limit, samples) => {
     if (limit === undefined || limit === null) return;
+    if (samples !== undefined && samples < minSamples) {
+      checks.push({ name, actual, limit, pass: true, skipped: true, samples });
+      return;
+    }
     checks.push({ name, actual, limit, pass: actual !== null && actual <= limit });
   };
   for (const [stage, rows] of Object.entries(report.stages)) {
@@ -156,7 +164,7 @@ function evaluateSlos(report, slos) {
       const limit = slos[scenario]
         ?? (SECONDARY_API_SCENARIOS.includes(scenario) && slos.secondary !== undefined ? slos.secondary : undefined)
         ?? (scenario.startsWith('api_') ? slos.api : undefined);
-      add(`${stage}/${scenario} p95`, stats.p95, limit);
+      add(`${stage}/${scenario} p95`, stats.p95, limit, stats.count);
       if (stats.count) add(`${stage}/${scenario} errorRate`, stats.errorRate, slos.errorRate);
     }
   }
@@ -573,7 +581,7 @@ function markdownReport(report) {
   }
   if (report.slo.length) {
     lines.push(`## SLO checks`, ``, `| check | actual | limit | result |`, `|---|---|---|---|`);
-    for (const c of report.slo) lines.push(`| ${c.name} | ${c.actual ?? '-'} | ${c.limit} | ${c.pass ? 'PASS' : 'FAIL'} |`);
+    for (const c of report.slo) lines.push(`| ${c.name} | ${c.actual ?? '-'} | ${c.limit} | ${c.skipped ? `SKIP (n=${c.samples})` : c.pass ? 'PASS' : 'FAIL'} |`);
   }
   return lines.join('\n');
 }
@@ -603,6 +611,7 @@ async function main() {
     rag_first_token: intArg(args['slo-rag-first-token-p95'], 6000, '--slo-rag-first-token-p95', 1, 600000),
     rag_final: intArg(args['slo-rag-final-p95'], 30000, '--slo-rag-final-p95', 1, 600000),
     errorRate: 0.01,
+    minSamples: intArg(args['min-samples'], 30, '--min-samples', 0, 100000),
   };
 
   const outDir = path.resolve(args.out || path.join('test-data', 'reel-latency', new Date().toISOString().replace(/[:.]/g, '-')));

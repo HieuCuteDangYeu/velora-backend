@@ -17,6 +17,24 @@ export type AuthOperation =
   | 'verify_google_token';
 
 export type AuthOutcome = 'success' | 'rejected' | 'error';
+
+// Every operation and outcome is exported from the first scrape. A counter that only
+// appears after its first event makes rate() empty, so an error rate with no errors
+// shows no data instead of 0 after each restart.
+const AUTH_OPERATIONS: readonly AuthOperation[] = [
+  'register',
+  'login',
+  'verify_token',
+  'confirm_account',
+  'resend_verification',
+  'refresh',
+  'logout',
+  'login_google',
+  'forgot_password',
+  'reset_password',
+  'verify_google_token',
+];
+const AUTH_OUTCOMES: readonly AuthOutcome[] = ['success', 'rejected', 'error'];
 export type RefreshOutcome =
   | 'success'
   | 'recovered'
@@ -47,6 +65,11 @@ export class AuthPrometheusMetricsService implements OnModuleDestroy {
     private readonly prisma: PrismaService,
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {
+    for (const operation of AUTH_OPERATIONS) {
+      for (const outcome of AUTH_OUTCOMES) {
+        this.requestCounts.set(`${operation}|${outcome}`, 0);
+      }
+    }
     this.eventLoopDelay.enable();
   }
 

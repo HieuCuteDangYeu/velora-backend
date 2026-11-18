@@ -21,6 +21,29 @@ export type UserOperation =
   | 'validate_list';
 
 export type UserOutcome = 'success' | 'rejected' | 'error';
+
+// Every operation and outcome is exported from the first scrape. A counter that only
+// appears after its first event makes rate() empty, so an error rate with no errors, or
+// an idle search path, shows no data instead of 0 after each restart.
+const USER_OPERATIONS: readonly UserOperation[] = [
+  'create',
+  'find_all',
+  'update',
+  'delete',
+  'validate',
+  'verify',
+  'find_by_email',
+  'create_social',
+  'avatar_update',
+  'find_by_id',
+  'find_by_ids',
+  'public_profile',
+  'search',
+  'recommendations',
+  'username_availability',
+  'validate_list',
+];
+const USER_OUTCOMES: readonly UserOutcome[] = ['success', 'rejected', 'error'];
 type HistogramState = { bucketCounts: number[]; count: number; sum: number };
 
 @Injectable()
@@ -38,6 +61,11 @@ export class UserPrometheusMetricsService implements OnModuleDestroy {
   private readonly eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 
   constructor(private readonly prisma: PrismaService) {
+    for (const operation of USER_OPERATIONS) {
+      for (const outcome of USER_OUTCOMES) {
+        this.requestCounts.set(`${operation}|${outcome}`, 0);
+      }
+    }
     this.eventLoopDelay.enable();
   }
 

@@ -2,6 +2,7 @@ import type {
   AiChatMemoryContext,
   AiChatMemoryRole,
 } from '@common/ai/interfaces/chat-memory-context.interface';
+import { extractChatImageCaption } from '@common/ai/chat-image';
 import { BOT_USER_ID } from '@common/constants/seed.constants';
 import { Inject, Injectable } from '@nestjs/common';
 import type { Message } from '../../domain/entities/message.entity';
@@ -57,10 +58,19 @@ export class BuildBotMemoryContextUseCase {
   }
 
   private isMemoryEligibleMessage(message: Message): boolean {
-    return message.type === 'text' || message.type === 'reel';
+    return (
+      message.type === 'text' ||
+      message.type === 'reel' ||
+      message.type === 'image'
+    );
   }
 
   private toMemoryContent(message: Message): string {
+    if (message.type === 'image') {
+      // Only the caption is text; the bytes never enter memory.
+      const caption = extractChatImageCaption(message.content);
+      return caption ? `[Photo] ${caption}` : '[Photo]';
+    }
     if (message.type !== 'reel') {
       return message.content?.trim() ?? '';
     }

@@ -2,6 +2,7 @@ import {
   boundRecentMessages,
   boundTextItems,
   boundEvidence,
+  conversationRecallBounds,
   DEFAULT_RAG_PROMPT_BOUNDS,
   preserveReelCoverage,
   selectRagAnswerEvidenceIds,
@@ -569,5 +570,17 @@ describe('rag prompt bounds', () => {
         ),
       ].sort(),
     ).toEqual(['e0', 'e1', 'e2']);
+  });
+
+  it('widens recent history for recall questions without lowering an operator override', () => {
+    const wide = conversationRecallBounds(DEFAULT_RAG_PROMPT_BOUNDS);
+    expect(wide.maxRecentMessages).toBe(12);
+    expect(wide.maxRecentTotalChars).toBe(3_000);
+    const larger = conversationRecallBounds({
+      ...DEFAULT_RAG_PROMPT_BOUNDS,
+      maxRecentTotalChars: 6_000,
+    });
+    expect(larger.maxRecentTotalChars).toBe(6_000);
+    expect(DEFAULT_RAG_PROMPT_BOUNDS.maxRecentMessages).toBe(4);
   });
 });

@@ -5,6 +5,7 @@ import type {
 import {
   boundPromptText,
   boundRecentMessages,
+  conversationRecallBounds,
   readRagPromptBounds,
   type RagPromptConfig,
 } from './rag-prompt-bounds';
@@ -65,7 +66,9 @@ export function ragMemoryEvidence(
   }
   for (const [index, message] of boundRecentMessages(
     state.memory?.recentMessages ?? [],
-    bounds,
+    intent === 'CONVERSATION_MEMORY_QUESTION'
+      ? conversationRecallBounds(bounds)
+      : bounds,
   ).entries()) {
     if (message.eventType === 'REEL_SHARE') continue;
     add(

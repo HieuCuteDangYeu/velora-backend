@@ -351,6 +351,30 @@ export function boundClaimMappings<T extends { claim: string }>(
   );
 }
 
+/**
+ * A question about what was said earlier reaches further back than a follow-up
+ * does. Widen the recent-history window for it only, and never below an
+ * operator's own larger setting.
+ */
+export const CONVERSATION_RECALL_MIN_MESSAGES = 12;
+export const CONVERSATION_RECALL_MIN_TOTAL_CHARS = 3_000;
+
+export function conversationRecallBounds(
+  bounds: RagPromptBounds,
+): RagPromptBounds {
+  return {
+    ...bounds,
+    maxRecentMessages: Math.max(
+      bounds.maxRecentMessages,
+      CONVERSATION_RECALL_MIN_MESSAGES,
+    ),
+    maxRecentTotalChars: Math.max(
+      bounds.maxRecentTotalChars,
+      CONVERSATION_RECALL_MIN_TOTAL_CHARS,
+    ),
+  };
+}
+
 export function boundRecentMessages<T extends { content: string }>(
   messages: T[],
   bounds: RagPromptBounds,

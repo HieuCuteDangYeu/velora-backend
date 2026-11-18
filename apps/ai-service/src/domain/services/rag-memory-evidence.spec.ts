@@ -90,4 +90,30 @@ describe('ragMemoryEvidence', () => {
     expect(result.every((r) => r.reelId === undefined)).toBe(true);
     expect(JSON.stringify(result)).not.toContain('Fake shared fact');
   });
+
+  it('reaches past the default four-message window for a conversation recall question, but not for other intents', () => {
+    const recentMessages = [
+      'Here are some reels for "pasta dinner":',
+      'sup',
+      'hello again',
+      'what tools do you have?',
+      'I can only help with Velora.',
+    ].map((content, index) => ({
+      role: index % 2 === 0 ? 'assistant' : 'user',
+      content,
+      createdAt: `2026-11-18T00:00:0${index}Z`,
+    }));
+    const texts = (intent: string) =>
+      ragMemoryEvidence(
+        state({ route: { intent }, memory: { recentMessages } }),
+        config,
+      ).map((item) => item.evidenceText);
+
+    expect(texts('CONVERSATION_MEMORY_QUESTION').join('\n')).toContain(
+      'pasta dinner',
+    );
+    expect(texts('USER_MEMORY_QUESTION').join('\n')).not.toContain(
+      'pasta dinner',
+    );
+  });
 });

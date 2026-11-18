@@ -13,6 +13,7 @@ import {
   boundEvidence,
   boundPromptText,
   boundRecentMessages,
+  conversationRecallBounds,
   boundTextItems,
   readRagPromptBounds,
   truncatePromptText,
@@ -205,7 +206,9 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
   ): string {
     const messages = boundRecentMessages(
       state.memory?.recentMessages ?? [],
-      bounds,
+      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION'
+        ? conversationRecallBounds(bounds)
+        : bounds,
     );
     if (messages.length === 0) return 'No recent conversation context.';
     return messages

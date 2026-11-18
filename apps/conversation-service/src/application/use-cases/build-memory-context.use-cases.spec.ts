@@ -53,6 +53,38 @@ describe('conversation memory context builders', () => {
     expect(JSON.stringify(result)).not.toContain('private-id');
   });
 
+  it('keeps a photo message as a caption line and never as image data', async () => {
+    const repository = {
+      findMessagesByConversationId: jest.fn().mockResolvedValue([
+        new Message({
+          id: 'captioned',
+          senderId: 'user',
+          type: 'image',
+          content: 'find reels like this',
+          media: { fileKey: 'chat-images/user/secret.jpg' },
+          createdAt: at(1),
+        }),
+        new Message({
+          id: 'bare',
+          senderId: 'user',
+          type: 'image',
+          content: '[Hình ảnh]',
+          createdAt: at(2),
+        }),
+      ]),
+    };
+
+    const result = await new BuildBotMemoryContextUseCase(
+      repository as never,
+    ).execute({ conversationId: 'conversation', currentMessageId: 'current' });
+
+    expect(result.recentMessages.map((message) => message.content)).toEqual([
+      '[Photo] find reels like this',
+      '[Photo]',
+    ]);
+    expect(JSON.stringify(result)).not.toContain('secret.jpg');
+  });
+
   it('marks which user messages were written by the requester so other members are not remembered as them', async () => {
     const repository = {
       findMessagesByConversationId: jest.fn().mockResolvedValue([

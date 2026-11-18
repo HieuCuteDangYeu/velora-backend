@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { GroqKeyPoolExhaustedError } from '../services/groq-key-pool.service';
 import { GroqStructuredLlmAdapter } from './groq-structured-llm.adapter';
 import { HybridStructuredLlmAdapter } from './hybrid-structured-llm.adapter';
+import { MuseStructuredLlmAdapter } from './muse-structured-llm.adapter';
 import {
   OllamaStructuredCompletionProviderError,
   OllamaStructuredLlmAdapter,
@@ -19,12 +20,14 @@ const request = (modelRole: string, model = 'm') => ({
 function setup(values: Record<string, string>) {
   const groq = { generateObject: jest.fn().mockResolvedValue('groq') };
   const ollama = { generateObject: jest.fn().mockResolvedValue('ollama') };
+  const muse = { generateObject: jest.fn().mockResolvedValue('muse') };
   const adapter = new HybridStructuredLlmAdapter(
     groq as unknown as GroqStructuredLlmAdapter,
     ollama as unknown as OllamaStructuredLlmAdapter,
     { get: (key: string) => values[key] } as unknown as ConfigService,
+    muse as unknown as MuseStructuredLlmAdapter,
   );
-  return { adapter, groq, ollama };
+  return { adapter, groq, ollama, muse };
 }
 
 describe('HybridStructuredLlmAdapter', () => {
@@ -117,5 +120,52 @@ describe('HybridStructuredLlmAdapter', () => {
       exhausted,
     );
     expect(ollama.generateObject).not.toHaveBeenCalled();
+  });
+
+  describe('Muse indexing roles', () => {
+    const museOn = { AI_MUSE_ENABLED: 'true' };
+
+    it.each(['METADATA_EXTRACTION', 'INDEX_QUALITY', 'SUBTITLE_TRANSLATION'])(
+      'sends %s to Muse when enabled',
+      async (role) => {
+        const { adapter, muse, ollama } = setup(museOn);
+        await expect(adapter.generateObject(request(role))).resolves.toBe(
+          'muse',
+        );
+        expect(muse.generateObject).toHaveBeenCalledTimes(1);
+        expect(ollama.generateObject).not.toHaveBeenCalled();
+      },
+    );
+
+    it('never sends live RAG roles to Muse', async () => {
+      const { adapter, muse } = setup({ ...museOn, ...enabled });
+      await adapter.generateObject(request('ROUTER'));
+      await adapter.generateObject(request('VERIFIER'));
+      expect(muse.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('honours AI_MUSE_ROLES', async () => {
+      const { adapter, muse, ollama } = setup({
+        ...museOn,
+        AI_MUSE_ROLES: 'INDEX_QUALITY',
+      });
+      await adapter.generateObject(request('METADATA_EXTRACTION'));
+      expect(muse.generateObject).not.toHaveBeenCalled();
+      expect(ollama.generateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays off unless AI_MUSE_ENABLED is true', async () => {
+      const { adapter, muse } = setup({});
+      await adapter.generateObject(request('METADATA_EXTRACTION'));
+      expect(muse.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('falls back to Ollama with the original request when Muse fails', async () => {
+      const { adapter, muse, ollama } = setup(museOn);
+      muse.generateObject.mockRejectedValue(new Error('session expired'));
+      const input = request('INDEX_QUALITY', 'gemma4:e2b');
+      await expect(adapter.generateObject(input)).resolves.toBe('ollama');
+      expect(ollama.generateObject).toHaveBeenCalledWith(input);
+    });
   });
 });

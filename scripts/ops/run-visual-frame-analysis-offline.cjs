@@ -4,6 +4,7 @@
 // --provider=ollama uses a local Ollama vision model (OLLAMA_VISION_MODEL, default gemma4:e4b-it-qat) at OLLAMA_BASE_URL or 127.0.0.1:11434.
 // --provider=groq uses a Groq vision model (GROQ_VISION_MODEL, default qwen/qwen3.8-27b) rotating through GROQ_API_KEYS.
 // concise = tight plus a caption of at most 30 words and at most 6 objects, to test whether verbosity is penalised against terse references.
+// --provider=muse uses the local muse2api OpenAI-compatible gateway (MUSE_BASE_URL, MUSE_API_KEY, MUSE_MODEL; default http://127.0.0.1:18610/v1, muse-chat; the key has no default).
 // --provider=claude uses Claude Haiku 5.5 via the claude CLI as the vision model: a stronger model than production's, so it
 // measures a prompt change or a better-vision-model ceiling, not production behaviour. Default is the production Cloudflare model.
 // Resumable (skips analysed cases), stops cleanly on a 429, never writes to production data.
@@ -233,7 +234,66 @@ async function analyzeWithOllama(file) {
     objects: Array.isArray(p.objects) ? p.objects.map(String) : [],
   };
 }
+async function analyzeWithMuse(file) {
+  const base = (
+    process.env.MUSE_BASE_URL || 'http://127.0.0.1:18610/v1'
+  ).replace(/\/+$/, '');
+  const b64 = fs.readFileSync(FRAMES + file).toString('base64');
+  const res = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.MUSE_API_KEY || ''}`,
+      'Content-Type': 'application/json',
+    },
+    signal: AbortSignal.timeout(180000),
+    body: JSON.stringify({
+      model: process.env.MUSE_MODEL || 'muse-chat',
+      messages: [
+        { role: 'system', content: sys },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: usr },
+            {
+              type: 'image_url',
+              image_url: { url: `data:image/jpeg;base64,${b64}` },
+            },
+          ],
+        },
+      ],
+      temperature: 0,
+      max_tokens: 700,
+      stream: false,
+    }),
+  });
+  const raw = await res.text();
+  if (!res.ok)
+    throw Object.assign(new Error(`muse status ${res.status}`), {
+      status: res.status,
+    });
+  const text = JSON.parse(raw).choices?.[0]?.message?.content ?? '';
+  // The gateway sometimes returns a garbled first attempt followed by the complete object: take the first start that parses.
+  const end = text.lastIndexOf('}');
+  let p;
+  for (
+    let i = text.indexOf('{');
+    i >= 0 && i < end;
+    i = text.indexOf('{', i + 1)
+  ) {
+    try {
+      p = JSON.parse(text.slice(i, end + 1));
+      break;
+    } catch {}
+  }
+  if (!p) throw new Error('muse returned no parsable JSON object');
+  return {
+    caption: String(p.caption || ''),
+    ocrText: String(p.ocrText || ''),
+    objects: Array.isArray(p.objects) ? p.objects.map(String) : [],
+  };
+}
 async function analyze(file) {
+  if (provider === 'muse') return analyzeWithMuse(file);
   if (provider === 'claude') return analyzeWithClaude(file);
   if (provider === 'ollama') return analyzeWithOllama(file);
   if (provider === 'groq') return analyzeWithGroq(file);
@@ -286,11 +346,17 @@ async function analyze(file) {
     let ok = false;
     for (let a = 0; a < 3 && !ok; a++) {
       try {
+        const t0 = Date.now();
         const r = await analyze(it.file);
         fs.appendFileSync(
           outFile,
-          JSON.stringify({ caseId: it.caseId, file: it.file, variant, ...r }) +
-            '\n',
+          JSON.stringify({
+            caseId: it.caseId,
+            file: it.file,
+            variant,
+            latencyMs: Date.now() - t0,
+            ...r,
+          }) + '\n',
         );
         ok = true;
         n++;

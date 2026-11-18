@@ -78,3 +78,19 @@ model, which lives in the 4 GB of VRAM.
 - Tunnel flapping with "remote port forwarding failed": the cleanup step should clear it within seconds; if not, find the holder
   on the homelab with `lsof -nP -iTCP:11435 -sTCP:LISTEN` and terminate that `sshd-session`.
 - First answer after a restart is slow: `scripts/deploy/model-host-ollama` warms the model; otherwise send one short request.
+
+## Muse gateway for offline indexing (optional)
+Three offline indexing roles (index-quality review, metadata extraction, subtitle translation) can run on a muse.ai session
+through the `muse2api` gateway on the laptop. This is opt-in with `AI_MUSE_ENABLED=true`; any Muse failure falls back to Ollama.
+
+```
+homelab ai-service -> host.docker.internal:18611 -> (reverse SSH tunnel) -> laptop 127.0.0.1:18610 -> muse2api -> muse.ai
+```
+
+| Piece | What / where |
+|---|---|
+| Gateway | User service `muse2api` (`~/.local/share/muse2api`). Its API and admin keys are in `~/velora-local-secrets/muse2api/`; `MUSE_API_KEY` on the homelab is the API key. |
+| Tunnel | User service `velora-muse-ssh-tunnel`, separate from the Ollama tunnel so restarting one never drops the other. |
+| Session | A rolling 48 h cookie that the gateway renews every 10 minutes while it runs. It is rejected if the gateway or laptop is off for about 48 h, after a logout, or if muse.ai revokes it. Recovery: log in at muse.ai, import fresh cookies (`POST /admin/accounts/import`), then `POST /admin/accounts/acc_muse_main/reset`. |
+| Monitoring | `scripts/deploy/muse-gateway-probe` (LaunchAgent `com.velora.muse-gateway-probe`, 60 s) reads the gateway's `/readyz` through the tunnel. Alerts: `VeloraMuseGatewayDown`, `VeloraMuseSessionExpired`, `VeloraMuseGatewayProbeStale` (all warnings, because the roles fall back to Ollama). Install the probe only while Muse is enabled. |
+| Limits | The gateway levels off at about 2 parallel requests; the adapter caps `MUSE_MAX_CONCURRENCY` (2). Measured 2026-11-18: about 14 requests/min, 6-10 s per call. |

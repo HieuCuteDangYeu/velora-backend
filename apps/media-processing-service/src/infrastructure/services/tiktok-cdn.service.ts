@@ -27,6 +27,10 @@ const PNG_MASK_SIZE = 67;
 const DEFAULT_CDN_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_CDN_UPLOAD_BUDGET_MS = 120_000;
 const CDN_UPLOAD_CONCURRENCY = 3;
+// All jobs of one worker share this many CDN uploads at a time. One job uses at most
+// CDN_UPLOAD_CONCURRENCY, so a single job is unaffected; it only matters when a worker runs
+// several jobs (MEDIA_VIDEO_PROCESSING_CONCURRENCY > 1) on the one TikTok session.
+const DEFAULT_CDN_MAX_PARALLEL_UPLOADS = 4;
 const CDN_STREAMING_POLL_MS = 300;
 const DEFAULT_CDN_UPLOAD_RETRIES = 2;
 const CDN_RETRY_BACKOFF_MS = 300;
@@ -67,6 +71,10 @@ export class TikTokCdnService implements ITikTokCdnService {
   private readonly requestTimeoutMs: number;
   private readonly uploadBudgetMs: number;
   private readonly uploadRetries: number;
+  // Upload slots shared by every job in this process (see TIKTOK_CDN_MAX_PARALLEL_UPLOADS).
+  private readonly maxParallelUploads: number;
+  private activeUploads = 0;
+  private readonly uploadWaiters: Array<() => void> = [];
 
   constructor(private readonly configService: ConfigService) {
     this.uploadEndpoint =
@@ -101,6 +109,14 @@ export class TikTokCdnService implements ITikTokCdnService {
     );
     const retries = Number(
       this.configService.get<string>('TIKTOK_CDN_UPLOAD_RETRIES'),
+    );
+    this.maxParallelUploads = Math.max(
+      1,
+      Math.floor(
+        Number(
+          this.configService.get<string>('TIKTOK_CDN_MAX_PARALLEL_UPLOADS'),
+        ) || DEFAULT_CDN_MAX_PARALLEL_UPLOADS,
+      ),
     );
     this.uploadRetries =
       Number.isInteger(retries) && retries >= 0 && retries <= 5
@@ -274,7 +290,11 @@ export class TikTokCdnService implements ITikTokCdnService {
       finish: async () => {
         stopped = true;
         await background;
-        if (failure !== undefined) throw failure;
+        if (failure !== undefined) {
+          throw failure instanceof Error
+            ? failure
+            : new Error('TikTok CDN streaming upload failed');
+        }
         deadline = Date.now() + this.uploadBudgetMs;
         await sendNewSegments(false);
         return this.finishHlsUpload(hlsDir, [...uploaded.values()]);
@@ -439,7 +459,37 @@ export class TikTokCdnService implements ITikTokCdnService {
   }
 
   // Uploads TS segment prepended with 67-byte PNG mask.
+  private async acquireUploadSlot(): Promise<void> {
+    if (this.activeUploads < this.maxParallelUploads) {
+      this.activeUploads += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.uploadWaiters.push(resolve));
+  }
+
+  private releaseUploadSlot(): void {
+    const next = this.uploadWaiters.shift();
+    if (next) {
+      next(); // the slot passes straight to the next waiter
+    } else {
+      this.activeUploads -= 1;
+    }
+  }
+
   private async uploadSegment(
+    filePath: string,
+    filename: string,
+    deadline?: number,
+  ): Promise<SegmentUploadResult> {
+    await this.acquireUploadSlot();
+    try {
+      return await this.uploadSegmentNow(filePath, filename, deadline);
+    } finally {
+      this.releaseUploadSlot();
+    }
+  }
+
+  private async uploadSegmentNow(
     filePath: string,
     filename: string,
     deadline?: number,

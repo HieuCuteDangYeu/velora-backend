@@ -154,6 +154,25 @@ describe('ValidateReelStreamUseCase', () => {
       expect(peak).toBe(1);
     });
 
+    it('does not fail the stream for one dropped or not-yet-served CDN request', async () => {
+      const calls = new Map<string, number>();
+      global.fetch = jest.fn((url: string) => {
+        const count = (calls.get(url) ?? 0) + 1;
+        calls.set(url, count);
+        if (url.endsWith('seg-0.png') && count === 1) {
+          return Promise.resolve(new Response(null, { status: 404 }));
+        }
+        if (url.endsWith('seg-47.png') && count === 1) {
+          return Promise.reject(new Error('socket hang up'));
+        }
+        return Promise.resolve(new Response(null, { status: 206 }));
+      });
+
+      await expect(run()).resolves.toBeUndefined();
+      expect(calls.get(urls[0])).toBe(2);
+      expect(calls.get(urls[47])).toBe(2);
+    });
+
     it('fails when a sampled URL is not reachable', async () => {
       global.fetch = jest.fn((url: string) =>
         Promise.resolve(

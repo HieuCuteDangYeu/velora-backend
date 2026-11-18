@@ -255,7 +255,7 @@ describe('TikTok streaming upload while ffmpeg encodes', () => {
           }),
         ),
       );
-    }) as unknown as typeof fetch;
+    });
 
     const upload = service().startHlsStreamingUpload(directory);
     writeSegment(0);
@@ -296,7 +296,7 @@ describe('TikTok streaming upload while ffmpeg encodes', () => {
       Promise.resolve(
         new Response(JSON.stringify({ code: 40102, msg: 'permission' })),
       ),
-    ) as unknown as typeof fetch;
+    );
 
     const upload = service().startHlsStreamingUpload(directory);
     writeSegment(0);
@@ -315,11 +315,70 @@ describe('TikTok streaming upload while ffmpeg encodes', () => {
   });
 
   it('stops polling after abort', async () => {
-    global.fetch = jest.fn() as unknown as typeof fetch;
+    global.fetch = jest.fn();
     const upload = service().startHlsStreamingUpload(directory);
     upload.abort();
     writeSegment(0);
     await wait(700);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('never has more uploads in flight than TIKTOK_CDN_MAX_PARALLEL_UPLOADS, even across two jobs', async () => {
+    const second = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'velora-cdn-stream2-'),
+    );
+    fs.mkdirSync(path.join(second, '0'));
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        fs.writeFileSync(path.join(directory, '0', `cap_a${i}.ts`), `a-${i}`);
+        fs.writeFileSync(path.join(second, '0', `cap_b${i}.ts`), `b-${i}`);
+      }
+      for (const dir of [directory, second]) {
+        fs.writeFileSync(
+          path.join(dir, '0', 'stream.m3u8'),
+          '#EXTM3U\n#EXTINF:2,\ncap_x.ts\n#EXT-X-ENDLIST\n',
+        );
+        fs.writeFileSync(
+          path.join(dir, 'master.m3u8'),
+          '#EXTM3U\n0/stream.m3u8\n',
+        );
+      }
+      let inFlight = 0;
+      let peak = 0;
+      let sent = 0;
+      global.fetch = jest.fn(async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await wait(15);
+        inFlight -= 1;
+        sent += 1;
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: { url: `https://cdn.example/${sent}.png` },
+          }),
+        );
+      });
+
+      const shared = new TikTokCdnService(
+        new ConfigService({
+          TIKTOK_CDN_UPLOAD_ENDPOINT: 'https://upload.example',
+          TIKTOK_CDN_CSRF_TOKEN: 'test',
+          TIKTOK_CDN_UUID: 'test',
+          TIKTOK_CDN_COOKIE: 'test',
+          TIKTOK_CDN_UPLOAD_RETRIES: '0',
+          TIKTOK_CDN_MAX_PARALLEL_UPLOADS: '2',
+        }),
+      );
+      const a = shared.startHlsStreamingUpload(directory);
+      const b = shared.startHlsStreamingUpload(second);
+      await Promise.all([a.finish(), b.finish()]);
+
+      expect(sent).toBeGreaterThanOrEqual(12);
+      expect(peak).toBeLessThanOrEqual(2);
+      expect(peak).toBe(2);
+    } finally {
+      fs.rmSync(second, { recursive: true, force: true });
+    }
   });
 });

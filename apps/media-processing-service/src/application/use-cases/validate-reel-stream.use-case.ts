@@ -24,6 +24,14 @@ const STREAM_VALIDATION_CONCURRENCY = 16;
 // every segment (code 0 and a URL), so URLs are spot-checked: the first, the last and evenly spaced
 // ones in between. Objects stored in R2 are still checked in full.
 const CDN_SEGMENT_SAMPLE_SIZE = 6;
+/**
+ * A CDN object is only reported missing after this many tries. A segment that was uploaded a moment
+ * ago can answer 404/5xx or reset the connection once before it is served, and a single dropped
+ * request used to fail the whole media attempt (a full re-encode, +60-100 s).
+ */
+const CDN_CHECK_ATTEMPTS = 3;
+const CDN_CHECK_TIMEOUT_MS = 8_000;
+const CDN_CHECK_RETRY_DELAYS_MS = [500, 1_500];
 
 const SAFE_STREAM_VALIDATION_MESSAGE =
   'Streaming files could not be prepared. Please try again.';
@@ -218,6 +226,34 @@ export class ValidateReelStreamUseCase {
     return [...picked].sort((a, b) => a - b).map((index) => items[index]);
   }
 
+  private async cdnObjectExists(url: string): Promise<boolean> {
+    let lastProblem = 'unknown';
+    for (let attempt = 1; attempt <= CDN_CHECK_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: { Range: 'bytes=0-0' },
+          signal: AbortSignal.timeout(CDN_CHECK_TIMEOUT_MS),
+        });
+        if (response.ok || response.status === 206) {
+          return true;
+        }
+        lastProblem = `HTTP ${response.status}`;
+      } catch (error: unknown) {
+        lastProblem = error instanceof Error ? error.message : String(error);
+      }
+      if (attempt < CDN_CHECK_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, CDN_CHECK_RETRY_DELAYS_MS[attempt - 1] ?? 1_500),
+        );
+      }
+    }
+    this.logger.warn(
+      `CDN object not reachable after ${CDN_CHECK_ATTEMPTS} tries (${lastProblem}): ${url.split('?')[0]}`,
+    );
+    return false;
+  }
+
   private async referenceExists(
     reference: PlaylistReference,
   ): Promise<boolean> {
@@ -225,15 +261,7 @@ export class ValidateReelStreamUseCase {
       /^https?:\/\//i.test(reference.line) ||
       /^https?:\/\//i.test(reference.key)
     ) {
-      try {
-        const response = await fetch(reference.key, {
-          method: 'GET',
-          headers: { Range: 'bytes=0-0' },
-        });
-        return response.ok || response.status === 206;
-      } catch {
-        return false;
-      }
+      return await this.cdnObjectExists(reference.key);
     }
 
     return this.mediaStorageService.objectExists(reference.key);

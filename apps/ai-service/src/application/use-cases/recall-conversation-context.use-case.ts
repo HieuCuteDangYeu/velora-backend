@@ -11,6 +11,7 @@ import {
   rankRecalledMessages,
   selectEmbeddingCandidates,
 } from '@ai/domain/services/rank-recalled-messages';
+import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
 import {
   boundPromptText,
   readRagPromptBounds,
@@ -47,7 +48,7 @@ export class RecallConversationContextUseCase {
   async execute(
     state: RagChatWorkflowState,
   ): Promise<Partial<RagChatWorkflowState>> {
-    if (state.route?.intent !== 'CONVERSATION_MEMORY_QUESTION') return {};
+    if (!this.isRecallTurn(state)) return {};
 
     const startedAt = Date.now();
     const question = boundPromptText(
@@ -79,6 +80,18 @@ export class RecallConversationContextUseCase {
       ...(userMemories ? { userMemories } : {}),
       memorySelection: selection,
     };
+  }
+
+  /**
+   * The router names recall questions CONVERSATION_MEMORY_QUESTION. When it calls one normal
+   * chat, explicit recall wording ("do you remember...") still earns the same lookup.
+   */
+  isRecallTurn(state: RagChatWorkflowState): boolean {
+    const intent = state.route?.intent;
+    return (
+      intent === 'CONVERSATION_MEMORY_QUESTION' ||
+      (intent === 'NORMAL_CHAT' && looksLikeRecallQuestion(state.userMessage))
+    );
   }
 
   private async recallMessages(

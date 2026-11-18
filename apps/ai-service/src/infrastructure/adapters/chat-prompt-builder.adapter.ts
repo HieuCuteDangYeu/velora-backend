@@ -205,7 +205,6 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
     state: RagChatWorkflowState,
     bounds: RagPromptBounds,
   ): string {
-    if (state.route?.intent !== 'CONVERSATION_MEMORY_QUESTION') return '';
     return (state.recalledMessages ?? [])
       .slice(0, 6)
       .map(
@@ -221,7 +220,8 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
   ): string {
     const messages = boundRecentMessages(
       state.memory?.recentMessages ?? [],
-      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION'
+      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' ||
+        state.recalledMessages !== undefined
         ? conversationRecallBounds(bounds)
         : bounds,
     );

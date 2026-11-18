@@ -1,0 +1,336 @@
+// Live check that Velora AI remembers earlier turns, through the real gateway and Socket.IO.
+// One login, one bot conversation, about 22 turns: three facts are planted (two typed, one
+// photo), eight unrelated turns push them beyond the 12-message live window, then ten questions
+// ask for them back in different words and languages, and two ask for things never said (the
+// answer must not claim them). It needs an account you own: the turns count against its AI
+// budget and the messages stay in its bot chat.
+//
+//   VELORA_BASE_URL=https://velora-app.me BOT_USER_ID=<bot user id> \
+//   VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... node eval/rag/conversation-recall-live.cjs
+//
+// Exit code 0 when every check passes. The photo is a drawn plate of pasta, so the check does not
+// depend on a real picture.
+
+const zlib = require('node:zlib');
+const { io } = require('socket.io-client');
+
+const base = process.env.VELORA_BASE_URL || 'https://velora-app.me';
+const botUserId = process.env.BOT_USER_ID;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const RUN = Date.now().toString(36);
+const REFUSAL_FALLBACK =
+  /could not verify that answer|I do not have enough verified/i;
+
+// --- a small PNG writer, so no image file or dependency is needed ---
+function crc32(buffer) {
+  let crc = ~0;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let k = 0; k < 8; k += 1)
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return ~crc >>> 0;
+}
+function chunk(type, data) {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  const out = Buffer.alloc(8 + data.length + 4);
+  out.writeUInt32BE(data.length, 0);
+  body.copy(out, 4);
+  out.writeUInt32BE(crc32(body), 8 + data.length);
+  return out;
+}
+function pastaPng() {
+  const width = 480;
+  const height = 360;
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  const inEllipse = (x, y, cx, cy, rx, ry) =>
+    ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1;
+  for (let y = 0; y < height; y += 1) {
+    raw[y * (width * 3 + 1)] = 0;
+    for (let x = 0; x < width; x += 1) {
+      let color = y > 210 ? [150, 100, 60] : [250, 235, 205]; // wooden table, cream wall
+      if (inEllipse(x, y, 240, 215, 190, 110)) color = [250, 250, 250]; // white plate
+      if (inEllipse(x, y, 240, 205, 140, 75)) color = [235, 170, 60]; // pasta
+      for (const [cx, cy] of [
+        [190, 180],
+        [240, 160],
+        [290, 185],
+        [215, 225],
+        [275, 230],
+      ]) {
+        if (inEllipse(x, y, cx, cy, 20, 20)) color = [205, 40, 40]; // tomatoes
+      }
+      raw.set(color, y * (width * 3 + 1) + 1 + x * 3);
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', header),
+    chunk('IDAT', zlib.deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+const FILLERS = [
+  'how do I edit my Velora profile?',
+  'what can you help me with in Velora?',
+  'recommend videos about woodworking',
+  'how do I share a reel with a friend?',
+  'what should I watch next?',
+  'is there a dark mode in the app?',
+  'how do I turn off notifications?',
+  'thanks, that helps',
+];
+
+(async () => {
+  const login = await fetch(new URL('/auth/login', base), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      email: process.env.VELORA_TEST_EMAIL,
+      password: process.env.VELORA_TEST_PASSWORD,
+    }),
+  });
+  console.log('login status', login.status);
+  if (!login.ok) process.exit(2);
+  const jar = (login.headers.getSetCookie?.() ?? []).map(
+    (c) => c.split(';', 1)[0],
+  );
+  const cookie = jar.join('; ');
+  const token = decodeURIComponent(
+    (jar.find((c) => c.startsWith('access_token=')) || '').slice(
+      'access_token='.length,
+    ),
+  );
+  await login.arrayBuffer();
+
+  const json = async (path, body) => {
+    const response = await fetch(new URL(path, base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Cookie: cookie,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok)
+      throw new Error(
+        `${path} -> ${response.status} ${(await response.text()).slice(0, 160)}`,
+      );
+    return response.json();
+  };
+
+  const conv = await json('/conversations', {
+    participantIds: [botUserId],
+    type: 'DIRECT',
+  });
+  const conversationId = conv.id || conv._id || conv.conversation?.id;
+  if (!conversationId) process.exit(3);
+
+  const socket = io(base, {
+    transports: ['websocket'],
+    path: '/socket.io',
+    forceNew: true,
+    auth: { token },
+  });
+  await new Promise((resolve, reject) => {
+    socket.once('connect', resolve);
+    socket.once('connect_error', reject);
+    setTimeout(() => reject(new Error('connect timeout')), 15000);
+  });
+  let current = null;
+  socket.on('new_message', (m) => {
+    if (
+      m.conversationId === conversationId &&
+      m.senderId === botUserId &&
+      current &&
+      !current.final
+    ) {
+      current.final = performance.now();
+      current.reply = m.content ?? '';
+      current.metadata = m.metadata;
+      current.resolve();
+    }
+  });
+  socket.on('bot_reply_failed', (m) => {
+    if (current && !current.final) {
+      current.final = performance.now();
+      current.reply = `FAILED ${m.error?.code}`;
+      current.resolve();
+    }
+  });
+  socket.emit('join_conversation', conversationId);
+  await sleep(1500);
+
+  let counter = 0;
+  const send = async (message) => {
+    current = { sent: performance.now() };
+    const done = new Promise((resolve) => {
+      current.resolve = resolve;
+    });
+    counter += 1;
+    socket.emit('send_message', {
+      conversationId,
+      clientMessageId: `rc-${RUN}-${counter}`,
+      ...message,
+    });
+    await Promise.race([done, sleep(150000)]);
+    const result = {
+      reply: String(current.reply ?? ''),
+      metadata: current.metadata,
+      ms: current.final ? Math.round(current.final - current.sent) : null,
+    };
+    await sleep(2500);
+    return result;
+  };
+  const say = (content) => send({ type: 'text', content });
+
+  const sendPhoto = async (caption) => {
+    const png = pastaPng();
+    const upload = await json('/media/upload-url', {
+      fileType: 'image/png',
+      purpose: 'chat',
+    });
+    const put = await fetch(upload.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      body: png,
+    });
+    if (!put.ok) throw new Error(`upload PUT ${put.status}`);
+    const media = await json('/media/finalize-upload', {
+      key: upload.key,
+      fileType: 'image/png',
+    });
+    return send({
+      type: 'image',
+      content: caption,
+      media: {
+        fileKey: media.fileKey,
+        fileUrl: media.fileUrl,
+        mimeType: media.mimeType,
+        width: media.width,
+        height: media.height,
+      },
+    });
+  };
+
+  const results = [];
+  const check = (name, ok, detail) => {
+    results.push(ok);
+    console.log(`${ok ? 'PASS' : 'FAIL'} | ${name} | ${detail}`);
+  };
+  const show = (r) =>
+    `${r.ms ?? 'TIMEOUT'}ms | ${r.reply.replace(/\s+/g, ' ').slice(0, 200)}`;
+
+  // --- plant ---
+  const petName = `Biscuit${RUN.slice(-3)}`;
+  let r = await say(`My dog is a golden retriever called ${petName}.`);
+  console.log('plant pet     |', show(r));
+  r = await say('Tháng sau mình sẽ đi Đà Lạt với gia đình.');
+  console.log('plant travel  |', show(r));
+  r = await sendPhoto('find reels like this');
+  console.log(
+    'plant photo   |',
+    show(r),
+    '| stored description:',
+    r.metadata?.photoDescription ?? '(none in event)',
+  );
+  const stored = String(r.metadata?.photoDescription ?? '');
+
+  // --- push everything past the 12-message live window ---
+  for (const text of FILLERS) {
+    r = await say(text);
+    console.log('filler        |', show(r));
+  }
+
+  // --- recall: the same three facts, asked in different words and languages ---
+  const NOT_FALLBACK = (reply) => !REFUSAL_FALLBACK.test(reply);
+  const photoWords = [
+    'pasta',
+    'plate',
+    'food',
+    'dish',
+    'tomato',
+    'spaghetti',
+    'noodle',
+    ...(stored.toLowerCase().match(/[a-z]{5,}/g) ?? []),
+  ];
+  const mentions = (reply, words) =>
+    words.some((word) => reply.toLowerCase().includes(word));
+  const asks = [
+    [
+      'pet, no shared words',
+      'what is my pet called?',
+      (t) => new RegExp(petName, 'i').test(t),
+    ],
+    [
+      'pet, "do you remember"',
+      'do you remember my dog’s name?',
+      (t) => new RegExp(petName, 'i').test(t),
+    ],
+    [
+      'pet, Vietnamese',
+      'chó của mình tên gì nhỉ?',
+      (t) => new RegExp(petName, 'i').test(t),
+    ],
+    [
+      'travel, Vietnamese',
+      'mình nói sẽ đi du lịch ở đâu nhỉ?',
+      (t) => /đà lạt|da lat/i.test(t),
+    ],
+    [
+      'travel, Vietnamese, other wording',
+      'mình sắp đi du lịch ở đâu ấy nhỉ?',
+      (t) => /đà lạt|da lat/i.test(t),
+    ],
+    [
+      'travel, English',
+      'where did I say I am travelling next month?',
+      (t) => /đà lạt|da lat/i.test(t),
+    ],
+    [
+      'photo, English',
+      'do you remember what was in the photo I sent?',
+      (t) => mentions(t, photoWords),
+    ],
+    [
+      'photo, Vietnamese',
+      'bạn còn nhớ tấm ảnh mình gửi không?',
+      (t) => mentions(t, [...photoWords, 'pizza', 'ảnh', 'hình']),
+    ],
+  ];
+  for (const [name, question, correct] of asks) {
+    r = await say(question);
+    check(name, correct(r.reply) && NOT_FALLBACK(r.reply), show(r));
+  }
+
+  // --- things never said: the answer must not claim them ---
+  for (const [name, question, pattern] of [
+    [
+      'never said: bread',
+      'do you remember what I told you about the sourdough bread?',
+      /sourdough/i,
+    ],
+    ['never said: guitar', 'what did I tell you about my guitar?', /guitar/i],
+  ]) {
+    r = await say(question);
+    const claims = new RegExp(
+      `(yes|you (mentioned|said|told))[^.]*${pattern.source}`,
+      'i',
+    ).test(r.reply);
+    check(name, !claims && r.ms !== null, show(r));
+  }
+
+  socket.close();
+  const failed = results.filter((ok) => !ok).length;
+  console.log(`\n${results.length - failed}/${results.length} checks passed`);
+  process.exit(failed ? 1 : 0);
+})().catch((error) => {
+  console.error('ERR', error.message);
+  process.exit(4);
+});

@@ -57,16 +57,23 @@ describe('final fallback after verification fails', () => {
     expect(result.citations).toEqual([]);
   });
 
-  it('keeps the existing wording for reel and memory questions', async () => {
+  it('keeps the existing wording for reel questions and other intents', async () => {
     expect(
       (await failureNode()(failedState('REEL_VIDEO_QUESTION'))).answer,
     ).toBe(
       'I do not have enough verified shared reel evidence to answer that reliably.',
     );
-    expect(
-      (await failureNode()(failedState('CONVERSATION_MEMORY_QUESTION'))).answer,
-    ).toBe(
+    expect((await failureNode()(failedState('OFF_TOPIC'))).answer).toBe(
       'I could not verify that answer reliably from the available context.',
     );
+  });
+
+  it('says plainly when a remembered thing could not be found, instead of a generic verification failure', async () => {
+    expect(
+      (await failureNode()(failedState('CONVERSATION_MEMORY_QUESTION'))).answer,
+    ).toBe('I could not find that in our conversation.');
+    expect(
+      (await failureNode()(failedState('USER_MEMORY_QUESTION'))).answer,
+    ).toBe('I do not have that saved about you.');
   });
 });

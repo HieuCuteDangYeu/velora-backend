@@ -79,10 +79,32 @@ describe('RecallConversationContextUseCase', () => {
   it('does nothing for other intents', async () => {
     const { useCase, batch, memories } = unit({});
     expect(
-      await useCase.execute(state({ route: { intent: 'NORMAL_CHAT' } })),
+      await useCase.execute(
+        state({
+          route: { intent: 'NORMAL_CHAT' },
+          userMessage: 'recommend videos about woodworking',
+        }),
+      ),
     ).toEqual({});
     expect(batch.execute).not.toHaveBeenCalled();
     expect(memories.execute).not.toHaveBeenCalled();
+  });
+
+  it('also recalls when the router called an explicit recall question normal chat', async () => {
+    const { useCase } = unit({});
+    const cued = state({
+      route: { intent: 'NORMAL_CHAT' },
+      userMessage: 'do you remember the spaghetti I mentioned?',
+    });
+    expect(useCase.isRecallTurn(cued)).toBe(true);
+    expect((await useCase.execute(cued)).recalledMessages).toHaveLength(1);
+
+    const plain = state({
+      route: { intent: 'NORMAL_CHAT' },
+      userMessage: 'how do I edit my profile?',
+    });
+    expect(useCase.isRecallTurn(plain)).toBe(false);
+    expect(await useCase.execute(plain)).toEqual({});
   });
 
   it('recalls the older message by meaning and adds the user facts', async () => {

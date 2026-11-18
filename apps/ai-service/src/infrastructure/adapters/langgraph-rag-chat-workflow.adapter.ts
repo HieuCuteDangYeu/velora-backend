@@ -944,10 +944,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
-      if (
-        !this.recallConversationContextUseCase ||
-        state.route?.intent !== 'CONVERSATION_MEMORY_QUESTION'
-      ) {
+      if (!this.recallConversationContextUseCase?.isRecallTurn(state)) {
         return {};
       }
       try {
@@ -1547,7 +1544,11 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
             )
           : state.route?.intent === 'REEL_VIDEO_QUESTION'
             ? 'I do not have enough verified shared reel evidence to answer that reliably.'
-            : 'I could not verify that answer reliably from the available context.';
+            : state.route?.intent === 'CONVERSATION_MEMORY_QUESTION'
+              ? 'I could not find that in our conversation.'
+              : state.route?.intent === 'USER_MEMORY_QUESTION'
+                ? 'I do not have that saved about you.'
+                : 'I could not verify that answer reliably from the available context.';
 
       return {
         answer: fallbackAnswer,

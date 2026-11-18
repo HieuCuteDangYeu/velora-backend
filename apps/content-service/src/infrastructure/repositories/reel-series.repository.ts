@@ -38,7 +38,6 @@ export class ReelSeriesRepository {
 
   async findReelSeriesById(id: string): Promise<ReelSeries | null> {
     const record = await this.prisma.reelSeries.findUnique({
-      relationLoadStrategy: 'join',
       where: { id },
       include: {
         reels: {

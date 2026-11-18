@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PrismaReadReplicaService } from '../prisma/prisma-read-replica.service';
 import { ConversationMapper } from './conversation.mapper';
 import { PrismaChatRepository } from './prisma-chat.repository';
+import type { NativeMessageWriter } from './native-message-writer';
 
 const MEMBERSHIP_CAS_MAX_ATTEMPTS = 8;
 
@@ -96,6 +97,9 @@ export class PrismaConversationChatRepository
     @Inject('IChatMediaService') chatMediaService: IChatMediaService,
     metrics?: ConversationPrometheusMetricsService,
     @Optional() readReplica?: PrismaReadReplicaService,
+    @Optional()
+    @Inject('MESSAGE_NATIVE_WRITER')
+    nativeWriter?: NativeMessageWriter | null,
   ) {
     super(
       conversationPrisma,
@@ -105,6 +109,7 @@ export class PrismaConversationChatRepository
       chatMediaService,
       metrics,
       readReplica,
+      nativeWriter,
     );
   }
 

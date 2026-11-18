@@ -7,6 +7,7 @@ import {
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  Optional,
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
@@ -61,6 +62,15 @@ import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from './chat.mapper';
 import { ConversationMapper } from './conversation.mapper';
 import { writeAuthorizedPreview } from './authorized-preview.writer';
+import {
+  DuplicateClientMessageError,
+  MessageWriteConflictError,
+  type NativeMessageWriter,
+} from './native-message-writer';
+import {
+  buildMessageRecords,
+  type PreparedMessageWrite,
+} from './message-write-records';
 
 const RECALLED_PREVIEW_CONTENT = 'Tin nhắn đã thu hồi';
 const RECALLED_LAST_MESSAGE = '🚫 Message recalled';
@@ -85,14 +95,6 @@ const MAX_MESSAGE_TRANSACTION_BATCH = 10;
 const MESSAGE_TRANSACTION_MAX_WAIT_MS = 2_000;
 const MESSAGE_TRANSACTION_TIMEOUT_MS = 5_000;
 
-type PreparedMessageWrite = {
-  data: Omit<
-    PrismaMessage,
-    'createdAt' | 'notificationRecipientIds' | 'notificationNextAttemptAt'
-  >;
-  preview: string;
-  enqueueNotification: boolean;
-};
 type PersistedMessageWrite = readonly [PrismaMessage, PrismaConversation];
 type QueuedMessageWrite = {
   write: PreparedMessageWrite;
@@ -134,6 +136,10 @@ export class PrismaChatRepository implements IChatRepository {
     private readonly metrics?: ConversationPrometheusMetricsService,
     // Only for reads that tolerate a few seconds of replica lag (see read()).
     private readonly readReplica?: PrismaReadReplicaService,
+    // Set only when CONVERSATION_MESSAGE_WRITE_DRIVER=native; null keeps the Prisma write path.
+    @Optional()
+    @Inject('MESSAGE_NATIVE_WRITER')
+    private readonly nativeWriter?: NativeMessageWriter | null,
   ) {
     let timeouts = 0;
     this.writeLock = new ConversationWriteLock(redis, {
@@ -1676,6 +1682,12 @@ export class PrismaChatRepository implements IChatRepository {
   private persistLockedMessageBatch(
     writes: PreparedMessageWrite[],
   ): Promise<PersistedMessageWrite[]> {
+    const nativeWriter = this.nativeWriter;
+    if (nativeWriter) {
+      return this.retryMessageTransaction(() =>
+        this.measure('mongo_write', () => nativeWriter.write(writes)),
+      );
+    }
     return this.retryMessageTransaction(() =>
       this.measure('mongo_write', () =>
         this.prisma.$transaction(
@@ -1691,26 +1703,11 @@ export class PrismaChatRepository implements IChatRepository {
                 timestamp,
               ),
             );
-            const messages = writes.map((write): PrismaMessage => {
-              const recipients = write.enqueueNotification
-                ? [...new Set(conversation.participantIds)].filter(
-                    (id) => Boolean(id) && id !== write.data.senderId,
-                  )
-                : [];
-              const notificationRecipientIds =
-                conversation.isGroup ||
-                (conversation.participantIds.length === 2 &&
-                  recipients.length === 1)
-                  ? recipients
-                  : [];
-              return {
-                ...write.data,
-                createdAt: timestamp,
-                notificationRecipientIds,
-                notificationNextAttemptAt:
-                  notificationRecipientIds.length > 0 ? timestamp : null,
-              };
-            });
+            const messages = buildMessageRecords(
+              writes,
+              conversation,
+              timestamp,
+            );
             const inserted = await tx.message.createMany({ data: messages });
             if (inserted.count !== messages.length)
               throw new InternalServerErrorException(
@@ -1737,11 +1734,11 @@ export class PrismaChatRepository implements IChatRepository {
         // P2034 means the transaction failed with a write conflict/deadlock.
         // Retry the whole transaction with fresh Prisma promises; never repeat
         // post-commit socket, push, cache or media side effects here.
-        if (
-          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
-          error.code !== 'P2034' ||
-          attempt + 1 >= MESSAGE_TRANSACTION_ATTEMPTS
-        ) {
+        const writeConflict =
+          error instanceof MessageWriteConflictError ||
+          (error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2034');
+        if (!writeConflict || attempt + 1 >= MESSAGE_TRANSACTION_ATTEMPTS) {
           throw error;
         }
         if (attempt === 0) {
@@ -1759,8 +1756,9 @@ export class PrismaChatRepository implements IChatRepository {
 
   private isClientMessageIdConflict(error: unknown): boolean {
     return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002'
+      error instanceof DuplicateClientMessageError ||
+      (error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002')
     );
   }
 

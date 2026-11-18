@@ -363,6 +363,57 @@ const FILLERS = [
         ['English', 'which watch brand did I say I bought?'],
       ],
     },
+    podcast: {
+      fact: (w) => `The podcast I listen to every morning is called ${w} Talk.`,
+      asks: [
+        [
+          'with "remember"',
+          'do you remember which podcast I listen to in the morning?',
+        ],
+        ['paraphrase', 'which audio show do I put on each morning?'],
+        ['Vietnamese', 'podcast mình nghe mỗi sáng là gì nhỉ?'],
+      ],
+    },
+    perfume: {
+      fact: (w) => `Mình hay xịt nước hoa hiệu ${w} mỗi ngày.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói hay xịt nước hoa hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ nước hoa mình hay dùng không?'],
+        ['English', 'which perfume brand did I say I wear daily?'],
+      ],
+    },
+    bakery: {
+      fact: (w) => `My favourite bakery is called ${w} Bakery.`,
+      asks: [
+        ['with "remember"', 'do you remember my favourite bakery?'],
+        ['paraphrase', 'which place do I like to buy bread from?'],
+        ['Vietnamese', 'tiệm bánh mình thích nhất là gì nhỉ?'],
+      ],
+    },
+    jacket: {
+      fact: (w) => `Mình vừa mua áo khoác hiệu ${w} để đi Đà Lạt.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mua áo khoác hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ hiệu áo khoác mình mua không?'],
+        ['English', 'which jacket brand did I say I bought?'],
+      ],
+    },
+    hike: {
+      fact: (w) => `I am planning to hike ${w} Ridge in the spring.`,
+      asks: [
+        ['with "remember"', 'do you remember which ridge I want to hike?'],
+        ['paraphrase', 'which mountain trail am I planning to walk?'],
+        ['Vietnamese', 'mình định đi bộ đường dài ở đâu nhỉ?'],
+      ],
+    },
+    laptop: {
+      fact: (w) => `Mình đang dùng laptop hiệu ${w} để làm việc.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói đang dùng laptop hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ laptop mình dùng không?'],
+        ['English', 'which laptop brand did I say I work on?'],
+      ],
+    },
   };
   const chosen = (
     process.env.RECALL_CATEGORIES
@@ -445,13 +496,19 @@ const FILLERS = [
   // --- things never said: an honest "not found" passes, a claim fails ---
   const HONEST =
     /(không tìm thấy|không có thông tin|không thấy|không nhớ|could not|couldn't|cannot|can't|do not|don't|did not|didn't|not (find|see|have|mention)|no (record|information|mention))/i;
+  const neverBread = invent();
+  const neverKayak = invent();
   for (const [name, question, topic] of [
     [
       'never said: bread',
-      'do you remember what I told you about the sourdough bread?',
-      /sourdough/i,
+      `do you remember what I told you about the ${neverBread} bread?`,
+      new RegExp(neverBread, 'i'),
     ],
-    ['never said: kayak', 'what did I tell you about my kayak trip?', /kayak/i],
+    [
+      'never said: kayak',
+      `what did I tell you about my ${neverKayak} kayak trip?`,
+      new RegExp(neverKayak, 'i'),
+    ],
   ]) {
     r = await say(question);
     const claims = topic.test(r.reply) && !HONEST.test(r.reply);

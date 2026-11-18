@@ -145,8 +145,8 @@ const isPhotoLine = (message: AiChatMessageContext): boolean =>
   message.role === 'user' && message.content.startsWith('[Photo]');
 
 export function cosineSimilarity(
-  left: readonly number[],
-  right: readonly number[],
+  left: ArrayLike<number>,
+  right: ArrayLike<number>,
 ): number {
   if (left.length === 0 || left.length !== right.length) return 0;
   let dot = 0;

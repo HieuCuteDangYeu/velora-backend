@@ -33,13 +33,14 @@ import {
   isChatImageMimeType,
   MAX_CHAT_IMAGES_PER_AI_TURN,
 } from '@common/ai/chat-image';
-import { Controller } from '@nestjs/common';
+import { Controller, Optional } from '@nestjs/common';
 import {
   EventPattern,
   MessagePattern,
   Payload,
   RpcException,
 } from '@nestjs/microservices';
+import { RecallConversationContextUseCase } from '../../application/use-cases/recall-conversation-context.use-case';
 import { GenerateEmbeddingUseCase } from '../../application/use-cases/generate-embedding.use-case';
 import { GenerateEmbeddingBatchUseCase } from '../../application/use-cases/generate-embedding-batch.use-case';
 
@@ -58,6 +59,8 @@ export class AiController {
     private readonly backfillUserMemoryEmbeddingsUseCase: BackfillUserMemoryEmbeddingsUseCase,
     private readonly scoreTextRelevanceUseCase: ScoreTextRelevanceUseCase,
     private readonly translateSubtitleCuesUseCase: TranslateSubtitleCuesUseCase,
+    @Optional()
+    private readonly recallConversationContextUseCase?: RecallConversationContextUseCase,
   ) {}
 
   @MessagePattern('ai.generate_embedding')
@@ -361,6 +364,8 @@ export class AiController {
   ): Promise<void> {
     try {
       await this.handleConversationTurnCompletedUseCase.execute(payload);
+      // Embed what the user just said now, so a later recall question finds it already done.
+      this.recallConversationContextUseCase?.warm(payload.userMessage);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[ConversationTurnCompleted] ${message}`);

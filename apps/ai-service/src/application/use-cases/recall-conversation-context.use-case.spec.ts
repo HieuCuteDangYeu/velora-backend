@@ -152,4 +152,70 @@ describe('RecallConversationContextUseCase', () => {
     expect(memories.execute).not.toHaveBeenCalled();
     expect(result.userMemories).toBe(existing);
   });
+
+  it('embeds only what the cache lacks, and a batch that outlives the timeout still fills it', async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const slow = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { useCase, batch } = unit({
+      batch: () => slow,
+      timeout: '500',
+    });
+    const first = await useCase.execute(
+      state({ userMessage: 'what food did I mention earlier?' }),
+    );
+    // First question: no vectors in time, so word match only.
+    expect(first.recalledMessages).toEqual([]);
+
+    // The slow batch finally finishes.
+    release({
+      embeddings: [
+        { id: 'question', values: [1, 0], dimensions: 2 },
+        { id: 'm0', values: [0.9, 0.1], dimensions: 2 },
+        { id: 'm1', values: [0, 1], dimensions: 2 },
+        { id: 'm2', values: [0, 1], dimensions: 2 },
+      ],
+      errors: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Second question: the older messages come from the cache, only the question is embedded.
+    batch.execute.mockImplementation(
+      (request: { items: Array<{ id: string; text: string }> }) =>
+        Promise.resolve({
+          embeddings: request.items.map((item) => ({
+            id: item.id,
+            dimensions: 2,
+            values: [1, 0],
+          })),
+          errors: [],
+        }),
+    );
+    const second = await useCase.execute(
+      state({ userMessage: 'which dish do I like cooking?' }),
+    );
+    const lastRequest = batch.execute.mock.calls.at(-1)![0] as {
+      items: Array<{ id: string }>;
+    };
+    expect(lastRequest.items.map((item) => item.id)).toEqual(['question']);
+    expect(second.recalledMessages?.map((m) => m.content)).toEqual([
+      older[0].content,
+    ]);
+  });
+
+  it('warms the cache with a new user message, so a later question does not embed it', async () => {
+    const { useCase, batch } = unit({});
+    useCase.warm('I love making spaghetti carbonara on weekends');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(batch.execute).toHaveBeenCalledTimes(1);
+
+    // A greeting is not worth an embedding.
+    useCase.warm('hi');
+    expect(batch.execute).toHaveBeenCalledTimes(1);
+
+    // Already cached: no second call.
+    useCase.warm('I love making spaghetti carbonara on weekends');
+    expect(batch.execute).toHaveBeenCalledTimes(1);
+  });
 });

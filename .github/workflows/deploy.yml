@@ -19,8 +19,9 @@ permissions:
   contents: read
 
 env:
-  # Public Docker Hub namespace of the images; the build cache is read from it.
-  DOCKERHUB_CACHE_OWNER: hieucutedangyeu
+  # GHCR namespace (lower case) the Homelab CD writes the build cache to. It used to be read from
+  # Docker Hub, where every CI image build counted against the anonymous pull limit.
+  GHCR_CACHE_OWNER: hieucutedangyeu
 
 # Only stale runs for the same PR are cancelled. Pushes to master deliberately
 # get a unique group so independent CI runs can execute concurrently. Production
@@ -555,6 +556,9 @@ jobs:
       needs.validate.result == 'success' &&
       needs.detect-changes.outputs.build_matrix_json != '[]'
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: false
       # Four ARM slots per run: a broad change used to take 30-48 minutes with
@@ -571,6 +575,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # The package is linked to this repository, so the job token can read it even while it is
+      # private. A pull request from a fork has no token for it: the cache is then just a miss.
+      - name: Log in to GHCR for the build cache
+        continue-on-error: true
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build ARM64 image without publishing
         uses: docker/build-push-action@v7
         with:
@@ -578,7 +592,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/arm64
           push: false
-          # Read-only: the CD writes this cache on Docker Hub (public repos, no
-          # login needed). The 10 GB GitHub cache this replaced was over its
-          # limit and evicted the call-service build cache (10 min rebuilds).
-          cache-from: type=registry,ref=${{ env.DOCKERHUB_CACHE_OWNER }}/${{ matrix.image }}:buildcache
+          # Read-only: the CD writes this cache on GHCR. The 10 GB GitHub cache this
+          # replaced was over its limit and evicted the call-service build cache
+          # (10 min rebuilds).
+          cache-from: type=registry,ref=ghcr.io/${{ env.GHCR_CACHE_OWNER }}/${{ matrix.image }}:buildcache

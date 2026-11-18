@@ -195,6 +195,9 @@ jobs:
     needs: prepare-release
     if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       # Most jobs only re-tag an image and finish in seconds.
@@ -218,29 +221,54 @@ jobs:
           fi
           echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
 
+      # Every image is published twice. Docker Hub is what the homelab pulls. GHCR is what this
+      # pipeline reads (re-tag source and build cache): Docker Hub's personal plan allows 200
+      # pulls per 6 hours, one release used 40-60 of them, and three releases in a few hours
+      # failed with "toomanyrequests" (2026-11-17..19). GHCR has no pull limit for these jobs.
+      - name: Name the GHCR repository
+        id: ghcr
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "repo=ghcr.io/${owner}/${IMAGE}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       # Nothing this service is built from changed since the last release, so
-      # point the new SHA tag (and :latest) at that image. If the old tag is
-      # missing the build below runs instead.
+      # point the new SHA tag (and :latest) at that image, read from GHCR and
+      # written to both registries. If the old tag is missing from GHCR (the
+      # first release after this change) the build below runs instead.
       - name: Re-tag the previous release image
         id: reuse
         if: steps.plan.outputs.reuse == 'true'
         continue-on-error: true
         env:
-          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
+          GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+          HUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}
           BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
           TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
         run: |
           set -euo pipefail
           docker buildx imagetools create \
-            --tag "${REPO}:latest" \
-            --tag "${REPO}:${TARGET_SHA}" \
-            "${REPO}:${BASE_SHA}"
+            --tag "${GHCR_REPO}:latest" \
+            --tag "${GHCR_REPO}:${TARGET_SHA}" \
+            "${GHCR_REPO}:${BASE_SHA}"
+          docker buildx imagetools create \
+            --tag "${HUB_REPO}:latest" \
+            --tag "${HUB_REPO}:${TARGET_SHA}" \
+            "${GHCR_REPO}:${BASE_SHA}"
 
       - name: Checkout approved commit
         if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
@@ -265,16 +293,23 @@ jobs:
           outputs: type=image,push=true,rewrite-timestamp=true
           build-args: |
             SOURCE_DATE_EPOCH=1767225600
+          # Links the GHCR package to this repository, which is what lets the
+          # GITHUB_TOKEN of later runs read and write it.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.prepare-release.outputs.target_sha }}
-          # The build cache lives on Docker Hub: the 10 GB GitHub cache was over
-          # its limit and kept evicting the call-service layers. The gha line
-          # is a read-only fallback for the first run and can be removed later.
+            ${{ steps.ghcr.outputs.repo }}:latest
+            ${{ steps.ghcr.outputs.repo }}:${{ needs.prepare-release.outputs.target_sha }}
+          # The build cache lives on GHCR (it was on Docker Hub, where reading it
+          # counted against the pull limit; the 10 GB GitHub cache before that was
+          # over its limit and kept evicting the call-service layers). The gha
+          # line is a read-only fallback for the first runs.
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:buildcache
+            type=registry,ref=${{ steps.ghcr.outputs.repo }}:buildcache
             type=gha,scope=${{ matrix.service }}-arm64
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
+          cache-to: type=registry,ref=${{ steps.ghcr.outputs.repo }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
   promote-homelab:
     needs:
@@ -345,6 +380,9 @@ jobs:
     needs: prepare-release
     if: needs.prepare-release.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -368,25 +406,46 @@ jobs:
           fi
           echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
 
+      # Same two-registry arrangement as the homelab images above: node-2 pulls from Docker
+      # Hub, this job reads from GHCR.
+      - name: Name the GHCR repository
+        id: ghcr
+        env:
+          IMAGE: ${{ matrix.service }}
+        run: |
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "repo=ghcr.io/${owner}/${IMAGE}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Re-tag the previous release image
         id: reuse
         if: steps.plan.outputs.reuse == 'true'
         continue-on-error: true
         env:
-          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}
+          GHCR_REPO: ${{ steps.ghcr.outputs.repo }}
+          HUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}
           BASE_SHA: ${{ needs.prepare-release.outputs.base_sha }}
           TARGET_SHA: ${{ needs.prepare-release.outputs.target_sha }}
         run: |
           set -euo pipefail
           docker buildx imagetools create \
-            --tag "${REPO}:${TARGET_SHA}-amd64" \
-            "${REPO}:${BASE_SHA}-amd64"
+            --tag "${GHCR_REPO}:${TARGET_SHA}-amd64" \
+            "${GHCR_REPO}:${BASE_SHA}-amd64"
+          docker buildx imagetools create \
+            --tag "${HUB_REPO}:${TARGET_SHA}-amd64" \
+            "${GHCR_REPO}:${BASE_SHA}-amd64"
 
       - name: Checkout approved commit
         if: steps.plan.outputs.reuse != 'true' || steps.reuse.outcome == 'failure'
@@ -408,12 +467,15 @@ jobs:
           outputs: type=image,push=true,rewrite-timestamp=true
           build-args: |
             SOURCE_DATE_EPOCH=1767225600
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:${{ needs.prepare-release.outputs.target_sha }}-amd64
+            ${{ steps.ghcr.outputs.repo }}:${{ needs.prepare-release.outputs.target_sha }}-amd64
           cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:buildcache-amd64
+            type=registry,ref=${{ steps.ghcr.outputs.repo }}:buildcache-amd64
             type=gha,scope=${{ matrix.service }}-amd64
-          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.service }}:buildcache-amd64,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
+          cache-to: type=registry,ref=${{ steps.ghcr.outputs.repo }}:buildcache-amd64,mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true
 
   # Independent of promote-homelab: a node-2 problem must not hold back the homelab
   # release, and the other way round. The key can only run the forced command

@@ -9,6 +9,7 @@ import type {
   StructuredLlmCallDiagnostics,
   StructuredProviderFailureCategory,
 } from './structured-llm.service.interface';
+import type { RagImageContext } from '../services/rag-image-context';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 
 export type RagChatIntent =
@@ -439,6 +440,8 @@ export interface RagChatWorkflowInput {
   memory?: AiChatMemoryContext;
   /** Shared Reel the user swipe-replied to; scopes "this reel" to it. */
   replyToReelId?: string;
+  /** What the vision model saw in photos attached to this turn (untrusted data). */
+  images?: RagImageContext[];
 }
 
 export interface RagGenerationEvidence {
@@ -486,6 +489,7 @@ export interface RagChatWorkflowState {
   userMessage: string;
   memory?: AiChatMemoryContext;
   replyToReelId?: string;
+  images?: RagImageContext[];
 
   accessibleReelIds?: string[];
   hasSharedReelContext?: boolean;

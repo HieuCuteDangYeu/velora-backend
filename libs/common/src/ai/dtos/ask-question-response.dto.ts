@@ -48,7 +48,13 @@ export const AskQuestionResponseSchema = z.object({
   suggestedQueries: z.array(z.string()).optional(),
   error: z
     .object({
-      code: z.enum(['AI_UNAVAILABLE', 'AI_BUSY', 'NO_CONTENT', 'UNKNOWN']),
+      code: z.enum([
+        'AI_UNAVAILABLE',
+        'AI_BUSY',
+        'NO_CONTENT',
+        'IMAGE_UNREADABLE',
+        'UNKNOWN',
+      ]),
       message: z.string(),
       /** AI_BUSY: seconds until a retry is likely to be admitted. */
       retryAfterSeconds: z.number().int().positive().optional(),

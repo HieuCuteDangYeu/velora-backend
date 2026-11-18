@@ -6,6 +6,10 @@ import type {
   IAiService,
 } from '../../domain/interfaces/ai-service.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
+import {
+  resolveBotTurnCaption,
+  resolveBotTurnImages,
+} from '../policies/bot-turn-image';
 import { BuildBotMemoryContextUseCase } from './build-bot-memory-context.use-case';
 import { BuildCompletedTurnMemoryContextUseCase } from './build-completed-turn-memory-context.use-case';
 
@@ -42,12 +46,17 @@ export class ProcessBotReplyUseCase {
 
       const replyToReelId = await this.resolveReplyToReelId(userMessage);
 
+      // For a photo, the words are its caption: the composer's placeholder is not a question.
+      const images = resolveBotTurnImages(userMessage);
+      const caption = resolveBotTurnCaption(userMessage);
+
       const result = await this.aiService.askQuestionStream({
-        message: userMessage.content,
+        message: caption,
         userId: userMessage.senderId,
         conversationId: userMessage.conversationId,
         memory: answerMemory,
         ...(replyToReelId ? { replyToReelId } : {}),
+        ...(images.length > 0 ? { images } : {}),
       });
 
       if (result.answer) {
@@ -84,17 +93,20 @@ export class ProcessBotReplyUseCase {
         const completedTurnMemory =
           this.buildCompletedTurnMemoryContextUseCase.execute({
             previousMemory: answerMemory,
-            userMessage,
+            userMessage: new Message({ ...userMessage, content: caption }),
             assistantMessage: botReply,
           });
 
-        this.aiService.emitConversationTurnCompleted({
-          conversationId: userMessage.conversationId,
-          userId: userMessage.senderId,
-          userMessage: userMessage.content,
-          assistantMessage: result.answer,
-          memory: completedTurnMemory,
-        });
+        // A bare photo has no words to remember about the user, so no memory turn is emitted.
+        if (caption) {
+          this.aiService.emitConversationTurnCompleted({
+            conversationId: userMessage.conversationId,
+            userId: userMessage.senderId,
+            userMessage: caption,
+            assistantMessage: result.answer,
+            memory: completedTurnMemory,
+          });
+        }
 
         this.logger.debug(
           `Bot reply ${botReply.id} saved for conversation ${userMessage.conversationId}`,

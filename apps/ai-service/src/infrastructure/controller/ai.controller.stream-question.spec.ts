@@ -1,4 +1,5 @@
 import { ChatBusyError } from '@ai/domain/errors/chat-busy.error';
+import { ChatImageUnreadableError } from '@ai/domain/errors/chat-image-unreadable.error';
 import { AskQuestionResponseSchema } from '@common/ai/dtos/ask-question-response.dto';
 import { AiController } from './ai.controller';
 
@@ -50,6 +51,60 @@ describe('AiController stream question', () => {
         execute: jest.fn().mockResolvedValue({ answer: 'Paris' }),
       }).handleStreamQuestion(payload as never),
     ).resolves.toMatchObject({ answer: 'Paris' });
+  });
+});
+
+describe('AiController stream question photos', () => {
+  const photo = { fileKey: 'chat-images/u/abc.jpeg', mimeType: 'image/jpeg' };
+
+  it('passes the photos to the turn and accepts an empty caption', async () => {
+    const execute = jest.fn().mockResolvedValue({ answer: 'ok' });
+
+    await controllerWith({ execute }).handleStreamQuestion({
+      ...payload,
+      message: '',
+      images: [photo],
+    } as never);
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '', images: [photo] }),
+    );
+  });
+
+  it.each([
+    ['an empty message with no photo', { message: '  ' }],
+    [
+      'an unsupported mime type',
+      { images: [{ ...photo, mimeType: 'image/gif' }] },
+    ],
+    ['a photo without a key', { images: [{ mimeType: 'image/jpeg' }] }],
+    ['too many photos', { images: [photo, photo, photo, photo] }],
+  ])('rejects %s', async (_label, extra) => {
+    const execute = jest.fn();
+
+    await expect(
+      controllerWith({ execute }).handleStreamQuestion({
+        ...payload,
+        ...extra,
+      } as never),
+    ).rejects.toMatchObject({ error: { statusCode: 400 } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('answers an unreadable photo with a typed IMAGE_UNREADABLE response', async () => {
+    const response = await controllerWith({
+      execute: jest
+        .fn()
+        .mockRejectedValue(new ChatImageUnreadableError('NOT_OWNED')),
+    }).handleStreamQuestion({ ...payload, images: [photo] } as never);
+
+    expect(response).toEqual({
+      error: {
+        code: 'IMAGE_UNREADABLE',
+        message: 'Velora AI could not read that image. Try another photo.',
+      },
+    });
+    expect(AskQuestionResponseSchema.safeParse(response).success).toBe(true);
   });
 });
 

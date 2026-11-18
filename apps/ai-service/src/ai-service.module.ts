@@ -26,6 +26,7 @@ import { ReviewIndexQualityUseCase } from '@ai/application/use-cases/review-inde
 import { RewriteRetrievalQueryUseCase } from '@ai/application/use-cases/rewrite-retrieval-query.use-case';
 import { BuildRagGuardrailSummaryUseCase } from '@ai/application/use-cases/build-rag-guardrail-summary.use-case';
 import { BuildRagTraceSnapshotUseCase } from '@ai/application/use-cases/build-rag-trace-snapshot.use-case';
+import { DescribeChatImagesUseCase } from '@ai/application/use-cases/describe-chat-images.use-case';
 import { RefuseRagInputUseCase } from '@ai/application/use-cases/refuse-rag-input.use-case';
 import { ScreenRagInputUseCase } from '@ai/application/use-cases/screen-rag-input.use-case';
 import { ScreenRagResultUseCase } from '@ai/application/use-cases/screen-rag-result.use-case';
@@ -70,6 +71,7 @@ import { PrismaConversationMemoryRepository } from '@ai/infrastructure/repositor
 import { LangfuseRagHierarchyShadowObservationRepository } from '@ai/infrastructure/repositories/langfuse-rag-hierarchy-shadow-observation.repository';
 import { PrismaUserMemoryRepository } from '@ai/infrastructure/repositories/prisma-user-memory.repository';
 import { R2AudioStorageService } from '@ai/infrastructure/services/r2-audio-storage.service';
+import { R2ChatImageStorageService } from '@ai/infrastructure/services/r2-chat-image-storage.service';
 import { GroqKeyPool } from '@ai/infrastructure/services/groq-key-pool.service';
 import { LangfuseTracingService } from '@ai/infrastructure/services/langfuse-tracing.service';
 import { REEL_INDEX_QUERY_QUEUE } from '@common/processing/interfaces/semantic-index.interface';
@@ -176,6 +178,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     OllamaTextClient,
 
     StreamChatUseCase,
+    DescribeChatImagesUseCase,
     GenerateEmbeddingUseCase,
     GenerateEmbeddingBatchUseCase,
     CountDocumentTokensUseCase,
@@ -254,6 +257,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     {
       provide: 'IAudioStorageService',
       useClass: R2AudioStorageService,
+    },
+    {
+      provide: 'IChatImageStorageService',
+      useClass: R2ChatImageStorageService,
     },
     {
       provide: 'ILlmService',

@@ -3,6 +3,7 @@ import type {
   AiRecommendedReel,
 } from '@common/ai/dtos/ask-question-response.dto';
 import type { AiChatMemoryContext } from '@common/ai/interfaces/chat-memory-context.interface';
+import type { AskQuestionImage } from '@common/ai/dtos/ask-question.dto';
 import { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
 
 export interface BotError {
@@ -10,6 +11,7 @@ export interface BotError {
     | 'AI_UNAVAILABLE'
     | 'AI_BUSY'
     | 'NO_CONTENT'
+    | 'IMAGE_UNREADABLE'
     | 'RATE_LIMITED'
     | 'UNKNOWN';
   message: string;
@@ -32,6 +34,8 @@ export interface AskQuestionStreamInput {
   memory?: AiChatMemoryContext;
   /** Reel the user's message replies to, when it replies to a shared Reel. */
   replyToReelId?: string;
+  /** Photos sent with the message; the AI reads them from storage by key. */
+  images?: AskQuestionImage[];
 }
 
 export interface IAiService {

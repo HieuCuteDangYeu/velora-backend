@@ -9,5 +9,9 @@ export interface AiTurnLimitDecision {
  * shared across service replicas; the mechanism is an infrastructure concern.
  */
 export interface IAiTurnLimiter {
-  consume(userId: string): Promise<AiTurnLimitDecision>;
+  /** `withImage` also spends the tighter photo budget, because the turn costs a vision call. */
+  consume(
+    userId: string,
+    options?: { withImage?: boolean },
+  ): Promise<AiTurnLimitDecision>;
 }

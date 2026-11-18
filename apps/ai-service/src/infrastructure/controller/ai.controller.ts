@@ -12,6 +12,7 @@ import {
 import { TranscribeAudioBufferUseCase } from '@ai/application/use-cases/transcribe-audio-buffer.use-case';
 import { TranscribeAudioUseCase } from '@ai/application/use-cases/transcribe-audio.use-case';
 import { ChatBusyError } from '@ai/domain/errors/chat-busy.error';
+import { ChatImageUnreadableError } from '@ai/domain/errors/chat-image-unreadable.error';
 import { AskQuestionResponse } from '@common/ai/dtos/ask-question-response.dto';
 import { AskQuestionPayload } from '@common/ai/dtos/ask-question.dto';
 import type { CountDocumentTokensRequest } from '@common/ai/interfaces/count-document-tokens.interface';
@@ -28,6 +29,10 @@ import type { ReelMetadataExtractionInput } from '@common/ai/interfaces/reel-met
 import type { TranslateSubtitleCuesRequest } from '@common/ai/interfaces/subtitle-translation.interface';
 import type { ConversationTurnCompletedPayload } from '@common/ai/interfaces/user-memory.interface';
 import type { AnalyzeVisualFrameRequest } from '@common/ai/interfaces/visual-analysis.interface';
+import {
+  isChatImageMimeType,
+  MAX_CHAT_IMAGES_PER_AI_TURN,
+} from '@common/ai/chat-image';
 import { Controller } from '@nestjs/common';
 import {
   EventPattern,
@@ -258,6 +263,20 @@ export class AiController {
     }
   }
 
+  private isValidImages(images: unknown): boolean {
+    return (
+      Array.isArray(images) &&
+      images.length <= MAX_CHAT_IMAGES_PER_AI_TURN &&
+      images.every(
+        (image: unknown) =>
+          typeof image === 'object' &&
+          image !== null &&
+          typeof (image as { fileKey?: unknown }).fileKey === 'string' &&
+          isChatImageMimeType((image as { mimeType?: unknown }).mimeType),
+      )
+    );
+  }
+
   @MessagePattern('ai.stream_question')
   async handleStreamQuestion(
     @Payload() data: AskQuestionPayload,
@@ -266,7 +285,10 @@ export class AiController {
       !data ||
       typeof data.message !== 'string' ||
       typeof data.userId !== 'string' ||
-      typeof data.conversationId !== 'string'
+      typeof data.conversationId !== 'string' ||
+      (data.images !== undefined && !this.isValidImages(data.images)) ||
+      // The words may only be missing when a photo carries the turn.
+      (!data.message.trim() && !data.images?.length)
     ) {
       throw new RpcException({
         statusCode: 400,
@@ -281,6 +303,7 @@ export class AiController {
         conversationId: data.conversationId,
         memory: data.memory,
         ...(data.replyToReelId ? { replyToReelId: data.replyToReelId } : {}),
+        ...(data.images?.length ? { images: data.images } : {}),
       });
 
       if (!result.answer || result.answer.trim() === '') {
@@ -307,6 +330,15 @@ export class AiController {
             message:
               'Velora AI is busy right now. Please try again in a moment.',
             retryAfterSeconds: err.retryAfterSeconds,
+          },
+        };
+      }
+      if (err instanceof ChatImageUnreadableError) {
+        // The photo is what the user asked about, so say so instead of answering without it.
+        return {
+          error: {
+            code: 'IMAGE_UNREADABLE',
+            message: 'Velora AI could not read that image. Try another photo.',
           },
         };
       }

@@ -167,7 +167,9 @@ export class ChatGateway
               ? 'You are asking Velora AI too quickly. Please wait a moment and try again.'
               : error.code === 'AI_BUSY'
                 ? 'Velora AI is busy right now. Please try again in a moment.'
-                : 'AI service is temporarily unavailable',
+                : error.code === 'IMAGE_UNREADABLE'
+                  ? 'Velora AI could not read that photo. Try a different one.'
+                  : 'AI service is temporarily unavailable',
         ...((error.code === 'RATE_LIMITED' || error.code === 'AI_BUSY') &&
         error.retryAfterSeconds
           ? { retryAfterSeconds: error.retryAfterSeconds }

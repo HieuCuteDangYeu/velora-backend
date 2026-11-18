@@ -117,3 +117,113 @@ describe('ProcessBotReplyUseCase reply-to-Reel hint', () => {
     expect(result.botError).toBeUndefined();
   });
 });
+
+describe('ProcessBotReplyUseCase photo turns', () => {
+  const photo = (content: string) =>
+    new Message({
+      id: 'photo-1',
+      conversationId: 'conversation-1',
+      senderId: 'user-1',
+      content,
+      type: 'image',
+      createdAt: new Date(),
+      media: {
+        fileKey: 'chat-images/user-1/abc.png',
+        fileUrl: 'https://cdn.example/abc.png',
+        mimeType: 'image/png',
+      },
+    });
+
+  const build = () => {
+    const askQuestionStream = jest.fn().mockResolvedValue({ answer: 'ok' });
+    const emitConversationTurnCompleted = jest.fn();
+    const completedTurn = jest.fn().mockReturnValue({ recentMessages: [] });
+    const useCase = new ProcessBotReplyUseCase(
+      {
+        findMessageById: jest.fn(),
+        createMessage: jest.fn((message: Message) => Promise.resolve(message)),
+      } as never,
+      { askQuestionStream, emitConversationTurnCompleted },
+      { execute: jest.fn().mockResolvedValue({ recentMessages: [] }) } as never,
+      { execute: completedTurn } as never,
+    );
+    return {
+      useCase,
+      askQuestionStream,
+      emitConversationTurnCompleted,
+      completedTurn,
+    };
+  };
+
+  it('sends the caption with the photo key', async () => {
+    const { useCase, askQuestionStream, emitConversationTurnCompleted } =
+      build();
+
+    await useCase.execute(photo('find reels like this'));
+
+    expect(askQuestionStream).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'find reels like this',
+        images: [
+          { fileKey: 'chat-images/user-1/abc.png', mimeType: 'image/png' },
+        ],
+      }),
+    );
+    expect(emitConversationTurnCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({ userMessage: 'find reels like this' }),
+    );
+  });
+
+  it('sends no words for a bare photo and keeps the placeholder out of memory', async () => {
+    const {
+      useCase,
+      askQuestionStream,
+      emitConversationTurnCompleted,
+      completedTurn,
+    } = build();
+
+    await useCase.execute(photo('[Hình ảnh]'));
+
+    expect(askQuestionStream).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '', images: expect.any(Array) }),
+    );
+    expect(emitConversationTurnCompleted).not.toHaveBeenCalled();
+    expect(completedTurn.mock.calls[0][0].userMessage.content).toBe('');
+  });
+
+  it('sends no images for a text turn', async () => {
+    const { useCase, askQuestionStream } = build();
+
+    await useCase.execute(
+      new Message({
+        id: 'm',
+        conversationId: 'conversation-1',
+        senderId: 'user-1',
+        content: 'hello',
+        type: 'text',
+        createdAt: new Date(),
+      }),
+    );
+
+    expect(askQuestionStream.mock.calls[0][0]).not.toHaveProperty('images');
+  });
+
+  it('keeps an unreadable-image failure for the client', async () => {
+    const { useCase, askQuestionStream } = build();
+    askQuestionStream.mockResolvedValue({
+      answer: null,
+      error: {
+        code: 'IMAGE_UNREADABLE',
+        message: 'Could not read that image.',
+      },
+    });
+
+    expect(await useCase.execute(photo('what is this'))).toEqual({
+      botReply: undefined,
+      botError: {
+        code: 'IMAGE_UNREADABLE',
+        message: 'Could not read that image.',
+      },
+    });
+  });
+});

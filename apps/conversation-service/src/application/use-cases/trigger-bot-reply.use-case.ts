@@ -6,6 +6,7 @@ import type { BotError } from '../../domain/interfaces/ai-service.interface';
 import type { IBotTypingNotifier } from '../../domain/interfaces/bot-typing-notifier.interface';
 import type { IAiTurnLimiter } from '../../domain/interfaces/ai-turn-limiter.interface';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
+import { resolveBotTurnImages } from '../policies/bot-turn-image';
 import { ProcessBotReplyUseCase } from './process-bot-reply.use-case';
 
 export interface TriggerBotReplyResult {
@@ -31,7 +32,13 @@ export class TriggerBotReplyUseCase {
     senderId: string,
     conversationSnapshot?: Conversation | null,
   ): Promise<TriggerBotReplyResult> {
-    if (userMessage.type !== 'text' || senderId === BOT_USER_ID) {
+    if (senderId === BOT_USER_ID) {
+      return { triggered: false };
+    }
+
+    // A photo asks the bot something only when it is a readable upload of the sender's own.
+    const hasImage = resolveBotTurnImages(userMessage).length > 0;
+    if (userMessage.type !== 'text' && !hasImage) {
       return { triggered: false };
     }
 
@@ -47,7 +54,9 @@ export class TriggerBotReplyUseCase {
     }
 
     // The user message is already stored; only the paid AI turn is withheld.
-    const turn = await this.aiTurnLimiter.consume(senderId);
+    const turn = hasImage
+      ? await this.aiTurnLimiter.consume(senderId, { withImage: true })
+      : await this.aiTurnLimiter.consume(senderId);
     if (!turn.allowed) {
       return {
         triggered: false,

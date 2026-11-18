@@ -990,7 +990,10 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
         issues: [],
         requiresRevision: false,
         supportedClaimMappings: [
-          { claim: 'The transcript says this one is blue.', evidenceIds: ['e0'] },
+          {
+            claim: 'The transcript says this one is blue.',
+            evidenceIds: ['e0'],
+          },
         ],
         contradictions: [],
         diagnostics: {
@@ -1001,7 +1004,10 @@ describe('LangGraphRagChatWorkflowAdapter routing', () => {
           issues: [],
           requiresRevision: false,
           supportedClaimMappings: [
-            { claim: 'The transcript says this one is blue.', evidenceIds: ['e0'] },
+            {
+              claim: 'The transcript says this one is blue.',
+              evidenceIds: ['e0'],
+            },
           ],
           contradictions: [],
         },
@@ -2067,5 +2073,171 @@ describe('LangGraphRagChatWorkflowAdapter monitoring isolation', () => {
         message: 'question',
       }),
     ).rejects.toBe(original);
+  });
+});
+
+describe('LangGraphRagChatWorkflowAdapter photo turns', () => {
+  type Node = (
+    state: RagChatWorkflowState,
+  ) => Promise<Partial<RagChatWorkflowState>>;
+  interface PhotoWorkflow {
+    createQueryRouterNode: (timings: Record<string, number>) => Node;
+    createRetrievalPlannerNode: (timings: Record<string, number>) => Node;
+    createReelRecommendationNode: (timings: Record<string, number>) => Node;
+  }
+  const images = [
+    {
+      description: 'A red bicycle',
+      ocrText: 'CITY TOUR',
+      objects: ['bicycle'],
+    },
+  ];
+  const state = (overrides: Partial<RagChatWorkflowState> = {}) =>
+    ({
+      userId: 'u',
+      conversationId: 'c',
+      userMessage: 'find reels like this',
+      ...overrides,
+    }) as RagChatWorkflowState;
+  const route = {
+    intent: 'NORMAL_CHAT',
+    referenceTarget: 'NONE',
+    needsRetrieval: false,
+    reelQuestionType: 'NONE',
+    requiredEvidence: ['NONE'],
+    recommendationAction: {
+      type: 'RECOMMEND_REELS',
+      minRelevantItems: 1,
+      allowPersonalizedFallback: false,
+      reason: 'photo search',
+    },
+    reason: 'x',
+  };
+  const make = (parts: {
+    router?: { execute: jest.Mock };
+    planner?: { execute: jest.Mock };
+    content?: object;
+  }) =>
+    new LangGraphRagChatWorkflowAdapter(
+      (parts.router ?? undefined) as never,
+      (parts.planner ?? undefined) as never,
+      ...(Array(11).fill(undefined) as [
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+        never,
+      ]),
+      { get: jest.fn() } as never,
+      (parts.content ?? undefined) as never,
+    ) as unknown as PhotoWorkflow;
+
+  it('shows the router the photo note so a Velora request is judged on what the photo is', async () => {
+    const router = { execute: jest.fn().mockResolvedValue(route) };
+    await make({ router }).createQueryRouterNode({})(state({ images }));
+
+    const { message } = router.execute.mock.calls[0][0];
+    expect(message).toContain('find reels like this');
+    expect(message).toContain('[Attached image shows: A red bicycle');
+  });
+
+  describe('a photo turn the router kept in scope without choosing a search', () => {
+    const decided = (overrides: Record<string, unknown>) => ({
+      ...route,
+      recommendationAction: {
+        type: 'NONE',
+        query: '',
+        minRelevantItems: 2,
+        allowPersonalizedFallback: false,
+        reason: 'none',
+      },
+      ...overrides,
+    });
+    const routeFor = async (
+      routerResult: object,
+      withPhoto: boolean,
+    ): Promise<RagChatWorkflowState['route']> => {
+      const router = { execute: jest.fn().mockResolvedValue(routerResult) };
+      const result = await make({ router }).createQueryRouterNode({})(
+        state(withPhoto ? { images } : {}),
+      );
+      return result.route;
+    };
+
+    it('becomes a reel search built from the photo', async () => {
+      const result = await routeFor(decided({}), true);
+
+      expect(result?.recommendationAction).toMatchObject({
+        type: 'RECOMMEND_REELS',
+        query: '',
+        minRelevantItems: 1,
+        allowPersonalizedFallback: false,
+      });
+    });
+
+    it('keeps a text turn, an off-topic photo, a reel question and a search the router chose', async () => {
+      const text = decided({});
+      expect((await routeFor(text, false))?.recommendationAction.type).toBe(
+        'NONE',
+      );
+      expect(
+        (await routeFor(decided({ intent: 'OFF_TOPIC' }), true))
+          ?.recommendationAction.type,
+      ).toBe('NONE');
+      expect(
+        (await routeFor(decided({ intent: 'REEL_VIDEO_QUESTION' }), true))
+          ?.recommendationAction.type,
+      ).toBe('NONE');
+      const chosen = decided({
+        recommendationAction: {
+          type: 'RECOMMEND_REELS',
+          query: 'bicycles',
+          minRelevantItems: 2,
+          allowPersonalizedFallback: true,
+          reason: 'chosen',
+        },
+      });
+      expect(
+        (await routeFor(chosen, true))?.recommendationAction,
+      ).toMatchObject({ query: 'bicycles', minRelevantItems: 2 });
+    });
+  });
+
+  it('leaves the router message untouched without a photo', async () => {
+    const router = { execute: jest.fn().mockResolvedValue(route) };
+    await make({ router }).createQueryRouterNode({})(state());
+
+    expect(router.execute.mock.calls[0][0].message).toBe(
+      'find reels like this',
+    );
+  });
+
+  it('plans retrieval from the caption and the photo', async () => {
+    const planner = { execute: jest.fn().mockResolvedValue({ mode: 'x' }) };
+    await make({ planner }).createRetrievalPlannerNode({})(
+      state({ images, route: route as never }),
+    );
+
+    expect(planner.execute.mock.calls[0][0].message).toContain('A red bicycle');
+  });
+
+  it('searches reels with terms from the photo when the router gave no query', async () => {
+    const content = {
+      searchPublicReels: jest.fn().mockResolvedValue([]),
+      getRecommendedReels: jest.fn(),
+    };
+    await make({ content }).createReelRecommendationNode({})(
+      state({ images, route: route as never }),
+    );
+
+    expect(content.searchPublicReels).toHaveBeenCalledWith(
+      expect.objectContaining({ query: 'A red bicycle bicycle' }),
+    );
   });
 });

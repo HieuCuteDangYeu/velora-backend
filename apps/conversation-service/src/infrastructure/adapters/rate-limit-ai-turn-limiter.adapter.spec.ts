@@ -67,3 +67,18 @@ describe('RateLimitAiTurnLimiterAdapter', () => {
     expect(moduleRef.get(TriggerBotReplyUseCase)).toBeDefined();
   });
 });
+
+describe('RateLimitAiTurnLimiterAdapter photo budget', () => {
+  it('stops photo turns on their own budget while plain turns continue', async () => {
+    const limiter = new RateLimitAiTurnLimiterAdapter(
+      service({ RATE_LIMIT_AI_IMAGE_TURN_MINUTE_LIMIT: '1' }),
+    );
+    expect((await limiter.consume('u', { withImage: true })).allowed).toBe(
+      true,
+    );
+    expect((await limiter.consume('u', { withImage: true })).allowed).toBe(
+      false,
+    );
+    expect((await limiter.consume('u')).allowed).toBe(true);
+  });
+});

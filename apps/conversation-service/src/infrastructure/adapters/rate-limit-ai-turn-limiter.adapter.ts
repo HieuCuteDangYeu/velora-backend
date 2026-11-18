@@ -10,8 +10,19 @@ import {
 export class RateLimitAiTurnLimiterAdapter implements IAiTurnLimiter {
   constructor(private readonly rateLimits: RateLimitService) {}
 
-  async consume(userId: string): Promise<AiTurnLimitDecision> {
-    for (const policy of ['ai_turn_minute', 'ai_turn_day'] as const) {
+  async consume(
+    userId: string,
+    options?: { withImage?: boolean },
+  ): Promise<AiTurnLimitDecision> {
+    const policies = options?.withImage
+      ? ([
+          'ai_turn_minute',
+          'ai_turn_day',
+          'ai_image_turn_minute',
+          'ai_image_turn_day',
+        ] as const)
+      : (['ai_turn_minute', 'ai_turn_day'] as const);
+    for (const policy of policies) {
       const decision = await this.rateLimits.check(policy, `u:${userId}`);
       if (!decision.allowed) {
         this.rateLimits.logDenied(policy, decision);

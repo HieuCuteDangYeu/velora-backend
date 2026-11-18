@@ -1881,4 +1881,38 @@ describe('QueryRouterAgentUseCase', () => {
       expect(request.systemPrompt).not.toContain('coding help');
     });
   });
+
+  describe('photo turns', () => {
+    const route = async (message: string) => {
+      const generateObject = jest
+        .fn()
+        .mockResolvedValue(response({ intent: 'NORMAL_CHAT' }));
+      await new QueryRouterAgentUseCase(
+        { generateObject } as never,
+        config,
+      ).execute({ message });
+      return generateObject.mock.calls[0][0] as {
+        systemPrompt: string;
+        userPrompt: string;
+      };
+    };
+
+    it('tells the router how to read the photo note, in the user prompt of a photo turn only', async () => {
+      const photo = await route(
+        'find reels like this\n[Attached image shows: A red bicycle]',
+      );
+      const text = await route('find reels about bicycles');
+
+      expect(photo.userPrompt).toContain('Photo note:');
+      expect(photo.userPrompt).toContain('is OFF_TOPIC');
+      expect(text.userPrompt).not.toContain('Photo note:');
+    });
+
+    it('leaves the system prompt identical for photo and text turns', async () => {
+      const photo = await route('hi\n[Attached image shows: a cat]');
+      const text = await route('hi');
+
+      expect(photo.systemPrompt).toBe(text.systemPrompt);
+    });
+  });
 });

@@ -63,6 +63,10 @@ import {
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 import { scopeAccessibleReelsToReplyTarget } from '@ai/domain/services/rag-reply-reel-scope';
 import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
+import {
+  buildRagImageSearchQuery,
+  withRagImageHint,
+} from '@ai/domain/services/rag-image-context';
 import type { GuardrailFinding } from '@ai/domain/services/rag-guardrail/rag-guardrail.types';
 
 const RagChatStateSchema = new StateSchema({
@@ -71,6 +75,7 @@ const RagChatStateSchema = new StateSchema({
   userMessage: z.string(),
   memory: z.any().optional(),
   replyToReelId: z.string().optional(),
+  images: z.array(z.any()).optional(),
   accessibleReelIds: z.array(z.string()).default([]),
   hasSharedReelContext: z.boolean().default(false),
 
@@ -219,6 +224,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       userMessage: input.message,
       memory: input.memory,
       replyToReelId: input.replyToReelId,
+      images: input.images,
       accessibleReelIds: [],
       hasSharedReelContext: false,
       retrievedChunks: [],
@@ -565,15 +571,16 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     return async (
       state: RagChatWorkflowState,
     ): Promise<Partial<RagChatWorkflowState>> => {
-      const route = await this.timed('queryRouterNode', nodeTimings, () =>
+      const routed = await this.timed('queryRouterNode', nodeTimings, () =>
         this.queryRouterAgentUseCase.execute({
-          message: state.userMessage,
+          message: withRagImageHint(state.userMessage, state.images),
           recentHistory: this.formatRecentHistory(state),
           hasSharedReelContext: state.hasSharedReelContext,
           sharedReelCount: state.accessibleReelIds?.length ?? 0,
           referentContext: this.buildRouterReferentContext(state),
         }),
       );
+      const route = this.searchReelsForPhotoTurn(state, routed);
 
       this.logger.debug(
         `[RagGraph] route intent=${route.intent} retrieval=${route.needsRetrieval} recommendation=${route.recommendationAction.type}`,
@@ -583,6 +590,34 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       this.recordTokenUsage(nodeTimings, route.diagnostics?.semanticCalls);
 
       return { route };
+    };
+  }
+
+  /**
+   * Velora answers about a photo only to find reels that look like it, so a photo turn the router
+   * kept in scope without choosing a search becomes one. The query stays empty on purpose: the
+   * recommendation step then builds it from what the photo shows.
+   */
+  private searchReelsForPhotoTurn(
+    state: RagChatWorkflowState,
+    route: RagChatRouteDecision,
+  ): RagChatRouteDecision {
+    if (
+      !state.images?.length ||
+      route.intent !== 'NORMAL_CHAT' ||
+      route.recommendationAction.type !== 'NONE'
+    ) {
+      return route;
+    }
+    return {
+      ...route,
+      recommendationAction: {
+        type: 'RECOMMEND_REELS',
+        query: '',
+        minRelevantItems: 1,
+        allowPersonalizedFallback: false,
+        reason: 'The user attached a photo to find related Velora reels.',
+      },
     };
   }
 
@@ -613,7 +648,8 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     ): Promise<Partial<RagChatWorkflowState>> => {
       if (!state.route) return {};
       const planningMessage =
-        state.retrievalRepairQuery?.trim() || state.userMessage;
+        state.retrievalRepairQuery?.trim() ||
+        withRagImageHint(state.userMessage, state.images);
       const retrievalPlan = await this.timed(
         'retrievalPlannerNode',
         nodeTimings,
@@ -1529,7 +1565,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         };
       }
 
-      const query = action.query?.trim() || state.userMessage.trim();
+      const query =
+        action.query?.trim() ||
+        buildRagImageSearchQuery(state.images) ||
+        state.userMessage.trim();
 
       try {
         const recommendedReels = await this.timed(

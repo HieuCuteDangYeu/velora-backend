@@ -262,3 +262,110 @@ describe('TriggerBotReplyUseCase', () => {
     });
   });
 });
+
+describe('TriggerBotReplyUseCase photo turns', () => {
+  const photo = (overrides: Partial<Message> = {}) =>
+    new Message({
+      id: 'photo-1',
+      conversationId: CONVERSATION_ID,
+      senderId: USER_ID,
+      content: 'find reels like this',
+      type: 'image',
+      createdAt: new Date('2026-08-19T00:01:00.000Z'),
+      media: {
+        fileKey: `chat-images/${USER_ID}/abc.jpeg`,
+        fileUrl: 'https://cdn.example/abc.jpeg',
+        mimeType: 'image/jpeg',
+      },
+      ...overrides,
+    });
+  const bot = () =>
+    new Conversation({
+      id: CONVERSATION_ID,
+      participantIds: [USER_ID, BOT_USER_ID],
+    });
+  const build = () => {
+    const limiter = {
+      consume: jest
+        .fn()
+        .mockResolvedValue({ allowed: true, retryAfterSeconds: 0 }),
+    };
+    const process = { execute: jest.fn().mockResolvedValue({}) };
+    const useCase = new TriggerBotReplyUseCase(
+      { findConversation: jest.fn() } as never,
+      process as never,
+      limiter,
+      botTypingNotifier,
+    );
+    return { useCase, limiter, process };
+  };
+
+  it('answers the sender own photo in a bot chat and spends the photo budget', async () => {
+    const { useCase, limiter, process } = build();
+    const message = photo();
+
+    expect((await useCase.execute(message, USER_ID, bot())).triggered).toBe(
+      true,
+    );
+    expect(limiter.consume).toHaveBeenCalledWith(USER_ID, { withImage: true });
+    expect(process.execute).toHaveBeenCalledWith(message);
+  });
+
+  it('does not answer a photo in a chat without the bot', async () => {
+    const { useCase, limiter, process } = build();
+    const plain = new Conversation({
+      id: CONVERSATION_ID,
+      participantIds: [USER_ID, '22222222-2222-4222-8222-222222222222'],
+    });
+
+    expect((await useCase.execute(photo(), USER_ID, plain)).triggered).toBe(
+      false,
+    );
+    expect(limiter.consume).not.toHaveBeenCalled();
+    expect(process.execute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'a key the sender does not own',
+      { fileKey: 'chat-images/other/abc.jpeg', fileUrl: 'x' },
+    ],
+    ['media without a key', { fileUrl: 'https://cdn.example/abc.jpeg' }],
+  ])('does not answer a photo with %s', async (_label, media) => {
+    const { useCase, limiter, process } = build();
+
+    expect(
+      (await useCase.execute(photo({ media }), USER_ID, bot())).triggered,
+    ).toBe(false);
+    expect(limiter.consume).not.toHaveBeenCalled();
+    expect(process.execute).not.toHaveBeenCalled();
+  });
+
+  it('still answers other attachment types with nothing', async () => {
+    const { useCase, process } = build();
+
+    expect(
+      (await useCase.execute(photo({ type: 'video' }), USER_ID, bot()))
+        .triggered,
+    ).toBe(false);
+    expect(process.execute).not.toHaveBeenCalled();
+  });
+
+  it('reports an exhausted photo budget as RATE_LIMITED', async () => {
+    const { useCase, limiter, process } = build();
+    limiter.consume.mockResolvedValue({
+      allowed: false,
+      retryAfterSeconds: 30,
+    });
+
+    expect(await useCase.execute(photo(), USER_ID, bot())).toEqual({
+      triggered: false,
+      botError: {
+        code: 'RATE_LIMITED',
+        message: 'Too many AI requests. Please try again later.',
+        retryAfterSeconds: 30,
+      },
+    });
+    expect(process.execute).not.toHaveBeenCalled();
+  });
+});

@@ -119,6 +119,14 @@ export const DEFAULT_RATE_LIMIT_POLICIES = {
   // every path (WebSocket send_message and REST create_message) converges.
   ai_turn_minute: { limit: 10, windowSeconds: MINUTE, onStoreFailure: 'local' },
   ai_turn_day: { limit: 300, windowSeconds: DAY, onStoreFailure: 'local' },
+  // A turn that carries a photo also spends a cloud vision call, whose free quota is shared
+  // with reel indexing, so photos get their own tighter budget on top of the turn budget.
+  ai_image_turn_minute: {
+    limit: 4,
+    windowSeconds: MINUTE,
+    onStoreFailure: 'local',
+  },
+  ai_image_turn_day: { limit: 60, windowSeconds: DAY, onStoreFailure: 'local' },
 } as const satisfies Record<string, PolicyDefaults>;
 
 export type RateLimitPolicyName = keyof typeof DEFAULT_RATE_LIMIT_POLICIES;

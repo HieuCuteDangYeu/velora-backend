@@ -1,3 +1,5 @@
+import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
+import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { withRagImageHint } from '@ai/domain/services/rag-image-context';
 import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-structured-llm.adapter';
 import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
@@ -232,4 +234,56 @@ describe('router scope policy for photo turns (opt-in, real model)', () => {
     expect(falseRefusals).toBeLessThanOrEqual(1);
     expect(caught).toBeGreaterThanOrEqual(Math.ceil(OFF_TOPIC.length * 0.85));
   });
+
+  localIt(
+    'ends every Velora photo request as a reel search through the graph router node',
+    async () => {
+      const router = new QueryRouterAgentUseCase(
+        new OllamaStructuredLlmAdapter(new OllamaTextClient(config), config),
+        appConfig,
+      );
+      const workflow = new LangGraphRagChatWorkflowAdapter(
+        router,
+        ...(Array(12).fill(undefined) as [
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+          never,
+        ]),
+        { get: jest.fn() } as never,
+        undefined as never,
+      ) as unknown as {
+        createQueryRouterNode: (
+          timings: Record<string, number>,
+        ) => (
+          state: RagChatWorkflowState,
+        ) => Promise<Partial<RagChatWorkflowState>>;
+      };
+      const node = workflow.createQueryRouterNode({});
+
+      const notSearches: string[] = [];
+      for (const [label, caption, images] of IN_SCOPE) {
+        const { route } = await node({
+          userId: 'u',
+          conversationId: 'c',
+          userMessage: caption,
+          images,
+        } as RagChatWorkflowState);
+        const finalType = route?.recommendationAction.type;
+        console.log(`[photo graph] ${label}: ${route?.intent} ${finalType}`);
+        if (route?.intent !== 'OFF_TOPIC' && finalType !== 'RECOMMEND_REELS') {
+          notSearches.push(`${label}: ${route?.intent} ${finalType}`);
+        }
+      }
+      expect(notSearches).toEqual([]);
+    },
+  );
 });

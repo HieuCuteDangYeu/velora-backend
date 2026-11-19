@@ -9,6 +9,7 @@ import {
   getRefreshTokenExpiresAt,
   getRefreshTokenExpiresInSeconds,
 } from '../../domain/refresh-token.constants';
+import type { RefreshToken } from '../../domain/entities/refresh-token.entity';
 import { InvalidTokenError } from '../../domain/errors/invalid-token.error';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
@@ -62,6 +63,7 @@ export class RefreshTokenUseCase {
 
       if (!storedToken) {
         refreshOutcome = 'replay_detected';
+        this.logReplay(payload.sub, 'unknown_token', null, refreshRequestId);
         await this.authRepository.revokeAllUserTokens(payload.sub);
         throw new InvalidTokenError();
       }
@@ -69,6 +71,11 @@ export class RefreshTokenUseCase {
       if (storedToken.revoked) {
         if (!refreshRequestId) {
           refreshOutcome = 'replay_detected';
+          this.logReplay(
+            payload.sub,
+            'revoked_without_request_id',
+            storedToken,
+          );
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
@@ -81,6 +88,12 @@ export class RefreshTokenUseCase {
 
         if (!replacementToken) {
           refreshOutcome = 'replay_detected';
+          this.logReplay(
+            payload.sub,
+            'revoked_not_recoverable',
+            storedToken,
+            refreshRequestId,
+          );
           await this.authRepository.revokeAllUserTokens(payload.sub);
           throw new InvalidTokenError();
         }
@@ -97,6 +110,9 @@ export class RefreshTokenUseCase {
           { expiresIn: '15m' },
         );
 
+        this.logger.log(
+          `Refresh recovered for user ${payload.sub}: ${this.describeToken(storedToken)}`,
+        );
         requestOutcome = 'success';
         refreshOutcome = 'recovered';
         return { accessToken, refreshToken: replacementToken };
@@ -153,6 +169,12 @@ export class RefreshTokenUseCase {
 
       if (!persistedRefreshToken) {
         refreshOutcome = 'replay_detected';
+        this.logReplay(
+          payload.sub,
+          'rotation_conflict',
+          storedToken,
+          refreshRequestId,
+        );
         await this.authRepository.revokeAllUserTokens(payload.sub);
         throw new InvalidTokenError();
       }
@@ -184,6 +206,36 @@ export class RefreshTokenUseCase {
         this.metrics.recordRefresh(refreshOutcome, durationSeconds);
       }
     }
+  }
+
+  // Every replay verdict signs the user out everywhere, so say why and which
+  // token row it was. Never log the token itself or the request id value.
+  private logReplay(
+    userId: string,
+    reason: string,
+    storedToken: RefreshToken | null,
+    refreshRequestId?: string,
+  ): void {
+    const requestId = !refreshRequestId
+      ? 'no request id'
+      : storedToken?.rotationRequestId === refreshRequestId
+        ? 'request id matches'
+        : 'request id differs';
+    this.logger.warn(
+      `Refresh replay detected for user ${userId}: ${reason}; ${requestId}; ` +
+        (storedToken ? this.describeToken(storedToken) : 'no stored token row'),
+    );
+  }
+
+  private describeToken(token: RefreshToken): string {
+    const ageSeconds = (from: Date | null) =>
+      from ? Math.round((Date.now() - from.getTime()) / 1000) : null;
+    return (
+      `token ${token.id} revoked=${token.revoked} ` +
+      `createdAgoS=${ageSeconds(token.createdAt)} ` +
+      `rotatedAgoS=${ageSeconds(token.rotatedAt)} ` +
+      `hasReplacement=${token.replacedByTokenId !== null}`
+    );
   }
 
   private createJwtPayload(user: ValidateUserResponse): JwtPayload {

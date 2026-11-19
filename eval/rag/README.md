@@ -507,3 +507,32 @@ something to work around. The code since `bb49d077` only adds fallbacks (the thr
 were 10, 8 and 9 of 10 = 90.0%), but re-run `conversation-recall-live.cjs` once the budget resets, with
 categories not yet used (`neighbor`, `recipe` are the only two left in the runner; add more), to complete the
 gate on the final code.
+
+### Three more live runs on the final code, and what they showed (2026-11-19)
+
+The runner now waits for the AI turn budget (a token bucket, about one turn per five minutes) instead of
+failing, so the three-run check was completed on `85850a7f`:
+
+| Run (categories) | Result |
+|---|---|
+| earlier single run (bakery, jacket) | 9/10 |
+| neighbor, recipe | 10/10 |
+| dentist, kite | 6/10 |
+| harbor, lantern | 9/10 |
+| **Pooled on `85850a7f`** | **34/40 = 85%**, below the 90% bar set earlier, zero wrong claims |
+
+The misses: three in the dentist category (a health statement is turned away as off topic, so it is never
+saved; the later "do you remember who my dentist is?" was routed as a saved-fact question, which searched only
+saved facts), two quotes of an old photo line that has no stored description, one Vietnamese "mình để quên"
+paraphrase the router called off topic.
+
+Fixed in `2de509c8`: a saved-fact question now also searches the chat (and quotes the strongest match before
+saying nothing is saved), and among photo lines a quote prefers one that records what the photo showed.
+Verification run on `2de509c8` with two health-type categories (physio, optician): **8/10**. The recall-wording
+question about the physiotherapist now passes; the two misses are paraphrases about a medical subject
+("who helps me with my back exercises?", "bác sĩ vật lý trị liệu của mình tên gì nhỉ?") that the router
+refuses as off topic, which is its scope policy, not a recall failure.
+
+So the 90% bar was not reached on the final code (85%, then 8/10 on the targeted run), and the remaining misses
+are the router's: a recall question with no recall wording, or about a subject its scope rules call off topic,
+can still be turned away. Every other class seen in these runs has a fix deployed.

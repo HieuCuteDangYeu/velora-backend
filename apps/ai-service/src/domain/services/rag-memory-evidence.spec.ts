@@ -151,17 +151,18 @@ describe('ragMemoryEvidence', () => {
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
   });
 
-  it('does not add recalled messages for other intents', () => {
-    expect(
+  it('adds recalled messages for both memory intents, because a saved fact may only be in the chat, but not for others', () => {
+    const recalled = [{ role: 'user', content: 'EARLIER', createdAt: 'x' }];
+    const texts = (intent: string) =>
       ragMemoryEvidence(
-        state({
-          route: { intent: 'USER_MEMORY_QUESTION' },
-          recalledMessages: [
-            { role: 'user', content: 'EARLIER', createdAt: 'x' },
-          ],
-        }),
+        state({ route: { intent }, recalledMessages: recalled }),
         config,
-      ).map((item) => item.evidenceText),
-    ).not.toContain('user at x: EARLIER');
+      ).map((item) => item.evidenceText);
+    expect(texts('USER_MEMORY_QUESTION')).toContain('user at x: EARLIER');
+    expect(texts('CONVERSATION_MEMORY_QUESTION')).toContain(
+      'user at x: EARLIER',
+    );
+    expect(texts('NORMAL_CHAT')).toEqual([]);
+    expect(texts('REEL_VIDEO_QUESTION')).toEqual([]);
   });
 });

@@ -70,7 +70,6 @@ export function ragMemoryEvidence(
   }
   // Earlier messages picked for the question come before the live window, as they happened first.
   for (const [index, message] of (state.recalledMessages ?? []).entries()) {
-    if (intent !== 'CONVERSATION_MEMORY_QUESTION') break;
     add(
       `conversation-message:${state.conversationId}:earlier-${index}`,
       'CONVERSATION_MEMORY',

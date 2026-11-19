@@ -195,11 +195,15 @@ const FILLERS = [
         ms: current.final ? Math.round(current.final - current.sent) : null,
       };
       await sleep(2500);
+      // A rate-limited turn is not a recall failure either: the AI turn budget is a token bucket
+      // that refills about one turn every five minutes, so wait for a token and ask again.
+      if (/FAILED RATE_LIMITED/.test(result.reply) && attempt < 40) {
+        console.log(`rate limited, waiting 5 min (attempt ${attempt})`);
+        await sleep(300000);
+        continue;
+      }
       // A busy model host is not a recall failure: wait and ask again.
-      if (
-        /FAILED AI_BUSY|FAILED RATE_LIMITED/.test(result.reply) &&
-        attempt < 4
-      ) {
+      if (/FAILED AI_BUSY/.test(result.reply) && attempt <= retries) {
         await sleep(20000);
         continue;
       }
@@ -476,6 +480,57 @@ const FILLERS = [
         ['Vietnamese, "nói"', 'mình nói hay làm bánh gì nhỉ?'],
         ['Vietnamese, "còn nhớ"', 'bạn còn nhớ loại bánh mình hay làm không?'],
         ['English', 'which cake did I say I usually bake?'],
+      ],
+    },
+    dentist: {
+      fact: (w) => `My dentist is called Doctor ${w}.`,
+      asks: [
+        ['with "remember"', 'do you remember who my dentist is?'],
+        ['paraphrase', 'which doctor looks after my teeth?'],
+        ['Vietnamese', 'nha sĩ của mình tên gì nhỉ?'],
+      ],
+    },
+    kite: {
+      fact: (w) => `Mình vừa mua con diều hiệu ${w} cho em trai.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mua con diều hiệu gì nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ hiệu diều mình mua không?'],
+        ['English', 'which kite brand did I say I bought?'],
+      ],
+    },
+    harbor: {
+      fact: (w) => `We are sailing from ${w} Harbour next summer.`,
+      asks: [
+        ['with "remember"', 'do you remember where we are sailing from?'],
+        ['paraphrase', 'which port do we leave from on the boat trip?'],
+        ['Vietnamese', 'mình sẽ đi thuyền từ cảng nào nhỉ?'],
+      ],
+    },
+    lantern: {
+      fact: (w) => `Mình thích loại đèn lồng kiểu ${w} treo ở ban công.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói thích đèn lồng kiểu gì nhỉ?'],
+        [
+          'Vietnamese, "còn nhớ"',
+          'bạn còn nhớ kiểu đèn lồng mình thích không?',
+        ],
+        ['English', 'which lantern style did I say I like?'],
+      ],
+    },
+    physio: {
+      fact: (w) => `My physiotherapist is called ${w}.`,
+      asks: [
+        ['with "remember"', 'do you remember who my physiotherapist is?'],
+        ['paraphrase', 'who helps me with my back exercises?'],
+        ['Vietnamese', 'bác sĩ vật lý trị liệu của mình tên gì nhỉ?'],
+      ],
+    },
+    optician: {
+      fact: (w) => `Mình vừa mua kính ở tiệm kính ${w}.`,
+      asks: [
+        ['Vietnamese, "nói"', 'mình nói vừa mua kính ở tiệm nào nhỉ?'],
+        ['Vietnamese, "còn nhớ"', 'bạn còn nhớ tiệm kính mình mua không?'],
+        ['English', 'which glasses shop did I say I bought from?'],
       ],
     },
   };

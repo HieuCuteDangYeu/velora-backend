@@ -1551,7 +1551,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
                 ? formatRecallQuote(state.recallQuote)
                 : 'I could not find that in our conversation.'
               : state.route?.intent === 'USER_MEMORY_QUESTION'
-                ? 'I do not have that saved about you.'
+                ? state.recallQuote
+                  ? formatRecallQuote(state.recallQuote)
+                  : 'I do not have that saved about you.'
                 : 'I could not verify that answer reliably from the available context.';
 
       return {

@@ -225,6 +225,19 @@ describe('rankRecalledMessages', () => {
       ).toBe(candidates[1]);
     });
 
+    it('prefers a photo line that records what the photo showed over a newer bare caption', () => {
+      const described = message(
+        '[Photo] find reels like this shows: a plate of pasta',
+      );
+      const bare = message('[Photo] find reels like this');
+      expect(
+        strongRecallMatch({
+          question: 'what was in the photo I sent?',
+          candidates: [described, bare],
+        }),
+      ).toBe(described);
+    });
+
     it('quotes a photo line as the photo and what it showed', () => {
       expect(
         formatRecallQuote(

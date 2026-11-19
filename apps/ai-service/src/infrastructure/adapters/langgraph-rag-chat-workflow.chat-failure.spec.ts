@@ -91,4 +91,23 @@ describe('final fallback after verification fails', () => {
       'Earlier you wrote: “Mình hay mua cà phê ở quán Zorvak Cafe.”',
     );
   });
+
+  it('quotes the confident match for a saved-fact question too, before saying nothing is saved', async () => {
+    const quote = {
+      role: 'user',
+      content: 'My dentist is called Doctor Zorvak.',
+      createdAt: '2026-11-19T00:00:00Z',
+    };
+    const withQuote = {
+      ...failedState('USER_MEMORY_QUESTION'),
+      recallQuote: quote,
+    } as unknown as RagChatWorkflowState;
+
+    expect((await failureNode()(withQuote)).answer).toBe(
+      'Earlier you wrote: “My dentist is called Doctor Zorvak.”',
+    );
+    expect(
+      (await failureNode()(failedState('USER_MEMORY_QUESTION'))).answer,
+    ).toBe('I do not have that saved about you.');
+  });
 });

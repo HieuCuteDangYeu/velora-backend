@@ -238,4 +238,14 @@ describe('RecallConversationContextUseCase', () => {
     );
     expect(result.recallQuote?.content).toContain('spaghetti carbonara');
   });
+
+  it('also searches the chat for a question routed as a saved-fact question', async () => {
+    const { useCase } = unit({});
+    const asked = state({
+      route: { intent: 'USER_MEMORY_QUESTION' },
+      userMessage: 'do you remember what food I like cooking?',
+    });
+    expect(useCase.isRecallTurn(asked)).toBe(true);
+    expect((await useCase.execute(asked)).recalledMessages).toHaveLength(1);
+  });
 });

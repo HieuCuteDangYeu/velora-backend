@@ -18,7 +18,8 @@ export class CreateNoContextAnswerUseCase {
     }
 
     if (
-      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' &&
+      (state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' ||
+        state.route?.intent === 'USER_MEMORY_QUESTION') &&
       state.recallQuote
     ) {
       // The model could not write an answer but the chat holds a confident one: quote it.

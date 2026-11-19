@@ -260,7 +260,10 @@ export function strongRecallMatch(input: {
       (meaning !== undefined && meaning >= options.strongSemantic) ||
       words >= options.strongLexical;
     if (!strong) return;
-    const score = Math.max(meaning ?? 0, words) + (photo ? PHOTO_BONUS : 0);
+    // Among photo lines, one that records what the photo showed answers better than a bare caption.
+    const described = photo && message.content.includes('shows:') ? 0.05 : 0;
+    const score =
+      Math.max(meaning ?? 0, words) + (photo ? PHOTO_BONUS : 0) + described;
     // A newer message wins a tie: the latest thing the user said about it is the one to quote.
     if (!best || score >= best.score) best = { message, score };
   });

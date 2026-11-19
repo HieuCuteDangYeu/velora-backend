@@ -122,7 +122,12 @@ export class RecallConversationContextUseCase {
 
   /** The router names recall questions, including ones the model called chat but whose wording is an explicit recall. */
   isRecallTurn(state: RagChatWorkflowState): boolean {
-    return state.route?.intent === 'CONVERSATION_MEMORY_QUESTION';
+    // A "do you remember my X" can be routed as a question about saved facts, yet the fact may only
+    // be in the chat (a statement the assistant turned away is never saved), so both search it.
+    return (
+      state.route?.intent === 'CONVERSATION_MEMORY_QUESTION' ||
+      state.route?.intent === 'USER_MEMORY_QUESTION'
+    );
   }
 
   private async recallMessages(

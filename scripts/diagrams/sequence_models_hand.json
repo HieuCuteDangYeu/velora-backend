@@ -1,0 +1,2062 @@
+[
+ {
+  "id": "18-auth-login",
+  "title": "18 · Login and session restoration",
+  "subtitle": "Password login; a separate optional cold-start hydration restores only when access is absent.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:56-131"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:70-195"
+    ]
+   },
+   {
+    "id": "auth",
+    "label": "Auth service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:17-77"
+    ]
+   },
+   {
+    "id": "user",
+    "label": "User service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:25-133"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Auth private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:35-82"
+    ]
+   },
+   {
+    "id": "redis",
+    "label": "Auth Redis",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/redis-user-role.repository.ts:1-21"
+    ]
+   },
+   {
+    "id": "secure",
+    "label": "Mobile SecureStore",
+    "kind": "store",
+    "evidence": [
+     "mobile:src/lib/auth/tokenSession.ts:7-52"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "gateway",
+    "label": "Submit mobile login credentials (email & password)",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:61-64"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "auth",
+    "label": "Authenticate user credentials via RabbitMQ",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:106-122"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "user",
+    "label": "Verify account status and validate password hash",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:65-72"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "auth",
+    "label": "Return validated user identity",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:30-33"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "!user || !user.isVerified",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "gateway",
+        "label": "Reject invalid credentials or unverified account",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/auth-service/src/infrastructure/controllers/auth.controller.ts:84-100"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "gateway",
+        "to": "mobile",
+        "label": "Deliver authentication failure response",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/api-gateway/src/auth/auth.controller.ts:118-121"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "user && user.isVerified",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "db",
+        "label": "Fetch authoritative user roles and permissions",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:36-36",
+         "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:76-82"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "db",
+        "to": "auth",
+        "label": "Role names",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:76-82"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "redis",
+        "label": "Warm roles cache; cache error logged and tolerated",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:38-46"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "auth",
+        "label": "Sign access 15m + rolling refresh JWT (90 days)",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:60-69"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "db",
+        "label": "Store encrypted refresh token session (90-day expiry)",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:57-73"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "gateway",
+        "label": "Token pair",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:74-77"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "gateway",
+        "to": "mobile",
+        "label": "Return new access and refresh token pair",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/api-gateway/src/auth/auth.controller.ts:106-122"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "mobile",
+        "to": "secure",
+        "label": "Securely store refresh token and clear temporary retry ID",
+        "sort": "synchCall",
+        "evidence": [
+         "mobile:src/lib/auth/tokenSession.ts:37-46"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:30-77"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "opt",
+    "operands": [
+     {
+      "guard": "hydrateAuth invoked later",
+      "steps": [
+       {
+        "type": "phase",
+        "label": "Later session hydration",
+        "evidence": [
+         "mobile:src/stores/authStore.ts:75-90"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "opt",
+        "operands": [
+         {
+          "guard": "!hasAccessToken()",
+          "steps": [
+           {
+            "type": "ref",
+            "label": "20 · Single-flight refresh: absent refresh returns null; network errors retain credentials",
+            "participants": [
+             "mobile",
+             "secure",
+             "gateway",
+             "auth"
+            ],
+            "evidence": [
+             "mobile:src/api/client.ts:46-87"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "mobile:src/api/auth.api.ts:99-103"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "alt",
+        "operands": [
+         {
+          "guard": "hydrationVersion changed || !hasSession",
+          "steps": [
+           {
+            "type": "message",
+            "from": "mobile",
+            "to": "mobile",
+            "label": "Stop stale hydration or set unauthenticated",
+            "sort": "synchCall",
+            "evidence": [
+             "mobile:src/stores/authStore.ts:82-87"
+            ]
+           }
+          ]
+         },
+         {
+          "guard": "current hydrationVersion && hasSession",
+          "steps": [
+           {
+            "type": "message",
+            "from": "mobile",
+            "to": "gateway",
+            "label": "Query authenticated user profile",
+            "sort": "synchCall",
+            "evidence": [
+             "mobile:src/api/auth.api.ts:105-107"
+            ]
+           },
+           {
+            "type": "ref",
+            "label": "21 · JwtAuthGuard verifies JWT, roles and existing user; no resource policy for /me",
+            "participants": [
+             "gateway",
+             "auth",
+             "redis",
+             "db",
+             "user"
+            ],
+            "evidence": [
+             "backend:apps/api-gateway/src/auth/guards/jwt-auth.guard.ts:24-46"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "mobile",
+            "label": "Return authenticated user profile to client",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/api-gateway/src/auth/auth.controller.ts:191-195"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "mobile",
+            "to": "mobile",
+            "label": "Update active profile if cache hydration version matches",
+            "sort": "synchCall",
+            "evidence": [
+             "mobile:src/stores/authStore.ts:90-96"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "mobile:src/stores/authStore.ts:82-91"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "mobile:src/stores/authStore.ts:64-90"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical RPC arrows show the caller awaiting a correlated RabbitMQ response; transport envelopes are abstracted.",
+   "Hydration error handling preserves recoverable state for non-authentication failures (mobile:src/stores/authStore.ts:97-117)."
+  ]
+ },
+ {
+  "id": "19-auth-google",
+  "title": "19 · Google identity login",
+  "subtitle": "Configured Google identity verification; existing/link/new profile branches; refresh is issued, not rotated.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:56-131"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:70-195"
+    ]
+   },
+   {
+    "id": "auth",
+    "label": "Auth service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:18-135"
+    ]
+   },
+   {
+    "id": "google",
+    "label": "Google OAuth2Client boundary",
+    "kind": "external",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts:16-53"
+    ]
+   },
+   {
+    "id": "user",
+    "label": "User service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:25-133"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Auth private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:35-82"
+    ]
+   },
+   {
+    "id": "redis",
+    "label": "Auth Redis",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/redis-user-role.repository.ts:1-21"
+    ]
+   },
+   {
+    "id": "secure",
+    "label": "Mobile SecureStore",
+    "kind": "store",
+    "evidence": [
+     "mobile:src/lib/auth/tokenSession.ts:7-52"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "gateway",
+    "label": "Submit Google OAuth ID token for verification",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:127-130"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "auth",
+    "label": "Verify Google ID token via RabbitMQ",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:125-137"
+    ]
+   },
+   {
+    "type": "ref",
+    "label": "Require configured audiences; verifyIdToken; reject missing email/sub or invalid token",
+    "participants": [
+     "auth",
+     "google"
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts:16-53"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "user",
+    "label": "Query user profile by verified Google email",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:28-29",
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:86-96"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "auth",
+    "label": "User or null",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:86-96"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "user exists",
+      "steps": [
+       {
+        "type": "frame",
+        "operator": "opt",
+        "operands": [
+         {
+          "guard": "!user.providerId",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "user",
+            "label": "Link Google identity to user account in database",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:38-48"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "user",
+            "label": "Refetch user.find_by_email",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:48-50"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:38-51"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "user absent",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "user",
+        "label": "user.create_social; isVerified=true",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:52-65"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "user",
+        "to": "auth",
+        "label": "Provision new user account and issue profile ID",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:64-65"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:34-66"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "opt",
+    "operands": [
+     {
+      "guard": "isNewUser && userId",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "db",
+        "label": "Assign default USER role",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:68-69"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:68-70"
+    ]
+   },
+   {
+    "type": "ref",
+    "label": "Require userId and user; invalid state throws into saga catch",
+    "participants": [
+     "auth"
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:72-74"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "db",
+    "label": "Fetch authoritative user roles and permissions",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:76-76"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "redis",
+    "label": "Warm role cache; failures tolerated",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:78-86"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "auth",
+    "label": "access 15m (type=access); refresh 90d (type=refresh)",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:100-109"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "db",
+    "label": "Create new protected refresh row",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:112-116",
+     "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:57-73"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "gateway",
+    "label": "Issued token pair",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/google-login.use-case.ts:118-118"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "mobile",
+    "label": "HTTP issued token pair; no cookies",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:132-137"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "secure",
+    "label": "Persist issued refresh before exposing memory access",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/lib/auth/tokenSession.ts:37-46"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical RPC arrows show the caller awaiting a correlated RabbitMQ response; transport envelopes are abstracted.",
+   "This view follows valid provider identity and successful saga; Google SDK verification may cache keys, so no unconditional provider HTTP request is invented.",
+   "New-user saga failures asynchronously rollback user and await role rollback; not drawn as a successful mutation (google-login.use-case.ts:118-131)."
+  ]
+ },
+ {
+  "id": "21-auth-authorization",
+  "title": "21 · Protected resource authorization",
+  "subtitle": "One protected route: GET /content/series/:id/episodes; JWT verification precedes resource policy.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:56-131"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:70-195"
+    ]
+   },
+   {
+    "id": "auth",
+    "label": "Auth service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:11-83"
+    ]
+   },
+   {
+    "id": "redis",
+    "label": "Auth Redis",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/redis-user-role.repository.ts:1-21"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Auth private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:35-82"
+    ]
+   },
+   {
+    "id": "user",
+    "label": "User service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/adapters/user-service.adapter.ts:25-133"
+    ]
+   },
+   {
+    "id": "content",
+    "label": "Content service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+    ]
+   },
+   {
+    "id": "friend",
+    "label": "Friend service access policy",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:112-181"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "gateway",
+    "label": "Request protected series episodes (Bearer token)",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/content/content.controller.ts:244-263"
+    ]
+   },
+   {
+    "type": "ref",
+    "label": "JwtAuthGuard extracts token; missing token -> HTTP 401; present token enters verification",
+    "participants": [
+     "gateway"
+    ],
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/guards/jwt-auth.guard.ts:24-40"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "auth",
+    "label": "Verify access token validity via RabbitMQ (5s timeout)",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/guards/jwt-auth.guard.ts:32-40"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "auth",
+    "to": "auth",
+    "label": "verifyAsync JWT signature + expiry; require tokenType=access",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:22-39"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "JWT invalid/expired or type != access",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "gateway",
+        "label": "Reject expired or invalid access token",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/auth-service/src/infrastructure/controllers/auth.controller.ts:112-125"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "gateway",
+        "to": "mobile",
+        "label": "Return 401 Unauthorized (Block before downstream)",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/api-gateway/src/auth/guards/jwt-auth.guard.ts:32-46"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "Valid access token",
+      "steps": [
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "redis",
+        "label": "Fetch cached user roles from Redis",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:25-35"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "opt",
+        "operands": [
+         {
+          "guard": "!roles",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "db",
+            "label": "Read authoritative user roles",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:41-42"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "redis",
+            "label": "Warm roles TTL 900s; cache error tolerated",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:44-52",
+             "backend:apps/auth-service/src/infrastructure/repositories/redis-user-role.repository.ts:9-10"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:41-53"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "user",
+        "label": "user.find_by_id(payload.sub)",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:55-55"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "alt",
+        "operands": [
+         {
+          "guard": "!user",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "gateway",
+            "label": "RPC 401 missing user",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/auth-service/src/infrastructure/controllers/auth.controller.ts:112-125"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "mobile",
+            "label": "Return 401 Unauthorized (Block before downstream)",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/api-gateway/src/auth/guards/jwt-auth.guard.ts:32-46"
+            ]
+           }
+          ]
+         },
+         {
+          "guard": "user exists",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "gateway",
+            "label": "AuthUser with authoritative roles",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:61-69"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "content",
+            "label": "content.get_reel_series_episodes(viewerId,isAdmin,query)",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/api-gateway/src/content/content.controller.ts:251-264"
+            ]
+           },
+           {
+            "type": "ref",
+            "label": "Read private Series metadata; absent -> ReelSeriesNotFoundError",
+            "participants": [
+             "content"
+            ],
+            "evidence": [
+             "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+            ]
+           },
+           {
+            "type": "frame",
+            "operator": "opt",
+            "operands": [
+             {
+              "guard": "!isAdmin && series.ownerId != viewerId",
+              "steps": [
+               {
+                "type": "message",
+                "from": "content",
+                "to": "friend",
+                "label": "Owner and private Reels are decided inside Content;\notherwise friend.can_view_reel_content(viewer, owner, visibility),\nallowed answers cached for 15 s",
+                "sort": "synchCall",
+                "evidence": [
+                 "backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:112-178"
+                ]
+               },
+               {
+                "type": "message",
+                "from": "friend",
+                "to": "content",
+                "label": "allowed; RPC failure maps to allowed=false",
+                "sort": "reply",
+                "evidence": [
+                 "backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:164-181"
+                ]
+               }
+              ]
+             }
+            ],
+            "evidence": [
+             "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+            ]
+           },
+           {
+            "type": "frame",
+            "operator": "alt",
+            "operands": [
+             {
+              "guard": "!isAdmin && !isOwner && !allowed",
+              "steps": [
+               {
+                "type": "message",
+                "from": "content",
+                "to": "gateway",
+                "label": "Series not found (policy rejection)",
+                "sort": "reply",
+                "evidence": [
+                 "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+                ]
+               },
+               {
+                "type": "message",
+                "from": "gateway",
+                "to": "mobile",
+                "label": "HTTP hidden-resource rejection",
+                "sort": "reply",
+                "evidence": [
+                 "backend:apps/api-gateway/src/content/content.controller.ts:251-264"
+                ]
+               }
+              ]
+             },
+             {
+              "guard": "isAdmin || isOwner || allowed",
+              "steps": [
+               {
+                "type": "ref",
+                "label": "Read ordered episode page; onlyCompleted=!isAdmin&&!isOwner; preserve cursor/window contract",
+                "participants": [
+                 "content"
+                ],
+                "evidence": [
+                 "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+                ]
+               },
+               {
+                "type": "message",
+                "from": "content",
+                "to": "gateway",
+                "label": "Series metadata + episode page",
+                "sort": "reply",
+                "evidence": [
+                 "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+                ]
+               },
+               {
+                "type": "ref",
+                "label": "Load author map, enrich stream URLs and author DTOs",
+                "participants": [
+                 "gateway",
+                 "user"
+                ],
+                "evidence": [
+                 "backend:apps/api-gateway/src/content/content.controller.ts:932-940"
+                ]
+               },
+               {
+                "type": "message",
+                "from": "gateway",
+                "to": "mobile",
+                "label": "HTTP episode page + cursors",
+                "sort": "reply",
+                "evidence": [
+                 "backend:apps/api-gateway/src/content/content.controller.ts:267-270"
+                ]
+               }
+              ]
+             }
+            ],
+            "evidence": [
+             "backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:57-69"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/verify-token.use-case.ts:22-69"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical RPC arrows show the caller awaiting a correlated RabbitMQ response; transport envelopes are abstracted.",
+   "Content controller attaches JwtAuthGuard, not global RolesGuard (content.controller.ts:68-71). Public/friends/private policy is invoked only for nonowner nonadmin.",
+   "Missing metadata exits before friend access or episode listing; ref preserves this subordinate failure."
+  ]
+ },
+ {
+  "id": "22-auth-logout",
+  "title": "22 · Logout versus in-flight refresh",
+  "subtitle": "Logout fence waits for in-flight refresh; local clear follows remote success; endLogout always runs.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:56-131"
+    ]
+   },
+   {
+    "id": "secure",
+    "label": "Mobile SecureStore",
+    "kind": "store",
+    "evidence": [
+     "mobile:src/lib/auth/tokenSession.ts:7-52"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/auth/auth.controller.ts:70-195"
+    ]
+   },
+   {
+    "id": "auth",
+    "label": "Auth service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/auth-service/src/application/use-cases/login.use-case.ts:17-77"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Auth private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:35-82"
+    ]
+   },
+   {
+    "id": "redis",
+    "label": "Auth Redis",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/auth-service/src/infrastructure/repositories/redis-user-role.repository.ts:1-21"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "mobile",
+    "label": "Initiate logout: Set client fence to block concurrent refresh",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/client.ts:32-39"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "secure",
+    "label": "Read latest stored refresh token",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:66-70"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "!refreshToken",
+      "steps": [
+       {
+        "type": "message",
+        "from": "mobile",
+        "to": "mobile",
+        "label": "Throw missing-token error; no HTTP",
+        "sort": "synchCall",
+        "evidence": [
+         "mobile:src/api/auth.api.ts:72-74"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "refreshToken exists",
+      "steps": [
+       {
+        "type": "message",
+        "from": "mobile",
+        "to": "gateway",
+        "label": "POST /auth/mobile/logout {refreshToken}; timeout 5s",
+        "sort": "synchCall",
+        "evidence": [
+         "mobile:src/api/auth.api.ts:76-82"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "gateway",
+        "to": "auth",
+        "label": "Process logout request via RabbitMQ RPC",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/api-gateway/src/auth/auth.controller.ts:163-167"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "auth",
+        "to": "db",
+        "label": "Find stored refresh token",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:14-14"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "opt",
+        "operands": [
+         {
+          "guard": "storedToken exists",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "db",
+            "label": "Set revoked=true",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:16-19"
+            ]
+           },
+           {
+            "type": "frame",
+            "operator": "opt",
+            "operands": [
+             {
+              "guard": "storedToken.userId exists",
+              "steps": [
+               {
+                "type": "message",
+                "from": "auth",
+                "to": "redis",
+                "label": "Invalidate cached user roles",
+                "sort": "synchCall",
+                "evidence": [
+                 "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:21-22"
+                ]
+               }
+              ]
+             }
+            ],
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:21-23"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:16-28"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "alt",
+        "operands": [
+         {
+          "guard": "remote HTTP succeeds",
+          "steps": [
+           {
+            "type": "message",
+            "from": "auth",
+            "to": "gateway",
+            "label": "Confirm session termination for user",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/auth-service/src/application/use-cases/logout.use-case.ts:25-31"
+            ]
+           },
+           {
+            "type": "ref",
+            "label": "Gateway completes mobile-logout response; excluded notification cleanup internals",
+            "participants": [
+             "gateway"
+            ],
+            "evidence": [
+             "backend:apps/api-gateway/src/auth/auth.controller.ts:169-188"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "mobile",
+            "label": "HTTP logout message",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/api-gateway/src/auth/auth.controller.ts:188-188"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "mobile",
+            "to": "secure",
+            "label": "Clear credentials only after HTTP success",
+            "sort": "synchCall",
+            "evidence": [
+             "mobile:src/api/auth.api.ts:84-85"
+            ]
+           }
+          ]
+         },
+         {
+          "guard": "remote HTTP fails or times out",
+          "steps": [
+           {
+            "type": "message",
+            "from": "mobile",
+            "to": "mobile",
+            "label": "Propagate failure without successful-path clear",
+            "sort": "synchCall",
+            "evidence": [
+             "mobile:src/api/auth.api.ts:76-87"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "mobile:src/api/auth.api.ts:76-85"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "mobile:src/api/auth.api.ts:69-85"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "mobile",
+    "label": "finally endLogout releases fence on every outcome",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/auth.api.ts:86-87"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical RPC arrows show the caller awaiting a correlated RabbitMQ response; transport envelopes are abstracted.",
+   "No payment/call/notification interaction expanded; mandatory gateway completion is abstracted in a ref.",
+   "An error while clearing local storage still reaches endLogout in finally."
+  ]
+ },
+ {
+  "id": "25-friend-block",
+  "title": "25 · Blocking and cache reconciliation",
+  "subtitle": "Block target with a local self check, awaited profile lookup, atomic block+relationship removal and local cache reconciliation.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile: authenticated actor",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/api/friend.api.ts:45-75"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/friends/friend.controller.ts:39-65"
+    ]
+   },
+   {
+    "id": "friend",
+    "label": "Friend service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/send-friend-request.use-case.ts:24-89"
+    ]
+   },
+   {
+    "id": "user",
+    "label": "User profile boundary",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/send-friend-request.use-case.ts:92-97"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Friend private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/friend-service/src/infrastructure/repositories/friend.repository.ts:51-219"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "gateway",
+    "label": "Submit block request for target user",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/friend.api.ts:73-75"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "friend",
+    "label": "friend.block_user(authenticated blocker, target)",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/friends/friend.controller.ts:109-126"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "blockerId == blockedUserId",
+      "steps": [
+       {
+        "type": "message",
+        "from": "friend",
+        "to": "gateway",
+        "label": "CannotBlockSelfError before public-user RPC",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:21-22"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "gateway",
+        "to": "mobile",
+        "label": "HTTP self-block rejection",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/api-gateway/src/friends/friend.controller.ts:119-126"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "blockerId != blockedUserId",
+      "steps": [
+       {
+        "type": "message",
+        "from": "friend",
+        "to": "user",
+        "label": "Query public profile for blocked user",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:25-25"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "user",
+        "to": "friend",
+        "label": "Public profiles",
+        "sort": "reply",
+        "evidence": [
+         "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:25-28"
+        ]
+       },
+       {
+        "type": "frame",
+        "operator": "alt",
+        "operands": [
+         {
+          "guard": "users.length == 0",
+          "steps": [
+           {
+            "type": "message",
+            "from": "friend",
+            "to": "gateway",
+            "label": "FriendUserNotFoundError",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:27-28"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "mobile",
+            "label": "HTTP missing-user rejection",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/api-gateway/src/friends/friend.controller.ts:119-126"
+            ]
+           }
+          ]
+         },
+         {
+          "guard": "users.length > 0",
+          "steps": [
+           {
+            "type": "message",
+            "from": "friend",
+            "to": "db",
+            "label": "Record block relationship and dissolve friendship",
+            "sort": "synchCall",
+            "evidence": [
+             "backend:apps/friend-service/src/infrastructure/repositories/user-block.repository.ts:14-44"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "db",
+            "to": "friend",
+            "label": "Committed block and removal",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:31-34"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "friend",
+            "to": "gateway",
+            "label": "Confirm user successfully blocked",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:36-40"
+            ]
+           },
+           {
+            "type": "message",
+            "from": "gateway",
+            "to": "mobile",
+            "label": "HTTP blocked result",
+            "sort": "reply",
+            "evidence": [
+             "backend:apps/api-gateway/src/friends/friend.controller.ts:119-126"
+            ]
+           },
+           {
+            "type": "frame",
+            "operator": "opt",
+            "operands": [
+             {
+              "guard": "current viewer unchanged",
+              "steps": [
+               {
+                "type": "message",
+                "from": "mobile",
+                "to": "mobile",
+                "label": "Remove blocked target from cached lists/discovery",
+                "sort": "synchCall",
+                "evidence": [
+                 "mobile:src/hooks/useFriendMutations.ts:412-415"
+                ]
+               },
+               {
+                "type": "ref",
+                "label": "Background: remove offline creator reels/video cache; invalidate relationship/search/feed caches",
+                "participants": [
+                 "mobile"
+                ],
+                "evidence": [
+                 "mobile:src/hooks/useFriendMutations.ts:416-426"
+                ]
+               }
+              ]
+             }
+            ],
+            "evidence": [
+             "mobile:src/hooks/useFriendMutations.ts:412-426"
+            ]
+           }
+          ]
+         }
+        ],
+        "evidence": [
+         "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:27-40"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/block-user.use-case.ts:21-40"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical awaited RabbitMQ RPC; authenticate/route role guards are abstracted at entry.",
+   "Block cache changes run only after HTTP success and only for the same current viewer; offline cleanup errors are tolerated."
+  ]
+ },
+ {
+  "id": "26-user-recommendation",
+  "title": "26 · Graph user recommendation flow",
+  "subtitle": "Viewer/session recommendation query; graph candidates, exclusion-aware fallback, source-backed mobile cache key.",
+  "participants": [
+   {
+    "id": "mobile",
+    "label": "Velora-Mobile recommendation hook",
+    "kind": "client",
+    "evidence": [
+     "mobile:src/hooks/useRecommendedUsers.ts:23-54"
+    ]
+   },
+   {
+    "id": "gateway",
+    "label": "API Gateway",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/api-gateway/src/users/user.controller.ts:102-120"
+    ]
+   },
+   {
+    "id": "user",
+    "label": "User service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:27-146"
+    ]
+   },
+   {
+    "id": "friend",
+    "label": "Friend service",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/send-friend-request.use-case.ts:24-89"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Friend graph/block database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts:13-102"
+    ]
+   },
+   {
+    "id": "userdb",
+    "label": "User private database",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:49-87"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "mobile",
+    "label": "Get viewer-bound feedSessionId; query key(viewer,session,limit)",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/hooks/useRecommendedUsers.ts:23-40"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "gateway",
+    "label": "Query recommended user profiles",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/api/user.api.ts:52-59"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "user",
+    "label": "Compute candidate user recommendations for viewer",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/api-gateway/src/users/user.controller.ts:112-119"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "friend",
+    "label": "friend.get_graph_recommendations(viewer,min(limit*4,100))",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts:42-67"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "par",
+    "operands": [
+     {
+      "guard": "",
+      "steps": [
+       {
+        "type": "message",
+        "from": "friend",
+        "to": "db",
+        "label": "Two-hop accepted graph; mutual count and Adamic-Adar",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts:35-102"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "",
+      "steps": [
+       {
+        "type": "message",
+        "from": "friend",
+        "to": "db",
+        "label": "Existing relationship IDs (including pending)",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/friend-service/src/infrastructure/repositories/friend-graph.repository.ts:13-32"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "",
+      "steps": [
+       {
+        "type": "message",
+        "from": "friend",
+        "to": "db",
+        "label": "Block exclusions in either direction",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/friend-service/src/infrastructure/repositories/user-block.repository.ts:83-99"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts:24-29"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "friend",
+    "to": "friend",
+    "label": "Exclude viewer/relationships/blocks; weighted normalized graph score (0.6 mutual / 0.4 Adamic-Adar); stable tie-break",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts:31-88"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "friend",
+    "to": "user",
+    "label": "Ranked candidates + exclusion IDs",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/friend-service/src/application/use-cases/get-graph-friend-recommendations.use-case.ts:90-101"
+    ]
+   },
+   {
+    "type": "ref",
+    "label": "Validate graph response/exclusions; failures propagate; do not bypass graph policy with fallback",
+    "participants": [
+     "user"
+    ],
+    "evidence": [
+     "backend:apps/user-service/src/infrastructure/adapters/friend-discovery-service.adapter.ts:69-103"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "opt",
+    "operands": [
+     {
+      "guard": "graphResponse.candidates.length > 0",
+      "steps": [
+       {
+        "type": "message",
+        "from": "user",
+        "to": "userdb",
+        "label": "Hydrate graph profiles by candidate IDs",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:49-53"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:49-53"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "user",
+    "label": "Drop missing username; preserve graph order; slice to limit",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:55-73"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "opt",
+    "operands": [
+     {
+      "guard": "remaining > 0",
+      "steps": [
+       {
+        "type": "message",
+        "from": "user",
+        "to": "userdb",
+        "label": "Public fallback; exclude all graph candidates and exclusion IDs",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:75-87"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:75-87"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "user",
+    "label": "Attach rank, mutual count, candidate sources and session provenance",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:89-122"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "user",
+    "to": "gateway",
+    "label": "Recommended public profiles",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/user-service/src/application/use-cases/get-recommended-public-users.use-case.ts:146-146"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "gateway",
+    "to": "mobile",
+    "label": "HTTP recommendation array",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/api-gateway/src/users/user.controller.ts:112-120"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mobile",
+    "to": "mobile",
+    "label": "Viewer/session query cache; filter accepted friends and blocked IDs",
+    "sort": "synchCall",
+    "evidence": [
+     "mobile:src/hooks/useRecommendedUsers.ts:36-54"
+    ]
+   }
+  ],
+  "notes": [
+   "Logical awaited RabbitMQ RPC; authenticate/route role guards are abstracted at entry.",
+   "Unconditional parallel operand guards are empty; branch names are conveyed by message labels.",
+   "Action-driven recommendation exclusions are downstream mobile mutation behavior (mobile:src/hooks/useFriendMutations.ts:136-159), not mandatory steps in every recommendation request."
+  ]
+ },
+ {
+  "id": "33-cache-invalidation",
+  "title": "33 · Versioned Reel cache invalidation versus stale fill",
+  "subtitle": "One invalidation-before-fill interleaving; protects entity-cache overwrite and read quarantine.",
+  "participants": [
+   {
+    "id": "reader",
+    "label": "In-flight Content feed reader",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:581-615"
+    ]
+   },
+   {
+    "id": "mutator",
+    "label": "Content mutator",
+    "kind": "service",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/content.repository.ts:1008-1030"
+    ]
+   },
+   {
+    "id": "db",
+    "label": "Content DB",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:593-599"
+    ]
+   },
+   {
+    "id": "cache",
+    "label": "Cache adapter / Redis entity",
+    "kind": "store",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:162-230"
+    ]
+   }
+  ],
+  "steps": [
+   {
+    "type": "message",
+    "from": "reader",
+    "to": "db",
+    "label": "Read eligible Reel snapshot before concurrent invalidation",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:593-599"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "db",
+    "to": "reader",
+    "label": "Already-read snapshot with incomingVersion",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:593-599"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "mutator",
+    "to": "cache",
+    "label": "invalidateReels: local quarantine first",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:202-207"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "cache",
+    "to": "cache",
+    "label": "Atomic Lua tombstone; preserve existing version else Redis TIME; TTL 3h",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:58-86"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "cache",
+    "to": "mutator",
+    "label": "Successful invalidation: remove local quarantine",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:220-225"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "reader",
+    "to": "cache",
+    "label": "saveReels: only public && COMPLETED; Lua incomingVersion",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:162-182"
+    ]
+   },
+   {
+    "type": "frame",
+    "operator": "alt",
+    "operands": [
+     {
+      "guard": "versioned tombstone && incomingVersion <= version",
+      "steps": [
+       {
+        "type": "message",
+        "from": "cache",
+        "to": "cache",
+        "label": "Reject overwrite; return 0; keep tombstone",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:43-44"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "versioned tombstone && incomingVersion > version",
+      "steps": [
+       {
+        "type": "message",
+        "from": "cache",
+        "to": "cache",
+        "label": "SET versioned Reel with TTL; return 1",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:47-55"
+        ]
+       },
+       {
+        "type": "message",
+        "from": "cache",
+        "to": "cache",
+        "label": "Clear local invalidated-ID set only when result == 1",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:189-193"
+        ]
+       }
+      ]
+     },
+     {
+      "guard": "legacy unversioned tombstone",
+      "steps": [
+       {
+        "type": "message",
+        "from": "cache",
+        "to": "cache",
+        "label": "Always reject overwrite; return 0",
+        "sort": "synchCall",
+        "evidence": [
+         "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:39-41"
+        ]
+       }
+      ]
+     }
+    ],
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:39-55"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "cache",
+    "to": "reader",
+    "label": "saveReels returns void (not acceptance guarantee)",
+    "sort": "reply",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:162-199"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "reader",
+    "to": "reader",
+    "label": "May still return its already-read fetchedReels after eligibility filter",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:608-615"
+    ]
+   },
+   {
+    "type": "message",
+    "from": "reader",
+    "to": "cache",
+    "label": "Later getReels: tombstone or local quarantine yields miss",
+    "sort": "synchCall",
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:133-153"
+    ]
+   },
+   {
+    "type": "ref",
+    "label": "parseReel rejects invalidated/nonpublic/noncompleted values",
+    "participants": [
+     "cache"
+    ],
+    "evidence": [
+     "backend:apps/content-service/src/infrastructure/repositories/redis-recommendation-feed-cache.repository.ts:267-299"
+    ]
+   }
+  ],
+  "notes": [
+   "This is not a guarantee against every stale response: saveReels returns void and the reader can still use its already-read snapshot.",
+   "The pictured alt is scoped to an existing tombstone. For non-tombstone values, currentVersion > incomingVersion also rejects.",
+   "Invalidation failure retains local quarantine; successful newer fill clears it."
+  ]
+ }
+]

@@ -13,8 +13,8 @@ from drawio_kit import Page, ev, mev, install  # noqa: E402
 
 def page_01():
     p = Page('01-microservices-architecture', '01 · Velora high-level architecture', 1900, 1560,
-             'System overview · clients, edge, entry services, RabbitMQ bus, domain services, owned data and external providers',
-             scope='Velora-Mobile plus the backend containers in docker-compose.yml and the managed providers they call')
+             'The whole system on one page · the phone app, the edge, the two entry services, the message bus, the services that own their data, and the outside providers',
+             scope='Velora-Mobile plus the backend containers in docker-compose.yml and the managed providers they call; call and notification services are outside the design')
     BX, BW = 215, 1470  # bus x and width
 
     def bus_x(x):
@@ -34,53 +34,41 @@ def page_01():
     p.edge('cloudflare', 'nginx', 'tunnel', 'sync', exit=(0.93, 0.5), entry=(0, 0.5))
 
     # ---- entry services ---------------------------------------------------------------
-    p.zone('z-entry', BX, 300, BX + BW - 215 + 0, 230, 'Entry services', 'api')
-    p.service('gateway', 245, 345, 200, 80, 'API Gateway', 'REST · JWT · roles · rate limits\nvalidated DTOs', 'api',
+    p.zone('z-entry', BX, 300, 845, 230, 'Entry services · the only containers the phone talks to', 'api')
+    p.service('gateway', 245, 345, 200, 80, 'API Gateway', 'REST · login check · rate limits\ninput validation', 'api',
               [ev('apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync')])
     p.store('redis-rl', 255, 450, 100, 60, 'Redis', 'rate limits', [ev('apps/api-gateway/src/api-gateway.module.ts', r'createRateLimitRedis')])
-    p.service('conversation', 700, 345, 200, 80, 'Conversation Service', 'Socket.IO chat · bot turns\nmessages · reactions', 'realtime',
+    p.service('conversation', 700, 345, 220, 80, 'Conversation Service', 'AI agent chat · shared Reels\nSocket.IO · messages', 'realtime',
               [ev('apps/conversation-service/src/conversation-service.module.ts', r'@Module')])
     p.store('mongo', 710, 450, 110, 60, 'MongoDB', 'replica set rs0', [ev('docker-compose.yml', r'image: mongo:8\.0')])
-    p.service('call', 1150, 345, 200, 80, 'Call Service', 'Socket.IO /call · signalling\nmedia-node placement', 'realtime',
-              [ev('apps/call-service/src/call-service.module.ts', r'@Module')])
-    p.store('call-db', 1160, 450, 100, 60, 'PostgreSQL', 'call state', [ev('apps/call-service/prisma/schema.prisma', r'CALL_DATABASE_URL')])
-    p.service('media-node', 1430, 345, 230, 80, 'mediasoup media nodes', 'WebRTC SFU · UDP 40000\ncall-media-1 · call-media-2', 'realtime',
-              [ev('docker-compose.yml', r'call-media-1:'), ev('infra/call-media-node/README.md', None, 20)])
     p.edge('nginx', 'gateway', 'REST', 'sync', exit=(0.2, 1), entry=(0.5, 0), points=[(780, 270), (345, 270)])
-    p.edge('nginx', 'conversation', 'Socket.IO', 'sync', exit=(0.5, 1), entry=(0.5, 0), points=[(840, 270), (800, 270)])
-    p.edge('nginx', 'call', '/call Socket.IO', 'sync', exit=(0.8, 1), entry=(0.5, 0), points=[(900, 270), (1250, 270)])
-    for a, b in [('gateway', 'redis-rl'), ('conversation', 'mongo'), ('call', 'call-db')]:
-        p.edge(a, b, '', 'data', exit=(0.1, 1), entry=(0.5, 0))
-    p.edge('call', 'media-node', 'RPC', 'media', exit=(1, 0.5), entry=(0, 0.5))
+    p.edge('nginx', 'conversation', 'Socket.IO', 'sync', exit=(0.6, 1), entry=(0.5, 0), points=[(860, 270), (810, 270)])
+    for a, b2 in [('gateway', 'redis-rl'), ('conversation', 'mongo')]:
+        p.edge(a, b2, '', 'data', exit=(0.1, 1), entry=(0.5, 0))
 
     # ---- RabbitMQ bus -----------------------------------------------------------------
-    p.queue('bus', BX, 575, BW, 60, 'RabbitMQ', 'service RPC · domain events · durable Reel media / index queues with retry and dead-letter queues',
+    p.queue('bus', BX, 575, BW, 60, 'RabbitMQ', 'every call between services · domain events · durable Reel media and index queues with retries and dead-letter queues',
             [ev('docker-compose.yml', r'image: rabbitmq:3\.13'), ev('apps/api-gateway/src/api-gateway.module.ts', r'user_queue')])
     p.edge('gateway', 'bus', 'RPC', 'async', exit=(0.85, 1), entry=(bus_x(415), 0))
-    p.edge('conversation', 'bus', 'AI RPC · events', 'async', exit=(0.85, 1), entry=(bus_x(870), 0))
-    p.edge('call', 'bus', 'RPC', 'async', exit=(0.85, 1), entry=(bus_x(1320), 0))
+    p.edge('conversation', 'bus', 'AI request · events', 'async', exit=(0.85, 1), entry=(bus_x(900), 0))
 
-    # ---- identity, social and notifications ---------------------------------------------
-    p.zone('z-id', BX, 680, 1085, 370, 'Identity · social · push', 'domain')
+    # ---- identity and social ----------------------------------------------------------
+    p.zone('z-id', BX, 680, 1085, 370, 'Identity and social', 'domain')
     svc = [('auth', 245, 'Auth Service', 'accounts · sessions · roles\nGoogle sign-in', 'apps/auth-service/src/auth-service.module.ts'),
-           ('user', 435, 'User Service', 'profiles · discovery', 'apps/user-service/src/user-service.module.ts'),
-           ('friend', 625, 'Friend Service', 'requests · friends · blocks', 'apps/friend-service/src/friend-service.module.ts'),
-           ('notify', 815, 'Notification Service', 'push jobs · retry · push tokens', 'apps/notification-service/src/notification-service.module.ts'),
-           ('mail', 1050, 'Mail Service', 'confirmation · reset mail', 'apps/mail-service/src/mail-service.module.ts')]
+           ('user', 510, 'User Service', 'profiles · discovery', 'apps/user-service/src/user-service.module.ts'),
+           ('friend', 775, 'Friend Service', 'requests · friends · blocks', 'apps/friend-service/src/friend-service.module.ts'),
+           ('mail', 1040, 'Mail Service', 'confirmation · reset mail', 'apps/mail-service/src/mail-service.module.ts')]
     for sid, x, title, detail, file in svc:
-        p.service(sid, x, 725, 170, 85, title, detail, 'domain', [ev(file, r'@Module')])
-    for sid, db, x, detail, file, var in [('auth', 'auth-db', 255, 'auth DB · homelab', 'auth', 'AUTH_DATABASE_URL'), ('user', 'user-db', 445, 'user DB · Aiven', 'user', 'USER_DATABASE_URL'),
-                                          ('friend', 'friend-db', 635, 'friend DB · Aiven', 'friend', 'FRIEND_DATABASE_URL'), ('notify', 'notify-db', 825, 'notification DB', 'notification', 'NOTIFICATION_DATABASE_URL')]:
-        p.store(db, x, 845, 120, 70, 'PostgreSQL', detail, [ev(f'apps/{file}-service/prisma/schema.prisma', var)])
-        p.edge(sid, db, '', 'data', exit=(0.3, 1), entry=(0.5, 0))
-    for sid, x, lane in [('auth', 245, 398), ('user', 435, 570), ('friend', 625, 760), ('notify', 815, 951), ('mail', 1050, 1175)]:
-        w = 170
-        p.edge('bus', sid, '', 'async', exit=(bus_x(lane), 1), entry=((lane - x) / w, 0))
-    p.cloud('google', 320, 960, 156, 80, 'Google', 'sign-in identity', [ev('apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts', None, 30)])
-    p.cloud('fcm', 880, 960, 150, 80, 'FCM · APNs VoIP', 'push delivery', [ev('apps/notification-service/src/infrastructure/gateways/firebase-admin.gateway.ts', None, 30)])
-    p.cloud('resend', 1065, 960, 140, 80, 'Resend', 'transactional email', [ev('apps/mail-service/src/infrastructure/adapters/resend.adapter.ts', None, 30)])
-    p.edge('auth', 'google', 'OAuth', 'external', exit=(0.9, 1), entry=(0.5, 0))
-    p.edge('notify', 'fcm', 'push', 'external', exit=(0.8, 1), entry=(0.5, 0))
+        p.service(sid, x, 725, 235, 85, title, detail, 'domain', [ev(file, r'@Module')])
+    for sid, db, x, detail, file, var in [('auth', 'auth-db', 255, 'auth DB · homelab', 'auth', 'AUTH_DATABASE_URL'), ('user', 'user-db', 520, 'user DB · Aiven', 'user', 'USER_DATABASE_URL'),
+                                          ('friend', 'friend-db', 785, 'friend DB · Aiven', 'friend', 'FRIEND_DATABASE_URL')]:
+        p.store(db, x, 845, 130, 70, 'PostgreSQL', detail, [ev(f'apps/{file}-service/prisma/schema.prisma', var)])
+        p.edge(sid, db, '', 'data', exit=(0.2, 1), entry=(0.5, 0))
+    for sid, x, lane in [('auth', 245, 362), ('user', 510, 627), ('friend', 775, 892), ('mail', 1040, 1157)]:
+        p.edge('bus', sid, '', 'async', exit=(bus_x(lane), 1), entry=((lane - x) / 235, 0))
+    p.cloud('google', 335, 960, 130, 80, 'Google', 'sign-in identity', [ev('apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts', None, 30)])
+    p.cloud('resend', 1090, 960, 140, 80, 'Resend', 'transactional email', [ev('apps/mail-service/src/infrastructure/adapters/resend.adapter.ts', None, 30)])
+    p.edge('auth', 'google', 'OAuth', 'external', exit=(0.66, 1), entry=(0.5, 0))
     p.edge('mail', 'resend', 'API', 'external', exit=(0.5, 1), entry=(0.5, 0))
 
     # ---- operations --------------------------------------------------------------------
@@ -95,7 +83,7 @@ def page_01():
     p.edge('alloy', 'grafana', '', 'ops', exit=(1, 0.5), entry=(0, 0.5))
 
     # ---- content, media, search and AI -------------------------------------------------
-    p.zone('z-core', BX, 1100, 1235, 420, 'Content · media · search · AI', 'processing')
+    p.zone('z-core', BX, 1100, 1235, 420, 'Content, media, search and AI', 'processing')
     core = [('content', 245, 'Content Service', 'reels · series · shares · feed\nsubtitles · outbox', 'api', 'apps/content-service/src/content-service.module.ts'),
             ('media', 445, 'Media Service', 'presigned upload URLs\nupload lease', 'processing', 'apps/media-service/src/media-service.module.ts'),
             ('processing', 645, 'Media Processing', 'FFmpeg HLS · evidence jobs\nshort + long workers', 'processing', 'apps/media-processing-service/src/media-processing-service.module.ts'),
@@ -105,7 +93,7 @@ def page_01():
     for sid, x, title, detail, role, file in core:
         evidence = [ev(file, r'@Module')] if file else [ev('docker-compose.yml', r'rag-embedding:'), ev('docker-compose.yml', r'rag-reranker:')]
         p.service(sid, x, 1150, 180, 90, title, detail, role, evidence)
-    for sid, x, lane in [('content', 245, 200), ('media', 445, 615), ('processing', 645, 805), ('indexing', 845, 1040), ('ai', 1245, 1305)]:
+    for sid, x, lane in [('content', 245, 200), ('media', 445, 495), ('processing', 645, 760), ('indexing', 845, 1025), ('ai', 1245, 1305)]:
         entry = ((lane - x) / 180, 0) if x <= lane <= x + 180 else (0.5, 0)
         mid = 1075
         pts = [(lane, mid), (x + entry[0] * 180, mid)] if lane != x + entry[0] * 180 else []
@@ -138,11 +126,10 @@ def page_01():
     p.edge('ai', 'ollama', '', 'external', exit=(1, 0.5), entry=(0, 0.5), points=[(1440, 1195), (1440, 1312)])
     p.edge('ai', 'langfuse', '', 'external', exit=(1, 0.8), entry=(0, 0.5), points=[(1465, 1222), (1465, 1432)])
 
-    # direct media path
     p.edge('mobile', 'r2', 'HLS GET · original PUT', 'external', exit=(0, 0.85), entry=(0, 0.5), points=[(150, 212), (150, 1405), (485, 1405), (485, 1325)])
-    p.legend(1710, 110, [('sync', 'Synchronous call'), ('async', 'RabbitMQ RPC or job'), ('data', 'Owned data access'),
-                         ('media', 'Realtime media control'), ('external', 'Provider / direct-to-storage path'), ('ops', 'Metrics and logs')])
-    p.text('Every service owns its data; services never read each other’s stores. All inter-service calls go through RabbitMQ.', 215, 1530, 1470, 20, size=11, color='#475569')
+    p.legend(1110, 300, [('sync', 'Direct request'), ('async', 'Message over RabbitMQ'), ('data', 'Reads and writes its own data'),
+                         ('external', 'Outside provider or direct-to-storage'), ('ops', 'Metrics and logs')])
+    p.text('Reading guide: every service owns its data and never reads another service\'s store. Services talk to each other only through RabbitMQ. Videos go straight between the phone and storage, never through the gateway.', 215, 1530, 1470, 20, size=11, color='#475569')
     return p.element()
 
 
@@ -150,19 +137,17 @@ def page_02():
     p = Page('02-application-architecture', '02 · Service communication and durable job topology', 1900, 1480,
              'Who consumes which RabbitMQ queue, who calls whom, and how the Reel media and index jobs flow with retries and dead letters',
              scope='docker-compose.yml services, Nest ClientsModule registrations, libs/common reel queue constants')
-    p.zone('z-rpc', 40, 100, 1820, 470, 'Service RPC map · every call goes through RabbitMQ (ClientProxy.send / emit); the gateway also reaches Notification over HTTP', 'messaging')
+    p.zone('z-rpc', 40, 100, 1820, 470, 'Who calls whom · every call between services goes through RabbitMQ (ClientProxy.send / emit)', 'messaging')
     svc = [
-        ('gateway', 'API Gateway', 'HTTP :3000', 'user · auth · media · conversation · content · ai · friend · call · monitoring', 'api', 'apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync'),
+        ('gateway', 'API Gateway', 'HTTP :3000', 'user · auth · media · conversation · content · ai · friend · monitoring', 'api', 'apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync'),
         ('auth', 'Auth Service', 'auth_queue', 'user · mail', 'domain', 'apps/auth-service/src/auth-service.module.ts', r'MAIL_SERVICE_CLIENT'),
         ('user', 'User Service', 'user_queue', 'auth · friend · monitoring', 'domain', 'apps/user-service/src/user-service.module.ts', r'@Module'),
         ('friend', 'Friend Service', 'friend_queue', 'user · conversation', 'domain', 'apps/friend-service/src/friend-service.module.ts', r'CONVERSATION_SERVICE_RMQ'),
         ('mail', 'Mail Service', 'mail_queue', '(no outgoing RPC) · Resend API', 'domain', 'apps/mail-service/src/mail-service.module.ts', r'@Module'),
         ('content', 'Content Service', 'content_queue', 'ai · conversation · friend · index · user · monitoring', 'api', 'apps/content-service/src/content-service.module.ts', r'@Module'),
-        ('conversation', 'Conversation Service', 'conversation_queue', 'ai · auth · media · user · HTTP → notification', 'realtime', 'apps/conversation-service/src/conversation-service.module.ts', r'AI_SERVICE_RMQ'),
+        ('conversation', 'Conversation Service', 'conversation_queue', 'ai · auth · media · user', 'realtime', 'apps/conversation-service/src/conversation-service.module.ts', r'AI_SERVICE_RMQ'),
         ('ai', 'AI Service', 'ai_queue', 'content · conversation · index · monitoring', 'ai', 'apps/ai-service/src/ai-service.module.ts', r'CONTENT_RMQ'),
         ('media', 'Media Service', 'media_queue', 'content · media-processing', 'processing', 'apps/media-service/src/media-service.module.ts', r'MEDIA_PROCESSING_RMQ'),
-        ('notify', 'Notification Service', 'notification_queue · HTTP :3015', '(consumer) · FCM · APNs VoIP', 'domain', 'apps/notification-service/src/main.ts', r'notification_queue'),
-        ('call', 'Call Service', 'call_queue · Socket.IO /call', 'auth · conversation · notification · Redis registry', 'realtime', 'apps/call-service/src/call-service.module.ts', r'NOTIFICATION_SERVICE_RMQ'),
         ('processing', 'Media Processing', 'reel media queues · processing_queue', 'content · conversation · monitoring', 'processing', 'apps/media-processing-service/src/main.ts', r'getEvidenceQueuesForWorkerLane'),
         ('indexing', 'Reel Indexing', 'reel index queues · query queue', 'ai · content · monitoring', 'ai', 'apps/reel-indexing-service/src/main.ts', r'REEL_INDEX_QUERY_QUEUE'),
         ('monitoring', 'Monitoring Service', 'monitoring_queue · HTTP', 'content · Prometheus · Loki', 'ops', 'apps/monitoring-service/src/monitoring-service.module.ts', r'CONTENT_SERVICE_RMQ'),
@@ -244,14 +229,14 @@ def page_02a():
     p.edge('cloudflare', 'cloudflared', 'tunnel', 'sync', exit=(0.5, 1), entry=(0.5, 0), points=[(455, 280), (155, 280)])
     p.edge('cloudflared', 'nginx', '', 'sync', exit=(1, 0.5), entry=(0, 0.5))
     p.zone('h-entry', 420, 320, 790, 120, 'Entry services', 'api')
-    grid(p, 435, 355, [('gateway', 'api-gateway', ':3000', 'api', [ev(D, r'api-gateway:')]), ('conv', 'conversation-service', ':3005 · Socket.IO', 'realtime', [ev(D, r'conversation-service:')]),
-                       ('call', 'call-service ×2', ':3007 · /call', 'realtime', [ev(D, r'replicas: 2')]), ('media1', 'call-media-1', 'mediasoup · UDP 40000', 'realtime', [ev(D, r'call-media-1:')])], 4, 180, 62)
+    grid(p, 435, 355, [('gateway', 'api-gateway', ':3000', 'api', [ev(D, r'api-gateway:')]), ('conv', 'conversation-service', ':3005 · Socket.IO', 'realtime', [ev(D, r'conversation-service:')])
+                       ], 2, 300, 62)
     p.edge('nginx', 'gateway', '', 'sync', exit=(1, 0.2), entry=(0, 0.2), points=[(400, 367), (410, 367)])
 
     p.zone('h-app', 70, 460, 760, 170, 'Domain services', 'domain')
     grid(p, 85, 495, [('auth', 'auth-service', 'auth DB', 'domain', [ev(D, r'  auth-service:')]), ('user', 'user-service', 'user DB', 'domain', [ev(D, r'  user-service:')]),
                       ('friend', 'friend-service', 'friend DB', 'domain', [ev(D, r'  friend-service:')]), ('content', 'content-service', 'content DB', 'domain', [ev(D, r'  content-service:')]),
-                      ('media', 'media-service', 'presign', 'domain', [ev(D, r'  media-service:')]), ('notify', 'notification-service', 'notification DB', 'domain', [ev(D, r'  notification-service:')]),
+                      ('media', 'media-service', 'presign', 'domain', [ev(D, r'  media-service:')]),
                       ('monitor', 'monitoring-service', 'ops API', 'ops', [ev(D, r'  monitoring-service:')])], 4, 170, 52)
     p.zone('h-work', 850, 460, 360, 170, 'Reel workers and AI', 'processing')
     grid(p, 865, 495, [('proc', 'media-processing', 'SHORT + LONG lanes', 'processing', [ev(D, r'media-processing-long-service:')]), ('idx', 'reel-indexing', 'SHORT + LONG lanes', 'ai', [ev(D, r'reel-indexing-long-service:')]),
@@ -261,15 +246,14 @@ def page_02a():
                       ('ollamav', 'rag-vision', 'Ollama · profile', 'ai', [ev(D, r'rag-vision:')])], 3, 160, 62)
     p.zone('h-data', 70, 800, 920, 240, 'Stateful services', 'data')
     grid(p, 85, 835, [('rabbit', 'rabbitmq 3.13', 'queues · exchanges', 'messaging', [ev(D, r'image: rabbitmq:3\.13')]), ('redis', 'redis 8.6', 'caches · limits · registry', 'data', [ev(D, r'image: redis:8\.6')]),
-                      ('mongo', 'mongo 8.0 · rs0', 'chat messages', 'data', [ev(D, r'image: mongo:8\.0')]), ('pg', 'postgres 18.6', 'auth · content · notification · call DBs', 'data', [ev(D, r'image: postgres:18\.6')]),
+                      ('mongo', 'mongo 8.0 · rs0', 'chat messages', 'data', [ev(D, r'image: mongo:8\.0')]), ('pg', 'postgres 18.6', 'auth DB · content DB', 'data', [ev(D, r'image: postgres:18\.6')]),
                       ('idxpg', 'reel-indexing-postgres', 'pgvector 0.8.7', 'data', [ev('docker-compose.qdrant.yml', r'reel-indexing-postgres:')]), ('qdrant', 'qdrant 1.20', 'vector search · TLS', 'data', [ev(D, r'image: qdrant/qdrant')])], 3, 285, 80)
     p.zone('h-ops', 1010, 800, 200, 240, 'Observability', 'ops')
     grid(p, 1025, 835, [('prom', 'prometheus', 'scrape · rules', 'ops', [ev(D, r'image: prom/prometheus')]), ('alloy', 'alloy', 'logs → Loki', 'ops', [ev(D, r'image: grafana/alloy')]), ('nodeexp', 'node-exporter', 'host metrics', 'ops', [ev(D, r'image: prom/node-exporter')])], 1, 170, 52)
 
     # ---- velora-node-2 ---------------------------------------------------------------------
     p.node('node2', 1430, 250, 440, 450, 'velora-node-2 · VPS, France', 'tailnet 100.86.68.16 · public IPv4', [ev('infra/mongo-replica/README.md', None, 12)])
-    grid(p, 1450, 325, [('mail', 'mail-service', 'mail_queue · Resend', 'domain', [ev('infra/friend-mail-node/README.md', None, 14)]), ('media2', 'call-media-2', 'standby SFU · UDP 40000', 'realtime', [ev('infra/call-media-node/README.md', None, 14)]),
-                        ('mrep', 'mongo secondary', 'non-voting · priority 0', 'data', [ev('infra/mongo-replica/README.md', None, 14)]), ('prep', 'postgres standby', 'streaming replica', 'data', [ev('infra/postgres-replica/README.md', None, 14)]),
+    grid(p, 1450, 325, [('mail', 'mail-service', 'mail_queue · Resend', 'domain', [ev('infra/friend-mail-node/README.md', None, 14)]), ('mrep', 'mongo secondary', 'non-voting · priority 0', 'data', [ev('infra/mongo-replica/README.md', None, 14)]), ('prep', 'postgres standby', 'streaming replica', 'data', [ev('infra/postgres-replica/README.md', None, 14)]),
                         ('grafana', 'Grafana 13', 'dashboards', 'ops', [ev('infra/grafana-node/README.md', None, 14)]), ('loki', 'Loki 3.7', '72 h retention', 'ops', [ev('infra/loki-node/README.md', None, 14)]),
                         ('langfuse', 'Langfuse v4', 'AI traces · ClickHouse', 'ops', [ev('infra/langfuse-node/README.md', None, 14)]), ('backup', 'backup worker', 'nightly dumps', 'ops', [ev('infra/backup-worker/README.md', None, 14)])], 2, 195, 66, 20, 16)
     p.node('winlap', 1430, 735, 440, 175, 'Windows laptop · WSL2', 'Ubuntu 24.04 · same LAN as the homelab', [ev('infra/windows-node/README.md', None, 12)])
@@ -279,7 +263,7 @@ def page_02a():
     p.box('gemma', 1450, 1025, 195, 66, 'Ollama velora-gemma4', 'gemma4:e2b-it-qat', 'ai', [ev('docs/model-host.md', None, 12)])
     p.box('muse', 1660, 1025, 195, 66, 'muse2api (optional)', 'indexing text roles', 'ai', [ev('.env.example', r'AI_MUSE_ENABLED')], dashed=True)
 
-    p.edge('homelab', 'node2', 'Tailscale\nmail_queue · replication\nmetrics · logs · traces', 'async', exit=(1, 0.3), entry=(0, 0.3))
+    p.edge('homelab', 'node2', 'Tailscale\nmail queue · replication\nmetrics · logs · traces', 'async', exit=(1, 0.3), entry=(0, 0.3))
     p.edge('homelab', 'winlap', 'Tailscale\nreplication · metrics', 'data', exit=(1, 0.62), entry=(0, 0.5))
     p.edge('homelab', 'devlap', 'reverse SSH tunnels\nOllama :11435 · Muse :18611', 'external', exit=(1, 0.88), entry=(0, 0.5))
 
@@ -290,12 +274,11 @@ def page_02a():
     p.cloud('cfai', 470, 1180, 190, 95, 'Cloudflare Workers AI', 'frame analysis', [ev('apps/ai-service/src/infrastructure/adapters/cloudflare-vision.adapter.ts', None, 30)])
     p.cloud('groq', 710, 1180, 170, 95, 'Groq', 'Whisper ASR · vision fallback', [ev('apps/ai-service/src/infrastructure/adapters/groq-transcription.adapter.ts', None, 30)])
     p.cloud('resend', 930, 1180, 160, 95, 'Resend', 'transactional email', [ev('apps/mail-service/src/infrastructure/adapters/resend.adapter.ts', None, 30)])
-    p.cloud('fcm', 1140, 1180, 190, 95, 'FCM · APNs VoIP', 'push delivery', [ev('apps/notification-service/src/infrastructure/gateways/firebase-admin.gateway.ts', None, 30)])
     p.cloud('google', 1380, 1180, 150, 95, 'Google', 'sign-in identity', [ev('apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts', None, 30)])
     p.cloud('tiktok', 1580, 1180, 180, 95, 'TikTok CDN', 'optional HLS mirror', [ev('apps/media-processing-service/src/infrastructure/services/tiktok-cdn.service.ts', None, 30)])
     p.edge('homelab', 'aiven', 'TLS', 'external', exit=(0.08, 1), entry=(0.5, 0))
     p.edge('homelab', 'r2', 'S3 API', 'external', exit=(0.28, 1), entry=(0.5, 0))
-    p.text('Homelab services also call the model, mail, push, identity and CDN providers directly over HTTPS.', 470, 1295, 1290, 20, size=11, color='#475569')
+    p.text('Homelab services also call the model, mail, identity and CDN providers directly over HTTPS.', 470, 1295, 1290, 20, size=11, color='#475569')
     p.legend(1450, 95, [('sync', 'Client request path'), ('async', 'RabbitMQ across hosts'), ('external', 'Tunnel or provider API'), ('data', 'Replication')], title='Legend')
     return p.element()
 
@@ -310,7 +293,7 @@ def page_02b():
     p.edge('dev', 'github', 'push · pull request', 'sync', exit=(1, 0.5), entry=(0, 0.5))
     p.zone('z-ci', 400, 90, 420, 520, 'Homelab CI · deploy.yml · every PR and master push', 'processing')
     p.box('detect', 420, 140, 380, 70, 'detect-changes', 'which application images are affected', 'processing', [ev(W, r'Detect affected application images')])
-    p.box('validate', 420, 235, 380, 110, 'validate', 'compose + nginx validation · lint · unit and call E2E tests\nAI RAG regression · Nest build · Swagger DTO check', 'processing', [ev(W, r'name: Validate Docker Compose'), ev(W, r'Build all Nest applications')])
+    p.box('validate', 420, 235, 380, 110, 'validate', 'compose + nginx validation · lint · unit and end-to-end tests\nAI RAG regression · Nest build · Swagger DTO check', 'processing', [ev(W, r'name: Validate Docker Compose'), ev(W, r'Build all Nest applications')])
     p.box('buildci', 420, 370, 380, 80, 'build-images (arm64, no publish)', 'proves every changed Dockerfile builds · cache read from GHCR', 'processing', [ev(W, r'Build ARM64 image without publishing')])
     p.text('Concurrency: one CI run per PR; pushes to master run independently.', 420, 470, 380, 40, size=11, color='#475569')
     p.edge('github', 'detect', '', 'sync', exit=(1, 0.5), entry=(0, 0.5), points=[(380, 160), (380, 175)])
@@ -363,7 +346,7 @@ def page_02c():
              scope='infra/monitoring, infra/*-node READMEs, apps/monitoring-service, docker-compose.yml')
     P = 'infra/monitoring/prometheus/prometheus.yml'
     p.zone('z-targets', 40, 100, 520, 700, 'Sources', 'domain')
-    p.box('svc', 60, 150, 480, 95, 'Velora services', 'monitoring-service · conversation · call + call-media · notification · auth · user\nexpose /metrics · RabbitMQ metrics · reel, RAG and call telemetry events', 'domain', [ev(P, r'job_name: monitoring-service'), ev('apps/monitoring-service/src/infrastructure/controllers/reel-pipeline-telemetry.controller.ts', None, 30)])
+    p.box('svc', 60, 150, 480, 95, 'Velora services', 'monitoring-service · conversation · auth · user\nexpose /metrics · RabbitMQ metrics · reel pipeline and RAG telemetry events', 'domain', [ev(P, r'job_name: monitoring-service'), ev('apps/monitoring-service/src/infrastructure/controllers/reel-pipeline-telemetry.controller.ts', None, 30)])
     p.box('hostsrc', 60, 265, 480, 95, 'Host exporters', 'node-exporter on the homelab, velora-node-2 and the Windows laptop\nplus a read-only Docker proxy for per-container figures', 'domain', [ev(P, r'job_name: node-exporter'), ev('infra/vps-agent/README.md', None, 14)])
     p.box('probes', 60, 380, 480, 95, 'Operator probes', 'LaunchAgents on the homelab write textfile metrics:\nmodel-host probe, Muse gateway probe, deployment status', 'domain', [ev('scripts/deploy/model-host-probe', None, 14), ev('scripts/deploy/com.velora.muse-gateway-probe.plist', None, 10)])
     p.box('logsrc', 60, 500, 480, 95, 'Container logs', 'Alloy discovers Docker containers on the homelab and node-2\nlabels: service · container · host · environment', 'domain', [ev('infra/monitoring/alloy/config.alloy', r'discovery.docker')])
@@ -371,7 +354,7 @@ def page_02c():
     p.text('Reel indexing also exports Qdrant projection metrics checked by the reel-vector rules.', 60, 735, 480, 40, size=11, color='#475569')
 
     p.zone('z-store', 640, 100, 480, 700, 'Storage and alerting', 'ops')
-    p.service('prom', 670, 150, 420, 325, 'Prometheus', 'scrapes every source and evaluates the alert rules\nvelora-host · rag · reel-pipeline · auth · user\nnotification · monitoring-service · model-host\nmuse-gateway · reel-vector-projection', 'ops', [ev(P, r'job_name: prometheus'), ev('infra/monitoring/prometheus/rules/velora-monitoring.yml', r'name: velora-host')])
+    p.service('prom', 670, 150, 420, 325, 'Prometheus', 'scrapes every source and evaluates the alert rules\nvelora-host · rag · reel-pipeline · auth · user\nmonitoring-service · model-host\nmuse-gateway · reel-vector-projection', 'ops', [ev(P, r'job_name: prometheus'), ev('infra/monitoring/prometheus/rules/velora-monitoring.yml', r'name: velora-host')])
     p.service('loki', 670, 500, 420, 95, 'Loki · velora-node-2', '72 h retention · reached over Tailscale', 'ops', [ev('infra/loki-node/README.md', None, 14)])
     p.service('langfuse', 670, 620, 420, 95, 'Langfuse v4 · velora-node-2', 'ClickHouse · PostgreSQL · Redis · MinIO\nAPI on the tailnet · UI behind Cloudflare Access', 'ops', [ev('infra/langfuse-node/README.md', None, 14)])
     p.text('There is no Alertmanager: Prometheus evaluates the rules and monitoring-service reads the firing alerts from its API.', 670, 735, 420, 50, size=11, color='#475569')
@@ -388,7 +371,7 @@ def page_02c():
     p.actor('operator', 1680, 450, 40, 70, 'Operator')
     p.service('grafana', 1220, 500, 300, 95, 'Grafana · velora-node-2', 'dashboards on Prometheus and Loki', 'ops', [ev('infra/grafana-node/README.md', None, 14)])
     p.cloud('langui', 1220, 620, 300, 95, 'Langfuse UI', 'traces · scores · benchmarks', [ev('infra/langfuse-node/README.md', r'UI')], role='ops')
-    p.text('Dashboard data: hosts and containers, alerts, logs and the reel pipeline, call and RAG telemetry.', 1560, 600, 290, 60, size=11, color='#475569')
+    p.text('Dashboard data: hosts and containers, alerts, logs and the reel pipeline and RAG telemetry.', 1560, 600, 290, 60, size=11, color='#475569')
     p.edge('monitoring', 'prom', 'PromQL', 'ops', exit=(0, 0.3), entry=(1, 0.1))
     p.edge('monitoring', 'loki', 'LogQL', 'ops', exit=(0, 0.75), entry=(1, 0.5), points=[(1160, 240), (1160, 547)])
     p.edge('grafana', 'prom', '', 'ops', exit=(0, 0.3), entry=(1, 0.8), points=[(1140, 528), (1140, 410)])
@@ -449,41 +432,33 @@ def page_02d():
 
 
 def page_02e():
-    p = Page('02e-mobile-client-architecture', '02e · Velora-Mobile client architecture', 1900, 1240,
-             'The Expo / React Native app, its state and storage layers, and the channels it uses to reach the backend',
+    p = Page('02e-mobile-client-architecture', '02e · Velora-Mobile client architecture', 1900, 1000,
+             'The phone app in layers, and the three ways it reaches the backend: REST, the chat socket, and direct storage access for video',
              scope='Velora-Mobile repository (/home/hieucutedangyeu/Velora-Mobile); backend paths from the nginx and gateway configuration')
-    p.zone('z-ui', 40, 100, 640, 1080, 'Velora-Mobile · Expo SDK 54 · React Native 0.81', 'client')
-    p.box('screens', 65, 150, 590, 120, 'Screens · expo-router', '(tabs): home · reels · friends · calls · search · profile\nconversation · reels · series · users · call · settings · auth', 'client', [mev('package.json', r'expo-router'), mev('app/_layout.tsx', None, 30)])
-    p.box('providers', 65, 295, 590, 150, 'Providers and stores', 'AuthProvider · QueryProvider (TanStack Query) · SocketProvider\nCallProvider · SystemCallProvider · PushTokenLifecycleProvider\nNetworkProvider · ChatMediaUploadProvider · zustand stores', 'client', [mev('src/providers/SocketProvider.tsx', None, 30), mev('src/providers/AuthProvider.tsx', None, 30), mev('src/stores/authStore.ts', None, 20)])
-    p.box('api', 65, 470, 590, 110, 'REST client · axios', 'src/api/*.api.ts · one shared refresh request for concurrent 401s\nrefreshRequestId makes a lost refresh response recoverable', 'client', [mev('src/api/client.ts', None, 60)])
-    p.box('sock', 65, 600, 590, 90, 'socket.io-client', 'chat namespace and /call namespace · bot_token streaming · bot_reply_failed', 'client', [mev('src/providers/SocketProvider.tsx', None, 40), mev('src/lib/call/callSocket.ts', None, 30)])
-    p.box('rtc', 65, 710, 590, 90, 'mediasoup-client + react-native-webrtc', 'device, transports, producers and consumers for calls', 'client', [mev('src/lib/call/mediasoup.ts', None, 30)])
-    p.box('media', 65, 820, 590, 110, 'Playback and capture', 'expo-video HLS + expo-video-cache (offline copy) · expo-camera\nexpo-image-picker · video trim and crop · thumbnails · subtitles', 'client', [mev('src/lib/offlineReelVideoCache.ts', None, 30), mev('src/lib/reelSubtitles.ts', None, 30)])
-    p.box('native', 65, 950, 590, 100, 'Native modules', 'velora-system-calls (CallKit / ConnectionService) · Firebase Messaging\nGoogle Sign-In', 'client', [mev('package.json', r'react-native-firebase/messaging'), mev('src/lib/notifications/fcm.ts', None, 30)])
-    p.box('store', 65, 1075, 590, 90, 'Local persistence', 'WatermelonDB (messages · reels · calls) · SecureStore (tokens)\nreel event outbox · durable publish checkpoints · offline reel cache', 'data', [mev('src/database/schema.ts', None, 30), mev('src/lib/reelEventsOutbox.ts', None, 30), mev('src/lib/reelPublishPersistence.ts', None, 30)])
-    for a, b in [('screens', 'providers'), ('providers', 'api'), ('api', 'sock'), ('sock', 'rtc'), ('rtc', 'media'), ('media', 'native'), ('native', 'store')]:
+    p.zone('z-ui', 40, 100, 640, 840, 'Velora-Mobile · Expo SDK 54 · React Native 0.81', 'client')
+    p.box('screens', 65, 150, 590, 110, 'Screens · expo-router', 'tabs: home · reels · friends · search · profile\nconversation (AI agent) · reels · series · users · settings · sign-in', 'client', [mev('package.json', r'expo-router'), mev('app/_layout.tsx', None, 30)])
+    p.box('providers', 65, 285, 590, 120, 'Providers and stores', 'AuthProvider · QueryProvider (TanStack Query) · SocketProvider\nNetworkProvider · ChatMediaUploadProvider · zustand stores', 'client', [mev('src/providers/SocketProvider.tsx', None, 30), mev('src/providers/AuthProvider.tsx', None, 30), mev('src/stores/authStore.ts', None, 20)])
+    p.box('api', 65, 430, 590, 110, 'REST client · axios', 'src/api/*.api.ts · one shared refresh request when several calls get a 401\na refreshRequestId makes a lost refresh response recoverable', 'client', [mev('src/api/client.ts', None, 60)])
+    p.box('sock', 65, 565, 590, 90, 'socket.io-client', 'chat socket · the AI agent streams its answer as bot_token events\nbot_reply_failed reports a failed answer', 'client', [mev('src/providers/SocketProvider.tsx', None, 40)])
+    p.box('media', 65, 680, 590, 110, 'Playback and capture', 'expo-video HLS + expo-video-cache (offline copy) · expo-camera\nexpo-image-picker · video trim and crop · thumbnails · subtitles', 'client', [mev('src/lib/offlineReelVideoCache.ts', None, 30), mev('src/lib/reelSubtitles.ts', None, 30)])
+    p.box('store', 65, 815, 590, 100, 'Local persistence', 'WatermelonDB (messages · reels) · SecureStore (tokens)\nreel event outbox · durable publish checkpoints · offline reel cache', 'data', [mev('src/database/schema.ts', None, 30), mev('src/lib/reelEventsOutbox.ts', None, 30), mev('src/lib/reelPublishPersistence.ts', None, 30)])
+    for a, b in [('screens', 'providers'), ('providers', 'api'), ('api', 'sock'), ('sock', 'media'), ('media', 'store')]:
         p.edge(a, b, '', 'link', exit=(0.1, 1), entry=(0.1, 0))
 
     p.cloud('cf', 800, 150, 250, 100, 'Cloudflare', 'tunnel · CDN', [ev('docs/rate-limiting-and-guardrails.md', r'Production topology')])
-    p.service('nginx', 1130, 170, 200, 70, 'Nginx', 'REST · /socket.io · /call/socket.io', 'edge', [ev('infra/nginx/nginx.conf', r'upstream api_gateway')])
-    p.service('gw', 1400, 150, 220, 90, 'API Gateway', 'REST · JWT · rate limits', 'api', [ev('apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync')])
-    p.service('conv', 1400, 290, 220, 90, 'Conversation Service', 'chat · bot turns · presence', 'realtime', [ev('apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts', None, 30)])
-    p.service('call', 1400, 430, 220, 90, 'Call Service', 'signalling · media placement', 'realtime', [ev('apps/call-service/src/call-service.module.ts', r'@Module')])
-    p.service('sfu', 1400, 570, 220, 90, 'mediasoup media node', 'UDP 40000', 'realtime', [ev('docker-compose.yml', r'call-media-1:')])
-    p.cloud('r2', 1120, 820, 260, 110, 'Cloudflare R2 + CDN', 'presigned original PUT · HLS GET', [ev('apps/media-service/src/infrastructure/services/s3.service.ts', r'S3Client')])
-    p.cloud('fcm', 1120, 950, 260, 100, 'FCM · APNs VoIP', 'push · incoming-call wake-up', [ev('apps/notification-service/src/infrastructure/gateways/firebase-admin.gateway.ts', None, 30)])
-    p.cloud('goog', 1120, 1070, 260, 100, 'Google', 'sign-in identity token', [ev('apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts', None, 30)])
-    p.edge('api', 'cf', 'HTTPS REST', 'sync', exit=(1, 0.3), entry=(0, 0.3), points=[(740, 503), (740, 180)])
-    p.edge('sock', 'cf', 'WSS', 'sync', exit=(1, 0.5), entry=(0, 0.5), points=[(760, 645), (760, 200)])
+    p.service('nginx', 1130, 170, 200, 70, 'Nginx', 'REST · /socket.io', 'edge', [ev('infra/nginx/nginx.conf', r'upstream api_gateway')])
+    p.service('gw', 1400, 150, 220, 90, 'API Gateway', 'REST · login check · rate limits', 'api', [ev('apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync')])
+    p.service('conv', 1400, 290, 220, 90, 'Conversation Service', 'AI agent chat · shared Reels', 'realtime', [ev('apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts', None, 30)])
+    p.cloud('r2', 1120, 480, 260, 110, 'Cloudflare R2 + CDN', 'presigned original PUT · HLS GET', [ev('apps/media-service/src/infrastructure/services/s3.service.ts', r'S3Client')])
+    p.cloud('goog', 1120, 780, 260, 100, 'Google', 'sign-in identity token', [ev('apps/auth-service/src/application/use-cases/verify-google-token.use-case.ts', None, 30)])
+    p.edge('api', 'cf', 'HTTPS REST', 'sync', exit=(1, 0.3), entry=(0, 0.3), points=[(740, 463), (740, 180)])
+    p.edge('sock', 'cf', 'WSS', 'sync', exit=(1, 0.5), entry=(0, 0.5), points=[(760, 610), (760, 200)])
     p.edge('cf', 'nginx', '', 'sync', exit=(1, 0.5), entry=(0, 0.5))
     p.edge('nginx', 'gw', 'REST', 'sync', exit=(1, 0.3), entry=(0, 0.5), points=[(1370, 191), (1370, 195)])
     p.edge('nginx', 'conv', 'Socket.IO', 'sync', exit=(0.5, 1), entry=(0, 0.5), points=[(1230, 335)])
-    p.edge('nginx', 'call', '/call', 'sync', exit=(0.8, 1), entry=(0, 0.5), points=[(1290, 475)])
-    p.edge('rtc', 'sfu', 'WebRTC · UDP 40000', 'media', exit=(1, 0.5), entry=(0, 0.5), points=[(1000, 755), (1000, 615), (1370, 615)])
-    p.edge('media', 'r2', 'HLS GET · original PUT', 'external', exit=(1, 0.5), entry=(0, 0.5))
-    p.edge('native', 'fcm', 'receives push', 'external', exit=(1, 0.5), entry=(0, 0.5))
-    p.edge('native', 'goog', 'sign-in', 'external', exit=(1, 0.8), entry=(0, 0.5), points=[(740, 1030), (740, 1120)])
-    p.legend(1400, 800, [('sync', 'REST / Socket.IO via the edge'), ('media', 'WebRTC media'), ('external', 'Direct to provider'), ('link', 'Layer dependency')], title='Legend')
+    p.edge('media', 'r2', 'HLS GET · original PUT', 'external', exit=(1, 0.5), entry=(0, 0.5), points=[(800, 735), (800, 535)])
+    p.edge('providers', 'goog', 'sign-in', 'external', exit=(1, 0.5), entry=(0, 0.5), points=[(700, 345), (700, 830)])
+    p.legend(1400, 480, [('sync', 'REST / Socket.IO through the edge'), ('external', 'Direct to a provider'), ('link', 'Layer depends on the one below')], title='Legend')
     return p.element()
 
 

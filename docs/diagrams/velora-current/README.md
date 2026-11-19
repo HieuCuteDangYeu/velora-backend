@@ -85,5 +85,3 @@ Rebuild in this order: `build_and_modernize_all_diagrams.py` (sequence pages, fr
 | 78 | 43b · Guardrails around an AI turn: input, evidence, output and memory | [`43b-ai-guardrails.drawio.svg`](importable-svg/43b-ai-guardrails.drawio.svg) |
 | 79 | 43c · Recalling earlier messages, saved facts and photo descriptions | [`43c-ai-conversation-recall.drawio.svg`](importable-svg/43c-ai-conversation-recall.drawio.svg) |
 | 80 | 44a · Reel subtitles: translate once, store per language, serve to the viewer | [`44a-reel-subtitles.drawio.svg`](importable-svg/44a-reel-subtitles.drawio.svg) |
-| 81 | 45a · New-message push: recoverable outbox, durable job and device delivery | [`45a-message-push-delivery.drawio.svg`](importable-svg/45a-message-push-delivery.drawio.svg) |
-| 82 | 45b · Starting a call: signalling, media-node placement and incoming-call push | [`45b-call-setup-media-placement.drawio.svg`](importable-svg/45b-call-setup-media-placement.drawio.svg) |

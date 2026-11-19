@@ -1595,44 +1595,86 @@ SPLIT_MODELS = [
 import sequence_models_extra  # noqa: E402
 
 SPLIT_MODELS += sequence_models_extra.build(msg, note, frame)
+SPLIT_MODELS += json.loads((Path(__file__).resolve().parent / 'sequence_models_hand.json').read_text())
+
+# Visual language shared with the architecture pages: colour encodes the role of a participant only.
+KIND_STYLE = {
+    'client': ('#EAF3FF', '#2F80ED'), 'api': ('#F5F0FF', '#8B5CF6'), 'service': ('#ECFDF5', '#34A853'),
+    'store': ('#F1F5F9', '#475569'), 'external': ('#FFF5F5', '#EF4444'), 'messaging': ('#FFF7E6', '#F59E0B'),
+}
+FRAME_STYLE = {'alt': ('#EAF3FF', '#2F80ED'), 'opt': ('#ECFDF5', '#34A853'), 'loop': ('#FFF7E6', '#F59E0B'), 'par': ('#F5F0FF', '#8B5CF6'),
+               'ref': ('#FFFBEB', '#D97706')}
+INK = '#1F2937'
+
+
+def participant_kind(pid, label):
+    text = f'{pid} {label}'.lower()
+    if re.search(r'rabbit|queue|broker|channel|event', text) and 'database' not in text:
+        return 'messaging'
+    if re.search(r'database|\bdb\b|redis|mongo|store|securestore|\br2\b|storage|registry|cache|journal|postgres|qdrant|outbox', text):
+        return 'store'
+    if re.search(r'provider|llm|tei|vision|ffmpeg|langfuse|cloudflare|model|google|tools|embedding|resend|identity', text):
+        return 'external'
+    if re.search(r'mobile|app\b|creator|viewer|owner|sender|recipient|caller|client|user\b|operator|screen|player|device|cache \(tanstack|interceptor|hook|registry|bottom sheet|detail view|conversation room', text):
+        return 'client'
+    if 'gateway' in text:
+        return 'api'
+    return 'service'
+
+
+def wrap_estimate(text, width_px, px_per_char=7.2):
+    per_line = max(20, int(width_px / px_per_char))
+    lines = 0
+    for part in text.split('\n'):
+        lines += max(1, -(-len(part) // per_line))
+    return lines
+
 
 def build_diagram_element(m):
     p = ET.Element('diagram', id=m['id'], name=m['title'])
     g = ET.SubElement(p, 'mxGraphModel', dx='0', dy='0', grid='1', gridSize='10', guides='1', tooltips='1',
                       connect='1', arrows='1', fold='1', page='1', pageScale='1', pageWidth='2800', pageHeight='3800',
-                      background='#ffffff', adaptiveColors='auto',
+                      background='#ffffff', adaptiveColors='none',
                       conformance='Practical UML sequence subset; native draw.io figure styles', scopeDescription=m['title'])
     root = ET.SubElement(g, 'root')
     ET.SubElement(root, 'mxCell', id='0')
     ET.SubElement(root, 'mxCell', id='1', parent='0')
     count = 0
     order = 0
-    lanes = {a: 300 + i * 320 for i, (a, _) in enumerate(m['participants'])}
+    participants = [(x['id'], x['label']) if isinstance(x, dict) else tuple(x) for x in m['participants']]
+    lanes = {a: 300 + i * 320 for i, (a, _) in enumerate(participants)}
     width = max(max(lanes.values()) + 250, 1500)
+    base = f'html=1;fontFamily=Helvetica;fontSize=14;fontColor={INK};'
+    step = {'n': 0}
 
-    def cell(label, x, y, w, h, style=STYLE + 'text;whiteSpace=wrap;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;', e=(), **attrs):
+    def cell(label, x, y, w, h, style=base + 'text;whiteSpace=wrap;align=center;verticalAlign=middle;fillColor=none;strokeColor=none;', e=(), **attrs):
         nonlocal count
         count += 1
         c = ET.SubElement(root, 'mxCell', id=f'flow{count}', value=html.escape(label).replace('\n', '<br>'),
                           vertex='1', parent='1', style=style, sourceEvidence=json.dumps(e), **attrs)
-        ET.SubElement(c, 'mxGeometry', x=str(x), y=str(y), width=str(w), height=str(h), **{'as': 'geometry'})
+        ET.SubElement(c, 'mxGeometry', x=str(int(x)), y=str(int(y)), width=str(int(w)), height=str(int(h)), **{'as': 'geometry'})
         return c
 
     def edge(a, b, label, y, sort, e=()):
         nonlocal count, order
         count += 1
         order += 1
+        step['n'] += 1
+        numbered = f"{step['n']}. {label}"
         is_self = (a == b)
-        base_style = STYLE + 'endArrow=' + ('open;dashed=1;' if sort == 'reply' else 'open;endFill=0;' if sort == 'asynchSignal' else 'block;endFill=1;')
-        if is_self:
-            loop_w = 40
-            loop_h = 28
-            style = base_style + 'edgeStyle=orthogonalEdgeStyle;curved=0;rounded=0;orthogonalLoop=1;jettySize=auto;labelBackgroundColor=#ffffff;labelWidth=240;whiteSpace=wrap;align=left;'
+        if sort == 'reply':
+            arrow = 'endArrow=open;endFill=0;dashed=1;dashPattern=6 4;strokeColor=#94A3B8;strokeWidth=1.6;'
+        elif sort == 'asynchSignal':
+            arrow = 'endArrow=open;endFill=0;strokeColor=#D97706;strokeWidth=1.8;'
         else:
-            style = base_style + 'labelBackgroundColor=#ffffff;labelWidth=550;whiteSpace=wrap;align=center;'
-        c = ET.SubElement(root, 'mxCell', id=f'flow{count}', value=html.escape(label).replace('\n', '<br>'),
-                          edge='1', parent='1',
-                          style=style,
+            arrow = 'endArrow=block;endFill=1;strokeColor=#334155;strokeWidth=1.8;'
+        common = f'html=1;fontFamily=Helvetica;fontSize=14;fontColor={INK};labelBackgroundColor=#ffffff;whiteSpace=wrap;'
+        if is_self:
+            style = common + arrow + 'edgeStyle=orthogonalEdgeStyle;curved=0;rounded=1;orthogonalLoop=1;jettySize=auto;labelWidth=260;align=left;'
+        else:
+            style = common + arrow + 'labelWidth=560;align=center;'
+        c = ET.SubElement(root, 'mxCell', id=f'flow{count}', value=html.escape(numbered).replace('\n', '<br>'),
+                          edge='1', parent='1', style=style,
                           messageSort=sort, fromParticipant=a, toParticipant=b, order=str(order), sourceEvidence=json.dumps(e))
         geom = ET.SubElement(c, 'mxGeometry', relative='1', **{'as': 'geometry'})
         if is_self:
@@ -1647,59 +1689,85 @@ def build_diagram_element(m):
             ET.SubElement(geom, 'mxPoint', x=str(lanes[b]), y=str(y), **{'as': 'targetPoint'})
             ET.SubElement(geom, 'mxPoint', x='0', y='-25', **{'as': 'offset'})
 
+    def frame_style(op):
+        fill, stroke = FRAME_STYLE.get(op, FRAME_STYLE['alt'])
+        return (base + f'shape=umlFrame;fillColor={fill};strokeColor={stroke};strokeWidth=1.6;fillOpacity={55 if op == "ref" else 40};'
+                f'fontColor={stroke};fontStyle=1;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;')
+
     def render_steps(items, y, depth=0):
-        for s in items:
-            if s['type'] == 'message':
-                edge(s['from'], s['to'], s['label'], y + 55, s['sort'], s['evidence'])
-                y += 135 if s['from'] == s['to'] else 125
-            elif s['type'] == 'ref':
-                cell('ref', 180 + depth * 15, y + 10, width - 330 - depth * 30, 70,
-                     STYLE + 'shape=umlFrame;fillColor=light-dark(#ffffff,#181818);align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;',
-                     s['evidence'])
-                cell(s['label'], 188 + depth * 15, y + 32, width - 350 - depth * 30, 44,
-                     STYLE + 'text;whiteSpace=wrap;align=left;verticalAlign=middle;strokeColor=none;fillColor=none;',
-                     s['evidence'])
+        for s_ in items:
+            if s_['type'] == 'message':
+                edge(s_['from'], s_['to'], s_['label'], y + 55, s_['sort'], s_['evidence'])
+                y += 135 if s_['from'] == s_['to'] else 125
+            elif s_['type'] == 'ref':
+                cell('ref', 180 + depth * 15, y + 10, width - 330 - depth * 30, 70, frame_style('ref'), s_['evidence'])
+                cell(s_['label'], 188 + depth * 15, y + 32, width - 350 - depth * 30, 44,
+                     base + 'text;whiteSpace=wrap;align=left;verticalAlign=middle;strokeColor=none;fillColor=none;', s_['evidence'])
                 y += 100
+            elif s_['type'] == 'phase':
+                cell(s_['label'], 130, y + 10, width - 220, 40,
+                     base + 'rounded=1;arcSize=30;whiteSpace=wrap;fillColor=#E2E8F0;strokeColor=#94A3B8;fontStyle=1;', s_.get('evidence', []))
+                y += 75
             else:
                 top = y
-                f = cell(s['operator'], 130 + depth * 15, y, width - 220 - depth * 30, 1,
-                         STYLE + 'shape=umlFrame;fillColor=none;align=left;verticalAlign=top;spacingLeft=8;spacingTop=4;',
-                         e=s.get('evidence', []), interactionOperator=s['operator'])
+                op = s_['operator']
+                f = cell(op, 130 + depth * 15, y, width - 220 - depth * 30, 1, frame_style(op), e=s_.get('evidence', []), interactionOperator=op)
+                stroke = FRAME_STYLE.get(op, FRAME_STYLE['alt'])[1]
                 y += 50
-                for j, o in enumerate(s['operands']):
+                for j, o in enumerate(s_['operands']):
                     if j:
-                        cell('', 145 + depth * 15, y, width - 250 - depth * 30, 1, STYLE + 'fillColor=none;dashed=1;')
+                        cell('', 145 + depth * 15, y, width - 250 - depth * 30, 1, base + f'fillColor=none;dashed=1;strokeColor={stroke};')
                         y += 20
                     cell('[' + o['guard'] + ']', 155 + depth * 15, y, width - 280 - depth * 30, 45,
-                         STYLE + 'text;whiteSpace=wrap;align=left;strokeColor=none;fillColor=none;', o.get('evidence', []))
+                         base + f'text;whiteSpace=wrap;align=left;strokeColor=none;fillColor=none;fontColor={stroke};fontStyle=1;', o.get('evidence', []))
                     y = render_steps(o['steps'], y + 60, depth + 1)
-                f.find('mxGeometry').set('height', str(y - top + 15))
+                f.find('mxGeometry').set('height', str(int(y - top + 15)))
                 y += 35
         return y
 
-    cell(m['title'], 130, 20, width - 220, 50, STYLE + 'text;fontSize=24;align=left;strokeColor=none;fillColor=none;')
+    cell(m['title'], 130, 20, width - 220, 50, base + 'text;fontSize=26;fontStyle=1;align=left;strokeColor=none;fillColor=none;')
+    top = 85
+    summary = m.get('summary') or SUMMARIES.get(m['id'])
+    if summary:
+        inner = width - 260
+        lines = wrap_estimate(summary, inner, 7.4)
+        height = 44 + lines * 21
+        cell('In plain words', 130, top, width - 220, height,
+             base + 'rounded=1;arcSize=6;whiteSpace=wrap;fillColor=#FFFBEB;strokeColor=#F59E0B;strokeWidth=1.6;align=left;verticalAlign=top;spacingLeft=16;spacingTop=10;spacingRight=16;fontStyle=1;fontColor=#B45309;')
+        cell(summary, 146, top + 32, inner, lines * 21 + 6,
+             base + 'text;whiteSpace=wrap;align=left;verticalAlign=top;strokeColor=none;fillColor=none;fontSize=15;')
+        top += height + 25
     headers = []
-    for a, label in m['participants']:
-        h = cell(label, lanes[a] - 130, 100, 260, 65,
-                 STYLE + 'rounded=0;fillColor=#ffffff;whiteSpace=wrap;align=center;verticalAlign=middle;', participantId=a)
-        headers.append((a, h))
-    end = render_steps(m['steps'], 200)
-    for a, h in headers:
+    for a, label in participants:
+        kind = participant_kind(a, label)
+        fill, stroke = KIND_STYLE[kind]
+        shape = 'shape=cylinder3;boundedLbl=1;backgroundOutline=1;size=10;' if kind == 'store' else 'rounded=1;arcSize=14;'
+        dash = 'dashed=1;dashPattern=6 3;' if kind == 'external' else ''
+        h = cell(label, lanes[a] - 130, top, 260, 70,
+                 base + shape + dash + f'whiteSpace=wrap;fillColor={fill};strokeColor={stroke};strokeWidth=1.8;align=center;verticalAlign=middle;fontStyle=1;', participantId=a)
+        headers.append((a, h, stroke))
+    end = render_steps(m['steps'], top + 110)
+    for a, h, stroke in headers:
         count += 1
-        line = ET.Element('mxCell', id=f'life{count}', edge='1', parent='1', style=STYLE + 'dashed=1;endArrow=none;')
+        line = ET.Element('mxCell', id=f'life{count}', edge='1', parent='1', style=base + f'dashed=1;dashPattern=4 4;endArrow=none;strokeColor={stroke};strokeWidth=1.2;')
         geom = ET.SubElement(line, 'mxGeometry', relative='1', **{'as': 'geometry'})
-        ET.SubElement(geom, 'mxPoint', x=str(lanes[a]), y='165', **{'as': 'sourcePoint'})
-        ET.SubElement(geom, 'mxPoint', x=str(lanes[a]), y=str(end), **{'as': 'targetPoint'})
+        ET.SubElement(geom, 'mxPoint', x=str(lanes[a]), y=str(top + 70), **{'as': 'sourcePoint'})
+        ET.SubElement(geom, 'mxPoint', x=str(lanes[a]), y=str(int(end)), **{'as': 'targetPoint'})
         root.insert(2, line)
+    notes = m.get('notes') or []
+    if notes:
+        text = '\n'.join(str(n) if not isinstance(n, dict) else n.get('text', '') for n in notes)
+        cell(text, 130, end + 20, width - 220, 20 + wrap_estimate(text, width - 260) * 20,
+             base + 'rounded=1;arcSize=6;whiteSpace=wrap;fillColor=#F8FAFC;strokeColor=#94A3B8;align=left;verticalAlign=top;spacingLeft=14;spacingTop=8;fontSize=13;')
+        end += 40 + wrap_estimate(text, width - 260) * 20
 
     semantic_participants = [
-        dict(id=a, label=b, kind='client' if a in ('mobile', 'creator', 'player', 'caller1', 'caller2', 'sender', 'recipient', 'user', 'external', 'operator', 'viewer', 'client') else 'store' if a in ('db', 'secure', 'checkpoint', 'mongo', 'redis', 'sql', 'cache', 'metrics') else 'external' if a in ('r2', 'assets', 'broker', 'llm', 'tei', 'qdrant', 'mail', 'cdn', 'langfuse', 'notify', 'email', 'alert') else 'service', evidence=[])
-        for a, b in m['participants']
+        dict(id=a, label=b, kind=participant_kind(a, b)) for a, b in participants
     ]
     m_copy = dict(m)
     m_copy['participants'] = semantic_participants
     g.set('semanticModel', json.dumps(m_copy, ensure_ascii=False, separators=(',', ':')))
-    g.set('pageHeight', str(end + 100))
+    g.set('pageHeight', str(int(end) + 100))
     g.set('pageWidth', str(width + 100))
     return p
 
@@ -1839,7 +1907,11 @@ def create_svg_figure(diagram_elem):
 
     return ET.tostring(svg, encoding='unicode')
 
+from diagram_summaries import SEQUENCE_SUMMARIES as SUMMARIES  # noqa: E402
+
 MONOLITHIC_TO_REMOVE = {
+    '45a-message-push-delivery',
+    '45b-call-setup-media-placement',
     '30b-index-stale-fencing',
     '35a-series-creation-flow',
     '35b-series-reels-ordering',
@@ -1946,8 +2018,6 @@ DIAGRAM_ORDER = [
     '43b-ai-guardrails',
     '43c-ai-conversation-recall',
     '44a-reel-subtitles',
-    '45a-message-push-delivery',
-    '45b-call-setup-media-placement',
 ]
 
 def main():

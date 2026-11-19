@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const { publishRmqMessage } = require('../send-rmq-message.cjs');
 
-const PER_REEL_TIMEOUT_MS = 10 * 60 * 1000; // two languages, each allowed up to five minutes by the service
+const PER_REEL_TIMEOUT_MS = 60 * 60 * 1000; // a long talk is many 100-line requests per language (see the subtitle adapter)
 
 function parseArgs(argv) {
   const options = { apply: false, limit: 10, after: undefined, help: false };

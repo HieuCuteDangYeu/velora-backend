@@ -43,7 +43,7 @@ def patch_context(page):
     """The context DFD has no push provider: notification delivery is outside the design."""
     root = page.find('mxGraphModel/root')
     for node in list(root):
-        if node.attrib.get('id') in ('push', '03-dfd-context-push', '03-dfd-context-push-background', '03-dfd-context-push-label'):
+        if node.attrib.get('id') in ('push', 'push-label', '03-dfd-context-push', '03-dfd-context-push-background', '03-dfd-context-push-label'):
             root.remove(node)
     import re
     legend = cell(page, 'legend')
@@ -221,6 +221,8 @@ def restyle_dfd(page):
         value = legend[0].attrib['value']
         value = value.replace('Orange: external participant. Navy: transformation. Green open-ended symbol: retained data.',
                               'Blue box: outside participant. Green box: process. Grey open-ended box: stored data.')
+        value = value.replace('Orange: external participant. Navy: transformation. Green: retained data.',
+                              'Blue box: outside participant. Green box: process. Grey open-ended box: stored data.')
         legend[0].set('value', value)
 
 
@@ -241,6 +243,42 @@ def restyle_er(page):
             set_style(node, strokeColor='#475569', strokeWidth='1.6')
 
 
+def relayout_identity(page):
+    """Page 12: Auth entities on the left, Friend entities on the right, User in the middle, so no line crosses another."""
+    summary = cell(page, 'summary-box').find('mxGeometry')
+    y0 = float(summary.attrib['y']) + float(summary.attrib['height']) + 35
+    spots = {'RefreshToken': (100, 0), 'UserRole': (100, 300), 'Role': (100, 560), 'Friendship': (1900, 0), 'UserBlock': (1900, 300), 'User': (1000, 240)}
+    for name, (x, dy) in spots.items():
+        geometry = cell(page, name).find('mxGeometry')
+        geometry.set('x', str(x))
+        geometry.set('y', str(round(y0 + dy, 1)))
+    cell(page, 'User').find('mxGeometry').set('height', '260')
+    ports = {'E01-identity-social-e1': ((0.5, 1), (0.5, 0)), 'E01-identity-social-e2': ((1, 0.5), (0, 0.8)), 'E01-identity-social-e3': ((1, 0.9), (0, 0.2)),
+             'E01-identity-social-e4': ((0, 0.25), (1, 0.1)), 'E01-identity-social-e4_second': ((0, 0.75), (1, 0.3)),
+             'E01-identity-social-e5': ((0, 0.25), (1, 0.7)), 'E01-identity-social-e5_second': ((0, 0.75), (1, 0.9))}
+    for edge_id, (out, into) in ports.items():
+        edge = cell(page, edge_id)
+        for array in edge.findall('mxGeometry/Array'):
+            array.clear()
+            array.set('as', 'points')
+        parts = [q for q in edge.attrib['style'].split(';') if q and not q.startswith(('exit', 'entry', 'edgeStyle', 'noEdgeStyle', 'rounded'))]
+        parts += ['edgeStyle=orthogonalEdgeStyle', 'rounded=1', f'exitX={out[0]}', f'exitY={out[1]}', f'entryX={into[0]}', f'entryY={into[1]}']
+        edge.set('style', ';'.join(parts) + ';')
+    loop = cell(page, 'E01-identity-social-e6')
+    for array in loop.findall('mxGeometry/Array'):
+        array.clear()
+        array.set('as', 'points')
+        ET.SubElement(array, 'mxPoint', x='620', y=str(round(y0 + 40, 1)))
+        ET.SubElement(array, 'mxPoint', x='620', y=str(round(y0 + 120, 1)))
+    parts = [q for q in loop.attrib['style'].split(';') if q and not q.startswith(('exit', 'entry', 'edgeStyle', 'noEdgeStyle', 'rounded'))]
+    loop.set('style', ';'.join(parts + ['edgeStyle=orthogonalEdgeStyle', 'rounded=1', 'exitX=1', 'exitY=0.2', 'entryX=1', 'entryY=0.65']) + ';')
+    model = page.find('mxGraphModel')
+    model.set('pageWidth', '2500')
+    note = cell(page, 'notes').find('mxGeometry')
+    note.set('y', str(round(y0 + 780, 1)))
+    model.set('pageHeight', str(round(y0 + 900, 1)))
+
+
 def restyle_all(root):
     pages = {p.attrib['id']: p for p in root.findall('diagram')}
     for pid, page in pages.items():
@@ -250,6 +288,7 @@ def restyle_all(root):
     for pid in ER_SUMMARIES:
         restyle_er(pages[pid])
         add_summary(pages[pid], ER_SUMMARIES[pid], ['title'])
+    relayout_identity(pages['12-identity-social'])
 
 
 def main():

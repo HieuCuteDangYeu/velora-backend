@@ -5,6 +5,10 @@ import xml.etree.ElementTree as ET
 import html
 import json
 import re
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from drawio_kit import ev as B, mev as MB  # noqa: E402  (pattern-resolved evidence for newly added steps)
 
 ROOT = Path(__file__).resolve().parents[2]
 DIR = ROOT / 'docs/diagrams/velora-current'
@@ -28,13 +32,13 @@ def frame(operator, *operands):
 
 # Verified references
 C_REF = 'backend:apps/content-service/src/application/use-cases/create-reel.use-case.ts:32-52'
-R_REF = 'backend:apps/content-service/src/infrastructure/repositories/content.repository.ts:713-733'
-MP_REF = 'backend:apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:60-120'
-PM_REF = 'backend:apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:101-121'
-VAL_STREAM_REF = 'backend:apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:80-100'
-PREP_EVID_REF = 'backend:apps/media-processing-service/src/application/use-cases/prepare-existing-hls-evidence.use-case.ts:100-120'
-OUTBOX_REF = 'backend:apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:85-105'
-INDEX_JOB_REF = 'backend:apps/reel-indexing-service/src/application/use-cases/process-reel-index-job.use-case.ts:43-63'
+R_REF = 'backend:apps/content-service/src/infrastructure/repositories/content.repository.ts:726-746'
+MP_REF = 'backend:apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts:66-126'
+PM_REF = 'backend:apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts:104-136'
+VAL_STREAM_REF = 'backend:apps/media-processing-service/src/application/use-cases/validate-reel-stream.use-case.ts:96-118'
+PREP_EVID_REF = 'backend:apps/media-processing-service/src/application/use-cases/prepare-existing-hls-evidence.use-case.ts:100-115'
+OUTBOX_REF = 'backend:apps/content-service/src/application/use-cases/dispatch-outbox-events.use-case.ts:96-116'
+INDEX_JOB_REF = 'backend:apps/reel-indexing-service/src/application/use-cases/process-reel-index-job.use-case.ts:43-69'
 INDEX_WORKFLOW_REF = 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:219-240'
 PRESIGN_REF = 'backend:apps/media-service/src/application/use-cases/get-presigned-url.use-case.ts:14-103'
 AUTH_REFRESH_REF = 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:46-66'
@@ -51,7 +55,7 @@ RAG_TEI_REF = 'backend:apps/ai-service/src/infrastructure/adapters/tei-embedding
 RAG_VERIFY_REF = 'backend:apps/ai-service/src/application/use-cases/verifier-agent.use-case.ts:77-97'
 RAG_CONV_REF = 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:36-47'
 RAG_AI_CTRL_REF = 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:229-249'
-PRISMA_UNIQUE_REF = 'backend:apps/content-service/prisma/schema.prisma:1-20'
+PRISMA_UNIQUE_REF = 'backend:apps/content-service/prisma/schema.prisma:1-23'
 AUTH_REG_REF = 'backend:apps/auth-service/src/application/use-cases/register.use-case.ts:1-70'
 AUTH_CONFIRM_REF = 'backend:apps/auth-service/src/application/use-cases/confirm-account.use-case.ts:1-28'
 FRIEND_SEND_REF = 'backend:apps/friend-service/src/application/use-cases/send-friend-request.use-case.ts:1-99'
@@ -130,8 +134,8 @@ SPLIT_MODELS = [
              msg('db', 'auth', 'Return the active stored token', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:85-106', reply=True),
              msg('auth', 'user', 'Look up the token owner (user.find_by_id)', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:88-88'),
              msg('user', 'auth', 'Return the user', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:88-88', reply=True),
-             msg('auth', 'db', 'Transactional compare-and-swap: revoke the old token, create the replacement\n(rolling 90-day expiry)', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:144-216'),
-             msg('db', 'auth', 'Replacement token persisted', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:188-216', reply=True),
+             msg('auth', 'db', 'One atomic SQL statement: revoke the old token only if still unrevoked and insert the replacement\n(rolling 90-day expiry, one database round trip)', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:144-215'),
+             msg('db', 'auth', 'Replacement token persisted', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:152-215', reply=True),
              msg('auth', 'auth', 'Sign a 15-minute access token and the replacement refresh token', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:95-102'),
              msg('auth', 'gateway', 'Return the new token pair', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:160-165', reply=True),
              msg('gateway', 'mobile', 'Deliver the new token pair over HTTP', 'backend:apps/api-gateway/src/auth/auth.controller.ts:150-153', reply=True),
@@ -173,7 +177,7 @@ SPLIT_MODELS = [
                        msg('gateway', 'auth', 'Forward refresh via RabbitMQ RPC', 'backend:apps/api-gateway/src/auth/auth.controller.ts:141-153'),
                        msg('auth', 'db', 'Find the stored token by hash', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:85-106'),
                        msg('db', 'auth', 'Token is revoked and no recovery matches', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:85-106', reply=True),
-                       msg('auth', 'db', 'Revoke all tokens of the verified user', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:63-66', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:231-235'),
+                       msg('auth', 'db', 'Revoke all tokens of the verified user', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:63-66', 'backend:apps/auth-service/src/infrastructure/repositories/auth.repository.ts:230-234'),
                        msg('auth', 'gateway', 'Reject with InvalidTokenError', 'backend:apps/auth-service/src/application/use-cases/refresh-token.use-case.ts:63-66', reply=True),
                        msg('gateway', 'mobile', 'Map the RPC rejection to an HTTP auth error', 'backend:apps/api-gateway/src/auth/auth.controller.ts:150-153', reply=True),
                        msg('mobile', 'mobile', 'On 401 or 403 clear the local token session and sign out', 'mobile:src/api/client.ts:70-80', 'mobile:src/lib/auth/tokenSession.ts:49-52'),
@@ -350,38 +354,51 @@ SPLIT_MODELS = [
              msg('broker', 'worker', 'Deliver source video transcode job from queue', MP_REF),
              msg('worker', 'content', 'Claim processing lease for current transcode attempt', MP_REF),
              msg('content', 'worker', 'Processing lease granted for attempt', MP_REF, reply=True),
-             msg('worker', 'assets', 'Download video, apply trim/crop filters, and transcode HLS', PM_REF),
-             msg('worker', 'assets', 'Upload HLS playlists, segments, and thumbnail to Cloudflare R2', PM_REF),
+             msg('worker', 'assets', 'Download video, apply trim/crop filters, and transcode HLS (x264 veryfast by default)', PM_REF),
+             frame('opt',
+                   ('the optional TikTok CDN mirror is configured', [
+                       note('Finished segments are sent to the CDN while ffmpeg still encodes the rest; a CDN failure falls back to R2 only', B('apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts', r'startHlsStreamingUpload'), B('apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts', r'falling back to R2')),
+                   ]),
+             ),
+             note('Unless MEDIA_INLINE_EVIDENCE=false, the encoded HLS is also copied into one local file for evidence built after the job ends (see 28b)', B('apps/media-processing-service/src/application/use-cases/prepare-reel-media.use-case.ts', r'materializeHls')),
+             msg('worker', 'assets', 'Upload HLS playlists and segments to Cloudflare R2 (always), then the thumbnail', PM_REF),
              msg('worker', 'assets', 'Validate master manifest, variant playlists, and all segment resources', VAL_STREAM_REF),
              msg('assets', 'worker', 'Validation passed: Stream is fully playable', VAL_STREAM_REF, reply=True),
              msg('worker', 'content', 'Commit HLS playback assets and playback metadata', MP_REF),
              msg('content', 'db', 'Atomically mark Reel MEDIA_READY and queue evidence outbox job', R_REF),
              msg('db', 'content', 'State committed in database', R_REF, reply=True),
+             note('After the commit Content wakes the outbox dispatcher and warms the HLS files in the CDN cache (best effort)', B('apps/content-service/src/application/use-cases/complete-reel-media-processing.use-case.ts', r'hlsCacheWarmer\.warm'), B('apps/content-service/src/infrastructure/adapters/cdn-hls-cache-warmer.adapter.ts', r'class CdnHlsCacheWarmer')),
              msg('content', 'worker', 'Confirm media status updated to ready for playback', MP_REF, reply=True),
              msg('worker', 'broker', 'Acknowledge transcode job completion to queue', MP_REF),
-             note('On accepted commit: Validated HLS is immediately playable! Multimodal evidence extraction runs decoupled in background.', MP_REF)
+             note('On accepted commit: validated HLS is immediately playable. Evidence extraction runs afterwards and never holds the next encode back (28b).', MP_REF)
          ]),
 
     dict(id='28b-media-evidence-pipeline', title='28b · Durable multimodal evidence extraction and index handoff',
          participants=[('publisher', 'Content Outbox Dispatcher'), ('broker', 'RabbitMQ Job Queue'), ('worker', 'Media Processing Worker'), ('assets', 'FFmpeg / Vision Tools'), ('content', 'Content Service'), ('db', 'Content DB / outbox'), ('indexer', 'Reel Indexing Worker')],
          steps=[
-             msg('publisher', 'db', 'Claim committed multimodal evidence outbox jobs', OUTBOX_REF),
-             msg('publisher', 'broker', 'Publish EXISTING_HLS evidence extraction job to RabbitMQ', OUTBOX_REF),
-             msg('broker', 'worker', 'Deliver multimodal evidence extraction job to worker', MP_REF),
-             msg('worker', 'content', 'Claim evidence lease against completed media attempt', MP_REF),
-             msg('worker', 'assets', 'Extract audio track from validated HLS and upload audio manifest', PREP_EVID_REF),
-             msg('worker', 'assets', 'Extract keyframes and upload checksummed visual manifest', MP_REF),
-             msg('worker', 'content', 'Commit audio and visual evidence manifests', MP_REF),
-             msg('content', 'db', 'Atomically commit evidence manifests and queue indexing outbox job', R_REF),
-             msg('publisher', 'broker', 'Dispatcher publishes indexing job to RabbitMQ queue', OUTBOX_REF),
-             msg('broker', 'indexer', 'Deliver indexing job with audio and visual manifest dependencies', INDEX_JOB_REF),
-             note('Indexing starts with verified audio & visual evidence; playback remains uninterrupted.', INDEX_JOB_REF)
+             note('Normal path (MEDIA_INLINE_EVIDENCE on): the encode job ends as soon as the Reel is ready so its slot serves the next waiting encode; the same worker then builds the evidence from the local file as a low-priority task, dropped if no slot frees within 9 minutes', B('apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts', r'private deferEvidence'), B('apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts', r'Built after the reel is reported ready')),
+             msg('worker', 'assets', 'Extract the audio track (Opus by default) from the local file and upload the audio manifest', PREP_EVID_REF),
+             msg('worker', 'assets', 'Extract keyframes and upload the checksummed visual manifest', MP_REF),
+             msg('worker', 'content', 'Commit the audio and visual evidence manifests', B('apps/media-processing-service/src/application/use-cases/process-reel.use-case.ts', r'persistExistingHlsEvidence')),
+             msg('content', 'db', 'Atomically commit evidence manifests and queue the indexing outbox job', R_REF),
+             frame('opt',
+                   ('the inline evidence did not complete (disabled, no slot in time, or the worker restarted)', [
+                       msg('publisher', 'db', 'Claim the fallback evidence outbox job Content queued about ten minutes after MEDIA_READY', B('apps/content-service/src/infrastructure/repositories/content.repository.ts', r'DEFAULT_INLINE_EVIDENCE_FALLBACK_DELAY_MS =')),
+                       msg('publisher', 'broker', 'Publish the EXISTING_HLS job to the lane\'s own evidence queue (reel_media_short_evidence_jobs or reel_media_long_evidence_jobs)', B('apps/content-service/src/infrastructure/adapters/reel-media-job-publisher.adapter.ts', r'getReelMediaEvidenceQueue')),
+                       msg('broker', 'worker', 'Deliver it only when no encode is waiting: workers start an encode before an evidence job', B('libs/common/src/processing/reel-media-queue.constants.ts', r'REEL_MEDIA_EVIDENCE_QUEUES')),
+                       msg('worker', 'content', 'Claim the evidence lease against the completed media attempt', MP_REF),
+                       msg('worker', 'assets', 'Rebuild audio and keyframe evidence from the validated HLS and commit the manifests', PREP_EVID_REF),
+                   ]),
+             ),
+             msg('publisher', 'broker', 'Dispatcher publishes the indexing job to the RabbitMQ index queue', OUTBOX_REF),
+             msg('broker', 'indexer', 'Deliver the indexing job with its audio and visual manifest dependencies', INDEX_JOB_REF),
+             note('Indexing starts with verified audio and visual evidence; playback stays uninterrupted.', INDEX_JOB_REF)
          ]),
 
     dict(id='29a-index-intake-routing', title='29a · Indexing attempt claim and route classification',
          participants=[('broker', 'RabbitMQ index queue'), ('index', 'Reel Indexing worker'), ('ckpt', 'Index Postgres (checkpoints)'), ('content', 'Content Service'), ('r2', 'Cloudflare R2')],
          steps=[
-             msg('broker', 'index', 'Deliver the versioned reel.index.process job', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', 'backend:libs/common/src/processing/interfaces/reel-index-job.interface.ts:31-31', sort='asynchSignal'),
+             msg('broker', 'index', 'Deliver the versioned reel.index.process job', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:29-104', 'backend:libs/common/src/processing/interfaces/reel-index-job.interface.ts:31-31', sort='asynchSignal'),
              msg('index', 'ckpt', 'Read the checkpoint of this index attempt', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:492-505'),
              frame('alt',
                    ('the attempt is already COMPLETED', [
@@ -431,9 +448,9 @@ SPLIT_MODELS = [
                    ('route is SHORT or LONG', [
                        frame('loop',
                              ('each audio segment that is not yet COMPLETED (concurrency default 2)', [
-                                 msg('worker', 'ai', 'Transcribe the audio segment (transcribeAudioKey)', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:76-126'),
-                                 msg('ai', 'worker', 'Return transcript with provider, model and version', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:98-101', reply=True),
-                                 msg('worker', 'ckpt', 'Persist the segment as COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:76-126'),
+                                 msg('worker', 'ai', 'Transcribe the audio segment (transcribeAudioKey)', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:91-141'),
+                                 msg('ai', 'worker', 'Return transcript with provider, model and version', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:113-116', reply=True),
+                                 msg('worker', 'ckpt', 'Persist the segment as COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:91-141'),
                              ]),
                        ),
                        msg('worker', 'ckpt', 'Merge segments into one transcript with hash and merge version', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:560-560'),
@@ -448,18 +465,20 @@ SPLIT_MODELS = [
     dict(id='29c-index-vectorization-staging', title='29c · Token gating, embedding generation and candidate staging',
          participants=[('worker', 'Reel Indexing worker'), ('ai', 'AI Service (TEI embeddings)'), ('ckpt', 'Index Postgres (checkpoints)'), ('r2', 'Cloudflare R2 staging'), ('sql', 'Index Postgres (candidate)')],
          steps=[
-             msg('worker', 'worker', 'Segment the evidence into hierarchical document, section, chunk and scene drafts', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:40-60'),
+             msg('worker', 'worker', 'Segment the evidence into hierarchical document, section, chunk and scene drafts', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:41-61'),
+             note('Long videos: each transcript segment goes to exactly one section (the last section that starts at or before it) and chunk times are fitted inside that section, so overlapping section windows can no longer index a segment twice or fail validation', B('apps/reel-indexing-service/src/application/use-cases/build-long-evidence-chunks.use-case.ts', r'last section|section that starts', 40)),
              frame('loop',
                    ('up to 3 token-gate attempts while oversized drafts remain (batches of 100)', [
-                       msg('worker', 'ai', 'Count document tokens (ai.count_document_tokens)', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:256-256', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/ai-service.adapter.ts:123-131'),
+                       msg('worker', 'ai', 'Count document tokens (ai.count_document_tokens)', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:257-257', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/ai-service.adapter.ts:123-131'),
                        msg('ai', 'worker', 'Return exact token counts', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/ai-service.adapter.ts:123-131', reply=True),
                        msg('worker', 'ckpt', 'Persist token-validated or re-versioned drafts', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:807-818'),
                    ]),
              ),
-             msg('worker', 'ckpt', 'Find reusable embeddings by full content and model identity', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:310-378'),
-             msg('worker', 'ai', 'Embed the missing drafts in configured batches (ai.generate_embedding_batch, 1024-dim bge-m3)', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:256-256', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/ai-service.adapter.ts:110-121'),
-             msg('ai', 'worker', 'Return vectors, model identity and per-item errors', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:334-334', reply=True),
-             msg('worker', 'r2', 'Save valid reusable embeddings in R2 staging', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:310-378'),
+             msg('worker', 'ckpt', 'Find reusable embeddings by full content and model identity', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:311-383'),
+             msg('worker', 'ai', 'Embed the missing drafts in configured batches (ai.generate_embedding_batch, 1024-dim bge-m3)', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:257-257', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/ai-service.adapter.ts:110-121'),
+             msg('ai', 'worker', 'Return vectors, model identity and per-item errors', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:335-335', reply=True),
+             note('A TEI answer of 429 or 503 is retried with exponential backoff and jitter, honouring Retry-After (AI_EMBEDDING_OVERLOAD_RETRIES, default 4); vectors that did succeed are saved before an error is thrown, so a retried job embeds only the failed items', B('apps/ai-service/src/infrastructure/adapters/tei-embedding.adapter.ts', r'AI_EMBEDDING_OVERLOAD_RETRIES'), B('apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts', r'saveEmbeddings|reusable', 30)),
+             msg('worker', 'r2', 'Save valid reusable embeddings in R2 staging', 'backend:apps/reel-indexing-service/src/application/use-cases/build-hierarchical-index.use-case.ts:311-383'),
              msg('worker', 'sql', 'Stage the vector bundle to R2 and persist the SQL candidate and journal', 'backend:apps/reel-indexing-service/src/infrastructure/repositories/prisma-semantic-index.repository.ts:115-185'),
              note('The candidate is staged but not active; 31a activates it and projects its vectors to Qdrant', 'backend:apps/reel-indexing-service/src/infrastructure/repositories/prisma-semantic-index.repository.ts:115-185'),
          ]),
@@ -474,7 +493,7 @@ SPLIT_MODELS = [
                        msg('db', 'sched', 'Return one Reel ID, or none', 'backend:apps/reel-indexing-service/src/infrastructure/repositories/prisma-deferred-visual-analysis.repository.ts:51-57', reply=True),
                        msg('sched', 'content', 'Queue a re-index with visual analysis required (content.reindex_reel)', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/content-service.adapter.ts:73-95'),
                        msg('content', 'sched', 'queued flag and new indexAttemptId', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/content-service.adapter.ts:73-95', reply=True),
-                       msg('content', 'pipe', 'Publish the indexing job (same pipeline as 29a to 31a)', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', 'backend:libs/common/src/processing/interfaces/reel-index-job.interface.ts:31-31', sort='asynchSignal'),
+                       msg('content', 'pipe', 'Publish the indexing job (same pipeline as 29a to 31a)', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:29-104', 'backend:libs/common/src/processing/interfaces/reel-index-job.interface.ts:31-31', sort='asynchSignal'),
                        msg('sched', 'db', 'Poll the attempt status every 15 seconds until it is terminal', 'backend:apps/reel-indexing-service/src/application/use-cases/retry-deferred-visual-analysis.use-case.ts:111-125'),
                        frame('alt',
                              ('attempt did not FAIL', [
@@ -492,10 +511,10 @@ SPLIT_MODELS = [
     dict(id='30a-index-checkpoint-resume', title='30a · Same-attempt resume without repeating finished work',
          participants=[('rmq', 'RabbitMQ index queue'), ('index', 'Reel Indexing worker'), ('db', 'Index Postgres (checkpoints)'), ('storage', 'Cloudflare R2'), ('ai', 'AI Service')],
          steps=[
-             msg('rmq', 'index', 'Deliver the job with its redelivered flag and retry header', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', sort='asynchSignal'),
+             msg('rmq', 'index', 'Deliver the job with its redelivered flag and retry header', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:29-104', sort='asynchSignal'),
              frame('alt',
                    ('malformed job', [
-                       msg('index', 'rmq', 'nack(requeue=false) sends it to the dead-letter queue; nothing runs', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', sort='asynchSignal'),
+                       msg('index', 'rmq', 'nack(requeue=false) sends it to the dead-letter queue; nothing runs', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:29-104', sort='asynchSignal'),
                    ]),
                    ('valid job', [
                        msg('index', 'db', 'Load the domain checkpoint by indexAttemptId', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:492-505'),
@@ -509,15 +528,15 @@ SPLIT_MODELS = [
                                  msg('index', 'index', 'Reuse the merged transcript and skip ASR entirely', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:560-560'),
                              ]),
                              ('route is LONG', [
-                                 msg('index', 'storage', 'Read the audio manifest and validate Reel and media-attempt identity', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:22-60'),
+                                 msg('index', 'storage', 'Read the audio manifest and validate Reel and media-attempt identity', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:24-75'),
                                  msg('index', 'db', 'Create missing segment rows; compare the stored transcription identity', 'backend:apps/reel-indexing-service/src/infrastructure/repositories/prisma-index-checkpoint.repository.ts:119-160'),
                                  msg('index', 'db', 'Reset affected segments to PENDING when the identity changed', 'backend:apps/reel-indexing-service/src/infrastructure/repositories/prisma-index-checkpoint.repository.ts:119-160'),
-                                 msg('index', 'db', 'Read segments and select those not COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:22-60'),
+                                 msg('index', 'db', 'Read segments and select those not COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:24-75'),
                                  frame('loop',
                                        ('each pending segment (concurrency default 2) while attempts remain', [
-                                           msg('index', 'ai', 'Transcribe the segment (transcribeAudioKey)', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:76-126'),
-                                           msg('ai', 'index', 'Return transcript and provider, model, version', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:98-101', reply=True),
-                                           msg('index', 'db', 'Persist the segment as COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:76-126'),
+                                           msg('index', 'ai', 'Transcribe the segment (transcribeAudioKey)', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:91-141'),
+                                           msg('ai', 'index', 'Return transcript and provider, model, version', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:113-116', reply=True),
+                                           msg('index', 'db', 'Persist the segment as COMPLETED', 'backend:apps/reel-indexing-service/src/application/use-cases/transcribe-audio-manifest.use-case.ts:91-141'),
                                        ]),
                                  ),
                                  msg('index', 'db', 'Merge the segments and persist the transcript hash and merge version', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:560-560'),
@@ -528,32 +547,38 @@ SPLIT_MODELS = [
              note('Completed segments and merged transcripts are reused, so a redelivered job continues instead of restarting', 'backend:apps/reel-indexing-service/src/infrastructure/workflows/reel-index-langgraph.workflow.ts:560-560'),
          ]),
 
-    dict(id='30b-index-failure-retry-dlq', title='30b · Job outcome handling: acknowledge, retry or dead-letter',
+    dict(id='30b-index-failure-retry-dlq', title='30b · Job outcome handling: acknowledge, retry, rotate or dead-letter',
          participants=[('rmq', 'RabbitMQ index queue'), ('index', 'Reel Indexing worker')],
          steps=[
              frame('alt',
                    ('COMPLETED, DUPLICATE or STALE', [
-                       msg('index', 'rmq', 'ACK the original message', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', sort='asynchSignal'),
+                       msg('index', 'rmq', 'ACK the original message', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'processJob\.execute', 60), sort='asynchSignal'),
+                   ]),
+                   ('QUOTA_ROTATE: every visual provider key is out of quota and the job is under six hours old', [
+                       msg('index', 'rmq', 'Publish the job again behind the others (header x-reel-index-quota-rotation + 1) and ACK; the first four passes use the 30 s / 60 s lane, later ones the 5 / 10 minute lane; ordinary retries are not consumed', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'publishQuotaRotation'), B('libs/common/src/processing/reel-media-queue.constants.ts', r'REEL_INDEX_QUOTA_ROTATIONS_ON_SHORT_LANE'), sort='asynchSignal'),
                    ]),
                    ('RETRY with a next retry number', [
-                       msg('index', 'rmq', 'Publish a persistent retry packet and await the publisher confirmation', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/reel-index-retry-publisher.adapter.ts:54-73', sort='asynchSignal'),
+                       msg('index', 'rmq', 'Publish a persistent retry packet and await the publisher confirmation', 'backend:apps/reel-indexing-service/src/infrastructure/adapters/reel-index-retry-publisher.adapter.ts:56-75', sort='asynchSignal'),
                        frame('alt',
                              ('the publisher promise resolves', [
-                                 msg('index', 'rmq', 'ACK the original message', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', sort='asynchSignal'),
+                                 msg('index', 'rmq', 'ACK the original message', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'publishRetry\(payload'), sort='asynchSignal'),
                              ]),
                              ('the publisher throws', [
-                                 msg('index', 'rmq', 'nack(requeue=true) so the message is redelivered', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:60-60', sort='asynchSignal'),
+                                 msg('index', 'rmq', 'nack(requeue=true) so the message is redelivered', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'channel\.nack\(message, false, true\)'), sort='asynchSignal'),
                              ]),
                        ),
                    ]),
+                   ('the failure is a spent visual-provider quota (no job fault)', [
+                       msg('index', 'rmq', 'ACK instead of dead-lettering: the attempt is already recorded FAILED with the reason, the half-built index is discarded and the previous index stays live; the daily deferred retry or a manual re-index runs it again', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'isDeferredProviderQuotaFailure\(result\.error\)'), sort='asynchSignal'),
+                   ]),
                    ('PERMANENT_FAILURE or retries exhausted', [
-                       msg('index', 'rmq', 'nack(requeue=false) sends the message to the dead-letter queue', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:22-67', sort='asynchSignal'),
+                       msg('index', 'rmq', 'Log the reason (first 300 characters) and nack(requeue=false): the message goes to the dead-letter queue, which raises an alert', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'exhausted retries on'), sort='asynchSignal'),
                    ]),
                    ('processing throws before durable handling', [
-                       msg('index', 'rmq', 'nack(requeue=true) so the message is redelivered', 'backend:apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts:60-60', sort='asynchSignal'),
+                       msg('index', 'rmq', 'nack(requeue=true) so the message is redelivered', B('apps/reel-indexing-service/src/infrastructure/controllers/reel-indexing.controller.ts', r'channel\.nack\(message, false, true\)'), sort='asynchSignal'),
                    ]),
              ),
-             note('A visual-provider quota failure is not retried inside the attempt; it is left for the daily deferred retry in 29d', 'backend:apps/reel-indexing-service/src/application/use-cases/process-reel-index-job.use-case.ts:22-28'),
+             note('A visual-provider quota failure is not retried inside the attempt; it either rotates behind other jobs or is left for the daily deferred retry in 29d', 'backend:apps/reel-indexing-service/src/application/use-cases/process-reel-index-job.use-case.ts:22-28'),
          ]),
 
     dict(id='31a-index-atomic-activation', title='31a · Candidate activation, Qdrant projection and completion',
@@ -622,80 +647,80 @@ SPLIT_MODELS = [
     dict(id='32a-feed-cache-paging', title='32a · Feed paging from the cached session and first-page slate',
          participants=[('mobile', 'Velora-Mobile'), ('gateway', 'API Gateway'), ('content', 'Content Service'), ('redis', 'Redis (sessions, entities, slate)'), ('db', 'Content Database')],
          steps=[
-             msg('mobile', 'gateway', 'GET /content/reels/recommended (cursor, session ID, limit)', 'mobile:src/api/reels.api.ts:50-56'),
-             msg('gateway', 'content', 'Forward content.get_recommended_reels (viewer ID and query)', 'backend:apps/api-gateway/src/content/content.controller.ts:479-491'),
-             msg('content', 'redis', 'Read the feed session by ID', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:106-108'),
+             msg('mobile', 'gateway', 'GET /content/reels/recommended (cursor, session ID, limit)', 'mobile:src/api/reels.api.ts:51-57'),
+             msg('gateway', 'content', 'Forward content.get_recommended_reels (viewer ID and query)', 'backend:apps/api-gateway/src/content/content.controller.ts:485-497'),
+             msg('content', 'redis', 'Read the feed session by ID', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:155-157'),
              frame('alt',
                    ('a session exists for this viewer and algorithm version', [
-                       msg('content', 'redis', 'Load page Reel entities from the entity cache', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:489-499'),
-                       msg('content', 'db', 'Fetch only the cache-missing Reels that are still eligible', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:390-393'),
-                       msg('content', 'content', 'Slice the next page from the cursor and count the remaining items', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:408-440'),
+                       msg('content', 'redis', 'Load page Reel entities from the entity cache', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:581-591'),
+                       msg('content', 'db', 'Fetch only the cache-missing Reels that are still eligible', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:482-485'),
+                       msg('content', 'content', 'Slice the next page from the cursor and count the remaining items', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:500-532'),
                        frame('opt',
-                             ('authenticated viewer and (audience not loaded, or a next page exists with 10 or fewer items left)', [
-                                 note('Start the background refill described in 32b; the response does not wait for it', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:151-159'),
+                             ('authenticated viewer and (the audience snapshot is missing, the last refill never completed, or a next page exists with 10 or fewer items left)', [
+                                 note('Start or retry the background refill described in 32b on every such page; the refill lock stops retries from overlapping and the response does not wait for it', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:203-211'),
                              ]),
                        ),
                    ]),
                    ('no usable session (first page or expired)', [
-                       msg('content', 'redis', 'Read the shared global recommendation slate', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:166-168'),
+                       msg('content', 'redis', 'Read the shared global recommendation slate', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:218-220'),
                        frame('alt',
                              ('the slate is cached', [
-                                 note('Use the slate items; authenticated viewers get the first page size plus 10 items', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:179-187'),
+                                 note('Use the slate items; an authenticated session is seeded with at least 24 of them (never fewer than a page plus 10), so a slow or lost refill still leaves something to page through', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:231-242'),
                              ]),
                              ('no slate yet', [
-                                 msg('content', 'db', 'Build a recent-quality fallback and load its eligible Reels', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:369-389'),
+                                 msg('content', 'db', 'Build a recent-quality fallback and load its eligible Reels', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:461-481'),
                              ]),
                        ),
-                       msg('content', 'redis', 'Save the new feed session with its TTL', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:145-149'),
-                       msg('content', 'content', 'Build the first page; authenticated viewers also start the background refill', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:231-237'),
+                       msg('content', 'redis', 'Save the new feed session with its TTL', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:197-201'),
+                       msg('content', 'content', 'Build the first page; authenticated viewers also start the background refill', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:286-292'),
                    ]),
              ),
              frame('opt',
-                   ('authenticated viewer, no next cursor yet and the refill is still running', [
-                       msg('content', 'redis', 'Poll the session every 100 ms for up to 10 seconds until the refill completes', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:566-600'),
+                   ('authenticated viewer, no next cursor yet and the refill is still running and the page came back empty', [
+                       msg('content', 'redis', 'Poll the session every 100 ms: up to 4.5 s when only the audience snapshot is missing, 2 s for a whole refill; when the time is up the page is served from what exists and the same cursor comes back so the app retries on its next scroll', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:658-687'),
                    ]),
              ),
-             msg('content', 'gateway', 'Return items with recommendation metadata, next cursor, feed session ID and algorithm version', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:315-321', reply=True),
-             msg('gateway', 'mobile', 'Deliver the feed page over HTTP', 'backend:apps/api-gateway/src/content/content.controller.ts:462-496', reply=True),
-             note('The global slate (100 Reels from recent-quality and trending pools, 10-minute TTL) is built separately by RefreshGlobalRecommendationSlate', 'backend:apps/content-service/src/application/use-cases/refresh-global-recommendation-slate.use-case.ts:15-16'),
+             msg('content', 'gateway', 'Return items with recommendation metadata, next cursor, feed session ID and algorithm version', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:407-413', reply=True),
+             msg('gateway', 'mobile', 'Deliver the feed page over HTTP', 'backend:apps/api-gateway/src/content/content.controller.ts:468-502', reply=True),
+             note('The global slate (100 Reels from the recent-quality and trending pools, topped up with exploration Reels when those are thin; 10-minute TTL) is built separately by RefreshGlobalRecommendationSlate', 'backend:apps/content-service/src/application/use-cases/refresh-global-recommendation-slate.use-case.ts:15-16'),
          ]),
 
     dict(id='32b-feed-background-refill', title='32b · Background refill: candidate pools, ranking and optional neural rerank',
          participants=[('content', 'Content Service'), ('redis', 'Redis'), ('friend', 'Friend Service'), ('db', 'Content Database'), ('ai', 'AI Service'), ('index', 'Reel Indexing Service')],
          steps=[
-             msg('content', 'redis', 'Acquire the refill lock for the session (60-second TTL)', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:549-552'),
+             msg('content', 'redis', 'Wait for a slot (refills run one at a time per process, at most 6 queued), then acquire the refill lock for the session (60-second TTL)', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:641-644'),
              frame('alt',
                    ('another request already holds the lock', [
-                       msg('content', 'content', 'Return without refilling', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:549-552'),
+                       msg('content', 'content', 'Return without refilling', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:641-644'),
                    ]),
                    ('lock acquired', [
-                       msg('content', 'friend', 'Get the feed audience (excluded and friend user IDs)', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:98-98'),
-                       msg('friend', 'content', 'Return excluded user IDs and friend IDs', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:98-98', reply=True),
-                       msg('content', 'redis', 'Read the latest session, then save audience exclusions with refill marked incomplete', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:622-622', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:122-125'),
-                       msg('content', 'db', 'Collect candidates from the enabled pools: recent quality, trending, tag affinity, creator affinity, content similarity, social and exploration', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:745-757'),
+                       msg('content', 'friend', 'Get the feed audience (excluded and friend user IDs); the snapshot is saved first so the session can already page past its slate', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:147-147'),
+                       msg('friend', 'content', 'Return excluded user IDs and friend IDs', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:147-147', reply=True),
+                       msg('content', 'redis', 'Read the latest session, then save audience exclusions with refill marked incomplete', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:711-711', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:171-174'),
+                       msg('content', 'db', 'Collect candidates from the enabled pools, two sources at a time: recent quality, trending, tag affinity, creator affinity, content similarity, social and exploration', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:865-877'),
                        frame('opt',
                              ('the semantic pool is enabled', [
-                                 msg('content', 'ai', 'Embed the viewer interest tags (ai.generate_embedding)', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:37-41'),
-                                 msg('content', 'index', 'Hybrid search for related Reels (index.search_reels, 4-second timeout)', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:69-71'),
-                                 msg('index', 'content', 'Return scored matches; any failure yields an empty pool and the feed continues', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:98-101', reply=True),
+                                 msg('content', 'ai', 'Embed the viewer interest tags (ai.generate_embedding); the vector is reused for 10 minutes and the wait is capped at 2.5 s', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:51-60'),
+                                 msg('content', 'index', 'Hybrid search for related Reels (index.search_reels, 4-second timeout)', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:88-90'),
+                                 msg('index', 'content', 'Return scored matches; any failure yields an empty pool and the feed continues', 'backend:apps/content-service/src/infrastructure/adapters/semantic-recommendation-service.adapter.ts:117-120', reply=True),
                              ]),
                        ),
-                       msg('content', 'content', 'Merge and de-duplicate candidates; Reels found by several pools get a capped boost', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:1049-1099'),
-                       msg('content', 'db', 'Load the 24-hour seen history, eligible Reels and the ranking snapshot', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:646-654', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:889-895'),
-                       msg('content', 'content', 'Rank the unseen Reels with the feature ranker (personalized-ranker-v2)', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:646-654'),
+                       msg('content', 'content', 'Merge and de-duplicate candidates; Reels found by several pools get a capped boost', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:1258-1308'),
+                       msg('content', 'db', 'Load the 24-hour seen history, eligible Reels and the ranking snapshot, together rather than one after another', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:735-770', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:1019-1021'),
+                       msg('content', 'content', 'Rank the unseen Reels with the feature ranker (personalized-ranker-v2)', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:735-770'),
                        frame('opt',
                              ('neural rerank flag on, at least 2 unseen Reels and the viewer has interest tags', [
-                                 msg('content', 'ai', 'Score the top K (default 20) Reel texts against the interest tags (ai.rerank_texts, 3-second timeout)', 'backend:apps/content-service/src/infrastructure/adapters/ai-recommendation-reranker.adapter.ts:68-72'),
-                                 msg('ai', 'content', 'Return cross-encoder relevance scores (TEI reranker)', 'backend:apps/content-service/src/infrastructure/adapters/ai-recommendation-reranker.adapter.ts:71-81', reply=True),
-                                 msg('content', 'content', 'Blend rank-normalized scores centred on zero; on any failure keep the feature-ranked order', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:958-1008'),
+                                 msg('content', 'ai', 'Score the top K (default 20) Reel texts against the interest tags (ai.rerank_texts, 3-second timeout); reranks run one at a time and a rerank that would wait behind more than two others is skipped', 'backend:apps/content-service/src/infrastructure/adapters/ai-recommendation-reranker.adapter.ts:79-83'),
+                                 msg('ai', 'content', 'Return cross-encoder relevance scores (TEI reranker)', 'backend:apps/content-service/src/infrastructure/adapters/ai-recommendation-reranker.adapter.ts:82-92', reply=True),
+                                 msg('content', 'content', 'Blend rank-normalized scores centred on zero; on any failure keep the feature-ranked order. With the experiment on, the control arm is scored but keeps the feature order, and each scored Reel is logged to ReelRerankExposure', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:1089-1167'),
                              ]),
                        ),
-                       msg('content', 'content', 'Diversify the unseen Reels, then append seen ones only if capacity remains', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:909-919'),
-                       msg('content', 'redis', 'Cache the Reel entities and save the session with refill marked complete', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:609-694'),
-                       msg('content', 'redis', 'Release the refill lock', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:542-564'),
+                       msg('content', 'content', 'Diversify the unseen Reels, then append seen ones only if capacity remains', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:1037-1047'),
+                       msg('content', 'redis', 'Cache the Reel entities and save the session with refill marked complete', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:697-813'),
+                       msg('content', 'redis', 'Release the refill lock', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:634-656'),
                    ]),
              ),
-             note('Only unseen Reel IDs are appended to the session, so pages already shown keep their order', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:646-654'),
+             note('Only unseen Reel IDs are appended to the session, so pages already shown keep their order', 'backend:apps/content-service/src/application/use-cases/get-recommended-reels.use-case.ts:735-770'),
          ]),
 
     dict(id='34a-hls-owner-preview', title='34a · Owner-local preview before the validated stream is ready',
@@ -719,7 +744,7 @@ SPLIT_MODELS = [
                        note('Show a queued, processing, failed or offline-unavailable state', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239'),
                    ]),
              ),
-             note('The local source stays pinned for the owner; 14-day expiry and safe cleanup apply', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1225-1251'),
+             note('The local source stays pinned for the owner; 14-day expiry and safe cleanup apply', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1333-1359'),
          ]),
 
     dict(id='34b-hls-validated-stream', title='34b · Status polling and the switch to the validated HLS stream',
@@ -727,19 +752,19 @@ SPLIT_MODELS = [
          steps=[
              frame('loop',
                    ('media, evidence or index work is still pending', [
-                       msg('creator', 'gateway', 'Poll the Reel status (existing TanStack query)', 'mobile:src/hooks/useReels.ts:1237-1257'),
-                       msg('gateway', 'creator', 'Return media and index statuses (separate fields); streamUrl only when media is COMPLETED with an HLS master key', 'mobile:src/lib/reelProcessing.ts:265-294', 'backend:apps/api-gateway/src/content/content.controller.ts:669-672', reply=True),
+                       msg('creator', 'gateway', 'Poll the Reel status (existing TanStack query)', 'mobile:src/hooks/useReels.ts:1248-1268'),
+                       msg('gateway', 'creator', 'Return media and index statuses (separate fields); streamUrl only when media is COMPLETED with an HLS master key', 'mobile:src/lib/reelProcessing.ts:265-294', 'backend:apps/api-gateway/src/content/content.controller.ts:704-707', reply=True),
                    ]),
              ),
              frame('opt',
                    ('media COMPLETED and a valid HLS URL arrives', [
-                       note('HLS warm-up and the temporary offline cache run independently for validated remote assets', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1225-1251'),
-                       msg('resolver', 'player', 'Prefer the validated HLS and safely replace the coordinated player source', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1225-1251'),
-                       note('Queue the output-relative position on detach; the trim wrapper adds the source offset once; mute and pause state are preserved', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1225-1251'),
+                       note('HLS warm-up and the temporary offline cache run independently for validated remote assets', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1333-1359'),
+                       msg('resolver', 'player', 'Prefer the validated HLS and safely replace the coordinated player source', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1333-1359'),
+                       note('Queue the output-relative position on detach; the trim wrapper adds the source offset once; mute and pause state are preserved', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1333-1359'),
                        msg('player', 'r2', 'Fetch master playlist, variants and segments directly from the public R2 domain', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239'),
                        frame('opt',
                              ('remote playback errors', [
-                                 note('Bounded fallback: try each available remote or local candidate once; no backend media failure is written', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1225-1251'),
+                                 note('Bounded fallback: try each available remote or local candidate once; no backend media failure is written', 'mobile:src/hooks/useOfflineReelVideoSource.ts:182-239', 'mobile:src/components/reels/ReelFeedItem.tsx:1333-1359'),
                              ]),
                        ),
                    ]),
@@ -751,25 +776,25 @@ SPLIT_MODELS = [
          steps=[
              frame('alt',
                    ('create', [
-                       msg('mobile', 'gateway', 'POST /content/series', 'backend:apps/api-gateway/src/content/content.controller.ts:157-168'),
-                       msg('gateway', 'content', 'Forward content.create_reel_series (owner ID and payload)', 'backend:apps/api-gateway/src/content/content.controller.ts:163-169'),
+                       msg('mobile', 'gateway', 'POST /content/series', 'backend:apps/api-gateway/src/content/content.controller.ts:163-174'),
+                       msg('gateway', 'content', 'Forward content.create_reel_series (owner ID and payload)', 'backend:apps/api-gateway/src/content/content.controller.ts:169-175'),
                        msg('content', 'db', 'Create the Series with owner, title, description and visibility', 'backend:apps/content-service/src/application/use-cases/create-reel-series.use-case.ts:13-21'),
                    ]),
                    ('update', [
-                       msg('mobile', 'gateway', 'PATCH /content/series/:id', 'backend:apps/api-gateway/src/content/content.controller.ts:286-300'),
-                       msg('gateway', 'content', 'Forward content.update_reel_series (owner ID and payload)', 'backend:apps/api-gateway/src/content/content.controller.ts:294-301'),
+                       msg('mobile', 'gateway', 'PATCH /content/series/:id', 'backend:apps/api-gateway/src/content/content.controller.ts:292-306'),
+                       msg('gateway', 'content', 'Forward content.update_reel_series (owner ID and payload)', 'backend:apps/api-gateway/src/content/content.controller.ts:300-307'),
                        note('Load the Series and require the owner; otherwise Forbidden or NotFound', 'backend:apps/content-service/src/application/use-cases/update-reel-series.use-case.ts:15-29'),
-                       msg('content', 'db', 'Transaction: re-check the owner and update the Series metadata', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:345-375'),
+                       msg('content', 'db', 'Transaction: re-check the owner and update the Series metadata', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:364-394'),
                        frame('opt',
                              ('visibility changed', [
-                                 msg('content', 'db', 'Propagate the new visibility to member Reels in the same transaction', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:357-361'),
+                                 msg('content', 'db', 'Propagate the new visibility to member Reels in the same transaction', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:376-380'),
                              ]),
                        ),
                    ]),
              ),
              msg('content', 'gateway', 'Return the persisted Series (RPC result)', 'backend:apps/content-service/src/application/use-cases/create-reel-series.use-case.ts:13-21', reply=True),
-             msg('gateway', 'mobile', 'Enrich the Series and return the HTTP response', 'backend:apps/api-gateway/src/content/content.controller.ts:171-174', reply=True),
-             note('Mobile reconciles the viewer Series cache and the command-specific list and episode queries', 'mobile:src/hooks/useReels.ts:1125-1145'),
+             msg('gateway', 'mobile', 'Enrich the Series and return the HTTP response', 'backend:apps/api-gateway/src/content/content.controller.ts:177-180', reply=True),
+             note('Mobile reconciles the viewer Series cache and the command-specific list and episode queries', 'mobile:src/hooks/useReels.ts:1136-1156'),
          ]),
 
     dict(id='35b-series-membership-order', title='35b · Add, remove and reorder Series episodes',
@@ -777,41 +802,41 @@ SPLIT_MODELS = [
          steps=[
              frame('alt',
                    ('add Reels', [
-                       msg('mobile', 'gateway', 'POST /content/series/:id/reels', 'backend:apps/api-gateway/src/content/content.controller.ts:326-341'),
-                       msg('gateway', 'content', 'Forward content.add_reel_to_series (owner ID and Reel IDs)', 'backend:apps/api-gateway/src/content/content.controller.ts:334-341'),
+                       msg('mobile', 'gateway', 'POST /content/series/:id/reels', 'backend:apps/api-gateway/src/content/content.controller.ts:332-347'),
+                       msg('gateway', 'content', 'Forward content.add_reel_to_series (owner ID and Reel IDs)', 'backend:apps/api-gateway/src/content/content.controller.ts:340-347'),
                        note('Load the owned Series; Forbidden or NotFound exits before any change', 'backend:apps/content-service/src/application/use-cases/add-reels-to-series.use-case.ts:18-32'),
-                       msg('content', 'db', 'Serializable transaction: validate every requested Reel', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:400-435', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:400-440'),
+                       msg('content', 'db', 'Serializable transaction: validate every requested Reel', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:419-454', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:419-459'),
                        frame('alt',
                              ('all Reels are owned, COMPLETED, standalone and match the Series visibility', [
-                                 msg('content', 'db', 'Append episodeNumber = current maximum + 1 + index; each update must change exactly one row', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:439-467'),
-                                 msg('content', 'gateway', 'Return the persisted Series', 'backend:apps/api-gateway/src/content/content.controller.ts:326-344', reply=True),
-                                 msg('gateway', 'mobile', 'Return the HTTP Series response', 'backend:apps/api-gateway/src/content/content.controller.ts:326-344', reply=True),
+                                 msg('content', 'db', 'Append episodeNumber = current maximum + 1 + index; each update must change exactly one row', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:458-486'),
+                                 msg('content', 'gateway', 'Return the persisted Series', 'backend:apps/api-gateway/src/content/content.controller.ts:332-350', reply=True),
+                                 msg('gateway', 'mobile', 'Return the HTTP Series response', 'backend:apps/api-gateway/src/content/content.controller.ts:332-350', reply=True),
                              ]),
                              ('eligibility fails, membership conflicts or the transaction aborts (P2002 or P2034)', [
-                                 msg('content', 'gateway', 'SeriesConflict; the transaction rolls back', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:470-484', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
-                                 msg('gateway', 'mobile', 'Return the HTTP conflict', 'backend:apps/api-gateway/src/content/content.controller.ts:341-341', reply=True),
+                                 msg('content', 'gateway', 'SeriesConflict; the transaction rolls back', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:489-503', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
+                                 msg('gateway', 'mobile', 'Return the HTTP conflict', 'backend:apps/api-gateway/src/content/content.controller.ts:347-347', reply=True),
                              ]),
                        ),
                    ]),
                    ('remove a Reel', [
-                       msg('mobile', 'gateway', 'DELETE /content/series/:id/reels/:reelId', 'backend:apps/api-gateway/src/content/content.controller.ts:347-362'),
-                       msg('gateway', 'content', 'Forward content.remove_reel_from_series (owner ID and Reel ID)', 'backend:apps/api-gateway/src/content/content.controller.ts:355-362'),
+                       msg('mobile', 'gateway', 'DELETE /content/series/:id/reels/:reelId', 'backend:apps/api-gateway/src/content/content.controller.ts:353-368'),
+                       msg('gateway', 'content', 'Forward content.remove_reel_from_series (owner ID and Reel ID)', 'backend:apps/api-gateway/src/content/content.controller.ts:361-368'),
                        note('Require an owned Series and an existing member Reel', 'backend:apps/content-service/src/application/use-cases/remove-reel-from-series.use-case.ts:17-29'),
-                       msg('content', 'db', 'Serializable detach: clear seriesId and episodeNumber, then renumber the remaining episodes', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:488-517'),
+                       msg('content', 'db', 'Serializable detach: clear seriesId and episodeNumber, then renumber the remaining episodes', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:507-536'),
                    ]),
                    ('reorder', [
-                       msg('mobile', 'gateway', 'PATCH /content/series/:id/reels/order', 'backend:apps/api-gateway/src/content/content.controller.ts:368-383'),
-                       msg('gateway', 'content', 'Forward content.reorder_reel_series (owner ID and the full Reel ID list)', 'backend:apps/api-gateway/src/content/content.controller.ts:376-383'),
-                       msg('content', 'db', 'Serializable transaction: re-check the owner and the exact member set', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:556-580'),
-                       msg('content', 'db', 'Clear episode numbers, then write index + 1 in the requested order', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:582-598'),
+                       msg('mobile', 'gateway', 'PATCH /content/series/:id/reels/order', 'backend:apps/api-gateway/src/content/content.controller.ts:374-389'),
+                       msg('gateway', 'content', 'Forward content.reorder_reel_series (owner ID and the full Reel ID list)', 'backend:apps/api-gateway/src/content/content.controller.ts:382-389'),
+                       msg('content', 'db', 'Serializable transaction: re-check the owner and the exact member set', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:575-599'),
+                       msg('content', 'db', 'Clear episode numbers, then write index + 1 in the requested order', 'backend:apps/content-service/src/infrastructure/repositories/reel-series.repository.ts:601-617'),
                        frame('alt',
                              ('the transaction commits', [
-                                 msg('content', 'gateway', 'Return the persisted Series', 'backend:apps/api-gateway/src/content/content.controller.ts:368-386', reply=True),
-                                 msg('gateway', 'mobile', 'Return the HTTP Series response', 'backend:apps/api-gateway/src/content/content.controller.ts:368-386', reply=True),
+                                 msg('content', 'gateway', 'Return the persisted Series', 'backend:apps/api-gateway/src/content/content.controller.ts:374-392', reply=True),
+                                 msg('gateway', 'mobile', 'Return the HTTP Series response', 'backend:apps/api-gateway/src/content/content.controller.ts:374-392', reply=True),
                              ]),
                              ('membership changed or the transaction aborts', [
                                  msg('content', 'gateway', 'SeriesConflict; no mutation result', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
-                                 msg('gateway', 'mobile', 'Return the HTTP conflict', 'backend:apps/api-gateway/src/content/content.controller.ts:383-383', reply=True),
+                                 msg('gateway', 'mobile', 'Return the HTTP conflict', 'backend:apps/api-gateway/src/content/content.controller.ts:389-389', reply=True),
                              ]),
                        ),
                    ]),
@@ -821,16 +846,16 @@ SPLIT_MODELS = [
     dict(id='36a-series-playback-entry', title='36a · Series episode page access and loading',
          participants=[('mobile', 'Velora-Mobile (Series screen)'), ('cache', 'TanStack Query cache'), ('gateway', 'API Gateway'), ('content', 'Content Service'), ('db', 'Content Database'), ('friend', 'Friend Service')],
          steps=[
-             msg('mobile', 'cache', 'Load the viewer-bound Series query (Series ID and aroundReelId)', 'mobile:src/hooks/useReels.ts:1022-1061'),
+             msg('mobile', 'cache', 'Load the viewer-bound Series query (Series ID and aroundReelId)', 'mobile:src/hooks/useReels.ts:1033-1072'),
              frame('alt',
                    ('the query is enabled and the cache is missing or stale', [
-                       msg('mobile', 'gateway', 'GET /content/series/:id/episodes (aroundReelId or a directional cursor)', 'backend:apps/api-gateway/src/content/content.controller.ts:238-257'),
-                       msg('gateway', 'content', 'Forward content.get_reel_series_episodes (viewer ID, isAdmin, query)', 'backend:apps/api-gateway/src/content/content.controller.ts:245-258'),
+                       msg('mobile', 'gateway', 'GET /content/series/:id/episodes (aroundReelId or a directional cursor)', 'backend:apps/api-gateway/src/content/content.controller.ts:244-263'),
+                       msg('gateway', 'content', 'Forward content.get_reel_series_episodes (viewer ID, isAdmin, query)', 'backend:apps/api-gateway/src/content/content.controller.ts:251-264'),
                        msg('content', 'db', 'Read the Series by ID; a missing Series is NotFound', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49'),
                        frame('opt',
                              ('the viewer is neither admin nor owner', [
-                                 msg('content', 'friend', 'Check access (friend.can_view_reel_content)', 'backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:40-62'),
-                                 msg('friend', 'content', 'allowed; a failed check counts as false', 'backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:45-62', reply=True),
+                                 msg('content', 'friend', 'Check access: the owner and private-Reel cases are answered inside Content; anyone else goes to friend.can_view_reel_content, and the answer is cached for 15 s', 'backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:112-181'),
+                                 msg('friend', 'content', 'allowed; a failed check counts as false', 'backend:apps/content-service/src/infrastructure/adapters/friend-content-access.adapter.ts:164-181', reply=True),
                              ]),
                        ),
                        frame('alt',
@@ -838,17 +863,17 @@ SPLIT_MODELS = [
                                  msg('content', 'db', 'Read the episode page; only COMPLETED Reels unless admin or owner', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49'),
                                  msg('db', 'content', 'Ordered episode window with cursors and count', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
                                  msg('content', 'gateway', 'Return the Series and the episode page', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
-                                 msg('gateway', 'mobile', 'Enrich the page and return it over HTTP', 'backend:apps/api-gateway/src/content/content.controller.ts:261-263', reply=True),
-                                 msg('mobile', 'cache', 'Store the infinite query in 15-item windows', 'mobile:src/hooks/useReels.ts:1022-1061'),
+                                 msg('gateway', 'mobile', 'Enrich the page and return it over HTTP', 'backend:apps/api-gateway/src/content/content.controller.ts:267-269', reply=True),
+                                 msg('mobile', 'cache', 'Store the infinite query in 15-item windows', 'mobile:src/hooks/useReels.ts:1033-1072'),
                              ]),
                              ('not allowed', [
                                  msg('content', 'gateway', 'RPC NotFound', 'backend:apps/content-service/src/application/use-cases/get-reel-series-episodes.use-case.ts:1-49', reply=True),
-                                 msg('gateway', 'mobile', 'Return the HTTP access failure; playback is not initialized', 'backend:apps/api-gateway/src/content/content.controller.ts:258-258', reply=True),
+                                 msg('gateway', 'mobile', 'Return the HTTP access failure; playback is not initialized', 'backend:apps/api-gateway/src/content/content.controller.ts:264-264', reply=True),
                              ]),
                        ),
                    ]),
                    ('the query cache is fresh', [
-                       msg('cache', 'mobile', 'Return the cached episode pages', 'mobile:src/hooks/useReels.ts:1072-1094', reply=True),
+                       msg('cache', 'mobile', 'Return the cached episode pages', 'mobile:src/hooks/useReels.ts:1083-1105', reply=True),
                    ]),
              ),
          ]),
@@ -858,22 +883,22 @@ SPLIT_MODELS = [
          steps=[
              frame('opt',
                    ('episode data loaded and the Series has episodes', [
-                       msg('mobile', 'mobile', 'Resolve the selected and stable playing Reel from requestedReelId', 'mobile:app/series/[id]/index.tsx:106-139'),
-                       note('The viewer source is initialised separately from episode-data pagination', 'mobile:app/series/[id]/index.tsx:106-139'),
+                       msg('mobile', 'mobile', 'Resolve the selected and stable playing Reel from requestedReelId', 'mobile:app/series/[id]/index.tsx:105-138'),
+                       note('The viewer source is initialised separately from episode-data pagination', 'mobile:app/series/[id]/index.tsx:105-138'),
                        frame('opt',
                              ('the user opens the episode sheet', [
-                                 msg('mobile', 'sheet', 'Increment the sheet session and present it', 'mobile:app/series/[id]/index.tsx:268-271'),
-                                 msg('mobile', 'sheet', 'Mount near the playing episode (initialIndex = playing index minus leading rows)', 'mobile:app/series/[id]/index.tsx:141-148', 'mobile:app/series/[id]/index.tsx:577-588'),
+                                 msg('mobile', 'sheet', 'Increment the sheet session and present it', 'mobile:app/series/[id]/index.tsx:238-243'),
+                                 msg('mobile', 'sheet', 'Mount near the playing episode (initialIndex = playing index minus leading rows)', 'mobile:app/series/[id]/index.tsx:140-161', 'mobile:app/series/[id]/index.tsx:581-630'),
                                  frame('opt',
                                        ('the user selects an episode', [
-                                           msg('sheet', 'mobile', 'handleEpisodeSelect(reelId)', 'mobile:app/series/[id]/index.tsx:273-276', sort='asynchSignal'),
-                                           msg('mobile', 'mobile', 'Remember the pending selected Reel ID', 'mobile:app/series/[id]/index.tsx:273-274'),
-                                           msg('mobile', 'sheet', 'Dismiss the sheet', 'mobile:app/series/[id]/index.tsx:275-275'),
-                                           msg('sheet', 'mobile', 'onDismiss triggers handleEpisodeSheetDismiss()', 'mobile:app/series/[id]/index.tsx:525-537', sort='asynchSignal'),
+                                           msg('sheet', 'mobile', 'handleEpisodeSelect(reelId)', 'mobile:app/series/[id]/index.tsx:245-248', sort='asynchSignal'),
+                                           msg('mobile', 'mobile', 'Remember the pending selected Reel ID', 'mobile:app/series/[id]/index.tsx:245-246'),
+                                           msg('mobile', 'sheet', 'Dismiss the sheet', 'mobile:app/series/[id]/index.tsx:247-247'),
+                                           msg('sheet', 'mobile', 'onDismiss triggers handleEpisodeSheetDismiss()', 'mobile:app/series/[id]/index.tsx:529-541', sort='asynchSignal'),
                                            frame('opt',
                                                  ('a pending selection exists', [
-                                                     msg('mobile', 'mobile', 'Clear the pending ID; set the active, playing and selected Reel', 'mobile:app/series/[id]/index.tsx:249-255'),
-                                                     note('The selected identity chooses the player source (see 34a)', 'mobile:app/series/[id]/index.tsx:249-255'),
+                                                     msg('mobile', 'mobile', 'Clear the pending ID; set the active, playing and selected Reel', 'mobile:app/series/[id]/index.tsx:219-225'),
+                                                     note('The selected identity chooses the player source (see 34a)', 'mobile:app/series/[id]/index.tsx:219-225'),
                                                  ]),
                                            ),
                                        ]),
@@ -884,6 +909,7 @@ SPLIT_MODELS = [
                              ('the user reaches the previous or next episode-data boundary and a cursor exists', [
                                  msg('mobile', 'gateway', 'Fetch the directional cursor page through the same cached, access-checked operation (36a)', 'mobile:src/hooks/useReels.ts:90-110'),
                                  note('The active Reel identity and previous pages are preserved', 'mobile:src/hooks/useReels.ts:90-110'),
+                                 note('The sheet list shows a snapshot of the episodes that is refreshed only while the list is idle, so rows prepended during a fling cannot make it jump to another episode', MB('app/series/[id]/index.tsx', r'sheetEpisodes, setSheetEpisodes'), MB('app/series/[id]/index.tsx', r'EPISODE_LIST_IDLE_DELAY_MS =')),
                              ]),
                        ),
                    ]),
@@ -893,8 +919,8 @@ SPLIT_MODELS = [
     dict(id='37a-share-to-ai-assistant', title='37a · Share a Reel with the Velora AI assistant',
          participants=[('creator', 'Sharing user / Mobile'), ('recipient', 'Recipient Mobile / conversation room'), ('gateway', 'API Gateway'), ('content', 'Content Service'), ('db', 'Content share records'), ('conversation', 'Conversation Service (AI/share scope)'), ('user', 'User profile service')],
          steps=[
-             msg('creator', 'gateway', 'POST /content/reels/:id/share (target defaults to the AI bot)', 'backend:apps/api-gateway/src/content/content.controller.ts:676-702'),
-             msg('gateway', 'content', 'Forward content.share_reel (sharer, conversation, target)', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699'),
+             msg('creator', 'gateway', 'POST /content/reels/:id/share (target defaults to the AI bot)', 'backend:apps/api-gateway/src/content/content.controller.ts:711-737'),
+             msg('gateway', 'content', 'Forward content.share_reel (sharer, conversation, target)', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734'),
              msg('content', 'db', 'Find Reel; require mediaStatus=COMPLETED + validated hlsMasterKey', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:34-34'),
              frame('alt',
                    ('sharer owns the Reel or it is public', [
@@ -922,35 +948,35 @@ SPLIT_MODELS = [
                                  note('SendMessage: persist idempotently; return saved message and created Boolean', 'backend:apps/conversation-service/src/application/use-cases/send-message.use-case.ts:21-32'),
                                  frame('alt',
                                        ('result.created', [
-                                           msg('conversation', 'creator', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', sort='asynchSignal'),
-                                           msg('conversation', 'recipient', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', sort='asynchSignal'),
-                                           note('Await conversation read; if present emit conversation_updated and message activity before RPC return', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:247-248'),
-                                           note('Detached trigger sees type=reel and returns triggered=false; no immediate AI question', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:26-75'),
+                                           msg('conversation', 'creator', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', sort='asynchSignal'),
+                                           msg('conversation', 'recipient', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', sort='asynchSignal'),
+                                           note('Await conversation read; if present emit conversation_updated and message activity before RPC return', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:250-251'),
+                                           note('Detached trigger sees type=reel and returns triggered=false; no immediate AI question', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:30-91'),
                                        ]),
                                        ('!result.created', [
-                                           msg('conversation', 'conversation', 'Return original message; skip repeated fan-out', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462'),
+                                           msg('conversation', 'conversation', 'Return original message; skip repeated fan-out', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465'),
                                        ]),
                                  ),
-                                 msg('conversation', 'content', 'CreatedConversationMessage DTO', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', reply=True),
+                                 msg('conversation', 'content', 'CreatedConversationMessage DTO', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', reply=True),
                                  msg('content', 'db', 'updateReelShareMessageId(share.id, message.id)', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:90-93'),
                              ]),
                        ),
                        msg('content', 'gateway', 'ReelShareResponse incl messageId and optional message', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:26-106', reply=True),
-                       note('Await Gateway owner-media enrichment when share.message.media exists', 'backend:apps/api-gateway/src/content/content.controller.ts:98-134'),
-                       msg('gateway', 'creator', 'HTTP share response', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699', reply=True),
+                       note('Await Gateway owner-media enrichment when share.message.media exists', 'backend:apps/api-gateway/src/content/content.controller.ts:104-140'),
+                       msg('gateway', 'creator', 'HTTP share response', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734', reply=True),
                        frame('opt',
                              ('!share.message && share.messageId exists', [
                                  msg('creator', 'gateway', 'GET /conversations/:id/messages/around/:messageId (before=1, after=1)', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378'),
                                  msg('gateway', 'conversation', 'get_messages_around(userId, conversationId, messageId)', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:359-370'),
                                  msg('conversation', 'gateway', 'Message anchor window', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:359-370', reply=True),
-                                 msg('gateway', 'creator', 'Enriched messages window; find target or throw', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378', 'mobile:src/hooks/useReels.ts:1589-1591', reply=True),
+                                 msg('gateway', 'creator', 'Enriched messages window; find target or throw', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378', 'mobile:src/hooks/useReels.ts:1600-1602', reply=True),
                              ]),
                        ),
-                       note('Share mutation success: upsert message/summary and local remote record; invalidate conversation queries', 'mobile:src/hooks/useReels.ts:1565-1626'),
+                       note('Share mutation success: upsert message/summary and local remote record; invalidate conversation queries', 'mobile:src/hooks/useReels.ts:1576-1637'),
                    ]),
                    ('else (friends/private nonowner)', [
                        msg('content', 'gateway', 'RPC Forbidden; no share/message writes', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:108-124', reply=True),
-                       msg('gateway', 'creator', 'HTTP rejected', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699', reply=True),
+                       msg('gateway', 'creator', 'HTTP rejected', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734', reply=True),
                    ]),
              ),
          ]),
@@ -958,8 +984,8 @@ SPLIT_MODELS = [
     dict(id='37b-share-to-user-chat', title='37b · Share a Reel with another user or group',
          participants=[('creator', 'Sharing user / Mobile'), ('recipient', 'Recipient Mobile / conversation room'), ('gateway', 'API Gateway'), ('content', 'Content Service'), ('db', 'Content share records'), ('conversation', 'Conversation Service (AI/share scope)'), ('friend', 'Friend Service'), ('user', 'User profile service')],
          steps=[
-             msg('creator', 'gateway', 'POST /content/reels/:id/share', 'backend:apps/api-gateway/src/content/content.controller.ts:676-702'),
-             msg('gateway', 'content', 'Forward content.share_reel (sharer, conversation, target)', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699'),
+             msg('creator', 'gateway', 'POST /content/reels/:id/share', 'backend:apps/api-gateway/src/content/content.controller.ts:711-737'),
+             msg('gateway', 'content', 'Forward content.share_reel (sharer, conversation, target)', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734'),
              msg('content', 'db', 'Find Reel; require mediaStatus=COMPLETED + validated hlsMasterKey', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:34-34'),
              frame('alt',
                    ('sharer owns the Reel or it is public', [
@@ -994,35 +1020,35 @@ SPLIT_MODELS = [
                                  note('SendMessage: persist idempotently; return saved message and created Boolean', 'backend:apps/conversation-service/src/application/use-cases/send-message.use-case.ts:21-32'),
                                  frame('alt',
                                        ('result.created', [
-                                           msg('conversation', 'creator', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', sort='asynchSignal'),
-                                           msg('conversation', 'recipient', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', sort='asynchSignal'),
-                                           note('Await conversation read; if present emit conversation_updated and message activity before RPC return', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:247-248'),
-                                           note('Detached trigger sees type=reel and returns triggered=false; no immediate AI question', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:26-75'),
+                                           msg('conversation', 'creator', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', sort='asynchSignal'),
+                                           msg('conversation', 'recipient', 'new_message(saved Reel DTO); socket send', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', sort='asynchSignal'),
+                                           note('Await conversation read; if present emit conversation_updated and message activity before RPC return', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:250-251'),
+                                           note('Detached trigger sees type=reel and returns triggered=false; no immediate AI question', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:30-91'),
                                        ]),
                                        ('!result.created', [
-                                           msg('conversation', 'conversation', 'Return original message; skip repeated fan-out', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462'),
+                                           msg('conversation', 'conversation', 'Return original message; skip repeated fan-out', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465'),
                                        ]),
                                  ),
-                                 msg('conversation', 'content', 'CreatedConversationMessage DTO', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:365-462', reply=True),
+                                 msg('conversation', 'content', 'CreatedConversationMessage DTO', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:368-465', reply=True),
                                  msg('content', 'db', 'updateReelShareMessageId(share.id, message.id)', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:90-93'),
                              ]),
                        ),
                        msg('content', 'gateway', 'ReelShareResponse incl messageId and optional message', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:26-106', reply=True),
-                       note('Await Gateway owner-media enrichment when share.message.media exists', 'backend:apps/api-gateway/src/content/content.controller.ts:98-134'),
-                       msg('gateway', 'creator', 'HTTP share response', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699', reply=True),
+                       note('Await Gateway owner-media enrichment when share.message.media exists', 'backend:apps/api-gateway/src/content/content.controller.ts:104-140'),
+                       msg('gateway', 'creator', 'HTTP share response', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734', reply=True),
                        frame('opt',
                              ('!share.message && share.messageId exists', [
                                  msg('creator', 'gateway', 'GET /conversations/:id/messages/around/:messageId (before=1, after=1)', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378'),
                                  msg('gateway', 'conversation', 'get_messages_around(userId, conversationId, messageId)', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:359-370'),
                                  msg('conversation', 'gateway', 'Message anchor window', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:359-370', reply=True),
-                                 msg('gateway', 'creator', 'Enriched messages window; find target or throw', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378', 'mobile:src/hooks/useReels.ts:1589-1591', reply=True),
+                                 msg('gateway', 'creator', 'Enriched messages window; find target or throw', 'backend:apps/api-gateway/src/conversation/conversation.controller.ts:347-378', 'mobile:src/hooks/useReels.ts:1600-1602', reply=True),
                              ]),
                        ),
-                       note('Share mutation success: upsert message/summary and local remote record; invalidate conversation queries', 'mobile:src/hooks/useReels.ts:1565-1626'),
+                       note('Share mutation success: upsert message/summary and local remote record; invalidate conversation queries', 'mobile:src/hooks/useReels.ts:1576-1637'),
                    ]),
                    ('else (friends/private nonowner)', [
                        msg('content', 'gateway', 'RPC Forbidden; no share/message writes', 'backend:apps/content-service/src/application/use-cases/share-reel.use-case.ts:108-124', reply=True),
-                       msg('gateway', 'creator', 'HTTP rejected', 'backend:apps/api-gateway/src/content/content.controller.ts:690-699', reply=True),
+                       msg('gateway', 'creator', 'HTTP rejected', 'backend:apps/api-gateway/src/content/content.controller.ts:725-734', reply=True),
                    ]),
              ),
              frame('opt',
@@ -1037,8 +1063,8 @@ SPLIT_MODELS = [
          steps=[
              frame('alt',
                    ('requested operation == create', [
-                       msg('creator', 'gateway', 'POST /content/reels/:id/share-link', 'backend:apps/api-gateway/src/content/content.controller.ts:705-727'),
-                       msg('gateway', 'content', 'content.create_reel_share_link(createdBy, reuseExisting, expiresInDays)', 'backend:apps/api-gateway/src/content/content.controller.ts:712-721'),
+                       msg('creator', 'gateway', 'POST /content/reels/:id/share-link', 'backend:apps/api-gateway/src/content/content.controller.ts:740-762'),
+                       msg('gateway', 'content', 'content.create_reel_share_link(createdBy, reuseExisting, expiresInDays)', 'backend:apps/api-gateway/src/content/content.controller.ts:747-756'),
                        msg('content', 'db', 'Find Reel', 'backend:apps/content-service/src/application/use-cases/create-reel-share-link.use-case.ts:24-24'),
                        frame('alt',
                              ('Reel exists && mediaStatus == COMPLETED && hlsMasterKey exists && visibility == public', [
@@ -1077,27 +1103,27 @@ SPLIT_MODELS = [
                                  frame('opt',
                                        ('link successfully returned', [
                                            msg('content', 'gateway', 'Link record only', 'backend:apps/content-service/src/application/use-cases/create-reel-share-link.use-case.ts:18-77', reply=True),
-                                           msg('gateway', 'creator', 'Link record + publicUrl; no appDeepLink', 'backend:apps/api-gateway/src/content/content.controller.ts:705-727', reply=True),
+                                           msg('gateway', 'creator', 'Link record + publicUrl; no appDeepLink', 'backend:apps/api-gateway/src/content/content.controller.ts:740-762', reply=True),
                                        ]),
                                  ),
                              ]),
                              ('else', [
-                                 note('NotFound / NotReady / Forbidden; Content RPC error -> Gateway mapped HTTP error -> caller; no successful write/playback', 'backend:apps/content-service/src/application/use-cases/create-reel-share-link.use-case.ts:18-77', 'backend:apps/api-gateway/src/content/content.controller.ts:712-721'),
+                                 note('NotFound / NotReady / Forbidden; Content RPC error -> Gateway mapped HTTP error -> caller; no successful write/playback', 'backend:apps/content-service/src/application/use-cases/create-reel-share-link.use-case.ts:18-77', 'backend:apps/api-gateway/src/content/content.controller.ts:747-756'),
                              ]),
                        ),
                    ]),
                    ('requested operation == revoke', [
-                       msg('creator', 'gateway', 'DELETE /content/reels/share-links/:token', 'backend:apps/api-gateway/src/content/content.controller.ts:730-749'),
-                       msg('gateway', 'content', 'content.revoke_reel_share_link(revokedByUserId)', 'backend:apps/api-gateway/src/content/content.controller.ts:730-749'),
+                       msg('creator', 'gateway', 'DELETE /content/reels/share-links/:token', 'backend:apps/api-gateway/src/content/content.controller.ts:765-784'),
+                       msg('gateway', 'content', 'content.revoke_reel_share_link(revokedByUserId)', 'backend:apps/api-gateway/src/content/content.controller.ts:765-784'),
                        msg('content', 'db', 'Find token', 'backend:apps/content-service/src/application/use-cases/revoke-reel-share-link.use-case.ts:20-22'),
                        frame('alt',
                              ('existing && (caller == link.creator || caller == Reel.owner)', [
                                  msg('content', 'db', 'Persist revoke; missing mutation result -> NotFound', 'backend:apps/content-service/src/application/use-cases/revoke-reel-share-link.use-case.ts:37-37'),
                                  msg('content', 'gateway', 'Revoked record', 'backend:apps/content-service/src/application/use-cases/revoke-reel-share-link.use-case.ts:16-44', reply=True),
-                                 msg('gateway', 'creator', 'Revoked record + publicUrl', 'backend:apps/api-gateway/src/content/content.controller.ts:730-749', reply=True),
+                                 msg('gateway', 'creator', 'Revoked record + publicUrl', 'backend:apps/api-gateway/src/content/content.controller.ts:765-784', reply=True),
                              ]),
                              ('else', [
-                                 note('NotFound / Forbidden; Content RPC error -> Gateway mapped HTTP error -> caller; no successful write/playback', 'backend:apps/content-service/src/application/use-cases/revoke-reel-share-link.use-case.ts:16-44', 'backend:apps/api-gateway/src/content/content.controller.ts:712-721'),
+                                 note('NotFound / Forbidden; Content RPC error -> Gateway mapped HTTP error -> caller; no successful write/playback', 'backend:apps/content-service/src/application/use-cases/revoke-reel-share-link.use-case.ts:16-44', 'backend:apps/api-gateway/src/content/content.controller.ts:747-756'),
                              ]),
                        ),
                    ]),
@@ -1134,32 +1160,49 @@ SPLIT_MODELS = [
     dict(id='39a-rag-scope-routing', title='39a · AI question entry, Reel scope and query routing',
          participants=[('mobile', 'Velora-Mobile'), ('conv', 'Conversation Service'), ('ai', 'AI Service'), ('content', 'Content Service'), ('db', 'Content Database'), ('prov', 'Router LLM provider')],
          steps=[
-             msg('mobile', 'conv', 'send_message (text, conversationId, clientMessageId)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:233-255', sort='asynchSignal'),
-             note('Conversation resolves the sender, requires a clientMessageId and a participant, and persists the message idempotently', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:233-255'),
+             msg('mobile', 'conv', 'send_message (text or photo with caption, conversationId, clientMessageId)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:285-307', sort='asynchSignal'),
+             note('Conversation resolves the sender, requires a clientMessageId and a participant, and persists the message idempotently', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:285-307'),
              frame('opt',
-                   ('created text message from a non-bot sender in a conversation with the bot', [
+                   ('created text or photo message from a non-bot sender in a conversation with the bot', [
                        frame('alt',
-                             ('the sender is inside the AI turn rate limit', [
-                                 note('Build bounded answer memory (see 40a)', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:12-49', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:29-53'),
-                                 msg('conv', 'ai', 'ai.stream_question (message, userId, conversationId, answerMemory)', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:22-45'),
-                                 note('AI Service admission: 2 turns run at once, 6 may wait up to 20 seconds, more are refused with AI_BUSY', 'backend:apps/ai-service/src/infrastructure/adapters/in-process-chat-admission.adapter.ts:54-78'),
-                                 note('Shadow guardrails screen the input and the final answer; they only log findings and never change routing or the answer', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:241-249'),
-                                 msg('ai', 'content', 'Resolve shared-Reel access (content.resolve_reel_context_access)', 'backend:apps/ai-service/src/infrastructure/adapters/content-service.adapter.ts:67-85'),
-                                 msg('content', 'db', 'Conversation-scoped shares whose media and index are COMPLETED; distinct Reel IDs', 'backend:apps/content-service/src/infrastructure/repositories/content.repository.ts:1172-1188'),
-                                 msg('content', 'ai', 'Return ready, indexed shared Reel IDs (a failed lookup returns none)', 'backend:apps/ai-service/src/infrastructure/adapters/content-service.adapter.ts:78-84', reply=True),
-                                 msg('ai', 'prov', 'Route the question semantically (bounded primary and fallback policy)', 'backend:apps/ai-service/src/application/use-cases/query-router-agent.use-case.ts:391-417'),
-                                 msg('prov', 'ai', 'Return the route decision, or report the router unavailable', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:552-569', reply=True),
+                             ('the sender is inside the AI turn rate limit (photo turns have a tighter budget)', [
+                                 note('Show the bot as typing for the whole turn; build bounded answer memory (see 40a)', B('apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts', r'botTypingNotifier\.start'), 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:15-74'),
+                                 msg('conv', 'ai', 'ai.stream_question (caption, userId, conversationId, answerMemory, replied-to Reel, owned photo keys)', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:22-48', B('apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts', r'askQuestionStream')),
                                  frame('alt',
-                                       ('the router returns a valid route', [
-                                           note('Retrieval and answering continue in 39b and 41a', 'backend:apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:792-793'),
+                                       ('the input guardrail finds a high-severity attack (patterns, or the optional model classifier)', [
+                                           msg('ai', 'conv', 'Return the fixed refusal at once: no photo is read, no model slot is taken, nothing is retrieved', B('apps/ai-service/src/application/use-cases/stream-chat.use-case.ts', r'refuseRagInputUseCase\.execute'), reply=True),
                                        ]),
-                                       ('the router is unavailable or throws', [
-                                           note('The error propagates to the stream RPC and the user gets bot_reply_failed; no planning or retrieval runs', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:295-325'),
+                                       ('the message passes the input guardrail', [
+                                           note('A photo is described by the vision provider first, outside the model slot (see 43a)', B('apps/ai-service/src/application/use-cases/stream-chat.use-case.ts', r'describeChatImagesUseCase!')),
+                                           note('AI Service admission: 2 turns run at once, 6 may wait up to 20 seconds, more are refused with AI_BUSY', 'backend:apps/ai-service/src/infrastructure/adapters/in-process-chat-admission.adapter.ts:54-78'),
+                                           msg('ai', 'content', 'Resolve shared-Reel access (content.resolve_reel_context_access)', 'backend:apps/ai-service/src/infrastructure/adapters/content-service.adapter.ts:67-85'),
+                                           msg('content', 'db', 'Conversation-scoped shares whose media and index are COMPLETED; distinct Reel IDs', 'backend:apps/content-service/src/infrastructure/repositories/content.repository.ts:1211-1227'),
+                                           msg('content', 'ai', 'Return ready, indexed shared Reel IDs (a failed lookup returns none)', 'backend:apps/ai-service/src/infrastructure/adapters/content-service.adapter.ts:78-84', reply=True),
+                                           frame('alt',
+                                                 ('router rules are on and the whole message is a greeting or thanks', [
+                                                     note('AI_ROUTER_RULES_ENABLED: the router model is skipped and the turn is answered as plain chat', B('apps/ai-service/src/application/use-cases/query-router-agent.use-case.ts', r'isGreetingOrThanksOnly\(boundedInput')),
+                                                 ]),
+                                                 ('any other message', [
+                                                     msg('ai', 'prov', 'Route the question semantically (bounded primary and fallback policy)', 'backend:apps/ai-service/src/application/use-cases/query-router-agent.use-case.ts:423-449'),
+                                                     msg('prov', 'ai', 'Return the route decision, or report the router unavailable', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:626-644', reply=True),
+                                                 ]),
+                                           ),
+                                           frame('alt',
+                                                 ('the route is OFF_TOPIC and AI_SCOPE_MODE=enforce (the default)', [
+                                                     note('Fixed redirect back to Velora; no retrieval, no draft; AI_SCOPE_MODE=off restores open chat', B('apps/ai-service/src/domain/services/rag-scope-policy.ts', r'RagScopeMode ='), B('apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts', r"intent === 'OFF_TOPIC'")),
+                                                 ]),
+                                                 ('the router returns another valid route', [
+                                                     note('Retrieval and answering continue in 39b and 41a', 'backend:apps/ai-service/src/infrastructure/adapters/deterministic-retrieval-engine.adapter.ts:792-793'),
+                                                 ]),
+                                                 ('the router is unavailable or throws', [
+                                                     note('The error propagates to the stream RPC and the user gets bot_reply_failed; no planning or retrieval runs', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:331-373'),
+                                                 ]),
+                                           ),
                                        ]),
                                  ),
                              ]),
                              ('the sender exceeded the AI turn rate limit', [
-                                 msg('conv', 'mobile', 'bot_reply_failed with RATE_LIMITED and retryAfterSeconds; the user message stays stored and no AI call is made', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:47-59', sort='asynchSignal'),
+                                 msg('conv', 'mobile', 'bot_reply_failed with RATE_LIMITED and retryAfterSeconds; the user message stays stored and no AI call is made', 'backend:apps/conversation-service/src/application/use-cases/trigger-bot-reply.use-case.ts:57-73', sort='asynchSignal'),
                              ]),
                        ),
                    ]),
@@ -1172,7 +1215,7 @@ SPLIT_MODELS = [
              frame('alt',
                    ('the context tool agent is enabled', [
                        note('Bounded tool-agent provider loop; allowlisted/required tools; capped calls execute serially; memory/evidence tools use the same scoped engine; tool-provider failure + no evidence -> guarded scoped retrieval fallback; rerank has retrieved-chunk fallback', 'backend:apps/ai-service/src/application/use-cases/context-tool-agent.use-case.ts:114-170', 'backend:apps/ai-service/src/application/use-cases/context-tool-agent.use-case.ts:199-252'),
-                       note('Tool-agent returns memoryReady=true; retrievalReady=!needsRetrieval; sufficiency gates follow', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:712-722'),
+                       note('Tool-agent returns memoryReady=true; retrievalReady=!needsRetrieval; sufficiency gates follow', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:816-826'),
                    ]),
                    ('the context tool agent is disabled', [
                        note('Memory selection runs in parallel and is described in 40a', 'backend:apps/ai-service/src/application/use-cases/get-conversation-memory.use-case.ts:12-23'),
@@ -1231,7 +1274,7 @@ SPLIT_MODELS = [
                                            ),
                                            frame('opt',
                                                  ('rerank or adjacency fails or returns nothing', [
-                                                     msg('ai', 'ai', 'Workflow fallback: slice original retrieved chunks', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:748-762'),
+                                                     msg('ai', 'ai', 'Workflow fallback: slice original retrieved chunks', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:852-866'),
                                                  ]),
                                            ),
                                        ]),
@@ -1242,29 +1285,30 @@ SPLIT_MODELS = [
              ),
              frame('alt',
                    ('retrieval or the tool agent was used', [
+                       note('Evidence guardrail: a retrieved chunk with a high-severity injection finding is dropped before sufficiency and the prompt (enforce mode); only content-free codes are logged', B('apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts', r'private guardEvidence')),
                        note('Assess sufficiency: deterministic no-context/modality/not-required exits; otherwise structured provider assessment (failure closed)', 'backend:apps/ai-service/src/application/use-cases/check-context-sufficiency.use-case.ts:39-158', 'backend:apps/ai-service/src/application/use-cases/check-context-sufficiency.use-case.ts:243-265'),
                        frame('alt',
                              ('the evidence is sufficient for a grounded answer', [
-                                 msg('ai', 'ai', 'retrievalReady=true; answer-context join', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:458-458'),
+                                 msg('ai', 'ai', 'retrievalReady=true; answer-context join', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:526-526'),
                                  frame('alt',
                                        ('memory and retrieval are both ready', [
-                                           note('41 · Draft / verify / citations / final delivery', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1513-1519'),
+                                           note('41 · Draft / verify / citations / final delivery', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1708-1715'),
                                        ]),
                                        ('else', [
-                                           msg('ai', 'ai', 'Join returns END; do not draft yet', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1516-1519'),
+                                           msg('ai', 'ai', 'Join returns END; do not draft yet', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1711-1715'),
                                        ]),
                                  ),
                              ]),
                              ('the evidence is insufficient and a rewrite retry remains', [
-                                 note('Rewrite and increment retry (configured default 1, 0..2); reroute to tool agent or planner, reretrieve and reassess', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:796-818', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1472-1508'),
+                                 note('Rewrite and increment retry (configured default 1, 0..2); reroute to tool agent or planner, reretrieve and reassess', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:901-923', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1668-1705'),
                              ]),
                              ('else', [
-                                 note('41 · No-context answer -> finalAnswerNode; skip draft and verification happy path', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:541-543', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1510-1510'),
+                                 note('41 · No-context answer -> finalAnswerNode; skip draft and verification happy path', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:615-617', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1698-1705'),
                              ]),
                        ),
                    ]),
                    ('no retrieval is needed', [
-                       note('Join when memoryReady; 41 · Answer path without Reel retrieval', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1513-1519'),
+                       note('Join when memoryReady; 41 · Answer path without Reel retrieval', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1708-1715'),
                    ]),
              ),
          ]),
@@ -1272,9 +1316,9 @@ SPLIT_MODELS = [
     dict(id='40a-rag-answer-memory', title='40a · Bounded answer memory and memory selection for a question',
          participants=[('conversation', 'Conversation Service'), ('cdb', 'Conversation message store'), ('ai', 'AI memory agents'), ('aidb', 'AI summary / user-memory DB'), ('tei', 'TEI embeddings')],
          steps=[
-             msg('conversation', 'cdb', 'Read last 20 messages; exclude current question/recalled/signals; retain eligible text/Reel context', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:12-49'),
-             msg('conversation', 'conversation', 'answerMemory = last 12 eligible recent messages', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:29-53'),
-             note('39 · ai.stream_question sends bounded answerMemory; router selects memory sources', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:37-47'),
+             msg('conversation', 'cdb', 'Read the newest 120 messages; exclude the current question, recalled messages and signals; keep eligible text, photo descriptions and Reel context', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:15-74'),
+             msg('conversation', 'conversation', 'answerMemory = the last 12 eligible messages, plus up to 80 older messages cut to 300 characters each (offered for recall)', 'backend:apps/conversation-service/src/application/use-cases/build-bot-memory-context.use-case.ts:38-79'),
+             note('39 · ai.stream_question sends bounded answerMemory; router selects memory sources', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:41-60'),
              frame('par',
                    ('conversation summary', [
                        frame('opt',
@@ -1302,33 +1346,40 @@ SPLIT_MODELS = [
                        ),
                    ]),
              ),
+             frame('opt',
+                   ('the question is about the conversation or the user\'s saved facts', [
+                       note('At the answer-context join the recall step also searches the older messages and saved facts (see 43c); a failure leaves the answer to the recent history', B('apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts', r'createAnswerContextJoinNode'), B('apps/ai-service/src/application/use-cases/recall-conversation-context.use-case.ts', r'isRecallTurn\(state')),
+                   ]),
+             ),
          ]),
 
     dict(id='40b-rag-turn-memory-update', title='40b · Completed-turn memory: summary and long-term user memory',
          participants=[('conversation', 'Conversation Service'), ('ai', 'AI memory agents'), ('aidb', 'AI summary / user-memory DB'), ('provider', 'Summary / extraction LLM provider'), ('tei', 'TEI embeddings'), ('rmq', 'RabbitMQ completed-turn event')],
          steps=[
-             note('41 · AI result received; result.answer truthy -> await assistant createMessage with citations/metadata; error/null -> no completed turn', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:42-79'),
+             note('41 · AI result received; result.answer truthy -> await assistant createMessage with citations/metadata; error/null -> no completed turn', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:53-105'),
              frame('opt',
                    ('the assistant answer was saved', [
-                       msg('conversation', 'conversation', 'completedTurnMemory = answerMemory + current user + saved assistant; trim last 12', 'backend:apps/conversation-service/src/application/use-cases/build-completed-turn-memory-context.use-case.ts:12-40'),
-                       msg('conversation', 'rmq', 'ai.conversation_turn_completed(completed memory); detached event emission', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:72-81', sort='asynchSignal'),
-                       msg('rmq', 'ai', 'Consume completed-turn event (outside answer RPC completion)', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:315-324', sort='asynchSignal'),
+                       msg('conversation', 'conversation', 'completedTurnMemory = answerMemory + current user + saved assistant; trim last 12', 'backend:apps/conversation-service/src/application/use-cases/build-completed-turn-memory-context.use-case.ts:12-41'),
+                       msg('conversation', 'rmq', 'ai.conversation_turn_completed(completed memory); detached event emission', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:75-84', sort='asynchSignal'),
+                       msg('rmq', 'ai', 'Consume completed-turn event (outside answer RPC completion)', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:361-372', sort='asynchSignal'),
+                       note('The event carries the caption, so a bare photo (no words) emits none; the AI embeds the user message ahead of time so a later recall question finds it ready', B('apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts', r'if \(caption\)'), B('apps/ai-service/src/infrastructure/controller/ai.controller.ts', r'recallConversationContextUseCase\?\.warm')),
                        frame('alt',
                              ('the completed turn has user, conversation and both messages', [
                                  frame('alt',
                                        ('conversation memory is enabled', [
                                            frame('alt',
                                                  ('the summary update succeeds', [
-                                                     msg('ai', 'aidb', 'Find conversation memory', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:42-45'),
-                                                     msg('ai', 'ai', 'nextMessageCount = (existing.messageCount ?? 0) + 2', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:47-55'),
+                                                     note('Memory guardrail (enforce): a summary or fact whose text has a high-severity finding is never stored, and stored text that carries one is left out of later prompts', B('apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts', r'screenRagMemoryUseCase\?\.blocks'), B('apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts', r'screenRagMemoryUseCase\?\.blocks')),
+                                                     msg('ai', 'aidb', 'Find conversation memory', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:46-49'),
+                                                     msg('ai', 'ai', 'nextMessageCount = (existing.messageCount ?? 0) + 2', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:51-59'),
                                                      frame('opt',
                                                            ('every 4th turn (AI_CONVERSATION_MEMORY_EVERY_N_TURNS)', [
-                                                               msg('ai', 'provider', 'summarizeTurn(existingSummary, completed recentMessages, user + assistant)', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:60-68', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-conversation-summarizer.adapter.ts:31-80'),
+                                                               msg('ai', 'provider', 'summarizeTurn(existingSummary, completed recentMessages, user + assistant)', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:64-72', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-conversation-summarizer.adapter.ts:31-80'),
                                                                msg('provider', 'ai', 'Summary / shouldUpdate; provider failure keeps previous summary', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-conversation-summarizer.adapter.ts:31-80', reply=True),
-                                                               note('Sanitize; only shouldUpdate && nonempty summary replaces old value', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:70-84'),
+                                                               note('Sanitize; only shouldUpdate && nonempty summary replaces old value', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:74-98'),
                                                            ]),
                                                      ),
-                                                     msg('ai', 'aidb', 'Upsert summary + messageCount + lastMessageAt', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:88-94'),
+                                                     msg('ai', 'aidb', 'Upsert summary + messageCount + lastMessageAt', 'backend:apps/ai-service/src/application/use-cases/update-conversation-memory.use-case.ts:102-108'),
                                                  ]),
                                                  ('the summary update throws', [
                                                      note('Attempt summary update; log/skip failure; messageCount=max(completed recentMessages.length + 2, 2)', 'backend:apps/ai-service/src/application/use-cases/memory-writer-agent.use-case.ts:49-61', 'backend:apps/ai-service/src/application/use-cases/memory-writer-agent.use-case.ts:111-117'),
@@ -1343,18 +1394,18 @@ SPLIT_MODELS = [
                                        ('userMemoryExtractionEnabled && floor(messageCount / 2) > 0 && floor(messageCount / 2) % AI_USER_MEMORY_EVERY_N_TURNS == 0 (default 1)', [
                                            frame('alt',
                                                  ('extraction and upsert complete', [
-                                                     msg('ai', 'provider', 'Extract long-term memories from deduped recent user-only source (last 8) + completed assistant', 'backend:apps/ai-service/src/application/use-cases/extract-user-memories-from-turn.use-case.ts:29-56', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-memory-extractor.adapter.ts:24-48'),
+                                                     msg('ai', 'provider', 'Extract long-term memories from deduped recent user-only source (last 8) + completed assistant', 'backend:apps/ai-service/src/application/use-cases/extract-user-memories-from-turn.use-case.ts:29-59', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-memory-extractor.adapter.ts:24-48'),
                                                      msg('provider', 'ai', 'Parsed memory candidates; provider failure -> []', 'backend:apps/ai-service/src/infrastructure/adapters/ollama-memory-extractor.adapter.ts:24-48', reply=True),
-                                                     msg('ai', 'ai', 'Sanitize/filter: allowed type, LONG_TERM, confidence/length, exact user evidence; dedupe type+normalizedContent', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:59-86', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:216-250'),
+                                                     msg('ai', 'ai', 'Sanitize/filter: allowed type, LONG_TERM, confidence/length, exact user evidence; dedupe type+normalizedContent', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:68-104', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:234-268'),
                                                      frame('loop',
                                                            ('each valid, unique memory', [
                                                                frame('opt',
                                                                      ('memory embeddings are enabled (default)', [
-                                                                         msg('ai', 'tei', 'Generate RETRIEVAL_DOCUMENT embedding for memory', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:170-175'),
-                                                                         note('Validate expected dimensions; mismatch/embedding error -> persist without vector', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:177-203'),
+                                                                         msg('ai', 'tei', 'Generate RETRIEVAL_DOCUMENT embedding for memory', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:188-193'),
+                                                                         note('Validate expected dimensions; mismatch/embedding error -> persist without vector', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:195-221'),
                                                                      ]),
                                                                ),
-                                                               note('If embedded: semantic+lexical consolidation against same user; consolidate if similar else upsertMany(memory)', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:90-155'),
+                                                               note('If embedded: semantic+lexical consolidation against same user; consolidate if similar else upsertMany(memory)', 'backend:apps/ai-service/src/application/use-cases/upsert-user-memories.use-case.ts:108-173'),
                                                            ]),
                                                      ),
                                                  ]),
@@ -1367,7 +1418,7 @@ SPLIT_MODELS = [
                                  ),
                              ]),
                              ('else', [
-                                 msg('ai', 'ai', 'Ignore incomplete completed turn', 'backend:apps/ai-service/src/application/use-cases/handle-conversation-turn-completed.use-case.ts:12-18'),
+                                 msg('ai', 'ai', 'Ignore incomplete completed turn', 'backend:apps/ai-service/src/application/use-cases/handle-conversation-turn-completed.use-case.ts:19-25'),
                              ]),
                        ),
                    ]),
@@ -1377,13 +1428,14 @@ SPLIT_MODELS = [
     dict(id='41a-rag-draft-verify-cite', title='41a · Draft, verify and cite the grounded answer',
          participants=[('ai', 'AI Service (RAG workflow)'), ('prov', 'Answer and verifier LLM provider')],
          steps=[
-             note('Evidence and memory are ready from 39b and 40a; if the evidence is insufficient the workflow skips drafting', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1317-1336'),
+             note('Evidence and memory are ready from 39b and 40a; if the evidence is insufficient the workflow skips drafting', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1500-1519'),
+             note('Time budget: once the workflow is older than AI_RAG_VERIFICATION_BUDGET_MS (default 45 s, 0 disables) the verifier is skipped and the draft is accepted with its citations; citation coverage no longer triggers a revision', B('apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts', r'verificationBudgetExhausted\(state\)'), B('apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts', r'createAcceptDraftNode\(\)')),
              frame('loop',
                    ('the verifier requires a revision and revisions remain (bounded by the maximum and confidence threshold)', [
-                       msg('ai', 'prov', 'Draft the grounded answer, or revise it when asked (structured generation; a synthesis failure falls back to a local answer)', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:871-891'),
-                       msg('ai', 'prov', 'Verify the draft against the retrieved evidence (verifier agent)', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1014-1034'),
-                       msg('prov', 'ai', 'Return the verdict: pass, requires revision, or fail', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1631-1651', reply=True),
-                       msg('ai', 'ai', 'On a revision verdict: count the retry, clear citations and redraft', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1009-1017'),
+                       msg('ai', 'prov', 'Draft the grounded answer, or revise it when asked (structured generation; a synthesis failure falls back to a local answer)', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:997-1017'),
+                       msg('ai', 'prov', 'Verify the draft against the retrieved evidence (verifier agent)', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1140-1167'),
+                       msg('prov', 'ai', 'Return the verdict: pass, requires revision, or fail', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1830-1857', reply=True),
+                       msg('ai', 'ai', 'On a revision verdict: count the retry, clear citations and redraft', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1135-1143'),
                    ]),
              ),
              frame('alt',
@@ -1400,16 +1452,16 @@ SPLIT_MODELS = [
                        ),
                        frame('opt',
                              ('coverage is below the threshold and citation retries remain', [
-                                 msg('ai', 'ai', 'Count a citation retry, clear coverage and citations, and request a factual-claim rewrite; redraft and verify again', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1088-1107'),
+                                 msg('ai', 'ai', 'Count a citation retry, clear coverage and citations, and request a factual-claim rewrite; redraft and verify again', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1271-1290'),
                              ]),
                        ),
-                       msg('ai', 'ai', 'Citation gate passes; go to the final answer', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1573-1587'),
+                       msg('ai', 'ai', 'Citation gate passes; go to the final answer', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1772-1786'),
                    ]),
                    ('the verifier fails the answer, or citation coverage stays below the threshold after the retries', [
-                       note('VerificationFailureNode: a guarded grounded or extractive rescue, otherwise a reliable refusal text; then the final answer', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1155-1185'),
+                       note('VerificationFailureNode: a guarded grounded or extractive rescue, otherwise a reliable refusal text; then the final answer', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1338-1368'),
                    ]),
                    ('the evidence is insufficient (context sufficiency chose the no-context path)', [
-                       msg('ai', 'ai', 'Local no-context answer with no citations; drafting and verification are skipped', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1317-1336'),
+                       msg('ai', 'ai', 'Local no-context answer with no citations; drafting and verification are skipped', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:1500-1519'),
                    ]),
              ),
          ]),
@@ -1417,13 +1469,14 @@ SPLIT_MODELS = [
     dict(id='41b-rag-stream-delivery', title='41b · Stream the final answer and persist it',
          participants=[('mobile', 'Mobile AI conversation'), ('conversation', 'Conversation Service'), ('cdb', 'Conversation message store'), ('ai', 'AI RAG workflow'), ('provider', 'Structured / streaming LLM provider'), ('rmq', 'RabbitMQ token / memory channels')],
          steps=[
-             note('Final answer state reaches StreamFinalAnswer only after successful coverage or local failure/no-context outcome', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:541-543'),
+             note('Final answer state reaches StreamFinalAnswer only after successful coverage or local failure/no-context outcome', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:615-617'),
              frame('alt',
                    ('the workflow completes', [
                        frame('par',
                              ('AI Service side: stream the answer and return the result', [
                                  frame('alt',
                                        ('a verified answer already exists', [
+                                           note('Output guardrail (enforce): the whole answer is screened before its first chunk; a high-severity leak is replaced by a fixed message that does not say why', B('apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts', r'blockingCodes\(state, existingVerifiedAnswer\)')),
                                            frame('loop',
                                                  ('each 80-character slice of the answer', [
                                                      msg('ai', 'rmq', 'ai.stream_token: at most 80 UTF-16 code units per existing-answer chunk', 'backend:apps/ai-service/src/infrastructure/adapters/conversation-token-publisher.adapter.ts:15-35', sort='asynchSignal'),
@@ -1431,48 +1484,49 @@ SPLIT_MODELS = [
                                            ),
                                        ]),
                                        ('else', [
-                                           msg('ai', 'provider', 'generateResponseStream(systemPrompt, userMessage, callback)', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:34-52'),
+                                           note('With the output check enforcing, live text is held back by 160 characters while it grows, screened on every token, and publishing stops on a hit; the tail is released only after the final screen', B('apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts', r'OUTPUT_HOLD_BACK_CHARS'), B('apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts', r'Output enforcement: hold the tail')),
+                                           msg('ai', 'provider', 'generateResponseStream(systemPrompt, userMessage, callback)', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:56-102'),
                                            frame('loop',
                                                  ('each token from the provider', [
-                                                     msg('ai', 'rmq', 'ai.stream_token: callback token (no universal 80-unit bound)', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:40-49', sort='asynchSignal'),
+                                                     msg('ai', 'rmq', 'ai.stream_token: callback token (no universal 80-unit bound)', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:90-99', sort='asynchSignal'),
                                                  ]),
                                            ),
-                                           msg('provider', 'ai', 'Generated answer string', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:54-56', reply=True),
+                                           msg('provider', 'ai', 'Generated answer string', 'backend:apps/ai-service/src/application/use-cases/stream-final-answer.use-case.ts:104-112', reply=True),
                                        ]),
                                  ),
-                                 msg('ai', 'conversation', 'ai.stream_question final RPC response: answer/citations/metadata (or error)', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:279-311', reply=True),
+                                 msg('ai', 'conversation', 'ai.stream_question final RPC response: answer/citations/metadata (or error)', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:312-357', reply=True),
                                  frame('alt',
                                        ('the AI returned an answer', [
-                                           msg('conversation', 'cdb', 'Await createMessage(assistant text + citations/recommendation metadata)', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:49-79'),
-                                           msg('cdb', 'conversation', 'Saved durable assistant', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:79-79', reply=True),
-                                           note('40 · Build completedTurnMemory = answerMemory + current user + saved assistant; emit completed-turn event detached', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:81-94', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:72-81'),
-                                           msg('conversation', 'mobile', 'Callback new_message(saved assistant DTO with final metadata)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:316-323', sort='asynchSignal'),
-                                           note('Mobile reconcileStreamingBotMessage and upsert durable message; final metadata replaces temporary stream record', 'mobile:src/providers/SocketProvider.tsx:1449-1493'),
+                                           msg('conversation', 'cdb', 'Await createMessage(assistant text + citations/recommendation metadata)', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:62-105'),
+                                           msg('cdb', 'conversation', 'Saved durable assistant', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:105-105', reply=True),
+                                           note('40 · Build completedTurnMemory = answerMemory + current user + saved assistant; emit completed-turn event detached', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:107-123', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:75-84'),
+                                           msg('conversation', 'mobile', 'Callback new_message(saved assistant DTO with final metadata)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:368-375', sort='asynchSignal'),
+                                           note('Mobile reconcileStreamingBotMessage and upsert durable message; final metadata replaces temporary stream record', 'mobile:src/providers/SocketProvider.tsx:1460-1508'),
                                        ]),
                                        ('the answer is empty, or the AI returned an error', [
-                                           note('Empty AI answer -> NO_CONTENT; RPC/provider failure -> AI_UNAVAILABLE; omit save/completed turn', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:279-311', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:36-68', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:101-115'),
-                                           msg('conversation', 'mobile', 'bot_reply_failed(userMessageId, clientMessageId, error)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:344-353', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:106-120', sort='asynchSignal'),
+                                           note('Empty AI answer -> NO_CONTENT; RPC/provider failure -> AI_UNAVAILABLE; omit save/completed turn', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:312-357', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:36-71', 'backend:apps/conversation-service/src/application/use-cases/process-bot-reply.use-case.ts:130-144'),
+                                           msg('conversation', 'mobile', 'bot_reply_failed(userMessageId, clientMessageId, error)', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:396-405', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:137-151', sort='asynchSignal'),
                                        ]),
                                  ),
                              ]),
                              ('Conversation side: relay each token to the client', [
                                  frame('loop',
                                        ('each ai.stream_token event', [
-                                           msg('rmq', 'conversation', 'ai.stream_token(conversationId, userId, token)', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:668-681', sort='asynchSignal'),
-                                           msg('conversation', 'mobile', 'bot_token(conversationId, token)', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:668-681', sort='asynchSignal'),
-                                           note('Normalize token and upsert temporary streaming bot message', 'mobile:src/providers/SocketProvider.tsx:1440-1446'),
+                                           msg('rmq', 'conversation', 'ai.stream_token(conversationId, userId, token)', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:671-686', sort='asynchSignal'),
+                                           msg('conversation', 'mobile', 'bot_token(conversationId, token)', 'backend:apps/conversation-service/src/infrastructure/controllers/conversation.controller.ts:671-686', sort='asynchSignal'),
+                                           note('Normalize token and upsert temporary streaming bot message', 'mobile:src/providers/SocketProvider.tsx:1451-1457'),
                                        ]),
                                  ),
                              ]),
                        ),
                    ]),
                    ('the workflow or final stream throws', [
-                       msg('ai', 'conversation', 'RPC exception -> adapter answer=null / AI_UNAVAILABLE', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:46-68', reply=True),
-                       msg('conversation', 'mobile', 'bot_reply_failed; no assistant save or completed-turn event', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:344-353', sort='asynchSignal'),
+                       msg('ai', 'conversation', 'RPC exception -> adapter answer=null / AI_UNAVAILABLE', 'backend:apps/conversation-service/src/infrastructure/adapters/ai-service.adapter.ts:49-71', reply=True),
+                       msg('conversation', 'mobile', 'bot_reply_failed; no assistant save or completed-turn event', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:396-405', sort='asynchSignal'),
                    ]),
                    ('the AI Service turns the turn away because it is busy (admission)', [
-                       msg('ai', 'conversation', 'Return the AI_BUSY error with retryAfterSeconds instead of a failure', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:295-305', reply=True),
-                       msg('conversation', 'mobile', 'bot_reply_failed with AI_BUSY, a friendly message and retryAfterSeconds', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:135-145', sort='asynchSignal'),
+                       msg('ai', 'conversation', 'Return the AI_BUSY error with retryAfterSeconds instead of a failure', 'backend:apps/ai-service/src/infrastructure/controller/ai.controller.ts:331-351', reply=True),
+                       msg('conversation', 'mobile', 'bot_reply_failed with AI_BUSY, a friendly message and retryAfterSeconds', 'backend:apps/conversation-service/src/infrastructure/gateways/chat.gateway.ts:166-178', sort='asynchSignal'),
                    ]),
              ),
          ]),
@@ -1480,33 +1534,33 @@ SPLIT_MODELS = [
     dict(id='42a-observability-trace-capture', title='42a · Langfuse trace capture around a RAG workflow run',
          participants=[('workflow', 'AI RAG workflow'), ('tracing', 'Langfuse tracing adapter'), ('sdk', 'OTEL SDK / Langfuse processor')],
          steps=[
-             msg('workflow', 'workflow', 'Allocate productionExecutionId = randomUUID()', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:162-165'),
+             msg('workflow', 'workflow', 'Allocate productionExecutionId = randomUUID()', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:179-182'),
              frame('alt',
                    ('Langfuse is enabled with public and secret keys', [
-                       msg('workflow', 'tracing', 'withRoot(metadata, operation); root is created here', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:173-185'),
+                       msg('workflow', 'tracing', 'withRoot(metadata, operation); root is created here', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:192-204'),
                        msg('tracing', 'sdk', 'startActiveObservation(rag.workflow); propagate trace/session/release metadata', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:75-93'),
                        msg('tracing', 'sdk', 'root.update: bounded input; capture query only if captureContent', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:94-105'),
-                       note('39–41 · Execute workflow; record node observations and provider token diagnostics', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:189-280'),
-                       note('finally: latency/token usage; delete execution context; snapshot error boundary is local', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:280-284'),
+                       note('39–41 · Execute workflow; record node observations and provider token diagnostics', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:208-321'),
+                       note('finally: latency/token usage; delete execution context; snapshot error boundary is local', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:321-325'),
                        frame('opt',
                              ('a root observation exists', [
-                                 msg('workflow', 'tracing', 'Attempt snapshot build (when root exists) and setRootOutput inside local try', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:284-312'),
+                                 msg('workflow', 'tracing', 'Attempt snapshot build (when root exists) and setRootOutput inside local try', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:325-354'),
                                  frame('alt',
                                        ('the snapshot is built and stored', [
                                            msg('tracing', 'sdk', 'root.update(redacted output; schema rag-monitoring-v1)', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:111-131'),
                                        ]),
                                        ('snapshot capture throws', [
-                                           msg('workflow', 'workflow', 'Log diagnostics capture failed; preserve workflow result/error', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:314-316'),
+                                           msg('workflow', 'workflow', 'Log diagnostics capture failed; preserve workflow result/error', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:356-358'),
                                        ]),
                                  ),
                              ]),
                        ),
-                       note('finally: publish existing RAG telemetry regardless of snapshot capture error', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:317-317'),
+                       note('finally: publish existing RAG telemetry regardless of snapshot capture error', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:359-359'),
                        msg('tracing', 'workflow', 'Return operation result / propagate workflow error after finally', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:94-108', reply=True),
                        note('SDK processor batches OTEL observations independently; configured flushAt=20 / interval=5; sampling default=1; no workflow export-drain wait', 'backend:apps/ai-service/src/infrastructure/services/langfuse-telemetry.ts:5-45'),
                    ]),
                    ('else', [
-                       note('Execute same workflow without root; no snapshot builder when root absent; existing telemetry still publishes', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:186-186', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:284-317', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:75-75'),
+                       note('Execute same workflow without root; no snapshot builder when root absent; existing telemetry still publishes', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:205-205', 'backend:apps/ai-service/src/infrastructure/adapters/langgraph-rag-chat-workflow.adapter.ts:325-359', 'backend:apps/ai-service/src/infrastructure/services/langfuse-tracing.service.ts:75-75'),
                    ]),
              ),
          ]),
@@ -1537,6 +1591,10 @@ SPLIT_MODELS = [
              ),
          ]),
 ]
+
+import sequence_models_extra  # noqa: E402
+
+SPLIT_MODELS += sequence_models_extra.build(msg, note, frame)
 
 def build_diagram_element(m):
     p = ET.Element('diagram', id=m['id'], name=m['title'])
@@ -1884,6 +1942,12 @@ DIAGRAM_ORDER = [
     '41b-rag-stream-delivery',
     '42a-observability-trace-capture',
     '42b-observability-trace-export',
+    '43a-ai-photo-question',
+    '43b-ai-guardrails',
+    '43c-ai-conversation-recall',
+    '44a-reel-subtitles',
+    '45a-message-push-delivery',
+    '45b-call-setup-media-placement',
 ]
 
 def main():
@@ -1919,9 +1983,19 @@ def main():
     for child in list(doc_root):
         doc_root.remove(child)
 
+    unlisted = [d for d in all_diagrams if d not in DIAGRAM_ORDER]
     for diag_id in DIAGRAM_ORDER:
-        assert diag_id in all_diagrams, f"Missing diagram {diag_id}"
+        if diag_id not in all_diagrams:
+            print(f"Skipping {diag_id}: not generated yet (architecture_pages.py creates it)")
+            continue
         doc_root.append(all_diagrams[diag_id])
+    for diag_id in unlisted:  # hand-laid-out pages keep their place; they are re-sorted below
+        doc_root.append(all_diagrams[diag_id])
+    pages = sorted(doc_root.findall('diagram'), key=lambda d: (int(re.match(r'\d+', d.attrib['id']).group()), d.attrib['id']))
+    for child in list(doc_root):
+        doc_root.remove(child)
+    for page in pages:
+        doc_root.append(page)
 
     print(f"Document reordered: {len(doc_root.findall('diagram'))} diagrams in sequential order.")
 

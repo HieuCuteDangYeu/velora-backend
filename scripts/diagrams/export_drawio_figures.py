@@ -60,7 +60,7 @@ def main():
             subprocess.run(common + ['--format', 'png', '--output', str(args.png_dir), str(inputs)], check=True)
     index = ['# Velora diagrams', '',
              'Master file: `velora-architecture.drawio` (one page per diagram, in the order below). Each page is exported natively by draw.io to `importable-svg/<id>.drawio.svg` with its editable XML embedded; `velora-diagrams.drawio.svg` embeds the complete multi-page file.',
-             'Regenerate with `DRAWIO_BIN=<draw.io desktop> python3 scripts/diagrams/export_drawio_figures.py` and check with `python3 scripts/diagrams/validate_reel_exports.py`.', '',
+             'Rebuild in this order: `build_and_modernize_all_diagrams.py` (sequence pages, from `SPLIT_MODELS` and `sequence_models_extra.py`), `architecture_pages.py` (01, 02, 02a-02e), `patch_hand_pages.py` (DFD, ER and authorization edits), then `DRAWIO_BIN=<draw.io desktop> python3 scripts/diagrams/export_drawio_figures.py` and `python3 scripts/diagrams/validate_reel_exports.py`. `reanchor_evidence.py` moves cited line ranges after code changes.', '',
              '| # | Diagram | Export |', '|---|---|---|']
     for number, page in enumerate(root.findall('diagram'), 1):
         name = page.attrib['id']

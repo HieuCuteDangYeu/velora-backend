@@ -214,6 +214,13 @@ services:
         condition: service_healthy
     networks:
       - microservices-net
+    # One process saturated at about 400 API requests/s (175% CPU while every other container
+    # stayed under 50%, 2026-11-21 in-homelab load test). The replicas are competing RMQ
+    # consumers; feed sessions live in Redis, the outbox claims rows with FOR UPDATE SKIP
+    # LOCKED, and the media cleanup claims each lease. Each replica holds its own content
+    # database pool (local Postgres, max_connections 60).
+    deploy:
+      replicas: 2
 
   conversation-service:
     image: ${DOCKERHUB_USERNAME}/conversation-service:${VELORA_IMAGE_TAG:-latest}

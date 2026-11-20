@@ -28,14 +28,14 @@ def page_01():
     p.text('Expo · React Native · Android + iOS', 130, 252, 240, 18, size=11, color='#475569', align='center')
     p.cloud('cloudflare', 420, 125, 210, 100, 'Cloudflare', 'tunnel (cloudflared) · CDN',
             [ev('docs/rate-limiting-and-guardrails.md', r'Production topology')])
-    p.service('nginx', 740, 140, 200, 80, 'Nginx', 'reverse proxy · WebSocket upgrade', 'edge', [ev('infra/nginx/nginx.conf', r'upstream api_gateway')])
+    p.service('nginx', 740, 140, 200, 80, 'Nginx', 'reverse proxy · gzips JSON\nWebSocket upgrade', 'edge', [ev('infra/nginx/nginx.conf', r'upstream api_gateway')])
     p.edge('users', 'mobile', 'uses', 'link', exit=(1, 0.5), entry=(0, 0.5))
     p.edge('mobile', 'cloudflare', 'HTTPS · WSS', 'sync', exit=(1, 0.5), entry=(0.07, 0.5))
     p.edge('cloudflare', 'nginx', 'tunnel', 'sync', exit=(0.93, 0.5), entry=(0, 0.5))
 
     # ---- entry services ---------------------------------------------------------------
     p.zone('z-entry', BX, 300, 845, 230, 'Entry services · the only containers the phone talks to', 'api')
-    p.service('gateway', 245, 345, 200, 80, 'API Gateway', 'REST · login check · rate limits\ninput validation', 'api',
+    p.service('gateway', 245, 345, 200, 80, 'API Gateway ×2', 'REST · login check · rate limits\ninput validation', 'api',
               [ev('apps/api-gateway/src/api-gateway.module.ts', r'ClientsModule\.registerAsync')])
     p.store('redis-rl', 255, 450, 100, 60, 'Redis', 'rate limits', [ev('apps/api-gateway/src/api-gateway.module.ts', r'createRateLimitRedis')])
     p.service('conversation', 700, 345, 220, 80, 'Conversation Service', 'AI agent chat · shared Reels\nSocket.IO · messages', 'realtime',
@@ -57,11 +57,11 @@ def page_01():
     svc = [('auth', 245, 'Auth Service', 'accounts · sessions · roles\nGoogle sign-in', 'apps/auth-service/src/auth-service.module.ts'),
            ('user', 510, 'User Service', 'profiles · discovery', 'apps/user-service/src/user-service.module.ts'),
            ('friend', 775, 'Friend Service', 'requests · friends · blocks', 'apps/friend-service/src/friend-service.module.ts'),
-           ('mail', 1040, 'Mail Service', 'confirmation · reset mail', 'apps/mail-service/src/mail-service.module.ts')]
+           ('mail', 1040, 'Mail Service', 'confirmation · reset mail\nruns on velora-node-2', 'apps/mail-service/src/mail-service.module.ts')]
     for sid, x, title, detail, file in svc:
         p.service(sid, x, 725, 235, 85, title, detail, 'domain', [ev(file, r'@Module')])
-    for sid, db, x, detail, file, var in [('auth', 'auth-db', 255, 'auth DB · homelab', 'auth', 'AUTH_DATABASE_URL'), ('user', 'user-db', 520, 'user DB · Aiven', 'user', 'USER_DATABASE_URL'),
-                                          ('friend', 'friend-db', 785, 'friend DB · Aiven', 'friend', 'FRIEND_DATABASE_URL')]:
+    for sid, db, x, detail, file, var in [('auth', 'auth-db', 255, 'auth DB · homelab', 'auth', 'AUTH_DATABASE_URL'), ('user', 'user-db', 520, 'user DB · Aiven SGP', 'user', 'USER_DATABASE_URL'),
+                                          ('friend', 'friend-db', 785, 'friend DB · Aiven SGP', 'friend', 'FRIEND_DATABASE_URL')]:
         p.store(db, x, 845, 130, 70, 'PostgreSQL', detail, [ev(f'apps/{file}-service/prisma/schema.prisma', var)])
         p.edge(sid, db, '', 'data', exit=(0.2, 1), entry=(0.5, 0))
     for sid, x, lane in [('auth', 245, 362), ('user', 510, 627), ('friend', 775, 892), ('mail', 1040, 1157)]:
@@ -84,7 +84,7 @@ def page_01():
 
     # ---- content, media, search and AI -------------------------------------------------
     p.zone('z-core', BX, 1100, 1235, 420, 'Content, media, search and AI', 'processing')
-    core = [('content', 245, 'Content Service', 'reels · series · shares · feed\nsubtitles · outbox', 'api', 'apps/content-service/src/content-service.module.ts'),
+    core = [('content', 245, 'Content Service ×2', 'reels · series · shares · feed\nsubtitles · outbox', 'api', 'apps/content-service/src/content-service.module.ts'),
             ('media', 445, 'Media Service', 'presigned upload URLs\nupload lease', 'processing', 'apps/media-service/src/media-service.module.ts'),
             ('processing', 645, 'Media Processing', 'FFmpeg HLS · evidence jobs\nshort + long workers', 'processing', 'apps/media-processing-service/src/media-processing-service.module.ts'),
             ('indexing', 845, 'Reel Indexing', 'semantic index · Qdrant\nshort + long workers', 'ai', 'apps/reel-indexing-service/src/reel-indexing-service.module.ts'),
@@ -103,7 +103,7 @@ def page_01():
     p.bucket('r2', 520, 1290, 80, 70, 'Cloudflare R2', 'media · evidence', [ev('apps/media-service/src/infrastructure/services/s3.service.ts', r'S3Client')])
     p.store('index-db', 845, 1290, 110, 70, 'PostgreSQL', 'index DB · pgvector', [ev('docker-compose.qdrant.yml', r'reel-indexing-postgres:')])
     p.store('qdrant', 975, 1290, 90, 70, 'Qdrant', 'vectors', [ev('docker-compose.yml', r'image: qdrant/qdrant')])
-    p.store('ai-db', 1245, 1290, 120, 70, 'PostgreSQL', 'AI DB · pgvector · Aiven', [ev('apps/ai-service/prisma/schema.prisma', r'AI_DATABASE_URL')])
+    p.store('ai-db', 1245, 1290, 120, 70, 'PostgreSQL', 'AI DB · pgvector · Aiven SGP', [ev('apps/ai-service/prisma/schema.prisma', r'AI_DATABASE_URL')])
     p.edge('content', 'content-db', '', 'data', exit=(0.2, 1), entry=(0.5, 0))
     p.edge('content', 'content-redis', '', 'data', exit=(0.55, 1), entry=(0.5, 0))
     p.edge('media', 'r2', '', 'data', exit=(0.5, 1), entry=(0.5, 0))
@@ -129,7 +129,7 @@ def page_01():
     p.edge('mobile', 'r2', 'HLS GET · original PUT', 'external', exit=(0, 0.85), entry=(0, 0.5), points=[(150, 212), (150, 1405), (485, 1405), (485, 1325)])
     p.legend(1110, 300, [('sync', 'Direct request'), ('async', 'Message over RabbitMQ'), ('data', 'Reads and writes its own data'),
                          ('external', 'Outside provider or direct-to-storage'), ('ops', 'Metrics and logs')])
-    p.text('Reading guide: every service owns its data and never reads another service\'s store. Services talk to each other only through RabbitMQ. Videos go straight between the phone and storage, never through the gateway.', 215, 1530, 1470, 20, size=11, color='#475569')
+    p.text('Reading guide: every service owns its data and never reads another service\'s store. Services talk to each other only through RabbitMQ. Videos go straight between the phone and storage, never through the gateway. ×2 means two replicas that compete for the same RabbitMQ queue.', 215, 1530, 1470, 20, size=11, color='#475569')
     return p.element()
 
 
@@ -222,20 +222,20 @@ def page_02a():
     p.edge('mobile', 'cloudflare', 'HTTPS · WSS', 'sync', exit=(1, 0.5), entry=(0.07, 0.5))
 
     # ---- homelab ---------------------------------------------------------------------------
-    p.node('homelab', 40, 250, 1200, 830, 'Homelab · Apple M1 Mac', 'Docker Compose project microservices-boilerplate · images pulled from Docker Hub · deployed by velora-deploy', [ev('scripts/deploy/velora-deploy-core', r'Velora production deployment controller')], align='right')
+    p.node('homelab', 40, 250, 1200, 830, 'Homelab · Apple M1 Mac · 8 cores', 'Docker Compose project microservices-boilerplate · images pulled from Docker Hub · deployed by velora-deploy', [ev('scripts/deploy/velora-deploy-core', r'Velora production deployment controller')], align='right')
     p.zone('h-edge', 70, 320, 330, 120, 'Edge', 'edge')
     p.box('cloudflared', 85, 355, 140, 62, 'cloudflared', 'host process · tunnel', 'edge', [ev('docs/rate-limiting-and-guardrails.md', r'Production topology')])
-    p.box('nginx', 240, 355, 140, 62, 'nginx', '127.0.0.1:80 · Socket.IO', 'edge', [ev(D, r'image: nginx:alpine')])
-    p.edge('cloudflare', 'cloudflared', 'tunnel', 'sync', exit=(0.5, 1), entry=(0.5, 0), points=[(455, 280), (155, 280)])
+    p.box('nginx', 240, 355, 140, 62, 'nginx', '127.0.0.1:80 · gzips JSON', 'edge', [ev(D, r'image: nginx:alpine')])
+    p.edge('cloudflare', 'cloudflared', 'tunnel · 100 Mbit/s uplink', 'sync', exit=(0.5, 1), entry=(0.5, 0), points=[(455, 280), (155, 280)])
     p.edge('cloudflared', 'nginx', '', 'sync', exit=(1, 0.5), entry=(0, 0.5))
     p.zone('h-entry', 420, 320, 790, 120, 'Entry services', 'api')
-    grid(p, 435, 355, [('gateway', 'api-gateway', ':3000', 'api', [ev(D, r'api-gateway:')]), ('conv', 'conversation-service', ':3005 · Socket.IO', 'realtime', [ev(D, r'conversation-service:')])
+    grid(p, 435, 355, [('gateway', 'api-gateway ×2', ':3000 · 2 replicas', 'api', [ev(D, r'api-gateway:')]), ('conv', 'conversation-service', ':3005 · Socket.IO', 'realtime', [ev(D, r'conversation-service:')])
                        ], 2, 300, 62)
     p.edge('nginx', 'gateway', '', 'sync', exit=(1, 0.2), entry=(0, 0.2), points=[(400, 367), (410, 367)])
 
     p.zone('h-app', 70, 460, 760, 170, 'Domain services', 'domain')
-    grid(p, 85, 495, [('auth', 'auth-service', 'auth DB', 'domain', [ev(D, r'  auth-service:')]), ('user', 'user-service', 'user DB', 'domain', [ev(D, r'  user-service:')]),
-                      ('friend', 'friend-service', 'friend DB', 'domain', [ev(D, r'  friend-service:')]), ('content', 'content-service', 'content DB', 'domain', [ev(D, r'  content-service:')]),
+    grid(p, 85, 495, [('auth', 'auth-service', 'auth DB · local Postgres', 'domain', [ev(D, r'  auth-service:')]), ('user', 'user-service', 'user DB · Aiven SGP', 'domain', [ev(D, r'  user-service:')]),
+                      ('friend', 'friend-service', 'friend DB · Aiven SGP · pool 4', 'domain', [ev(D, r'  friend-service:')]), ('content', 'content-service ×2', '2 replicas · content DB local', 'domain', [ev(D, r'  content-service:')]),
                       ('media', 'media-service', 'presign', 'domain', [ev(D, r'  media-service:')]),
                       ('monitor', 'monitoring-service', 'ops API', 'ops', [ev(D, r'  monitoring-service:')])], 4, 170, 52)
     p.zone('h-work', 850, 460, 360, 170, 'Reel workers and AI', 'processing')
@@ -279,6 +279,8 @@ def page_02a():
     p.edge('homelab', 'aiven', 'TLS', 'external', exit=(0.08, 1), entry=(0.5, 0))
     p.edge('homelab', 'r2', 'S3 API', 'external', exit=(0.28, 1), entry=(0.5, 0))
     p.text('Homelab services also call the model, mail, identity and CDN providers directly over HTTPS.', 470, 1295, 1290, 20, size=11, color='#475569')
+    p.text('nginx gzips JSON for the 100 Mbit/s uplink: a 20-reel list is 42 KB raw and 8 KB on the wire. content-service runs 2 replicas and api-gateway 2, each pair competing for the same RabbitMQ queue.', 620, 105, 760, 70, size=12, color='#475569')
+    p.text('Aiven Singapore: about 27 ms a query from the homelab and a 15-connection limit shared by the user, friend and AI services (friend-service uses 4).', 80, 1330, 1750, 20, size=11, color='#475569')
     p.legend(1450, 95, [('sync', 'Client request path'), ('async', 'RabbitMQ across hosts'), ('external', 'Tunnel or provider API'), ('data', 'Replication')], title='Legend')
     return p.element()
 

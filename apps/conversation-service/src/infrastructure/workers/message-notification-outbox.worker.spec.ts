@@ -173,13 +173,14 @@ const makeHarness = (records = [makeRecord()]) => {
     recordNotificationOutbox: jest.fn(),
     setNotificationOutboxPending: jest.fn(),
   };
-  const createWorker = () =>
+  const createWorker = (redis?: unknown) =>
     new MessageNotificationOutboxWorker(
       { message, $runCommandRaw: runCommand } as never,
       notifications as never,
       chats as never,
       encryption as never,
       metrics as never,
+      redis as never,
     );
   return {
     records,
@@ -232,6 +233,98 @@ describe('Message notification outbox', () => {
     worker.onModuleInit();
     expect(jest.getTimerCount()).toBe(1);
     void worker.onModuleDestroy();
+  });
+
+  describe('leader mode', () => {
+    const startLeaderWorker = async (
+      redis: { eval: jest.Mock },
+      records = [makeRecord()],
+    ) => {
+      const h = makeHarness(records);
+      process.env.CONVERSATION_NOTIFICATION_OUTBOX = 'leader';
+      const worker = h.createWorker(redis);
+      worker.onModuleInit();
+      delete process.env.CONVERSATION_NOTIFICATION_OUTBOX;
+      await flush();
+      return { h, worker };
+    };
+
+    it('drains while this replica holds the lease', async () => {
+      const redis = { eval: jest.fn().mockResolvedValue(1) };
+      const { h, worker } = await startLeaderWorker(redis);
+      await worker.runOnce();
+      expect(redis.eval).toHaveBeenCalled();
+      expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      await worker.onModuleDestroy();
+    });
+
+    it('leaves the outbox alone but keeps its backlog gauge current while another replica leads', async () => {
+      const redis = { eval: jest.fn().mockResolvedValue(0) };
+      const { h, worker } = await startLeaderWorker(redis);
+      await worker.runOnce();
+      expect(h.message.findRaw).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          options: expect.objectContaining({ limit: OUTBOX_BATCH_SIZE }),
+        }),
+      );
+      expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+      expect(h.metrics.setNotificationOutboxPending).toHaveBeenCalled();
+      await worker.onModuleDestroy();
+    });
+
+    it('keeps delivering when Redis cannot answer', async () => {
+      const redis = { eval: jest.fn().mockRejectedValue(new Error('down')) };
+      const { h, worker } = await startLeaderWorker(redis);
+      await worker.runOnce();
+      expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+      await worker.onModuleDestroy();
+    });
+
+    it('renews the lease on its own timer, not once per batch', async () => {
+      const redis = { eval: jest.fn().mockResolvedValue(1) };
+      const { worker } = await startLeaderWorker(redis);
+      const first = redis.eval.mock.calls.length;
+      jest.advanceTimersByTime(6_000);
+      await flush();
+      expect(redis.eval.mock.calls.length).toBeGreaterThanOrEqual(first + 3);
+      await worker.onModuleDestroy();
+    });
+
+    it('stops a long drain once the lease is lost', async () => {
+      const records = Array.from({ length: OUTBOX_BATCH_SIZE * 3 }, (_, i) =>
+        makeRecord(i + 1),
+      );
+      const redis = {
+        eval: jest.fn().mockResolvedValueOnce(1).mockResolvedValue(0),
+      };
+      const { h, worker } = await startLeaderWorker(redis, records);
+      h.notifications.notifyNewMessage.mockImplementationOnce(async () => {
+        jest.advanceTimersByTime(2_000);
+        await flush();
+      });
+      await worker.runOnce();
+      expect(h.notifications.notifyNewMessage.mock.calls.length).toBeLessThan(
+        records.length,
+      );
+      expect(h.notifications.notifyNewMessage).toHaveBeenCalled();
+      await worker.onModuleDestroy();
+    });
+
+    it('hands the lease over on shutdown', async () => {
+      const redis = { eval: jest.fn().mockResolvedValue(1) };
+      const { worker } = await startLeaderWorker(redis);
+      await worker.onModuleDestroy();
+      const lastScript = redis.eval.mock.calls.at(-1)![0] as string;
+      expect(lastScript).toContain("redis.call('del'");
+    });
+
+    it('does not use the lease unless leader mode is switched on', async () => {
+      const redis = { eval: jest.fn().mockResolvedValue(0) };
+      const h = makeHarness();
+      await h.createWorker(redis).runOnce();
+      expect(redis.eval).not.toHaveBeenCalled();
+      expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('delivers the saved identity after decrypting and excludes removed/new members', async () => {

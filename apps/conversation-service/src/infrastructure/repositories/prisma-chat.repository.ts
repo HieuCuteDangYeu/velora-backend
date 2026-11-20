@@ -18,6 +18,11 @@ import {
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
 import { ConversationWriteLock } from './conversation-write-lock';
+import {
+  ConversationWriteRouter,
+  WriteRouterUnavailableError,
+} from './conversation-write-router';
+import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Types } from 'mongoose';
 
@@ -119,6 +124,7 @@ export class PrismaChatRepository implements IChatRepository {
   private readonly messageTransactions = new Map<string, MessageWriteQueue>();
   // Makes several conversation-service replicas take turns writing one conversation.
   private readonly writeLock: ConversationWriteLock;
+  private writeRouter?: ConversationWriteRouter;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -152,6 +158,35 @@ export class PrismaChatRepository implements IChatRepository {
           );
       },
     });
+    // Opt-in: with CONVERSATION_WRITE_ROUTING=owner every conversation is written by one
+    // replica only, so replicas stop colliding on the same conversation document.
+    if (process.env.CONVERSATION_WRITE_ROUTING === 'owner') {
+      this.writeRouter = new ConversationWriteRouter(redis, {
+        selfId: `${hostname()}-${process.pid}`,
+        // CONVERSATION_WRITE_OWNER=off: this replica only forwards writes (slow link or weak machine).
+        ownsConversations: process.env.CONVERSATION_WRITE_OWNER !== 'off',
+        handler: (writes) =>
+          Promise.all(
+            (writes as PreparedMessageWrite[]).map((write) =>
+              this.enqueueMessageTransaction(write.data.conversationId, {
+                ...write,
+                forwarded: true,
+              }),
+            ),
+          ),
+        logger: this.logger,
+      });
+      this.writeRouter.start().catch((error: unknown) => {
+        this.logger.warn(
+          `Conversation write routing could not start (${(error as Error).name}); writing locally`,
+        );
+        this.writeRouter = undefined;
+      });
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.writeRouter?.stop();
   }
 
   private measure<T>(
@@ -1669,6 +1704,24 @@ export class PrismaChatRepository implements IChatRepository {
   private async persistMessageBatch(
     writes: PreparedMessageWrite[],
   ): Promise<PersistedMessageWrite[]> {
+    // A conversation is written by its owner replica. Writes forwarded to us are
+    // already ours; anything else goes to the owner, and falls back to a local
+    // write when the owner cannot be reached.
+    const router = this.writeRouter;
+    if (router && !writes.some((write) => write.forwarded)) {
+      const owner = router.ownerOf(
+        writes[writes.length - 1].data.conversationId,
+      );
+      if (owner && owner !== router.selfId) {
+        try {
+          return (await this.measure('lock_wait', () =>
+            router.forward(owner, writes),
+          )) as PersistedMessageWrite[];
+        } catch (error: unknown) {
+          if (!(error instanceof WriteRouterUnavailableError)) throw error;
+        }
+      }
+    }
     const lease = await this.measure('lock_wait', () =>
       this.writeLock.acquire(writes[writes.length - 1].data.conversationId),
     );

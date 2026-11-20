@@ -3,6 +3,7 @@ import {
   DuplicateClientMessageError,
   MessageWriteConflictError,
 } from './native-message-writer';
+import { WriteRouterUnavailableError } from './conversation-write-router';
 import { PrismaChatRepository } from './prisma-chat.repository';
 
 const CONVERSATION_ID = '6af774b69b6c568d77df5413';
@@ -47,14 +48,14 @@ function makeRepository(nativeWriter: { write: jest.Mock } | null) {
     {
       encrypt: (value: string) => `enc:${value}`,
       decrypt: (v: string) => v,
-    } as never,
+    },
     {} as never,
     {} as never,
     undefined,
     undefined,
     nativeWriter as never,
   );
-  return { repository, prisma };
+  return { repository, prisma, redis };
 }
 
 const newMessage = () =>
@@ -147,5 +148,90 @@ describe('PrismaChatRepository native message writer', () => {
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(result.created).toBe(true);
+  });
+
+  describe('single writer per conversation', () => {
+    const withRouter = (
+      router: { selfId: string; ownerOf: jest.Mock; forward: jest.Mock },
+      write: jest.Mock,
+    ) => {
+      const made = makeRepository({ write });
+      (made.repository as unknown as { writeRouter: unknown }).writeRouter =
+        router;
+      return made;
+    };
+
+    it('hands the write to the owner replica and does not write locally', async () => {
+      const write = jest.fn();
+      const forward = jest.fn().mockResolvedValue([[stored(), conversation]]);
+      const router = {
+        selfId: 'r1',
+        ownerOf: jest.fn(() => 'r2'),
+        forward,
+      };
+      const { repository, redis } = withRouter(router, write);
+
+      const result = await repository.createMessageIdempotently(newMessage());
+
+      expect(forward).toHaveBeenCalledWith('r2', [
+        expect.objectContaining({ preview: 'hello' }),
+      ]);
+      expect(write).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(result.created).toBe(true);
+    });
+
+    it('writes locally when this replica owns the conversation', async () => {
+      const write = jest.fn().mockResolvedValue([[stored(), conversation]]);
+      const forward = jest.fn();
+      const router = {
+        selfId: 'r1',
+        ownerOf: jest.fn(() => 'r1'),
+        forward,
+      };
+      const { repository } = withRouter(router, write);
+
+      await repository.createMessageIdempotently(newMessage());
+
+      expect(forward).not.toHaveBeenCalled();
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it('writes locally when the owner cannot be reached', async () => {
+      const write = jest.fn().mockResolvedValue([[stored(), conversation]]);
+      const forward = jest
+        .fn()
+        .mockRejectedValue(new WriteRouterUnavailableError('gone'));
+      const router = {
+        selfId: 'r1',
+        ownerOf: jest.fn(() => 'r2'),
+        forward,
+      };
+      const { repository } = withRouter(router, write);
+
+      const result = await repository.createMessageIdempotently(newMessage());
+
+      expect(forward).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(result.created).toBe(true);
+    });
+
+    it('passes the owner’s refusal on to the sender', async () => {
+      const write = jest.fn();
+      const forward = jest
+        .fn()
+        .mockRejectedValue(new MessageWriteConflictError());
+      const router = {
+        selfId: 'r1',
+        ownerOf: jest.fn(() => 'r2'),
+        forward,
+      };
+      const { repository } = withRouter(router, write);
+
+      await expect(
+        repository.createMessageIdempotently(newMessage()),
+      ).rejects.toBeInstanceOf(MessageWriteConflictError);
+      expect(write).not.toHaveBeenCalled();
+    });
   });
 });

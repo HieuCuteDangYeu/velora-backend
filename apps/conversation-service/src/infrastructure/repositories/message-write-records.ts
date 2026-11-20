@@ -10,6 +10,8 @@ export type PreparedMessageWrite = {
   >;
   preview: string;
   enqueueNotification: boolean;
+  /** Set on the owner replica for writes it received from another replica: never forward them again. */
+  forwarded?: boolean;
 };
 
 // The rows a batch inserts, including the embedded notification intent that is

@@ -88,9 +88,12 @@ services:
       - .env
     environment:
       # .env carries connection_limit=1, which runs the two audience queries (friends,
-      # blocks) one after the other, each a ~75 ms round trip to the shared Aiven server
-      # (17 client connections in all). Two let them run together.
-      FRIEND_DATABASE_CONNECTION_LIMIT: ${FRIEND_DATABASE_CONNECTION_LIMIT:-2}
+      # blocks) one after the other. Every reel access check is one more query on this pool,
+      # each a ~27 ms round trip to the Aiven Singapore server (max_connections 15; user 2,
+      # AI 1, 2 internal). At 200 distinct load-test viewers two connections (~74 queries/s)
+      # ran out: thousands of P2024 pool timeouts surfaced as 404/500 on reel detail, series
+      # and the friends feed. Four connections leave ~5 spare on the server.
+      FRIEND_DATABASE_CONNECTION_LIMIT: ${FRIEND_DATABASE_CONNECTION_LIMIT:-4}
     depends_on:
       rabbitmq:
         condition: service_healthy

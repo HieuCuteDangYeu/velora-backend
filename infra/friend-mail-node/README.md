@@ -8,7 +8,7 @@ consumer (`mail_queue`) with no HTTP port, so the move only adds the homelab to 
 **friend-service is back on the homelab (2026-11-17).** It answers the audience and access lookups
 behind the reel feeds, tag pages and context windows. A probe over RabbitMQ with no database work
 took 240-570 ms to reach it on node-2, and its database round trips were slower than the homelab's.
-It is a normal Compose service again (`FRIEND_DATABASE_CONNECTION_LIMIT`, default 2) and the deploy
+It is a normal Compose service again (`FRIEND_DATABASE_CONNECTION_LIMIT`, default 4) and the deploy
 controller checks `friend_queue` again. The folder name stays for history.
 
 `mail-service` is not in the homelab compose file and the homelab deploy script ignores this folder

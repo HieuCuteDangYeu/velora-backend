@@ -32,13 +32,16 @@ export class RoleController {
   }
 
   @MessagePattern('auth.ban_user')
-  async banUser(@Payload() data: { userId: string }): Promise<void> {
+  async banUser(@Payload() data: { userId: string }): Promise<{ ok: true }> {
     await this.banUserUseCase.execute(data.userId);
+    // A reply with no value makes the caller's lastValueFrom throw EmptyError.
+    return { ok: true };
   }
 
   @MessagePattern('auth.unban_user')
-  async unbanUser(@Payload() data: { userId: string }): Promise<void> {
+  async unbanUser(@Payload() data: { userId: string }): Promise<{ ok: true }> {
     await this.unbanUserUseCase.execute(data.userId);
+    return { ok: true };
   }
 
   @EventPattern('auth.delete_user_roles')

@@ -756,8 +756,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       state.retrievalPlan?.sourceTimestampEndSec;
     const exactWindowEvidence = boundedChunks.flatMap((chunk, index) => {
       const evidenceText = chunk.evidenceText?.trim() || chunk.chunkText.trim();
-      return (
-        requestKind === 'SUMMARY' &&
+      return requestKind === 'SUMMARY' &&
         typeof windowStart === 'number' &&
         typeof windowEnd === 'number' &&
         (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
@@ -765,7 +764,6 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         typeof chunk.endTime === 'number' &&
         Math.abs(chunk.startTime - windowStart) <= 0.05 &&
         Math.abs(chunk.endTime - windowEnd) <= 0.05
-      )
         ? [{ evidenceId: `e${index}`, evidenceText }]
         : [];
     });
@@ -1090,13 +1088,11 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         ? boundedEvidence.flatMap((chunk, index) => {
             const evidenceText =
               chunk.evidenceText?.trim() || chunk.chunkText?.trim() || '';
-            return (
-              (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+            return (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
               typeof chunk.startTime === 'number' &&
               typeof chunk.endTime === 'number' &&
               Math.abs(chunk.startTime - transcriptWindowStart) <= 0.05 &&
               Math.abs(chunk.endTime - transcriptWindowEnd) <= 0.05
-            )
               ? [{ evidenceId: `e${index}`, evidenceText }]
               : [];
           })
@@ -1133,23 +1129,24 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
       ...allowedEvidenceIds,
       ...memoryEvidence.map((item) => item.evidenceId),
     ]);
-    const unsupportedClaimMappings: RagUnsupportedClaimMapping[] = Array.isArray(
-      raw.unsupportedClaimMappings,
-    )
-      ? raw.unsupportedClaimMappings.flatMap((value) => {
-          if (!value || typeof value !== 'object') return [];
-          const candidate = value as Record<string, unknown>;
-          return typeof candidate.claim === 'string' &&
-            candidate.claim.trim() &&
-            typeof candidate.reason === 'string' &&
-            candidate.reason.trim()
-            ? [{
-                claim: candidate.claim.trim(),
-                reason: candidate.reason.trim(),
-              }]
-            : [];
-        })
-      : [];
+    const unsupportedClaimMappings: RagUnsupportedClaimMapping[] =
+      Array.isArray(raw.unsupportedClaimMappings)
+        ? raw.unsupportedClaimMappings.flatMap((value) => {
+            if (!value || typeof value !== 'object') return [];
+            const candidate = value as Record<string, unknown>;
+            return typeof candidate.claim === 'string' &&
+              candidate.claim.trim() &&
+              typeof candidate.reason === 'string' &&
+              candidate.reason.trim()
+              ? [
+                  {
+                    claim: candidate.claim.trim(),
+                    reason: candidate.reason.trim(),
+                  },
+                ]
+              : [];
+          })
+        : [];
     const answerCompletesTranscriptTail = truncatedTranscriptEvidence.some(
       (item) =>
         hasUnsupportedTranscriptTailCompletion(
@@ -1273,7 +1270,8 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
         0,
         supportedClaimMappings.length,
         ...supportedClaimMappings.filter(
-          (mapping) => !transcriptTailCompletionKeys.has(claimKey(mapping.claim)),
+          (mapping) =>
+            !transcriptTailCompletionKeys.has(claimKey(mapping.claim)),
         ),
       );
     }
@@ -1290,7 +1288,9 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
     if (hasUnknownEvidenceId)
       issues.push('Verifier returned unknown evidence ID.');
     if (hasConflictingClaimClassification)
-      issues.push('Verifier classified a claim as both supported and unsupported.');
+      issues.push(
+        'Verifier classified a claim as both supported and unsupported.',
+      );
     if (answerCompletesTranscriptTail || transcriptTailCompletionKeys.size > 0)
       issues.push(
         'Answer completes an incomplete transcript tail beyond the supplied excerpt.',
@@ -1609,9 +1609,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
 
   private exactExtractiveTranscriptSentenceSelection(
     state: RagChatWorkflowState,
-  ):
-    | { claim: string; evidenceId: string; evidenceIndex: number }
-    | undefined {
+  ): { claim: string; evidenceId: string; evidenceIndex: number } | undefined {
     if (
       !isTranscriptSentenceSelectionRequest(state.route) ||
       state.contextSufficiency?.sufficient !== true

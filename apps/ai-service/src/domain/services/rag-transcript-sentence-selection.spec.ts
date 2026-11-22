@@ -276,9 +276,9 @@ describe('transcript sentence selection inputs', () => {
     expect(isLikelyIncompleteTranscriptUtterance("I'll of a person.")).toBe(
       true,
     );
-    expect(isLikelyIncompleteTranscriptUtterance("I'll of course be there.")).toBe(
-      false,
-    );
+    expect(
+      isLikelyIncompleteTranscriptUtterance("I'll of course be there."),
+    ).toBe(false);
     expect(isLikelyIncompleteTranscriptUtterance("I'll make you laugh.")).toBe(
       false,
     );
@@ -291,22 +291,22 @@ describe('transcript sentence selection inputs', () => {
 
   it('skips clipped, gerund, bare-noun, and subjectless predicate fragments', () => {
     expect(isLikelyIncompleteTranscriptUtterance('He...')).toBe(true);
-    expect(isLikelyIncompleteTranscriptUtterance('asking whether you saw it.')).toBe(
-      true,
-    );
+    expect(
+      isLikelyIncompleteTranscriptUtterance('asking whether you saw it.'),
+    ).toBe(true);
     expect(isLikelyIncompleteTranscriptUtterance('little signal.')).toBe(true);
-    expect(isLikelyIncompleteTranscriptUtterance('quietly removed the sign.')).toBe(
-      true,
-    );
-    expect(isLikelyIncompleteTranscriptUtterance('is a reasonable claim.')).toBe(
-      true,
-    );
-    expect(isLikelyIncompleteTranscriptUtterance('Avery thought for a moment.')).toBe(
-      false,
-    );
-    expect(isLikelyIncompleteTranscriptUtterance('I protected my mother.')).toBe(
-      false,
-    );
+    expect(
+      isLikelyIncompleteTranscriptUtterance('quietly removed the sign.'),
+    ).toBe(true);
+    expect(
+      isLikelyIncompleteTranscriptUtterance('is a reasonable claim.'),
+    ).toBe(true);
+    expect(
+      isLikelyIncompleteTranscriptUtterance('Avery thought for a moment.'),
+    ).toBe(false);
+    expect(
+      isLikelyIncompleteTranscriptUtterance('I protected my mother.'),
+    ).toBe(false);
     expect(isLikelyIncompleteTranscriptUtterance('Yes.')).toBe(false);
   });
 
@@ -368,7 +368,7 @@ describe('transcript sentence selection inputs', () => {
     ).toBe(true);
     expect(
       isNearVerbatimTranscriptSummary(
-        'They had wanted to renovate for years, thanked the listener, and said the listener\'s power could change things.',
+        "They had wanted to renovate for years, thanked the listener, and said the listener's power could change things.",
         source,
       ),
     ).toBe(false);

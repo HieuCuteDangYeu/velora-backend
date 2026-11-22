@@ -186,7 +186,7 @@ export function firstCompleteTranscriptSentenceCandidate(
       index === 0 &&
       Boolean(
         priorTranscript &&
-          startsInsidePriorTranscriptSentence(span, priorTranscript),
+        startsInsidePriorTranscriptSentence(span, priorTranscript),
       );
     const completeUtteranceStart =
       isShortTerminalTranscriptUtterance(span) ||
@@ -205,7 +205,8 @@ export function isLikelyIncompleteTranscriptUtterance(text: string): boolean {
   const words = span.match(/[\p{L}\p{N}]+/gu) ?? [];
   const firstWord = words[0]?.toLocaleLowerCase() ?? '';
   if (/^(?:i|you|we|they|he|she|it)$/iu.test(span)) return true;
-  const auxiliary = /^(?:i|you|we|they|he|she|it)(?:['’](?:ll|d|ve|re)|\s+(?:will|would|could|should|can|may|might|must))\s+/iu;
+  const auxiliary =
+    /^(?:i|you|we|they|he|she|it)(?:['’](?:ll|d|ve|re)|\s+(?:will|would|could|should|can|may|might|must))\s+/iu;
   const match = auxiliary.exec(span);
   if (
     match &&
@@ -282,7 +283,8 @@ export function hasUnsupportedTranscriptTailCompletion(
   answer: string,
   evidenceText: string,
 ): boolean {
-  if (!answer.trim() || !hasIncompleteTranscriptEnding(evidenceText)) return false;
+  if (!answer.trim() || !hasIncompleteTranscriptEnding(evidenceText))
+    return false;
   const source = evidenceText
     .normalize('NFKC')
     .trim()
@@ -333,21 +335,27 @@ export function isNearVerbatimTranscriptSummary(
   answer: string,
   evidenceText: string,
 ): boolean {
-  const answerTokens: string[] = answer
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .match(/[\p{L}\p{N}]+/gu) ?? [];
-  const sourceTokens: string[] = evidenceText
-    .normalize('NFKC')
-    .toLocaleLowerCase()
-    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  const answerTokens: string[] =
+    answer
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? [];
+  const sourceTokens: string[] =
+    evidenceText
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu) ?? [];
   if (answerTokens.length < 16 || sourceTokens.length < 20) return false;
 
   let previous = new Array<number>(sourceTokens.length + 1).fill(0);
   let longestMatch = 0;
   for (const token of answerTokens) {
     const current = new Array<number>(sourceTokens.length + 1).fill(0);
-    for (let sourceIndex = 1; sourceIndex <= sourceTokens.length; sourceIndex++) {
+    for (
+      let sourceIndex = 1;
+      sourceIndex <= sourceTokens.length;
+      sourceIndex++
+    ) {
       if (token !== sourceTokens[sourceIndex - 1]) continue;
       current[sourceIndex] = previous[sourceIndex - 1] + 1;
       longestMatch = Math.max(longestMatch, current[sourceIndex]);

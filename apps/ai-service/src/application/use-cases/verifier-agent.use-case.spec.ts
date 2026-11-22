@@ -1106,22 +1106,21 @@ describe('VerifierAgentUseCase', () => {
           failureClass: 'GROUNDING',
           issues: ['The evidence does not state that the zorb is red.'],
           answerQualityPassed: true,
-          supportedClaimMappings: [
-            { claim: supported, evidenceIds: ['e0'] },
-          ],
+          supportedClaimMappings: [{ claim: supported, evidenceIds: ['e0'] }],
         }),
       ),
     };
-    const useCase = new VerifierAgentUseCase(service as never, {
-      ...config,
-      boolean: jest.fn(() => false),
-    } as unknown as IAiApplicationConfig);
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      {
+        ...config,
+        boolean: jest.fn(() => false),
+      } as unknown as IAiApplicationConfig,
+    );
 
     await expect(useCase.execute(input)).resolves.toMatchObject({
       passed: false,
-      supportedClaimMappings: [
-        { claim: supported, evidenceIds: ['e0'] },
-      ],
+      supportedClaimMappings: [{ claim: supported, evidenceIds: ['e0'] }],
       diagnostics: { failureClass: 'GROUNDING' },
     });
     expect(
@@ -1148,10 +1147,13 @@ describe('VerifierAgentUseCase', () => {
         }),
       ),
     };
-    const useCase = new VerifierAgentUseCase(service as never, {
-      ...config,
-      boolean: jest.fn(() => false),
-    } as unknown as IAiApplicationConfig);
+    const useCase = new VerifierAgentUseCase(
+      service as never,
+      {
+        ...config,
+        boolean: jest.fn(() => false),
+      } as unknown as IAiApplicationConfig,
+    );
 
     await expect(useCase.execute(input)).resolves.toMatchObject({
       passed: false,
@@ -2098,9 +2100,7 @@ describe('VerifierAgentUseCase', () => {
       passed: true,
       answerQualityPassed: false,
       requiresRevision: true,
-      answerQualityIssues: [
-        expect.stringContaining('structurally incomplete'),
-      ],
+      answerQualityIssues: [expect.stringContaining('structurally incomplete')],
     });
   });
 

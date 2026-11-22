@@ -11,6 +11,18 @@ interface MuseChatPayload {
   choices?: Array<{ message?: { content?: string | null } }>;
 }
 
+class MuseHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Muse vision request failed with status ${status}`);
+  }
+}
+
+class MuseUnparsableReply extends Error {
+  constructor(readonly prose: string) {
+    super('Muse vision returned no parsable JSON object');
+  }
+}
+
 /**
  * Frame analysis over the local muse2api gateway, used as overflow when
  * Cloudflare's daily allocation is spent. The gateway has no JSON mode and
@@ -29,9 +41,35 @@ export class MuseVisionAdapter implements IVisionService {
     image: Uint8Array;
     mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
   }): Promise<VisualFrameAnalysis> {
-    const model = this.config.get<string>('MUSE_MODEL')?.trim() || 'muse-chat';
-    const timeoutMs = this.timeoutMs();
-    const deadline = Date.now() + timeoutMs;
+    // The gateway is a consumer chat session: it answers 504 under load and sometimes replies with prose
+    // instead of JSON. One bad frame fails a whole short-reel index, so a frame gets a few tries inside
+    // one budget (the indexer allows 120 s per frame) and, as a last resort, its prose becomes the caption.
+    const deadline = Date.now() + this.timeoutMs();
+    const maxAttempts = this.maxAttempts();
+    let lastError: Error = new Error('Muse vision failed');
+    let lastProse = '';
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.attempt(input, deadline);
+      } catch (error: unknown) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (error instanceof MuseUnparsableReply) lastProse = error.prose;
+        else if (!this.retryable(lastError)) throw lastError;
+        if (attempt === maxAttempts || Date.now() + 2_000 >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1_500));
+      }
+    }
+    const caption = this.text(lastProse).slice(0, 600);
+    if (caption.length >= 20) {
+      return this.result({ caption, objects: [] });
+    }
+    throw lastError;
+  }
+
+  private async attempt(
+    input: { image: Uint8Array; mimeType: string },
+    deadline: number,
+  ): Promise<VisualFrameAnalysis> {
     await this.acquire(deadline);
     try {
       const response = await fetch(`${this.baseUrl()}/chat/completions`, {
@@ -41,7 +79,7 @@ export class MuseVisionAdapter implements IVisionService {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model,
+          model: this.model(),
           messages: [
             { role: 'system', content: VISION_SYSTEM_PROMPT },
             {
@@ -61,30 +99,64 @@ export class MuseVisionAdapter implements IVisionService {
           max_tokens: 700,
           stream: false,
         }),
-        signal: AbortSignal.timeout(Math.max(500, deadline - Date.now())),
+        signal: AbortSignal.timeout(
+          Math.max(500, Math.min(deadline - Date.now(), 60_000)),
+        ),
       });
       const raw = await response.text();
       if (!response.ok) {
-        throw new Error(
-          `Muse vision request failed with status ${response.status}`,
-        );
+        throw new MuseHttpError(response.status);
       }
-      const content = (JSON.parse(raw) as MuseChatPayload).choices?.[0]?.message
-        ?.content;
-      const parsed = this.parseAnswer(content ?? '');
-      return {
+      const content =
+        (JSON.parse(raw) as MuseChatPayload).choices?.[0]?.message?.content ??
+        '';
+      const parsed = this.parseAnswer(content);
+      return this.result({
         caption: this.requiredText(parsed.caption),
         ...this.optionalOcr(parsed.ocrText),
         objects: this.cleanObjects(parsed.objects),
-        provider: 'muse2api',
-        model,
-        version:
-          this.config.get<string>('AI_VISION_MUSE_VERSION')?.trim() ||
-          'muse-vision-v1',
-      };
+      });
     } finally {
       this.release();
     }
+  }
+
+  private result(fields: {
+    caption: string;
+    ocrText?: string;
+    objects: string[];
+  }): VisualFrameAnalysis {
+    return {
+      ...fields,
+      provider: 'muse2api',
+      model: this.model(),
+      version:
+        this.config.get<string>('AI_VISION_MUSE_VERSION')?.trim() ||
+        'muse-vision-v1',
+    };
+  }
+
+  /** 5xx, 429, timeouts, network errors and unparsable replies are worth another try; auth and 4xx are not. */
+  private retryable(error: Error): boolean {
+    if (error instanceof MuseHttpError)
+      return error.status >= 500 || error.status === 429;
+    return (
+      error.name === 'TimeoutError' ||
+      error.name === 'AbortError' ||
+      error.name === 'TypeError' ||
+      /timed out waiting/.test(error.message)
+    );
+  }
+
+  private model(): string {
+    return this.config.get<string>('MUSE_MODEL')?.trim() || 'muse-chat';
+  }
+
+  private maxAttempts(): number {
+    const value = Number(
+      this.config.get<string>('MUSE_VISION_MAX_ATTEMPTS') ?? 3,
+    );
+    return Number.isInteger(value) && value >= 1 && value <= 5 ? value : 3;
   }
 
   /** First JSON object in the reply that has a caption. */
@@ -109,7 +181,7 @@ export class MuseVisionAdapter implements IVisionService {
         continue;
       }
     }
-    throw new Error('Muse vision returned no parsable JSON object');
+    throw new MuseUnparsableReply(content);
   }
 
   private requiredText(value: unknown): string {
@@ -174,11 +246,11 @@ export class MuseVisionAdapter implements IVisionService {
 
   private timeoutMs(): number {
     const configured = Number(
-      this.config.get<string>('MUSE_VISION_TIMEOUT_MS') ?? 120_000,
+      this.config.get<string>('MUSE_VISION_TIMEOUT_MS') ?? 100_000,
     );
     return Number.isFinite(configured)
-      ? Math.min(300_000, Math.max(5_000, configured))
-      : 120_000;
+      ? Math.min(110_000, Math.max(5_000, configured))
+      : 100_000;
   }
 
   private baseUrl(): string {

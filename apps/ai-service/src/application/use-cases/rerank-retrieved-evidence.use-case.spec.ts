@@ -65,9 +65,7 @@ describe('RerankRetrievedEvidenceUseCase', () => {
       diagnostics: diagnostics as never,
     });
 
-    expect(result.map((chunk) => chunk.chunkId)).toEqual([
-      'exact-window',
-    ]);
+    expect(result.map((chunk) => chunk.chunkId)).toEqual(['exact-window']);
     expect(diagnostics).toMatchObject({ rerankedCount: 1 });
   });
 
@@ -136,6 +134,9 @@ describe('RerankRetrievedEvidenceUseCase', () => {
       retrievedChunks: [before, inside, after, metadata] as never,
     });
 
-    expect(result.map((chunk) => chunk.chunkId)).toEqual(['inside', 'metadata']);
+    expect(result.map((chunk) => chunk.chunkId)).toEqual([
+      'inside',
+      'metadata',
+    ]);
   });
 });

@@ -361,16 +361,20 @@ export class BuildGroundedAnswerRevisionUseCase {
             const claim =
               typeof candidate.claim === 'string' ? candidate.claim.trim() : '';
             const claimEvidenceIds = Array.isArray(candidate.evidenceIds)
-              ? [...new Set(
-                  candidate.evidenceIds.filter(
-                    (id): id is string =>
-                      typeof id === 'string' &&
-                      allowedIds.has(id) &&
-                      evidenceIds.includes(id),
+              ? [
+                  ...new Set(
+                    candidate.evidenceIds.filter(
+                      (id): id is string =>
+                        typeof id === 'string' &&
+                        allowedIds.has(id) &&
+                        evidenceIds.includes(id),
+                    ),
                   ),
-                )]
+                ]
               : [];
-            return claim && answer.includes(claim) && claimEvidenceIds.length > 0
+            return claim &&
+              answer.includes(claim) &&
+              claimEvidenceIds.length > 0
               ? [{ claim, evidenceIds: claimEvidenceIds }]
               : [];
           })

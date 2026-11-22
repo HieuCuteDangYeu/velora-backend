@@ -55,13 +55,53 @@ describe('MuseVisionAdapter', () => {
     });
   });
 
-  it('rejects a reply with no caption and a non-2xx status', async () => {
-    jest.spyOn(global, 'fetch').mockResolvedValueOnce(chat('no json here'));
-    await expect(adapter().analyzeImage(frame)).rejects.toThrow('parsable');
+  it('retries a gateway error and succeeds', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(new Response('busy', { status: 504 }))
+      .mockResolvedValueOnce(chat('{"caption":"A dog","objects":[]}'));
+    await expect(adapter().analyzeImage(frame)).resolves.toMatchObject({
+      caption: 'A dog',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to the prose of a reply that never held JSON', async () => {
     jest
       .spyOn(global, 'fetch')
-      .mockResolvedValueOnce(new Response('x', { status: 502 }));
-    await expect(adapter().analyzeImage(frame)).rejects.toThrow('status 502');
+      .mockImplementation(() =>
+        Promise.resolve(
+          chat(
+            'The frame shows a lecture slide with a flowchart of questions.',
+          ),
+        ),
+      );
+    await expect(
+      adapter({ MUSE_VISION_MAX_ATTEMPTS: '2' }).analyzeImage(frame),
+    ).resolves.toMatchObject({
+      caption: 'The frame shows a lecture slide with a flowchart of questions.',
+      objects: [],
+    });
+  });
+
+  it('fails after the attempts when there is neither JSON nor usable prose', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockImplementation(() =>
+        Promise.resolve(new Response('x', { status: 502 })),
+      );
+    await expect(
+      adapter({ MUSE_VISION_MAX_ATTEMPTS: '2' }).analyzeImage(frame),
+    ).rejects.toThrow('status 502');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry an authentication error', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response('no', { status: 401 }));
+    await expect(adapter().analyzeImage(frame)).rejects.toThrow('status 401');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('is the overflow when AI_VISION_FALLBACK_PROVIDER=muse', async () => {

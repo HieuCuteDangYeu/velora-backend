@@ -400,7 +400,8 @@ describe('BuildGroundedAnswerRevisionUseCase', () => {
     const revised = await useCase.executeWithProvenance(input);
 
     expect(revised).toMatchObject({
-      answer: 'What the fuck? Honestly, I have wanted to renovate this place for years.',
+      answer:
+        'What the fuck? Honestly, I have wanted to renovate this place for years.',
       evidenceIds: ['e0'],
       claims: [
         { claim: 'What the fuck?', evidenceIds: ['e0'] },

@@ -68,3 +68,9 @@ test('selectRows filters by split, category and limit; helpers parse ids and sta
   assert.equal(statusOf(new Error('POST /x failed (413)')), 413);
   assert.equal(statusOf(new Error('boom')), null);
 });
+
+test('selectRows can pick rows by id', () => {
+  const rows = [{ id: 'a', category: 'frame', split: 'dev' }, { id: 'b', category: 'frame', split: 'dev' }, { id: 'c', category: 'edge', split: 'dev' }];
+  assert.deepEqual(selectRows(rows, { ids: 'a, c' }).map((r) => r.id), ['a', 'c']);
+  assert.deepEqual(selectRows(rows, { ids: 'c', category: 'frame' }), []);
+});

@@ -148,9 +148,10 @@ async function runRow(row, deps) {
   return out;
 }
 
-function selectRows(rows, { split = 'all', category = null, limit = null } = {}) {
+function selectRows(rows, { split = 'all', category = null, limit = null, ids = null } = {}) {
   const cats = category ? new Set(String(category).split(',')) : null;
-  const picked = rows.filter((r) => (split === 'all' || r.split === split) && (!cats || cats.has(r.category)));
+  const wanted = ids ? new Set(String(ids).split(',').map((id) => id.trim())) : null;
+  const picked = rows.filter((r) => (split === 'all' || r.split === split) && (!cats || cats.has(r.category)) && (!wanted || wanted.has(r.id)));
   return limit ? picked.slice(0, Number(limit)) : picked;
 }
 

@@ -23,6 +23,39 @@ export function requiresReelCoverage(message: string): boolean {
   );
 }
 
+const SPEECH_CUE =
+  /\b(?:segment|transcript|speech|spoken|said|say|says|saying|speaker|narrator|dialogue|mention(?:s|ed)?|talk(?:s|ed|ing)?)\b/i;
+const CLOCK = '(\\d{1,2}(?::\\d{2}){1,2})';
+
+const clockToSeconds = (clock: string): number =>
+  clock.split(':').reduce((total, part) => total * 60 + Number(part), 0);
+
+/**
+ * The transcript time a question asks about, as [match, startSec, endSec?]. Accepts "at 95 seconds",
+ * "at 2:02" and "from 1:05 to 1:20" next to a speech cue; a bare clock time is not enough on its own.
+ */
+function matchTranscriptTimestamp(
+  message: string,
+): [string, string, string | undefined] | null {
+  const seconds = message.match(
+    /\b(?:segment|transcript|speech|spoken|said|dialogue)\b[^\n\r?]*?\b(?:at|around|spanning|from)\s+(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:seconds?|s)\b/i,
+  );
+  if (seconds) return [seconds[0], seconds[1], seconds[2]];
+  if (!SPEECH_CUE.test(message)) return null;
+  const clock = message.match(
+    new RegExp(
+      `\\b(?:at|around|spanning|from|timestamp|minute)\\s+${CLOCK}\\s*(?:(?:-|–|—|to)\\s*${CLOCK}\\s*)?(?![\\d:])`,
+      'i',
+    ),
+  );
+  if (!clock) return null;
+  return [
+    clock[0],
+    String(clockToSeconds(clock[1])),
+    clock[2] ? String(clockToSeconds(clock[2])) : undefined,
+  ];
+}
+
 /** Source constraints come from the original question, never a tool rewrite. */
 export function sourceRetrievalPlan(
   message: string,
@@ -44,9 +77,7 @@ export function sourceRetrievalPlan(
   const timestamp = message.match(
     /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
   );
-  const transcriptTimestamp = message.match(
-    /\b(?:segment|transcript|speech|spoken|said|dialogue)\b[^\n\r?]*?\b(?:at|around|spanning|from)\s+(\d+(?:\.\d+)?)\s*(?:(?:-|–|—|to)\s*(\d+(?:\.\d+)?)\s*)?(?:seconds?|s)\b/i,
-  );
+  const transcriptTimestamp = matchTranscriptTimestamp(message);
   const multimodal = route.reelQuestionType === 'MULTIMODAL_CONTENT';
   const visualTimestampSec =
     (route.reelQuestionType === 'VISUAL_CONTENT' || multimodal) && timestamp

@@ -24,6 +24,29 @@ describe('source retrieval constraints', () => {
       searchLimit: 1,
     });
   });
+  describe('clock-time transcript questions', () => {
+    const transcript = {
+      needsRetrieval: true,
+      reelQuestionType: 'TRANSCRIPT_CONTENT',
+      requiredEvidence: ['TRANSCRIPT'],
+    } as RagChatRouteDecision;
+    it.each([
+      ['What does the speaker say at 2:02?', 122, undefined],
+      ['What is said at 1:02:03 in the video?', 3723, undefined],
+      ['What does the narrator mention from 1:05 to 1:20?', 65, 80],
+    ])('reads the time in %s', (message, start, end) => {
+      expect(sourceRetrievalPlan(message, transcript)).toMatchObject({
+        transcriptTimestampSec: start,
+        ...(end ? { transcriptTimestampEndSec: end } : {}),
+        sourceOrder: 'ASC',
+      });
+    });
+    it('needs a speech cue, so a clock time alone is not a transcript window', () => {
+      expect(
+        sourceRetrievalPlan('The meeting starts at 2:02 pm.', transcript),
+      ).toBeUndefined();
+    });
+  });
   it('does not invent a scene target for an unanchored question', () => {
     expect(
       sourceRetrievalPlan('What does the sampled visual scene show?', visual),

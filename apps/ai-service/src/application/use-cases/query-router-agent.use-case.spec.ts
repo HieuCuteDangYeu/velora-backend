@@ -1917,6 +1917,36 @@ describe('QueryRouterAgentUseCase', () => {
       expect(route.intent).toBe('NORMAL_CHAT');
     });
 
+    it('sends an off-topic label to the shared video instead of refusing when a video is shared', async () => {
+      const service = {
+        generateObject: jest
+          .fn()
+          .mockResolvedValue(response({ intent: 'OFF_TOPIC' })),
+      };
+      const decision = await new QueryRouterAgentUseCase(
+        service as never,
+        config,
+      ).execute({
+        message:
+          'When adapting works from a collection, what should you check before choosing a license?',
+        hasSharedReelContext: true,
+        sharedReelCount: 1,
+      });
+
+      expect(decision).toMatchObject({
+        intent: 'REEL_VIDEO_QUESTION',
+        referenceTarget: 'SHARED_REEL',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        needsRetrieval: true,
+      });
+    });
+
+    it('still refuses an off-topic message when no video is shared', async () => {
+      const { route } = await routeFor(undefined);
+
+      expect(route.intent).toBe('OFF_TOPIC');
+    });
+
     it('rejects an off-topic route that also names a reel question', async () => {
       await expect(
         routeFor(undefined, { reelQuestionType: 'TRANSCRIPT_CONTENT' }),

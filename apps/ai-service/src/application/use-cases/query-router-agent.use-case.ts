@@ -769,10 +769,26 @@ ${input.message.includes(PHOTO_NOTE_MARKER) ? `${PHOTO_NOTE_GUIDANCE}\n\n` : ''}
     raw: RawRouteDecision,
     input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
-    const modelIntent = this.applyScope(this.normalizeIntent(raw.intent));
-    const reelQuestionType = this.isExplicitMultimodalRequest(input.message)
+    const scopedIntent = this.applyScope(this.normalizeIntent(raw.intent));
+    const rawReelQuestionType = this.isExplicitMultimodalRequest(input.message)
       ? 'MULTIMODAL_CONTENT'
       : this.normalizeReelQuestionType(raw.reelQuestionType);
+    // A self-contained question ("what should you check before choosing a license?") reads like
+    // general knowledge to the router even when it is about the video the user just shared: 82%
+    // of such questions were refused in the 2026-11 benchmark. With a video shared, an OFF_TOPIC
+    // verdict is not trusted on its own. The question goes to that video's evidence; the answer
+    // step is grounded, so when the video does not cover it the reply says so instead of answering.
+    const offTopicAboutSharedReel =
+      Boolean(input.hasSharedReelContext) &&
+      scopedIntent === 'OFF_TOPIC' &&
+      rawReelQuestionType === 'NONE' &&
+      !looksLikeRecallQuestion(input.message ?? '');
+    const modelIntent: RagChatIntent = offTopicAboutSharedReel
+      ? 'REEL_VIDEO_QUESTION'
+      : scopedIntent;
+    const reelQuestionType = offTopicAboutSharedReel
+      ? 'TRANSCRIPT_CONTENT'
+      : rawReelQuestionType;
     // A small model sometimes calls "do you remember what I said about..." normal chat, or off
     // topic when the thing recalled is a trip or a pet. Explicit recall wording is a question
     // about the conversation: it is answered only from the chat and checked against it.

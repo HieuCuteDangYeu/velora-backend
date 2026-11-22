@@ -1,8 +1,15 @@
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
-import type { RagChatWorkflowState } from '@ai/domain/interfaces/rag-chat-workflow.interface';
+import type {
+  RagChatRouteDecision,
+  RagChatWorkflowState,
+} from '@ai/domain/interfaces/rag-chat-workflow.interface';
 import { LangGraphRagChatWorkflowAdapter } from './langgraph-rag-chat-workflow.adapter';
 
 type Workflow = {
+  searchReelsForPhotoTurn: (
+    state: RagChatWorkflowState,
+    route: RagChatRouteDecision,
+  ) => RagChatRouteDecision;
   routesAfterQueryRouter: (state: RagChatWorkflowState) => string[];
   createNoContextAnswerNode: (
     nodeTimings: Record<string, number>,
@@ -63,5 +70,39 @@ describe('off-topic turns in the RAG workflow', () => {
     } as unknown as RagChatWorkflowState);
 
     expect(result.finalFailureSource).toBe('NO_CONTEXT');
+  });
+
+  describe('photo turns the router called off topic', () => {
+    const photoState = (userMessage: string) =>
+      ({
+        userMessage,
+        images: [{ description: 'a lecture slide' }],
+      }) as unknown as RagChatWorkflowState;
+
+    it('become a reel search when the caption asks for reels or videos', () => {
+      const route = workflow.searchReelsForPhotoTurn(
+        photoState('find reels like this'),
+        offTopic.route as RagChatRouteDecision,
+      );
+
+      expect(route.intent).toBe('NORMAL_CHAT');
+      expect(route.recommendationAction.type).toBe('RECOMMEND_REELS');
+      expect(
+        workflow.routesAfterQueryRouter({
+          ...photoState('find reels like this'),
+          route,
+        }),
+      ).toEqual(['reelRecommendationNode']);
+    });
+
+    it('stay refused when the caption asks for something unrelated', () => {
+      const route = workflow.searchReelsForPhotoTurn(
+        photoState('solve this problem'),
+        offTopic.route as RagChatRouteDecision,
+      );
+
+      expect(route.intent).toBe('OFF_TOPIC');
+      expect(route.recommendationAction.type).toBe('NONE');
+    });
   });
 });

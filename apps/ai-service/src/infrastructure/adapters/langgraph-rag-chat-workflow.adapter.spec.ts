@@ -2181,15 +2181,17 @@ describe('LangGraphRagChatWorkflowAdapter photo turns', () => {
       });
     });
 
-    it('keeps a text turn, an off-topic photo, a reel question and a search the router chose', async () => {
+    it('keeps a text turn, a reel question and a search the router chose, and searches for an off-topic photo whose caption asks for reels', async () => {
       const text = decided({});
       expect((await routeFor(text, false))?.recommendationAction.type).toBe(
         'NONE',
       );
+      // The default caption is "find reels like this": the user asked for reels, so the router's
+      // OFF_TOPIC verdict on the picture does not refuse it.
       expect(
         (await routeFor(decided({ intent: 'OFF_TOPIC' }), true))
           ?.recommendationAction.type,
-      ).toBe('NONE');
+      ).toBe('RECOMMEND_REELS');
       expect(
         (await routeFor(decided({ intent: 'REEL_VIDEO_QUESTION' }), true))
           ?.recommendationAction.type,

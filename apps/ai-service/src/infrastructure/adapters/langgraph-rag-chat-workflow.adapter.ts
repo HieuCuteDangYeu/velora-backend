@@ -65,6 +65,7 @@ import {
   preserveReelCoverage,
   readRagPromptBounds,
 } from '@ai/domain/services/rag-prompt-bounds';
+import { asksForReelsLikePhoto } from '@ai/domain/services/rag-photo-reel-request';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 import { scopeAccessibleReelsToReplyTarget } from '@ai/domain/services/rag-reply-reel-scope';
 import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
@@ -662,15 +663,19 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     state: RagChatWorkflowState,
     route: RagChatRouteDecision,
   ): RagChatRouteDecision {
-    if (
-      !state.images?.length ||
-      route.intent !== 'NORMAL_CHAT' ||
-      route.recommendationAction.type !== 'NONE'
-    ) {
+    if (!state.images?.length || route.recommendationAction.type !== 'NONE') {
+      return route;
+    }
+    // An OFF_TOPIC verdict stands unless the caption itself asks for reels or videos.
+    const offTopicButAsksForReels =
+      route.intent === 'OFF_TOPIC' &&
+      asksForReelsLikePhoto(state.userMessage ?? '');
+    if (route.intent !== 'NORMAL_CHAT' && !offTopicButAsksForReels) {
       return route;
     }
     return {
       ...route,
+      intent: 'NORMAL_CHAT',
       recommendationAction: {
         type: 'RECOMMEND_REELS',
         query: '',

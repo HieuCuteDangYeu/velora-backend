@@ -2061,7 +2061,10 @@ export class ContentRepository
         conversationId: input.conversationId,
         reel: {
           mediaStatus: 'COMPLETED',
-          indexStatus: 'COMPLETED',
+          // A re-index in flight (the daily visual re-index, a retry) flips the status to PROCESSING
+          // while the previous index keeps serving; treating it as unshared made the bot answer
+          // "that reel hasn't been shared" about a video the user had just shared.
+          indexStatus: { in: ['COMPLETED', 'PROCESSING'] },
         },
       },
       distinct: ['reelId'],

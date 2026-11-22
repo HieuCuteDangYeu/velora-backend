@@ -725,3 +725,33 @@ describe('ContentRepository markIndexSkipped', () => {
     expect(invalidateReels).not.toHaveBeenCalled();
   });
 });
+
+describe('ContentRepository shared reel access', () => {
+  it('keeps a shared reel available while a re-index is in flight', async () => {
+    const findMany = jest
+      .fn()
+      .mockResolvedValue([{ reelId: 'reel-1' }, { reelId: 'reel-2' }]);
+    const repository = {
+      reelShare: { findMany },
+    } as unknown as ContentRepository;
+
+    await expect(
+      ContentRepository.prototype.findAccessibleSharedReelIds.call(repository, {
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+      }),
+    ).resolves.toEqual(['reel-1', 'reel-2']);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          conversationId: 'conversation-1',
+          reel: {
+            mediaStatus: 'COMPLETED',
+            indexStatus: { in: ['COMPLETED', 'PROCESSING'] },
+          },
+        },
+      }),
+    );
+  });
+});

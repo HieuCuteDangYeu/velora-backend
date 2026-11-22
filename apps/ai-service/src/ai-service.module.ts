@@ -260,7 +260,9 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
           ? OllamaVisionAdapter
           : process.env.AI_VISION_PROVIDER === 'groq'
             ? GroqVisionAdapter
-            : process.env.AI_VISION_FALLBACK_PROVIDER === 'groq'
+            : ['groq', 'muse'].includes(
+                  process.env.AI_VISION_FALLBACK_PROVIDER ?? '',
+                )
               ? FallbackVisionAdapter
               : CloudflareVisionAdapter,
     },

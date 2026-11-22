@@ -17,6 +17,12 @@ interface ParsedVisionAnswer {
   objects?: unknown;
 }
 
+export const VISION_SYSTEM_PROMPT =
+  'Analyze only the supplied single frame. Do not infer speech, identity, intent, emotion, motion, hidden text, or events outside this sampled timestamp. Return only a JSON object with exactly these keys: caption (a non-empty factual string), ocrText (a string containing only clearly readable text and empty when it cannot be read), and objects (an array of short grounded strings). When multiple people are visible, prefix person-specific observations with a stable label such as "subject 1:" or "subject 2:"; use "unassigned:" when an attribute cannot be linked to one subject. Never turn an unassigned attribute into a claim about every person.';
+
+export const VISION_USER_PROMPT =
+  'Set caption to a factual description of visible content, ocrText to only clearly readable text, and objects to important visible objects or UI elements. Preserve visible numbers and code exactly; omit uncertain text. Do not say that no text exists merely because OCR is empty.';
+
 @Injectable()
 export class CloudflareVisionAdapter implements IVisionService {
   private readonly endpoint: string;
@@ -57,15 +63,14 @@ export class CloudflareVisionAdapter implements IVisionService {
           messages: [
             {
               role: 'system',
-              content:
-                'Analyze only the supplied single frame. Do not infer speech, identity, intent, emotion, motion, hidden text, or events outside this sampled timestamp. Return only a JSON object with exactly these keys: caption (a non-empty factual string), ocrText (a string containing only clearly readable text and empty when it cannot be read), and objects (an array of short grounded strings). When multiple people are visible, prefix person-specific observations with a stable label such as "subject 1:" or "subject 2:"; use "unassigned:" when an attribute cannot be linked to one subject. Never turn an unassigned attribute into a claim about every person.',
+              content: VISION_SYSTEM_PROMPT,
             },
             {
               role: 'user',
               content: [
                 {
                   type: 'text',
-                  text: 'Set caption to a factual description of visible content, ocrText to only clearly readable text, and objects to important visible objects or UI elements. Preserve visible numbers and code exactly; omit uncertain text. Do not say that no text exists merely because OCR is empty.',
+                  text: VISION_USER_PROMPT,
                 },
                 {
                   type: 'image_url',

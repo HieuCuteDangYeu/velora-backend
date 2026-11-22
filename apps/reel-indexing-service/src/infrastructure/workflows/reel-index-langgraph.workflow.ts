@@ -618,15 +618,32 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
     state: ReelIndexGraphState,
   ): Promise<Partial<ReelIndexGraphState>> {
     const checkpoint = await this.requireCheckpoint(state);
+    let route = state.route;
     if (
-      state.route !== 'NO_AUDIO' &&
+      route !== 'NO_AUDIO' &&
       !checkpoint.mergedTranscript?.trim() &&
       !checkpoint.mergedSegments?.length
     ) {
-      throw new Error('Audio Reel produced no verified transcript');
+      // An audio track with no speech (silence, ambient sound) is not a failed transcription: every
+      // segment was transcribed and came back empty. Index it from its visuals and metadata like a
+      // reel with no audio. Anything else (a segment that failed or never ran) still fails the attempt.
+      const segments = await this.checkpoints.listAudioSegments(
+        state.job.indexAttemptId,
+      );
+      const speechless =
+        segments.length > 0 &&
+        segments.every(
+          (segment) =>
+            segment.status === 'COMPLETED' && !segment.transcriptText?.trim(),
+        );
+      if (!speechless) {
+        throw new Error('Audio Reel produced no verified transcript');
+      }
+      route = 'NO_AUDIO';
     }
     return {
       ...(await this.stageNode(state, 'validate_transcript', 40)),
+      route,
       transcriptReady: true,
     };
   }

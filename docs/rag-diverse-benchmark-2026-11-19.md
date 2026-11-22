@@ -290,3 +290,15 @@ First run that scores every REVIEWED row against the current index (two new long
 | timestamp | 53 | 0.24 | 0.32 | 0.00 | 0.00 |
 
 Content questions are unchanged from the fourth run (reel 0.91 → 0.92, whole 0.86 → 0.86 recall@5) even with 15 more videos in the index, so adding the new videos did not hurt retrieval. By duration band (reel scope, all types): 3-10 min recall@5 0.87, 10-30 min 0.74, 30-60 min 0.71, 60-120 min 0.69, under 3 min 1.00 (n=5, indicative). The band drop is mostly the opening and timestamp rows, which plain retrieval cannot answer (production routes them through dedicated paths; see the end-to-end layer). Whole-index chapter questions are the weak content cell (0.70): section summaries compete with chunks from other videos.
+
+## Contamination check: the 88-case baseline after the diverse videos (2026-11-22)
+The plan asked how much the added reels move the existing short-drama baseline. Same cases and settings as the 2026-11-13 baseline (`rag-semantic-live-v1`, 88 reviewed rows, whole-index search 30, rerank 12, 0 unavailable), run on the current index (`.benchmarks/semantic-live-run-after-diverse.json`):
+
+| | 2026-11-13 baseline | 2026-11-22 | paired diff (95% CI) |
+|---|---|---|---|
+| retrieval MRR | 0.572 | 0.543 | -0.029 (-0.073 to +0.014) |
+| retrieval recall@5 | 0.73 | 0.66 | -0.068 (-0.136 to -0.011) |
+| rerank MRR | 0.665 | 0.600 | -0.066 (-0.127 to -0.008), 4 better / 17 worse |
+| rerank recall@5 | 0.77 | 0.67 | -0.102 (-0.171 to -0.034) |
+
+Read it as total corpus growth, not as the cost of the diverse set alone. Between the two runs the index also took about 70 more short-drama episodes (the 2026-11-15 run, rerank MRR 0.545, was already hit by untranslated Chinese transcripts outranking English answers) and test reels from other sessions. Against that 2026-11-15 low the rerank has recovered (0.545 → 0.600). The diverse reels' own share cannot be separated without a scoped run that excludes tag `bench-diverse-v1`, which was not done. What this does show: every added reel makes whole-index search harder for the old questions, so baselines that search the whole index should be quoted with their corpus size and date, and compared only to runs on a comparable index.

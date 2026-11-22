@@ -177,10 +177,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const originOf = (value) => new URL(String(value)).origin;
 
 class Auth {
-  constructor(baseUrl) {
+  constructor(baseUrl, session = null) {
     this.baseUrl = baseUrl;
-    this.fixedToken = process.env.VELORA_TEST_ACCESS_TOKEN?.trim() || null;
-    this.token = this.fixedToken;
+    this.session = session; // { accessToken, refreshToken } minted by mint-viewer-tokens.cjs
+    this.fixedToken = session ? null : process.env.VELORA_TEST_ACCESS_TOKEN?.trim() || null;
+    this.token = session ? session.accessToken : this.fixedToken;
     this.cookie = null;
     this.inflight = null;
     this.logins = 0;
@@ -197,6 +198,20 @@ class Auth {
     if (this.inflight) return this.inflight;
     if (this.token && this.token !== staleToken) return undefined;
     this.inflight = (async () => {
+      if (this.session) {
+        // A per-viewer session renews through its own refresh token; it never uses the shared login.
+        const response = await fetch(new URL('/auth/mobile/refresh', this.baseUrl), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: this.session.refreshToken }),
+        });
+        if (!response.ok) throw new Error(`viewer refresh failed: ${response.status}`);
+        const tokens = await response.json();
+        this.token = tokens.accessToken;
+        if (tokens.refreshToken) this.session.refreshToken = tokens.refreshToken;
+        this.logins += 1;
+        return;
+      }
       const email = process.env.VELORA_TEST_EMAIL?.trim();
       const password = process.env.VELORA_TEST_PASSWORD;
       if (!email || !password) throw new Error('Set VELORA_TEST_EMAIL and VELORA_TEST_PASSWORD (or VELORA_TEST_ACCESS_TOKEN)');
@@ -223,6 +238,7 @@ class Auth {
 /** One timed request. Returns a sample; never throws. */
 async function timed(auth, baseUrl, name, route, init = {}, { parse = 'json', retryAuth = true } = {}) {
   const started = performance.now();
+  const at = Date.now();
   try {
     const url = new URL(route, baseUrl);
     const send = () => fetch(url, { ...init, headers: { ...(init.headers || {}), ...auth.headers() } });
@@ -240,15 +256,16 @@ async function timed(auth, baseUrl, name, route, init = {}, { parse = 'json', re
     if (response.ok && parse === 'json') {
       try { body = JSON.parse(buffer.toString('utf8')); } catch { body = null; }
     }
-    return { name, ok: response.ok, status: response.status, ms, ttfbMs, bytes: buffer.length, body };
+    return { name, ok: response.ok, status: response.status, ms, ttfbMs, bytes: buffer.length, body, at, ray: response.headers.get('cf-ray') };
   } catch (error) {
-    return { name, ok: false, status: null, error: error?.cause?.code || error?.name || 'fetch_error', ms: performance.now() - started, ttfbMs: null, bytes: 0, body: null };
+    return { name, ok: false, status: null, error: error?.cause?.code || error?.name || 'fetch_error', ms: performance.now() - started, ttfbMs: null, bytes: 0, body: null, at };
   }
 }
 
 /** Unauthenticated CDN fetch with TTFB, total time and cache header. */
 async function cdnFetch(name, url, { text = false } = {}) {
   const started = performance.now();
+  const at = Date.now();
   try {
     const response = await fetch(url);
     const ttfbMs = performance.now() - started;
@@ -261,11 +278,13 @@ async function cdnFetch(name, url, { text = false } = {}) {
       ms,
       ttfbMs,
       bytes: buffer.length,
+      at,
+      ray: response.headers.get('cf-ray'),
       cache: response.headers.get('cf-cache-status') || response.headers.get('x-cache') || 'none',
       text: text && response.ok ? buffer.toString('utf8') : null,
     };
   } catch (error) {
-    return { name, ok: false, status: null, error: error?.cause?.code || error?.name || 'fetch_error', ms: performance.now() - started, ttfbMs: null, bytes: 0, cache: 'none', text: null };
+    return { name, ok: false, status: null, error: error?.cause?.code || error?.name || 'fetch_error', ms: performance.now() - started, ttfbMs: null, bytes: 0, cache: 'none', text: null, at };
   }
 }
 
@@ -324,14 +343,14 @@ function pick(list, rand) {
 }
 
 function buildScenarios(ctx, enabled, rand) {
-  const feedOpen = async (rec) => {
-    const s = await timed(ctx.auth, ctx.baseUrl, 'api_feed_cold', `/content/reels/recommended?limit=${ctx.feedLimit}`);
+  const feedOpen = async (rec, auth) => {
+    const s = await timed(auth, ctx.baseUrl, 'api_feed_cold', `/content/reels/recommended?limit=${ctx.feedLimit}`);
     rec(s);
     return s;
   };
 
-  const firstFrame = async (rec, name, route) => {
-    const feed = await timed(ctx.auth, ctx.baseUrl, `${name}_feed`, route);
+  const firstFrame = async (rec, auth, name, route) => {
+    const feed = await timed(auth, ctx.baseUrl, `${name}_feed`, route);
     rec(feed);
     const fail = (error, status) => rec({ name, ok: false, status, error, ms: 0, ttfbMs: null, bytes: 0 });
     if (!feed.ok) return fail('feed_failed', feed.status);
@@ -344,70 +363,70 @@ function buildScenarios(ctx, enabled, rand) {
   };
 
   const all = {
-    api_feed_cold: { weight: 4, run: async (rec) => { await feedOpen(rec); } },
+    api_feed_cold: { weight: 4, run: async (rec, auth) => { await feedOpen(rec, auth); } },
     // Swipe through a fresh session. Page 2 is the first request that can outrun the
     // global slate and wait for the personalized refill, so it is timed on its own.
     api_feed_page: {
       weight: 6,
-      run: async (rec) => {
-        let page = await feedOpen(rec);
+      run: async (rec, auth) => {
+        let page = await feedOpen(rec, auth);
         for (const name of ['api_feed_page2', 'api_feed_page3', 'api_feed_page4']) {
           if (!page.ok || !page.body?.nextCursor) return;
           const q = new URLSearchParams({ limit: String(ctx.feedLimit), cursor: page.body.nextCursor });
           if (page.body.feedSessionId) q.set('feedSessionId', page.body.feedSessionId);
-          page = await timed(ctx.auth, ctx.baseUrl, name, `/content/reels/recommended?${q}`);
+          page = await timed(auth, ctx.baseUrl, name, `/content/reels/recommended?${q}`);
           rec(page);
         }
       },
     },
     api_feed_ranked: {
       weight: 2,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_feed_ranked', '/content/reels?limit=20&ranked=true')); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_feed_ranked', '/content/reels?limit=20&ranked=true')); },
     },
     api_feed_friends: {
       weight: 1,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_feed_friends', '/content/reels/friends?limit=20')); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_feed_friends', '/content/reels/friends?limit=20')); },
     },
     api_reel_detail: {
       weight: 4,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_reel_detail', `/content/reels/${pick(ctx.reels, rand).id}`)); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_reel_detail', `/content/reels/${pick(ctx.reels, rand).id}`)); },
     },
     api_reel_context: {
       weight: 2,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_reel_context', `/content/reels/${pick(ctx.reels, rand).id}/context?before=1&after=5`)); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_reel_context', `/content/reels/${pick(ctx.reels, rand).id}/context?before=1&after=5`)); },
     },
     api_series_episodes: {
       weight: ctx.seriesIds.length ? 4 : 0,
-      run: async (rec) => {
+      run: async (rec, auth) => {
         const id = pick(ctx.seriesIds, rand);
         const around = ctx.reels.find((r) => r.series?.id === id)?.id;
         const q = new URLSearchParams({ limit: '15' });
         if (around) q.set('aroundReelId', around);
-        rec(await timed(ctx.auth, ctx.baseUrl, 'api_series_episodes', `/content/series/${id}/episodes?${q}`));
+        rec(await timed(auth, ctx.baseUrl, 'api_series_episodes', `/content/series/${id}/episodes?${q}`));
       },
     },
     api_series_detail: {
       weight: ctx.seriesIds.length ? 1 : 0,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_series_detail', `/content/series/${pick(ctx.seriesIds, rand)}`)); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_series_detail', `/content/series/${pick(ctx.seriesIds, rand)}`)); },
     },
     api_search: {
       weight: 2,
-      run: async (rec) => {
+      run: async (rec, auth) => {
         const term = pick(ctx.queries, rand);
-        rec(await timed(ctx.auth, ctx.baseUrl, 'api_search', `/search?${new URLSearchParams({ q: term, type: 'reels', limit: '12' })}`));
+        rec(await timed(auth, ctx.baseUrl, 'api_search', `/search?${new URLSearchParams({ q: term, type: 'reels', limit: '12' })}`));
       },
     },
     api_search_tag: {
       weight: ctx.tags.length ? 1 : 0,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_search_tag', `/search/tags/reels?${new URLSearchParams({ tag: pick(ctx.tags, rand), limit: '20' })}`)); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_search_tag', `/search/tags/reels?${new URLSearchParams({ tag: pick(ctx.tags, rand), limit: '20' })}`)); },
     },
     api_auth_me: {
       weight: 1,
-      run: async (rec) => { rec(await timed(ctx.auth, ctx.baseUrl, 'api_auth_me', '/auth/me')); },
+      run: async (rec, auth) => { rec(await timed(auth, ctx.baseUrl, 'api_auth_me', '/auth/me')); },
     },
     stream_startup: {
       weight: ctx.playable.length ? 8 : 0,
-      run: async (rec) => {
+      run: async (rec, auth) => {
         const result = await hlsStartup(pick(ctx.playable, rand).streamUrl);
         for (const s of result.samples) rec(s);
         if (result.totalMs !== null) rec({ name: 'stream_startup', ok: true, status: 200, ms: result.totalMs, ttfbMs: null, bytes: 0 });
@@ -418,12 +437,12 @@ function buildScenarios(ctx, enabled, rand) {
     // list page, then start the first playable reel.
     first_frame_ranked: {
       weight: ctx.playable.length ? 6 : 0,
-      run: async (rec) => firstFrame(rec, 'first_frame_ranked', `/content/reels?limit=${ctx.feedLimit}&ranked=true`),
+      run: async (rec, auth) => firstFrame(rec, auth, 'first_frame_ranked', `/content/reels?limit=${ctx.feedLimit}&ranked=true`),
     },
     // AI-dependent variant: the recommended feed (semantic pool + rerank refill).
     first_frame: {
       weight: ctx.playable.length ? 6 : 0,
-      run: async (rec) => firstFrame(rec, 'first_frame', `/content/reels/recommended?limit=${ctx.feedLimit}`),
+      run: async (rec, auth) => firstFrame(rec, auth, 'first_frame', `/content/reels/recommended?limit=${ctx.feedLimit}`),
     },
   };
 
@@ -469,18 +488,21 @@ function enabledFilter(list) {
   return (name) => names.has(name);
 }
 
-async function runStage({ concurrency, seconds, thinkMs, scenarios, abort }) {
+async function runStage({ concurrency, seconds, thinkMs, scenarios, abort, viewers }) {
   const samples = [];
   const deadline = performance.now() + seconds * 1000;
-  const record = (sample) => samples.push(sample);
-  const worker = async () => {
+  // Keep only the timing fields: a retained response body (a feed page is 13-40 KB of parsed JSON)
+  // per sample ran the generator out of its 2 GB heap at 400 viewers.
+  const record = (sample) => { const { body, text, ...slim } = sample; samples.push(slim); };
+  const worker = async (_unused, index) => {
+    const auth = viewers ? viewers[index] : undefined;
     while (performance.now() < deadline && !abort.tripped) {
-      await scenarios.next().run(record);
+      await scenarios.next().run(record, auth);
       if (thinkMs) await sleep(thinkMs * (0.5 + Math.random()));
     }
   };
   const started = performance.now();
-  await Promise.all(Array.from({ length: concurrency }, worker));
+  await Promise.all(Array.from({ length: concurrency }, (_, index) => worker(_, index)));
   return { samples, wallSeconds: (performance.now() - started) / 1000 };
 }
 
@@ -591,7 +613,7 @@ async function main() {
   try { require('dotenv').config({ path: path.resolve(process.cwd(), '.env') }); } catch { /* optional */ }
 
   const baseUrl = originOf(args['base-url'] || process.env.VELORA_BASE_URL || 'https://velora-app.me');
-  const stages = String(args.stages || '1,5,10').split(',').map((v) => intArg(v.trim(), 1, '--stages', 1, 200));
+  const stages = String(args.stages || '1,5,10').split(',').map((v) => intArg(v.trim(), 1, '--stages', 1, 2000));
   const stageSeconds = intArg(args['stage-seconds'], 20, '--stage-seconds', 5, 600);
   const thinkMs = intArg(args['think-ms'], 250, '--think-ms', 0, 10000);
   const maxErrorRate = Number(args['max-error-rate'] ?? 0.2);
@@ -629,13 +651,25 @@ async function main() {
 
   let seed = intArg(args.seed, 1, '--seed', 1, 2 ** 31 - 1);
   const rand = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  // --viewers-file: one session per virtual viewer (distinct accounts, distinct feed sessions).
+  // Without it every viewer shares the single test login.
+  let viewers = Array.from({ length: Math.max(...stages) }, () => auth);
+  if (args['viewers-file']) {
+    const sessions = JSON.parse(fs.readFileSync(path.resolve(args['viewers-file']), 'utf8'));
+    const needed = Math.max(...stages);
+    if (!Array.isArray(sessions) || !sessions.length) throw new Error('--viewers-file holds no sessions');
+    // Beyond the number of accounts, viewers reuse them round-robin (two workers per account):
+    // less realistic for per-user caches, but it adds no accounts to the production database.
+    if (sessions.length < needed && args['reuse-sessions'] !== 'true') throw new Error(`--viewers-file needs at least ${needed} sessions (or pass --reuse-sessions)`);
+    viewers = Array.from({ length: needed }, (_, i) => new Auth(baseUrl, { ...sessions[i % sessions.length] }));
+  }
   const ctx = { auth, baseUrl, feedLimit: intArg(args['feed-limit'], 6, '--feed-limit', 1, 50), ...found };
   const scenarios = buildScenarios(ctx, enabled, rand);
   log(`[plan] scenarios=${scenarios.names.join(',')} stages=${stages.join('/')} x ${stageSeconds}s think=${thinkMs}ms`);
 
   const report = { baseUrl, startedAt: new Date().toISOString(), config: { stages, stageSeconds, thinkMs, slos }, stages: {}, cdnCache: {}, aborted: false, abortReason: '', logins: 0, slo: [] };
   const abort = { tripped: false };
-  const rawRows = ['stage,scenario,ok,status,ms,ttfb_ms,bytes,cache'];
+  const rawRows = ['stage,scenario,ok,status,ms,ttfb_ms,bytes,cache,at,cf_ray'];
   const allSamples = [];
 
   for (let index = 0; index < stages.length && !abort.tripped; index += 1) {
@@ -654,14 +688,14 @@ async function main() {
         }).catch((error) => { log(`[rag] failed: ${error.message}`); return [{ name: 'rag_final', ok: false, status: null, error: 'rag_exception', ms: 0 }]; })
       : null;
 
-    const { samples, wallSeconds } = await runStage({ concurrency, seconds: stageSeconds, thinkMs, scenarios, abort });
+    const { samples, wallSeconds } = await runStage({ concurrency, seconds: stageSeconds, thinkMs, scenarios, abort, viewers });
     if (ragPromise) samples.push(...(await ragPromise));
 
     const rows = {};
     for (const [name, group] of Object.entries(groupByName(samples))) rows[name] = { ...summarize(group), rps: Math.round((group.length / wallSeconds) * 10) / 10 };
     report.stages[label] = rows;
     allSamples.push(...samples);
-    for (const s of samples) rawRows.push([label, s.name, s.ok, s.status ?? s.error ?? '', Math.round(s.ms), s.ttfbMs == null ? '' : Math.round(s.ttfbMs), s.bytes ?? '', s.cache ?? ''].join(','));
+    for (const s of samples) rawRows.push([label, s.name, s.ok, s.status ?? s.error ?? '', Math.round(s.ms), s.ttfbMs == null ? '' : Math.round(s.ttfbMs), s.bytes ?? '', s.cache ?? '', s.at ? new Date(s.at).toISOString() : '', s.ray ?? ''].join(','));
 
     const api = samples.filter((s) => s.name.startsWith('api_'));
     const apiSummary = summarize(api);
@@ -674,7 +708,8 @@ async function main() {
     }
   }
 
-  report.logins = auth.logins;
+  report.logins = new Set([auth, ...viewers]).size === 1 ? auth.logins : [auth, ...new Set(viewers)].reduce((n, a) => n + a.logins, 0);
+  report.distinctViewers = new Set(viewers).size;
   report.cdnCache = cacheBreakdown(allSamples);
   report.slo = evaluateSlos(report, slos);
   fs.writeFileSync(path.join(outDir, 'samples.csv'), rawRows.join('\n'));

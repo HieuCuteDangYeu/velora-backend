@@ -2,9 +2,7 @@ import { InvalidTokenError } from '@auth/domain/errors/invalid-token.error';
 import type { IBanList } from '@auth/domain/interfaces/ban-list.interface';
 import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
 import { AuthUser } from '@common/auth/interfaces/auth-user.interface';
-import { JwtPayload } from '@common/auth/interfaces/jwt-payload.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 import type { IUserService } from '../../domain/interfaces/user-service.interface';
 
@@ -19,7 +17,6 @@ export class VerifyTokenUseCase {
   private readonly logger = new Logger(VerifyTokenUseCase.name);
 
   constructor(
-    private readonly jwtService: JwtService,
     private readonly accessTokens: AccessTokenService,
     @Inject('IAuthRepository') private readonly authRepository: IAuthRepository,
     @Inject('IUserService') private readonly userService: IUserService,
@@ -27,7 +24,7 @@ export class VerifyTokenUseCase {
   ) {}
 
   async execute(token: string): Promise<AuthUser> {
-    const userId = await this.verifySignature(token);
+    const userId = this.verifySignature(token);
 
     if (await this.isDenylisted(userId)) {
       throw new InvalidTokenError();
@@ -51,31 +48,11 @@ export class VerifyTokenUseCase {
     };
   }
 
-  private async verifySignature(token: string): Promise<string> {
-    const local = this.accessTokens.verify(token);
-    if (local.ok) return local.payload.sub;
-    // Access tokens signed before the ES256 rollout (HS256) stay valid until they expire
-    // (15 minutes). Remove this branch once that window has passed.
-    if (local.reason !== 'algorithm' && local.reason !== 'format')
-      throw new InvalidTokenError();
-
-    let payload: JwtPayload;
-    try {
-      payload = await this.jwtService.verifyAsync<JwtPayload>(token, {
-        algorithms: ['HS256'],
-      });
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        ['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'].includes(
-          error.name,
-        )
-      )
-        throw new InvalidTokenError();
-      throw error;
-    }
-    if (payload.tokenType !== 'access') throw new InvalidTokenError();
-    return payload.sub;
+  /** Only ES256 access tokens are accepted; refresh tokens and anything else are refused. */
+  private verifySignature(token: string): string {
+    const result = this.accessTokens.verify(token);
+    if (!result.ok) throw new InvalidTokenError();
+    return result.payload.sub;
   }
 
   private async isDenylisted(userId: string): Promise<boolean> {

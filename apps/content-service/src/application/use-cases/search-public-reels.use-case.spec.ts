@@ -38,3 +38,22 @@ describe('SearchPublicReelsUseCase', () => {
     expect(searchPublicReels).not.toHaveBeenCalled();
   });
 });
+
+describe('SearchPublicReelsUseCase result size', () => {
+  it('returns at most the requested limit even when the search over-fetches', async () => {
+    const candidates = Array.from({ length: 6 }, (_, i) => ({
+      reelId: `r${i}`,
+      score: 1 - i / 10,
+    }));
+    const useCase = new SearchPublicReelsUseCase(
+      {
+        findSearchablePublicReels: jest
+          .fn()
+          .mockResolvedValue(candidates.map((c) => ({ id: c.reelId }))),
+      } as never,
+      { searchPublicReels: jest.fn().mockResolvedValue(candidates) } as never,
+    );
+    const found = await useCase.execute({ query: 'x', limit: 3 });
+    expect(found.map((r) => r.reel.id)).toEqual(['r0', 'r1', 'r2']);
+  });
+});

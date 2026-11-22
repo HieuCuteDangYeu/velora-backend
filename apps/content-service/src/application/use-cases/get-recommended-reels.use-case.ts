@@ -189,10 +189,7 @@ export class GetRecommendedReelsUseCase {
           (page.nextCursor !== null &&
             page.remainingCount <= PERSONALIZED_REFILL_THRESHOLD);
         if (authenticated && shouldRefill) {
-          if (
-            audienceReady &&
-            session.personalizedRefillComplete !== false
-          ) {
+          if (audienceReady && session.personalizedRefillComplete !== false) {
             session = { ...session, personalizedRefillComplete: false };
             await this.feedSessionRepository.save(
               session,
@@ -694,15 +691,13 @@ export class GetRecommendedReelsUseCase {
     return null;
   }
 
-  private async buildAndAppendPersonalizedItems(
-    input: {
-      viewerId: string;
-      feedSessionId: string;
-      algorithmVersion: string;
-      excludedUserIds: string[];
-      excludeRecentlySeen?: boolean;
-    },
-  ): Promise<void> {
+  private async buildAndAppendPersonalizedItems(input: {
+    viewerId: string;
+    feedSessionId: string;
+    algorithmVersion: string;
+    excludedUserIds: string[];
+    excludeRecentlySeen?: boolean;
+  }): Promise<void> {
     const startedAt = Date.now();
     const audience = await this.friendContentAccessService.getFeedAudience(
       input.viewerId,

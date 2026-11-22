@@ -18,6 +18,11 @@ const QUERY_EMBEDDING_WAIT_MS = 2_500;
 // Measured on bge-m3 reel documents (2026-11-22): matching queries sit at 0.41-0.48 cosine distance and
 // unrelated ones at 0.58 or more. A reel that only matched by vector must be closer than this.
 const DEFAULT_MAX_VECTOR_DISTANCE = 0.55;
+// Transcript chunks are tighter: a chunk that is about the query sits at 0.30-0.37, unrelated text at 0.50+.
+const DEFAULT_MAX_CHUNK_DISTANCE = 0.45;
+// Hydration drops private reels after the search, so ask for more than the caller wants.
+const MAX_CANDIDATES = 40;
+const RRF_K = 60;
 
 @Injectable()
 export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
@@ -37,10 +42,14 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
   }): Promise<SemanticReelSearchCandidate[]> {
     try {
       const embedding = await this.embed(input.query);
-      const request: SemanticIndexSearchRequest = {
+      const wanted = Math.min(
+        Math.max(input.limit * 3, input.limit),
+        MAX_CANDIDATES,
+      );
+      const base: SemanticIndexSearchRequest = {
         queryText: input.query,
-        limit: input.limit,
-        candidateLimit: Math.min(Math.max(input.limit * 4, 24), 120),
+        limit: wanted,
+        candidateLimit: Math.min(Math.max(wanted * 4, 24), 120),
         ...(embedding
           ? {
               queryEmbedding: embedding.values,
@@ -49,33 +58,73 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
             }
           : {}),
       };
-      const results = await firstValueFrom(
-        this.indexClient
-          .send<
-            SemanticIndexSearchResult[]
-          >(SEMANTIC_INDEX_PATTERNS.SEARCH_REELS, request)
-          .pipe(timeout(4_000)),
-      );
+      // Reel documents (title, summary, tags) and, with a query vector, the transcript chunks: a frame
+      // or a paraphrase names the topic the speaker talks about, which a title rarely does.
+      const [reelHits, chunkHits] = await Promise.all([
+        this.search(SEMANTIC_INDEX_PATTERNS.SEARCH_REELS, base),
+        embedding
+          ? this.search(SEMANTIC_INDEX_PATTERNS.SEARCH_CHUNKS, base).catch(
+              (error: unknown) => {
+                this.logger.warn(
+                  `Chunk search for reel lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+                );
+                return [] as SemanticIndexSearchResult[];
+              },
+            )
+          : Promise.resolve([] as SemanticIndexSearchResult[]),
+      ]);
       const maxDistance = this.maxVectorDistance();
-      return (Array.isArray(results) ? results : [])
-        .filter(
-          (result) =>
-            // Keyword and tag matches always count; a vector-only match must be close enough.
-            result.vectorDistance === undefined ||
-            result.vectorDistance === null ||
-            result.keywordRank !== undefined ||
-            result.metadataRank !== undefined ||
-            result.vectorDistance <= maxDistance,
-        )
-        .map((result) => ({
-          reelId: result.reelId,
-          score: result.rrfScore,
-        }));
+      const maxChunkDistance = this.maxChunkDistance();
+      const reelRanked = reelHits.filter(
+        (result) =>
+          // Keyword and tag matches always count; a vector-only match must be close enough.
+          result.vectorDistance === undefined ||
+          result.vectorDistance === null ||
+          result.keywordRank !== undefined ||
+          result.metadataRank !== undefined ||
+          result.vectorDistance <= maxDistance,
+      );
+      const chunkRanked = chunkHits.filter(
+        (result) =>
+          result.keywordRank !== undefined ||
+          (typeof result.vectorDistance === 'number' &&
+            result.vectorDistance <= maxChunkDistance),
+      );
+      const scores = new Map<string, number>();
+      const add = (list: SemanticIndexSearchResult[]) => {
+        const seen = new Set<string>();
+        for (const result of list) {
+          if (seen.has(result.reelId)) continue;
+          seen.add(result.reelId);
+          scores.set(
+            result.reelId,
+            (scores.get(result.reelId) ?? 0) + 1 / (RRF_K + seen.size),
+          );
+        }
+      };
+      add(reelRanked);
+      add(chunkRanked);
+      return [...scores.entries()]
+        .sort((left, right) => right[1] - left[1])
+        .slice(0, wanted)
+        .map(([reelId, score]) => ({ reelId, score }));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Indexing public search unavailable: ${message}`);
       return [];
     }
+  }
+
+  private async search(
+    pattern: string,
+    request: SemanticIndexSearchRequest,
+  ): Promise<SemanticIndexSearchResult[]> {
+    const results = await firstValueFrom(
+      this.indexClient
+        .send<SemanticIndexSearchResult[]>(pattern, request)
+        .pipe(timeout(4_000)),
+    );
+    return Array.isArray(results) ? results : [];
   }
 
   /** The query vector, or null when the embedder is missing, slow or fails (search then uses keywords). */
@@ -103,6 +152,16 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
       );
       return null;
     }
+  }
+
+  private maxChunkDistance(): number {
+    const value = Number(
+      this.config?.get<string>('REEL_SEARCH_MAX_CHUNK_DISTANCE') ??
+        DEFAULT_MAX_CHUNK_DISTANCE,
+    );
+    return Number.isFinite(value) && value > 0 && value <= 2
+      ? value
+      : DEFAULT_MAX_CHUNK_DISTANCE;
   }
 
   private maxVectorDistance(): number {

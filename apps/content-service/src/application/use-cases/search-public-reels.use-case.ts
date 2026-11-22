@@ -47,9 +47,12 @@ export class SearchPublicReelsUseCase {
       return [];
     }
     const reelById = new Map(reels.map((reel) => [reel.id, reel]));
-    return candidates.flatMap((candidate) => {
-      const reel = reelById.get(candidate.reelId);
-      return reel ? [{ reel, score: candidate.score }] : [];
-    });
+    // The search over-fetches because private reels are dropped here; the caller still gets at most `limit`.
+    return candidates
+      .flatMap((candidate) => {
+        const reel = reelById.get(candidate.reelId);
+        return reel ? [{ reel, score: candidate.score }] : [];
+      })
+      .slice(0, limit);
   }
 }

@@ -241,6 +241,27 @@ function referenceTextFor(segments, row, windowOptions) {
   return w ? w.text : '';
 }
 
+/** Seconds from "m:ss" or "h:mm:ss" (the form timestamp questions use), or null. */
+function parseClock(text) {
+  const m = /\b(\d{1,2}(?::\d{2}){1,2})\b/.exec(text || '');
+  return m ? m[1].split(':').reduce((t, part) => t * 60 + Number(part), 0) : null;
+}
+
+/**
+ * What a timestamp question is asking about: the speech within `halfWidthSec` of the asked time,
+ * not the whole gold window (about 50 s), which would fault a correct one-sentence answer for
+ * missing the rest of the window. Falls back to the gold window text when the question has no time.
+ */
+function timestampReferenceText(segments, row, { halfWidthSec = 10 } = {}) {
+  const at = parseClock(row.question);
+  if (at === null) return referenceTextFor(segments, row);
+  return segments
+    .filter((s) => s.endSec > at - halfWidthSec && s.startSec < at + halfWidthSec)
+    .map((s) => s.text)
+    .join(' ')
+    .trim();
+}
+
 /** Seconds two [start, end] intervals share. */
 function overlapSec(a, b) {
   return Math.max(0, Math.min(a.endSec, b.endSec) - Math.max(a.startSec, b.startSec));
@@ -261,5 +282,5 @@ function isIntervalHit(hit, gold, { minOverlapSec = 5, minGoldShare = 0.3 } = {}
 module.exports = {
   TYPES, SPLITS, STATUSES,
   formatClock, buildWindows, eligibleWindows, pickSpread, assignVideoSplits,
-  templatedRows, detailRow, isLeakyDetail, validateRows, overlapSec, isIntervalHit, isCjk, referenceTextFor,
+  templatedRows, detailRow, isLeakyDetail, validateRows, overlapSec, isIntervalHit, isCjk, referenceTextFor, parseClock, timestampReferenceText,
 };

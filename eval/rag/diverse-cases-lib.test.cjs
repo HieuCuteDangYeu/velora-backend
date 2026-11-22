@@ -155,3 +155,16 @@ test('referenceTextFor joins the windows inside a chapter row', () => {
   const sem = require('./semantic-live-eval-lib.cjs');
   assert.equal(sem.textHash(lib.referenceTextFor(segments, row)), row.textHash);
 });
+
+test('timestampReferenceText keeps only the speech around the asked time', () => {
+  const segments = [
+    { startSec: 100, endSec: 108, text: 'far before' },
+    { startSec: 118, endSec: 124, text: 'just before' },
+    { startSec: 125, endSec: 131, text: 'at the time' },
+    { startSec: 134, endSec: 141, text: 'just after' },
+    { startSec: 170, endSec: 176, text: 'far after' },
+  ];
+  const row = { question: 'What does the speaker say at 2:05?', type: 'timestamp', gold: { startSec: 100, endSec: 176 } };
+  assert.equal(lib.parseClock(row.question), 125);
+  assert.equal(lib.timestampReferenceText(segments, row), 'just before at the time just after');
+});

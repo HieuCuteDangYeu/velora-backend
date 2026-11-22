@@ -110,10 +110,15 @@ function judgeCommand(args) {
   const { buildDimensionPrompt } = require('./rag-judge-prompts.cjs');
   const done = load(args.out);
   let judgedNow = 0;
+  // --rejudge --types timestamp: judge those rows again (the reference rule for a type changed).
+  const rejudgeTypes = args.rejudge ? new Set(String(args.types || '').split(',').filter(Boolean)) : new Set();
   for (const item of done.items) {
+    if (rejudgeTypes.has(item.row.type)) item.judge = undefined;
     if (item.judge || !item.reply?.answer || item.score.unbound) continue;
     const ref = referenceFor(item.row.fixtureId);
-    const referenceAnswer = div.referenceTextFor(ref.referenceSegments, item.row);
+    const referenceAnswer = item.row.type === 'timestamp'
+      ? div.timestampReferenceText(ref.referenceSegments, item.row)
+      : div.referenceTextFor(ref.referenceSegments, item.row);
     if (!referenceAnswer) continue;
     const input = {
       question: item.row.question, generatedAnswer: item.reply.answer, referenceAnswer,

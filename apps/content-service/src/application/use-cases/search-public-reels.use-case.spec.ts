@@ -51,7 +51,7 @@ describe('SearchPublicReelsUseCase result size', () => {
           .fn()
           .mockResolvedValue(candidates.map((c) => ({ id: c.reelId }))),
       } as never,
-      { searchPublicReels: jest.fn().mockResolvedValue(candidates) } as never,
+      { searchPublicReels: jest.fn().mockResolvedValue(candidates) },
     );
     const found = await useCase.execute({ query: 'x', limit: 3 });
     expect(found.map((r) => r.reel.id)).toEqual(['r0', 'r1', 'r2']);

@@ -85,6 +85,26 @@ describe('PrismaSemanticIndexRepository single-vector search', () => {
     );
   });
 
+  it('reads the chunk centred on a requested second, not the earliest one that covers it', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const repository = new PrismaSemanticIndexRepository(
+      { $queryRaw: query } as never,
+      config as never,
+    );
+    await repository.searchChunks({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: 213,
+      filters: { reelIds: ['authorized'] },
+      requiredIndexVersion: 'v1',
+      limit: 1,
+    });
+    const text = (query.mock.calls[0][0] as { strings: string[] }).strings.join(
+      '',
+    );
+    expect(text).toContain('ORDER BY ABS((COALESCE(t."startTime", 0)');
+    expect(text).not.toContain('ORDER BY t."startTime" ASC NULLS LAST');
+  });
+
   it('rejects unscoped or invalid timestamp source reads without querying', async () => {
     const query = jest.fn();
     const repository = new PrismaSemanticIndexRepository(

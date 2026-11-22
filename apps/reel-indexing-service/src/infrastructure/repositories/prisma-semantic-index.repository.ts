@@ -461,7 +461,12 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
       const timeOrder =
         endPoint !== undefined && point !== undefined
           ? Prisma.sql`ORDER BY CASE WHEN ABS(t."startTime" - ${point}) <= 0.05 AND ABS(t."endTime" - ${endPoint}) <= 0.05 THEN 0 WHEN t."startTime" >= ${point} AND t."endTime" <= ${endPoint} THEN 1 ELSE 2 END, t."startTime" ASC NULLS LAST, t."endTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
-          : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
+          : point !== undefined && target === 'ReelChunk'
+            ? // "What is said at 3:33": several chunks cover the second, and the earliest one starts
+              // up to a window earlier. The chunk whose middle is nearest the asked time is the
+              // one about it.
+              Prisma.sql`ORDER BY ABS((COALESCE(t."startTime", 0) + COALESCE(t."endTime", 0)) / 2.0 - ${point}) ASC, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
+            : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
       const chronologicalTable = Prisma.raw(`"${target}"`);
       const chronologicalType =
         target === 'ReelVisualScene' ? 'VISUAL' : 'TRANSCRIPT';

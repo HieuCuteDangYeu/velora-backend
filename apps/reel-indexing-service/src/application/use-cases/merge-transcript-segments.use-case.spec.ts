@@ -15,9 +15,7 @@ describe('MergeTranscriptSegmentsUseCase', () => {
           status: 'COMPLETED',
           attemptCount: 1,
           transcriptText: 'hello',
-          transcriptSegments: [
-            { start: 9, end: 30, text: 'hello', id: 0 },
-          ],
+          transcriptSegments: [{ start: 9, end: 30, text: 'hello', id: 0 }],
         },
       ],
       1,

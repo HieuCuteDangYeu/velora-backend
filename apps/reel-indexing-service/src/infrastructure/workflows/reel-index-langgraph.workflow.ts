@@ -19,6 +19,7 @@ import type {
   TranscriptSection,
 } from '@indexing/domain/entities/index-checkpoint.entity';
 import { IndexClassificationMismatchError } from '@indexing/domain/errors/index-classification-mismatch.error';
+import type { AudioSegmentCheckpoint } from '@indexing/domain/entities/index-checkpoint.entity';
 import type { IArtifactStorage } from '@indexing/domain/interfaces/artifact-storage.interface';
 import type { IIndexingContentService } from '@indexing/domain/interfaces/content-service.interface';
 import type { IIndexCheckpointRepository } from '@indexing/domain/interfaces/index-checkpoint.repository.interface';
@@ -53,6 +54,22 @@ export function routeIndexing(input: {
     });
   }
   return calculated;
+}
+
+/**
+ * True when audio was transcribed in full and no segment held any speech: a silent or ambient
+ * track, not a failed transcription. A segment that failed, never ran, or returned text is not.
+ */
+export function isSpeechlessAudio(
+  segments: Pick<AudioSegmentCheckpoint, 'status' | 'transcriptText'>[],
+): boolean {
+  return (
+    segments.length > 0 &&
+    segments.every(
+      (segment) =>
+        segment.status === 'COMPLETED' && !segment.transcriptText?.trim(),
+    )
+  );
 }
 
 export interface ReelIndexGraphState {
@@ -630,12 +647,7 @@ export class ReelIndexLangGraphWorkflow implements IReelIndexWorkflow {
       const segments = await this.checkpoints.listAudioSegments(
         state.job.indexAttemptId,
       );
-      const speechless =
-        segments.length > 0 &&
-        segments.every(
-          (segment) =>
-            segment.status === 'COMPLETED' && !segment.transcriptText?.trim(),
-        );
+      const speechless = isSpeechlessAudio(segments);
       if (!speechless) {
         throw new Error('Audio Reel produced no verified transcript');
       }

@@ -26,7 +26,8 @@ export class AnalyzeVisualFrameManifestUseCase {
   async execute(job: ReelIndexJob): Promise<VisualSceneEvidence[]> {
     const required = job.requireVisualAnalysis ?? this.required();
     if (!this.enabled()) {
-      if (required) throw new Error('Visual analysis is disabled for this index job');
+      if (required)
+        throw new Error('Visual analysis is disabled for this index job');
       return [];
     }
     if (required && !job.visualFrameManifestKey) {

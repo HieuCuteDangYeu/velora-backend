@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "name": "rag-diverse-sources-v1",
+  "note": "Planned long-video sources for the diversified RAG benchmark. Media is downloaded by scripts/ops/prepare-diverse-fixtures.cjs into the untracked test-data/reel-integration/diverse/. Licenses are what the uploader declared on YouTube (CC BY); the media is never committed or redistributed. Labels are marked planned until prepare-diverse-fixtures.cjs has probed the file.",
+  "tag": "bench-diverse-v1",
+  "sources": [
+    {
+      "youtubeId": "r24e9TC1yI8",
+      "genre": "screen-recording",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "screen-recording"
+    },
+    {
+      "youtubeId": "eQktTTzk5lA",
+      "genre": "music",
+      "language": "none",
+      "audioCondition": "music-only",
+      "visualType": "static"
+    },
+    {
+      "youtubeId": "TV2I8AioaJ0",
+      "genre": "sports",
+      "language": "none",
+      "audioCondition": "no-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "XXGSO0pySps",
+      "genre": "vlog-travel",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "kQT395Kpgnk",
+      "genre": "tutorial",
+      "language": "hi",
+      "audioCondition": "clean-speech",
+      "visualType": "screen-recording"
+    },
+    {
+      "youtubeId": "OdbOX7HtF9A",
+      "genre": "tutorial",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "lnhxWA9tLTw",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "aqz-KE-bpKQ",
+      "genre": "animation",
+      "language": "none",
+      "audioCondition": "music-only",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "hOJsRc9Ju7k",
+      "genre": "screen-recording",
+      "language": "zh",
+      "audioCondition": "clean-speech",
+      "visualType": "screen-recording"
+    },
+    {
+      "youtubeId": "-WhvPUzVqFA",
+      "genre": "news-interview",
+      "language": "zh",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "XwPu7nqL7SA",
+      "genre": "music",
+      "language": "none",
+      "audioCondition": "music-only",
+      "visualType": "static"
+    },
+    {
+      "youtubeId": "1eadcvvyGu8",
+      "genre": "documentary-nature",
+      "language": "none",
+      "audioCondition": "no-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "iR-ER7mO1V4",
+      "genre": "gameplay",
+      "language": "hi",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "qX3I9o6SQbY",
+      "genre": "news-interview",
+      "language": "en",
+      "audioCondition": "music-over-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "f4yBcKkb12g",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "kW4OWlprgyk",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "_xqul0kAnCc",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "57hjyb2E5xM",
+      "genre": "lecture-slides",
+      "language": "es",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "nePJkLLnOMg",
+      "genre": "lecture-slides",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "CYyRY3lmdJE",
+      "genre": "lecture-slides",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "blackboard"
+    },
+    {
+      "youtubeId": "YYWlRhfGCoU",
+      "genre": "screen-recording",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "screen-recording"
+    },
+    {
+      "youtubeId": "H7zSIAsi9x4",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "q8eInHZD1VA",
+      "genre": "lecture-slides",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "5A_Rfwy1XF0",
+      "genre": "lecture-slides",
+      "language": "es",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "BX_fbdbUxsg",
+      "genre": "screen-recording",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "screen-recording"
+    },
+    {
+      "youtubeId": "tu3OXtpi4XI",
+      "genre": "documentary-nature",
+      "language": "none",
+      "audioCondition": "silent-track",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "ll1VeD5lCzg",
+      "genre": "sports",
+      "language": "en",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "SKGigfdYHdI",
+      "genre": "news-interview",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "NNTzPbHtlRY",
+      "genre": "news-interview",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "WJmzFYqZ8HY",
+      "genre": "news-interview",
+      "language": "zh",
+      "audioCondition": "clean-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "1leK5WuEiuU",
+      "genre": "news-interview",
+      "language": "zh",
+      "audioCondition": "clean-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "FX3KAGdnKQk",
+      "genre": "cooking",
+      "language": "en",
+      "audioCondition": "music-over-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "INXURwh-duw",
+      "genre": "cooking",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "ZVxiZXgUVZk",
+      "genre": "sports",
+      "language": "en",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "Cnnq1ShPKvQ",
+      "genre": "sports",
+      "language": "ar",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "F2VVCqq3Oac",
+      "genre": "vlog-travel",
+      "language": "en",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "jIZSM8XJlTw",
+      "genre": "vlog-travel",
+      "language": "fr",
+      "audioCondition": "noisy",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "k4715CJ0Ii8",
+      "genre": "podcast",
+      "language": "en",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "AWNWRM4nERQ",
+      "genre": "news-interview",
+      "language": "vi",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "8oL03cm1kMc",
+      "genre": "podcast",
+      "language": "ko",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    }
+  ],
+  "derived": [
+    {
+      "id": "diverse-1eadcvvyGu8-noaudio",
+      "from": "1eadcvvyGu8",
+      "op": "strip-audio",
+      "note": "Same footage with the audio stream removed, to exercise the NO_AUDIO indexing route (no downloaded video lacks an audio stream)."
+    }
+  ]
+}

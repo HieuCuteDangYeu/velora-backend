@@ -392,7 +392,7 @@ function compare(args) {
   );
 }
 
-module.exports = { buildResult, compareRuns, run, selectCases };
+module.exports = { buildResult, compareRuns, rabbitDeps, rerankText, run, selectCases };
 
 if (require.main === module)
   (async () => {

@@ -46,8 +46,9 @@ function ensureDir(directory) {
 
 function datasetDirectory(args) {
   const dataset = String(args.dataset || 'pexels').toLowerCase();
-  if (!['pexels', 'ami'].includes(dataset)) throw new Error('--dataset must be pexels or ami');
-  return path.resolve(args['dataset-dir'] || (dataset === 'ami' ? 'test-data/reel-integration/ami' : 'test-data/reel-integration'));
+  if (!['pexels', 'ami', 'diverse'].includes(dataset)) throw new Error('--dataset must be pexels, ami or diverse');
+  const defaults = { ami: 'test-data/reel-integration/ami', diverse: 'test-data/reel-integration/diverse', pexels: 'test-data/reel-integration' };
+  return path.resolve(args['dataset-dir'] || defaults[dataset]);
 }
 
 function originBase(value) {
@@ -78,8 +79,21 @@ function csv(value) {
   return /[\",\n]/.test(text) ? `\"${text.replace(/\"/g, '\"\"')}\"` : text;
 }
 
+// The homelab sits behind a tunnel that resets connections now and then. A reset before any response
+// arrives (a thrown network error, not an HTTP status) is retried; the request body is a JSON string, so it is safe to resend.
+async function fetchWithRetry(url, options, attempts = 4) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+    }
+  }
+}
+
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
+  const response = await fetchWithRetry(url, options);
   const raw = await response.text();
   let body = null;
   try {
@@ -116,7 +130,8 @@ async function download(url, destination) {
 }
 
 async function prepareDataset(args) {
-  if (String(args.dataset || 'pexels').toLowerCase() === 'ami') throw new Error('Prepare AMI fixtures with scripts/ops/prepare-ami-fixtures.cjs; this runner uploads the generated manifest.');
+  const preparedElsewhere = { ami: 'scripts/ops/prepare-ami-fixtures.cjs', diverse: 'scripts/ops/prepare-diverse-fixtures.cjs' }[String(args.dataset || 'pexels').toLowerCase()];
+  if (preparedElsewhere) throw new Error(`Prepare these fixtures with ${preparedElsewhere}; this runner uploads the generated manifest.`);
   const apiKey = process.env.PEXELS_API_KEY?.trim();
   if (!apiKey) throw new Error('PEXELS_API_KEY is required for prepare/all mode');
 
@@ -241,12 +256,22 @@ async function getUploadUrl(baseUrl, auth, mimeType) {
 async function putObject(uploadUrl, filePath, mimeType) {
   const stat = fs.statSync(filePath);
   const started = Date.now();
-  const response = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': mimeType, 'Content-Length': String(stat.size) },
-    body: fs.createReadStream(filePath),
-    duplex: 'half',
-  });
+  let response;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      // a stream cannot be replayed, so every attempt opens the file again
+      response = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': mimeType, 'Content-Length': String(stat.size) },
+        body: fs.createReadStream(filePath),
+        duplex: 'half',
+      });
+      break;
+    } catch (error) {
+      if (attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 3000));
+    }
+  }
   const raw = await response.text();
   if (!response.ok) throw new Error(`R2 PUT failed (${response.status}): ${raw.slice(0, 500)}`);
   const latencyMs = Date.now() - started;
@@ -383,6 +408,24 @@ function report(datasetDir, id, rows, summary) {
   return directory;
 }
 
+// Persist fixtureId -> reelId so question sets can point at the uploaded reels.
+// Rows with a reelId are kept even when indexing failed or timed out, so a
+// half-created reel is never orphaned (it still needs deleting at cleanup).
+function recordReelMap(args, manifest, runId, rows) {
+  const file = path.resolve(args['reel-map'] || '.benchmarks/diverse-reel-map.json');
+  ensureDir(path.dirname(file));
+  const map = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { version: 1, tag: manifest.tag, entries: {} };
+  for (const row of rows) {
+    if (!row.reelId) continue;
+    (map.entries[row.fixtureId] ||= []).push({
+      reelId: row.reelId, runId, success: row.success, error: row.error || null,
+      processingMs: row.processingMs ?? null, uploadedAt: new Date().toISOString(),
+    });
+  }
+  fs.writeFileSync(file, JSON.stringify(map, null, 2));
+  console.log(`[run] reel map: ${file}`);
+}
+
 async function runLoad(args, prepared) {
   const datasetDir = datasetDirectory(args);
   const manifest = prepared || JSON.parse(fs.readFileSync(path.join(datasetDir, 'manifest.json'), 'utf8'));
@@ -412,15 +455,25 @@ async function runLoad(args, prepared) {
   console.log('[run] all automated reels are created as PRIVATE');
 
   const started = Date.now();
+  // Opt-in: stop starting new uploads after N failures in a row, so a gateway
+  // outage or a deploy does not burn the rest of the batch on instant errors.
+  const abortAfter = integer(args['abort-after-failures'], 0, '--abort-after-failures', 0, 1000);
+  let consecutiveFailures = 0;
   const rows = await pool(jobs, concurrency, async (job) => {
+    if (abortAfter && consecutiveFailures >= abortAfter) {
+      console.log(`[run] #${job.ordinal} SKIP ${job.fixture.id} (${consecutiveFailures} consecutive failures)`);
+      return { ordinal: job.ordinal, fixtureId: job.fixture.id, source: job.fixture.source, success: false, skipped: true, error: `skipped after ${consecutiveFailures} consecutive failures` };
+    }
     console.log(`[run] #${job.ordinal} start ${job.fixture.id}`);
     const result = await oneJob({ ...job, datasetDir, baseUrl, auth, id, timeoutMs, pollMs });
+    consecutiveFailures = result.success ? 0 : consecutiveFailures + 1;
     console.log(`[run] #${job.ordinal} ${result.success ? 'PASS' : 'FAIL'} ${result.reelId || ''} ${result.success ? `${result.processingMs}ms` : result.error}`);
     return result;
   });
 
   const summary = summarize(rows, Date.now() - started);
   const directory = report(datasetDir, id, rows, summary);
+  if (String(args.dataset || '').toLowerCase() === 'diverse') recordReelMap(args, manifest, id, rows);
   console.log(JSON.stringify(summary, null, 2));
   console.log(`[run] reports: ${directory}`);
   if (summary.failed && boolean(args['fail-on-error'])) process.exitCode = 1;
@@ -430,11 +483,45 @@ function help() {
   console.log(`Velora reel integration/load runner\n\nPrepare Pexels fixtures:\n  node scripts/ops/reel-integration-load.cjs --mode=prepare --query=\"people talking\" --orientation=portrait --count=5\n\nRun against Velora:\n  node scripts/ops/reel-integration-load.cjs --mode=run --count=5 --concurrency=1 --fail-on-error=true\n\nRequired environment:\n  PEXELS_API_KEY=...                         # prepare/all only\n  VELORA_TEST_BASE_URL=https://velora-app.me\n  VELORA_TEST_ACCESS_TOKEN=...               # OR credentials below\n  VELORA_TEST_EMAIL=...\n  VELORA_TEST_PASSWORD=...\n\nModes: prepare | run | all\nConcurrency is capped at 32. Downloaded source videos are cached before load timing.\n`);
 }
 
+// Re-read the status of every reel in the diverse reel map and correct entries
+// that finished after the run gave up (a deploy can delay an index job for an
+// hour). Never uploads or deletes anything.
+async function reconcileReelMap(args) {
+  const file = path.resolve(args['reel-map'] || '.benchmarks/diverse-reel-map.json');
+  const map = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const configuredBaseUrl = args['base-url'] || process.env.VELORA_TEST_BASE_URL || process.env.BACKEND_URL;
+  if (!configuredBaseUrl) throw new Error('Set --base-url, VELORA_TEST_BASE_URL, or BACKEND_URL');
+  const baseUrl = originBase(configuredBaseUrl);
+  const auth = await authenticate(baseUrl);
+  const counts = { checked: 0, fixed: 0, stillPending: 0, failed: 0 };
+  for (const [fixtureId, entries] of Object.entries(map.entries)) {
+    for (const entry of entries) {
+      if (entry.success) continue;
+      counts.checked += 1;
+      const st = await status(baseUrl, auth, entry.reelId);
+      if (st?.status === 'COMPLETED' && st?.mediaStatus === 'COMPLETED' && st?.indexStatus === 'COMPLETED') {
+        entry.success = true; entry.error = null; entry.reconciledAt = new Date().toISOString();
+        counts.fixed += 1;
+        console.log(`[reconcile] ${fixtureId} ${entry.reelId.slice(0, 8)} is COMPLETED`);
+      } else if (st?.indexStatus === 'FAILED' || st?.mediaStatus === 'FAILED' || st?.status === 'FAILED') {
+        counts.failed += 1;
+        console.log(`[reconcile] ${fixtureId} ${entry.reelId.slice(0, 8)} FAILED (index=${st.indexStatus})`);
+      } else {
+        counts.stillPending += 1;
+        console.log(`[reconcile] ${fixtureId} ${entry.reelId.slice(0, 8)} still ${st?.indexStatus}/${st?.stage}`);
+      }
+    }
+  }
+  fs.writeFileSync(file, JSON.stringify(map, null, 2));
+  console.log(JSON.stringify(counts));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help === 'true' || args.h === 'true') return help();
   const mode = args.mode || 'run';
-  if (!['prepare', 'run', 'all'].includes(mode)) throw new Error('--mode must be prepare, run, or all');
+  if (mode === 'reconcile') return reconcileReelMap(args);
+  if (!['prepare', 'run', 'all'].includes(mode)) throw new Error('--mode must be prepare, run, all, or reconcile');
   let prepared = null;
   if (mode === 'prepare' || mode === 'all') prepared = await prepareDataset(args);
   if (mode === 'run' || mode === 'all') await runLoad(args, prepared);

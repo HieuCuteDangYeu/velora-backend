@@ -302,3 +302,31 @@ The plan asked how much the added reels move the existing short-drama baseline. 
 | rerank recall@5 | 0.77 | 0.67 | -0.102 (-0.171 to -0.034) |
 
 Read it as total corpus growth, not as the cost of the diverse set alone. Between the two runs the index also took about 70 more short-drama episodes (the 2026-11-15 run, rerank MRR 0.545, was already hit by untranslated Chinese transcripts outranking English answers) and test reels from other sessions. Against that 2026-11-15 low the rerank has recovered (0.545 → 0.600). The diverse reels' own share cannot be separated without a scoped run that excludes tag `bench-diverse-v1`, which was not done. What this does show: every added reel makes whole-index search harder for the old questions, so baselines that search the whole index should be quoted with their corpus size and date, and compared only to runs on a comparable index.
+
+## Fixes after the end-to-end and photo findings, and the re-measurement (2026-11-22)
+The first end-to-end and photo runs found product problems. Each was traced to a cause, fixed, deployed and re-measured. Numbers below compare the first run with the re-run on the same layer.
+
+| problem found | cause | fix (commit) | before | after |
+|---|---|---|---|---|
+| 82% of plain detail questions about a shared video got "I can only help with Velora" | the router called a self-contained question ("what should you check before choosing a license?") general knowledge although a video was shared | with a shared video, an OFF_TOPIC verdict goes to that video's evidence; the grounded answer step says so when the video does not cover it (bf808076) | scope refusals 0.37 overall, 0.82 on detail | 0.05 overall, 0.07 on detail |
+| timestamp questions ("what does the speaker say at 2:02?") answered with the opening line | only "at 12 seconds" set a transcript window, clock times did not | mm:ss / h:mm:ss with a speech cue and "from .. to .." ranges set the window (bf808076) | moment hit 0.00 | moment hit 0.77 |
+| "find reels like this photo" found 0 of 21 source reels | reel search sent the query text only, so it matched titles and tags; also the bot recommends public reels only and benchmark reels were private | the search embeds the query and keeps vector-only hits within 0.55 distance (5fc4fdae); the photo set now flips its source reels public for one run (`set-photo-source-visibility.cjs`) | 0 of 21 | 10 of 21 (hit@1 8) |
+| 70-90 minute videos did not index | stored-HLS copy had the 5 minute encode timeout; embedding timeouts never retried (54c9f422) | own 30 minute timeout; timeout retries | 2 videos missing | both indexed |
+| silent video (audio track, no speech) did not index | the reel took the audio route and failed with "no verified transcript" | when every segment was transcribed and came back empty, the reel indexes from visuals and metadata (c00e0666) | failed | COMPLETED |
+
+End-to-end re-run, bare phrasing, 143 rows (133 judged, reel scope; `.benchmarks/diverse-e2e-5-bare-fixed.json`) against the first run (83 rows):
+
+| | first run | re-run |
+|---|---|---|
+| answered a correct reel's content (judge factual >= 0.7) | 0.12 | **0.33** |
+| detail correct | 0.00 | **0.42** |
+| opening correct | 0.64 | 0.67 |
+| timestamp correct | 0.00 | 0.12 (moment hit 0.77) |
+| chapter correct | 0.00 | 0.08 |
+| cited the right reel | 0.49 | 0.69 |
+
+By band (correct): 30-60 min 0.50, 10-30 min 0.29, 3-10 min 0.21 (scope refusals still 0.21 there), 60-120 min 0.16. By language: Vietnamese 0.43 (n=28), English 0.32, Korean 0.00 (n=5), Hindi 0.00 (n=5, answered only 2). Cells under 15 rows are indicative.
+
+Photo set re-run, 42 rows (`.benchmarks/photo-run-3-public.json`): pass 0.63 on 38 decided rows (was 0.25). Frames 10 of 21, caption variants 4 of 5, off-topic 6 of 6, injection 4 of 4. The edge rows: PNG and WebP photos still do not recommend their source (0 of 2 decided); oversize and corrupt photos get no chat message by design, because the app is told through a `bot_reply_failed` socket event (IMAGE_UNREADABLE). A REST poll cannot see that, so those rows are now undecided instead of failed.
+
+Still open: timestamp answers find the right moment but are judged wrong (0.12 correct); chapter summaries stay near 0 at the 0.7 bar; Korean and Hindi questions answer poorly; 3-10 min videos still see 21% scope refusals; half the frame photos still miss their source because a frame of a lecture or tutorial matches a reel's title and summary poorly (a visual-scene search would be the next step).

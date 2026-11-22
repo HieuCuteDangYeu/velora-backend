@@ -92,8 +92,11 @@ services:
       # each a ~27 ms round trip to the Aiven Singapore server (max_connections 15; user 2,
       # AI 1, 2 internal). At 200 distinct load-test viewers two connections (~74 queries/s)
       # ran out: thousands of P2024 pool timeouts surfaced as 404/500 on reel detail, series
-      # and the friends feed. Four connections leave ~5 spare on the server.
-      FRIEND_DATABASE_CONNECTION_LIMIT: ${FRIEND_DATABASE_CONNECTION_LIMIT:-4}
+      # and the friends feed. Four connections fixed that on 2026-11-21, but on 2026-11-22 the
+      # same 200-viewer test failed again (12-18% 404/500, 28 P2024 at limit 4) while the
+      # Singapore link was jittery (some TCP connects ~1 s, ping ~41 ms). Six connections
+      # leave ~3 spare on the server.
+      FRIEND_DATABASE_CONNECTION_LIMIT: ${FRIEND_DATABASE_CONNECTION_LIMIT:-6}
     depends_on:
       rabbitmq:
         condition: service_healthy

@@ -50,12 +50,28 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
       'AI_EMBEDDING_OVERLOAD_BACKOFF_MS',
       500,
     );
+    // A request that hit our own timeout is retried a bounded number of times: embedding the same
+    // text twice is harmless, and a busy TEI otherwise aborts a whole index attempt.
+    const timeoutRetries = this.nonNegativeInt(
+      'AI_EMBEDDING_TIMEOUT_RETRIES',
+      2,
+    );
+    let timeouts = 0;
+    let overloads = 0;
     for (let attempt = 0; ; attempt += 1) {
       const outcome = await this.requestEmbedding(text);
       if (outcome.kind === 'ok') return outcome.payload;
       // TEI answers 429/503 when it is past TEI_*_MAX_CONCURRENT_REQUESTS; the
       // request was not processed, so waiting and retrying is safe.
-      if (!outcome.overloaded || attempt >= retries) throw outcome.error;
+      if (outcome.timedOut) {
+        timeouts += 1;
+        if (timeouts > timeoutRetries) throw outcome.error;
+      } else if (outcome.overloaded) {
+        overloads += 1;
+        if (overloads > retries) throw outcome.error;
+      } else {
+        throw outcome.error;
+      }
       const backoff = Math.min(baseDelayMs * 2 ** attempt, 15_000);
       const delayMs = Math.max(outcome.retryAfterMs ?? 0, backoff);
       await new Promise((resolve) =>
@@ -70,6 +86,7 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
         kind: 'error';
         error: Error;
         overloaded: boolean;
+        timedOut?: boolean;
         retryAfterMs?: number;
       }
   > {
@@ -107,6 +124,14 @@ export class TeiEmbeddingAdapter implements IEmbeddingService {
       } catch {
         throw new Error('TEI embedding returned invalid JSON');
       }
+    } catch (error: unknown) {
+      if (!controller.signal.aborted) throw error;
+      return {
+        kind: 'error',
+        error: new Error(`TEI embedding timed out after ${timeoutMs}ms`),
+        overloaded: false,
+        timedOut: true,
+      };
     } finally {
       clearTimeout(timer);
     }

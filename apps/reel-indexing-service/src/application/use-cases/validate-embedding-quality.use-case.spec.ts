@@ -49,4 +49,34 @@ describe('ValidateEmbeddingQualityUseCase', () => {
       }),
     ).toThrow(/duplicate ratio/);
   });
+
+  it('accepts identical vectors that come from identical input text', () => {
+    const repeated = (index: number): ReelIndexDocument =>
+      ({
+        ...document(String(index), [0.2, 0.3]),
+        embeddingInputHash: 'same-description',
+      }) as ReelIndexDocument;
+    expect(() =>
+      useCase.execute({
+        documents: Array.from({ length: 8 }, (_, index) => repeated(index)),
+        expectedDimensions: 2,
+      }),
+    ).not.toThrow();
+  });
+
+  it('still rejects identical vectors for different input text', () => {
+    expect(() =>
+      useCase.execute({
+        documents: Array.from(
+          { length: 8 },
+          (_, index) =>
+            ({
+              ...document(String(index), [0.2, 0.3]),
+              embeddingInputHash: `text-${index}`,
+            }) as ReelIndexDocument,
+        ),
+        expectedDimensions: 2,
+      }),
+    ).toThrow(/duplicate ratio/);
+  });
 });

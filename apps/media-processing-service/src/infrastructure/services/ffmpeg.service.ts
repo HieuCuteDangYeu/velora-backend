@@ -231,13 +231,15 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
       buildHlsMaterializationArguments({ inputPlaylistPath, outputPath }),
       {
         signal: options.signal,
+        // Stored HLS is pulled over HTTPS segment by segment, so the copy takes as long as the
+        // download: a 70 minute reel overran the 5 minute encode base and lost its evidence.
         timeoutMs:
           options.timeoutMs ??
           this.getPositiveInt(
-            'MEDIA_FFMPEG_TIMEOUT_BASE_MS',
-            300_000,
+            'MEDIA_HLS_MATERIALIZE_TIMEOUT_MS',
+            1_800_000,
             30_000,
-            3_600_000,
+            7_200_000,
           ),
       },
     );

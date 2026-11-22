@@ -131,7 +131,9 @@ export class AiServiceAdapter implements IIndexingAiService {
           'ai.generate_embedding_batch',
           input,
         )
-        .pipe(timeout(120_000)),
+        // Long enough for ai-service to retry an embedding that timed out (3 x 120 s) before this
+        // call gives up; a shorter limit made the retries pointless.
+        .pipe(timeout(420_000)),
     );
   }
 

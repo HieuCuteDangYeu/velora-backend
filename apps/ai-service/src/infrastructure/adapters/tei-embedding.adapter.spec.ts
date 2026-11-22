@@ -115,5 +115,32 @@ describe('TeiEmbeddingAdapter', () => {
       );
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+
+    it('retries a request that hit the timeout and gives up after the bounded retries', async () => {
+      const aborted = () =>
+        Promise.reject(new DOMException('aborted', 'AbortError'));
+      jest.useFakeTimers();
+      try {
+        const fetchMock = jest
+          .spyOn(global, 'fetch')
+          .mockImplementation((_url, init) => {
+            // Mimic the abort the adapter's own timer triggers.
+            return new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () =>
+                reject(new DOMException('aborted', 'AbortError')),
+              );
+            });
+          });
+        void aborted;
+        const adapter = new TeiEmbeddingAdapter(config());
+        const result = adapter.generateVector({ text: 'hello' });
+        const assertion = expect(result).rejects.toThrow('timed out');
+        await jest.advanceTimersByTimeAsync(10 * 120_000);
+        await assertion;
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

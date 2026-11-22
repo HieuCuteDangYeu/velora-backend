@@ -15,6 +15,7 @@ export interface IUserService {
   findById(id: string): Promise<ValidateUserResponse | null>;
   findByIdForAuth(id: string): Promise<ValidateUserResponse | null>;
   invalidateCachedUser(id: string): Promise<void>;
+  listBannedIds(): Promise<string[]>;
   findByEmail(email: string): Promise<ValidateUserResponse | null>;
   createSocialUser(dto: CreateSocialUserDto): Promise<ValidateUserResponse>;
   rollbackUser(id: string): void;

@@ -1,4 +1,6 @@
 import { AssignRoleUseCase } from '@auth/application/use-cases/assign-role.use-case';
+import { BanUserUseCase } from '@auth/application/use-cases/ban-user.use-case';
+import { UnbanUserUseCase } from '@auth/application/use-cases/unban-user.use-case';
 import { DeleteUserRolesUseCase } from '@auth/application/use-cases/delete-user-roles.use-case';
 import { Controller } from '@nestjs/common';
 import {
@@ -13,6 +15,8 @@ export class RoleController {
   constructor(
     private readonly assignRoleUseCase: AssignRoleUseCase,
     private readonly deleteUserRolesUseCase: DeleteUserRolesUseCase,
+    private readonly banUserUseCase: BanUserUseCase,
+    private readonly unbanUserUseCase: UnbanUserUseCase,
   ) {}
 
   @MessagePattern('auth.assign_role')
@@ -25,6 +29,16 @@ export class RoleController {
       console.error(error);
       throw new RpcException('Failed to assign role');
     }
+  }
+
+  @MessagePattern('auth.ban_user')
+  async banUser(@Payload() data: { userId: string }): Promise<void> {
+    await this.banUserUseCase.execute(data.userId);
+  }
+
+  @MessagePattern('auth.unban_user')
+  async unbanUser(@Payload() data: { userId: string }): Promise<void> {
+    await this.unbanUserUseCase.execute(data.userId);
   }
 
   @EventPattern('auth.delete_user_roles')

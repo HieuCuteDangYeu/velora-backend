@@ -18,6 +18,14 @@ import {
 import { CheckUsernameAvailabilityUseCase } from '@user/application/use-cases/check-username-availability.use-case';
 import { CreateSocialUserUseCase } from '@user/application/use-cases/create-social-user.use-case';
 import { CreateUserUseCase } from '@user/application/use-cases/create-user.use-case';
+import { isRpcError } from '@common/constants/rpc-error.types';
+import type {
+  BanUserPayload,
+  UnbanUserPayload,
+} from '@common/user/interfaces/ban-user.types';
+import { BanUserUseCase } from '@user/application/use-cases/ban-user.use-case';
+import { ListBannedUserIdsUseCase } from '@user/application/use-cases/list-banned-user-ids.use-case';
+import { UnbanUserUseCase } from '@user/application/use-cases/unban-user.use-case';
 import { DeleteUserUseCase } from '@user/application/use-cases/delete-user.use-case';
 import { FindAllUsersUseCase } from '@user/application/use-cases/find-all-users.use-case';
 import { FindPublicUserByUsernameUseCase } from '@user/application/use-cases/find-public-user-by-username.use-case';
@@ -53,6 +61,9 @@ export class UserController {
     private readonly findAllUsersUseCase: FindAllUsersUseCase,
     private readonly updateUserUseCase: UpdateUserUseCase,
     private readonly deleteUserUseCase: DeleteUserUseCase,
+    private readonly banUserUseCase: BanUserUseCase,
+    private readonly unbanUserUseCase: UnbanUserUseCase,
+    private readonly listBannedUserIdsUseCase: ListBannedUserIdsUseCase,
     private readonly verifyUserUseCase: VerifyUserUseCase,
     private readonly findUserByEmailUseCase: FindUserByEmailUseCase,
     private readonly createSocialUserUseCase: CreateSocialUserUseCase,
@@ -81,7 +92,9 @@ export class UserController {
 
   @MessagePattern('find_all_users')
   async handleFindAllUsers(@Payload() data: FindAllUsersPayload) {
-    return this.observe('find_all', () => this.findAllUsersUseCase.execute(data));
+    return this.observe('find_all', () =>
+      this.findAllUsersUseCase.execute(data),
+    );
   }
 
   @MessagePattern('update_user')
@@ -95,15 +108,34 @@ export class UserController {
     }
   }
 
-  @MessagePattern('delete_user')
-  async handleDeleteUser(@Payload() payload: DeleteUserPayload) {
+  @MessagePattern('user.ban')
+  async handleBanUser(@Payload() payload: BanUserPayload) {
     try {
-      return await this.observe('delete', () =>
-        this.deleteUserUseCase.execute(payload),
+      return await this.observe('ban', () =>
+        this.banUserUseCase.execute(payload),
       );
     } catch (error) {
       this.handleDomainError(error);
     }
+  }
+
+  @MessagePattern('user.unban')
+  async handleUnbanUser(@Payload() payload: UnbanUserPayload) {
+    try {
+      return await this.observe('unban', () =>
+        this.unbanUserUseCase.execute(payload),
+      );
+    } catch (error) {
+      this.handleDomainError(error);
+    }
+  }
+
+  /** Source of truth for auth-service's ban list reconciliation. */
+  @MessagePattern('user.list_banned_ids')
+  async handleListBannedIds() {
+    return await this.observe('list_banned', () =>
+      this.listBannedUserIdsUseCase.execute(),
+    );
   }
 
   @MessagePattern('validate_user')
@@ -115,7 +147,9 @@ export class UserController {
 
   @MessagePattern('verify_user')
   async handleVerifyUser(@Payload() id: string) {
-    return await this.observe('verify', () => this.verifyUserUseCase.execute(id));
+    return await this.observe('verify', () =>
+      this.verifyUserUseCase.execute(id),
+    );
   }
 
   @MessagePattern('user.find_by_email')
@@ -320,6 +354,14 @@ export class UserController {
       throw new RpcException({
         statusCode: 500,
         message: 'User creation failed due to role system error',
+      });
+    }
+
+    // Errors answered by another service (e.g. auth-service refusing to ban an admin).
+    if (isRpcError(error) && error.statusCode < 500) {
+      throw new RpcException({
+        statusCode: error.statusCode,
+        message: error.message,
       });
     }
 

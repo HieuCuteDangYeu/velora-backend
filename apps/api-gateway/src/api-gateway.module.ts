@@ -24,6 +24,7 @@ import { RecommendationController } from '@gateway/recommendation/recommendation
 import { SearchController } from '@gateway/search/search.controller';
 import { UserController } from '@gateway/users/user.controller';
 import { Module } from '@nestjs/common';
+import { AccessKeyProvider } from './auth/access-key.provider';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 
@@ -96,6 +97,7 @@ function createRmqClientRegistration(name: string, queue: string) {
   ],
   providers: [
     JwtAuthGuard,
+    AccessKeyProvider,
     RolesGuard,
     ReelAuthorService,
     StressRunsService,

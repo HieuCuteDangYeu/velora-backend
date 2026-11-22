@@ -26,6 +26,7 @@ export class ValidateUserUseCase {
       username: user.username,
       picture: user.picture,
       isVerified: user.isVerified,
+      status: user.status,
     };
   }
 }

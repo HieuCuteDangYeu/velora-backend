@@ -8,6 +8,9 @@ import {
 import { CheckUsernameAvailabilityUseCase } from '@user/application/use-cases/check-username-availability.use-case';
 import { CreateSocialUserUseCase } from '@user/application/use-cases/create-social-user.use-case';
 import { CreateUserUseCase } from '@user/application/use-cases/create-user.use-case';
+import { BanUserUseCase } from '@user/application/use-cases/ban-user.use-case';
+import { ListBannedUserIdsUseCase } from '@user/application/use-cases/list-banned-user-ids.use-case';
+import { UnbanUserUseCase } from '@user/application/use-cases/unban-user.use-case';
 import { DeleteUserUseCase } from '@user/application/use-cases/delete-user.use-case';
 import { FindAllUsersUseCase } from '@user/application/use-cases/find-all-users.use-case';
 import { FindPublicUserByUsernameUseCase } from '@user/application/use-cases/find-public-user-by-username.use-case';
@@ -73,6 +76,9 @@ function createRmqClientRegistration(
     FindAllUsersUseCase,
     UpdateUserUseCase,
     DeleteUserUseCase,
+    BanUserUseCase,
+    UnbanUserUseCase,
+    ListBannedUserIdsUseCase,
     ValidateUserUseCase,
     VerifyUserUseCase,
     FindUserByEmailUseCase,

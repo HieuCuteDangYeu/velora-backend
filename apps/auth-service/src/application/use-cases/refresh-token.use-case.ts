@@ -1,4 +1,5 @@
-import type { IUserRoleRepository } from '@auth/domain/interfaces/user-role.repository,interface';
+import type { IBanList } from '@auth/domain/interfaces/ban-list.interface';
+import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
 import { JwtPayload } from '@common/auth/interfaces/jwt-payload.interface';
 import { TokenResponse } from '@common/auth/interfaces/token.interface';
 import type { ValidateUserResponse } from '@common/user/interfaces/validate-user-response.types';
@@ -26,8 +27,8 @@ export class RefreshTokenUseCase {
   constructor(
     @Inject('IAuthRepository') private readonly authRepository: IAuthRepository,
     @Inject('IUserService') private readonly userService: IUserService,
-    @Inject('IUserRoleRepository')
-    private readonly roleCache: IUserRoleRepository,
+    @Inject('IBanList') private readonly banList: IBanList,
+    private readonly accessTokens: AccessTokenService,
     private readonly jwtService: JwtService,
     private readonly metrics: AuthPrometheusMetricsService,
   ) {}
@@ -54,6 +55,11 @@ export class RefreshTokenUseCase {
         payload.tokenType !== 'refresh' &&
         !(payload.tokenType === undefined && payload.jti)
       ) {
+        refreshOutcome = 'invalid';
+        throw new InvalidTokenError();
+      }
+
+      if (await this.isBanned(payload.sub)) {
         refreshOutcome = 'invalid';
         throw new InvalidTokenError();
       }
@@ -100,15 +106,15 @@ export class RefreshTokenUseCase {
 
         const user = await this.userService.findById(payload.sub);
 
-        if (!user) {
+        if (!user || user.status === 'BANNED') {
           refreshOutcome = 'invalid';
           throw new InvalidTokenError();
         }
 
-        const accessToken = await this.jwtService.signAsync(
-          { ...this.createJwtPayload(user), tokenType: 'access' },
-          { expiresIn: '15m' },
-        );
+        const accessToken = this.accessTokens.sign({
+          ...this.createJwtPayload(user),
+          roles: await this.authRepository.getUserRole(payload.sub),
+        });
 
         this.logger.log(
           `Refresh recovered for user ${payload.sub}: ${this.describeToken(storedToken)}`,
@@ -125,19 +131,9 @@ export class RefreshTokenUseCase {
 
       const roles = await this.authRepository.getUserRole(payload.sub);
 
-      try {
-        await this.roleCache.setUserRoles(payload.sub, roles);
-      } catch (error) {
-        this.logger.warn(
-          `Failed to cache roles for user ${payload.sub}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-
       const user = await this.userService.findById(payload.sub);
 
-      if (!user) {
+      if (!user || user.status === 'BANNED') {
         refreshOutcome = 'invalid';
         throw new InvalidTokenError();
       }
@@ -147,10 +143,7 @@ export class RefreshTokenUseCase {
       const now = new Date();
       const expiresAt = getRefreshTokenExpiresAt(now);
 
-      const accessToken = await this.jwtService.signAsync(
-        { ...newPayload, tokenType: 'access' },
-        { expiresIn: '15m' },
-      );
+      const accessToken = this.accessTokens.sign({ ...newPayload, roles });
       const refreshToken = await this.jwtService.signAsync(
         { ...newPayload, tokenType: 'refresh' },
         {
@@ -236,6 +229,14 @@ export class RefreshTokenUseCase {
       `rotatedAgoS=${ageSeconds(token.rotatedAt)} ` +
       `hasReplacement=${token.replacedByTokenId !== null}`
     );
+  }
+
+  private async isBanned(userId: string): Promise<boolean> {
+    try {
+      return await this.banList.isBanned(userId);
+    } catch {
+      return false; // the database status check below still applies
+    }
   }
 
   private createJwtPayload(user: ValidateUserResponse): JwtPayload {

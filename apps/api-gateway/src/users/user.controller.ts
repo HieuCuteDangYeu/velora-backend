@@ -1,4 +1,5 @@
 import { isRpcError } from '@common/constants/rpc-error.types';
+import { BanUserDto } from '@common/user/dtos/ban-user.dto';
 import { CheckUsernameAvailabilityDto } from '@common/user/dtos/check-username-availability.dto';
 import { CreateUserDto } from '@common/user/dtos/create-user.dto';
 import { RecommendedPublicUsersQueryDto } from '@common/user/dtos/recommended-public-users-query.dto';
@@ -7,9 +8,10 @@ import { UpdateAvatarDto } from '@common/user/dtos/update-avatar.dto';
 import { UpdateUserDto } from '@common/user/dtos/update-user.dto';
 import { CreateUserResponse } from '@common/user/interfaces/create-user-response.types';
 import {
-  DeleteUserPayload,
-  DeleteUserResponse,
-} from '@common/user/interfaces/delete-user.types';
+  BanUserPayload,
+  BanUserResponse,
+  UnbanUserPayload,
+} from '@common/user/interfaces/ban-user.types';
 import { PaginatedUsersResponse } from '@common/user/interfaces/find-all-users.types';
 import {
   PublicUserProfile,
@@ -28,7 +30,6 @@ import { RolesGuard } from '@gateway/auth/guards/roles.guard';
 import {
   Body,
   Controller,
-  Delete,
   Get,
   HttpException,
   HttpStatus,
@@ -216,18 +217,43 @@ export class UserController {
     );
   }
 
-  @Delete(':id')
+  @Post(':id/ban')
   @ApiOperation({
-    summary: 'Delete a user',
+    summary:
+      'Ban a user: every session ends at once and the account can no longer sign in',
   })
   @Roles(Role.ADMIN)
-  async remove(@Param('id') id: string): Promise<DeleteUserResponse> {
-    const payload: DeleteUserPayload = {
+  async ban(
+    @Param('id') id: string,
+    @Body() dto: BanUserDto,
+    @Req() request: AuthenticatedRequest,
+  ): Promise<BanUserResponse> {
+    if (id === request.user!.id) {
+      throw new HttpException('You cannot ban yourself', HttpStatus.CONFLICT);
+    }
+    const payload: BanUserPayload = {
       id,
+      bannedBy: request.user!.id,
+      reason: dto.reason,
     };
 
     return await lastValueFrom(
-      this.userClient.send<DeleteUserResponse>('delete_user', payload).pipe(
+      this.userClient.send<BanUserResponse>('user.ban', payload).pipe(
+        catchError((error) => {
+          this.handleMicroserviceError(error);
+        }),
+      ),
+    );
+  }
+
+  @Post(':id/unban')
+  @ApiOperation({ summary: 'Lift a ban; the user signs in again as normal' })
+  @Roles(Role.ADMIN)
+  async unban(@Param('id') id: string): Promise<BanUserResponse> {
+    const payload: UnbanUserPayload = { id };
+
+    return await lastValueFrom(
+      this.userClient.send<BanUserResponse>('user.unban', payload).pipe(
         catchError((error) => {
           this.handleMicroserviceError(error);
         }),

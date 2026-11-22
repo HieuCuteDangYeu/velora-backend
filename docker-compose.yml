@@ -37,10 +37,6 @@ services:
       - '3000'
     env_file:
       - .env
-    environment:
-      # MEASUREMENT: reuse successful GET token checks for 5 s (0 = off; code default is off).
-      # Admins, writes and failures are never cached. See jwt-auth.guard.ts.
-      AUTH_TOKEN_CACHE_TTL_MS: ${AUTH_TOKEN_CACHE_TTL_MS:-5000}
     depends_on:
       rabbitmq:
         condition: service_healthy

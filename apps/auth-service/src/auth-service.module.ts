@@ -1,3 +1,5 @@
+import { BanUserUseCase } from '@auth/application/use-cases/ban-user.use-case';
+import { UnbanUserUseCase } from '@auth/application/use-cases/unban-user.use-case';
 import { AssignRoleUseCase } from '@auth/application/use-cases/assign-role.use-case';
 import { ConfirmAccountUseCase } from '@auth/application/use-cases/confirm-account.use-case';
 import { DeleteUserRolesUseCase } from '@auth/application/use-cases/delete-user-roles.use-case';
@@ -15,7 +17,9 @@ import { AuthMetricsController } from '@auth/infrastructure/controllers/auth-met
 import { RoleController } from '@auth/infrastructure/controllers/role.controller';
 import { TokenCleanupService } from '@auth/infrastructure/jobs/token-cleanup.service';
 import { AuthPrometheusMetricsService } from '@auth/infrastructure/metrics/auth-prometheus-metrics.service';
-import { RedisUserRoleRepository } from '@auth/infrastructure/repositories/redis-user-role.repository';
+import { BanListReconciler } from '@auth/infrastructure/jobs/ban-list-reconciler.service';
+import { RedisBanList } from '@auth/infrastructure/repositories/redis-ban-list.repository';
+import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
 import { RedisVerificationCodeRepository } from '@auth/infrastructure/repositories/redis-verification-code.repository';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -127,9 +131,13 @@ import { AuthRepository } from './infrastructure/repositories/auth.repository';
       useClass: RedisVerificationCodeRepository,
     },
     {
-      provide: 'IUserRoleRepository',
-      useClass: RedisUserRoleRepository,
+      provide: 'IBanList',
+      useClass: RedisBanList,
     },
+    AccessTokenService,
+    BanListReconciler,
+    BanUserUseCase,
+    UnbanUserUseCase,
   ],
 })
 export class AuthServiceModule {}

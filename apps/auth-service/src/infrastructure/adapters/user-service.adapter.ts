@@ -40,8 +40,8 @@ function userTtlSeconds(raw: string | undefined) {
 }
 
 function pickIdentity(user: ValidateUserResponse): ValidateUserResponse {
-  const { id, email, fullName, username, picture, isVerified } = user;
-  return { id, email, fullName, username, picture, isVerified };
+  const { id, email, fullName, username, picture, isVerified, status } = user;
+  return { id, email, fullName, username, picture, isVerified, status };
 }
 
 @Injectable()
@@ -156,6 +156,14 @@ export class UserServiceAdapter implements IUserService {
     const user = await this.findById(id);
     if (user && user.id === id) await this.writeCachedUser(user);
     return user;
+  }
+
+  async listBannedIds(): Promise<string[]> {
+    return lastValueFrom(
+      this.rmqClient
+        .send<string[]>('user.list_banned_ids', {})
+        .pipe(timeout(10000)),
+    );
   }
 
   async invalidateCachedUser(id: string): Promise<void> {

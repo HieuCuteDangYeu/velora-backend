@@ -37,6 +37,10 @@ export interface IUserRepository {
     excludeUserId?: string,
   ): Promise<boolean>;
   update(id: string, data: Partial<User>): Promise<User>;
+  /** Hard delete. Only the registration rollback may use it; accounts are banned instead. */
   delete(id: string): Promise<User>;
+  ban(id: string, data: { reason: string; bannedBy: string }): Promise<User>;
+  unban(id: string): Promise<User>;
+  findBannedIds(): Promise<string[]>;
   countUsersByIds(ids: string[]): Promise<number>;
 }

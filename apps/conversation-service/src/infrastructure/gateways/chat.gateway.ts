@@ -21,6 +21,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { lastValueFrom, timeout } from 'rxjs';
+import { subscribeToUserBans } from '@common/auth/ban-events';
 import Redis from 'ioredis';
 import { Server, Socket } from 'socket.io';
 import { SendMessageUseCase } from '../../application/use-cases/send-message.use-case';
@@ -59,6 +60,7 @@ export class ChatGateway
   server!: Server;
 
   private readonly logger = new Logger(ChatGateway.name);
+  private stopBanListener?: () => Promise<void>;
   private static readonly LAST_SEEN_KEY_PREFIX = 'presence:last-seen:';
 
   constructor(
@@ -73,6 +75,14 @@ export class ChatGateway
   ) {}
 
   afterInit(): void {
+    // A banned user's open sockets would otherwise keep sending until they reconnect.
+    void subscribeToUserBans(this.redis, (userId) => {
+      void this.server.in(this.userRooms(userId)).disconnectSockets(true);
+    })
+      .then((stop) => {
+        this.stopBanListener = stop;
+      })
+      .catch(() => this.logger.warn('Ban listener could not subscribe'));
     this.presence?.startHeartbeat(
       () => this.localSockets(),
       () => this.logger.warn('Presence refresh failed; retrying next cycle'),
@@ -80,6 +90,7 @@ export class ChatGateway
   }
 
   onModuleDestroy(): void {
+    void this.stopBanListener?.();
     this.presence?.stopHeartbeat();
   }
 

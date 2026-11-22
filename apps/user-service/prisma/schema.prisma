@@ -15,6 +15,11 @@ datasource db {
   url      = env("USER_DATABASE_URL")
 }
 
+enum UserStatus {
+  ACTIVE
+  BANNED
+}
+
 model User {
   id         String   @id @default(uuid())
   email      String   @unique
@@ -26,6 +31,10 @@ model User {
   avatarKey  String?
   isVerified Boolean  @default(false)
   createdAt  DateTime @default(now())
+  status     UserStatus @default(ACTIVE)
+  bannedAt   DateTime?
+  banReason  String?
+  bannedBy   String?
 
   @@index([fullName])
 }

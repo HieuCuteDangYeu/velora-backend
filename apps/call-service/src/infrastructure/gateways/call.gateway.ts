@@ -14,7 +14,9 @@ import {
   Optional,
   UseFilters,
 } from '@nestjs/common';
+import { subscribeToUserBans } from '@common/auth/ban-events';
 import { ClientProxy } from '@nestjs/microservices';
+import type Redis from 'ioredis';
 import {
   ConnectedSocket,
   MessageBody,
@@ -314,6 +316,7 @@ export class CallGateway
   @WebSocketServer() server!: Namespace;
 
   private readonly logger = new Logger(CallGateway.name);
+  private stopBanListener?: () => Promise<void>;
   private readonly reconnectGraceMs = Number(
     process.env.CALL_RECONNECT_GRACE_MS || 15000,
   );
@@ -400,9 +403,21 @@ export class CallGateway
     @Optional()
     @Inject(CALL_COORDINATOR)
     private readonly coordinator: CallCoordinator = new InProcessCallCoordinator(),
+    @Optional() @Inject('REDIS_CLIENT') private readonly redis?: Redis,
   ) {}
 
   async onModuleInit(): Promise<void> {
+    if (this.redis) {
+      // A banned user's open call sockets would otherwise stay signed in until they leave.
+      // Never block startup on this: without Redis the listener simply stays off.
+      void subscribeToUserBans(this.redis, (userId) => {
+        void this.server.in(userId).disconnectSockets(true);
+      })
+        .then((stop) => {
+          this.stopBanListener = stop;
+        })
+        .catch(() => this.logger.warn('Ban listener could not subscribe'));
+    }
     await this.runtimeLease.acquire();
     this.runtimeLease.assertHeld();
     this.mediaEngine.onRoomsLost((callIds) => {
@@ -427,6 +442,7 @@ export class CallGateway
   }
 
   onModuleDestroy(): void {
+    void this.stopBanListener?.();
     if (this.expirySweepTimer) {
       clearInterval(this.expirySweepTimer);
       this.expirySweepTimer = undefined;

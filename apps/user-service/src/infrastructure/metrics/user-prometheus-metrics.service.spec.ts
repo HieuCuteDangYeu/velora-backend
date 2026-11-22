@@ -27,7 +27,7 @@ describe('UserPrometheusMetricsService', () => {
       }
     }
     expect(output.match(/^velora_user_requests_total\{/gm)?.length).toBe(
-      16 * 3,
+      19 * 3,
     );
 
     metrics.onModuleDestroy();
@@ -51,7 +51,7 @@ describe('UserPrometheusMetricsService', () => {
       'velora_user_requests_total{service="user-service",operation="search",outcome="error"} 0',
     );
     expect(output.match(/^velora_user_requests_total\{/gm)?.length).toBe(
-      16 * 3,
+      19 * 3,
     );
     // Latency histograms still appear only for observed requests.
     expect(output).toContain(

@@ -10,5 +10,8 @@ export class User {
     public readonly picture: string | null,
     public readonly provider: string | null,
     public readonly providerId: string | null,
+    public readonly status: 'ACTIVE' | 'BANNED' = 'ACTIVE',
+    public readonly bannedAt: Date | null = null,
+    public readonly banReason: string | null = null,
   ) {}
 }

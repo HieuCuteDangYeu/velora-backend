@@ -1,4 +1,9 @@
 import {
+  deriveAccessKeyPair,
+  signAccessToken,
+  toPublicKeyObjects,
+} from '@common/auth/access-token';
+import {
   ExecutionContext,
   Logger,
   ServiceUnavailableException,
@@ -7,188 +12,209 @@ import {
 import { NEVER, of, throwError } from 'rxjs';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
-describe('Gateway credential and infrastructure failures', () => {
+const keys = deriveAccessKeyPair('guard-spec-secret-with-32-characters!');
+const claims = {
+  sub: 'user-1',
+  email: 'u@e.c',
+  fullName: 'User One',
+  roles: ['USER'],
+};
+
+describe('JwtAuthGuard', () => {
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
-  const fixture = (response = of({ id: 'user-1' })) => {
-    const send = jest.fn(() => response);
+
+  const fixture = (
+    options: {
+      token?: string;
+      rpc?: ReturnType<typeof of>;
+      fresh?: boolean;
+      redis?: { exists: jest.Mock } | null;
+    } = {},
+  ) => {
+    const send = jest.fn(
+      () => options.rpc ?? of({ id: 'rpc-user', roles: ['USER'] }),
+    );
+    const accessKeys = {
+      current: () => toPublicKeyObjects([keys.publicKey]),
+      refreshSoon: jest.fn(),
+    };
+    const reflector = {
+      getAllAndOverride: jest.fn(() => options.fresh ?? false),
+    };
+    const redis =
+      options.redis === null
+        ? undefined
+        : (options.redis ?? { exists: jest.fn().mockResolvedValue(0) });
     const request = {
-      headers: { authorization: 'Bearer private-token' },
+      headers: { authorization: `Bearer ${options.token ?? 'private-token'}` },
       cookies: {},
       user: undefined,
     };
     const context = {
       switchToHttp: () => ({ getRequest: () => request }),
-    } as ExecutionContext;
+      getHandler: () => undefined,
+      getClass: () => undefined,
+    } as unknown as ExecutionContext;
     return {
       request,
       context,
-      guard: new JwtAuthGuard({ send } as never),
       send,
+      redis,
+      accessKeys,
+      guard: new JwtAuthGuard(
+        { send } as never,
+        accessKeys as never,
+        reflector as never,
+        redis as never,
+      ),
     };
   };
-  it('sets identity only after successful verification', async () => {
-    const f = fixture();
-    await expect(f.guard.canActivate(f.context)).resolves.toBe(true);
-    expect(f.request.user).toEqual({ id: 'user-1' });
-  });
-  it('keeps an explicit invalid-token response as 401', async () => {
-    const f = fixture(
-      throwError(() => ({ statusCode: 401, message: 'private-token' })),
-    );
-    await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
-    expect(f.request.user).toBeUndefined();
-  });
-  it('returns 503 for unavailable upstream without logging credentials', async () => {
-    const log = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-    const f = fixture(throwError(() => new Error('private-token')));
-    await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
-      ServiceUnavailableException,
-    );
-    expect(f.request.user).toBeUndefined();
-    expect(JSON.stringify(log.mock.calls)).not.toContain('private-token');
-  });
-  it('keeps the 5-second RPC deadline and classifies timeout as 503', async () => {
-    jest.useFakeTimers();
-    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-    const f = fixture(NEVER);
-    const result = expect(
-      f.guard.canActivate(f.context),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    await jest.advanceTimersByTimeAsync(5000);
-    await result;
-    expect(f.request.user).toBeUndefined();
-  });
-});
+  const userToken = (overrides: Partial<typeof claims> = {}) =>
+    signAccessToken(keys, { ...claims, ...overrides });
 
-describe('JwtAuthGuard token cache (opt-in)', () => {
-  const b64 = (o: object) =>
-    Buffer.from(JSON.stringify(o)).toString('base64url');
-  const tokenFor = (sub: string, expInSeconds = 900) =>
-    `${b64({ alg: 'HS256' })}.${b64({ sub, exp: Math.floor(Date.now() / 1000) + expInSeconds })}.sig`;
-  const make = (ttl: number | undefined, responses: Array<unknown>) => {
-    const send = jest.fn(() => {
-      const next = responses.shift();
-      return next instanceof Error ||
-        (next as { statusCode?: number })?.statusCode === 401
-        ? throwError(() => next)
-        : of(next);
+  describe('local verification of ordinary users', () => {
+    it('accepts a valid token without asking auth-service', async () => {
+      const f = fixture({ token: userToken() });
+      await expect(f.guard.canActivate(f.context)).resolves.toBe(true);
+      expect(f.send).not.toHaveBeenCalled();
+      expect(f.request.user).toMatchObject({
+        id: 'user-1',
+        email: 'u@e.c',
+        fullName: 'User One',
+        roles: ['USER'],
+      });
     });
-    const config = { get: () => ttl } as never;
-    const guard = new JwtAuthGuard({ send } as never, config);
-    const ctx = (token: string, method = 'GET') => {
-      const request: Record<string, unknown> = {
-        method,
-        headers: { authorization: `Bearer ${token}` },
-        cookies: {},
-      };
-      return {
-        request,
-        context: {
-          switchToHttp: () => ({ getRequest: () => request }),
-        } as ExecutionContext,
-      };
-    };
-    return { guard, send, ctx };
-  };
-  const user = { id: 'u1', email: 'a@b.c', roles: ['USER'] };
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
+
+    it('refuses a banned user immediately, without asking auth-service', async () => {
+      const f = fixture({
+        token: userToken(),
+        redis: { exists: jest.fn().mockResolvedValue(1) },
+      });
+      await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(f.send).not.toHaveBeenCalled();
+      expect(f.request.user).toBeUndefined();
+    });
+
+    it('asks auth-service when the ban list is unreachable', async () => {
+      const f = fixture({
+        token: userToken(),
+        redis: { exists: jest.fn().mockRejectedValue(new Error('down')) },
+      });
+      await expect(f.guard.canActivate(f.context)).resolves.toBe(true);
+      expect(f.send).toHaveBeenCalledTimes(1);
+      expect(f.request.user).toMatchObject({ id: 'rpc-user' });
+    });
+
+    it('asks auth-service when no ban list is configured', async () => {
+      const f = fixture({ token: userToken(), redis: null });
+      await f.guard.canActivate(f.context);
+      expect(f.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('never decides for an admin token locally', async () => {
+      const f = fixture({ token: userToken({ roles: ['USER', 'ADMIN'] }) });
+      await f.guard.canActivate(f.context);
+      expect(f.send).toHaveBeenCalledTimes(1);
+      expect(f.redis!.exists).not.toHaveBeenCalled();
+    });
+
+    it('asks auth-service on routes that need the current profile', async () => {
+      const f = fixture({ token: userToken(), fresh: true });
+      await f.guard.canActivate(f.context);
+      expect(f.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('asks auth-service for a token signed with an unknown key and refetches keys', async () => {
+      const other = deriveAccessKeyPair('another-secret-with-32-characters!!');
+      const f = fixture({ token: signAccessToken(other, claims) });
+      await f.guard.canActivate(f.context);
+      expect(f.send).toHaveBeenCalledTimes(1);
+      expect(f.accessKeys.refreshSoon).toHaveBeenCalled();
+    });
+
+    it('does not trust a forged or tampered token', async () => {
+      const [h, , s] = userToken().split('.');
+      const forged = Buffer.from(
+        JSON.stringify({
+          ...claims,
+          sub: 'victim',
+          tokenType: 'access',
+          exp: 9_999_999_999,
+        }),
+      ).toString('base64url');
+      const f = fixture({
+        token: `${h}.${forged}.${s}`,
+        rpc: throwError(() => ({
+          statusCode: 401,
+          message: 'invalid',
+        })),
+      });
+      await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(f.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a token without a roles claim to auth-service', async () => {
+      const f = fixture({ token: userToken({ roles: undefined as never }) });
+      await f.guard.canActivate(f.context);
+      expect(f.send).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it('is off by default: every request is verified', async () => {
-    const f = make(undefined, [user, user]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t).context);
-    await f.guard.canActivate(f.ctx(t).context);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
+  describe('authoritative path', () => {
+    it('sets identity only after successful verification', async () => {
+      const f = fixture();
+      await expect(f.guard.canActivate(f.context)).resolves.toBe(true);
+      expect(f.request.user).toEqual({ id: 'rpc-user', roles: ['USER'] });
+    });
 
-  it('serves a repeat GET from the cache, then re-verifies after the TTL', async () => {
-    jest.useFakeTimers();
-    const f = make(5000, [user, { ...user, roles: ['USER'] }]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t).context);
-    const hit = f.ctx(t);
-    await expect(f.guard.canActivate(hit.context)).resolves.toBe(true);
-    expect(hit.request.user).toEqual(user);
-    expect(f.send).toHaveBeenCalledTimes(1);
-    await jest.advanceTimersByTimeAsync(5001);
-    await f.guard.canActivate(f.ctx(t).context);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
+    it('keeps an explicit invalid-token response as 401', async () => {
+      const f = fixture({
+        rpc: throwError(() => ({
+          statusCode: 401,
+          message: 'private-token',
+        })),
+      });
+      await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      expect(f.request.user).toBeUndefined();
+    });
 
-  it('rejects a deleted user once the entry expires', async () => {
-    jest.useFakeTimers();
-    const f = make(5000, [user, { statusCode: 401, message: 'invalid' }]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t).context);
-    await jest.advanceTimersByTimeAsync(5001);
-    await expect(f.guard.canActivate(f.ctx(t).context)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
-  });
+    it('returns 503 for unavailable upstream without logging credentials', async () => {
+      const log = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const f = fixture({
+        rpc: throwError(() => new Error('private-token')),
+      });
+      await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(JSON.stringify(log.mock.calls)).not.toContain('private-token');
+    });
 
-  it('never caches a failure', async () => {
-    const f = make(5000, [{ statusCode: 401, message: 'invalid' }]);
-    const t = tokenFor('u1');
-    await expect(f.guard.canActivate(f.ctx(t).context)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
-    (f.send as jest.Mock).mockReturnValueOnce(of(user));
-    await expect(f.guard.canActivate(f.ctx(t).context)).resolves.toBe(true);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
+    it('keeps the 5-second RPC deadline and classifies timeout as 503', async () => {
+      jest.useFakeTimers();
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const f = fixture({ rpc: NEVER });
+      const result = expect(
+        f.guard.canActivate(f.context),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+      await jest.advanceTimersByTimeAsync(5000);
+      await result;
+    });
 
-  it("does not let one token be served from another token's entry", async () => {
-    const other = { ...user, id: 'u2' };
-    const f = make(5000, [user, other]);
-    const a = f.ctx(tokenFor('u1'));
-    const b = f.ctx(tokenFor('u2'));
-    await f.guard.canActivate(a.context);
-    await f.guard.canActivate(b.context);
-    expect(b.request.user).toEqual(other);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
-
-  it('always re-verifies writes', async () => {
-    const f = make(5000, [user, user, user]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t, 'GET').context);
-    await f.guard.canActivate(f.ctx(t, 'POST').context);
-    await f.guard.canActivate(f.ctx(t, 'DELETE').context);
-    expect(f.send).toHaveBeenCalledTimes(3);
-  });
-
-  it('never caches admins', async () => {
-    const admin = { ...user, roles: ['USER', 'ADMIN'] };
-    const f = make(5000, [admin, admin]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t).context);
-    await f.guard.canActivate(f.ctx(t).context);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
-
-  it('never keeps an entry past the token expiry', async () => {
-    const f = make(5000, [user, user]);
-    const t = tokenFor('u1', 0);
-    await f.guard.canActivate(f.ctx(t).context);
-    await f.guard.canActivate(f.ctx(t).context);
-    expect(f.send).toHaveBeenCalledTimes(2);
-  });
-
-  it('caps the configured TTL at 30 seconds', async () => {
-    jest.useFakeTimers();
-    const f = make(10 * 60_000, [user, user]);
-    const t = tokenFor('u1');
-    await f.guard.canActivate(f.ctx(t).context);
-    await jest.advanceTimersByTimeAsync(30_001);
-    await f.guard.canActivate(f.ctx(t).context);
-    expect(f.send).toHaveBeenCalledTimes(2);
+    it('rejects a request with no token', async () => {
+      const f = fixture();
+      f.request.headers = {} as never;
+      await expect(f.guard.canActivate(f.context)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+    });
   });
 });

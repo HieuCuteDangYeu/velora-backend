@@ -15,6 +15,7 @@ import { RateLimit } from '@common/rate-limit/rate-limit.decorator';
 import { RateLimitGuard } from '@common/rate-limit/rate-limit.guard';
 import { CreateUserResponse } from '@common/user/interfaces/create-user-response.types';
 import type { AuthenticatedRequest } from '@gateway/auth/guards/jwt-auth.guard';
+import { FreshAuth } from './decorators/fresh-auth.decorator';
 import { JwtAuthGuard } from '@gateway/auth/guards/jwt-auth.guard';
 import {
   Body,
@@ -189,6 +190,7 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @FreshAuth()
   @Get('me')
   @ApiOperation({ summary: 'Get current logged-in user session' })
   getProfile(@Req() request: AuthenticatedRequest): AuthUser {
@@ -196,6 +198,7 @@ export class AuthController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @FreshAuth()
   @Get('socket-token')
   @ApiOperation({
     summary:

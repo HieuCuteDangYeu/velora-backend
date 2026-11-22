@@ -2,6 +2,8 @@ import { JwtService } from '@nestjs/jwt';
 import { LoginUseCase } from './login.use-case';
 import { GoogleLoginUseCase } from './google-login.use-case';
 import { LogoutUseCase } from './logout.use-case';
+import { AccountBannedError } from '../../domain/errors/account-banned.error';
+import { AccessTokenService } from '../../infrastructure/security/access-token.service';
 import { RefreshToken } from '../../domain/entities/refresh-token.entity';
 
 const user = {
@@ -13,6 +15,10 @@ const user = {
   picture: null,
   providerId: 'google-1',
 };
+
+const accessTokens = new AccessTokenService({
+  getOrThrow: () => 'unit-test-secret-with-at-least-32-chars',
+} as never);
 
 describe('Login rolling refresh policy', () => {
   afterEach(() => jest.useRealTimers());
@@ -31,20 +37,19 @@ describe('Login rolling refresh policy', () => {
         validateUser: jest.fn().mockResolvedValue(user),
         findByEmail: jest.fn().mockResolvedValue(user),
       };
-      const cache = { setUserRoles: jest.fn() };
       const jwt = new JwtService({ secret: 'unit-test-secret' });
       const tokens =
         provider === 'password'
           ? await new LoginUseCase(
               users as never,
               repository as never,
-              cache as never,
+              accessTokens,
               jwt,
             ).execute({ email: user.email, password: 'password' })
           : await new GoogleLoginUseCase(
               users as never,
               repository as never,
-              cache as never,
+              accessTokens,
               jwt,
             ).execute({
               email: user.email,
@@ -52,11 +57,15 @@ describe('Login rolling refresh policy', () => {
               providerId: user.providerId,
               picture: '',
             });
-      const access = jwt.verify<{
+      const verified = accessTokens.verify(tokens.accessToken);
+      if (!verified.ok)
+        throw new Error(`access token rejected: ${verified.reason}`);
+      const access = verified.payload as {
         exp: number;
         iat: number;
         tokenType: string;
-      }>(tokens.accessToken);
+        roles?: string[];
+      };
       const refresh = jwt.verify<{
         exp: number;
         iat: number;
@@ -73,11 +82,11 @@ describe('Login rolling refresh policy', () => {
         tokens.refreshToken,
         new Date(now.getTime() + 90 * 86400000),
       );
-      expect(cache.setUserRoles).toHaveBeenCalledWith(user.id, ['USER']);
+      expect(access.roles).toEqual(['USER']);
     },
   );
 
-  it('logout revokes the presented refresh token and invalidates roles', async () => {
+  it('logout revokes the presented refresh token', async () => {
     const repository = {
       findRefreshToken: jest
         .fn()
@@ -93,13 +102,48 @@ describe('Login rolling refresh policy', () => {
         ),
       updateRefreshToken: jest.fn(),
     };
-    const cache = { invalidateUserRoles: jest.fn() };
     await expect(
-      new LogoutUseCase(repository as never, cache as never).execute('refresh'),
+      new LogoutUseCase(repository as never).execute('refresh'),
     ).resolves.toEqual({ message: 'Logged out successfully', userId: user.id });
     expect(repository.updateRefreshToken).toHaveBeenCalledWith('token-id', {
       revoked: true,
     });
-    expect(cache.invalidateUserRoles).toHaveBeenCalledWith(user.id);
   });
+
+  it.each(['password', 'google'])(
+    '%s login refuses a banned account and issues nothing',
+    async (provider) => {
+      const repository = {
+        getUserRole: jest.fn(),
+        createRefreshToken: jest.fn(),
+      };
+      const banned = { ...user, status: 'BANNED' };
+      const users = {
+        validateUser: jest.fn().mockResolvedValue(banned),
+        findByEmail: jest.fn().mockResolvedValue(banned),
+      };
+      const jwt = new JwtService({ secret: 'unit-test-secret' });
+      const attempt =
+        provider === 'password'
+          ? new LoginUseCase(
+              users as never,
+              repository as never,
+              accessTokens,
+              jwt,
+            ).execute({ email: user.email, password: 'password' })
+          : new GoogleLoginUseCase(
+              users as never,
+              repository as never,
+              accessTokens,
+              jwt,
+            ).execute({
+              email: user.email,
+              fullName: user.fullName,
+              providerId: user.providerId,
+              picture: '',
+            });
+      await expect(attempt).rejects.toBeInstanceOf(AccountBannedError);
+      expect(repository.createRefreshToken).not.toHaveBeenCalled();
+    },
+  );
 });

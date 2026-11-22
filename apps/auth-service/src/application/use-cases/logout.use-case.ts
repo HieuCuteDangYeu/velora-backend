@@ -1,4 +1,3 @@
-import type { IUserRoleRepository } from '@auth/domain/interfaces/user-role.repository,interface';
 import { Inject, Injectable } from '@nestjs/common';
 import type { IAuthRepository } from '../../domain/interfaces/auth.repository.interface';
 
@@ -6,8 +5,6 @@ import type { IAuthRepository } from '../../domain/interfaces/auth.repository.in
 export class LogoutUseCase {
   constructor(
     @Inject('IAuthRepository') private readonly authRepository: IAuthRepository,
-    @Inject('IUserRoleRepository')
-    private readonly roleCache: IUserRoleRepository,
   ) {}
 
   async execute(token: string): Promise<{ message: string; userId?: string }> {
@@ -17,10 +14,6 @@ export class LogoutUseCase {
       await this.authRepository.updateRefreshToken(storedToken.id, {
         revoked: true,
       });
-
-      if (storedToken.userId) {
-        await this.roleCache.invalidateUserRoles(storedToken.userId);
-      }
 
       return {
         message: 'Logged out successfully',

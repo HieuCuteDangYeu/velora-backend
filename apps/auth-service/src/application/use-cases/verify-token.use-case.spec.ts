@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { NEVER, of, throwError } from 'rxjs';
 import { InvalidTokenError } from '../../domain/errors/invalid-token.error';
+import { AccessTokenService } from '../../infrastructure/security/access-token.service';
 import { UserServiceAdapter } from '../../infrastructure/adapters/user-service.adapter';
 import { AuthController } from '../../infrastructure/controllers/auth.controller';
 import { VerifyTokenUseCase } from './verify-token.use-case';
@@ -10,6 +11,7 @@ describe('Token verification failure classification', () => {
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
+  const SECRET = 'unit-test-secret-with-at-least-32-chars';
   const fixture = () => {
     const jwt = {
       verifyAsync: jest
@@ -19,16 +21,17 @@ describe('Token verification failure classification', () => {
     const users = {
       findByIdForAuth: jest.fn().mockResolvedValue({ id: 'user-1' }),
     };
-    const roles = {
-      getUserRoles: jest.fn().mockResolvedValue(['ADMIN']),
-      setUserRoles: jest.fn(),
-    };
-    const repository = { getUserRole: jest.fn() };
+    const banList = { isBanned: jest.fn().mockResolvedValue(false) };
+    const accessTokens = new AccessTokenService({
+      getOrThrow: () => SECRET,
+    } as never);
+    const repository = { getUserRole: jest.fn().mockResolvedValue(['ADMIN']) };
     const verify = new VerifyTokenUseCase(
       jwt as never,
+      accessTokens,
       repository as never,
       users as never,
-      roles as never,
+      banList as never,
     );
     const metrics = { recordRequest: jest.fn() };
     const controller = new AuthController(
@@ -46,8 +49,20 @@ describe('Token verification failure classification', () => {
       verify,
       undefined as never,
       metrics as never,
+      accessTokens,
     );
-    return { jwt, users, roles, repository, verify, controller, metrics };
+    const es256 = () =>
+      accessTokens.sign({ sub: 'user-1', email: 'u@e.c', roles: ['USER'] });
+    return {
+      jwt,
+      users,
+      banList,
+      repository,
+      verify,
+      controller,
+      metrics,
+      es256,
+    };
   };
   it.each(['JsonWebTokenError', 'TokenExpiredError', 'NotBeforeError'])(
     'rejects %s without querying user data',
@@ -105,7 +120,7 @@ describe('Token verification failure classification', () => {
       await expect(f.verify.execute('token')).rejects.toBeInstanceOf(
         InvalidTokenError,
       );
-      expect(f.roles.getUserRoles).not.toHaveBeenCalled();
+      expect(f.repository.getUserRole).not.toHaveBeenCalled();
       expect(f.users.findByIdForAuth).not.toHaveBeenCalled();
     },
   );
@@ -115,10 +130,7 @@ describe('Token verification failure classification', () => {
       const f = fixture();
       const error = new Error('private database credentials');
       if (step === 'user') f.users.findByIdForAuth.mockRejectedValue(error);
-      if (step === 'roles') {
-        f.roles.getUserRoles.mockResolvedValue(null);
-        f.repository.getUserRole.mockRejectedValue(error);
-      }
+      if (step === 'roles') f.repository.getUserRole.mockRejectedValue(error);
       if (step === 'jwt') f.jwt.verifyAsync.mockRejectedValue(error);
       await expect(
         f.controller.verifyToken({ token: 'private token' }),
@@ -135,6 +147,44 @@ describe('Token verification failure classification', () => {
       );
     },
   );
+  it('verifies an ES256 access token without the legacy HS256 path', async () => {
+    const f = fixture();
+    f.users.findByIdForAuth.mockResolvedValue({ id: 'user-1', email: 'u@e.c' });
+    await expect(f.verify.execute(f.es256())).resolves.toMatchObject({
+      id: 'user-1',
+      roles: ['ADMIN'],
+    });
+    expect(f.jwt.verifyAsync).not.toHaveBeenCalled();
+  });
+  it('rejects a token whose ES256 signature is wrong without trying HS256', async () => {
+    const f = fixture();
+    const [h, p] = f.es256().split('.');
+    await expect(f.verify.execute(`${h}.${p}.AAAA`)).rejects.toBeInstanceOf(
+      InvalidTokenError,
+    );
+    expect(f.jwt.verifyAsync).not.toHaveBeenCalled();
+  });
+  it('refuses a denylisted user before any lookup', async () => {
+    const f = fixture();
+    f.banList.isBanned.mockResolvedValue(true);
+    await expect(f.verify.execute(f.es256())).rejects.toBeInstanceOf(
+      InvalidTokenError,
+    );
+    expect(f.repository.getUserRole).not.toHaveBeenCalled();
+    expect(f.users.findByIdForAuth).not.toHaveBeenCalled();
+  });
+  it('still refuses a banned user when the ban list is down', async () => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const f = fixture();
+    f.banList.isBanned.mockRejectedValue(new Error('redis down'));
+    f.users.findByIdForAuth.mockResolvedValue({
+      id: 'user-1',
+      status: 'BANNED',
+    });
+    await expect(f.verify.execute(f.es256())).rejects.toBeInstanceOf(
+      InvalidTokenError,
+    );
+  });
   it('preserves real not-found responses but propagates user RPC outage', async () => {
     const send = jest.fn().mockReturnValue(of(null));
     const adapter = new UserServiceAdapter({ send } as never);

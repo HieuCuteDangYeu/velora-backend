@@ -7,6 +7,9 @@ export type UserOperation =
   | 'find_all'
   | 'update'
   | 'delete'
+  | 'ban'
+  | 'unban'
+  | 'list_banned'
   | 'validate'
   | 'verify'
   | 'find_by_email'
@@ -30,6 +33,9 @@ const USER_OPERATIONS: readonly UserOperation[] = [
   'find_all',
   'update',
   'delete',
+  'ban',
+  'unban',
+  'list_banned',
   'validate',
   'verify',
   'find_by_email',
@@ -92,7 +98,9 @@ export class UserPrometheusMetricsService implements OnModuleDestroy {
   }
 
   async metrics(): Promise<string> {
-    const database = await Promise.allSettled([this.prisma.$queryRaw`SELECT 1`]);
+    const database = await Promise.allSettled([
+      this.prisma.$queryRaw`SELECT 1`,
+    ]);
     const lines: string[] = [];
     const labels = this.labels({ service: this.serviceName });
     const cpu = process.cpuUsage();

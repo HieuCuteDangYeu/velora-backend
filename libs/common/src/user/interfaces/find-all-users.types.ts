@@ -5,6 +5,7 @@ export interface UserResponse {
   username: string | null;
   picture: string | null;
   createdAt: Date;
+  status?: 'ACTIVE' | 'BANNED';
 }
 
 export interface FindAllUsersPayload {

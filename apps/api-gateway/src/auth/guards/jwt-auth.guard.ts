@@ -1,5 +1,7 @@
-import { isRpcError } from '@common/constants/rpc-error.types';
+import { verifyAccessToken, bannedUserKey } from '@common/auth/access-token';
 import { AuthUser } from '@common/auth/interfaces/auth-user.interface';
+import { isRpcError } from '@common/constants/rpc-error.types';
+import { RATE_LIMIT_REDIS } from '@common/rate-limit/rate-limit.types';
 import {
   CanActivate,
   ExecutionContext,
@@ -10,51 +12,37 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import { ClientProxy } from '@nestjs/microservices';
-import { createHash } from 'node:crypto';
 import { Request } from 'express';
+import type Redis from 'ioredis';
 import { lastValueFrom, timeout, TimeoutError } from 'rxjs';
+import { AccessKeyProvider } from '../access-key.provider';
+import { FRESH_AUTH_KEY } from '../decorators/fresh-auth.decorator';
 
 export interface AuthenticatedRequest extends Request {
   user?: AuthUser;
   cookies: { [key: string]: string };
 }
 
-const TOKEN_CACHE_MAX_ENTRIES = 10_000;
-const TOKEN_CACHE_MAX_TTL_MS = 30_000;
-const READ_METHODS = new Set(['GET', 'HEAD']);
-
-interface CachedIdentity {
-  user: AuthUser;
-  expiresAt: number;
-}
-
+/**
+ * Ordinary users are verified here, without a round trip: the ES256 signature, expiry and
+ * token type are checked locally and one Redis lookup confirms the user is not banned.
+ * Everything else asks auth-service, which is authoritative:
+ *  - admin tokens (so a demoted admin loses access at once),
+ *  - routes marked @FreshAuth (they return the current profile),
+ *  - tokens signed before the ES256 rollout, tokens with an unknown key, and any Redis error.
+ */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   private readonly logger = new Logger(JwtAuthGuard.name);
-  /**
-   * Opt-in, per-process memo of successful `auth.verify_token` results.
-   * AUTH_TOKEN_CACHE_TTL_MS=0 (default) disables it. It trades up to that many
-   * milliseconds of delay before a deleted user or a changed profile is noticed
-   * for one fewer RPC chain per read, so it is capped at 30 s and is limited to:
-   *  - GET/HEAD requests (writes always re-verify),
-   *  - users without the ADMIN role (admin demotion/deletion is never delayed),
-   *  - successful verifications only (errors and 401s are never stored).
-   * Entries are keyed by a hash of the whole token and never outlive its `exp`.
-   */
-  private readonly cacheTtlMs: number;
-  private readonly cache = new Map<string, CachedIdentity>();
 
   constructor(
     @Inject('AUTH_SERVICE') private readonly authClient: ClientProxy,
-    @Optional() config?: ConfigService,
-  ) {
-    const raw = Number(config?.get('AUTH_TOKEN_CACHE_TTL_MS') ?? 0);
-    this.cacheTtlMs = Number.isFinite(raw)
-      ? Math.min(Math.max(Math.trunc(raw), 0), TOKEN_CACHE_MAX_TTL_MS)
-      : 0;
-  }
+    private readonly accessKeys: AccessKeyProvider,
+    private readonly reflector: Reflector,
+    @Optional() @Inject(RATE_LIMIT_REDIS) private readonly redis?: Redis,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -64,16 +52,16 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('No authentication token found');
     }
 
-    const cacheable =
-      this.cacheTtlMs > 0 && READ_METHODS.has(request.method ?? '');
-    const cacheKey = cacheable ? this.cacheKey(token) : undefined;
-    if (cacheKey) {
-      const hit = this.cache.get(cacheKey);
-      if (hit && hit.expiresAt > Date.now()) {
-        request.user = hit.user;
+    const needsFreshIdentity = this.reflector.getAllAndOverride<boolean>(
+      FRESH_AUTH_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (!needsFreshIdentity) {
+      const local = await this.verifyLocally(token);
+      if (local) {
+        request.user = local;
         return true;
       }
-      if (hit) this.cache.delete(cacheKey);
     }
 
     const startedAt = Date.now();
@@ -85,7 +73,6 @@ export class JwtAuthGuard implements CanActivate {
       );
 
       request.user = user;
-      if (cacheKey) this.remember(cacheKey, token, user);
       return true;
     } catch (error) {
       if (isRpcError(error) && error.statusCode === 401)
@@ -99,41 +86,39 @@ export class JwtAuthGuard implements CanActivate {
     }
   }
 
-  private cacheKey(token: string): string {
-    return createHash('sha256').update(token).digest('hex');
-  }
-
-  private remember(key: string, token: string, user: AuthUser): void {
-    if (!Array.isArray(user?.roles) || user.roles.includes('ADMIN')) return;
-    const tokenExpiryMs = this.tokenExpiryMs(token);
-    if (tokenExpiryMs === undefined) return;
-    const now = Date.now();
-    const expiresAt = Math.min(now + this.cacheTtlMs, tokenExpiryMs);
-    if (expiresAt <= now) return;
-    if (this.cache.size >= TOKEN_CACHE_MAX_ENTRIES) {
-      for (const [k, v] of this.cache) {
-        if (v.expiresAt <= now) this.cache.delete(k);
-      }
-      if (this.cache.size >= TOKEN_CACHE_MAX_ENTRIES) {
-        for (const oldest of this.cache.keys()) {
-          this.cache.delete(oldest);
-          break;
-        }
-      }
+  /** The user for a token that can be decided here, or null to ask auth-service. */
+  private async verifyLocally(token: string): Promise<AuthUser | null> {
+    const result = verifyAccessToken(token, this.accessKeys.current());
+    if (!result.ok) {
+      if (result.reason === 'unknown_key') this.accessKeys.refreshSoon();
+      return null;
     }
-    this.cache.set(key, { user, expiresAt });
-  }
 
-  /** `exp` of a token that auth-service has just accepted; undefined if unreadable. */
-  private tokenExpiryMs(token: string): number | undefined {
+    const claims = result.payload;
+    if (!Array.isArray(claims.roles) || claims.roles.includes('ADMIN')) {
+      return null;
+    }
+    if (!this.redis) return null;
+
+    let banned: number;
     try {
-      const payload = JSON.parse(
-        Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8'),
-      ) as { exp?: unknown };
-      return typeof payload.exp === 'number' ? payload.exp * 1000 : undefined;
+      banned = await this.redis.exists(bannedUserKey(claims.sub));
     } catch {
-      return undefined;
+      return null; // ban list unreachable: let auth-service decide
     }
+    if (banned !== 0) {
+      throw new UnauthorizedException('Invalid or expired token');
+    }
+
+    return {
+      id: claims.sub,
+      email: claims.email,
+      fullName: claims.fullName,
+      username: claims.username,
+      picture: claims.picture ?? undefined,
+      isVerified: claims.isVerified,
+      roles: claims.roles,
+    };
   }
 
   private extractToken(request: AuthenticatedRequest): string | undefined {

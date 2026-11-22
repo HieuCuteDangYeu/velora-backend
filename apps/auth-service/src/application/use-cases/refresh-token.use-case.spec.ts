@@ -35,8 +35,11 @@ const createUseCase = () => {
   const userService = {
     findById: jest.fn(),
   };
-  const roleCache = {
-    setUserRoles: jest.fn(),
+  const banList = {
+    isBanned: jest.fn().mockResolvedValue(false),
+  };
+  const accessTokens = {
+    sign: jest.fn().mockReturnValue('access-token'),
   };
   const jwtService = {
     verifyAsync: jest.fn(),
@@ -50,12 +53,14 @@ const createUseCase = () => {
   return {
     authRepository,
     jwtService,
-    roleCache,
+    accessTokens,
+    banList,
     userService,
     useCase: new RefreshTokenUseCase(
       authRepository as never,
       userService as never,
-      roleCache as never,
+      banList as never,
+      accessTokens as never,
       jwtService as never,
       metrics as never,
     ),
@@ -64,7 +69,7 @@ const createUseCase = () => {
 
 describe('RefreshTokenUseCase', () => {
   it('rotates a valid refresh token and persists the replacement', async () => {
-    const { authRepository, jwtService, roleCache, userService, useCase } =
+    const { authRepository, jwtService, accessTokens, userService, useCase } =
       createUseCase();
     const incomingRefreshToken = 'incoming-refresh-token';
     const storedToken = new RefreshToken(
@@ -90,11 +95,10 @@ describe('RefreshTokenUseCase', () => {
       ),
       refreshToken: 'new-refresh-token',
     });
-    roleCache.setUserRoles.mockResolvedValue(undefined);
+    authRepository.getUserRole.mockResolvedValue(['USER']);
     userService.findById.mockResolvedValue(user);
-    jwtService.signAsync
-      .mockResolvedValueOnce('new-access-token')
-      .mockResolvedValueOnce('new-refresh-token');
+    accessTokens.sign.mockReturnValue('new-access-token');
+    jwtService.signAsync.mockResolvedValueOnce('new-refresh-token');
 
     await expect(
       useCase.execute(incomingRefreshToken, 'request-1'),
@@ -114,20 +118,18 @@ describe('RefreshTokenUseCase', () => {
       expect.any(Date),
       'request-1',
     );
-    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ tokenType: 'access' }),
-      { expiresIn: '15m' },
+    expect(accessTokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'user-1', roles: ['USER'] }),
     );
     expect(jwtService.signAsync).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({ tokenType: 'refresh' }),
       { expiresIn: expect.any(Number), jwtid: expect.any(String) },
     );
   });
 
   it('issues a replacement valid for 90 days from the refresh time', async () => {
-    const { authRepository, jwtService, roleCache, userService, useCase } =
+    const { authRepository, jwtService, accessTokens, userService, useCase } =
       createUseCase();
     const storedToken = new RefreshToken(
       'stored-token-1',
@@ -145,15 +147,14 @@ describe('RefreshTokenUseCase', () => {
       token: storedToken,
       refreshToken: 'new-refresh-token',
     });
-    roleCache.setUserRoles.mockResolvedValue(undefined);
+    authRepository.getUserRole.mockResolvedValue(['USER']);
     userService.findById.mockResolvedValue(user);
-    jwtService.signAsync
-      .mockResolvedValueOnce('new-access-token')
-      .mockResolvedValueOnce('new-refresh-token');
+    accessTokens.sign.mockReturnValue('new-access-token');
+    jwtService.signAsync.mockResolvedValueOnce('new-refresh-token');
 
     await useCase.execute('incoming-refresh-token', 'request-1');
 
-    const refreshSignOptions = jwtService.signAsync.mock.calls[1][1];
+    const refreshSignOptions = jwtService.signAsync.mock.calls[0][1];
     expect(refreshSignOptions.expiresIn).toBe(90 * 24 * 60 * 60);
     const expiresAt = authRepository.rotateRefreshToken.mock
       .calls[0][2] as Date;
@@ -239,7 +240,7 @@ describe('RefreshTokenUseCase', () => {
   });
 
   it('recovers a rotated token when the request ID is retried', async () => {
-    const { authRepository, jwtService, userService, useCase } =
+    const { authRepository, jwtService, accessTokens, userService, useCase } =
       createUseCase();
     const incomingRefreshToken = 'stale-refresh-token';
     const storedToken = new RefreshToken(
@@ -260,7 +261,7 @@ describe('RefreshTokenUseCase', () => {
       'replacement-refresh-token',
     );
     userService.findById.mockResolvedValue(user);
-    jwtService.signAsync.mockResolvedValue('recovered-access-token');
+    accessTokens.sign.mockReturnValue('recovered-access-token');
 
     await expect(
       useCase.execute(incomingRefreshToken, 'request-1'),
@@ -270,9 +271,8 @@ describe('RefreshTokenUseCase', () => {
     });
 
     expect(authRepository.revokeAllUserTokens).not.toHaveBeenCalled();
-    expect(jwtService.signAsync).toHaveBeenCalledWith(
-      expect.objectContaining({ tokenType: 'access' }),
-      { expiresIn: '15m' },
+    expect(accessTokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'user-1' }),
     );
     expect(authRepository.rotateRefreshToken).not.toHaveBeenCalled();
     expect(authRepository.recoverRotatedRefreshToken).toHaveBeenCalledWith(
@@ -382,7 +382,7 @@ describe('RefreshTokenUseCase', () => {
   );
 
   it('rotates a persisted legacy untyped refresh token and types its replacement', async () => {
-    const { authRepository, jwtService, roleCache, userService, useCase } =
+    const { authRepository, jwtService, accessTokens, userService, useCase } =
       createUseCase();
     const legacyPayload = { ...payload, tokenType: undefined };
     const incomingRefreshToken = 'legacy-refresh-token';
@@ -408,12 +408,11 @@ describe('RefreshTokenUseCase', () => {
       ),
       refreshToken: 'typed-refresh-token',
     });
-    roleCache.setUserRoles.mockResolvedValue(undefined);
+    authRepository.getUserRole.mockResolvedValue(['USER']);
     userService.findById.mockResolvedValue(user);
     jwtService.verifyAsync.mockResolvedValue(legacyPayload);
-    jwtService.signAsync
-      .mockResolvedValueOnce('typed-access-token')
-      .mockResolvedValueOnce('typed-refresh-token');
+    accessTokens.sign.mockReturnValue('typed-access-token');
+    jwtService.signAsync.mockResolvedValueOnce('typed-refresh-token');
 
     await expect(
       useCase.execute(incomingRefreshToken, 'legacy-request'),
@@ -427,13 +426,11 @@ describe('RefreshTokenUseCase', () => {
       expect.any(Date),
       'legacy-request',
     );
-    expect(jwtService.signAsync).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ tokenType: 'access' }),
-      { expiresIn: '15m' },
+    expect(accessTokens.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ sub: 'user-1', roles: ['USER'] }),
     );
     expect(jwtService.signAsync).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({ tokenType: 'refresh' }),
       { expiresIn: expect.any(Number), jwtid: expect.any(String) },
     );
@@ -449,5 +446,47 @@ describe('RefreshTokenUseCase', () => {
     await expect(
       useCase.execute('valid-refresh-token', 'request-1'),
     ).rejects.toBe(databaseError);
+  });
+
+  it('refuses a user on the ban list before touching the token store', async () => {
+    const { authRepository, jwtService, banList, useCase } = createUseCase();
+    jwtService.verifyAsync.mockResolvedValue(payload);
+    banList.isBanned.mockResolvedValue(true);
+
+    await expect(
+      useCase.execute('incoming-refresh-token', 'request-1'),
+    ).rejects.toBeInstanceOf(InvalidTokenError);
+    expect(authRepository.findRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('refuses a banned user even when the ban list is unreachable', async () => {
+    const {
+      authRepository,
+      jwtService,
+      accessTokens,
+      banList,
+      userService,
+      useCase,
+    } = createUseCase();
+    jwtService.verifyAsync.mockResolvedValue(payload);
+    banList.isBanned.mockRejectedValue(new Error('redis down'));
+    authRepository.findRefreshToken.mockResolvedValue(
+      new RefreshToken(
+        'stored-token-1',
+        'user-1',
+        'incoming-refresh-token',
+        new Date(Date.now() + 60_000),
+        false,
+        new Date(),
+      ),
+    );
+    authRepository.getUserRole.mockResolvedValue(['USER']);
+    userService.findById.mockResolvedValue({ ...user, status: 'BANNED' });
+
+    await expect(
+      useCase.execute('incoming-refresh-token', 'request-1'),
+    ).rejects.toBeInstanceOf(InvalidTokenError);
+    expect(accessTokens.sign).not.toHaveBeenCalled();
+    expect(authRepository.rotateRefreshToken).not.toHaveBeenCalled();
   });
 });

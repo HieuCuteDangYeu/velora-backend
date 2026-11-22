@@ -8,4 +8,6 @@ export interface ValidateUserResponse {
   providerId?: string | null;
   picture?: string | null;
   password?: string | null;
+  /** BANNED accounts cannot log in, refresh or authenticate. Absent on old replies = ACTIVE. */
+  status?: 'ACTIVE' | 'BANNED';
 }

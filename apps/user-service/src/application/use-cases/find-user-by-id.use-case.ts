@@ -19,6 +19,7 @@ export class FindUserByIdUseCase {
       fullName: user.fullName,
       username: user.username,
       isVerified: user.isVerified,
+      status: user.status,
       password: user.password,
       picture: user.picture,
       provider: user.provider,

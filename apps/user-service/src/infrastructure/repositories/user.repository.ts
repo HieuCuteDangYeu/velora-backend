@@ -89,6 +89,9 @@ export class UserRepository implements IUserRepository {
       this.toPicture(prismaUser.avatarKey),
       prismaUser.provider,
       prismaUser.providerId,
+      prismaUser.status,
+      prismaUser.bannedAt,
+      prismaUser.banReason,
     );
   }
 
@@ -137,6 +140,7 @@ export class UserRepository implements IUserRepository {
           username: true,
           avatarKey: true,
           createdAt: true,
+          status: true,
         },
       }),
       this.prisma.user.count({ where }),
@@ -150,6 +154,7 @@ export class UserRepository implements IUserRepository {
         username: user.username,
         picture: this.toPicture(user.avatarKey),
         createdAt: user.createdAt,
+        status: user.status,
       })),
       total,
     };
@@ -160,6 +165,7 @@ export class UserRepository implements IUserRepository {
 
     const users = await this.prisma.user.findMany({
       where: {
+        status: 'ACTIVE',
         id: {
           notIn: excludedUserIds,
         },
@@ -196,6 +202,7 @@ export class UserRepository implements IUserRepository {
 
     const users = await this.prisma.user.findMany({
       where: {
+        status: 'ACTIVE',
         id: {
           notIn: excludedUserIds,
         },
@@ -260,6 +267,45 @@ export class UserRepository implements IUserRepository {
     });
 
     return this.toDomain(deleted);
+  }
+
+  async ban(
+    id: string,
+    data: { reason: string; bannedBy: string },
+  ): Promise<User> {
+    const banned = await this.prisma.user.update({
+      where: { id },
+      data: {
+        status: 'BANNED',
+        bannedAt: new Date(),
+        banReason: data.reason,
+        bannedBy: data.bannedBy,
+      },
+    });
+
+    return this.toDomain(banned);
+  }
+
+  async unban(id: string): Promise<User> {
+    const restored = await this.prisma.user.update({
+      where: { id },
+      data: {
+        status: 'ACTIVE',
+        bannedAt: null,
+        banReason: null,
+        bannedBy: null,
+      },
+    });
+
+    return this.toDomain(restored);
+  }
+
+  async findBannedIds(): Promise<string[]> {
+    const banned = await this.prisma.user.findMany({
+      where: { status: 'BANNED' },
+      select: { id: true },
+    });
+    return banned.map((user) => user.id);
   }
 
   async findByIds(ids: string[]): Promise<User[]> {

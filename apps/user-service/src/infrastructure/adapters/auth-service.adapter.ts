@@ -26,6 +26,18 @@ export class AuthServiceAdapter implements IAuthService {
     }
   }
 
+  async banUser(userId: string): Promise<void> {
+    await lastValueFrom(
+      this.rmqClient.send('auth.ban_user', { userId }).pipe(timeout(10000)),
+    );
+  }
+
+  async unbanUser(userId: string): Promise<void> {
+    await lastValueFrom(
+      this.rmqClient.send('auth.unban_user', { userId }).pipe(timeout(10000)),
+    );
+  }
+
   deleteUserRoles(userId: string): void {
     this.rmqClient.emit('auth.delete_user_roles', { userId });
   }

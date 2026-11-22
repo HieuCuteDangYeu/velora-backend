@@ -8,6 +8,7 @@ import { ResendVerificationUseCase } from '@auth/application/use-cases/resend-ve
 import { ResetPasswordUseCase } from '@auth/application/use-cases/reset-password.use-case';
 import { VerifyGoogleTokenUseCase } from '@auth/application/use-cases/verify-google-token.use-case';
 import { VerifyTokenUseCase } from '@auth/application/use-cases/verify-token.use-case';
+import { AccountBannedError } from '@auth/domain/errors/account-banned.error';
 import { AccountNotVerifiedError } from '@auth/domain/errors/account-not-verified.error';
 import { GoogleAuthNotConfiguredError } from '@auth/domain/errors/google-auth-not-configured.error';
 import { InvalidCredentialsError } from '@auth/domain/errors/invalid-credentials.error';
@@ -22,6 +23,7 @@ import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
 import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto';
 import type { GoogleProfile } from '@common/auth/interfaces/google-profile.interface';
+import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
 import { SagaCompensationError } from '@common/domain/errors/saga.error';
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload, RpcException } from '@nestjs/microservices';
@@ -48,6 +50,7 @@ export class AuthController {
     private readonly verifyTokenUseCase: VerifyTokenUseCase,
     private readonly verifyGoogleTokenUseCase: VerifyGoogleTokenUseCase,
     private readonly metrics: AuthPrometheusMetricsService,
+    private readonly accessTokens: AccessTokenService,
   ) {}
 
   @MessagePattern('auth.register')
@@ -86,7 +89,10 @@ export class AuthController {
     try {
       return await this.observe('login', () => this.loginUseCase.execute(dto));
     } catch (error) {
-      if (error instanceof AccountNotVerifiedError) {
+      if (
+        error instanceof AccountNotVerifiedError ||
+        error instanceof AccountBannedError
+      ) {
         throw new RpcException({
           statusCode: 403,
           message: error.message,
@@ -192,9 +198,22 @@ export class AuthController {
 
   @MessagePattern('auth.login_google')
   async loginGoogle(@Payload() profile: GoogleProfile) {
-    return await this.observe('login_google', () =>
-      this.googleLoginUseCase.execute(profile),
-    );
+    try {
+      return await this.observe('login_google', () =>
+        this.googleLoginUseCase.execute(profile),
+      );
+    } catch (error) {
+      if (error instanceof AccountBannedError) {
+        throw new RpcException({ statusCode: 403, message: error.message });
+      }
+      throw error;
+    }
+  }
+
+  /** Public half of the access-token signing key; the gateway verifies tokens with it. */
+  @MessagePattern('auth.access_public_keys')
+  accessPublicKeys() {
+    return this.accessTokens.publicKeys();
   }
 
   @MessagePattern('auth.forgot_password')
@@ -288,6 +307,7 @@ export class AuthController {
   private isRejected(error: unknown): boolean {
     return (
       error instanceof AccountNotVerifiedError ||
+      error instanceof AccountBannedError ||
       error instanceof InvalidCredentialsError ||
       error instanceof InvalidGoogleTokenError ||
       error instanceof InvalidResetTokenError ||

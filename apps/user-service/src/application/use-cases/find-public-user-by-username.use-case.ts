@@ -14,7 +14,7 @@ export class FindPublicUserByUsernameUseCase {
     const username = normalizeUsername(rawUsername);
     const user = await this.userRepository.findByUsername(username);
 
-    if (!user) {
+    if (!user || user.status === 'BANNED') {
       throw new UsernameNotFoundError(username);
     }
 

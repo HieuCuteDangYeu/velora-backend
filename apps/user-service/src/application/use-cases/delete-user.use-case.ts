@@ -8,6 +8,7 @@ import type { IAuthService } from '@user/domain/interfaces/auth-service.interfac
 import { UserNotFoundError } from '../../domain/errors/user-not-found.error';
 import type { IUserRepository } from '../../domain/interfaces/user.repository.interface';
 
+/** Internal only: undoes a registration whose role assignment failed. Accounts are banned, never deleted. */
 @Injectable()
 export class DeleteUserUseCase {
   constructor(

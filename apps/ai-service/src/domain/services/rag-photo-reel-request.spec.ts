@@ -8,6 +8,11 @@ describe('asksForReelsLikePhoto', () => {
     'tìm video giống cái này',
     'có phim tương tự không?',
     '找类似的视频',
+    'what is this from?',
+    'Which show is this from',
+    'where was this taken from?',
+    'what is the source of this',
+    'cái này từ đâu vậy?',
   ])('accepts %s', (caption) => {
     expect(asksForReelsLikePhoto(caption)).toBe(true);
   });
@@ -15,6 +20,8 @@ describe('asksForReelsLikePhoto', () => {
   it.each([
     'solve this problem',
     'what is this?',
+    'what is this made from?',
+    'where is the nearest cafe?',
     'translate the text',
     'how much is the total?',
     '',

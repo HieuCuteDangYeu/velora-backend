@@ -18,13 +18,16 @@ describe('SemanticReelSearchAdapter', () => {
     reels: unknown[],
     chunks: unknown[] | Error,
     embed?: jest.Mock,
+    scenes: unknown[] | Error = [],
   ) => {
+    const answer = (list: unknown[] | Error) =>
+      list instanceof Error ? throwError(() => list) : of(list);
     const send = jest.fn((pattern: string) =>
       pattern === 'index.search_chunks'
-        ? chunks instanceof Error
-          ? throwError(() => chunks)
-          : of(chunks)
-        : of(reels),
+        ? answer(chunks)
+        : pattern === 'index.search_visual_scenes'
+          ? answer(scenes)
+          : of(reels),
     );
     const adapter = new SemanticReelSearchAdapter(
       { send } as never,
@@ -82,6 +85,29 @@ describe('SemanticReelSearchAdapter', () => {
       'title-match',
       'spoken-only',
     ]);
+  });
+
+  it('adds reels whose sampled frames are close to the query, and ignores far frames', async () => {
+    const embed = jest.fn().mockResolvedValue(vector);
+    const { adapter } = build([], [], embed, [
+      hit('looks-like', { vectorDistance: 0.35 }),
+      hit('plausible-but-off', { vectorDistance: 0.44 }),
+    ]);
+    const found = await adapter.searchPublicReels({ query: 'x', limit: 8 });
+    expect(found.map((c) => c.reelId)).toEqual(['looks-like']);
+  });
+
+  it('still returns the other matches when the visual search fails', async () => {
+    const embed = jest.fn().mockResolvedValue(vector);
+    const { adapter } = build(
+      [hit('near', { vectorDistance: 0.4 })],
+      [],
+      embed,
+      new Error('qdrant timeout'),
+    );
+    await expect(
+      adapter.searchPublicReels({ query: 'x', limit: 8 }),
+    ).resolves.toEqual([expect.objectContaining({ reelId: 'near' })]);
   });
 
   it('asks for more candidates than the caller wants, since private reels are dropped later', async () => {

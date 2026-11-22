@@ -20,6 +20,8 @@ const QUERY_EMBEDDING_WAIT_MS = 2_500;
 const DEFAULT_MAX_VECTOR_DISTANCE = 0.55;
 // Transcript chunks are tighter: a chunk that is about the query sits at 0.30-0.37, unrelated text at 0.50+.
 const DEFAULT_MAX_CHUNK_DISTANCE = 0.45;
+// Sampled-frame descriptions: relevant 0.34-0.39, a merely plausible off-topic query 0.41-0.46, unrelated 0.57.
+const DEFAULT_MAX_VISUAL_DISTANCE = 0.4;
 // Hydration drops private reels after the search, so ask for more than the caller wants.
 const MAX_CANDIDATES = 40;
 const RRF_K = 60;
@@ -60,18 +62,19 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
       };
       // Reel documents (title, summary, tags) and, with a query vector, the transcript chunks: a frame
       // or a paraphrase names the topic the speaker talks about, which a title rarely does.
-      const [reelHits, chunkHits] = await Promise.all([
-        this.search(SEMANTIC_INDEX_PATTERNS.SEARCH_REELS, base),
+      const optional = (pattern: string, label: string) =>
         embedding
-          ? this.search(SEMANTIC_INDEX_PATTERNS.SEARCH_CHUNKS, base).catch(
-              (error: unknown) => {
-                this.logger.warn(
-                  `Chunk search for reel lookup failed: ${error instanceof Error ? error.message : String(error)}`,
-                );
-                return [] as SemanticIndexSearchResult[];
-              },
-            )
-          : Promise.resolve([] as SemanticIndexSearchResult[]),
+          ? this.search(pattern, base).catch((error: unknown) => {
+              this.logger.warn(
+                `${label} search for reel lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return [] as SemanticIndexSearchResult[];
+            })
+          : Promise.resolve([] as SemanticIndexSearchResult[]);
+      const [reelHits, chunkHits, sceneHits] = await Promise.all([
+        this.search(SEMANTIC_INDEX_PATTERNS.SEARCH_REELS, base),
+        optional(SEMANTIC_INDEX_PATTERNS.SEARCH_CHUNKS, 'Chunk'),
+        optional(SEMANTIC_INDEX_PATTERNS.SEARCH_VISUAL_SCENES, 'Visual scene'),
       ]);
       const maxDistance = this.maxVectorDistance();
       const maxChunkDistance = this.maxChunkDistance();
@@ -90,6 +93,12 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
           (typeof result.vectorDistance === 'number' &&
             result.vectorDistance <= maxChunkDistance),
       );
+      const maxVisualDistance = this.maxVisualDistance();
+      const sceneRanked = sceneHits.filter(
+        (result) =>
+          typeof result.vectorDistance === 'number' &&
+          result.vectorDistance <= maxVisualDistance,
+      );
       const scores = new Map<string, number>();
       const add = (list: SemanticIndexSearchResult[]) => {
         const seen = new Set<string>();
@@ -104,6 +113,7 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
       };
       add(reelRanked);
       add(chunkRanked);
+      add(sceneRanked);
       return [...scores.entries()]
         .sort((left, right) => right[1] - left[1])
         .slice(0, wanted)
@@ -152,6 +162,16 @@ export class SemanticReelSearchAdapter implements ISemanticReelSearchService {
       );
       return null;
     }
+  }
+
+  private maxVisualDistance(): number {
+    const value = Number(
+      this.config?.get<string>('REEL_SEARCH_MAX_VISUAL_DISTANCE') ??
+        DEFAULT_MAX_VISUAL_DISTANCE,
+    );
+    return Number.isFinite(value) && value > 0 && value <= 2
+      ? value
+      : DEFAULT_MAX_VISUAL_DISTANCE;
   }
 
   private maxChunkDistance(): number {

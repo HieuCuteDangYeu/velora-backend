@@ -276,3 +276,17 @@ Three indexing defects found by this benchmark were fixed and deployed: (A2) sto
 Re-upload with the fixes: 8oL03cm1kMc (70 min Korean podcast, reel bc7af7fb) and BX_fbdbUxsg (79 min, reel 3eed9b04) both indexed COMPLETED, so the 60-120 min band now has 2 more videos. tu3OXtpi4XI (silent) still does not index: it now fails later, at "Audio Reel produced no verified transcript", a fail-closed gate for audio with no speech, so A3 did not get a live test. Its failed reel was deleted.
 
 End-to-end on the two long videos (17 rows, grounded, reel scope, Haiku judge; `.benchmarks/diverse-e2e-4-longfix.json`): answered 0.94, cited the right reel 0.88, moment hit 0.59, correct (factual >= 0.7) 0.25, factual mean 0.39. Detail 0.50 correct (n=8), chapter 0.00 (n=5), opening 0.00 (n=2), timestamp 0.00 (n=2); Korean 0.43 (n=7), Vietnamese 0.11 (n=9). All cells are indicative (n < 15). Retrieval-layer numbers for these two were not run. This matches the pattern of earlier runs: the bot cites the right reel and moment far more often than it answers correctly.
+
+## Sixth run: full set on the full index (2026-11-22, 264 scored rows, 38 videos, retrieval stage, no rerank)
+First run that scores every REVIEWED row against the current index (two new long videos included), 0 unavailable, 0 unbound. Raw: `.benchmarks/diverse-run6-{reel,whole}.json`.
+
+| Slice | n | reel MRR | reel recall@5 | whole MRR | whole recall@5 |
+|---|---|---|---|---|---|
+| all rows | 264 | 0.62 | 0.75 | 0.49 | 0.60 |
+| content (detail + chapter) | 183 | 0.78 | 0.92 | 0.71 | 0.86 |
+| detail | 143 | 0.80 | 0.92 | 0.77 | 0.91 |
+| chapter | 40 | 0.72 | 0.93 | 0.49 | 0.70 |
+| opening | 28 | 0.28 | 0.46 | 0.01 | 0.04 |
+| timestamp | 53 | 0.24 | 0.32 | 0.00 | 0.00 |
+
+Content questions are unchanged from the fourth run (reel 0.91 → 0.92, whole 0.86 → 0.86 recall@5) even with 15 more videos in the index, so adding the new videos did not hurt retrieval. By duration band (reel scope, all types): 3-10 min recall@5 0.87, 10-30 min 0.74, 30-60 min 0.71, 60-120 min 0.69, under 3 min 1.00 (n=5, indicative). The band drop is mostly the opening and timestamp rows, which plain retrieval cannot answer (production routes them through dedicated paths; see the end-to-end layer). Whole-index chapter questions are the weak content cell (0.70): section summaries compete with chunks from other videos.

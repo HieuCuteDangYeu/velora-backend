@@ -40,11 +40,13 @@ test('off-topic row passes the weak rule when nothing is recommended, and is fla
   assert.equal(lib.scoreRow(off, { reply: { answer: 'here', recommended: ['r1'] } }).pass, false);
 });
 
-test('graceful error: a 4xx refusal or any reply is clean, a 5xx or silence is not', () => {
+test('graceful error: a 4xx refusal or any reply is clean, a 5xx is not, silence is undecided', () => {
   assert.equal(lib.scoreRow(err, { rejected: { stage: 'finalize', status: 400 } }).pass, true);
   assert.equal(lib.scoreRow(err, { rejected: { stage: 'finalize', status: 500 } }).pass, false);
   assert.equal(lib.scoreRow(err, { reply: { answer: 'could not read the image', recommended: [] } }).pass, true);
-  assert.equal(lib.scoreRow(err, {}).pass, false);
+  const silent = lib.scoreRow(err, {});
+  assert.equal(silent.pass, null);
+  assert.equal(silent.unobservable, true);
 });
 
 test('judge-only rows are undecided', () => {

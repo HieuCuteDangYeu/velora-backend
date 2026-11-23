@@ -1,0 +1,38 @@
+# A router (mongos) on velora-node-2 used only by backup.sh. conversation_db is
+# sharded (infra/mongo-shard/README.md), so a dump from the local rs0 secondary
+# alone would miss shard 2. Through this router, reads with secondaryPreferred
+# take shard 1 from the secondary on this machine and shard 2 from the laptop.
+# Not published: backup.sh runs mongodump inside the container (127.0.0.1:27017).
+# Start in /opt/velora/backup-worker/: docker compose -f mongos.compose.yaml up -d
+name: backup-mongos
+services:
+  mongos-backup:
+    image: mongo:8.0.34
+    container_name: mongos-backup
+    restart: unless-stopped
+    command:
+      - mongos
+      - --configdb
+      - cfg/mongo-cfg:27019
+      - --keyFile
+      - /etc/mongo/keyfile
+      - --bind_ip
+      - 127.0.0.1
+    extra_hosts:
+      # Homelab: shard 1 primary and the config server, via tailscale serve.
+      - 'mongo:100.102.228.48'
+      - 'mongo-cfg:100.102.228.48'
+      # Laptop: shard 2.
+      - 'sh2.lab:100.104.227.44'
+    volumes:
+      - /opt/velora/mongo-replica/keyfile:/etc/mongo/keyfile:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'mongosh --quiet --eval "db.adminCommand({ping:1}).ok" | grep -q 1',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

@@ -8,7 +8,7 @@ ROOT="${BACKUP_ROOT:-/opt/velora/backups}"
 KEEP="${BACKUP_KEEP:-7}"
 ENV_FILE="${ENV_FILE:-/opt/velora/backup-worker/.env}"
 PG_CONTAINER="${PG_CONTAINER:-postgres-replica}"
-MONGO_CONTAINER="${MONGO_CONTAINER:-mongo-replica}"
+MONGO_CONTAINER="${MONGO_CONTAINER:-mongos-backup}"
 PG_DATABASES="${PG_DATABASES:-notification call}"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -53,10 +53,12 @@ for db in $PG_DATABASES; do
   log "postgres-$db.dump ok: $entries entries, $(du -h "$work/postgres-$db.dump" | cut -f1)"
 done
 
-# --- MongoDB, from the secondary (credentials come through stdin, not argv)
-log "mongodump conversation_db from the secondary"
+# --- MongoDB, through the local mongos so every shard is included (shard 1 is read
+# from the secondary on this machine). MONGO_DUMP_URI points at 127.0.0.1:27017
+# inside the mongos-backup container. Credentials come through stdin, not argv.
+log "mongodump conversation_db through mongos (all shards)"
 printf 'uri: "%s"\n' "$MONGO_DUMP_URI" |
-  docker exec -i "$MONGO_CONTAINER" mongodump --config=/dev/stdin --readPreference=secondary \
+  docker exec -i "$MONGO_CONTAINER" mongodump --config=/dev/stdin --readPreference=secondaryPreferred \
     --archive --gzip 2>"$work/mongodump.log" >"$work/mongo-conversation_db.archive.gz"
 gzip -t "$work/mongo-conversation_db.archive.gz"
 docs="$(grep -o 'done dumping [^ ]* ([0-9]* documents)' "$work/mongodump.log" | tr '\n' ';')"

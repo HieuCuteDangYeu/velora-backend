@@ -8,7 +8,7 @@ homelab primaries carry no extra load and the copies sit on another machine. Set
 | Item | Value |
 | --- | --- |
 | What | `pg_dump -Fc` of the `notification` and `call` databases, `pg_dumpall --globals-only` (roles), and `mongodump` of `conversation_db` |
-| Source | the hot standby `postgres-replica` and the secondary `mongo-replica` (`--readPreference=secondary`) |
+| Source | the hot standby `postgres-replica`; for Mongo the local router `mongos-backup` (`mongos.compose.yaml`, `--readPreference=secondaryPreferred`), which reads shard 1 from the secondary `mongo-replica` on this machine and shard 2 from the laptop, because conversation_db is sharded |
 | When | every day at 20:30 UTC (03:30 in Vietnam), `Persistent=true` so a missed run happens at the next boot |
 | Where | `/opt/velora/backups/<UTC stamp>/`, mode 700, newest 7 kept |
 | Run by | `velora-backup.timer` and `velora-backup.service` (systemd, `Nice=10`, idle I/O) |

@@ -51,6 +51,7 @@ export class ChatPromptBuilderAdapter implements IChatPromptBuilder {
               state.userMessage,
               state.retrievalPlan?.requiresReelCoverage === true,
               state.route?.requiredEvidence ?? [],
+              this.requestedTranscriptTimeSec(state),
             )
           : 'Retrieved reel evidence was not selected for this request.';
     const routeContext = this.formatRouteContext(state, bounds);
@@ -247,6 +248,7 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
     requiredEvidenceTypes: NonNullable<
       RagChatWorkflowState['route']
     >['requiredEvidence'],
+    requestedTimeSec?: number,
   ): string {
     if (chunks.length === 0) {
       return 'No relevant shared reel evidence found in this conversation.';
@@ -296,6 +298,7 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
               : `Timestamp: ${match.startTime.toFixed(1)}s - ${match.endTime.toFixed(1)}s`
             : undefined,
           match.matchedBy ? `Matched by: ${match.matchedBy}` : undefined,
+          this.requestedTimeNote(match, evidenceType, requestedTimeSec),
           `${evidenceLabel}:\n${groundedEvidence ? this.truncate(groundedEvidence, 700) : '(no grounded evidence text available)'}`,
         ]
           .filter((line): line is string => Boolean(line))
@@ -324,6 +327,43 @@ ${boundPromptText(state.userMessage, bounds.maxUserMessageChars)}
       ...selected,
       ...chunks.filter((match) => !selectedSet.has(match)),
     ].slice(0, 3);
+  }
+
+  /** The one second a "what is said at 3:33" question names, when it names a single second. */
+  private requestedTranscriptTimeSec(
+    state: RagChatWorkflowState,
+  ): number | undefined {
+    const plan = state.retrievalPlan;
+    return plan?.transcriptTimestampSec !== undefined &&
+      plan.transcriptTimestampEndSec === undefined
+      ? plan.transcriptTimestampSec
+      : undefined;
+  }
+
+  /**
+   * An excerpt is a window of about a minute; the question names one second inside it. Say where, so
+   * the answer uses the words spoken around that second instead of the first sentence of the excerpt.
+   */
+  private requestedTimeNote(
+    match: ReelContextSearchResult,
+    evidenceType: string,
+    requestedTimeSec: number | undefined,
+  ): string | undefined {
+    if (
+      requestedTimeSec === undefined ||
+      evidenceType !== 'TRANSCRIPT' ||
+      !this.hasTimestamp(match) ||
+      match.endTime <= match.startTime ||
+      requestedTimeSec < match.startTime ||
+      requestedTimeSec > match.endTime
+    )
+      return undefined;
+    const percent = Math.round(
+      ((requestedTimeSec - match.startTime) /
+        (match.endTime - match.startTime)) *
+        100,
+    );
+    return `Requested time: ${Math.floor(requestedTimeSec / 60)}:${String(Math.floor(requestedTimeSec % 60)).padStart(2, '0')}, about ${percent}% of the way through this excerpt. Answer with what is said around that point, not with the start of the excerpt.`;
   }
 
   private hasTimestamp(

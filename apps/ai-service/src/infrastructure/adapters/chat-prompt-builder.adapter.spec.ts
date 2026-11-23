@@ -284,4 +284,60 @@ describe('ChatPromptBuilderAdapter', () => {
 
     expect(prompt).not.toContain('ATTACHED IMAGE DESCRIPTION');
   });
+
+  describe('requested time inside a transcript excerpt', () => {
+    const state = (plan: Record<string, unknown>) =>
+      ({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        userMessage: 'What does the speaker say at 3:33?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          needsVerification: true,
+          requiredEvidence: ['TRANSCRIPT'],
+          toolPlan: { allowedTools: [], requiredTools: [] },
+        },
+        retrievalPlan: plan,
+        memorySelection: {
+          includeRecentHistory: false,
+          includeConversationSummary: false,
+          includeUserMemory: false,
+          includeRetrievedChunks: true,
+          reason: 'x',
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'chunk-1',
+            reelId: 'reel-1',
+            distance: 0,
+            evidenceType: 'TRANSCRIPT',
+            evidenceText: 'First sentence. Middle sentence. Last sentence.',
+            chunkText: 'First sentence. Middle sentence. Last sentence.',
+            startTime: 188,
+            endTime: 238,
+            tags: [],
+          },
+        ],
+      }) as unknown as RagChatWorkflowState;
+
+    it('tells the model where the asked second falls in the excerpt', () => {
+      const prompt = new ChatPromptBuilderAdapter().build(
+        state({ transcriptTimestampSec: 213 }),
+      );
+      expect(prompt).toContain('Requested time: 3:33, about 50% of the way');
+      expect(prompt).toContain('not with the start of the excerpt');
+    });
+
+    it('adds nothing for a range, for no time, or for a second outside the excerpt', () => {
+      for (const plan of [
+        { transcriptTimestampSec: 213, transcriptTimestampEndSec: 230 },
+        {},
+        { transcriptTimestampSec: 900 },
+      ]) {
+        expect(new ChatPromptBuilderAdapter().build(state(plan))).not.toContain(
+          'Requested time:',
+        );
+      }
+    });
+  });
 });

@@ -386,3 +386,15 @@ The "correct" figure uses factual >= 0.7, which is harsh for one-sentence answer
 | all | 134 | 0.34 | 0.47 | 0.58 | 0.44 |
 
 Reading it: opening questions work. Detail questions are right or partly right about half the time and about 40% of them score under 0.3, which is real wrongness, not strictness. Chapter and timestamp answers are mostly partial (58% and 44% at >= 0.3) and rarely complete. Spot-checking live turns (a chapter question and a 5:06 timestamp question, graph log and answer read side by side) found grounded one-sentence answers with no routing fault, so the gap there is completeness, which a small local answer model and a one-sentence answer style cap. No fix was made for it; the earlier Muse experiment showed a bigger model did not close it.
+
+## Why detail answers fail (2026-11-23)
+All 21 detail rows that scored under 0.3 in the latest local-model runs, by what went wrong:
+
+| cause | rows | note |
+|---|---|---|
+| answered, right reel not cited | 11 | 4 of these are "I can only help with Velora" refusals; the rest are answers with no citation to the shared reel |
+| answered, cited the reel but the wrong moment | 5 | the answer step used a neighbouring excerpt |
+| answered from the right moment, still wrong | 4 | small-model answer errors (a wrong quantity, a paraphrase of the wrong sentence) |
+| hedged ("I don't have information on ...") | 1 | |
+
+The four refusals were re-run on the current deploy: 2 of 6 rows on those videos are still refused. The graph log shows why: the router files an English question about the video under plain chat with `retrieval=false`. The non-English guard (0eee7f07) deliberately does not cover English, because the frozen router corpora expect a general-knowledge question ("What is the difference between TCP and UDP?") with a video shared to stay chat, and its wording cannot be told apart from "What do AI companies admit happens to a chatbot's filters?" (a question the video answers). The right fix is a **retrieval probe**: for a plain-chat, question-shaped message with a video shared, embed it and search the shared reel's chunks (`index.search_chunks` with `filters.reelIds`); if the best chunk is within about 0.42 cosine distance, treat the turn as a video question, otherwise keep it as chat. That needs an optional probe injected into `QueryRouterAgentUseCase`, the reel ids plumbed into its input, and a threshold calibrated on the frozen corpora; it was not built because it would change about 3% of the rows in this set (2 of 58 detail rows), against a router that every chat turn passes through.

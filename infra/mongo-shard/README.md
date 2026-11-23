@@ -16,24 +16,35 @@ flag sends it straight to rs0 again (only safe while all chunks live on rs0).
 
 ## Shard keys
 
-All three collections use ranged keys that put a conversation and its messages and
-members on the same shard, so sending a message stays a single-shard transaction:
+All three collections use hashed keys on the same ObjectId, so a conversation,
+its members and its messages hash to the same value and stay on one shard;
+sending a message is a single-shard transaction:
 
-- `conversations`: `{ _id: 1 }`
-- `conversation_members`: `{ conversationId: 1 }` (unique `conversationId, userId` is prefixed by it)
-- `messages`: `{ conversationId: 1 }` (unique `conversationId, senderId, clientMessageId` is prefixed by it)
+- `conversations`: `{ _id: "hashed" }`
+- `conversation_members`: `{ conversationId: "hashed" }`
+- `messages`: `{ conversationId: "hashed" }`
 
-Zones keep the three aligned: zone `lab2` (shard rs1) owns `[MinKey, split)` and zone
-`home` (shard rs0) owns `[split, MaxKey)` on every collection, with the same split
-ObjectId. New conversations get larger ObjectIds, so they land on rs0 (the homelab,
-on Ethernet). The balancer moves chunks to satisfy the zones.
+The unique indexes `conversationId, userId` and `conversationId, senderId,
+clientMessageId` still work: every document with the same conversationId has
+the same hash, so uniqueness per shard is uniqueness overall (checked on
+MongoDB 8.0.34 on 2026-11-23: duplicate inserts fail with 11000, upserts work).
+
+Zones split the hashed space in two on every collection: `lab2` (shard rs1, the
+laptop) owns `[MinKey, 0)` and `home` (shard rs0) owns `[0, MaxKey)`. New
+conversations therefore land on either shard about half the time. The first
+layout (2026-11-23 morning) used ranged keys split at one ObjectId, which sent
+every new conversation to rs0; it was resharded to the hashed keys with
+`reshardCollection` the same day.
 
 ## Users
 
 Through mongos, users live on the config server, not on the shards. The cluster
 has its own `root` (same name and password as `MONGO_INITDB_ROOT_*`) and
 `velora_conversation` (same password as in `CONVERSATION_DATABASE_URL`). The old
-users on rs0 still work for direct connections to shard 1 (backups, maintenance).
+users on rs0 exist for maintenance only: MongoDB 8.0 rejects direct reads and
+writes on a shard unless the user has `directShardOperations` (nobody has it now;
+both nightly backups dump through a mongos). Before adding a shard, move every
+client to mongos first, or the shard starts refusing it the moment it joins.
 
 ## Operating notes
 

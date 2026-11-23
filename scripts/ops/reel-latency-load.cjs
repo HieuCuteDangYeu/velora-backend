@@ -33,6 +33,8 @@
  * so judge a run by its larger stages. A p95 over fewer than about 20 samples is one request: use
  * --stage-seconds 90 --think-ms 100 for 30-600 samples per scenario, and check the homelab load
  * (uptime) is under 2 first, because another stress test shows up as 1-40 s tails.
+ * --ramp-seconds N spreads the start of each stage's viewers over N seconds (default 0: all at once,
+ * which also hits every cache cold at the same instant; a push notification can do that, a normal day does not).
  *
  * Usage:
  *   VELORA_TEST_EMAIL=... VELORA_TEST_PASSWORD=... \
@@ -488,7 +490,7 @@ function enabledFilter(list) {
   return (name) => names.has(name);
 }
 
-async function runStage({ concurrency, seconds, thinkMs, scenarios, abort, viewers }) {
+async function runStage({ concurrency, seconds, thinkMs, rampSeconds = 0, scenarios, abort, viewers }) {
   const samples = [];
   const deadline = performance.now() + seconds * 1000;
   // Keep only the timing fields: a retained response body (a feed page is 13-40 KB of parsed JSON)
@@ -496,6 +498,8 @@ async function runStage({ concurrency, seconds, thinkMs, scenarios, abort, viewe
   const record = (sample) => { const { body, text, ...slim } = sample; samples.push(slim); };
   const worker = async (_unused, index) => {
     const auth = viewers ? viewers[index] : undefined;
+    // Without a ramp every viewer starts in the same instant, which is the harshest start there is.
+    if (rampSeconds > 0) await sleep((index / concurrency) * rampSeconds * 1000);
     while (performance.now() < deadline && !abort.tripped) {
       await scenarios.next().run(record, auth);
       if (thinkMs) await sleep(thinkMs * (0.5 + Math.random()));
@@ -616,6 +620,7 @@ async function main() {
   const stages = String(args.stages || '1,5,10').split(',').map((v) => intArg(v.trim(), 1, '--stages', 1, 2000));
   const stageSeconds = intArg(args['stage-seconds'], 20, '--stage-seconds', 5, 600);
   const thinkMs = intArg(args['think-ms'], 250, '--think-ms', 0, 10000);
+  const rampSeconds = intArg(args['ramp-seconds'], 0, '--ramp-seconds', 0, 600);
   const maxErrorRate = Number(args['max-error-rate'] ?? 0.2);
   const abortP95Ms = intArg(args['abort-p95-ms'], 8000, '--abort-p95-ms', 500, 120000);
   const scenarioList = String(args.scenarios || DEFAULT_SCENARIOS).split(',').map((v) => v.trim()).filter(Boolean);
@@ -667,7 +672,7 @@ async function main() {
   const scenarios = buildScenarios(ctx, enabled, rand);
   log(`[plan] scenarios=${scenarios.names.join(',')} stages=${stages.join('/')} x ${stageSeconds}s think=${thinkMs}ms`);
 
-  const report = { baseUrl, startedAt: new Date().toISOString(), config: { stages, stageSeconds, thinkMs, slos }, stages: {}, cdnCache: {}, aborted: false, abortReason: '', logins: 0, slo: [] };
+  const report = { baseUrl, startedAt: new Date().toISOString(), config: { stages, stageSeconds, thinkMs, rampSeconds, slos }, stages: {}, cdnCache: {}, aborted: false, abortReason: '', logins: 0, slo: [] };
   const abort = { tripped: false };
   const rawRows = ['stage,scenario,ok,status,ms,ttfb_ms,bytes,cache,at,cf_ray'];
   const allSamples = [];
@@ -688,7 +693,7 @@ async function main() {
         }).catch((error) => { log(`[rag] failed: ${error.message}`); return [{ name: 'rag_final', ok: false, status: null, error: 'rag_exception', ms: 0 }]; })
       : null;
 
-    const { samples, wallSeconds } = await runStage({ concurrency, seconds: stageSeconds, thinkMs, scenarios, abort, viewers });
+    const { samples, wallSeconds } = await runStage({ concurrency, seconds: stageSeconds, thinkMs, rampSeconds, scenarios, abort, viewers });
     if (ragPromise) samples.push(...(await ragPromise));
 
     const rows = {};

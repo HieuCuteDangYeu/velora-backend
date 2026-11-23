@@ -5,6 +5,7 @@ import {
 import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
 import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
+import type { ISharedReelEvidenceProbe } from '@ai/domain/interfaces/shared-reel-evidence-probe.interface';
 import type {
   RagChatIntent,
   RagChatRouteDecision,
@@ -23,7 +24,7 @@ import type {
   StructuredLlmCallDiagnostics,
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Optional, Logger } from '@nestjs/common';
 import {
   boundPromptText,
   readRagPromptBounds,
@@ -115,6 +116,16 @@ const PHOTO_NOTE_GUIDANCE =
 const APP_OR_ASSISTANT_QUESTION =
   /\b(?:velora|app|profile|account|password|settings?|notifications?|log\s?in|sign\s?up|follow(?:ers?)?|block|report|who\s+are\s+you|what\s+are\s+you|your\s+name)\b/i;
 
+/** A question-shaped message (ends with a question mark, enough words) that is not about the app or the assistant. */
+export function looksLikeQuestion(message: string): boolean {
+  const text = message.trim();
+  return (
+    text.length >= 12 &&
+    /[?？]\s*$/u.test(text) &&
+    !APP_OR_ASSISTANT_QUESTION.test(text)
+  );
+}
+
 /** True when the text has a letter outside A-Z (Hangul, CJK, Devanagari, Arabic, accented Latin). */
 function hasNonEnglishLetters(text: string): boolean {
   return /\p{L}/u.test(text.replace(/[A-Za-z]/g, ''));
@@ -171,9 +182,67 @@ export class QueryRouterAgentUseCase {
     private readonly structuredLlmService: IStructuredLlmService,
     @Inject('IAiApplicationConfig')
     private readonly config: IAiApplicationConfig,
+    @Optional()
+    @Inject('ISharedReelEvidenceProbe')
+    private readonly evidenceProbe?: ISharedReelEvidenceProbe,
   ) {}
 
+  /**
+   * Routes by meaning. A question-shaped message the model leaves as plain chat while a video is
+   * shared is checked against that video's transcript: a general-knowledge question and a question
+   * about the video can have the same wording, and only the video's own content tells them apart.
+   */
   async execute(input: {
+    message: string;
+    recentHistory?: string;
+    hasSharedReelContext?: boolean;
+    sharedReelCount?: number;
+    referentContext?: RagRouterReferentContext;
+    accessibleReelIds?: string[];
+  }): Promise<RagChatRouteDecision> {
+    const route = await this.routeByMeaning(input);
+    if (
+      route.intent !== 'NORMAL_CHAT' ||
+      route.recommendationAction.type !== 'NONE' ||
+      !this.evidenceProbe ||
+      input.hasSharedReelContext !== true ||
+      !input.accessibleReelIds?.length ||
+      !looksLikeQuestion(input.message)
+    ) {
+      return route;
+    }
+    const matches = await this.evidenceProbe
+      .hasStrongEvidence({
+        message: input.message,
+        accessibleReelIds: input.accessibleReelIds,
+      })
+      .catch(() => false);
+    if (!matches) return route;
+    return {
+      ...this.normalize(
+        {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          recommendationAction: {
+            type: 'NONE',
+            query: '',
+            allowPersonalizedFallback: false,
+            suggestedQueries: [],
+          },
+          tools: ['search_reel_content'],
+          reason:
+            'The question was filed as plain chat, but a shared video has a close transcript excerpt for it.',
+        },
+        {
+          message: input.message,
+          hasSharedReelContext: input.hasSharedReelContext,
+        },
+      ),
+      diagnostics: route.diagnostics,
+    };
+  }
+
+  private async routeByMeaning(input: {
     message: string;
     recentHistory?: string;
     hasSharedReelContext?: boolean;

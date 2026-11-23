@@ -60,6 +60,7 @@ import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-s
 import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
 import { OllamaToolCallingLlmAdapter } from '@ai/infrastructure/adapters/ollama-tool-calling-llm.adapter';
 import { GroqTranscriptionAdapter } from '@ai/infrastructure/adapters/groq-transcription.adapter';
+import { SharedReelEvidenceProbeAdapter } from '@ai/infrastructure/adapters/shared-reel-evidence-probe.adapter';
 import { FallbackVisionAdapter } from '@ai/infrastructure/adapters/fallback-vision.adapter';
 import { GroqVisionAdapter } from '@ai/infrastructure/adapters/groq-vision.adapter';
 import { LangGraphRagChatWorkflowAdapter } from '@ai/infrastructure/adapters/langgraph-rag-chat-workflow.adapter';
@@ -240,6 +241,10 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     {
       provide: 'IContextToolAgentPolicy',
       useExisting: 'IRetrievalAgentPolicy',
+    },
+    {
+      provide: 'ISharedReelEvidenceProbe',
+      useClass: SharedReelEvidenceProbeAdapter,
     },
     {
       provide: 'IRetrievalEngine',

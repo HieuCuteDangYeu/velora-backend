@@ -1999,6 +1999,85 @@ describe('QueryRouterAgentUseCase', () => {
       });
     });
 
+    describe('the evidence probe on an English plain-chat question', () => {
+      const routeWithProbe = async (
+        message: string,
+        probeResult: boolean | 'throws',
+        shared = true,
+      ) => {
+        const probe = {
+          hasStrongEvidence: jest.fn(() =>
+            probeResult === 'throws'
+              ? Promise.reject(new Error('probe down'))
+              : Promise.resolve(probeResult),
+          ),
+        };
+        const service = {
+          generateObject: jest
+            .fn()
+            .mockResolvedValue(response({ intent: 'NORMAL_CHAT' })),
+        };
+        const decision = await new QueryRouterAgentUseCase(
+          service as never,
+          config,
+          probe,
+        ).execute({
+          message,
+          hasSharedReelContext: shared,
+          sharedReelCount: shared ? 1 : 0,
+          accessibleReelIds: shared ? ['reel-1'] : [],
+        });
+        return { decision, probe };
+      };
+      const question = 'What do AI companies admit happens to the filters?';
+
+      it('goes to the video when a shared reel has a close excerpt', async () => {
+        const { decision, probe } = await routeWithProbe(question, true);
+        expect(decision).toMatchObject({
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          needsRetrieval: true,
+        });
+        expect(probe.hasStrongEvidence).toHaveBeenCalledWith({
+          message: question,
+          accessibleReelIds: ['reel-1'],
+        });
+      });
+
+      it('stays chat when no excerpt is close', async () => {
+        expect(
+          (
+            await routeWithProbe(
+              'What is the difference between TCP and UDP?',
+              false,
+            )
+          ).decision.intent,
+        ).toBe('NORMAL_CHAT');
+      });
+
+      it('keeps the model verdict when the probe itself fails', async () => {
+        expect((await routeWithProbe(question, 'throws')).decision.intent).toBe(
+          'NORMAL_CHAT',
+        );
+      });
+
+      it('does not probe greetings, app questions, or chats with no shared video', async () => {
+        for (const [message, shared] of [
+          ['Thanks, that helps a lot!', true],
+          ['How do I edit my Velora profile?', true],
+          [question, false],
+        ] as const) {
+          const { decision, probe } = await routeWithProbe(
+            message,
+            true,
+            shared,
+          );
+          expect(decision.intent).toBe('NORMAL_CHAT');
+          expect(probe.hasStrongEvidence).not.toHaveBeenCalled();
+        }
+      });
+    });
+
     it('still refuses an off-topic message when no video is shared', async () => {
       const { route } = await routeFor(undefined);
 

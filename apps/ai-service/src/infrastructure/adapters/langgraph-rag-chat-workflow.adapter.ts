@@ -638,6 +638,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
           recentHistory: this.formatRecentHistory(state),
           hasSharedReelContext: state.hasSharedReelContext,
           sharedReelCount: state.accessibleReelIds?.length ?? 0,
+          accessibleReelIds: state.accessibleReelIds,
           referentContext: this.buildRouterReferentContext(state),
         }),
       );

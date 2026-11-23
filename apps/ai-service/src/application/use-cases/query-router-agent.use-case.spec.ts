@@ -1941,6 +1941,62 @@ describe('QueryRouterAgentUseCase', () => {
       });
     });
 
+    describe('a plain-chat verdict on a question about a shared video', () => {
+      const routeShared = async (
+        message: string,
+        hasSharedReelContext = true,
+        overrides: Record<string, unknown> = {},
+      ) => {
+        const service = {
+          generateObject: jest
+            .fn()
+            .mockResolvedValue(
+              response({ intent: 'NORMAL_CHAT', ...overrides }),
+            ),
+        };
+        return new QueryRouterAgentUseCase(service as never, config).execute({
+          message,
+          hasSharedReelContext,
+          sharedReelCount: hasSharedReelContext ? 1 : 0,
+        });
+      };
+
+      it.each([
+        '광둥어를 공부하려고 넷플릭스 콘텐츠를 볼 때 자막은 어떻게 설정하고 있나요?',
+        'Người nói đã khuyên điều gì về việc học tiếng Quảng Đông?',
+        'What does the speaker recommend for learning vocabulary?',
+      ])('goes to the shared video: %s', async (message) => {
+        const decision = await routeShared(
+          message.endsWith('?') ? message : `${message.slice(0, -1)}?`,
+        );
+        expect(decision).toMatchObject({
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          needsRetrieval: true,
+        });
+      });
+
+      it.each([
+        'How do I edit my Velora profile?',
+        'Who are you, exactly?',
+        'thanks?',
+        'Thanks, that helps a lot!',
+      ])('stays chat: %s', async (message) => {
+        expect((await routeShared(message)).intent).toBe('NORMAL_CHAT');
+      });
+
+      it('stays chat when no video is shared', async () => {
+        expect(
+          (
+            await routeShared(
+              'What does the speaker recommend for learning vocabulary?',
+              false,
+            )
+          ).intent,
+        ).toBe('NORMAL_CHAT');
+      });
+    });
+
     it('still refuses an off-topic message when no video is shared', async () => {
       const { route } = await routeFor(undefined);
 

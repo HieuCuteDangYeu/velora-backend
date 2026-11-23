@@ -1,0 +1,61 @@
+# A conversation-service replica on the Windows laptop (WSL2) plus its own mongos.
+# Run in /opt/velora/conv-run/ with conv.env next to this file (mode 600; the
+# service's secrets, same values as on the homelab). The image is built on the
+# laptop: the x86 base from an earlier build plus the dist/ of the homelab image
+# for the same commit (see README.md).
+#
+# Role: this replica owns the conversations whose shard is rs1 on this laptop
+# (CONVERSATION_WRITE_ZONE=lab2, the hashed half below 0), so their Mongo writes
+# go to the local mongos and the local shard. Homelab replicas run with
+# CONVERSATION_WRITE_ZONE=home. It never drains the notification outbox (that
+# needs notification-service, which only the homelab reaches).
+name: conversation-laptop
+services:
+  mongos-laptop:
+    image: mongo:8.0.34
+    container_name: mongos-laptop
+    restart: unless-stopped
+    # Host network so sh2.lab can be loopback (the laptop cannot reach its own
+    # tailnet address from a bridge container); listens on loopback and the
+    # docker bridge gateway only, where the replica reaches it.
+    network_mode: host
+    command:
+      - mongos
+      - --port
+      - '27020'
+      - --bind_ip
+      - 127.0.0.1,172.17.0.1
+      - --keyFile
+      - /etc/mongo/keyfile
+      - --configdb
+      - cfg/mongo-cfg:27019
+    extra_hosts:
+      - 'mongo-cfg:100.102.228.48'
+      - 'mongo:100.102.228.48'
+      - 'sh2.lab:127.0.0.1'
+    volumes:
+      - /opt/velora/mongo-shard2/keyfile:/etc/mongo/keyfile:ro
+
+  conversation-laptop:
+    image: conversation-service-laptop:${CONV_LAPTOP_TAG:-latest}
+    container_name: conversation-laptop
+    restart: unless-stopped
+    depends_on:
+      - mongos-laptop
+    # raw: secrets contain "$", which Compose would otherwise interpolate.
+    env_file:
+      - path: conv.env
+        format: raw
+    environment:
+      CONVERSATION_PORT: '3005'
+      CONVERSATION_MONGO_ROUTER: 172.17.0.1:27020
+      CONVERSATION_MESSAGE_WRITE_DRIVER: native
+      CONVERSATION_WRITE_ROUTING: owner
+      CONVERSATION_WRITE_ZONE: lab2
+      CONVERSATION_NOTIFICATION_OUTBOX: 'off'
+    extra_hosts:
+      - 'redis:100.102.228.48'
+      - 'rabbitmq:100.102.228.48'
+      - 'notification-service:100.102.228.48'
+    ports:
+      - '100.104.227.44:3005:3005'

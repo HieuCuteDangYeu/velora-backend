@@ -1,6 +1,8 @@
 import { ForbiddenException, HttpException } from '@nestjs/common';
 import {
   chooseOwner,
+  memberId,
+  zoneOfMember,
   ConversationWriteRouter,
   decodeWriteError,
   encodeWriteError,
@@ -121,6 +123,73 @@ describe('chooseOwner', () => {
 
   it('returns null without members', () => {
     expect(chooseOwner([], 'c')).toBeNull();
+  });
+});
+
+describe('zone-aware ownership', () => {
+  const zoneOf = (conversationId: string) =>
+    conversationId.startsWith('L') ? 'lab2' : 'home';
+  const members = [
+    memberId('mac-1', 'home'),
+    memberId('mac-2', 'home'),
+    memberId('laptop-1', 'lab2'),
+  ];
+
+  it('builds and reads zone-prefixed member ids', () => {
+    expect(memberId('r1')).toBe('r1');
+    expect(memberId('r1', 'lab2')).toBe('lab2~r1');
+    expect(zoneOfMember('lab2~r1')).toBe('lab2');
+    expect(zoneOfMember('r1')).toBeNull();
+  });
+
+  it('gives every conversation to a replica of its own zone', () => {
+    for (let i = 0; i < 200; i++) {
+      expect(chooseOwner(members, `L${i}`, zoneOf)).toBe('lab2~laptop-1');
+      expect(['home~mac-1', 'home~mac-2']).toContain(
+        chooseOwner(members, `H${i}`, zoneOf),
+      );
+    }
+  });
+
+  it('falls back to every replica when the zone has none alive', () => {
+    const macOnly = ['home~mac-1', 'home~mac-2'];
+    for (let i = 0; i < 50; i++)
+      expect(macOnly).toContain(chooseOwner(macOnly, `L${i}`, zoneOf));
+  });
+
+  it('ignores zones when the conversation has none', () => {
+    expect(members).toContain(chooseOwner(members, 'x', () => null));
+  });
+
+  it('routes a forwarded write to the zone owner end to end', async () => {
+    const written: string[] = [];
+    const bus = new FakeBus();
+    const make = (replica: string, zone: string) =>
+      new ConversationWriteRouter(new FakeRedis(bus) as never, {
+        selfId: memberId(replica, zone),
+        zoneOf,
+        handler: (writes) => {
+          written.push(replica);
+          return Promise.resolve(writes);
+        },
+        heartbeatMs: 60_000,
+        logger: silent,
+      });
+    const mac = make('mac', 'home');
+    const laptop = make('laptop', 'lab2');
+    await mac.start();
+    await laptop.start();
+    for (const router of [mac, laptop])
+      await (router as unknown as { beat(): Promise<void> }).beat();
+
+    expect(mac.ownerOf('L-conv')).toBe('lab2~laptop');
+    expect(laptop.ownerOf('H-conv')).toBe('home~mac');
+    await expect(mac.forward('lab2~laptop', [{ n: 1 }])).resolves.toEqual([
+      { n: 1 },
+    ]);
+    expect(written).toEqual(['laptop']);
+    await mac.stop();
+    await laptop.stop();
   });
 });
 

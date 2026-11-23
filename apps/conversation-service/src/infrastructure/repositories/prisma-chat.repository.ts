@@ -18,8 +18,10 @@ import {
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
 import { ConversationWriteLock } from './conversation-write-lock';
+import { shardZoneOf } from './conversation-shard-zone';
 import {
   ConversationWriteRouter,
+  memberId,
   WriteRouterUnavailableError,
 } from './conversation-write-router';
 import { hostname } from 'node:os';
@@ -161,8 +163,12 @@ export class PrismaChatRepository implements IChatRepository {
     // Opt-in: with CONVERSATION_WRITE_ROUTING=owner every conversation is written by one
     // replica only, so replicas stop colliding on the same conversation document.
     if (process.env.CONVERSATION_WRITE_ROUTING === 'owner') {
+      // CONVERSATION_WRITE_ZONE=home|lab2: own the conversations whose shard lives on
+      // this machine, so their Mongo writes stay local (see conversation-shard-zone.ts).
+      const zone = process.env.CONVERSATION_WRITE_ZONE?.trim() || undefined;
       this.writeRouter = new ConversationWriteRouter(redis, {
-        selfId: `${hostname()}-${process.pid}`,
+        selfId: memberId(`${hostname()}-${process.pid}`, zone),
+        ...(zone ? { zoneOf: shardZoneOf } : {}),
         // CONVERSATION_WRITE_OWNER=off: this replica only forwards writes (slow link or weak machine).
         ownsConversations: process.env.CONVERSATION_WRITE_OWNER !== 'off',
         handler: (writes) =>

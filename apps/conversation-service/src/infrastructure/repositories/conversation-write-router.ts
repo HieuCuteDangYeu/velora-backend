@@ -70,6 +70,12 @@ export interface WriteRouterOptions {
    * machine that should carry sockets, not the write path). Default true.
    */
   ownsConversations?: boolean;
+  /**
+   * Maps a conversation to the zone whose replicas should own it (the zone of
+   * its shard). Replicas register as `<zone>~<id>` (see memberId). Without it,
+   * ownership is spread over every live replica.
+   */
+  zoneOf?: (conversationId: string) => string | null;
   /** A replica without a heartbeat for this long no longer owns anything. */
   memberTtlMs?: number;
   requestTimeoutMs?: number;
@@ -96,14 +102,38 @@ function hash32(text: string): number {
   return h >>> 0;
 }
 
-/** Highest-random-weight choice: a replica joining or leaving moves only its share. */
+/** Separates an optional zone prefix from the replica part of a member id. */
+export const ZONE_SEPARATOR = '~';
+
+/** The member id a replica registers under: `<zone>~<replica>` when it has a zone. */
+export function memberId(replica: string, zone?: string): string {
+  return zone ? `${zone}${ZONE_SEPARATOR}${replica}` : replica;
+}
+
+export function zoneOfMember(member: string): string | null {
+  const at = member.indexOf(ZONE_SEPARATOR);
+  return at > 0 ? member.slice(0, at) : null;
+}
+
+/**
+ * Highest-random-weight choice: a replica joining or leaving moves only its share.
+ * With zoneOf, a conversation goes to a live replica of its own zone (the machine
+ * that holds its shard) and only falls back to every replica when that zone has
+ * none alive.
+ */
 export function chooseOwner(
   members: readonly string[],
   conversationId: string,
+  zoneOf?: (conversationId: string) => string | null,
 ): string | null {
+  const zone = zoneOf?.(conversationId) ?? null;
+  const inZone = zone
+    ? members.filter((member) => zoneOfMember(member) === zone)
+    : [];
+  const candidates = inZone.length > 0 ? inZone : members;
   let best: string | null = null;
   let bestWeight = -1;
-  for (const member of members) {
+  for (const member of candidates) {
     const weight = hash32(`${member}|${conversationId}`);
     if (
       weight > bestWeight ||
@@ -174,6 +204,7 @@ export class ConversationWriteRouter {
   private readonly handler: WriteHandler;
   private readonly heartbeatMs: number;
   private readonly owns: boolean;
+  private readonly zoneOf?: (conversationId: string) => string | null;
   private readonly memberTtlMs: number;
   private readonly requestTimeoutMs: number;
   private readonly logger: Pick<Logger, 'log' | 'warn'>;
@@ -198,6 +229,7 @@ export class ConversationWriteRouter {
     this.handler = options.handler;
     this.heartbeatMs = options.heartbeatMs ?? 2_000;
     this.owns = options.ownsConversations ?? true;
+    this.zoneOf = options.zoneOf;
     this.memberTtlMs = options.memberTtlMs ?? 6_000;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 4_000;
     this.logger = options.logger ?? new Logger(ConversationWriteRouter.name);
@@ -254,7 +286,7 @@ export class ConversationWriteRouter {
     } else if (this.members.length < 1) {
       return null;
     }
-    return chooseOwner(this.members, conversationId);
+    return chooseOwner(this.members, conversationId, this.zoneOf);
   }
 
   async forward(owner: string, writes: unknown[]): Promise<unknown[]> {

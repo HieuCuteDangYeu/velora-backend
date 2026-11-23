@@ -37,7 +37,8 @@ services:
       - /opt/velora/mongo-shard2/keyfile:/etc/mongo/keyfile:ro
 
   conversation-laptop:
-    image: conversation-service-laptop:${CONV_LAPTOP_TAG:-latest}
+    # CONV_LAPTOP_TAG comes from .env next to this file (the commit the image was built from).
+    image: conversation-service-laptop:${CONV_LAPTOP_TAG:?set CONV_LAPTOP_TAG in .env}
     container_name: conversation-laptop
     restart: unless-stopped
     depends_on:

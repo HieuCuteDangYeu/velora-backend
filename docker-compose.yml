@@ -245,6 +245,15 @@ services:
       # conversation_db is sharded (infra/mongo-shard/README.md): every Mongo client
       # goes through the router instead of the rs0 replica set.
       CONVERSATION_MONGO_ROUTER: mongos:27017
+      # One replica here and one on the Windows laptop (infra/windows-node/
+      # conversation.compose.yaml). Each owns the conversations whose shard lives on
+      # its own machine (zone home = rs0 here, lab2 = rs1 on the laptop), so message
+      # writes stay local; a conversation of a zone with no live replica is written
+      # by any replica. Only this side drains the notification outbox.
+      CONVERSATION_MESSAGE_WRITE_DRIVER: native
+      CONVERSATION_WRITE_ROUTING: owner
+      CONVERSATION_WRITE_ZONE: home
+      CONVERSATION_NOTIFICATION_OUTBOX: leader
       # Display profiles are looked up from user-service, whose database is a
       # remote Aiven server (~75 ms a query) behind a pool of two connections,
       # so it can answer about 1,600 lookups a minute. At 10,000 online users

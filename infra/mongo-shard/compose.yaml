@@ -1,0 +1,97 @@
+# Sharded-cluster control plane on the homelab: the config server replica set
+# (cfg) and the router (mongos). Shard 1 is the main stack's `mongo` (rs0, started
+# with --shardsvr), shard 2 is rs1 on the Windows laptop (sh2.lab, see
+# infra/windows-node/mongo-shard2.compose.yaml). conversation-service reaches the
+# cluster through mongos:27017 when CONVERSATION_MONGO_ROUTER is set.
+#
+# Kept out of the main docker-compose.yml so the deploy controller does not treat
+# these as unmanaged services; it ignores infra/mongo-shard/. Start by hand on
+# the homelab:
+#   docker compose -f infra/mongo-shard/compose.yaml up -d
+# Both join the main stack's network and reuse its keyfile (volume mongo_config).
+name: mongo-shard
+services:
+  mongo-cfg:
+    image: mongo:8.0.34
+    container_name: mongo-cfg
+    restart: unless-stopped
+    command:
+      - mongod
+      - --configsvr
+      - --replSet
+      - cfg
+      - --port
+      - '27019'
+      - --keyFile
+      - /etc/mongo-key/keyfile
+      - --bind_ip_all
+      - --wiredTigerCacheSizeGB
+      - '0.25'
+    extra_hosts:
+      - 'sh2.lab:100.104.227.44'
+    # Loopback only; `tailscale serve --tcp 27019` exposes it to the shard members
+    # on velora-node-2 and the laptop, which resolve mongo-cfg to the homelab.
+    ports:
+      - '127.0.0.1:27019:27019'
+    volumes:
+      - cfg_data:/data/db
+      - cfg_config:/data/configdb
+      - mongo_key:/etc/mongo-key:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'mongosh --quiet --port 27019 --eval "db.adminCommand({ping:1}).ok" | grep -q 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - microservices-net
+
+  mongos:
+    image: mongo:8.0.34
+    container_name: mongos
+    restart: unless-stopped
+    depends_on:
+      - mongo-cfg
+    command:
+      - mongos
+      - --configdb
+      - cfg/mongo-cfg:27019
+      - --port
+      - '27017'
+      - --keyFile
+      - /etc/mongo-key/keyfile
+      - --bind_ip_all
+    extra_hosts:
+      - 'sh2.lab:100.104.227.44'
+    expose:
+      - '27017'
+    volumes:
+      - mongo_key:/etc/mongo-key:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'mongosh --quiet --eval "db.adminCommand({ping:1}).ok" | grep -q 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - microservices-net
+
+volumes:
+  cfg_data:
+  cfg_config:
+  mongo_key:
+    external: true
+    name: microservices-boilerplate_mongo_config
+
+networks:
+  microservices-net:
+    external: true
+    name: microservices-boilerplate_microservices-net

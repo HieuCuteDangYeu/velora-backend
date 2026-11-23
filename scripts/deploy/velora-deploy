@@ -29,6 +29,26 @@ CORE_SCRIPT="$SCRIPT_DIR/velora-deploy-core"
 }
 source "$CORE_SCRIPT"
 
+# The 2026-11 sharding cutover turns the rs0 replica set into shard 1 of a sharded
+# cluster (config server and mongos live in infra/mongo-shard/). The only mongo
+# change approved here is that one: `--shardsvr --port 27017` appended to the
+# mongod command plus extra_hosts for the other shard. Anything else on mongo
+# still needs manual review.
+is_approved_mongo_shardsvr_migration() {
+  local base_normal="$1"
+  local target_normal="$2"
+
+  jq -n -e --slurpfile a "$base_normal" --slurpfile b "$target_normal" '
+    def strip: (.entrypoint // []) |= map(sub(" --shardsvr --port 27017"; ""));
+    ($a[0].services.mongo // null) as $base
+    | ($b[0].services.mongo // null) as $target
+    | ($base != null and $target != null)
+      and ((($base.entrypoint // []) | map(select(test("--shardsvr"))) | length) == 0)
+      and ((($target.entrypoint // []) | map(select(test("mongod .* --shardsvr --port 27017"))) | length) == 1)
+      and (($target | strip | del(.extra_hosts)) == ($base | del(.extra_hosts)))
+  ' >/dev/null
+}
+
 compare_compose_models() {
   [[ -n "$LAST_DEPLOYED_SHA" ]] || return 0
   [[ -f "$BASE_COMPOSE_JSON" && -f "$TARGET_COMPOSE_JSON" ]] || return 0
@@ -129,6 +149,13 @@ compare_compose_models() {
         continue
       fi
 
+      if [[ "$service" == "mongo" ]] \
+        && is_approved_mongo_shardsvr_migration "$base_normal" "$target_normal"; then
+        add_unique mongo INFRA_RECONCILE_SERVICES
+        log "MongoDB shard-server migration is approved; converging mongo (no force-recreate)."
+        continue
+      fi
+
       fail "Compose configuration changed for protected/worker service '$service'; manual review is required"
     fi
 
@@ -188,6 +215,15 @@ plan_from_changed_files() {
         add_app_and_worker_companions reel-indexing-service
         ;;
       scripts/ops/reel-qdrant-*|scripts/ops/qdrant-*|scripts/ops/backup-qdrant*)
+        ;;
+      scripts/ops/*chat-stress*|scripts/ops/CHAT-STRESS-FIXTURES.md)
+        # Operator-only tools that create synthetic load users and rooms.
+        ;;
+      infra/mongo-replica/*|infra/mongo-shard/*|infra/postgres-replica/*|infra/call-media-node/*|infra/friend-mail-node/*|infra/langfuse-node/*|infra/vps-agent/*|infra/backup-worker/*|infra/grafana-node/*|infra/loki-node/*|infra/windows-node/*)
+        # Compose files and notes for stacks started by hand (velora-node-2, the
+        # Windows laptop, the homelab's sharding control plane). The core planner
+        # had these rules but this override did not, so such pushes restarted
+        # every application service.
         ;;
       infra/nginx/*)
         add_unique nginx INFRA_RECONCILE_SERVICES

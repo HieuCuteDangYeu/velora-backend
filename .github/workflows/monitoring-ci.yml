@@ -94,6 +94,7 @@ jobs:
           bash scripts/deploy/test-deployment-metrics.sh
           bash scripts/deploy/test-turn-env-approval.sh
           bash scripts/deploy/test-mongo-compose-addition.sh
+          bash scripts/deploy/test-mongo-shardsvr-migration.sh
           bash scripts/deploy/test-redis-compose-addition.sh
           bash scripts/deploy/test-postgres-compose-addition.sh
           bash scripts/deploy/test-call-media-compose-addition.sh

@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-source "$repo_root/scripts/deploy/velora-deploy-core"
+source "$repo_root/scripts/deploy/velora-deploy"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
@@ -22,6 +22,8 @@ plan_for() {
 for file in \
   infra/mongo-replica/compose.yaml \
   infra/mongo-replica/README.md \
+  infra/mongo-shard/compose.yaml \
+  infra/mongo-shard/README.md \
   infra/postgres-replica/compose.yaml \
   infra/call-media-node/compose.yaml \
   infra/call-media-node/README.md \
@@ -47,6 +49,7 @@ for file in \
   infra/loki-node/README.md \
   infra/windows-node/README.md \
   infra/windows-node/mongo-replica.compose.yaml \
+  infra/windows-node/mongo-shard2.compose.yaml \
   infra/windows-node/postgres-replica.compose.yaml \
   infra/windows-node/vps-agent.override.yaml \
   infra/windows-node/wslconfig.example \

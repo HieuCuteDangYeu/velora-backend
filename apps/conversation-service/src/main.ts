@@ -1,3 +1,5 @@
+// Must stay first: rewrites the Mongo URL before any module reads it.
+import './mongo-router-env';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { Transport } from '@nestjs/microservices';

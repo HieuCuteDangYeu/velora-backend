@@ -549,8 +549,10 @@ services:
     networks:
       - microservices-net
 
-  # Single-node replica set: Prisma needs one for $transaction on MongoDB. The
+  # Replica set rs0 = shard 1 of the sharded cluster (config server and mongos are
+  # in infra/mongo-shard/, shard 2 is rs1 on the Windows laptop as sh2.lab). The
   # keyfile is generated once into mongo_config; auth is enabled by the keyfile.
+  # --port keeps 27017 (a shard server defaults to 27018).
   mongo:
     image: mongo:8.0
     restart: unless-stopped
@@ -564,7 +566,9 @@ services:
         fi
         chown mongodb:mongodb /data/configdb/keyfile
         chmod 400 /data/configdb/keyfile
-        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /data/configdb/keyfile --bind_ip_all --wiredTigerCacheSizeGB 0.5
+        exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /data/configdb/keyfile --bind_ip_all --wiredTigerCacheSizeGB 0.5 --shardsvr --port 27017
+    extra_hosts:
+      - 'sh2.lab:100.104.227.44'
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-root}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}

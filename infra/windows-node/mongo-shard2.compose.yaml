@@ -1,0 +1,48 @@
+# Shard 2 of the conversation cluster: replica set rs1 (one member) on the
+# Windows laptop. Run in WSL2 from /opt/velora/mongo-shard2/ with the cluster
+# keyfile copied to /opt/velora/mongo-shard2/keyfile (same file as rs0 and cfg).
+#
+# The member is named sh2.lab:27018. Inside this container sh2.lab is loopback
+# (the laptop cannot reach its own tailnet address from here); on the homelab
+# mongos, mongo-cfg and mongo map it to the tailnet address 100.104.227.44.
+# mongo and mongo-cfg resolve to the homelab, where `tailscale serve` forwards
+# 27017 (shard 1, for chunk migrations) and 27019 (config server).
+name: mongo-shard2
+services:
+  mongo-shard2:
+    image: mongo:8.0.34
+    container_name: mongo-shard2
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - mongod
+      - --shardsvr
+      - --replSet
+      - rs1
+      - --port
+      - '27018'
+      - --keyFile
+      - /etc/mongo/keyfile
+      - --bind_ip
+      - 127.0.0.1,100.104.227.44
+      - --wiredTigerCacheSizeGB
+      - '1'
+    extra_hosts:
+      - 'sh2.lab:127.0.0.1'
+      - 'mongo:100.102.228.48'
+      - 'mongo-cfg:100.102.228.48'
+    volumes:
+      - mongo_shard2_data:/data/db
+      - /opt/velora/mongo-shard2/keyfile:/etc/mongo/keyfile:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'mongosh --quiet --port 27018 --eval "db.adminCommand({ping:1}).ok" | grep -q 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+volumes:
+  mongo_shard2_data:

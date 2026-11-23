@@ -6,6 +6,7 @@ import type {
   FriendshipPaginationCursor,
   IFriendRepository,
   PaginatedFriendships,
+  ReelFeedAudienceIds,
 } from '@friend/domain/interfaces/friend.repository.interface';
 import { PrismaService } from '@friend/infrastructure/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
@@ -369,6 +370,36 @@ export class FriendRepository implements IFriendRepository {
         ? friendship.userTwoId
         : friendship.userOneId,
     );
+  }
+
+  async listReelFeedAudienceIds(userId: string): Promise<ReelFeedAudienceIds> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ kind: 'friend' | 'blocked'; otherUserId: string }>
+    >(Prisma.sql`
+      SELECT 'friend' AS "kind",
+        CASE WHEN "userOneId" = ${userId} THEN "userTwoId" ELSE "userOneId" END AS "otherUserId"
+      FROM "Friendship"
+      WHERE "status" = 'ACCEPTED'
+        AND ("userOneId" = ${userId} OR "userTwoId" = ${userId})
+      UNION ALL
+      SELECT 'blocked' AS "kind",
+        CASE WHEN "blockerId" = ${userId} THEN "blockedUserId" ELSE "blockerId" END AS "otherUserId"
+      FROM "UserBlock"
+      WHERE "blockerId" = ${userId} OR "blockedUserId" = ${userId}
+    `);
+
+    return {
+      friendUserIds: rows
+        .filter((row) => row.kind === 'friend')
+        .map((row) => row.otherUserId),
+      blockRelatedUserIds: [
+        ...new Set(
+          rows
+            .filter((row) => row.kind === 'blocked')
+            .map((row) => row.otherUserId),
+        ),
+      ],
+    };
   }
 
   private buildCursorFilter(

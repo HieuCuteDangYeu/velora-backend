@@ -96,4 +96,16 @@ export interface IFriendRepository {
   ): Promise<PaginatedFriendships>;
 
   listAcceptedUserIds(userId: string): Promise<string[]>;
+
+  /**
+   * Accepted friends and every user who blocked or is blocked by this one, read with one
+   * query. A feed audience needs both, and two queries took two of the few pooled database
+   * connections per lookup.
+   */
+  listReelFeedAudienceIds(userId: string): Promise<ReelFeedAudienceIds>;
+}
+
+export interface ReelFeedAudienceIds {
+  friendUserIds: string[];
+  blockRelatedUserIds: string[];
 }

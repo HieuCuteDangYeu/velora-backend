@@ -373,3 +373,16 @@ To test whether the weak answers are a small-model limit, ANSWER and CONTEXT_SUF
 Running one Korean question live and reading the ai-service graph log showed `route intent=NORMAL_CHAT retrieval=false`: the small router model filed a Korean question about the shared video under plain chat, so **no retrieval ran at all** and the bot replied with a canned "I can only help with Velora" and no evidence. (The Muse experiment above did not help for the same reason: the answer model never saw an excerpt.) With a video shared, a question that ends in a question mark, has at least 12 characters, is not about the app or the assistant and is written with non-English letters now goes to the video's transcript (68b29a5b, narrowed in 0eee7f07 after the first version contradicted the frozen English router corpora; English questions keep the router's verdict).
 
 Live on the deployed guard, Korean rows (`.benchmarks/diverse-e2e-12-ko-vi.json`, 5 rows, same rows as before): right reel cited 5 of 5 (was 2 of 4), moment hit 0.80, mean factual 0.18 → 0.32, judged correct 1 of 5 (was 0 of 5). Vietnamese (12 rows, already routed correctly) is unchanged at 5 of 12. So the Korean refusals are fixed; the remaining Korean errors are weak answers over a correct excerpt, the same ceiling the other languages hit. Indicative only (n=5).
+
+## Answer quality as a distribution, not one bar (2026-11-23)
+The "correct" figure uses factual >= 0.7, which is harsh for one-sentence answers against paragraph references. Same judged rows (latest local-model run per row: 134 REVIEWED rows from the bare-phrasing re-run, the timestamp re-run and the Korean/Vietnamese re-run), share of rows at each level:
+
+| type | n | >= 0.7 | >= 0.5 | >= 0.3 | mean factual |
+|---|---|---|---|---|---|
+| opening | 24 | 0.67 | 0.75 | 0.75 | 0.66 |
+| detail | 52 | 0.44 | 0.54 | 0.60 | 0.48 |
+| chapter | 24 | 0.08 | 0.25 | 0.58 | 0.32 |
+| timestamp | 34 | 0.15 | 0.32 | 0.44 | 0.29 |
+| all | 134 | 0.34 | 0.47 | 0.58 | 0.44 |
+
+Reading it: opening questions work. Detail questions are right or partly right about half the time and about 40% of them score under 0.3, which is real wrongness, not strictness. Chapter and timestamp answers are mostly partial (58% and 44% at >= 0.3) and rarely complete. Spot-checking live turns (a chapter question and a 5:06 timestamp question, graph log and answer read side by side) found grounded one-sentence answers with no routing fault, so the gap there is completeness, which a small local answer model and a one-sentence answer style cap. No fix was made for it; the earlier Muse experiment showed a bigger model did not close it.

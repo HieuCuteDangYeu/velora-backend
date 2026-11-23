@@ -97,7 +97,7 @@ function summarize(samples) {
     p90: round(percentile(latencies, 0.9)),
     p95: round(percentile(latencies, 0.95)),
     p99: round(percentile(latencies, 0.99)),
-    max: round(latencies.length ? Math.max(...latencies) : null),
+    max: round(latencies.length ? latencies.reduce((m, v) => (v > m ? v : m), -Infinity) : null),
     kbMedian: round(percentile(ok.map((s) => (s.bytes || 0) / 1024), 0.5)),
     mean: round(latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null),
   };
@@ -694,7 +694,7 @@ async function main() {
     const rows = {};
     for (const [name, group] of Object.entries(groupByName(samples))) rows[name] = { ...summarize(group), rps: Math.round((group.length / wallSeconds) * 10) / 10 };
     report.stages[label] = rows;
-    allSamples.push(...samples);
+    for (const s of samples) allSamples.push(s);
     for (const s of samples) rawRows.push([label, s.name, s.ok, s.status ?? s.error ?? '', Math.round(s.ms), s.ttfbMs == null ? '' : Math.round(s.ttfbMs), s.bytes ?? '', s.cache ?? '', s.at ? new Date(s.at).toISOString() : '', s.ray ?? ''].join(','));
 
     const api = samples.filter((s) => s.name.startsWith('api_'));

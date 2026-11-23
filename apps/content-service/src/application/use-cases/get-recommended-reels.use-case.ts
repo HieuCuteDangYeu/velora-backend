@@ -1,3 +1,4 @@
+import { ThrottledWarn } from '@content/application/services/throttled-warn';
 import {
   ConcurrencyGate,
   readBoundedIntEnv,
@@ -98,6 +99,8 @@ const REEL_ENTITY_CACHE_TTL_SECONDS = 3 * 60 * 60;
 @Injectable()
 export class GetRecommendedReelsUseCase {
   private readonly logger = new Logger(GetRecommendedReelsUseCase.name);
+  // These four fire once per feed request while a slate is slow or the refill queue is full.
+  private readonly throttledWarn = new ThrottledWarn(this.logger);
 
   constructor(
     @Inject('IRecommendationRepository')
@@ -622,7 +625,8 @@ export class GetRecommendedReelsUseCase {
     excludeRecentlySeen?: boolean;
   }): void {
     void this.refillPersonalizedSession(input).catch((error: unknown) => {
-      this.logger.warn(
+      this.throttledWarn.warn(
+        'refill-failed',
         `Recommendation session refill failed for ${input.feedSessionId}: ${this.describeError(error)}`,
       );
     });
@@ -685,7 +689,8 @@ export class GetRecommendedReelsUseCase {
       );
     }
 
-    this.logger.warn(
+    this.throttledWarn.warn(
+      'session-not-ready',
       `Recommendation session ${input.feedSessionId} not ready within ${waitMs}ms; returning without it`,
     );
     return null;
@@ -731,14 +736,16 @@ export class GetRecommendedReelsUseCase {
     // saved before queueing; only the heavy candidate pipeline waits for a slot.
     const snapshotMs = Date.now() - startedAt;
     if (snapshotMs >= PERSONALIZED_REFILL_PAGE_WAIT_MS) {
-      this.logger.warn(
+      this.throttledWarn.warn(
+        'audience-snapshot-slow',
         `Audience snapshot for ${input.feedSessionId} took ${snapshotMs}ms (friend audience ${audienceMs}ms); pages wait at most ${AUDIENCE_SNAPSHOT_PAGE_WAIT_MS}ms for it`,
       );
     }
     const gateRequestedAt = Date.now();
     const release = await PERSONALIZED_REFILL_GATE.acquire();
     if (!release) {
-      this.logger.warn(
+      this.throttledWarn.warn(
+        'refill-deferred',
         `Deferring recommendation refill for ${input.feedSessionId}: ${PERSONALIZED_REFILL_MAX_QUEUED} refills already queued`,
       );
       return;

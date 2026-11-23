@@ -3,6 +3,7 @@ import type {
   FriendFeedAudienceResponse,
 } from '@common/friend/interfaces/friend-content-access.interface';
 import type { IFriendContentAccessService } from '@content/domain/interfaces/friend-content-access.service.interface';
+import { ThrottledWarn } from '@content/application/services/throttled-warn';
 import { TtlPromiseCache } from '@content/application/services/ttl-promise-cache';
 import {
   Inject,
@@ -30,6 +31,11 @@ const FEED_AUDIENCE_ATTEMPT_TIMEOUT_MS = 2_000;
 // feeds up to this long later. A recommendation session already keeps its own audience
 // snapshot for the whole session, so this is tighter than what feeds had before.
 export const FEED_AUDIENCE_CACHE_TTL_MS = 15_000;
+// An audience is refreshed in the background during its last 5 s, so a viewer who keeps
+// browsing never waits for friend-service at an expiry (13 of 158,605 requests did at 1550
+// viewers, when the lookup timed out twice). It is never older than the ttl above, so the
+// bound on how late a block takes effect is unchanged.
+export const FEED_AUDIENCE_REFRESH_AHEAD_MS = 5_000;
 // Same window for "this viewer may open this owner's reels". Only a yes is remembered, so
 // a newly allowed viewer gets in at once and only a new block can lag, by up to this long.
 export const REEL_ACCESS_CACHE_TTL_MS = 15_000;
@@ -50,9 +56,16 @@ export class FriendContentAccessAdapter
   implements IFriendContentAccessService, OnModuleInit, OnModuleDestroy
 {
   private readonly logger = new Logger(FriendContentAccessAdapter.name);
+  private readonly throttledWarn = new ThrottledWarn(this.logger);
   private warmupTimer: NodeJS.Timeout | undefined;
   private readonly audienceCache =
-    new TtlPromiseCache<FriendFeedAudienceResponse>(FEED_AUDIENCE_CACHE_TTL_MS);
+    new TtlPromiseCache<FriendFeedAudienceResponse>(
+      FEED_AUDIENCE_CACHE_TTL_MS,
+      2_000,
+      Date.now,
+      () => true,
+      FEED_AUDIENCE_REFRESH_AHEAD_MS,
+    );
   private readonly accessCache = new TtlPromiseCache<boolean>(
     REEL_ACCESS_CACHE_TTL_MS,
     5_000,
@@ -97,7 +110,8 @@ export class FriendContentAccessAdapter
               error instanceof TimeoutError ? of(0) : throwError(() => error),
           }),
           catchError((error: unknown) => {
-            this.logger.warn(
+            this.throttledWarn.warn(
+              'audience-lookup-failed',
               `Friend feed audience lookup failed: ${this.describeError(
                 error,
               )}`,
@@ -167,7 +181,8 @@ export class FriendContentAccessAdapter
         .pipe(
           timeout(5000),
           catchError((error: unknown) => {
-            this.logger.warn(
+            this.throttledWarn.warn(
+              'access-lookup-failed',
               `Reel content access lookup failed: ${this.describeError(error)}`,
             );
 

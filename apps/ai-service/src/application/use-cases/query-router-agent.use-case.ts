@@ -115,12 +115,22 @@ const PHOTO_NOTE_GUIDANCE =
 const APP_OR_ASSISTANT_QUESTION =
   /\b(?:velora|app|profile|account|password|settings?|notifications?|log\s?in|sign\s?up|follow(?:ers?)?|block|report|who\s+are\s+you|what\s+are\s+you|your\s+name)\b/i;
 
-/** A real question (a question mark, enough words) that does not ask about the app or the assistant. */
+/** True when the text has a letter outside A-Z (Hangul, CJK, Devanagari, Arabic, accented Latin). */
+function hasNonEnglishLetters(text: string): boolean {
+  return /\p{L}/u.test(text.replace(/[A-Za-z]/g, ''));
+}
+
+/**
+ * A real question in a language the small router model files wrongly: a question mark, enough words,
+ * not about the app or the assistant, and written with non-English letters. English questions keep the
+ * model's own verdict.
+ */
 export function looksLikeContentQuestion(message: string): boolean {
   const text = message.trim();
   return (
     text.length >= 12 &&
     /[?？]\s*$/u.test(text) &&
+    hasNonEnglishLetters(text) &&
     !APP_OR_ASSISTANT_QUESTION.test(text)
   );
 }

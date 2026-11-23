@@ -1964,7 +1964,7 @@ describe('QueryRouterAgentUseCase', () => {
       it.each([
         '광둥어를 공부하려고 넷플릭스 콘텐츠를 볼 때 자막은 어떻게 설정하고 있나요?',
         'Người nói đã khuyên điều gì về việc học tiếng Quảng Đông?',
-        'What does the speaker recommend for learning vocabulary?',
+        '¿Qué recomienda el presentador para aprender vocabulario?',
       ])('goes to the shared video: %s', async (message) => {
         const decision = await routeShared(
           message.endsWith('?') ? message : `${message.slice(0, -1)}?`,
@@ -1981,6 +1981,8 @@ describe('QueryRouterAgentUseCase', () => {
         'Who are you, exactly?',
         'thanks?',
         'Thanks, that helps a lot!',
+        'What does the speaker recommend for learning vocabulary?',
+        'What’s the difference between TCP and UDP exactly?',
       ])('stays chat: %s', async (message) => {
         expect((await routeShared(message)).intent).toBe('NORMAL_CHAT');
       });

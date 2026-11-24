@@ -38,6 +38,10 @@ import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import { PresenceRegistry } from './presence-registry';
 import {
+  sendRateLimitFromEnv,
+  takeSendToken,
+} from './socket-send-rate-limiter';
+import {
   stressFixtureNamespace,
   stressMessageTiming,
 } from '../metrics/stress-message-timing';
@@ -60,6 +64,8 @@ export class ChatGateway
   server!: Server;
 
   private readonly logger = new Logger(ChatGateway.name);
+  // Per-socket send_message budget (see socket-send-rate-limiter.ts).
+  private readonly sendRateLimit = sendRateLimitFromEnv();
   private stopBanListener?: () => Promise<void>;
   private static readonly LAST_SEEN_KEY_PREFIX = 'presence:last-seen:';
 
@@ -323,6 +329,21 @@ export class ChatGateway
       client.emit('message_failed', {
         conversationId: payload.conversationId,
         clientMessageId: payload.clientMessageId,
+      });
+      this.recordSendMessageOutcome(startedAt, 'rejected');
+      return;
+    }
+
+    const rate = takeSendToken(
+      client.data as Record<string, unknown>,
+      this.sendRateLimit,
+    );
+    if (!rate.allowed) {
+      client.emit('message_failed', {
+        conversationId: payload.conversationId,
+        clientMessageId: payload.clientMessageId,
+        reason: 'rate_limited',
+        retryAfterMs: rate.retryAfterMs,
       });
       this.recordSendMessageOutcome(startedAt, 'rejected');
       return;

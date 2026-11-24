@@ -4,15 +4,13 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CloudflareVisionAdapter } from './cloudflare-vision.adapter';
 import { GroqVisionAdapter } from './groq-vision.adapter';
-import { MuseVisionAdapter } from './muse-vision.adapter';
 
 const QUOTA_ERROR =
   /\b429\b|daily free allocation|rate[- ]?limit|quota|too many requests/i;
 const DAILY_ALLOCATION = /daily free allocation/i;
 
 /**
- * Frame analysis on Cloudflare Workers AI with overflow on Muse (the local
- * muse2api gateway) or Groq, chosen by AI_VISION_FALLBACK_PROVIDER. When
+ * Frame analysis on Cloudflare Workers AI with Groq as overflow (AI_VISION_FALLBACK_PROVIDER=groq). When
  * Cloudflare reports its daily free allocation is spent, it is skipped until
  * the next UTC midnight so each remaining frame goes straight to the overflow.
  */
@@ -29,11 +27,7 @@ export class FallbackVisionAdapter implements IVisionService {
       config,
     ),
     @Optional()
-    private readonly secondary: IVisionService = config
-      .get<string>('AI_VISION_FALLBACK_PROVIDER')
-      ?.trim() === 'muse'
-      ? new MuseVisionAdapter(config)
-      : new GroqVisionAdapter(config),
+    private readonly secondary: IVisionService = new GroqVisionAdapter(config),
     @Optional() private readonly now: () => number = Date.now,
   ) {}
 

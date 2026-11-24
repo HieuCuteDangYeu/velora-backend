@@ -6,7 +6,6 @@ import { GroqKeyPoolExhaustedError } from '@ai/infrastructure/services/groq-key-
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GroqStructuredLlmAdapter } from './groq-structured-llm.adapter';
-import { MuseStructuredLlmAdapter } from './muse-structured-llm.adapter';
 import {
   OllamaStructuredCompletionProviderError,
   OllamaStructuredLlmAdapter,
@@ -21,14 +20,6 @@ const GROQ_ROLES = new Set([
   'ANSWER',
   'DRAFT_ANSWER',
 ]);
-
-// Offline indexing roles that may run on the local muse2api gateway when
-// AI_MUSE_ENABLED=true. AI_MUSE_ROLES (comma-separated) narrows or replaces this.
-const DEFAULT_MUSE_ROLES = [
-  'METADATA_EXTRACTION',
-  'INDEX_QUALITY',
-  'SUBTITLE_TRANSLATION',
-];
 
 const CAPACITY_CATEGORIES = new Set([
   'RATE_LIMITED',
@@ -50,22 +41,9 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
     private readonly groq: GroqStructuredLlmAdapter,
     private readonly ollama: OllamaStructuredLlmAdapter,
     private readonly config: ConfigService,
-    private readonly muse: MuseStructuredLlmAdapter,
   ) {}
 
   async generateObject<T>(input: GenerateStructuredObjectInput): Promise<T> {
-    if (this.useMuse(input.modelRole)) {
-      try {
-        return await this.muse.generateObject<T>(input);
-      } catch (error: unknown) {
-        // The gateway rides a browser session that can expire; indexing must
-        // keep working on the local model.
-        this.logger.warn(
-          `Muse failed for ${input.modelRole}; falling back to Ollama: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        return this.ollama.generateObject<T>(input);
-      }
-    }
     if (!this.useGroq(input.modelRole))
       return this.ollama.generateObject<T>(input);
     try {
@@ -81,19 +59,6 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
       );
       return this.ollama.generateObject<T>({ ...input, model });
     }
-  }
-
-  private useMuse(role?: string): boolean {
-    if (
-      this.config.get<string>('AI_MUSE_ENABLED')?.trim().toLowerCase() !==
-      'true'
-    )
-      return false;
-    const configured = this.config.get<string>('AI_MUSE_ROLES')?.trim();
-    const roles = configured
-      ? configured.split(',').map((item) => item.trim())
-      : DEFAULT_MUSE_ROLES;
-    return roles.includes(role ?? '');
   }
 
   private useGroq(role?: string): boolean {

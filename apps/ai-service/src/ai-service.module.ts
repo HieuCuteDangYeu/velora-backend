@@ -55,7 +55,6 @@ import { OllamaMemoryExtractorAdapter } from '@ai/infrastructure/adapters/ollama
 import { GroqStructuredLlmAdapter } from '@ai/infrastructure/adapters/groq-structured-llm.adapter';
 import { GroqTextClient } from '@ai/infrastructure/adapters/groq-text.client';
 import { HybridStructuredLlmAdapter } from '@ai/infrastructure/adapters/hybrid-structured-llm.adapter';
-import { MuseStructuredLlmAdapter } from '@ai/infrastructure/adapters/muse-structured-llm.adapter';
 import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-structured-llm.adapter';
 import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
 import { OllamaToolCallingLlmAdapter } from '@ai/infrastructure/adapters/ollama-tool-calling-llm.adapter';
@@ -180,7 +179,6 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     GroqKeyPool,
     GroqTextClient,
     GroqStructuredLlmAdapter,
-    MuseStructuredLlmAdapter,
     OllamaStructuredLlmAdapter,
     OllamaTextClient,
 
@@ -265,9 +263,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
           ? OllamaVisionAdapter
           : process.env.AI_VISION_PROVIDER === 'groq'
             ? GroqVisionAdapter
-            : ['groq', 'muse'].includes(
-                  process.env.AI_VISION_FALLBACK_PROVIDER ?? '',
-                )
+            : process.env.AI_VISION_FALLBACK_PROVIDER === 'groq'
               ? FallbackVisionAdapter
               : CloudflareVisionAdapter,
     },

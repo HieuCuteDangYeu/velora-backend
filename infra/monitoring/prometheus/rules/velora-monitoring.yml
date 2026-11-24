@@ -750,38 +750,3 @@ groups:
         annotations:
           summary: the model server is answering slowly
           description: The model server has taken more than two seconds to answer a health probe for five minutes, which usually means the laptop is overloaded, thermally throttled or swapping.
-
-  # Offline indexing text roles can run on the Muse gateway on the developer laptop (AI_MUSE_ENABLED). When it fails they fall
-  # back to local Ollama, so these are warnings. scripts/deploy/muse-gateway-probe reports the metrics; install that probe only
-  # while Muse is enabled, otherwise no metrics exist and nothing alerts.
-  - name: velora-muse-gateway
-    rules:
-      - alert: VeloraMuseGatewayDown
-        expr: velora_muse_gateway_up == 0
-        for: 5m
-        labels:
-          severity: warning
-          service: muse-gateway
-        annotations:
-          summary: the Muse gateway is unreachable
-          description: The homelab has not reached the Muse gateway on the laptop through its reverse SSH tunnel for five minutes. Index-quality review, metadata extraction and subtitle translation are running on local Ollama instead. Check that the laptop is awake and the muse2api and velora-muse-ssh-tunnel user services are active.
-
-      - alert: VeloraMuseSessionExpired
-        expr: velora_muse_gateway_up == 1 and on() velora_muse_gateway_ready == 0
-        for: 5m
-        labels:
-          severity: warning
-          service: muse-gateway
-        annotations:
-          summary: the muse.ai login session was rejected
-          description: The Muse gateway is running but reports no usable muse.ai session, so the indexing text roles are falling back to local Ollama. Log in to muse.ai in the browser, import the fresh cookies into the gateway (POST /admin/accounts/import) and reset the account (POST /admin/accounts/acc_muse_main/reset).
-
-      - alert: VeloraMuseGatewayProbeStale
-        expr: time() - velora_muse_gateway_probe_timestamp_seconds > 300
-        for: 5m
-        labels:
-          severity: warning
-          service: muse-gateway
-        annotations:
-          summary: the Muse gateway probe is not reporting
-          description: No Muse gateway probe result has been written for five minutes, so a gateway outage or an expired session would go unnoticed. Check the com.velora.muse-gateway-probe LaunchAgent on the homelab, or uninstall it if Muse is switched off.

@@ -1867,6 +1867,42 @@ describe('QueryRouterAgentUseCase', () => {
     });
   });
 
+  describe('a question about one named second is not a first-utterance request', () => {
+    const route = async (message: string) =>
+      new QueryRouterAgentUseCase(
+        {
+          generateObject: jest.fn().mockResolvedValue(
+            response({
+              intent: 'REEL_VIDEO_QUESTION',
+              reelQuestionType: 'TRANSCRIPT_CONTENT',
+              transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE',
+            }),
+          ),
+        } as never,
+        config,
+      ).execute({ message, hasSharedReelContext: true, sharedReelCount: 1 });
+
+    it.each([
+      'What does the speaker say at 3:33?',
+      'What is said at 1:02:03 in the video?',
+    ])('drops the first-utterance kind for: %s', async (message) => {
+      expect((await route(message)).transcriptRequestKind).toBe('NONE');
+    });
+
+    it.each([
+      'What is the first thing said at 3:33?',
+      'Repeat the earliest complete spoken line from the shared Reel.',
+      'What does the narrator mention from 1:05 to 1:20?',
+    ])(
+      'keeps it when the user asks for the first line or a range: %s',
+      async (message) => {
+        expect((await route(message)).transcriptRequestKind).toBe(
+          'FIRST_COMPLETE_UTTERANCE',
+        );
+      },
+    );
+  });
+
   describe('OFF_TOPIC scope', () => {
     const routeFor = async (
       scopeMode: string | undefined,

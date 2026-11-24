@@ -1,4 +1,5 @@
 import {
+  isPointInTimeQuestion,
   requiresReelCoverage,
   sourceRetrievalPlan,
 } from './rag-source-retrieval-plan';
@@ -387,5 +388,18 @@ describe('source retrieval constraints', () => {
       transcriptTimestampSec: 33.25,
       searchLimit: 6,
     });
+  });
+});
+
+describe('isPointInTimeQuestion', () => {
+  it.each([
+    ['What does the speaker say at 2:02?', true],
+    ['What is said at 95 seconds in the transcript?', true],
+    ['What does the narrator mention from 1:05 to 1:20?', false],
+    ['What is the first thing said at 2:00?', false],
+    ['What is the earliest line spoken at 0:05?', false],
+    ['What does the speaker say about prices?', false],
+  ])('%s -> %s', (message, expected) => {
+    expect(isPointInTimeQuestion(message)).toBe(expected);
   });
 });

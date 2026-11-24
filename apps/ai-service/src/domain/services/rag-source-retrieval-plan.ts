@@ -34,7 +34,7 @@ const clockToSeconds = (clock: string): number =>
  * The transcript time a question asks about, as [match, startSec, endSec?]. Accepts "at 95 seconds",
  * "at 2:02" and "from 1:05 to 1:20" next to a speech cue; a bare clock time is not enough on its own.
  */
-function matchTranscriptTimestamp(
+export function matchTranscriptTimestamp(
   message: string,
 ): [string, string, string | undefined] | null {
   const seconds = message.match(
@@ -171,4 +171,18 @@ export function sourceRetrievalPlan(
       decisionSource: 'NOT_REQUIRED',
     },
   };
+}
+
+/**
+ * "What does the speaker say at 3:33?" names one second, not "the first thing said". The router model
+ * files it under FIRST_COMPLETE_UTTERANCE, and that path returns the earliest sentence of the retrieved
+ * window, which is usually not the sentence at that second. True for a single named second with no
+ * first/earliest/opening wording; a range ("from 1:05 to 1:20") or "the first thing said at 2:00" is not.
+ */
+export function isPointInTimeQuestion(message: string): boolean {
+  const match = matchTranscriptTimestamp(message);
+  if (!match || match[2] !== undefined) return false;
+  return !/\b(?:first|earliest|opening|beginning|begin|begins|start|starts|started|initial)\b/i.test(
+    message,
+  );
 }

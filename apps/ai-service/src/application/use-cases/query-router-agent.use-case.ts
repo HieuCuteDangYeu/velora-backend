@@ -3,6 +3,7 @@ import {
   readRouterRulesEnabled,
 } from '@ai/domain/services/rag-greeting-shortcut';
 import { looksLikeRecallQuestion } from '@ai/domain/services/recall-cue';
+import { isPointInTimeQuestion } from '@ai/domain/services/rag-source-retrieval-plan';
 import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { ISharedReelEvidenceProbe } from '@ai/domain/interfaces/shared-reel-evidence-probe.interface';
@@ -882,7 +883,8 @@ ${input.message.includes(PHOTO_NOTE_MARKER) ? `${PHOTO_NOTE_GUIDANCE}\n\n` : ''}
       intent === 'REEL_VIDEO_QUESTION' &&
       reelQuestionType === 'TRANSCRIPT_CONTENT' &&
       !multiReelTranscriptComparison &&
-      raw.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE'
+      raw.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE' &&
+      !isPointInTimeQuestion(input.message ?? '')
         ? 'FIRST_COMPLETE_UTTERANCE'
         : 'NONE';
     const referenceTarget: RagReferenceTarget =

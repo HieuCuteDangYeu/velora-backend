@@ -105,6 +105,12 @@ export class MediasoupCallMediaEngine
   private readonly webRtcServerPort = this.readOptionalPort(
     process.env.MEDIASOUP_WEBRTC_SERVER_PORT,
   );
+  // MEDIASOUP_ENABLE_TCP=true also offers ICE-TCP candidates (same port as UDP
+  // with a WebRtcServer), for networks that block UDP such as campus or office
+  // Wi-Fi. Clients still prefer UDP. Off by default: the TCP port must be opened
+  // and forwarded first.
+  private readonly enableTcp =
+    process.env.MEDIASOUP_ENABLE_TCP?.trim().toLowerCase() === 'true';
   private readonly iceServers = readTurnIceServers();
   private readonly publicAddress = new MediasoupPublicAddress();
 
@@ -1052,6 +1058,16 @@ export class MediasoupCallMediaEngine
                 announcedAddress: this.publicAddress.current(),
                 port: this.webRtcServerPort,
               },
+              ...(this.enableTcp
+                ? [
+                    {
+                      protocol: 'tcp' as const,
+                      ip: process.env.MEDIASOUP_LISTEN_IP || '0.0.0.0',
+                      announcedAddress: this.publicAddress.current(),
+                      port: this.webRtcServerPort,
+                    },
+                  ]
+                : []),
             ],
           });
           this.webRtcServers.set(worker, webRtcServer);
@@ -1156,7 +1172,8 @@ export class MediasoupCallMediaEngine
             ],
           }),
       enableUdp: true,
-      enableTcp: false,
+      enableTcp: this.enableTcp,
+      ...(this.enableTcp ? { preferUdp: true } : {}),
       initialAvailableOutgoingBitrate: 800000,
       appData: {
         callId,

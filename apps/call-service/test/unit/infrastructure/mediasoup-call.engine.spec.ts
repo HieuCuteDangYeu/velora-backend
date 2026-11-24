@@ -1,5 +1,6 @@
 import { MediasoupCallMediaEngine } from '../../../src/infrastructure/engines/mediasoup-call.engine';
 import { MediasoupPublicAddress } from '../../../src/infrastructure/engines/mediasoup-public-address';
+import * as mediasoup from 'mediasoup';
 
 type RouterDouble = {
   id: string;
@@ -1039,6 +1040,80 @@ describe('MediasoupCallMediaEngine fixed-port WebRtcServer', () => {
     expect(router.createWebRtcTransport.mock.calls[0][0]).not.toHaveProperty(
       'listenIps',
     );
+  });
+});
+
+describe('MediasoupCallMediaEngine ICE-TCP', () => {
+  afterEach(() => {
+    delete process.env.MEDIASOUP_ENABLE_TCP;
+  });
+
+  it('offers TCP candidates and keeps preferring UDP when MEDIASOUP_ENABLE_TCP=true', async () => {
+    process.env.MEDIASOUP_ENABLE_TCP = 'true';
+    const transport = {
+      id: 'transport-tcp',
+      iceParameters: {},
+      iceCandidates: [],
+      dtlsParameters: {},
+      close: jest.fn(),
+      on: jest.fn(),
+      observer: { on: jest.fn() },
+    };
+    const router = {
+      id: 'router-tcp',
+      rtpCapabilities: { codecs: [], headerExtensions: [] },
+      close: jest.fn(),
+      createWebRtcTransport: jest.fn().mockResolvedValue(transport),
+    };
+    const { engine } = createEngine(jest.fn().mockResolvedValue(router));
+
+    await engine.createRoom('call-tcp');
+    await engine.createSendTransport('call-tcp', 'user-a');
+
+    expect(router.createWebRtcTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+      }),
+    );
+  });
+
+  it('adds a TCP listen info on the same port to the WebRtcServer', async () => {
+    process.env.MEDIASOUP_ENABLE_TCP = 'true';
+    process.env.MEDIASOUP_WEBRTC_SERVER_PORT = '40001';
+    try {
+      const engine = new MediasoupCallMediaEngine({} as never);
+      const createWebRtcServer = jest
+        .fn()
+        .mockResolvedValue({ close: jest.fn() });
+      const worker = {
+        pid: 7,
+        on: jest.fn(),
+        close: jest.fn(),
+        createWebRtcServer,
+      };
+      (
+        engine as unknown as { publicAddress: { current: () => string } }
+      ).publicAddress = { current: () => '203.0.113.10' };
+      const createWorker = jest
+        .spyOn(mediasoup, 'createWorker')
+        .mockResolvedValueOnce(worker as never);
+      await (
+        engine as unknown as { fillWorkers: (count: number) => Promise<void> }
+      ).fillWorkers(1);
+      createWorker.mockRestore();
+      const listenInfos = createWebRtcServer.mock.calls[0][0].listenInfos as {
+        protocol: string;
+        port: number;
+      }[];
+      expect(listenInfos.map((info) => [info.protocol, info.port])).toEqual([
+        ['udp', 40001],
+        ['tcp', 40001],
+      ]);
+    } finally {
+      delete process.env.MEDIASOUP_WEBRTC_SERVER_PORT;
+    }
   });
 });
 

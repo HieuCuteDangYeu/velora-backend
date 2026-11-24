@@ -10,6 +10,8 @@ services:
       - "mongo:100.102.228.48"
       # Config server on the homelab (tailscale serve --tcp 27019).
       - "mongo-cfg:100.102.228.48"
+      # Shard 2 (rs1) on the Windows laptop; shard members monitor every shard.
+      - "sh2.lab:100.104.227.44"
     ports:
       - "100.86.68.16:27017:27017"
     volumes:

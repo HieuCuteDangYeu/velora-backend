@@ -1,0 +1,99 @@
+name: Integration tests
+
+# Runs the integration suites that skip themselves in the main CI because they
+# need real databases: the notification job claim on PostgreSQL, the message
+# outbox and batching on a MongoDB replica set, and the Redis-backed gateway
+# and call suites. Hosted runner only; it never touches the homelab.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'apps/conversation-service/**'
+      - 'apps/notification-service/**'
+      - 'apps/call-service/**'
+      - 'libs/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/integration-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: velora_notification_test_0123456789abcdef
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TZ: UTC
+      DEFAULT_ADMIN_ID: 00000000-0000-4000-8000-000000000001
+      BOT_USER_ID: 00000000-0000-4000-8000-000000000002
+      NOTIFICATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/velora_notification_test_0123456789abcdef?schema=public
+      OUTBOX_TEST_DATABASE_URL: mongodb://127.0.0.1:27017/velora_outbox_test_0123456789abcdef?replicaSet=rs0&directConnection=true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a one-member MongoDB replica set
+        run: |
+          docker run --detach --name mongo-rs -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 30); do
+            docker exec mongo-rs mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] })'
+          for attempt in $(seq 1 30); do
+            [ "$(docker exec mongo-rs mongosh --quiet --eval 'rs.status().myState')" = "1" ] && exit 0
+            sleep 2
+          done
+          echo "replica set did not elect a primary" >&2
+          exit 1
+      - name: Install Redis server
+        run: command -v redis-server >/dev/null || (sudo apt-get update && sudo apt-get install -y redis-server)
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Generate Prisma clients
+        run: |
+          pnpm exec prisma generate --schema apps/conversation-service/prisma/schema.prisma
+          pnpm exec prisma generate --schema apps/notification-service/prisma/schema.prisma
+      - name: Run integration suites (and fail if any of them skipped itself)
+        run: |
+          set +e
+          pnpm exec jest --runInBand --ci --json --outputFile=/tmp/jest.json \
+            apps/notification-service/src/infrastructure/repositories/prisma-notification-job.repository.integration.spec.ts \
+            apps/conversation-service/test/notification-outbox.integration.spec.ts \
+            apps/conversation-service/test/message-batching.integration.spec.ts \
+            apps/conversation-service/test/message-features.integration.spec.ts \
+            apps/conversation-service/src/infrastructure/gateways/chat.gateway.typing-rooms.integration.spec.ts \
+            apps/call-service/test/unit/infrastructure/redis-call-state.repository.spec.ts \
+            apps/call-service/test/unit/infrastructure/redis-group-call.repository.spec.ts \
+            apps/call-service/test/unit/infrastructure/redis-group-call.invariants.spec.ts \
+            apps/call-service/test/unit/infrastructure/redis-call-history-outbox.spec.ts
+          status=$?
+          node -e 'const r=require("/tmp/jest.json"); console.log(`passed ${r.numPassedTests}, failed ${r.numFailedTests}, skipped ${r.numPendingTests}`); process.exit(r.numPendingTests===0?0:1)' || exit 1
+          exit $status
+      - name: Stop MongoDB
+        if: always()
+        run: docker rm --force mongo-rs || true

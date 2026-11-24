@@ -1,0 +1,71 @@
+name: Security scan
+
+# Reports known-vulnerable dependencies (pnpm audit) and vulnerable packages,
+# misconfigurations and secrets in the repository and Dockerfiles (Trivy).
+# Report only for now: it never blocks the homelab deploy. Read the job summary.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'apps/*/Dockerfile'
+      - '.github/workflows/security-scan.yml'
+  schedule:
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: pnpm audit (production dependencies, high and critical)
+        run: |
+          set +e
+          pnpm audit --prod --audit-level high > audit.txt 2>&1
+          status=$?
+          {
+            echo '## pnpm audit (prod, high+)'
+            echo '```'
+            tail -n 60 audit.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "pnpm audit exit code: $status (report only)"
+
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan (vulnerabilities, secrets, Dockerfile misconfigurations)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          format: table
+          output: trivy.txt
+          exit-code: '0'
+          skip-dirs: node_modules,eval,docs
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Trivy (HIGH, CRITICAL, fixed versions available)'
+            echo '```'
+            head -c 60000 trivy.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

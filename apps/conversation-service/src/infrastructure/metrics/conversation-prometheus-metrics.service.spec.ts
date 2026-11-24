@@ -22,6 +22,27 @@ describe('Chat phase measurements', () => {
     }
   });
 
+  it('counts write-route fallbacks by reason, zero for the rest', () => {
+    const metrics = new ConversationPrometheusMetricsService();
+    try {
+      metrics.recordWriteRouteFallback('timeout');
+      metrics.recordWriteRouteFallback('timeout');
+      metrics.recordWriteRouteFallback('owner_gone');
+      const output = metrics.metrics(0);
+      expect(output).toContain(
+        'velora_conversation_write_route_fallback_total{service="conversation-service",reason="timeout"} 2',
+      );
+      expect(output).toContain(
+        'velora_conversation_write_route_fallback_total{service="conversation-service",reason="owner_gone"} 1',
+      );
+      expect(output).toContain(
+        'velora_conversation_write_route_fallback_total{service="conversation-service",reason="publish_failed"} 0',
+      );
+    } finally {
+      metrics.onModuleDestroy();
+    }
+  });
+
   it('splits routed reads by the member that answered', () => {
     const metrics = new ConversationPrometheusMetricsService();
     try {

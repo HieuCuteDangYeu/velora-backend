@@ -70,6 +70,7 @@ async function cluster(
   handlers: Record<string, (writes: unknown[]) => Promise<unknown[]>>,
   requestTimeoutMs = 500,
   senderOnly: string[] = [],
+  onFallback?: (reason: string) => void,
 ) {
   const bus = new FakeBus();
   const routers = Object.fromEntries(
@@ -80,6 +81,7 @@ async function cluster(
         handler,
         ownsConversations: !senderOnly.includes(id),
         requestTimeoutMs,
+        ...(onFallback ? { onFallback } : {}),
         heartbeatMs: 60_000,
         logger: silent,
       }),
@@ -298,6 +300,59 @@ describe('ConversationWriteRouter', () => {
     await expect(routers.r1.forward('r2', [{}])).rejects.toBeInstanceOf(
       WriteRouterUnavailableError,
     );
+  });
+
+  it('falls back after the timeout even when the publish never answers', async () => {
+    const onFallback = jest.fn();
+    const router = new ConversationWriteRouter(
+      {
+        publish: jest.fn(() => new Promise<number>(() => undefined)),
+        zadd: jest.fn(() => Promise.resolve(1)),
+        zremrangebyscore: jest.fn(() => Promise.resolve(0)),
+        zrangebyscore: jest.fn(() => Promise.resolve([])),
+        zrem: jest.fn(() => Promise.resolve(1)),
+        duplicate: jest.fn(),
+      } as never,
+      {
+        selfId: 'r1',
+        handler: jest.fn(),
+        requestTimeoutMs: 30,
+        onFallback,
+        logger: silent,
+      },
+    );
+    await expect(router.forward('r2', [{}])).rejects.toMatchObject({
+      fallbackReason: 'timeout',
+    });
+    expect(onFallback).toHaveBeenCalledWith('timeout');
+  });
+
+  it('counts each fallback with its reason', async () => {
+    const onFallback = jest.fn();
+    const { routers } = await cluster(
+      {
+        r1: jest.fn(),
+        r2: jest.fn(() => new Promise<unknown[]>(() => undefined)),
+      },
+      30,
+      [],
+      onFallback,
+    );
+    await expect(routers.r1.forward('gone', [{}])).rejects.toMatchObject({
+      fallbackReason: 'owner_gone',
+    });
+    await expect(routers.r1.forward('r2', [{}])).rejects.toMatchObject({
+      fallbackReason: 'timeout',
+    });
+    await routers.r1.stop();
+    await expect(routers.r1.forward('r2', [{}])).rejects.toMatchObject({
+      fallbackReason: 'stopped',
+    });
+    expect(onFallback.mock.calls).toEqual([
+      ['owner_gone'],
+      ['timeout'],
+      ['stopped'],
+    ]);
   });
 
   it('drops a replica from ownership once it stops', async () => {

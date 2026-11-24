@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import type { WriteRouteFallbackReason } from '../repositories/conversation-write-router';
 
 export type ChatPhase =
   | 'socket_auth'
@@ -73,6 +74,19 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
   private readonly recentCounts = new Array<number>(10).fill(0);
   private outboxPending: number | undefined;
   private readonly outboxCounts = new Map<OutboxOutcome, number>();
+
+  private readonly writeRouteFallbacks = new Map<
+    WriteRouteFallbackReason,
+    number
+  >();
+
+  // A write meant for the owner replica that was written locally instead.
+  recordWriteRouteFallback(reason: WriteRouteFallbackReason): void {
+    this.writeRouteFallbacks.set(
+      reason,
+      (this.writeRouteFallbacks.get(reason) ?? 0) + 1,
+    );
+  }
 
   recordNotificationOutbox(outcome: OutboxOutcome): void {
     this.outboxCounts.set(outcome, (this.outboxCounts.get(outcome) ?? 0) + 1);
@@ -452,6 +466,22 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     ] as const) {
       lines.push(
         `velora_conversation_notification_outbox_total${this.labels({ service: this.serviceName, outcome })} ${this.outboxCounts.get(outcome) ?? 0}`,
+      );
+    }
+    this.metricHeader(
+      lines,
+      'velora_conversation_write_route_fallback_total',
+      'Writes meant for the owner replica that were written locally instead (the client key keeps them unique).',
+      'counter',
+    );
+    for (const reason of [
+      'timeout',
+      'publish_failed',
+      'owner_gone',
+      'stopped',
+    ] as const) {
+      lines.push(
+        `velora_conversation_write_route_fallback_total${this.labels({ service: this.serviceName, reason })} ${this.writeRouteFallbacks.get(reason) ?? 0}`,
       );
     }
     if (this.outboxPending !== undefined) {

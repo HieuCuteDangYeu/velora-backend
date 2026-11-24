@@ -38,12 +38,25 @@ const DATE_KEYS = [
   'notificationNextAttemptAt',
 ] as const;
 
+/** Why a forwarded write fell back to a local write. */
+export type WriteRouteFallbackReason =
+  | 'timeout'
+  | 'publish_failed'
+  | 'owner_gone'
+  | 'stopped';
+
 export class WriteRouterUnavailableError extends Error {
-  constructor(reason: string) {
+  constructor(
+    reason: string,
+    readonly fallbackReason: WriteRouteFallbackReason = 'stopped',
+  ) {
     super(`Conversation write owner unavailable: ${reason}`);
     this.name = 'WriteRouterUnavailableError';
   }
 }
+
+/** Default wait for the owner; longer than a healthy forward, short of the 4 s it used to be. */
+export const DEFAULT_WRITE_FORWARD_TIMEOUT_MS = 2_000;
 
 type WireError = { kind: string; message: string; status?: number };
 type WireMessage =
@@ -79,6 +92,8 @@ export interface WriteRouterOptions {
   /** A replica without a heartbeat for this long no longer owns anything. */
   memberTtlMs?: number;
   requestTimeoutMs?: number;
+  /** Called once for every write that falls back to a local write. */
+  onFallback?: (reason: WriteRouteFallbackReason) => void;
   logger?: Pick<Logger, 'log' | 'warn'>;
 }
 
@@ -207,6 +222,7 @@ export class ConversationWriteRouter {
   private readonly zoneOf?: (conversationId: string) => string | null;
   private readonly memberTtlMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly onFallback?: (reason: WriteRouteFallbackReason) => void;
   private readonly logger: Pick<Logger, 'log' | 'warn'>;
   private readonly pending = new Map<string, Pending>();
   private subscriber?: ReturnType<Redis['duplicate']>;
@@ -231,7 +247,9 @@ export class ConversationWriteRouter {
     this.owns = options.ownsConversations ?? true;
     this.zoneOf = options.zoneOf;
     this.memberTtlMs = options.memberTtlMs ?? 6_000;
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 4_000;
+    this.requestTimeoutMs =
+      options.requestTimeoutMs ?? DEFAULT_WRITE_FORWARD_TIMEOUT_MS;
+    this.onFallback = options.onFallback;
     this.logger = options.logger ?? new Logger(ConversationWriteRouter.name);
   }
 
@@ -259,7 +277,8 @@ export class ConversationWriteRouter {
     if (this.report) clearInterval(this.report);
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.reject(new WriteRouterUnavailableError('shutting down'));
+      this.fallBack('stopped');
+      entry.reject(new WriteRouterUnavailableError('shutting down', 'stopped'));
       this.pending.delete(id);
     }
     try {
@@ -290,20 +309,24 @@ export class ConversationWriteRouter {
   }
 
   async forward(owner: string, writes: unknown[]): Promise<unknown[]> {
-    if (this.stopped) throw new WriteRouterUnavailableError('stopped');
+    if (this.stopped) {
+      this.fallBack('stopped');
+      throw new WriteRouterUnavailableError('stopped', 'stopped');
+    }
     const id = `${this.selfId}:${++this.sequence}`;
     const result = new Promise<unknown[]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        this.counters.unavailable++;
-        reject(new WriteRouterUnavailableError('no answer in time'));
+        this.fallBack('timeout');
+        reject(new WriteRouterUnavailableError('no answer in time', 'timeout'));
       }, this.requestTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
     });
     result.catch(() => undefined);
-    let receivers = 0;
-    try {
-      receivers = await this.redis.publish(
+    // The publish is not awaited on its own: if its reply never comes, the
+    // request timer above still settles the result.
+    void this.redis
+      .publish(
         channelOf(owner),
         JSON.stringify({
           t: 'q',
@@ -311,20 +334,39 @@ export class ConversationWriteRouter {
           from: this.selfId,
           writes,
         } satisfies WireMessage),
+      )
+      .then(
+        (receivers) => {
+          if (!this.pending.has(id)) return;
+          // Nobody is listening on the owner's channel: it is gone, do not wait.
+          if (receivers === 0) {
+            this.fallBack('owner_gone');
+            this.settle(
+              id,
+              new WriteRouterUnavailableError(
+                'owner not subscribed',
+                'owner_gone',
+              ),
+            );
+          } else {
+            this.counters.forwarded++;
+          }
+        },
+        () => {
+          if (!this.pending.has(id)) return;
+          this.fallBack('publish_failed');
+          this.settle(
+            id,
+            new WriteRouterUnavailableError('publish failed', 'publish_failed'),
+          );
+        },
       );
-    } catch {
-      this.settle(id, new WriteRouterUnavailableError('publish failed'));
-      this.counters.unavailable++;
-      return result;
-    }
-    // Nobody is listening on the owner's channel: it is gone, do not wait.
-    if (receivers === 0) {
-      this.settle(id, new WriteRouterUnavailableError('owner not subscribed'));
-      this.counters.unavailable++;
-    } else {
-      this.counters.forwarded++;
-    }
     return result;
+  }
+
+  private fallBack(reason: WriteRouteFallbackReason): void {
+    this.counters.unavailable++;
+    this.onFallback?.(reason);
   }
 
   private settle(id: string, error: unknown, results?: unknown[]): void {

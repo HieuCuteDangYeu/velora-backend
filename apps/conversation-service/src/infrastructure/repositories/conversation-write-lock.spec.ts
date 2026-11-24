@@ -114,6 +114,33 @@ describe('ConversationWriteLock', () => {
     expect(redis.store.size).toBe(0);
   });
 
+  it('gives up on a SET whose reply never comes (Redis restarting)', async () => {
+    const onTimeout = jest.fn();
+    const lock = new ConversationWriteLock(
+      {
+        set: jest.fn(() => new Promise<null>(() => undefined)),
+        eval: jest.fn(),
+      } as never,
+      { maxWaitMs: 30, onTimeout },
+    );
+    const started = Date.now();
+    await expect(lock.acquire('c1')).resolves.toBeNull();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(onTimeout).toHaveBeenCalledWith('c1');
+  });
+
+  it('does not wait forever for a release whose reply never comes', async () => {
+    const lock = new ConversationWriteLock(
+      {
+        set: jest.fn(() => Promise.resolve('OK')),
+        eval: jest.fn(() => new Promise<number>(() => undefined)),
+      } as never,
+      { maxWaitMs: 30 },
+    );
+    const lease = await lock.acquire('c1');
+    await expect(lease!.release()).resolves.toBeUndefined();
+  });
+
   it('survives a failing release (the ttl frees the lock)', async () => {
     const redis = makeFakeRedis();
     redis.eval.mockRejectedValueOnce(new Error('redis down'));

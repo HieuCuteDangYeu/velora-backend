@@ -24,6 +24,26 @@ type LockRedis = Pick<Redis, 'set' | 'eval'>;
 const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+const TIMED_OUT = Symbol('timed out');
+
+/**
+ * A Redis command that never answers (seen while Redis restarted: the reply to a
+ * command sent over the dying connection was lost) must not hold the write queue
+ * of a conversation forever. Waits at most `ms` and then gives up on the reply.
+ */
+function within<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | typeof TIMED_OUT> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<typeof TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), Math.max(1, ms));
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Cross-replica mutex for the message write of one conversation.
  *
@@ -63,15 +83,26 @@ export class ConversationWriteLock {
     for (let attempt = 0; ; attempt++) {
       let reply: unknown;
       try {
-        reply = await this.redis.set(key, token, 'PX', this.ttlMs, 'NX');
+        const pending = this.redis.set(key, token, 'PX', this.ttlMs, 'NX');
+        pending.catch(() => undefined);
+        reply = await within(pending, deadline - Date.now());
       } catch {
+        return null;
+      }
+      if (reply === TIMED_OUT) {
+        // Unknown outcome: the lock may or may not be ours. Write without it;
+        // if it was set, its TTL frees it.
+        this.options.onTimeout?.(conversationId);
         return null;
       }
       if (reply === 'OK') {
         return {
           release: async () => {
             try {
-              await this.redis.eval(RELEASE_SCRIPT, 1, key, token);
+              const pending = this.redis.eval(RELEASE_SCRIPT, 1, key, token);
+              pending.catch(() => undefined);
+              // A lost reply leaves the key to expire by its TTL.
+              await within(pending, this.maxWaitMs);
             } catch {
               // The ttl frees the lock; a failed release must not fail the write.
             }

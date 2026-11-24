@@ -23,6 +23,7 @@ import {
   ConversationWriteRouter,
   memberId,
   WriteRouterUnavailableError,
+  DEFAULT_WRITE_FORWARD_TIMEOUT_MS,
 } from './conversation-write-router';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -120,6 +121,13 @@ type AnchorBoundary = {
   stableId: string;
 };
 
+/** CONVERSATION_WRITE_FORWARD_TIMEOUT_MS, clamped to 250 ms..10 s; anything else uses the default. */
+export function writeForwardTimeoutMs(raw: string | undefined): number {
+  const value = Number(raw);
+  if (!raw || !Number.isFinite(value)) return DEFAULT_WRITE_FORWARD_TIMEOUT_MS;
+  return Math.min(10_000, Math.max(250, Math.round(value)));
+}
+
 @Injectable()
 export class PrismaChatRepository implements IChatRepository {
   private readonly logger = new Logger(PrismaChatRepository.name);
@@ -171,6 +179,10 @@ export class PrismaChatRepository implements IChatRepository {
         ...(zone ? { zoneOf: shardZoneOf } : {}),
         // CONVERSATION_WRITE_OWNER=off: this replica only forwards writes (slow link or weak machine).
         ownsConversations: process.env.CONVERSATION_WRITE_OWNER !== 'off',
+        requestTimeoutMs: writeForwardTimeoutMs(
+          process.env.CONVERSATION_WRITE_FORWARD_TIMEOUT_MS,
+        ),
+        onFallback: (reason) => this.metrics?.recordWriteRouteFallback(reason),
         handler: (writes) =>
           Promise.all(
             (writes as PreparedMessageWrite[]).map((write) =>

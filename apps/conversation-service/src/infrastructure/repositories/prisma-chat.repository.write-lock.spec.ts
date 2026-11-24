@@ -1,4 +1,7 @@
-import { PrismaChatRepository } from './prisma-chat.repository';
+import {
+  PrismaChatRepository,
+  writeForwardTimeoutMs,
+} from './prisma-chat.repository';
 
 type Writes = { data: { conversationId: string } }[];
 
@@ -115,5 +118,19 @@ describe('PrismaChatRepository cross-replica write lock', () => {
     const tracker = { now: 0, max: 0 };
     const replica = makeReplica(down, tracker);
     await expect(replica('c1')).resolves.toEqual([]);
+  });
+});
+
+describe('writeForwardTimeoutMs', () => {
+  it('uses the 2 s default when unset or not a number', () => {
+    expect(writeForwardTimeoutMs(undefined)).toBe(2_000);
+    expect(writeForwardTimeoutMs('')).toBe(2_000);
+    expect(writeForwardTimeoutMs('soon')).toBe(2_000);
+  });
+
+  it('clamps the configured value to 250 ms..10 s', () => {
+    expect(writeForwardTimeoutMs('1500')).toBe(1_500);
+    expect(writeForwardTimeoutMs('10')).toBe(250);
+    expect(writeForwardTimeoutMs('60000')).toBe(10_000);
   });
 });

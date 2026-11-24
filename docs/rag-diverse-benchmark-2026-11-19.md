@@ -463,3 +463,22 @@ Measured ceiling for detail questions: with retrieval inside the video, the firs
 Live run of the Korean video's questions after every fix (`.benchmarks/diverse-e2e-20-ko.json`, 4 rows): all four answered and cited the right video; both detail questions got fluent, grounded Korean answers at the right moment (moment hit 2 of 2), so the earlier "Korean 20%" is the chapter rows plus a 5-row sample, not a Korean-language failure. The two chapter rows fail like chapter rows in every language: the question names a YouTube chapter title ("Methods he used to study Korean") that the bot never sees, so it answers from the best-matching excerpt (one quoted sentence) against a reference that is the whole chapter.
 
 What the graph log shows about answer quality in general: on the shared local model, `ContextToolAgent` times out at 8 s, `context sufficient=false action=REFUSE_NO_CONTEXT` is logged on turns that are still answered, and `verification budget exhausted before the verifier ran; returning the draft unverified` appears on most turns. The answers are therefore mostly drafts that were never verified. That is a capacity limit of the local model host (the laptop also serves the media workers and the benchmark's own load), not a routing or retrieval fault, and no code change was made for it.
+
+## Final measured run (2026-11-24/25): the estimate replaced by a measurement
+Full run on the final deployed stack (every fix above live; 138 rows, 2 per video per type, bare phrasing, reel scope; `.benchmarks/diverse-e2e-22-final.json`). The first pass lost 14 rows to a 40-minute outage (one contiguous block, each row waiting out its timeout, with "Disconnected from RMQ" in the ai-service log); those rows were re-run, and 2 more rows were re-run after that. 135 of 138 rows judged, 3 never answered (two "first thing said" questions on a Vietnamese and a Korean long video and one Korean detail question; the Korean opening answered on a later attempt with a "could not verify" fallback, so these are intermittent, not persistent).
+
+| | first run (2026-11-21) | full run before the timestamp fix | final run |
+|---|---|---|---|
+| rows judged | 77 | 137 | 135 |
+| judged correct (factual >= 0.7) | 0.12 | 0.38 | **0.43** |
+| at least half right (>= 0.5) | 0.18 | 0.53 | **0.66** |
+| mean factual score | 0.18 | 0.49 | **0.55** |
+| scope refusals | 0.37 | 0.02 | 0.02 |
+| right reel cited | 0.49 | 0.95 | 0.91 |
+| right moment | 0.27 | 0.81 | 0.77 |
+
+By type (n, correct at >= 0.7, at >= 0.5): opening 22, 0.64 and 0.73; detail 53, 0.57 and 0.68; chapter 26, 0.12 and 0.35; timestamp 34, 0.32 and 0.82. By band (correct at >= 0.7): 3-10 min 0.48 (n=27), 30-60 min 0.44 (41), 10-30 min 0.41 (39), 60-120 min 0.32 (25), under 3 min 1.0 (3). By language: Arabic 0.50 (4), Spanish 0.62 (8), English 0.44 (87), Vietnamese 0.44 (27), French 0.17 (6), Korean 0.0 (3 judged of 5); French and Korean are indicative but are the two weakest languages.
+
+Two experiments that did not help and were reverted: Muse for the answer roles (gateway removed altogether), and a 90 s verification budget (same 32 rows: mean 0.548 against 0.552, correct 15 against 14, turn time 37 s against 35 s).
+
+What this run does not settle: why a few turns on long Korean and Vietnamese videos produce no reply at all; the conversation-service log shows write-routing counters (`failed=37115` of `forwarded=113492`) that were not investigated and are outside this work.

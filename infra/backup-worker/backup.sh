@@ -9,7 +9,7 @@ KEEP="${BACKUP_KEEP:-7}"
 ENV_FILE="${ENV_FILE:-/opt/velora/backup-worker/.env}"
 PG_CONTAINER="${PG_CONTAINER:-postgres-replica}"
 MONGO_CONTAINER="${MONGO_CONTAINER:-mongos-backup}"
-PG_DATABASES="${PG_DATABASES:-notification call}"
+PG_DATABASES="${PG_DATABASES:-notification call monitoring}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a

@@ -1,7 +1,7 @@
 # PostgreSQL hot standby on the second VPS
 
 Set up on 2026-11-12. The homelab `postgres` container (PostgreSQL 18.6, databases
-`notification` and `call`) streams to a read-only hot standby on `velora-node-2`.
+`notification`, `call` and, since 2026-11-24, `monitoring`) streams to a read-only hot standby on `velora-node-2`.
 It is a physical replica of the whole cluster. Nothing here is deployed by CI; the
 VPS is managed by hand over SSH. The Mongo counterpart is in `../mongo-replica/`.
 
@@ -81,3 +81,16 @@ applies as for Mongo: about 217 ms round trip between Vietnam and France, so a
 service on the homelab reading the standby pays that per query. Failover is manual:
 `pg_promote()` on the standby makes it writable, after which the primary must not
 be used again without being rebuilt as a standby of the new one.
+
+## 2026-11-24: monitoring database moved here from Aiven
+
+Aiven set the managed `monitoring` database to `default_transaction_read_only=on`
+(the free service also still holds the old `notification` copy from before
+2026-10-16), so every call-telemetry insert failed with SQLSTATE 25006 from
+2026-11-21. The database was dumped from Aiven (reads still worked), restored
+into the homelab `postgres` container as database and role `monitoring`, and
+`MONITORING_DATABASE_URL` in the homelab `.env` now points at
+`postgres:5432/monitoring` (backup `.env.before-monitoring-db-home-*`, env hash
+re-recorded). Row counts matched (8,513 call and 78,196 recommendation events);
+the standby picked the database up by itself. Nothing on Aiven was deleted.
+

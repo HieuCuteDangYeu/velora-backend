@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 CONTAINER="${POSTGRES_CONTAINER:-microservices-boilerplate-postgres-1}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/backups/postgres}"
 KEEP="${KEEP:-7}"
-DATABASES="${DATABASES:-notification call}"
+DATABASES="${DATABASES:-notification call monitoring}"
 
 umask 077
 mkdir -p "$BACKUP_DIR"

@@ -114,4 +114,19 @@ function pickRows(rows, { types = null, perVideoPerType = 2, split = 'all', verd
   return limit ? out.slice(0, Number(limit)) : out;
 }
 
-module.exports = { MIN_CELL, REFUSAL, SCOPE_REFUSAL, citationsOf, spanOf, scoreReply, summarizeCell, summarize, tagsOf, pickRows };
+/**
+ * A chapter row asks about "the part titled X": a YouTube chapter title the bot never sees, because Velora
+ * videos have no chapters. The same gold interval asked the way a user can ask it, by time, keeps the
+ * reference and the gold unchanged: "Summarize what is said from 12:10 to 15:30 in the video."
+ */
+function chapterByInterval(row) {
+  if (row.type !== 'chapter') return row;
+  const clock = (sec) => div.formatClock(sec);
+  return {
+    ...row,
+    id: `${row.id}-iv`,
+    question: `Summarize what is said from ${clock(row.gold.startSec)} to ${clock(row.gold.endSec)} in the video.`,
+  };
+}
+
+module.exports = { chapterByInterval, MIN_CELL, REFUSAL, SCOPE_REFUSAL, citationsOf, spanOf, scoreReply, summarizeCell, summarize, tagsOf, pickRows };

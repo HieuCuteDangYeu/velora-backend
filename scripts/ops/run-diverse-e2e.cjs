@@ -75,7 +75,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function runCommand(args) {
   const map = JSON.parse(fs.readFileSync(MAP, 'utf8'));
   const types = args.types ? String(args.types).split(',') : null;
-  const picked = lib.pickRows(readRows(), { types, perVideoPerType: Number(args['per-video'] ?? 2), split: args.split ?? 'all', verdict: args.verdict ?? 'answered', limit: args.limit });
+  const picked = lib.pickRows(readRows().map((r) => (args['chapter-by-interval'] ? lib.chapterByInterval(r) : r)), { types, perVideoPerType: Number(args['per-video'] ?? 2), split: args.split ?? 'all', verdict: args.verdict ?? 'answered', limit: args.limit });
   const only = args.only ? new Set(String(args.only).split(',').map((id) => id.replace(/^diverse-/, ''))) : null;
   const rows = picked.filter((r) => live.resolveReelId(map, r.fixtureId) && (!only || only.has(r.fixtureId.replace(/^diverse-/, ''))));
   if (args['dry-run']) {

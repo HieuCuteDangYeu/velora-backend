@@ -492,3 +492,19 @@ Rule for the next run: the 300-turns-a-day limit is per user. A full run is 138 
 
 ### French, traced (2026-11-25)
 All 6 French rows answered. Five cited the right video and moment; their judged scores were 0.90 (a privatised-beaches detail question, correct), 0.65 (opening line, correct but omits the reason), 0.55 (an Omonia chapter summary, correct but incomplete), 0.50 (a timestamp answer reproducing one reference sentence) and 0.25 (a detail question that attached the right figure, "once a year", to the wrong group). The sixth, the chapter question for "Intro", cited the right video but a wrong moment and returned garbled transcript text. So French is not failing: three correct-but-partial answers sit just under the 0.7 bar, one detail is wrong and one chapter question is unanswerable by title; "17%" is a sample of 6 against that bar. Korean (5 rows: two chapter rows, an opening, two detail rows) is the same shape; its two detail answers are fluent and grounded, and its chapter rows are unanswerable by title.
+
+### Chapter questions asked the way a Velora user can ask them (2026-11-25)
+A chapter row names a YouTube chapter title ("the part titled Licensing basics") that a Velora video does not have, so the bot cannot know where that part starts. `run-diverse-e2e.cjs run --chapter-by-interval` asks the same 26 rows by time instead ("Summarize what is said from 12:10 to 15:30 in the video."), with the same gold interval, reference and judge (`.benchmarks/diverse-e2e-25-chapter-iv.json`, daily turn bucket reset first):
+
+| | by title | by time |
+|---|---|---|
+| right moment cited | 0.61 | 1.00 (26 of 26) |
+| judged correct (>= 0.7) | 3 of 26 | 5 of 26 |
+| at least half right (>= 0.5) | 9 | 10 |
+| at least 0.3 | 12 | 16 |
+| mean factual | 0.31 | 0.40 |
+| median answer length | 308 chars | 402 chars |
+
+So the chapter weakness is partly the question form (about a third of it) and partly how much a summary can say: the live draft path uses a purpose-built time-bounded-summary mode (concise paraphrase, evidence scoped to the requested interval) whose answers are proportional to the evidence it is given, and a 5 to 10 minute chapter is judged against its whole text. No code change was made for it.
+
+Finding: the `Requested time` note added to `ChatPromptBuilderAdapter.formatRetrievedReelEvidence` (e0d6ecc8) is not on the live draft path, because `GenerateDraftAnswerUseCase` calls the builder with `includeRetrievedEvidence: false` and supplies evidence separately with stable ids. The timestamp improvement therefore came entirely from the routing fix (19739563), not from that hint.

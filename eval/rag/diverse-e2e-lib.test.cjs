@@ -58,3 +58,14 @@ test('the strict-scope refusal is counted apart from an honest "cannot verify"',
   const ok = lib.summarize([{ row: row(), reply: { answer: 'I can only help with Velora.' }, score: s }]);
   assert.equal(ok.overall.scopeRefusalRate, 1);
 });
+
+test('chapterByInterval asks the same gold interval by time and leaves other types alone', () => {
+  const chapter = { id: 'c1', type: 'chapter', question: 'What is covered in the part of the video titled "Intro"?', gold: { startSec: 730, endSec: 930 } };
+  const asked = lib.chapterByInterval(chapter);
+  assert.equal(asked.question, 'Summarize what is said from 12:10 to 15:30 in the video.');
+  assert.equal(asked.id, 'c1-iv');
+  assert.deepEqual(asked.gold, chapter.gold);
+  const detail = { id: 'd1', type: 'detail', question: 'q', gold: { startSec: 1, endSec: 2 } };
+  assert.equal(lib.chapterByInterval(detail), detail);
+});
+

@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { GroqKeyPoolExhaustedError } from '../services/groq-key-pool.service';
+import { CloudflareStructuredLlmAdapter } from './cloudflare-structured-llm.adapter';
 import { GroqStructuredLlmAdapter } from './groq-structured-llm.adapter';
 import { HybridStructuredLlmAdapter } from './hybrid-structured-llm.adapter';
 import {
@@ -19,12 +20,16 @@ const request = (modelRole: string, model = 'm') => ({
 function setup(values: Record<string, string>) {
   const groq = { generateObject: jest.fn().mockResolvedValue('groq') };
   const ollama = { generateObject: jest.fn().mockResolvedValue('ollama') };
+  const cloudflare = {
+    generateObject: jest.fn().mockResolvedValue('cloudflare'),
+  };
   const adapter = new HybridStructuredLlmAdapter(
     groq as unknown as GroqStructuredLlmAdapter,
     ollama as unknown as OllamaStructuredLlmAdapter,
     { get: (key: string) => values[key] } as unknown as ConfigService,
+    cloudflare as unknown as CloudflareStructuredLlmAdapter,
   );
-  return { adapter, groq, ollama };
+  return { adapter, groq, ollama, cloudflare };
 }
 
 describe('HybridStructuredLlmAdapter', () => {
@@ -117,5 +122,50 @@ describe('HybridStructuredLlmAdapter', () => {
       exhausted,
     );
     expect(ollama.generateObject).not.toHaveBeenCalled();
+  });
+
+  describe('Cloudflare answer roles', () => {
+    const on = {
+      AI_CLOUDFLARE_LLM_ENABLED: 'true',
+      AI_CLOUDFLARE_LLM_ROLES: 'ANSWER, CONTEXT_SUFFICIENCY',
+    };
+
+    it.each(['ANSWER', 'CONTEXT_SUFFICIENCY'])(
+      'sends %s to Cloudflare when enabled and listed',
+      async (role) => {
+        const { adapter, cloudflare, ollama } = setup(on);
+        await expect(adapter.generateObject(request(role))).resolves.toBe(
+          'cloudflare',
+        );
+        expect(cloudflare.generateObject).toHaveBeenCalledTimes(1);
+        expect(ollama.generateObject).not.toHaveBeenCalled();
+      },
+    );
+
+    it('leaves unlisted roles, and everything when disabled or unset, on the usual path', async () => {
+      const a = setup(on);
+      await expect(a.adapter.generateObject(request('VERIFIER'))).resolves.toBe(
+        'ollama',
+      );
+      const b = setup({ ...on, AI_CLOUDFLARE_LLM_ENABLED: 'false' });
+      await expect(b.adapter.generateObject(request('ANSWER'))).resolves.toBe(
+        'ollama',
+      );
+      const c = setup({});
+      await expect(c.adapter.generateObject(request('ANSWER'))).resolves.toBe(
+        'ollama',
+      );
+      expect(a.cloudflare.generateObject).not.toHaveBeenCalled();
+      expect(b.cloudflare.generateObject).not.toHaveBeenCalled();
+      expect(c.cloudflare.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('falls back to Ollama with the original request when Cloudflare fails', async () => {
+      const { adapter, cloudflare, ollama } = setup(on);
+      cloudflare.generateObject.mockRejectedValue(new Error('quota spent'));
+      const req = request('ANSWER');
+      await expect(adapter.generateObject(req)).resolves.toBe('ollama');
+      expect(ollama.generateObject).toHaveBeenCalledWith(req);
+    });
   });
 });

@@ -3,8 +3,9 @@ import type {
   IStructuredLlmService,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { GroqKeyPoolExhaustedError } from '@ai/infrastructure/services/groq-key-pool.service';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CloudflareStructuredLlmAdapter } from './cloudflare-structured-llm.adapter';
 import { GroqStructuredLlmAdapter } from './groq-structured-llm.adapter';
 import {
   OllamaStructuredCompletionProviderError,
@@ -41,9 +42,22 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
     private readonly groq: GroqStructuredLlmAdapter,
     private readonly ollama: OllamaStructuredLlmAdapter,
     private readonly config: ConfigService,
+    @Optional()
+    private readonly cloudflare?: CloudflareStructuredLlmAdapter,
   ) {}
 
   async generateObject<T>(input: GenerateStructuredObjectInput): Promise<T> {
+    if (this.cloudflare && this.useCloudflare(input.modelRole)) {
+      try {
+        return await this.cloudflare.generateObject<T>(input);
+      } catch (error: unknown) {
+        // A larger hosted model is an upgrade, never a dependency: any failure falls back to the local model.
+        this.logger.warn(
+          `Cloudflare failed for ${input.modelRole}; falling back to Ollama: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return this.ollama.generateObject<T>(input);
+      }
+    }
     if (!this.useGroq(input.modelRole))
       return this.ollama.generateObject<T>(input);
     try {
@@ -59,6 +73,22 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
       );
       return this.ollama.generateObject<T>({ ...input, model });
     }
+  }
+
+  /** Opt-in per role: AI_CLOUDFLARE_LLM_ENABLED=true and AI_CLOUDFLARE_LLM_ROLES lists the role. */
+  private useCloudflare(role?: string): boolean {
+    if (
+      this.config
+        .get<string>('AI_CLOUDFLARE_LLM_ENABLED')
+        ?.trim()
+        .toLowerCase() !== 'true'
+    )
+      return false;
+    const roles = (this.config.get<string>('AI_CLOUDFLARE_LLM_ROLES') ?? '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return roles.includes(role ?? '');
   }
 
   private useGroq(role?: string): boolean {

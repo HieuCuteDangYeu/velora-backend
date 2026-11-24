@@ -43,6 +43,7 @@ import { UpsertUserMemoriesUseCase } from '@ai/application/use-cases/upsert-user
 import { VerifierAgentUseCase } from '@ai/application/use-cases/verifier-agent.use-case';
 import { AiApplicationConfigAdapter } from '@ai/infrastructure/adapters/ai-application-config.adapter';
 import { ChatPromptBuilderAdapter } from '@ai/infrastructure/adapters/chat-prompt-builder.adapter';
+import { CloudflareStructuredLlmAdapter } from '@ai/infrastructure/adapters/cloudflare-structured-llm.adapter';
 import { CloudflareVisionAdapter } from '@ai/infrastructure/adapters/cloudflare-vision.adapter';
 import { ContentServiceAdapter } from '@ai/infrastructure/adapters/content-service.adapter';
 import { InProcessChatAdmissionAdapter } from '@ai/infrastructure/adapters/in-process-chat-admission.adapter';
@@ -179,6 +180,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     GroqKeyPool,
     GroqTextClient,
     GroqStructuredLlmAdapter,
+    CloudflareStructuredLlmAdapter,
     OllamaStructuredLlmAdapter,
     OllamaTextClient,
 

@@ -93,4 +93,3 @@ into the homelab `postgres` container as database and role `monitoring`, and
 `postgres:5432/monitoring` (backup `.env.before-monitoring-db-home-*`, env hash
 re-recorded). Row counts matched (8,513 call and 78,196 recommendation events);
 the standby picked the database up by itself. Nothing on Aiven was deleted.
-

@@ -205,6 +205,103 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  describe('a question about one named second', () => {
+    const build = (
+      plan: Record<string, unknown>,
+      chunks: Array<[number, number]>,
+      kind: 'NONE' | 'FIRST_COMPLETE_UTTERANCE' = 'NONE',
+    ) => {
+      const service = { generateObject: jest.fn() };
+      const useCase = new CheckContextSufficiencyUseCase(
+        service as never,
+        config,
+      );
+      const state = {
+        userMessage: 'What does the speaker say at 3:33?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: kind,
+          needsRetrieval: true,
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        retrievalPlan: {
+          sourceOrder: 'ASC',
+          requiresReelCoverage: false,
+          ...plan,
+        },
+        retrievedChunks: chunks.map((_, i) => ({
+          chunkId: `c${i}`,
+          reelId: 'reel-1',
+        })),
+        rerankedChunks: chunks.map(([startTime, endTime], i) => ({
+          chunkId: `c${i}`,
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime,
+          endTime,
+          evidenceText: `Excerpt ${i} of the transcript.`,
+          chunkText: `Excerpt ${i} of the transcript.`,
+          tags: [],
+        })),
+      } as unknown as RagChatWorkflowState;
+      return { service, useCase, state };
+    };
+
+    it('is sufficient without a model call when an excerpt spans the second', async () => {
+      const { service, useCase, state } = build(
+        { transcriptTimestampSec: 213 },
+        [
+          [0, 40],
+          [190, 240],
+        ],
+      );
+      await expect(useCase.execute(state)).resolves.toMatchObject({
+        sufficient: true,
+        supportedEvidenceIds: ['e1'],
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_TRANSCRIPT_POINT',
+        },
+      });
+      expect(service.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('leaves the model in charge when no excerpt spans the second, for a range, and for first-line requests', async () => {
+      for (const [plan, chunks, kind] of [
+        [{ transcriptTimestampSec: 213 }, [[0, 40]], 'NONE'],
+        [
+          { transcriptTimestampSec: 213, transcriptTimestampEndSec: 230 },
+          [[190, 240]],
+          'NONE',
+        ],
+        [
+          { transcriptTimestampSec: 213 },
+          [[190, 240]],
+          'FIRST_COMPLETE_UTTERANCE',
+        ],
+      ] as const) {
+        const { service, useCase, state } = build(
+          { ...plan },
+          chunks.map(([a, b]) => [a, b] as [number, number]),
+          kind,
+        );
+        service.generateObject.mockResolvedValue({
+          sufficient: false,
+          confidence: 0.2,
+          availableEvidence: [],
+          missingEvidence: ['TRANSCRIPT'],
+          supportedEvidenceIds: [],
+          reason: 'x',
+          recommendedAction: 'REFUSE_NO_CONTEXT',
+        });
+        await useCase.execute(state).catch(() => undefined);
+        expect(service.generateObject).toHaveBeenCalled();
+      }
+    });
+  });
+
   it('refuses a comparison when reranking drops one retrieved Reel', async () => {
     const service = { generateObject: jest.fn() };
     const useCase = new CheckContextSufficiencyUseCase(

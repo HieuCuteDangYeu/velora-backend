@@ -194,6 +194,27 @@ export class CheckContextSufficiencyUseCase {
       };
     }
 
+    // "What does the speaker say at 3:33?": an excerpt that spans that second is the evidence for it. A
+    // literal model answers "no information at that timestamp" for an excerpt that merely contains the
+    // second, so the question is settled from the timestamps instead of by a model call.
+    const pointTranscriptEvidenceId = this.pointTranscriptEvidenceId(state);
+    if (pointTranscriptEvidenceId) {
+      return {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: [pointTranscriptEvidenceId],
+        reason: 'An indexed transcript excerpt spans the requested second.',
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_TRANSCRIPT_POINT',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
     const semanticCalls: StructuredLlmCallDiagnostics[] = [];
     try {
       const primaryModel = this.config.model('CONTEXT_SUFFICIENCY');
@@ -691,6 +712,34 @@ ${JSON.stringify(
         ? [`e${index}`]
         : [],
     );
+  }
+
+  private pointTranscriptEvidenceId(
+    state: RagChatWorkflowState,
+  ): string | undefined {
+    const plan = state.retrievalPlan;
+    const second = plan?.transcriptTimestampSec;
+    if (
+      state.route?.reelQuestionType !== 'TRANSCRIPT_CONTENT' ||
+      isTranscriptSentenceSelectionRequest(state.route) ||
+      plan?.requiresReelCoverage === true ||
+      plan?.sourceOrder !== 'ASC' ||
+      typeof second !== 'number' ||
+      !Number.isFinite(second) ||
+      plan.transcriptTimestampEndSec !== undefined
+    ) {
+      return undefined;
+    }
+    const index = state.rerankedChunks.findIndex(
+      (chunk) =>
+        (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+        Boolean(chunk.evidenceText?.trim() || chunk.chunkText.trim()) &&
+        typeof chunk.startTime === 'number' &&
+        typeof chunk.endTime === 'number' &&
+        chunk.startTime <= second &&
+        second <= chunk.endTime,
+    );
+    return index >= 0 ? `e${index}` : undefined;
   }
 
   private exactTranscriptRangeEvidenceId(

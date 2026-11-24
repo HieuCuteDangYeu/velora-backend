@@ -508,3 +508,20 @@ A chapter row names a YouTube chapter title ("the part titled Licensing basics")
 So the chapter weakness is partly the question form (about a third of it) and partly how much a summary can say: the live draft path uses a purpose-built time-bounded-summary mode (concise paraphrase, evidence scoped to the requested interval) whose answers are proportional to the evidence it is given, and a 5 to 10 minute chapter is judged against its whole text. No code change was made for it.
 
 Finding: the `Requested time` note added to `ChatPromptBuilderAdapter.formatRetrievedReelEvidence` (e0d6ecc8) is not on the live draft path, because `GenerateDraftAnswerUseCase` calls the builder with `includeRetrievedEvidence: false` and supplies evidence separately with stable ids. The timestamp improvement therefore came entirely from the routing fix (19739563), not from that hint.
+
+## Experiment: a larger answer model on Cloudflare (2026-11-25, rolled back)
+`CloudflareStructuredLlmAdapter` (e830b211, off by default) lets the roles in `AI_CLOUDFLARE_LLM_ROLES` run on `AI_CLOUDFLARE_LLM_MODEL` through the Cloudflare chat endpoint the vision path already uses, falling back to the local model on any failure. Tested with `@cf/meta/llama-4-scout-17b-16e-instruct` for ANSWER and CONTEXT_SUFFICIENCY on the same 32 rows (8 videos, detail, chapter, timestamp) the local e2b model answered in the final run (`.benchmarks/diverse-e2e-26-cfscout.json`; 4 to 6 s per Scout call, median turn time unchanged at 36 s):
+
+| | local e2b | Cloudflare Scout |
+|---|---|---|
+| mean factual (32 rows) | 0.524 | 0.423 |
+| judged correct (>= 0.7) | 13 | 12 |
+| at least half right | 19 | 15 |
+| detail (16): mean / correct | 0.63 / 10 | **0.73 / 11** |
+| chapter (8): mean / correct | 0.28 / 1 | 0.20 / 1 |
+| timestamp (8): mean / correct | 0.55 / 2 | **0.02 / 0** |
+| median answer length | 227 chars | 122 chars |
+
+Reading it: the larger model answers detail questions better, but it refuses every timestamp question ("The video transcript does not provide information at the 3:33 timestamp"; none cited) where the local model produced an answer from the retrieved excerpt. The larger model is more literal: it will not treat an excerpt that spans the asked second as saying something "at" that second, and an accurate CONTEXT_SUFFICIENCY verdict now blocks answers the small model's leniency used to let through (the log already showed `context sufficient=false action=REFUSE_NO_CONTEXT` on turns that were answered anyway). The answer, sufficiency and verifier prompts and guards were tuned on the small model, so a model swap needs prompt work (at least for point-in-time and range requests) before it can win. Three ANSWER and two CONTEXT_SUFFICIENCY calls hit Cloudflare 429 (daily free allocation) and fell back to the local model as designed. Not tested: ANSWER only with the local sufficiency check, or the 70B model; both need a paid plan, since the free 10,000 neurons a day are shared with frame analysis (this run used part of the day's allowance, so reel frame analysis could have failed for the rest of that UTC day).
+
+Rolled back: `AI_CLOUDFLARE_LLM_*` removed from the homelab `.env` (backups `env-before-cf-llm-*` and `env-before-cf-llm-rollback-*`), ai-service recreated. To repeat on a paid plan: set `AI_CLOUDFLARE_LLM_ENABLED=true`, `AI_CLOUDFLARE_LLM_MODEL=<model>`, `AI_CLOUDFLARE_LLM_ROLES=ANSWER` (try ANSWER alone first), reset the test account's `ai_turn_day` key, run the 32-row sample, compare with `diverse-e2e-22-final.json`.

@@ -420,3 +420,29 @@ Not done: perceptual-hash near-duplicate skipping (about 45% fewer frames on sli
 The 45% saving quoted above came from the benchmark videos (slides, talks, screen recordings). On 30 public production reels (first 90 s each, one frame per 4 s, 690 frames, 64-bit difference hash) it saves 0% at distance 3, 4 and 6 and 1% at 10: every sampled frame of these fast-cut dramas is visually distinct (23 of 23 kept in almost every reel). Near-duplicate skipping is therefore not worth building for the production corpus; the vision spend there is the frame count itself (about 24 frames, about 1,700 neurons per reel) and repeated analysis, which the content-hash cache already removes. A lower frame cap or a longer sampling interval would cut the spend but also the visual coverage; that trade is not measured and was not made.
 
 Note on the silent fixture: the original 1.1 GB `tu3OXtpi4XI.mp4` was lost when the scratch directory was wiped; the 480p copy it was re-encoded to (and uploaded from) is the fixture of record.
+
+## Current state: full end-to-end run on the final stack (2026-11-24)
+138 rows (2 per video per type, bare phrasing, reel scope, 38 videos), 137 judged, run after every fix above was live (`.benchmarks/diverse-e2e-17-full.json`; judge Haiku, 0 errors, 1 unanswered). Against the first end-to-end run (2026-11-21, 83 rows):
+
+| | first run | now |
+|---|---|---|
+| answered | 0.93 | 0.99 |
+| scope refusals ("I can only help with Velora") | 0.37 | **0.02** (3 of 138) |
+| right reel cited | 0.49 | **0.95** |
+| moment hit (cited span overlaps the gold span) | 0.27 | **0.81** |
+| judged correct (factual >= 0.7) | 0.12 | **0.38** |
+| judged at least half right (>= 0.5) | n/a | 0.53 |
+| mean factual score | 0.18 | 0.49 |
+
+By type (n, correct at >= 0.7, at >= 0.5, mean; and the same rows in the 2026-11-23 run):
+
+| type | n | >= 0.7 | >= 0.5 | mean | earlier >= 0.7 / mean |
+|---|---|---|---|---|---|
+| opening | 24 | 0.75 | 0.75 | 0.69 | 0.67 / 0.65 |
+| detail | 53 | 0.55 | 0.70 | 0.61 | 0.44 / 0.49 |
+| chapter | 26 | 0.12 | 0.31 | 0.33 | 0.08 / 0.32 |
+| timestamp | 34 | 0.06 | 0.29 | 0.29 | 0.09 / 0.25 |
+
+By band: 30-60 min 0.45 correct, 10-30 min 0.36, 3-10 min 0.37, 60-120 min 0.23 (n=27), under 3 min 1.0 (n=3). By language: Vietnamese 0.43, English 0.38, Spanish 0.43, French 0.33, Arabic 0.25, Korean 0.20 (n=5, indicative).
+
+What is solved: routing and retrieval for the shared video (cited 0.95, moment 0.81, refusals 2%). What is not: answer completeness. Timestamp answers find the right moment 97% of the time but are judged correct 6% (one sentence against a window of speech); chapter summaries are right in part (0.31 at >= 0.5) but rarely complete; 60-120 min videos are the weakest band; Korean answers are still poor. These are limits of a small local answer model and a one-sentence answer style, and of the 0.7 bar; no routing or retrieval fault was found behind them.

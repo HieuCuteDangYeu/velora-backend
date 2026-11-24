@@ -126,26 +126,6 @@ export function looksLikeQuestion(message: string): boolean {
   );
 }
 
-/** True when the text has a letter outside A-Z (Hangul, CJK, Devanagari, Arabic, accented Latin). */
-function hasNonEnglishLetters(text: string): boolean {
-  return /\p{L}/u.test(text.replace(/[A-Za-z]/g, ''));
-}
-
-/**
- * A real question in a language the small router model files wrongly: a question mark, enough words,
- * not about the app or the assistant, and written with non-English letters. English questions keep the
- * model's own verdict.
- */
-export function looksLikeContentQuestion(message: string): boolean {
-  const text = message.trim();
-  return (
-    text.length >= 12 &&
-    /[?？]\s*$/u.test(text) &&
-    hasNonEnglishLetters(text) &&
-    !APP_OR_ASSISTANT_QUESTION.test(text)
-  );
-}
-
 @Injectable()
 export class QueryRouterAgentUseCase {
   private readonly logger = new Logger(QueryRouterAgentUseCase.name);
@@ -188,9 +168,10 @@ export class QueryRouterAgentUseCase {
   ) {}
 
   /**
-   * Routes by meaning. A question-shaped message the model leaves as plain chat while a video is
-   * shared is checked against that video's transcript: a general-knowledge question and a question
-   * about the video can have the same wording, and only the video's own content tells them apart.
+   * Routes by meaning. With a video shared, an OFF_TOPIC verdict (or plain chat for a question) is
+   * checked against that video's transcript: a general-knowledge question and a question about the
+   * video can have the same wording, and only the video's own content tells them apart. Without a
+   * close excerpt the verdict stands, so a general question is not answered from unrelated text.
    */
   async execute(input: {
     message: string;
@@ -201,13 +182,19 @@ export class QueryRouterAgentUseCase {
     accessibleReelIds?: string[];
   }): Promise<RagChatRouteDecision> {
     const route = await this.routeByMeaning(input);
+    // The model's verdict stands unless the shared video itself has a close excerpt. A verdict of
+    // OFF_TOPIC, or plain chat for a question-shaped message, is checked; greetings, app questions,
+    // recall questions, recommendations and chats with no shared video are never probed.
+    const eligible =
+      route.recommendationAction.type === 'NONE' &&
+      (route.intent === 'OFF_TOPIC' ||
+        (route.intent === 'NORMAL_CHAT' && looksLikeQuestion(input.message)));
     if (
-      route.intent !== 'NORMAL_CHAT' ||
-      route.recommendationAction.type !== 'NONE' ||
+      !eligible ||
       !this.evidenceProbe ||
       input.hasSharedReelContext !== true ||
       !input.accessibleReelIds?.length ||
-      !looksLikeQuestion(input.message)
+      looksLikeRecallQuestion(input.message)
     ) {
       return route;
     }
@@ -861,33 +848,10 @@ ${input.message.includes(PHOTO_NOTE_MARKER) ? `${PHOTO_NOTE_GUIDANCE}\n\n` : ''}
     raw: RawRouteDecision,
     input: { message?: string; hasSharedReelContext?: boolean },
   ): RagChatRouteDecision {
-    const scopedIntent = this.applyScope(this.normalizeIntent(raw.intent));
-    const rawReelQuestionType = this.isExplicitMultimodalRequest(input.message)
+    const modelIntent = this.applyScope(this.normalizeIntent(raw.intent));
+    const reelQuestionType = this.isExplicitMultimodalRequest(input.message)
       ? 'MULTIMODAL_CONTENT'
       : this.normalizeReelQuestionType(raw.reelQuestionType);
-    // A self-contained question ("what should you check before choosing a license?") reads like
-    // general knowledge to the router even when it is about the video the user just shared: 82%
-    // of such questions were refused in the 2026-11 benchmark. With a video shared, an OFF_TOPIC
-    // verdict is not trusted on its own. The question goes to that video's evidence; the answer
-    // step is grounded, so when the video does not cover it the reply says so instead of answering.
-    const offTopicAboutSharedReel =
-      Boolean(input.hasSharedReelContext) &&
-      rawReelQuestionType === 'NONE' &&
-      !looksLikeRecallQuestion(input.message ?? '') &&
-      (scopedIntent === 'OFF_TOPIC' ||
-        // The same small model files a Korean or Vietnamese question about the video under plain chat
-        // and no retrieval runs at all. A substantive question with a video shared goes to the video;
-        // greetings, thanks, app how-to and questions to the assistant stay chat.
-        (scopedIntent === 'NORMAL_CHAT' &&
-          ((raw.recommendationAction as { type?: unknown } | undefined)?.type ??
-            'NONE') === 'NONE' &&
-          looksLikeContentQuestion(input.message ?? '')));
-    const modelIntent: RagChatIntent = offTopicAboutSharedReel
-      ? 'REEL_VIDEO_QUESTION'
-      : scopedIntent;
-    const reelQuestionType = offTopicAboutSharedReel
-      ? 'TRANSCRIPT_CONTENT'
-      : rawReelQuestionType;
     // A small model sometimes calls "do you remember what I said about..." normal chat, or off
     // topic when the thing recalled is a trip or a pet. Explicit recall wording is a question
     // about the conversation: it is answered only from the chat and checked against it.

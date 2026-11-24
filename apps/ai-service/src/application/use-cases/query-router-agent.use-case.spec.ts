@@ -1917,93 +1917,12 @@ describe('QueryRouterAgentUseCase', () => {
       expect(route.intent).toBe('NORMAL_CHAT');
     });
 
-    it('sends an off-topic label to the shared video instead of refusing when a video is shared', async () => {
-      const service = {
-        generateObject: jest
-          .fn()
-          .mockResolvedValue(response({ intent: 'OFF_TOPIC' })),
-      };
-      const decision = await new QueryRouterAgentUseCase(
-        service as never,
-        config,
-      ).execute({
-        message:
-          'When adapting works from a collection, what should you check before choosing a license?',
-        hasSharedReelContext: true,
-        sharedReelCount: 1,
-      });
-
-      expect(decision).toMatchObject({
-        intent: 'REEL_VIDEO_QUESTION',
-        referenceTarget: 'SHARED_REEL',
-        reelQuestionType: 'TRANSCRIPT_CONTENT',
-        needsRetrieval: true,
-      });
-    });
-
-    describe('a plain-chat verdict on a question about a shared video', () => {
-      const routeShared = async (
-        message: string,
-        hasSharedReelContext = true,
-        overrides: Record<string, unknown> = {},
-      ) => {
-        const service = {
-          generateObject: jest
-            .fn()
-            .mockResolvedValue(
-              response({ intent: 'NORMAL_CHAT', ...overrides }),
-            ),
-        };
-        return new QueryRouterAgentUseCase(service as never, config).execute({
-          message,
-          hasSharedReelContext,
-          sharedReelCount: hasSharedReelContext ? 1 : 0,
-        });
-      };
-
-      it.each([
-        '광둥어를 공부하려고 넷플릭스 콘텐츠를 볼 때 자막은 어떻게 설정하고 있나요?',
-        'Người nói đã khuyên điều gì về việc học tiếng Quảng Đông?',
-        '¿Qué recomienda el presentador para aprender vocabulario?',
-      ])('goes to the shared video: %s', async (message) => {
-        const decision = await routeShared(
-          message.endsWith('?') ? message : `${message.slice(0, -1)}?`,
-        );
-        expect(decision).toMatchObject({
-          intent: 'REEL_VIDEO_QUESTION',
-          reelQuestionType: 'TRANSCRIPT_CONTENT',
-          needsRetrieval: true,
-        });
-      });
-
-      it.each([
-        'How do I edit my Velora profile?',
-        'Who are you, exactly?',
-        'thanks?',
-        'Thanks, that helps a lot!',
-        'What does the speaker recommend for learning vocabulary?',
-        'What’s the difference between TCP and UDP exactly?',
-      ])('stays chat: %s', async (message) => {
-        expect((await routeShared(message)).intent).toBe('NORMAL_CHAT');
-      });
-
-      it('stays chat when no video is shared', async () => {
-        expect(
-          (
-            await routeShared(
-              'What does the speaker recommend for learning vocabulary?',
-              false,
-            )
-          ).intent,
-        ).toBe('NORMAL_CHAT');
-      });
-    });
-
-    describe('the evidence probe on an English plain-chat question', () => {
+    describe('the evidence probe on an OFF_TOPIC or plain-chat verdict', () => {
       const routeWithProbe = async (
         message: string,
         probeResult: boolean | 'throws',
         shared = true,
+        verdict: 'NORMAL_CHAT' | 'OFF_TOPIC' = 'NORMAL_CHAT',
       ) => {
         const probe = {
           hasStrongEvidence: jest.fn(() =>
@@ -2015,7 +1934,7 @@ describe('QueryRouterAgentUseCase', () => {
         const service = {
           generateObject: jest
             .fn()
-            .mockResolvedValue(response({ intent: 'NORMAL_CHAT' })),
+            .mockResolvedValue(response({ intent: verdict })),
         };
         const decision = await new QueryRouterAgentUseCase(
           service as never,
@@ -2053,6 +1972,40 @@ describe('QueryRouterAgentUseCase', () => {
             )
           ).decision.intent,
         ).toBe('NORMAL_CHAT');
+      });
+
+      it('reroutes an OFF_TOPIC verdict only when the video has a close excerpt', async () => {
+        const yes = await routeWithProbe(question, true, true, 'OFF_TOPIC');
+        expect(yes.decision.intent).toBe('REEL_VIDEO_QUESTION');
+        const no = await routeWithProbe(
+          'How does a binary search tree stay balanced?',
+          false,
+          true,
+          'OFF_TOPIC',
+        );
+        expect(no.decision.intent).toBe('OFF_TOPIC');
+      });
+
+      it('reroutes a non-English question the router called chat when the video has an excerpt, not otherwise', async () => {
+        const korean =
+          '광둥어를 공부하려고 넷플릭스 콘텐츠를 볼 때 자막은 어떻게 설정하고 있나요?';
+        expect((await routeWithProbe(korean, true)).decision.intent).toBe(
+          'REEL_VIDEO_QUESTION',
+        );
+        expect((await routeWithProbe(korean, false)).decision.intent).toBe(
+          'NORMAL_CHAT',
+        );
+      });
+
+      it('does not probe an OFF_TOPIC verdict when no video is shared', async () => {
+        const { decision, probe } = await routeWithProbe(
+          question,
+          true,
+          false,
+          'OFF_TOPIC',
+        );
+        expect(decision.intent).toBe('OFF_TOPIC');
+        expect(probe.hasStrongEvidence).not.toHaveBeenCalled();
       });
 
       it('keeps the model verdict when the probe itself fails', async () => {

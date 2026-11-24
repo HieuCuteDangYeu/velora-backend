@@ -4,9 +4,10 @@ import type { IReelSemanticIndexService } from '@ai/domain/interfaces/reel-seman
 import type { ISharedReelEvidenceProbe } from '@ai/domain/interfaces/shared-reel-evidence-probe.interface';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
-// bge-m3 chunk distances measured on this index: a chunk that answers the question sits at 0.30-0.37,
-// unrelated text at 0.50 and up.
-const DEFAULT_MAX_DISTANCE = 0.42;
+// Calibrated 2026-11-24 on 60 English detail questions, each searched inside its own video and inside an
+// unrelated one: the closest chunk of the own video is within 0.42 for 75% of questions, 0.48 for 93% and
+// 0.50 for 97%; an unrelated video is within 0.42 for 2%, 0.48 for 2% and 0.50 for 3% (its median is 0.62).
+const DEFAULT_MAX_DISTANCE = 0.48;
 const MAX_REELS = 8;
 
 @Injectable()

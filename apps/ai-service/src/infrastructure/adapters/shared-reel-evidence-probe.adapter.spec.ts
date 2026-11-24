@@ -30,6 +30,15 @@ describe('SharedReelEvidenceProbeAdapter', () => {
     );
   });
 
+  it('is true at the calibrated limit (0.48) and false just past it', async () => {
+    await expect(ask(build([{ vectorDistance: 0.48 }]).adapter)).resolves.toBe(
+      true,
+    );
+    await expect(ask(build([{ vectorDistance: 0.49 }]).adapter)).resolves.toBe(
+      false,
+    );
+  });
+
   it('is false when the closest chunk is unrelated', async () => {
     const { adapter } = build([
       { vectorDistance: 0.55 },
@@ -40,7 +49,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
 
   it('honours the configured distance', async () => {
     await expect(
-      ask(build([{ vectorDistance: 0.5 }], '0.6').adapter),
+      ask(build([{ vectorDistance: 0.55 }], '0.6').adapter),
     ).resolves.toBe(true);
   });
 

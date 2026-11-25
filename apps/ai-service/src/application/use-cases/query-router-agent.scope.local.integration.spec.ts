@@ -1,3 +1,4 @@
+import { CloudflareStructuredLlmAdapter } from '@ai/infrastructure/adapters/cloudflare-structured-llm.adapter';
 import { OllamaStructuredLlmAdapter } from '@ai/infrastructure/adapters/ollama-structured-llm.adapter';
 import { OllamaTextClient } from '@ai/infrastructure/adapters/ollama-text.client';
 import { ConfigService } from '@nestjs/config';
@@ -10,6 +11,9 @@ import { QueryRouterAgentUseCase } from './query-router-agent.use-case';
  *
  *   OLLAMA_LOCAL_INTEGRATION=1 [OLLAMA_LOCAL_MODEL=gemma4:e2b-it-qat] \
  *     npx jest query-router-agent.scope.local.integration
+ *
+ * SCOPE_ROUTER_PROVIDER=cloudflare runs the same rows with the router on the Cloudflare model
+ * (AI_CLOUDFLARE_LLM_MODEL, CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN from the environment).
  *
  * Two numbers matter:
  *  - false refusals: an in-scope message routed OFF_TOPIC (the user is turned away wrongly). The
@@ -27,6 +31,14 @@ const config = new ConfigService({
     process.env.OLLAMA_TEXT_BASE_URL || 'http://127.0.0.1:11434',
   OLLAMA_STRUCTURED_TIMEOUT_MS: '120000',
   AI_ROUTER_MODEL: model,
+});
+const cloudflare = process.env.SCOPE_ROUTER_PROVIDER === 'cloudflare';
+const cloudflareConfig = new ConfigService({
+  CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID,
+  CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN,
+  CLOUDFLARE_AI_GATEWAY_ID: process.env.CLOUDFLARE_AI_GATEWAY_ID,
+  AI_CLOUDFLARE_LLM_MODEL: process.env.AI_CLOUDFLARE_LLM_MODEL,
+  AI_CLOUDFLARE_LLM_TIMEOUT_MS: '60000',
 });
 const appConfig = {
   get: () => undefined,
@@ -84,7 +96,12 @@ describe('router scope policy (opt-in, real model)', () => {
     'turns unrelated messages away without refusing in-scope ones',
     async () => {
       const router = new QueryRouterAgentUseCase(
-        new OllamaStructuredLlmAdapter(new OllamaTextClient(config), config),
+        cloudflare
+          ? new CloudflareStructuredLlmAdapter(cloudflareConfig)
+          : new OllamaStructuredLlmAdapter(
+              new OllamaTextClient(config),
+              config,
+            ),
         appConfig,
       );
       const scopeRows = readJsonl<ScopeRow>(
@@ -173,7 +190,7 @@ describe('router scope policy (opt-in, real model)', () => {
 
       console.log(
         JSON.stringify({
-          model,
+          model: cloudflare ? process.env.AI_CLOUDFLARE_LLM_MODEL : model,
           ...stats,
           catchRate: stats.caught / stats.off,
           benchmarkCatchRate: stats.benchmarkCaught / stats.benchmarkOff,

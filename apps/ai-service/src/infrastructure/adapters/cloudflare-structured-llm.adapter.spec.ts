@@ -117,6 +117,46 @@ describe('CloudflareStructuredLlmAdapter', () => {
     ).not.toContain('previous reply was rejected');
   });
 
+  describe('constrained decoding (AI_CLOUDFLARE_LLM_JSON_SCHEMA)', () => {
+    const sentBody = () =>
+      JSON.parse(
+        (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+      ) as { response_format?: Record<string, unknown> };
+
+    afterEach(() => {
+      delete values.AI_CLOUDFLARE_LLM_JSON_SCHEMA;
+    });
+
+    it('does not send a response format unless it is switched on', async () => {
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await adapter.generateObject(request);
+      expect(sentBody().response_format).toBeUndefined();
+    });
+
+    it('sends the schema as a strict json_schema response format when on', async () => {
+      values.AI_CLOUDFLARE_LLM_JSON_SCHEMA = 'true';
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await adapter.generateObject({
+        ...request,
+        schemaVersion: 'router-semantic-v10',
+      });
+      expect(sentBody().response_format).toMatchObject({
+        type: 'json_schema',
+        json_schema: { name: 'router-semantic-v10', strict: true },
+      });
+    });
+
+    it('sanitises the schema name', async () => {
+      values.AI_CLOUDFLARE_LLM_JSON_SCHEMA = 'true';
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await adapter.generateObject({ ...request, schemaVersion: 'v 1.2/x' });
+      expect(
+        (sentBody().response_format as { json_schema: { name: string } })
+          .json_schema.name,
+      ).toBe('v_1_2_x');
+    });
+  });
+
   it('rejects a reply that violates the schema', async () => {
     fetchMock.mockResolvedValue(reply('{"title":1,"tags":[]}'));
     await expect(adapter.generateObject(request)).rejects.toMatchObject({

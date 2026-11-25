@@ -165,6 +165,24 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
         temperature: input.temperature ?? 0.1,
         max_tokens: input.maxTokens ?? 1_024,
         stream: false,
+        // Constrained decoding: without it Scout ignores the prompt-only schema on a large share of
+        // router calls. Opt-in per deployment (AI_CLOUDFLARE_LLM_JSON_SCHEMA=true).
+        ...(this.config.get<string>('AI_CLOUDFLARE_LLM_JSON_SCHEMA') === 'true'
+          ? {
+              response_format: {
+                type: 'json_schema',
+                json_schema: {
+                  name:
+                    (input.schemaVersion ?? 'response').replace(
+                      /[^A-Za-z0-9_-]/g,
+                      '_',
+                    ) || 'response',
+                  schema,
+                  strict: true,
+                },
+              },
+            }
+          : {}),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });

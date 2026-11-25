@@ -7,9 +7,10 @@ export function isLegacyReelHlsKey(key: string, reelId: string): boolean {
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       reelId,
     ) &&
-    new RegExp(`^reels/${reelId}/(?:(?:${uuid}/)?master|master-v[0-9]{8}T[0-9]{9}Z)\\.m3u8$`, 'i').test(
-      normalizeReelMediaKey(key),
-    )
+    new RegExp(
+      `^reels/${reelId}/(?:(?:${uuid}/)?master|master-v[0-9]{8}T[0-9]{9}Z)\\.m3u8$`,
+      'i',
+    ).test(normalizeReelMediaKey(key))
   );
 }
 

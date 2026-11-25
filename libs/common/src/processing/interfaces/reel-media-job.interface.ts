@@ -70,7 +70,9 @@ export function isReelMediaJob(value: unknown): value is ReelMediaJob {
         String(record['existingSourceOrientation']),
       )) &&
     (record['existingSourceLengthClass'] === undefined ||
-      ['SHORT', 'LONG'].includes(String(record['existingSourceLengthClass']))) &&
+      ['SHORT', 'LONG'].includes(
+        String(record['existingSourceLengthClass']),
+      )) &&
     (record['preservedSourceDurationMs'] === undefined ||
       (typeof record['preservedSourceDurationMs'] === 'number' &&
         Number.isFinite(record['preservedSourceDurationMs']) &&

@@ -75,9 +75,17 @@ describe('legacy stored HLS import keys', () => {
   it('accepts a timestamp-versioned imported master for its Reel only', () => {
     const key = `reels/${reelId}/master-v20260923T121215633Z.m3u8`;
     expect(isLegacyReelHlsKey(key, reelId)).toBe(true);
-    expect(isLegacyReelHlsKey(key, '87654321-1234-1234-1234-123456789abc')).toBe(false);
-    expect(isLegacyReelHlsKey(key.replace('master-v', 'variant-v'), reelId)).toBe(false);
-    expect(isLegacyReelHlsKey(key.replace('633Z', '633Z/other'), reelId)).toBe(false);
-    expect(isLegacyReelHlsKey(key.replace('20260923T121215633Z', 'unsafe'), reelId)).toBe(false);
+    expect(
+      isLegacyReelHlsKey(key, '87654321-1234-1234-1234-123456789abc'),
+    ).toBe(false);
+    expect(
+      isLegacyReelHlsKey(key.replace('master-v', 'variant-v'), reelId),
+    ).toBe(false);
+    expect(isLegacyReelHlsKey(key.replace('633Z', '633Z/other'), reelId)).toBe(
+      false,
+    );
+    expect(
+      isLegacyReelHlsKey(key.replace('20260923T121215633Z', 'unsafe'), reelId),
+    ).toBe(false);
   });
 });

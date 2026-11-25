@@ -35,7 +35,10 @@ export interface ReelSeriesListSummary {
   coverThumbnailKey?: string;
 }
 
-export interface ReelSeriesListItem extends Omit<ReelSeriesListSummary, 'coverThumbnailKey'> {
+export interface ReelSeriesListItem extends Omit<
+  ReelSeriesListSummary,
+  'coverThumbnailKey'
+> {
   coverThumbnailUrl?: string;
 }
 
@@ -44,8 +47,10 @@ export interface PaginatedReelSeriesList {
   nextCursor: string | null;
 }
 
-export interface ReelSeriesMetadataResponse
-  extends Omit<ReelSeriesListSummary, 'coverThumbnailKey' | 'firstReelId'> {}
+export interface ReelSeriesMetadataResponse extends Omit<
+  ReelSeriesListSummary,
+  'coverThumbnailKey' | 'firstReelId'
+> {}
 
 export interface ReelSeriesEpisodeCursor {
   episodeNumber: number;

@@ -144,17 +144,17 @@ The legacy `/members` endpoint remains available for compatibility.
 
 ## Stage 4 — Permission matrix
 
-| Action | OWNER | ADMIN | MEMBER |
-| --- | --- | --- | --- |
-| Rename/change group picture | Yes | Yes | No |
-| Add member | Yes | Yes | No |
-| Remove MEMBER | Yes | Yes | No |
-| Remove ADMIN | Yes | No | No |
-| Promote MEMBER → ADMIN | Yes | No | No |
-| Demote ADMIN → MEMBER | Yes | No | No |
-| Transfer ownership | Yes | No | No |
-| Leave group | Transfer first | Yes | Yes |
-| Disband group | Not enabled | No | No |
+| Action                      | OWNER          | ADMIN | MEMBER |
+| --------------------------- | -------------- | ----- | ------ |
+| Rename/change group picture | Yes            | Yes   | No     |
+| Add member                  | Yes            | Yes   | No     |
+| Remove MEMBER               | Yes            | Yes   | No     |
+| Remove ADMIN                | Yes            | No    | No     |
+| Promote MEMBER → ADMIN      | Yes            | No    | No     |
+| Demote ADMIN → MEMBER       | Yes            | No    | No     |
+| Transfer ownership          | Yes            | No    | No     |
+| Leave group                 | Transfer first | Yes   | Yes    |
+| Disband group               | Not enabled    | No    | No     |
 
 The pure policy is implemented in `group-permission.policy.ts`.
 

@@ -653,3 +653,15 @@ Detail questions on one shared reel spend 7-9 s in `contextToolAgentNode` becaus
 | `contextToolAgentNode` median | about 7 s | 1.4 s |
 
 The saving is real (9 s on detail turns) but the planning model is doing useful work: it rewrites the question into a search query that retrieves better than the raw message, and without it detail answers lose 0.17 and the right moment is hit less often. The loss is above the roughly 0.05 run-to-run noise on this sample and shows in three independent measures, so the flag was removed from the homelab env again (backups `env-before-direct-search-*`, `env-before-direct-search-revert-*`; hash gate checked). The code stays, off by default. A possible follow-up: keep the shortcut but build the query deterministically (drop the question wording, keep the content words) and re-measure; not done.
+
+## French and Korean, and the evidence probe limit 0.48 -> 0.50 (2026-11-25, 103779d6)
+Each language has one video and 11 reviewed rows (17 run with the default split), so these are single-video results. On the production setup of that day (Scout answers, range fix, constrained output), `diverse-e2e-39-frko.json`:
+
+| | mean factual | judged correct | earlier local-model run, same rows |
+|---|---|---|---|
+| French (8 rows) | 0.628 | 5 (62%) | 0.478 / 1 of 6 |
+| Korean (9 rows) | 0.416 | 3 (33%) | 0.204 / 1 of 5 |
+
+Misses: a French cooking question about the shared video was refused as off-topic; a Korean "first thing said" ended in "could not verify"; Korean detail answers were verbatim transcript excerpts instead of the asked fact; the French "Intro" chapter-by-title row cannot work without titles.
+
+The off-topic refusal was the evidence probe (`ISharedReelEvidenceProbe`, 0.48 limit calibrated on 60 English questions): that question's closest chunk was at 0.496. Re-measured on 55 non-English detail questions (vi 28, es 10, ar 6, ko 6, fr 5; own video vs an unrelated English video): own video within 0.42 / 0.48 / 0.50 / 0.55 for 64% / 89% / 95% / 100% (median 0.40); an unrelated video within 0.48 and 0.55 for 0%. The default limit is now 0.50 (English calibration: own 93% -> 97%, unrelated 2% -> 3%). Checks on the deployed build: the general-question control (6 questions: TCP vs UDP, the sky, optimistic locking, project retrospective, capital of Australia, binary search tree) was rerouted 0 of 6 on each of the English, French and Korean videos, all refused as off-topic; the French and Korean rows scored French 0.628 -> 0.632 (4 correct), Korean 0.416 -> 0.459 (3 correct), scope refusals 1 -> 0. Unchanged within noise except the refusal that is gone.

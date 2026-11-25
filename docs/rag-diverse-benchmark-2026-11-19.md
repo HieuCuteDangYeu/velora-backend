@@ -638,3 +638,18 @@ Tried `AI_CLOUDFLARE_LLM_ROLES=ANSWER,VERIFIER,CITATION_ATTRIBUTION` (json_schem
 | + verifier and citations on Scout | 0.567 | 14 | 39 s / 64 s | 29 / 31 | 0 |
 
 The verifier node itself fell from 8.1 s to 6.0 s median (p90 20.9 to 12.3) and there were no Scout errors or fallbacks, but the whole turn did not get faster (p90 worse), the citation node did not change (4.6 s), the verification budget was exhausted on 9 of 33 turns, and the cited-reel count slipped by one. No gain, so reverted: `AI_CLOUDFLARE_LLM_ROLES=ANSWER` (backups `env-before-cf-verifier-citation-20261125T121000Z`, `env-before-roles-revert-*`; hash gate re-checked). The turn's time is spread over six sequential steps; no single swap removes it. Remaining options are structural (run citation attribution alongside the verifier, shrink the retrieval step) and need workflow changes, not a model swap.
+
+## Direct reel search instead of the tool-planning model: faster, but worse retrieval, left OFF (2026-11-25)
+Detail questions on one shared reel spend 7-9 s in `contextToolAgentNode` because a local model plans the tool call (timestamp and opening questions skip it: 20-60 ms). `AI_CONTEXT_TOOL_DIRECT_SEARCH=true` (919faf9b, default off) searches directly with the user's own message when one reel is shared and only reel tools are allowed. Same 32 rows, flag off then on, 32 judged in both (`diverse-e2e-37-ds-off.json`, `-38-ds-on.json`):
+
+| | flag off | direct search on |
+|---|---|---|
+| mean factual | 0.629 | 0.508 |
+| judged correct (>= 0.7) | 17 | 12 |
+| cited reel / moment hit | 31 / 28 of 32 | 27 / 25 of 32 |
+| detail (16) mean | 0.754 | 0.589 |
+| timestamp (8) / chapter (8) mean | 0.628 / 0.380 | 0.522 / 0.331 |
+| median turn (detail) | 36 s | 27 s |
+| `contextToolAgentNode` median | about 7 s | 1.4 s |
+
+The saving is real (9 s on detail turns) but the planning model is doing useful work: it rewrites the question into a search query that retrieves better than the raw message, and without it detail answers lose 0.17 and the right moment is hit less often. The loss is above the roughly 0.05 run-to-run noise on this sample and shows in three independent measures, so the flag was removed from the homelab env again (backups `env-before-direct-search-*`, `env-before-direct-search-revert-*`; hash gate checked). The code stays, off by default. A possible follow-up: keep the shortcut but build the query deterministically (drop the question wording, keep the content words) and re-measure; not done.

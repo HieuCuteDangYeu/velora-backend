@@ -49,17 +49,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Trivy filesystem scan (vulnerabilities, secrets, Dockerfile misconfigurations)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: table
-          output: trivy.txt
-          exit-code: '0'
-          skip-dirs: node_modules,eval,docs
+        # The official image instead of trivy-action: the action's binary download failed on hosted runners.
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src aquasec/trivy:0.65.0 fs \
+            --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
+            --skip-dirs node_modules --skip-dirs eval --skip-dirs docs \
+            --exit-code 0 --format table --output trivy.txt .
       - name: Summary
         if: always()
         run: |

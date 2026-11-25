@@ -30,12 +30,18 @@ describe('SharedReelEvidenceProbeAdapter', () => {
     );
   });
 
-  it('is true at the calibrated limit (0.48) and false just past it', async () => {
-    await expect(ask(build([{ vectorDistance: 0.48 }]).adapter)).resolves.toBe(
+  it('is true at the calibrated limit (0.50) and false just past it', async () => {
+    await expect(ask(build([{ vectorDistance: 0.5 }]).adapter)).resolves.toBe(
       true,
     );
-    await expect(ask(build([{ vectorDistance: 0.49 }]).adapter)).resolves.toBe(
+    await expect(ask(build([{ vectorDistance: 0.51 }]).adapter)).resolves.toBe(
       false,
+    );
+  });
+
+  it('accepts the closest chunk of a non-English question that sat just above 0.48', async () => {
+    await expect(ask(build([{ vectorDistance: 0.496 }]).adapter)).resolves.toBe(
+      true,
     );
   });
 

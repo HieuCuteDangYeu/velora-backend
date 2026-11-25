@@ -7,7 +7,10 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 // Calibrated 2026-11-24 on 60 English detail questions, each searched inside its own video and inside an
 // unrelated one: the closest chunk of the own video is within 0.42 for 75% of questions, 0.48 for 93% and
 // 0.50 for 97%; an unrelated video is within 0.42 for 2%, 0.48 for 2% and 0.50 for 3% (its median is 0.62).
-const DEFAULT_MAX_DISTANCE = 0.48;
+// Re-measured 2026-11-25 on 55 non-English detail questions (vi, es, ar, ko, fr): own video within 0.48 for
+// 89%, 0.50 for 95%, 0.55 for 100% (median 0.40); an unrelated video within 0.55 for 0%. A French question
+// whose best chunk sat at 0.496 was turned away as off-topic at 0.48, so the default is 0.50.
+const DEFAULT_MAX_DISTANCE = 0.5;
 const MAX_REELS = 8;
 
 @Injectable()

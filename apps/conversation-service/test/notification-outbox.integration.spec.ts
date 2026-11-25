@@ -256,6 +256,28 @@ integration(
 
       const notifications = {
         notifyNewMessage: jest.fn().mockResolvedValue(undefined),
+        // The worker delivers a chunk with one batch request. This double hands
+        // each intent to notifyNewMessage, as the adapter does for an older
+        // notification service, so the lease checks below can hold single
+        // deliveries open.
+        notifyNewMessages: jest.fn(
+          async (
+            items: {
+              conversation: unknown;
+              message: unknown;
+              actorUserId: string;
+            }[],
+            signal?: AbortSignal,
+          ) => {
+            for (const item of items)
+              await notifications.notifyNewMessage(
+                item.conversation,
+                item.message,
+                item.actorUserId,
+                signal,
+              );
+          },
+        ),
       };
       const metrics = {
         measurePhase: jest.fn((_phase: string, action: () => unknown) =>
@@ -277,7 +299,8 @@ integration(
       queries.length = 0;
       await Promise.all([worker().runOnce(), worker().runOnce()]);
       expect(notifications.notifyNewMessage).toHaveBeenCalledTimes(1);
-      expect(queries).not.toContain('db.messages.updateMany');
+      // Chunks are claimed with one guarded multi-document update; two
+      // concurrent workers still deliver the intent exactly once (above).
       expect(
         queries.filter((query) => query === 'db.runCommand').length,
       ).toBeGreaterThanOrEqual(2);

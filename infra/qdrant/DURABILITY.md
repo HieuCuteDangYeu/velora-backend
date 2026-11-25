@@ -392,43 +392,122 @@ replica; replication_factor 2, write_consistency_factor 1. D2 additionally repli
   write path and more memory. Keep H2 data-less (about 15 MiB in the rehearsal, against about 50 MiB
   for a replica).
 
-### Runbook for D (not applied; production change needing the owner's approval)
+### Runbook for D (attempted 2026-11-26, rolled back; production remains single-node)
 
 Needs no node-2. Prerequisites: the TLS certificate re-issued from the existing CA with SANs for
-the H1 and H2 peer addresses and the laptop's tailnet address, port 6335 reachable from H2 and the
-laptop to H1, the standby already on the laptop untouched.
+the H1 and H2 peer addresses and the laptop's tailnet address (completed 2026-11-26 on the homelab),
+port 6335 reachable from H2 and the laptop to H1, a non-internal bridge network alongside the
+internal `reel-vector-net` so homelab Qdrant containers can reach the laptop over Tailscale, and the
+standby already on the laptop untouched.
 
 1. Take a paired backup; record baseline latency.
-2. H1: add the cluster environment, `--uri` and a 6335 listener to the Qdrant overlay (outside git; the
-   CI deploy drops it, so re-apply with `ensure-reel-indexing-qdrant`) and recreate: about 1.3 s of
-   restart in the rehearsal, budget 30-60 s in production, during which vector search returns
-   nothing.
+2. H1: add `QDRANT__CLUSTER__ENABLED=true`, `QDRANT__CLUSTER__P2P__ENABLE_TLS=true`,
+   `QDRANT_URI=https://100.102.228.48:6335` (the deployed `master` `infra/qdrant/entrypoint.sh` on
+   the homelab omits `"$@"`, so Compose `command: ["--uri", ...]` is ignored unless `entrypoint.sh`
+   is deployed with `"$@"` or `QDRANT_URI`/`QDRANT_BOOTSTRAP` env vars are used), a `6335` listener
+   on `100.102.228.48`, and a non-internal bridge network (`qdrant-cluster-net`) to the Qdrant
+   overlay (outside git; the CI deploy drops the overlay for the indexers, so re-apply with
+   `ensure-reel-indexing-qdrant`) and recreate: about 1.3 s of restart in the rehearsal, budget
+   30-60 s (max 90 s) in production, during which vector search returns nothing.
 3. Start H2 (second Qdrant container, own volume, 0.5 CPU, 384 MB) and the laptop node with
-   `--bootstrap` to H1.
+   `QDRANT_BOOTSTRAP=https://100.102.228.48:6335` (or `--bootstrap` once `"$@"` is deployed).
 4. Re-create the alias through consensus (`delete_alias` and `create_alias` in one request).
 5. Re-roll the laptop until its peer id is below H1's, then replicate the shard to it and set
    `replication_factor` 2. Do not replicate to H2.
 6. Verify: counts, `created_at`, `verify-parity --list-all`, `stale-ready`, search smoke, a test
    write batch.
 7. Optionally point `QDRANT_URL` at H2 for read failover (a one-line overlay change; the certificate
-   SAN must cover H2).
+   SAN must cover H2). Note: rehearsal read-scaling showed H2 (`0.5` CPU) bottlenecks forwarding
+   heavy exact queries and amplifies backend load back onto H1, so do not route normal read scaling
+   through H2.
 8. Rollback before the laptop is added or after: force-remove the peers, recreate H1 with cluster
    mode off (rehearsed: 1.4 s, count and `created_at` intact); fallback the paired backup restore
    (227 s).
 9. Host-loss procedure, written down and drilled once: promote the PostgreSQL standby, run the four
    standalone steps above on the laptop, start the services against it.
 
+## Production Layout D attempt and read-scaling results (2026-11-26)
+
+### Production attempt and 90-second gate rollback (homelab + homelab 2)
+
+1. **Gate A0 & A1 (passed):** homelab load1 `2.68`, RabbitMQ `reel_index_*` active queues `0`,
+   `pair-backup.cjs quiesce` `quiet: true`, standby `walreceiver` `streaming` (`replay_lag: 41.9 ms`),
+   homelab 2 available RAM `3,801 MiB`. Verified paired backup `74159ce7-deaa-4ddd-a53f-2977944b611d`
+   completed in `126 s` (`10,885` current points across `298` projections, `11,316` points in Qdrant,
+   `pg_dump` `126,664,547` bytes, R2 readback verified).
+2. **Gate A2 (`C0` production single-node baseline, `scripts/ops/qdrant-read-stress.cjs` in a
+   2-CPU container on `reel-vector-net`):**
+   - `reel-search-smoke.cjs` (`24` queries, `8` scope-reels): `24/24` own chunk at rank 1,
+     `p50 325 ms`, `p95 477 ms`.
+   - `WIDE` (`10,885` points, `298` tuples, `535,259 B` body, `30 s` after `10 s` warmup):
+     `28.26 qps` (`c=4`, `p50 136.94 ms`, `p95 170.73 ms`, `3/850 >250ms`), `28.25 qps` (`c=16`,
+     `p50 556.97 ms`, `848/848 >250ms`), `26.34 qps` (`c=64`, `p50 2293.83 ms`, `835/835 >250ms`),
+     `0` errors. Qdrant CPU `93.82-104.83%` (median `98.57%`), generator CPU `1.99-10.94%`.
+   - `NARROW` (`8` reels, `CHUNK`, `21,347 B` body): `947.24 qps` (`c=4`, `p50 3.77 ms`),
+     `962.24 qps` (`c=16`, `p50 13.07 ms`, `p95 40.16 ms`), `920.69 qps` (`c=64`, `p50 72.36 ms`,
+     `p95 106.30 ms`), `0` errors, `0` >250 ms. Qdrant CPU `95.57-99.86%`, generator CPU `31.66-58.95%`
+     (out of `200%`).
+3. **Gate A3 (passed):** re-issued `~/velora-operations/qdrant-secrets/server.crt` from the existing
+   CA (`ca.key`, `ca.crt`), keeping backup `server.crt.bak-20261125T190227Z`, with SANs
+   `DNS:qdrant, DNS:qdrant-h2, DNS:localhost, IP:127.0.0.1, IP:100.102.228.48, IP:100.104.227.44`
+   and EKU `serverAuth, clientAuth`.
+4. **H1 recreate failed 90-second gate and rolled back:** `index-rollout.yml` was backed up to
+   `index-rollout.yml.bak-20261125T190304Z` and updated with `qdrant` (`command: ["--uri", ...]`),
+   `qdrant-h2`, and `qdrant-cluster-net`. Recreating `microservices-boilerplate-qdrant-1` panicked
+   with `Can't initialize consensus: First peer should specify its uri.` because the homelab's
+   `master` `infra/qdrant/entrypoint.sh` omits `"$@"`. The 90-second watchdog rolled back
+   `index-rollout.yml` and recreated `microservices-boilerplate-qdrant-1` in single-node mode from
+   `qdrant-staging/reviewed` (`cluster: disabled`, `status: green`, `11,316` points, `created_at`
+   unchanged `2026-11-01T11:35:26.728Z`); total search outage was ~95-100 s. Post-rollback checks:
+   `reel-search-smoke.cjs` `24/24` (`p50 329 ms`, `p95 443 ms`), `verify-parity --list-all=true`
+   (`298/298` manifests, `10,885` verified points, `431` orphans, `recordsConsistent: true`),
+   `stale-ready` `0`, `ensure-reel-indexing-qdrant --check` ok, standby streaming (`42.5 ms` lag).
+   A subsequent **disposable** container test on the homelab verified that `QDRANT_URI=https://100.102.228.48:6335`
+   starts cluster TLS and consensus cleanly with the homelab's unmodified `entrypoint.sh`.
+
+### Phase B read-scaling experiment (rehearsal, not production)
+
+Because production rolled back at the 90-second gate, Phase B was stopped on production and run
+against the disposable three-node x86_64 Layout D rehearsal (`cluster-rehearsal/rehearse4.py`,
+`11,316` points, `298` tuples, `r4-h` 1.0 CPU, `r4-m` 0.5 CPU data-less, `r4-l` 1.0 CPU behind
+`6 ms ± 3 ms` symmetric `netem`, client RTT `0.3-0.5 ms` to `H1`/`H2` and `12.0-13.3 ms` to `L`).
+Three rotated rounds (`R1: C1 C2 C3 C4`, `R2: C4 C3 C2 C1`, `R3: C2 C4 C1 C3`) across
+`concurrencies=1,2,4,8,16,32,64` (`3 s` warmup + `12 s` measure) plus a `10 s` warmup + `45 s`
+steady-state check on `C1` vs `C2` (`WIDE`):
+
+| Scope (rehearsal, not prod) | Config | Knee c | Median saturated qps (min..max) | Ratio vs C1 (min..max) | Max Qdrant CPU |
+| --- | --- | --- | --- | --- | --- |
+| WIDE (`520 KB`, `11,316` pts) | `C1` (`H1`) | `1, 1, 1` | `22.57` (`21.95..23.17`) | `1.000` | `H1 105.8%` |
+| WIDE | `C2` (`H1+L` RR) | `4, 4, 2` | `38.10` (`34.83..38.81`) | `1.644` (`1.543..1.768`) | `H1 103.1%`, `L 104.2%` |
+| WIDE | `C3` (`H2` only) | `1, 1, 1` | `20.05` (`19.81..20.08`) | `0.888` (`0.867..0.903`) | `H2 51.5%`, `H1 104.2%`, `L 105.0%` |
+| WIDE | `C4` (`H1+H2+L` RR) | `2, 2, 2` | `29.58` (`29.11..29.63`) | `1.313` (`1.256..1.348`) | `H1 105.6%`, `H2 51.7%`, `L 103.9%` |
+| NARROW (`8` reels `CHUNK`) | `C1` (`H1`) | `2, 2, 2` | `620.92` (`616.58..625.78`) | `1.000` | `H1 103.6%` |
+| NARROW | `C2` (`H1+L` RR) | `16, 16, 16` | `1067.15` (`1061.09..1070.17`) | `1.719` (`1.710..1.721`) | `H1 102.2%`, `L 103.5%` |
+| NARROW | `C3` (`H2` only) | `2, 2, 2` | `241.57` (`239.06..244.75`) | `0.389` (`0.388..0.391`) | `H2 51.2%` |
+| NARROW | `C4` (`H1+H2+L` RR) | `8, 8, 8` | `651.69` (`650.30..652.80`) | `1.050` (`1.039..1.059`) | `H1 105.6%`, `H2 51.7%`, `L 103.9%` |
+
+Key findings (rehearsal, not production):
+- **The replica increases saturated read throughput by ~1.64x-1.78x when querying `H1+L` directly (`C2`)**: `45 s + 10 s` `WIDE` steady state gave `37.46 qps` (`C2@c=4`, `p50 96.22 ms`, `9/1689 >250ms`) vs `21.02 qps` (`C1@c=4`, `p50 185.78 ms`, `13/949 >250ms`), a `1.782x` ratio while cutting `c=4` `p50` latency in half. On `NARROW`, `C2` needed `c=16` to fill the `12 ms` RTT pipe to `L` (`1067.15 qps`, `1.719x`); at low concurrency (`c=2`) round-robin paid the `12 ms` RTT half the time (`199.98 qps` vs `C1` `620.92 qps`).
+- **Routing through data-less `H2` (`C3`, `C4`) hurts read scaling**: `H2` hit its `0.5` CPU cap (`51.2-51.7%`) and telemetry showed `1.32x-1.61x` internal gRPC sub-requests (`R1_C3`: `29,618` REST to `H2` produced `29,090` gRPC to `H1` plus `10,053` to `L`), overloading `H1` and leaving `C3` slower than `C1` (`0.888x` WIDE, `0.389x` NARROW).
+
 ## What lives outside git on the homelab, and how to re-apply
 
 - `~/velora-operations/pair-backup/`: `repo/` (copy of `scripts/ops` and `infra/qdrant`),
-  `work/` (pair directories, `archives/`, sampler log), `pair-backup.env`, `sampler.sh`.
+  `work/` (pair directories including `pair-74159ce7-deaa-4ddd-a53f-2977944b611d`, `archives/`, sampler log), `pair-backup.env`, `sampler.sh`.
   Re-create by copying the repo directories and the config from
   `infra/qdrant/pair-backup/pair-backup.env.example`. `repo/scripts/ops/_dbg.cjs` is a debugging
   shim, not in git.
-- R2 objects under `velora-private-backups/reel-indexing-pairs/` (two pairs). Nothing was
-  deleted anywhere.
-- Nothing in the deploy path changed: no compose file, overlay, `.env`, image, crontab or launchd
-  entry. A CI deploy therefore cannot drop any of it; only the host files above must be kept.
+- `~/velora-operations/qdrant-secrets/server.crt`: re-issued on 2026-11-26 from existing `ca.key`/`ca.crt`
+  with SANs for `qdrant`, `qdrant-h2`, `localhost`, `127.0.0.1`, `100.102.228.48`, `100.104.227.44`
+  (original backed up as `server.crt.bak-20261125T190227Z`); currently served by single-node
+  `microservices-boilerplate-qdrant-1`.
+- `~/velora-operations/qdrant-staging/index-rollout.yml`: restored byte-for-byte to pre-change
+  state (backup `index-rollout.yml.bak-20261125T190304Z` retained). Re-apply indexers after a CI
+  deploy with `scripts/deploy/ensure-reel-indexing-qdrant --apply`.
+- `~/velora-operations/read-scaling/`: `qdrant-read-stress.cjs`, `active-tuples.json`, `c0-smoke.out`,
+  `c0-stress.log`, `c0-stats.log`, `post-rollback-smoke.out`.
+- R2 objects under `velora-private-backups/reel-indexing-pairs/` (three pairs including
+  `74159ce7-deaa-4ddd-a53f-2977944b611d`). Nothing was deleted anywhere.
 - Standby pieces (see the standby section): forwarder container `reel-indexing-pg-forwarder`,
   `secrets/replicator_idx.pw`, the `replicator_idx` role, the `pg_hba` line and
   `max_slot_wal_keep_size` on the primary, and `/opt/velora/reel-indexing-standby/` on homelab 2.

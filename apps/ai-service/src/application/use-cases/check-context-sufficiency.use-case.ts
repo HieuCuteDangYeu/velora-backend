@@ -40,6 +40,9 @@ const MAX_RANGE_SECONDS_CHECKED = 120;
 
 // Closest-excerpt vector distance above which the shared video is taken not to cover the question.
 const DEFAULT_MAX_EVIDENCE_DISTANCE = 0.55;
+// With the reranker as a second signal (see rerankerAlsoDisagrees).
+const DEFAULT_SOFT_EVIDENCE_DISTANCE = 0.47;
+const DEFAULT_MIN_RERANK_SCORE = 0.01;
 
 @Injectable()
 export class CheckContextSufficiencyUseCase {
@@ -839,7 +842,54 @@ ${JSON.stringify(
     ) {
       return false;
     }
-    return Math.min(...chunks.map((chunk) => chunk.distance as number)) > limit;
+    const closest = Math.min(
+      ...chunks.map((chunk) => chunk.distance as number),
+    );
+    if (closest > limit) return true;
+    return this.rerankerAlsoDisagrees(state, closest);
+  }
+
+  /**
+   * Second signal for questions whose closest excerpt is only moderately far (the distance cannot tell them from
+   * covered ones): the neural reranker scores relevance directly and gives about 0.000-0.006 to every one of 40
+   * measured uncovered questions, while 27% of covered questions also score near 0 on their own, which is why it
+   * only counts together with a distance above the soft limit (0.47; those covered ones sit at 0.39-0.47). On 79
+   * covered and 40 uncovered questions, "distance > 0.47 and best rerank score < 0.01" refused all 40 uncovered
+   * ones with no covered question refused beyond the two the plain distance limit already refuses. Opt-in
+   * (AI_CONTEXT_EVIDENCE_RERANK_GUARD=true); fails open when any excerpt has no rerank score.
+   */
+  private rerankerAlsoDisagrees(
+    state: RagChatWorkflowState,
+    closestDistance: number,
+  ): boolean {
+    if (
+      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_RERANK_GUARD') !== 'true'
+    ) {
+      return false;
+    }
+    const softLimit = Number(
+      this.config.get?.<string>('AI_CONTEXT_SOFT_EVIDENCE_DISTANCE') ??
+        DEFAULT_SOFT_EVIDENCE_DISTANCE,
+    );
+    const floor = Number(
+      this.config.get?.<string>('AI_CONTEXT_MIN_RERANK_SCORE') ??
+        DEFAULT_MIN_RERANK_SCORE,
+    );
+    if (!Number.isFinite(softLimit) || !Number.isFinite(floor) || floor <= 0) {
+      return false;
+    }
+    const scores = state.rerankedChunks
+      .filter((chunk) => (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT')
+      .map((chunk) => chunk.rerankScore);
+    if (
+      scores.length === 0 ||
+      scores.some((score) => typeof score !== 'number')
+    ) {
+      return false;
+    }
+    return (
+      closestDistance > softLimit && Math.max(...(scores as number[])) < floor
+    );
   }
 
   private rangeTranscriptEvidenceIds(state: RagChatWorkflowState): string[] {

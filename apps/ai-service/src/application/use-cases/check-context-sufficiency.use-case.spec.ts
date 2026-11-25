@@ -302,6 +302,81 @@ describe('CheckContextSufficiencyUseCase', () => {
       expect(service.generateObject).toHaveBeenCalled();
     });
 
+    describe('with the reranker as a second signal', () => {
+      const flags = { AI_CONTEXT_EVIDENCE_RERANK_GUARD: 'true' };
+      const withScores = async (
+        distances: number[],
+        scores: Array<number | undefined>,
+        values: Record<string, string> = flags,
+      ) => {
+        const service = {
+          generateObject: jest.fn().mockResolvedValue(modelAnswer),
+        };
+        const useCase = new CheckContextSufficiencyUseCase(
+          service as never,
+          {
+            ...config,
+            get: jest.fn((key: string) => values[key]),
+          } as unknown as IAiApplicationConfig,
+        );
+        const chunks = distances.map((distance, i) => ({
+          chunkId: `c${i}`,
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime: i * 10,
+          endTime: i * 10 + 8,
+          distance,
+          rerankScore: scores[i],
+          evidenceText: `Excerpt ${i}.`,
+          chunkText: `Excerpt ${i}.`,
+          tags: [],
+        }));
+        const state = {
+          userMessage: 'In this video, why does the dashboard ask for files?',
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            transcriptRequestKind: 'NONE',
+            needsRetrieval: true,
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          retrievalPlan: { requiresReelCoverage: false },
+          retrievedChunks: chunks,
+          rerankedChunks: chunks,
+        } as unknown as RagChatWorkflowState;
+        return { service, result: await useCase.execute(state) };
+      };
+
+      it('refuses a moderately far excerpt that the reranker also finds irrelevant', async () => {
+        const { service, result } = await withScores([0.5, 0.52], [0.002, 0.0]);
+        expect(result.diagnostics?.decisionSource).toBe(
+          'DETERMINISTIC_EVIDENCE_DISTANCE',
+        );
+        expect(service.generateObject).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['the reranker finds one excerpt relevant', [0.5, 0.52], [0.002, 0.4]],
+        [
+          'the closest excerpt is within the soft limit',
+          [0.45, 0.52],
+          [0.0, 0.0],
+        ],
+        ['an excerpt has no rerank score', [0.5, 0.52], [0.0, undefined]],
+      ] as const)(
+        'leaves the model in charge when %s',
+        async (_name, distances, scores) => {
+          const { service } = await withScores([...distances], [...scores]);
+          expect(service.generateObject).toHaveBeenCalled();
+        },
+      );
+
+      it('does nothing unless switched on', async () => {
+        const { service } = await withScores([0.5, 0.52], [0.0, 0.0], {});
+        expect(service.generateObject).toHaveBeenCalled();
+      });
+    });
+
     it.each([
       ['a named time window', { plan: { transcriptTimestampSec: 100 } }],
       ['chronological order', { plan: { sourceOrder: 'ASC' } }],

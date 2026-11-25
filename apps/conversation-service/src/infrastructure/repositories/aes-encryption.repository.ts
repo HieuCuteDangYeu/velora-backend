@@ -8,6 +8,8 @@ import type { CipherGCM, DecipherGCM } from 'crypto';
 import * as crypto from 'crypto';
 import { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
 
+export const GCM_IV_BYTES = 12;
+
 @Injectable()
 export class AesEncryptionRepository
   implements IEncryptionRepository, OnModuleInit
@@ -31,7 +33,10 @@ export class AesEncryptionRepository
     if (!text) return text;
 
     try {
-      const iv = crypto.randomBytes(16);
+      // 12 bytes is the IV length GCM is designed for (NIST SP 800-38D); values
+      // written earlier with a 16-byte IV still decrypt, because every stored
+      // value carries its own IV.
+      const iv = crypto.randomBytes(GCM_IV_BYTES);
 
       const cipher = crypto.createCipheriv(
         this.algorithm,

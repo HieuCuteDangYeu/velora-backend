@@ -145,12 +145,35 @@ export class ContextToolAgentUseCase {
             state.route,
           )
         : undefined;
-    if (nativePlan && allowedTools.includes('search_reel_content')) {
+    // One shared reel and nothing but reel tools: the planning model's only sensible call is a search with
+    // the user's own message (the same call the repair path makes), so make it directly instead of paying a
+    // 7-9 s local model round-trip. Off unless AI_CONTEXT_TOOL_DIRECT_SEARCH is true.
+    const directSearch =
+      !nativePlan &&
+      this.config.get<string>('AI_CONTEXT_TOOL_DIRECT_SEARCH') === 'true' &&
+      state.route?.needsRetrieval === true &&
+      state.route.referenceTarget === 'SHARED_REEL' &&
+      !state.route.needsUserMemory &&
+      state.accessibleReelIds?.length === 1 &&
+      allowedTools.includes('search_reel_content') &&
+      allowedTools.every((tool) => reelTools.has(tool));
+    if (
+      (nativePlan || directSearch) &&
+      allowedTools.includes('search_reel_content')
+    ) {
       providerStatus = 'NOT_CALLED';
       const call: LlmToolCall = {
-        id: 'native-source-read',
+        id: nativePlan ? 'native-source-read' : 'direct-reel-search',
         name: 'search_reel_content',
-        arguments: { query: nativePlan.query },
+        arguments: {
+          query:
+            nativePlan?.query ??
+            (state.retrievalRepairQuery?.trim() ||
+              boundPromptText(
+                state.userMessage,
+                readRagPromptBounds(this.config).maxUserMessageChars,
+              )),
+        },
       };
       const started = Date.now();
       const result = await this.searchReelContent({
@@ -165,7 +188,7 @@ export class ContextToolAgentUseCase {
       for (const item of result.retrievedChunks ?? [])
         retrievedById.set(item.chunkId, item);
     }
-    if (!nativePlan && allowedTools.length > 0) {
+    if (!nativePlan && !directSearch && allowedTools.length > 0) {
       try {
         for (let step = 0; step < this.policy.maxSteps; step += 1) {
           stepCount = step + 1;

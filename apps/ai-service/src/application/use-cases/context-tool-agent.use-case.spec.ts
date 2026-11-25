@@ -76,8 +76,15 @@ function buildAgent(
     };
     userMemory?: { execute: jest.Mock };
     conversationMemory?: { execute: jest.Mock };
+    flags?: Record<string, string>;
   } = {},
 ) {
+  const agentConfig = overrides.flags
+    ? {
+        ...config,
+        get: jest.fn((key: string) => overrides.flags?.[key]),
+      }
+    : config;
   const retrievalEngine = overrides.retrievalEngine ?? {
     retrieve: jest.fn().mockResolvedValue([match]),
     rerank: jest.fn().mockResolvedValue([match]),
@@ -113,7 +120,7 @@ function buildAgent(
       new RerankRetrievedEvidenceUseCase(retrievalEngine as never),
       userMemory as never,
       conversationMemory as never,
-      config as never,
+      agentConfig as never,
       policy,
     ),
     toolLlm,
@@ -485,5 +492,98 @@ describe('ContextToolAgentUseCase', () => {
     expect(result.retrievedChunks).toHaveLength(1);
     expect(result.rerankedChunks).toHaveLength(1);
     expect(result.rerankedChunks[0].chunkId).toBe('chunk-1');
+  });
+
+  describe('direct reel search (AI_CONTEXT_TOOL_DIRECT_SEARCH)', () => {
+    const on = { AI_CONTEXT_TOOL_DIRECT_SEARCH: 'true' };
+    const reelOnlyRoute = {
+      ...route,
+      toolPlan: {
+        allowedTools: ['search_reel_content', 'get_reel_context'] as const,
+        requiredTools: ['search_reel_content'] as const,
+      },
+    };
+
+    it('searches with the user message and never calls the planning model for one shared reel', async () => {
+      const built = buildAgent({ flags: on });
+      const result = await built.agent.execute(
+        state({
+          userMessage: 'What can a music submitter provide instead of audio?',
+          route: reelOnlyRoute,
+        }),
+      );
+      expect(built.toolLlm.complete).not.toHaveBeenCalled();
+      expect(built.retrievalEngine.retrieve).toHaveBeenCalledTimes(1);
+      expect(
+        (
+          built.retrievalEngine.retrieve.mock.calls[0] as [
+            { plan: { query: string } },
+          ]
+        )[0].plan.query,
+      ).toContain('music submitter');
+      expect(result.retrievedChunks).toHaveLength(1);
+      expect(result.contextToolExecution).toMatchObject({
+        providerStatus: 'NOT_CALLED',
+        stepCount: 0,
+        calls: [
+          expect.objectContaining({
+            toolName: 'search_reel_content',
+            status: 'SUCCESS',
+          }),
+        ],
+      });
+    });
+
+    it('keeps the planning model when the flag is off', async () => {
+      const built = buildAgent();
+      await built.agent.execute(state({ route: reelOnlyRoute }));
+      expect(built.toolLlm.complete).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['two shared reels', { accessibleReelIds: ['reel-1', 'reel-2'] }],
+      [
+        'a memory tool in the plan',
+        {
+          route: {
+            ...route,
+            toolPlan: {
+              allowedTools: [
+                'search_reel_content',
+                'get_conversation_summary',
+              ] as const,
+              requiredTools: ['search_reel_content'] as const,
+            },
+          },
+        },
+      ],
+      [
+        'a user-memory question',
+        { route: { ...route, needsUserMemory: true } },
+      ],
+    ] as const)('keeps the planning model for %s', async (_name, overrides) => {
+      const built = buildAgent({ flags: on });
+      await built.agent.execute(
+        state(overrides as unknown as Partial<RagChatWorkflowState>),
+      );
+      expect(built.toolLlm.complete).toHaveBeenCalled();
+    });
+
+    it('searches with the repair query on a retrieval repair pass', async () => {
+      const built = buildAgent({ flags: on });
+      await built.agent.execute(
+        state({
+          route: reelOnlyRoute,
+          retrievalRepairQuery: 'docker dependencies packaging',
+        }),
+      );
+      expect(
+        (
+          built.retrievalEngine.retrieve.mock.calls[0] as [
+            { plan: { query: string } },
+          ]
+        )[0].plan.query,
+      ).toContain('docker dependencies packaging');
+    });
   });
 });

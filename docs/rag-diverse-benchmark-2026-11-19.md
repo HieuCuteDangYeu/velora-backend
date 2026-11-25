@@ -625,3 +625,16 @@ The prompt-only schema was ignored on 43% of Scout calls (in a probe it wrote a 
 | json_schema, run B | 0.611 | 16 | 0 of 24 |
 
 Two runs of the same configuration differ by 0.048 on the mean, more than the gap to the baseline, so no quality change is detectable; Scout calls no longer fail or fall back to the local model. Kept on. Median turn stays about 40 s (p90 about 59 s). Lesson for reading every earlier table: run-to-run noise on a 30-row sample is about 0.05 mean and 2-3 correct rows, so differences smaller than that are not findings.
+
+## Where a turn's time goes, and verifier + citations on Scout (2026-11-25, tried and reverted)
+Median time per graph node over 63 turns on the homelab (answer on Scout): verifier 8.1 s (p90 20.9), retrieval tools 6.2 s, context sufficiency 4.9 s, citation attribution 4.5 s, draft 4.3 s (p90 19.0), router 3.9 s. Three local-model steps (verifier, sufficiency, citations) are about 17 s of the 37-40 s median turn.
+
+Tried `AI_CLOUDFLARE_LLM_ROLES=ANSWER,VERIFIER,CITATION_ATTRIBUTION` (json_schema on), the same 32 rows (31 judged in all runs; `.benchmarks/diverse-e2e-35-cfverifier.json`):
+
+| | mean factual | correct | median / p90 turn | cited reel | "could not verify" |
+|---|---|---|---|---|---|
+| answer only, run A | 0.574 | 13 | 40 s / 58 s | 30 / 31 | 0 |
+| answer only, run B | 0.620 | 17 | 37 s / 57 s | 30 / 31 | 0 |
+| + verifier and citations on Scout | 0.567 | 14 | 39 s / 64 s | 29 / 31 | 0 |
+
+The verifier node itself fell from 8.1 s to 6.0 s median (p90 20.9 to 12.3) and there were no Scout errors or fallbacks, but the whole turn did not get faster (p90 worse), the citation node did not change (4.6 s), the verification budget was exhausted on 9 of 33 turns, and the cited-reel count slipped by one. No gain, so reverted: `AI_CLOUDFLARE_LLM_ROLES=ANSWER` (backups `env-before-cf-verifier-citation-20261125T121000Z`, `env-before-roles-revert-*`; hash gate re-checked). The turn's time is spread over six sequential steps; no single swap removes it. Remaining options are structural (run citation attribution alongside the verifier, shrink the retrieval step) and need workflow changes, not a model swap.

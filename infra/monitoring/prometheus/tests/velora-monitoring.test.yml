@@ -1136,3 +1136,121 @@ tests:
             exp_annotations:
               summary: Reel jobs are waiting in a dead-letter queue
               description: A reel media or index job exhausted its retries (or hit an AI provider quota that retrying cannot fix) and has sat in a dead-letter queue for thirty minutes. Nothing consumes these queues; inspect them with scripts/ops/peek-dead-letters.cjs and re-run the affected reels.
+
+  - name: failing telemetry inserts alert even when other RPCs dominate
+    interval: 1m
+    input_series:
+      - series: 'velora_monitoring_rpc_requests_total{pattern="call.telemetry.ingest",status="error"}'
+        values: '0+2x30'
+      - series: 'velora_monitoring_rpc_requests_total{pattern="call.telemetry.ingest",status="success"}'
+        values: '0+0x30'
+      - series: 'velora_monitoring_rpc_requests_total{pattern="system.metrics.timeseries",status="success"}'
+        values: '0+500x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VeloraTelemetryIngestFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: monitoring-service
+              pattern: call.telemetry.ingest
+            exp_annotations:
+              summary: telemetry ingestion is failing
+              description: 'More than 20 percent of call.telemetry.ingest writes have failed for five minutes; telemetry is being lost.'
+      - eval_time: 20m
+        alertname: VeloraMonitoringHighRpcErrorRate
+        exp_alerts: []
+
+  - name: a single telemetry error does not alert
+    interval: 1m
+    input_series:
+      - series: 'velora_monitoring_rpc_requests_total{pattern="call.telemetry.ingest",status="error"}'
+        values: '0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1'
+      - series: 'velora_monitoring_rpc_requests_total{pattern="call.telemetry.ingest",status="success"}'
+        values: '0+20x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VeloraTelemetryIngestFailing
+        exp_alerts: []
+
+  - name: failing chat writes alert, rejected sends do not
+    interval: 1m
+    input_series:
+      - series: 'velora_conversation_send_message_requests_total{service="conversation-service",status="success"}'
+        values: '0+600x20'
+      - series: 'velora_conversation_send_message_requests_total{service="conversation-service",status="error"}'
+        values: '0+60x20'
+      - series: 'velora_conversation_send_message_requests_total{service="conversation-service",status="rejected"}'
+        values: '0+600x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraChatMessageWriteErrors
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: conversation-service
+            exp_annotations:
+              summary: chat message writes are failing
+              description: More than 2 percent of send_message writes have failed for two minutes; senders see failed messages.
+
+  - name: only rejected chat sends do not alert
+    interval: 1m
+    input_series:
+      - series: 'velora_conversation_send_message_requests_total{service="conversation-service",status="success"}'
+        values: '0+600x20'
+      - series: 'velora_conversation_send_message_requests_total{service="conversation-service",status="rejected"}'
+        values: '0+600x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VeloraChatMessageWriteErrors
+        exp_alerts: []
+
+  - name: an abandoned message write warns
+    interval: 1m
+    input_series:
+      - series: 'velora_conversation_persist_timeout_total{service="conversation-service"}'
+        values: '0 0 0 1 1 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VeloraChatPersistTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: conversation-service
+            exp_annotations:
+              summary: message writes are timing out
+              description: Message write batches were abandoned after the persist timeout in the last five minutes; a database shard may be unavailable.
+
+  - name: an outbox that only retries alerts, a draining one does not
+    interval: 1m
+    input_series:
+      - series: 'velora_conversation_notification_outbox_total{service="conversation-service",outcome="retry"}'
+        values: '0+5x30'
+      - series: 'velora_conversation_notification_outbox_total{service="conversation-service",outcome="queued"}'
+        values: '0+0x30'
+      - series: 'velora_conversation_notification_outbox_pending{service="conversation-service"}'
+        values: '100+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VeloraNotificationOutboxNotDelivering
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: conversation-service
+            exp_annotations:
+              summary: notification outbox is not delivering
+              description: The outbox retried or failed for ten minutes without handing a single intent to notification-service while intents are pending; pushes are delayed.
+
+  - name: an outbox with some retries but steady delivery does not alert
+    interval: 1m
+    input_series:
+      - series: 'velora_conversation_notification_outbox_total{service="conversation-service",outcome="retry"}'
+        values: '0+5x30'
+      - series: 'velora_conversation_notification_outbox_total{service="conversation-service",outcome="queued"}'
+        values: '0+50x30'
+      - series: 'velora_conversation_notification_outbox_pending{service="conversation-service"}'
+        values: '100x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VeloraNotificationOutboxNotDelivering
+        exp_alerts: []

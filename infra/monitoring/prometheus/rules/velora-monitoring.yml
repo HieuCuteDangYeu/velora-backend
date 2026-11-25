@@ -222,6 +222,73 @@ groups:
           summary: APNs VoIP transport failures are elevated
           description: At least two APNs VoIP timeouts or transport failures occurred during the last five minutes.
 
+  # Error rates per write path. The monitoring database went read-only for three
+  # days without an alert: VeloraMonitoringHighRpcErrorRate divides by every RPC,
+  # and the many successful dashboard and recommendation calls hid the failing
+  # call-telemetry inserts. These rules look at each write path on its own.
+  - name: velora-write-paths
+    rules:
+      - alert: VeloraTelemetryIngestFailing
+        expr: |
+          (
+            sum by (pattern) (rate(velora_monitoring_rpc_requests_total{pattern=~".*telemetry\\.ingest",status="error"}[10m]))
+            /
+            clamp_min(sum by (pattern) (rate(velora_monitoring_rpc_requests_total{pattern=~".*telemetry\\.ingest"}[10m])), 0.000001)
+            > 0.2
+          )
+          and
+          sum by (pattern) (increase(velora_monitoring_rpc_requests_total{pattern=~".*telemetry\\.ingest",status="error"}[10m])) >= 3
+        for: 5m
+        labels:
+          severity: critical
+          service: monitoring-service
+        annotations:
+          summary: telemetry ingestion is failing
+          description: 'More than 20 percent of {{ $labels.pattern }} writes have failed for five minutes; telemetry is being lost.'
+
+      - alert: VeloraChatMessageWriteErrors
+        expr: |
+          (
+            sum(rate(velora_conversation_send_message_requests_total{status="error"}[5m]))
+            /
+            clamp_min(sum(rate(velora_conversation_send_message_requests_total{status=~"success|error"}[5m])), 0.000001)
+            > 0.02
+          )
+          and
+          sum(increase(velora_conversation_send_message_requests_total{status="error"}[5m])) >= 5
+        for: 2m
+        labels:
+          severity: critical
+          service: conversation-service
+        annotations:
+          summary: chat message writes are failing
+          description: More than 2 percent of send_message writes have failed for two minutes; senders see failed messages.
+
+      - alert: VeloraChatPersistTimeouts
+        expr: sum(increase(velora_conversation_persist_timeout_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: conversation-service
+        annotations:
+          summary: message writes are timing out
+          description: Message write batches were abandoned after the persist timeout in the last five minutes; a database shard may be unavailable.
+
+      - alert: VeloraNotificationOutboxNotDelivering
+        expr: |
+          sum(increase(velora_conversation_notification_outbox_total{outcome=~"retry|poll_error"}[10m])) > 0
+          and
+          sum(increase(velora_conversation_notification_outbox_total{outcome="queued"}[10m])) == 0
+          and
+          max(velora_conversation_notification_outbox_pending) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: conversation-service
+        annotations:
+          summary: notification outbox is not delivering
+          description: The outbox retried or failed for ten minutes without handing a single intent to notification-service while intents are pending; pushes are delayed.
+
   - name: velora-monitoring-service
     rules:
       - alert: VeloraMonitoringServiceDown

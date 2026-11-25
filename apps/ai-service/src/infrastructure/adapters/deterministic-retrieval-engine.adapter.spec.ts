@@ -1208,4 +1208,140 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       ]),
     );
   });
+
+  describe('a long transcript range read for a summary', () => {
+    const config = {
+      NODE_ENV: 'test',
+      RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+      RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+    };
+    const rangePlan = (
+      start: number,
+      end: number,
+      searchLimit: number,
+    ): RagRetrievalPlan => ({
+      ...plan,
+      sourceOrder: 'ASC',
+      sourceTimestampSec: start,
+      sourceTimestampEndSec: end,
+      transcriptTimestampSec: start,
+      transcriptTimestampEndSec: end,
+      searchLimit,
+      query: 'Summarize what is said.',
+      queries: ['Summarize what is said.'],
+    });
+    const chunkAt = (id: string, startTime: number) => ({
+      ...directCandidate,
+      id,
+      startTime,
+      endTime: startTime + 8,
+    });
+    const run = async (
+      retrievalPlan: RagRetrievalPlan,
+      reelIds = ['reel-1'],
+      values: Record<string, string> = config,
+    ) => {
+      const built = buildAdapter(values);
+      jest
+        .mocked(built.semanticIndexService.searchChunks)
+        .mockImplementation((request) =>
+          Promise.resolve([
+            chunkAt(
+              `c-${Math.round(request.sourceTimestampSec ?? 0)}`,
+              request.sourceTimestampSec ?? 0,
+            ),
+          ]),
+        );
+      await built.adapter.retrieve({
+        userId: 'user',
+        conversationId: 'conversation',
+        route: transcriptRoute,
+        plan: retrievalPlan,
+        accessibleReelIds: reelIds,
+      });
+      return jest
+        .mocked(built.semanticIndexService.searchChunks)
+        .mock.calls.map(([request]) => request);
+    };
+
+    it('reads contiguous sub-windows that cover the whole range, a few chunks each', async () => {
+      const requests = await run(rangePlan(437, 885, 20));
+      expect(requests).toHaveLength(3);
+      expect(requests[0].sourceTimestampSec).toBe(437);
+      expect(requests[2].sourceTimestampEndSec).toBe(885);
+      for (let i = 1; i < requests.length; i += 1) {
+        expect(requests[i].sourceTimestampSec).toBeCloseTo(
+          requests[i - 1].sourceTimestampEndSec as number,
+          6,
+        );
+      }
+      for (const request of requests) {
+        expect(request).toMatchObject({ sourceOrder: 'ASC', limit: 6 });
+      }
+    });
+
+    it('keeps a range of a few minutes as one read', async () => {
+      const requests = await run(rangePlan(131, 202, 12));
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        sourceTimestampSec: 131,
+        sourceTimestampEndSec: 202,
+        limit: 12,
+      });
+    });
+
+    it('keeps the small read of a non-summary range question', async () => {
+      const requests = await run(rangePlan(437, 885, 2));
+      expect(requests).toHaveLength(1);
+      expect(requests[0].limit).toBe(2);
+    });
+
+    it('can be switched off', async () => {
+      const requests = await run(rangePlan(437, 885, 20), ['reel-1'], {
+        ...config,
+        AI_TRANSCRIPT_RANGE_SAMPLING: 'false',
+      });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({
+        sourceTimestampSec: 437,
+        sourceTimestampEndSec: 885,
+      });
+    });
+
+    it('does not sample when several reels are read', async () => {
+      const requests = await run(rangePlan(437, 885, 20), ['reel-1', 'reel-2']);
+      expect(requests).toHaveLength(2);
+      for (const request of requests) {
+        expect(request.sourceTimestampSec).toBe(437);
+        expect(request.sourceTimestampEndSec).toBe(885);
+      }
+    });
+
+    it('returns the sampled chunks in chronological order without duplicates', async () => {
+      const built = buildAdapter(config);
+      jest
+        .mocked(built.semanticIndexService.searchChunks)
+        .mockImplementation((request) =>
+          Promise.resolve([
+            chunkAt('shared', 500),
+            chunkAt(
+              `c-${Math.round(request.sourceTimestampSec ?? 0)}`,
+              request.sourceTimestampSec ?? 0,
+            ),
+          ]),
+        );
+      const result = await built.adapter.retrieve({
+        userId: 'user',
+        conversationId: 'conversation',
+        route: transcriptRoute,
+        plan: rangePlan(437, 885, 20),
+        accessibleReelIds: ['reel-1'],
+      });
+      const starts = result.map((match) => match.startTime ?? 0);
+      expect(starts).toEqual([...starts].sort((a, b) => a - b));
+      expect(result.filter((match) => match.chunkId === 'shared')).toHaveLength(
+        1,
+      );
+    });
+  });
 });

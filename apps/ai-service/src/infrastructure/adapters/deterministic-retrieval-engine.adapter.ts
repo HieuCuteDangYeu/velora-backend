@@ -81,6 +81,12 @@ type RetrievalTemporalPlan = Pick<
   | 'transcriptTimestampEndSec'
 >;
 
+// A summary range longer than this is read as sub-windows of about this length (see sampledRangeWindows).
+const SAMPLED_RANGE_WINDOW_SECONDS = 150;
+const MAX_SAMPLED_RANGE_WINDOWS = 8;
+// Only the large reads of range summaries are sampled; the plan's read limit is 2 for other range questions.
+const MIN_SAMPLED_RANGE_READ_LIMIT = 8;
+
 @Injectable()
 export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   private readonly logger = new Logger(
@@ -317,13 +323,23 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
           const document =
             await this.semanticIndexService.getReelDocument(reelId);
           if (!document || document.reelId !== reelId) return [];
-          const candidates = await this.semanticIndexService.searchChunks({
-            filters: { reelIds: [reelId] },
-            sourceOrder: 'ASC',
-            ...transcriptTime,
-            requiredIndexVersion: document.indexVersion,
-            limit: perReelLimit,
-          });
+          const windows =
+            accessibleReelIds.length === 1
+              ? this.sampledRangeWindows(transcriptTime, perReelLimit)
+              : undefined;
+          const candidates = windows
+            ? await this.readSampledRange(
+                reelId,
+                document.indexVersion,
+                windows,
+              )
+            : await this.semanticIndexService.searchChunks({
+                filters: { reelIds: [reelId] },
+                sourceOrder: 'ASC',
+                ...transcriptTime,
+                requiredIndexVersion: document.indexVersion,
+                limit: perReelLimit,
+              });
           return candidates.flatMap((candidate) =>
             candidate.reelId === reelId &&
             (!candidate.indexVersion ||
@@ -748,6 +764,72 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
       queryEmbeddingVersion: input.queryEmbeddingVersion,
       queryTags: this.extractExplicitQueryTags(input.queryText),
     };
+  }
+
+  /**
+   * One chronological read returns the first `limit` chunks of the range (at most 20, about the first
+   * 2-3 minutes), so "summarize what is said from 7:17 to 14:45" never saw most of the range. A long
+   * summary range is therefore read as several sub-windows with a few chunks each: the evidence stays the
+   * same size but covers the whole range. Ranges of a few minutes and the small reads of other
+   * questions are untouched. AI_TRANSCRIPT_RANGE_SAMPLING=false turns it off.
+   */
+  private sampledRangeWindows(
+    time: Pick<
+      SemanticIndexSearchRequest,
+      'sourceTimestampSec' | 'sourceTimestampEndSec'
+    >,
+    limit: number,
+  ): Array<{ start: number; end: number; limit: number }> | undefined {
+    const start = time.sourceTimestampSec;
+    const end = time.sourceTimestampEndSec;
+    if (
+      this.config.get<string>('AI_TRANSCRIPT_RANGE_SAMPLING') === 'false' ||
+      start === undefined ||
+      end === undefined ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      limit < MIN_SAMPLED_RANGE_READ_LIMIT ||
+      end - start <= SAMPLED_RANGE_WINDOW_SECONDS
+    ) {
+      return undefined;
+    }
+    const count = Math.min(
+      MAX_SAMPLED_RANGE_WINDOWS,
+      Math.ceil((end - start) / SAMPLED_RANGE_WINDOW_SECONDS),
+    );
+    const width = (end - start) / count;
+    const perWindow = Math.max(2, Math.floor(limit / count));
+    return Array.from({ length: count }, (_, index) => ({
+      start: start + index * width,
+      end: index === count - 1 ? end : start + (index + 1) * width,
+      limit: perWindow,
+    }));
+  }
+
+  private async readSampledRange(
+    reelId: string,
+    indexVersion: string | undefined,
+    windows: Array<{ start: number; end: number; limit: number }>,
+  ): Promise<SemanticIndexSearchResult[]> {
+    const reads = await Promise.all(
+      windows.map((window) =>
+        this.semanticIndexService.searchChunks({
+          filters: { reelIds: [reelId] },
+          sourceOrder: 'ASC',
+          sourceTimestampSec: window.start,
+          sourceTimestampEndSec: window.end,
+          requiredIndexVersion: indexVersion,
+          limit: window.limit,
+        }),
+      ),
+    );
+    const seen = new Set<string>();
+    return reads
+      .flat()
+      .filter(
+        (candidate) => !seen.has(candidate.id) && !!seen.add(candidate.id),
+      )
+      .sort((a, b) => (a.startTime ?? 0) - (b.startTime ?? 0));
   }
 
   private temporalSearchConstraints(

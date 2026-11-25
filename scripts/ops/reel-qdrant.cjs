@@ -463,6 +463,13 @@ async function verifyParity(prisma, projection, store, options = {}) {
       verifiedPoints: points,
       // Positive: Qdrant holds points no verified manifest accounts for (orphans or extras).
       unaccountedQdrantPoints: qdrant.count - points,
+      // Records vs points only: ignores orphans and transient DELETE churn, which make
+      // `complete` false on a healthy production database (431 orphans on 2026-11-25).
+      recordsConsistent:
+        stable &&
+        !failures.length &&
+        unready[0].count === 0 &&
+        points === expectedPoints,
       failureCount: failures.length,
       failuresByReason: byReason,
       failures,

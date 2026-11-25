@@ -220,6 +220,18 @@ async function quiesce(prisma, recentMinutes) {
   return result;
 }
 
+// reconcile() re-opens completed DELETE tasks of revoked generations every five minutes, so
+// "pending" is briefly non-zero even when nothing is being indexed. Wait for it to settle.
+async function settledQuiesce(prisma, recentMinutes, settleSeconds) {
+  const until = Date.now() + settleSeconds * 1000;
+  let state = await quiesce(prisma, recentMinutes);
+  while (!state.quiet && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    state = await quiesce(prisma, recentMinutes);
+  }
+  return state;
+}
+
 async function readJson(file) {
   const stat = await fs.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024)
@@ -245,7 +257,11 @@ async function keyBytes(file) {
 async function begin(prisma, args) {
   const directory = resolve(args.dir);
   const pairId = crypto.randomUUID();
-  const state = await quiesce(prisma, Number(args['recent-minutes'] || 10));
+  const state = await settledQuiesce(
+    prisma,
+    Number(args['recent-minutes'] || 10),
+    Number(args['settle-seconds'] || 60),
+  );
   const result = {
     version: 1,
     pairId,
@@ -414,7 +430,12 @@ async function main() {
     try {
       if (command === 'begin') result = await begin(prisma, args);
       else if (command === 'proof') result = await proof(prisma, args);
-      else result = await quiesce(prisma, Number(args['recent-minutes'] || 10));
+      else
+        result = await settledQuiesce(
+          prisma,
+          Number(args['recent-minutes'] || 10),
+          Number(args['settle-seconds'] || 60),
+        );
     } finally {
       await prisma.$disconnect();
     }

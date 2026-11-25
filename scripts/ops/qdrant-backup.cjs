@@ -375,6 +375,11 @@ async function backup(prisma, projection, store, args, password) {
   return {
     name,
     pointCount: pointCount.count,
+    // Headroom against the in-memory bounds; a snapshot near the cap will fail next time.
+    snapshotBytes: bytes.length,
+    snapshotCapBytes: MAX_SNAPSHOT,
+    archiveBytes: encrypted.length,
+    archiveCapBytes: MAX_ARCHIVE,
     encryptedSha256: digest(encrypted),
     offhostLocation: offhostResult.key,
     offhostVerified: !localTest,

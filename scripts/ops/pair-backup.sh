@@ -5,6 +5,7 @@
 # readback. Runbook: infra/qdrant/PAIR-BACKUP.md. Works on macOS bash 3.2 and Linux.
 #
 #   pair-backup.sh <config-file> [--dry-run] [--no-pause]
+#   pair-backup.sh <config-file> --ops <script.cjs> [args...]   (run one operator CLI)
 #
 # --dry-run   only check that writers are quiet and print the SQL facts; nothing is written
 #             off-host and no writer is touched.
@@ -17,18 +18,25 @@ CONFIG="${1:?usage: pair-backup.sh <config-file> [--dry-run] [--no-pause]}"
 shift || true
 DRY_RUN=false
 PAUSE=true
-for flag in "$@"; do
-  case "$flag" in
-    --dry-run) DRY_RUN=true ;;
-    --no-pause) PAUSE=false ;;
-    *) echo "unknown option: $flag" >&2; exit 64 ;;
-  esac
-done
+OPS_ONLY=false
+if [ "${1:-}" = "--ops" ]; then
+  OPS_ONLY=true
+  shift
+else
+  for flag in "$@"; do
+    case "$flag" in
+      --dry-run) DRY_RUN=true ;;
+      --no-pause) PAUSE=false ;;
+      *) echo "unknown option: $flag" >&2; exit 64 ;;
+    esac
+  done
+fi
 # shellcheck disable=SC1090
 . "$CONFIG"
 : "${REPO_DIR:?}" "${OPS_IMAGE:?}" "${ENV_FILE:?}" "${SECRETS_DIR:?}" "${WORK_DIR:?}"
 : "${PG_CONTAINER:?}" "${PG_USER:?}" "${PG_DB:?}" "${INDEXER_CONTAINERS:?}"
 : "${NET_SQL:?}" "${NET_VECTOR:?}" "${R2_PREFIX:?}"
+if [ -n "${OFFSITE_SSH:-}" ]; then : "${OFFSITE_DIR:?OFFSITE_DIR is required with OFFSITE_SSH}"; fi
 SSH_OPTS="${SSH_OPTS:--o BatchMode=yes -o ConnectTimeout=20}"
 DRAIN_TIMEOUT="${DRAIN_TIMEOUT:-150}"
 KEEP_PLAINTEXT="${KEEP_PLAINTEXT:-false}"
@@ -105,6 +113,12 @@ resume_writers() {
   RESUMED=true
 }
 
+if [ "$OPS_ONLY" = true ]; then
+  script="$1"; shift
+  ops "/usr/src/app/scripts/ops/$script" "$@"
+  exit $?
+fi
+
 PAIR_DIR=""
 STARTED_S="$(now_s)"
 log "pair backup starting (dry-run=$DRY_RUN pause=$PAUSE)"
@@ -174,15 +188,8 @@ ops /usr/src/app/scripts/ops/pair-backup.cjs finish --dir="/work/pair-$PAIR_ID" 
 OFFSITE_RESULT="skipped"
 if [ -n "${OFFSITE_SSH:-}" ]; then
   ARCHIVE_NAME="$(sed -E 's/.*"name":"(velora-qdrant-[^"]+\.vqb)".*/\1/' "$PAIR_DIR/qdrant-result.json" | head -n 1)"
-  for f in "$PAIR_DIR/reel-indexing-$PAIR_ID.vqd" "$WORK_DIR/archives/$ARCHIVE_NAME" "$PAIR_DIR/pair-manifest.json"; do
-    base="$(basename "$f")"
-    # shellcheck disable=SC2086
-    ssh $SSH_OPTS "$OFFSITE_SSH" "umask 077; mkdir -p '$OFFSITE_DIR/$PAIR_ID' && cat > '$OFFSITE_DIR/$PAIR_ID/$base'" <"$f"
-    want="$(sha256_file "$f")"
-    # shellcheck disable=SC2086
-    got="$(ssh $SSH_OPTS "$OFFSITE_SSH" "sha256sum '$OFFSITE_DIR/$PAIR_ID/$base'" | cut -d' ' -f1)"
-    [ "$want" = "$got" ] || { log "off-site checksum mismatch for $base"; exit 1; }
-  done
+  SSH_OPTS="$SSH_OPTS" bash "$(dirname "$0")/pair-offsite-copy.sh" "$OFFSITE_SSH" "$OFFSITE_DIR/$PAIR_ID" \
+    "$PAIR_DIR/reel-indexing-$PAIR_ID.vqd" "$WORK_DIR/archives/$ARCHIVE_NAME" "$PAIR_DIR/pair-manifest.json" >&2
   OFFSITE_RESULT="verified"
   log "off-site copy verified on $OFFSITE_SSH"
 else

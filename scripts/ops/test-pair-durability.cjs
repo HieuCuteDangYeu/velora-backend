@@ -177,7 +177,17 @@ test('parity stops at the first error by default and lists every mismatch in lis
   assert.equal(all.expectedPoints, 6);
   assert.equal(all.verifiedPoints, 2);
   assert.equal(all.unaccountedQdrantPoints, 2);
+  assert.equal(all.recordsConsistent, false);
   assert.equal(parityReason(new Error('nonsense')), 'verification_error');
+});
+
+test('list-all parity treats orphan points as informational for recordsConsistent', async () => {
+  const { prisma, projection, store } = parityFixture();
+  prisma.vectorProjection.findMany = async () => [row('ok', 1)];
+  const result = await verifyParity(prisma, projection, store, { listAll: true });
+  assert.equal(result.complete, false);
+  assert.equal(result.unaccountedQdrantPoints, 2);
+  assert.equal(result.recordsConsistent, true);
 });
 
 test('list-all parity reports an unready record instead of throwing', async () => {

@@ -553,3 +553,16 @@ Same 32 rows (8 videos; detail, chapter, timestamp) with `AI_CLOUDFLARE_LLM_ENAB
 
 The earlier Scout run failed on timestamps because the larger model's sufficiency verdict blocked them; with that role on the local model and the deterministic point-in-time rule, the larger answer model keeps its detail gain and answers timestamps better than the local one did. Chapter summaries are unchanged (still limited by chapter titles being metadata and the one-paragraph answer style). Free allowance was enough for this run (about 110 neurons per answer call); the account is now on Workers Paid. Left on in production with the local model as fallback on any Cloudflare failure. Env backup before the change: `env-before-cf-answer-only-20261125T054756Z`; rollback = remove the three `AI_CLOUDFLARE_LLM_*` lines, restore `env.sha256`, recreate ai-service.
 Sample is small (n=31); a wider run follows.
+
+### Wide check of Scout ANSWER-only (2026-11-25, 138 rows)
+Opening, detail, chapter and timestamp rows across the benchmark videos (2 per video per type), Scout on ANSWER, against the local-model final run on the same rows (`.benchmarks/diverse-e2e-29-cfwide.json`, 134 comparable):
+
+| | mean factual | judged correct (>= 0.7) | at least half right |
+|---|---|---|---|
+| all (134) | 0.551 -> **0.608** | 59 -> **69** | 89 -> 91 |
+| opening (24) | 0.623 -> 0.670 | 15 -> 17 | 17 -> 17 |
+| detail (52) | 0.594 -> **0.722** | 30 -> **38** | 35 -> 42 |
+| chapter (25) | 0.318 -> 0.304 | 3 -> 2 | 9 -> 7 |
+| timestamp (33) | 0.607 -> 0.613 | 11 -> 12 | 28 -> 25 |
+
+The gain is all in detail questions (+0.13); opening is slightly up; timestamp is flat and chapter is flat to slightly down (within noise, n=25). Four rows have no answer, all sent between 06:22 and 06:35 UTC, right after the daemon deployed bdf5d0c1 (a conversation-service restart at 06:21); ai-service was not restarted. Scout stays on. Chapter summaries remain the weakest type and are next.

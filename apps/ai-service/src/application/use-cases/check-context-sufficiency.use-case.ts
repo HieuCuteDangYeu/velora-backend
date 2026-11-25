@@ -794,12 +794,15 @@ ${JSON.stringify(
   /**
    * Vector distance of the closest retrieved excerpt (0 identical, about 0.4 for a question the video
    * answers, about 0.6 for one it does not; measured 2026-11-26 on 79 covered and 40 uncovered questions:
-   * 97.5% of covered and 85% of uncovered questions fall on the right side of 0.55). Fails open: only
-   * ordinary transcript questions with a numeric distance on every excerpt are judged.
+   * 97.5% of covered and 85% of uncovered questions fall on the right side of 0.55). Verified live: questions
+   * about topics a video does not cover were answered 27 of 40 times without the guard and 4 of 40 with it,
+   * at the price of about 3% of covered questions refused. Fails open: only ordinary transcript questions
+   * with a numeric distance on every excerpt are judged. AI_CONTEXT_EVIDENCE_DISTANCE_GUARD=false turns it off.
    */
   private evidenceFarFromQuestion(state: RagChatWorkflowState): boolean {
     if (
-      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_DISTANCE_GUARD') !== 'true'
+      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_DISTANCE_GUARD') ===
+      'false'
     ) {
       return false;
     }

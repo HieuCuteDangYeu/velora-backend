@@ -217,9 +217,7 @@ describe('CheckContextSufficiencyUseCase', () => {
     };
     const run = async (
       distances: Array<number | null>,
-      flags: Record<string, string> = {
-        AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true',
-      },
+      flags: Record<string, string> = {},
       overrides: Record<string, unknown> = {},
     ) => {
       const service = {
@@ -283,14 +281,17 @@ describe('CheckContextSufficiencyUseCase', () => {
       expect(service.generateObject).toHaveBeenCalled();
     });
 
-    it('does nothing unless switched on', async () => {
-      const { service } = await run([0.7, 0.8], {});
-      expect(service.generateObject).toHaveBeenCalled();
+    it('is on by default and can be switched off', async () => {
+      const off = await run([0.7, 0.8], {
+        AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'false',
+      });
+      expect(off.service.generateObject).toHaveBeenCalled();
+      const on = await run([0.7, 0.8]);
+      expect(on.service.generateObject).not.toHaveBeenCalled();
     });
 
     it('honours a configured limit', async () => {
       const { service } = await run([0.62], {
-        AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true',
         AI_CONTEXT_MAX_EVIDENCE_DISTANCE: '0.7',
       });
       expect(service.generateObject).toHaveBeenCalled();
@@ -319,11 +320,7 @@ describe('CheckContextSufficiencyUseCase', () => {
         { route: { transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE' } },
       ],
     ] as const)('does not judge %s by distance', async (_name, overrides) => {
-      const { result } = await run(
-        [0.7, 0.8],
-        { AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true' },
-        overrides,
-      );
+      const { result } = await run([0.7, 0.8], {}, overrides);
       expect(result.diagnostics?.decisionSource).not.toBe(
         'DETERMINISTIC_EVIDENCE_DISTANCE',
       );

@@ -21,7 +21,7 @@ changes search behaviour.
 | `scripts/ops/test-pair-durability.cjs`, `test-pair-offsite-copy.sh` | Unit tests (`node --test scripts/ops/test-pair-durability.cjs`, `bash scripts/ops/test-pair-offsite-copy.sh`). |
 | `infra/qdrant/pair-backup/` | Config example, launchd plist and systemd unit and timer. **None is installed.** |
 | `infra/qdrant/pg-standby/` | `rehearse.sh` (disposable rehearsal) and `compose.yaml` (the standby on homelab 2). |
-| `infra/qdrant/cluster-rehearsal/` | `rehearse.py` (two nodes) and `rehearse3.py` (three nodes with netem latency, kill matrix, permanent loss, read distribution, Raft soak): disposable Qdrant clusters. |
+| `infra/qdrant/cluster-rehearsal/` | `rehearse.py` (two nodes), `rehearse3.py` (three nodes with netem latency, kill matrix, permanent loss, read distribution, Raft soak) and `rehearse4.py` (layout D: two nodes on the homelab, one on the laptop; peer-id forcing, host-loss failover): disposable Qdrant clusters. |
 
 ## Paired backup
 
@@ -321,7 +321,7 @@ certificate only.
 4. Laptop and node-2: start Qdrant with the same image, config and certificate, `--bootstrap
    https://100.102.228.48:6335 --uri https://<own tailnet IP>:6335`. Confirm `GET /cluster` shows
    three peers and a leader.
-5. Re-roll the laptop until its peer id is below the homelab's. Then
+5. Re-roll the laptop until its peer id is below the homelab's. Re-create the alias `velora_reel_semantic` through consensus (it predates cluster mode and does not reach new peers; see the layout D section). Then
    `POST /collections/<c>/cluster {replicate_shard: {shard_id: 0, from_peer_id: homelab, to_peer_id: laptop, method: "snapshot"}}`,
    wait for Active, `PATCH` the collection `replication_factor: 2` (leave `write_consistency_factor` 1).
    Do not replicate to node-2 and never recreate the collection.
@@ -337,6 +337,86 @@ Decision for the owner: B gives a warm copy on the laptop and about twice the re
 queries are sent there, at the price of a cluster mode change on production, a 30-60 s search
 interruption, a new certificate, two new nodes to operate, and an unchanged single point for
 writes (the homelab). It does not give automatic write failover.
+
+## Layout D rehearsal: two Qdrant nodes on the homelab host and one on the laptop (no node-2)
+
+Rehearsed 2026-11-26 on disposable containers only (`cluster-rehearsal/rehearse4.py`; logs kept
+outside the repo). Nothing on any production host or Qdrant was touched. Setup as for the
+three-node rehearsal, but only the homelab-laptop link is emulated (netem, 6 ms one way with 3 ms
+jitter, 25 % correlation, plus spikes to 40 ms for 3 s every 30 s in the soak); the two homelab
+nodes talk locally. H1 (`h`, 1 CPU, 768 MB) holds the replica and serves queries, H2 (`m`, 0.5 CPU,
+384 MB, own storage and peer port) is a data-less Raft voter, L (`l`, the laptop) holds the second
+replica; replication_factor 2, write_consistency_factor 1. D2 additionally replicates to H2
+(replication_factor 3). All nodes are x86; the real homelab is ARM64 (untested).
+
+| Question | Result |
+| --- | --- |
+| 1. Formation on existing storage | restart 1.3 s, 11,316 points, `created_at` identical on all three peers; laptop replica by snapshot 4.3 s (D) and 8.2 s (D2), H2 replica 4.2 s. **Found: the alias `velora_reel_semantic` does not reach the new peers.** It was created before cluster mode, so `GET /aliases` on H2 and the laptop is empty (the adapter's `identity()` would fail there). Re-creating it through consensus fixes it for all peers: one request with `delete_alias` then `create_alias` for the same name (200 in 0.2 s). This applies to every layout in this document, including B |
+| 2. Kill H1 (D) | search answered on H2 and the laptop (2/2, 3-5 ms); Raft leader moved to H2 immediately; replica marked Dead; topology operations worked (0.5 s); strict writes (`ordering=strong`) **depend on the peer ids**, see 4: with the laptop holding the highest id they succeeded (0.04-0.7 s); with H1 holding it they fail with HTTP 500 for the whole 40 s. `medium` writes succeed either way. Restart: ready in 6-10 s, converged within 0.1 s |
+| Kill H2 (D) | no effect: search 2/2, strict writes succeed (0.1-0.6 s), topology works; restart ready in 3.5-9 s |
+| Kill L (D) | search 2/2; strict writes succeed if H1 holds the highest id among the replica holders (verified 27-60 ms for 60 s), fail (500) if the laptop does; topology works; restart ready in 4.7-10 s |
+| Kill H1 and H2 together (host loss, D) | the laptop alone: search answers (2/2, 3-5 ms); topology operations fail (500 after 10 s, one voter of three); strict writes fail (500) when H1 held the highest id, and when the laptop held it they hung 12 s twice and then succeeded at 40 s (59 ms), which cannot be relied on; `medium` write took 6 s. After the host returns: ready in 6.5-8 s, converged within 0.1 s, counts equal; the isolated laptop's Raft term had climbed to 22-23 (harmless) |
+| D2 (replica also on H2), same four kills | identical outcome to D: H1 holds the highest id, so killing H1 stops strict writes even though two replicas are alive; killing H2 or L is harmless; host loss leaves the laptop searchable but not writable. D2 therefore adds no write availability and no host-loss protection |
+| 3. Host loss: laptop as a standalone writable Qdrant | works, 2.7 s of manual steps. Steps: (1) stop the laptop container (0.7 s); (2) offline, edit `collections/<c>/0/replica_state.json` on its storage so `peers` holds only its own peer id (original kept as `.orig`; 0.4 s); (3) start the same storage with cluster mode off, i.e. without `QDRANT__CLUSTER__ENABLED` and the `--uri` argument (ready in 1.2 s, green at once); (4) make sure the alias exists (create it if absent, see 1). Verified afterwards: `created_at` unchanged (so the collection fingerprint is), 11,316 points before and all present after (11,700 once the test writes are counted), 1,024 float32 cosine, no quantization, status green, search 3/3, strict writes 200 in 25-35 ms, `GET /cluster` says disabled. **Skipping step 2 leaves strict writes failing** ("no address found for peer <dead>"; `medium` and `weak` work; `drop_replica` is refused in standalone mode with HTTP 405). Rebuild afterwards: the old homelab storage diverges from the laptop's, so re-join it as a new peer from the laptop's data after wiping it; not rehearsed |
+| 4. The peer-id rule | tied to the highest peer id among the nodes that **hold a replica**, not among all peers. Case X (H2 highest of all, H1 highest holder, ids m > h > l): killing H2 did not stop strict writes, killing the laptop did not, killing H1 did. Case Y (laptop highest of all and of the holders): killing the laptop stopped them, H2 and H1 did not. The unforced D formation (H2 highest overall, laptop highest holder) gave the same pattern. Nine kills, all consistent with the rule. Inference from observation, not from Qdrant documentation |
+| 5. Write latency, 128-point batch, strong, wait=true | D, ids as formed (laptop highest holder, so writes go to the laptop): through H1 median 0.49 s, max 0.83 s (wcf 1), 0.55 s / 1.5 s (wcf 2). D2 with H1 highest: through H1 0.20 s / 0.96 s (wcf 1), 0.24 s / 0.28 s (wcf 2); via the laptop 0.63 s / 0.92 s. Read-back of every point straight after each write (the projection worker's verify): 0 batches with missing points, 27-62 ms. Nothing near the 5 s deadline. The 6 ms link costs 0.2-0.5 s per batch |
+| 6. Reads | a query to H1 is answered by H1's own replica (0 internal requests in 60 queries). With `read_fan_out_factor` 1, 20-27 of 40 queries sent one sub-request to the laptop. Closed-loop exact search over 6,000 ids, 12 threads: H1 alone 113 qps (median 102 ms, p95 163 ms); H1 + laptop 198 qps (median 51 ms, p95 107 ms), 1.75 times; **H2 alone 84 qps**: a data-less node forwards each query to a replica, so pointing the single `QDRANT_URL` at H2 spreads reads over H1 and the laptop with no client change and keeps answering when H1 dies (search 2/2 with H1 killed). H1 + H2 141 qps. A first, noisier run on the same machine gave 34 / 63 qps, the same ratio of 1.8. In D2 the H2 replica adds nothing real: it shares the homelab's CPU (the host already runs near its limit), and measured H1+H2 109 qps against 58 qps for H1 alone only because the rehearsal gives H2 its own CPU quota |
+| 7. Raft stability, 10 minutes, laptop link at 6 ms with 40 ms spikes, 119 writes of 128 points in minutes 3-8 | 0 term changes, 0 leader changes, 0 samples without a leader on 120 samples of each node; 0 write failures, median 0.23 s, max 1.7 s; one transient connection reset between H2 and H1 left from an earlier kill. Laptop away for 60 s (container killed): with H1 the highest holder, strict writes kept succeeding (27-60 ms), search and topology operations worked, Raft stayed on H1; the laptop returned ready in 9.1 s, converged within 0.1 s, counts equal, no new election. With the laptop the highest holder, every strict write failed for the 60 s; the laptop returned ready in 4.7 s |
+
+### Verdict on D
+
+- **D is safe to operate for the failures it targets, with two conditions.** (a) H1 must hold the
+  highest peer id among the replica holders: re-roll the laptop's id until it is lower than H1's
+  (`rehearse4.py layout D form,order`); otherwise losing the laptop stops indexing. (b)
+  `write_consistency_factor` stays 1. Alias recreation (1) is also required, in every cluster layout.
+- **What D protects against:** loss of the laptop (no interruption: verified 60 s with writes at
+  27-60 ms); loss of the H2 container; a crash of the H1 container for reads (search keeps answering
+  on H2 and the laptop, and if `QDRANT_URL` points at H2 without any repoint); and loss of H1's
+  storage, because the laptop holds a current copy (counts equal after every kill) that can seed a
+  rebuild (rebuilding H1 from it was not rehearsed). It also gives about 1.8 times the read
+  throughput if queries are spread over H1 and the laptop.
+- **What it cannot protect against:** loss of the homelab host. Two of the three voters live there,
+  so one voter remains: no topology operations, and strict writes fail unless the replica set is
+  edited offline. The laptop keeps a full, current copy and can become a standalone writable
+  Qdrant in about 3 seconds of manual work, but nothing in this plan runs the indexers, Content or
+  AI services on the laptop, so search for users only returns if those are moved too (not rehearsed).
+  An H1 crash still stops strict-ordered writes until H1 restarts (6-14 s), as today.
+- **Against layout B:** D needs no node-2 (no login, no 217 ms replica, no extra host), keeps writes
+  at 0.2-0.5 s, and gives the same laptop and container protection. B keeps a quorum when the
+  homelab host dies (the laptop and node-2 are two of three voters), so the cluster stays
+  operable (consensus works; `?force=true` removal of the dead peer would unblock writes, measured
+  for other peers, not for the homelab node itself) instead of needing the offline edit. D is the
+  simpler one to run; B is the only one that survives a host loss without surgery.
+- **Two replicas on one host (D2) are not worth it:** no gain in strict-write availability (H1 still
+  decides), no gain on host loss, no real read capacity on a host that is already CPU-bound, a larger
+  write path and more memory. Keep H2 data-less (about 15 MiB in the rehearsal, against about 50 MiB
+  for a replica).
+
+### Runbook for D (not applied; production change needing the owner's approval)
+
+Needs no node-2. Prerequisites: the TLS certificate re-issued from the existing CA with SANs for
+the H1 and H2 peer addresses and the laptop's tailnet address, port 6335 reachable from H2 and the
+laptop to H1, the standby already on the laptop untouched.
+
+1. Take a paired backup; record baseline latency.
+2. H1: add the cluster environment, `--uri` and a 6335 listener to the Qdrant overlay (outside git; the
+   CI deploy drops it, so re-apply with `ensure-reel-indexing-qdrant`) and recreate: about 1.3 s of
+   restart in the rehearsal, budget 30-60 s in production, during which vector search returns
+   nothing.
+3. Start H2 (second Qdrant container, own volume, 0.5 CPU, 384 MB) and the laptop node with
+   `--bootstrap` to H1.
+4. Re-create the alias through consensus (`delete_alias` and `create_alias` in one request).
+5. Re-roll the laptop until its peer id is below H1's, then replicate the shard to it and set
+   `replication_factor` 2. Do not replicate to H2.
+6. Verify: counts, `created_at`, `verify-parity --list-all`, `stale-ready`, search smoke, a test
+   write batch.
+7. Optionally point `QDRANT_URL` at H2 for read failover (a one-line overlay change; the certificate
+   SAN must cover H2).
+8. Rollback before the laptop is added or after: force-remove the peers, recreate H1 with cluster
+   mode off (rehearsed: 1.4 s, count and `created_at` intact); fallback the paired backup restore
+   (227 s).
+9. Host-loss procedure, written down and drilled once: promote the PostgreSQL standby, run the four
+   standalone steps above on the laptop, start the services against it.
 
 ## What lives outside git on the homelab, and how to re-apply
 

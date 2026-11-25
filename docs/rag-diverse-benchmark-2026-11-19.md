@@ -525,3 +525,16 @@ Finding: the `Requested time` note added to `ChatPromptBuilderAdapter.formatRetr
 Reading it: the larger model answers detail questions better, but it refuses every timestamp question ("The video transcript does not provide information at the 3:33 timestamp"; none cited) where the local model produced an answer from the retrieved excerpt. The larger model is more literal: it will not treat an excerpt that spans the asked second as saying something "at" that second, and an accurate CONTEXT_SUFFICIENCY verdict now blocks answers the small model's leniency used to let through (the log already showed `context sufficient=false action=REFUSE_NO_CONTEXT` on turns that were answered anyway). The answer, sufficiency and verifier prompts and guards were tuned on the small model, so a model swap needs prompt work (at least for point-in-time and range requests) before it can win. Three ANSWER and two CONTEXT_SUFFICIENCY calls hit Cloudflare 429 (daily free allocation) and fell back to the local model as designed. Not tested: ANSWER only with the local sufficiency check, or the 70B model; both need a paid plan, since the free 10,000 neurons a day are shared with frame analysis (this run used part of the day's allowance, so reel frame analysis could have failed for the rest of that UTC day).
 
 Rolled back: `AI_CLOUDFLARE_LLM_*` removed from the homelab `.env` (backups `env-before-cf-llm-*` and `env-before-cf-llm-rollback-*`), ai-service recreated. To repeat on a paid plan: set `AI_CLOUDFLARE_LLM_ENABLED=true`, `AI_CLOUDFLARE_LLM_MODEL=<model>`, `AI_CLOUDFLARE_LLM_ROLES=ANSWER` (try ANSWER alone first), reset the test account's `ai_turn_day` key, run the 32-row sample, compare with `diverse-e2e-22-final.json`.
+
+## Check: deterministic point-in-time sufficiency (2026-11-25)
+`ffc76f2a` answers "what is said at 3:33?" without the CONTEXT_SUFFICIENCY model call when a reranked transcript excerpt spans that second. Same 34 timestamp rows, local e2b model, run on the deployed build (`.benchmarks/diverse-e2e-27-pointrule.json` against `diverse-e2e-22-final.json`):
+
+| | before | after |
+|---|---|---|
+| mean factual (33 comparable rows) | 0.586 | 0.562 |
+| judged correct (>= 0.7) | 10 | 9 |
+| at least half right (>= 0.5) | 27 | 22 |
+| median turn time | 25 s | 21 s |
+| cited the reel / hit the moment | | 33 / 33 of 34 |
+
+Reading it: quality is flat within judge noise (no row fell by more than 0.25; one rose by more than 0.25), and a turn is about 4 s faster. The one unanswered row was sent at 05:34:01, the second the deploy daemon recreated `ai-service` (the same deploy that cleared the homelab-2 outage), so it is a restart artifact. The rule is kept because it removes a model call and is what a more literal answer model needs (the Scout test refused every timestamp question while the sufficiency model could block it). It does not raise the local model's timestamp score; that is limited by the answer style, not the gate.

@@ -37,6 +37,7 @@ import { ConversationPrometheusMetricsService } from '../metrics/conversation-pr
 import { truncatePreview } from '../../domain/message-preview';
 import { ChatMapper } from '../repositories/chat.mapper';
 import { PresenceRegistry } from './presence-registry';
+import { FanoutLedger } from './fanout-ledger';
 import {
   sendRateLimitFromEnv,
   takeSendToken,
@@ -66,6 +67,7 @@ export class ChatGateway
   private readonly logger = new Logger(ChatGateway.name);
   // Per-socket send_message budget (see socket-send-rate-limiter.ts).
   private readonly sendRateLimit = sendRateLimitFromEnv();
+  private fanoutLedger?: FanoutLedger;
   private stopBanListener?: () => Promise<void>;
   private static readonly LAST_SEEN_KEY_PREFIX = 'presence:last-seen:';
 
@@ -311,6 +313,11 @@ export class ChatGateway
     });
   }
 
+  private ledger(): FanoutLedger {
+    this.fanoutLedger ??= new FanoutLedger(this.redis);
+    return this.fanoutLedger;
+  }
+
   // --- 3. HANDLE MESSAGE (CORE) ---
   @SubscribeMessage('send_message')
   async handleMessage(
@@ -390,6 +397,19 @@ export class ChatGateway
       phase = 'dispatch';
 
       if (!result.created) {
+        // A retry of a message whose first attempt failed after the write
+        // committed: that attempt never broadcast it, so do it now, once.
+        if (
+          await this.ledger().needsBroadcast(
+            savedMessage.id,
+            new Date(savedMessage.createdAt),
+          )
+        ) {
+          client
+            .to(this.conversationRooms(payload.conversationId))
+            .emit('new_message', savedMessageDto);
+          this.ledger().markBroadcast(savedMessage.id);
+        }
         stressMessageTiming.report('ack_submitted');
         this.recordSendMessageOutcome(startedAt, 'success');
         return;
@@ -400,6 +420,7 @@ export class ChatGateway
           .to(this.conversationRooms(payload.conversationId))
           .emit('new_message', savedMessageDto),
       );
+      this.ledger().markBroadcast(savedMessage.id);
 
       stressMessageTiming.mark('recipientsSubmitted');
       stressMessageTiming.report('ack_submitted');

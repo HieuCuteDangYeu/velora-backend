@@ -845,6 +845,12 @@ ${JSON.stringify(
     const closest = Math.min(
       ...chunks.map((chunk) => chunk.distance as number),
     );
+    const rerankScores = state.rerankedChunks
+      .map((chunk) => chunk.rerankScore)
+      .filter((score): score is number => typeof score === 'number');
+    this.logger.debug(
+      `[ContextSufficiency] evidence signals closestDistance=${closest.toFixed(3)} excerpts=${chunks.length} reranked=${state.rerankedChunks.length} rerankScored=${rerankScores.length} bestRerank=${rerankScores.length ? Math.max(...rerankScores).toFixed(4) : 'n/a'}`,
+    );
     if (closest > limit) return true;
     return this.rerankerAlsoDisagrees(state, closest);
   }

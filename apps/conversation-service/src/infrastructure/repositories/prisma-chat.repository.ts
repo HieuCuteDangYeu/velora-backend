@@ -114,6 +114,9 @@ type MessageWriteQueue = {
   pending: number;
   running: boolean;
   waiting: QueuedMessageWrite[];
+  // Set while a batch has run longer than the persist timeout: new writes of
+  // the conversation fail at once instead of queueing behind it.
+  stalled?: boolean;
 };
 
 type AnchorBoundary = {
@@ -1647,6 +1650,14 @@ export class PrismaChatRepository implements IChatRepository {
       running: false,
       waiting: [],
     };
+    if (queue.stalled) {
+      return Promise.reject(
+        new HttpException(
+          'Message write timed out',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        ),
+      );
+    }
     if (queue.pending >= MAX_PENDING_MESSAGE_TRANSACTIONS) {
       return Promise.reject(
         new HttpException(
@@ -1697,13 +1708,16 @@ export class PrismaChatRepository implements IChatRepository {
       const entries = queue.waiting.splice(0, count);
       try {
         for (const entry of entries) entry.start();
-        const results = await this.withinPersistTimeout(
+        const results = await this.watchPersistTimeout(
+          queue,
+          entries,
           this.persistMessageBatch(entries.map((entry) => entry.write)),
         );
         entries.forEach((entry, index) => entry.resolve(results[index]));
       } catch (error: unknown) {
         // Only definitive rollback may fall back. Unknown commit outcomes must not replay writes.
         if (
+          !this.timedOutBatches.has(entries) &&
           entries.length > 1 &&
           (this.isClientMessageIdConflict(error) ||
             error instanceof ForbiddenException)
@@ -1727,32 +1741,46 @@ export class PrismaChatRepository implements IChatRepository {
   }
 
   // A write to a stopped shard waits for the driver's own timeouts, and every
-  // later message of the conversation queues behind it until the queue is full.
-  // Give up on the batch after CONVERSATION_PERSIST_TIMEOUT_MS instead: the
-  // senders get a failure at once and resend; if the abandoned write commits
-  // later, the client key turns the resend into a retry (and the fan-out ledger
-  // broadcasts it). The default is far above a healthy write (p95 < 0.4 s).
+  // later message of the conversation would queue behind it until the queue is
+  // full. After CONVERSATION_PERSIST_TIMEOUT_MS the batch's senders, the queued
+  // senders and every new sender of this conversation are told at once that the
+  // write failed, so they resend; but no new batch starts until the hung one
+  // settles. Starting one would put two writers on the same conversation, which
+  // is exactly the conflict that single-writer ownership removed (a first
+  // version that did so turned a stopped shard into hundreds of P2034 conflicts).
+  // If the hung write commits after all, the client key turns the resend into a
+  // retry, and the fan-out ledger broadcasts it.
   private readonly persistTimeoutMs = persistTimeoutMs(
     process.env.CONVERSATION_PERSIST_TIMEOUT_MS,
   );
 
-  private withinPersistTimeout<T>(write: Promise<T>): Promise<T> {
-    write.catch(() => undefined);
-    let timer: NodeJS.Timeout | undefined;
-    return Promise.race([
-      write,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          this.metrics?.recordPersistTimeout();
-          reject(
-            new HttpException(
-              'Message write timed out',
-              HttpStatus.SERVICE_UNAVAILABLE,
-            ),
-          );
-        }, this.persistTimeoutMs);
-      }),
-    ]).finally(() => clearTimeout(timer));
+  private readonly timedOutBatches = new WeakSet<QueuedMessageWrite[]>();
+
+  private async watchPersistTimeout<T>(
+    queue: MessageWriteQueue,
+    batch: QueuedMessageWrite[],
+    write: Promise<T>,
+  ): Promise<T> {
+    const timer = setTimeout(() => {
+      queue.stalled = true;
+      this.timedOutBatches.add(batch);
+      this.metrics?.recordPersistTimeout();
+      const failure = new HttpException(
+        'Message write timed out',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+      // Settling a promise twice is a no-op, so the batch's late result is ignored.
+      for (const entry of batch) entry.reject(failure);
+      const waiting = queue.waiting.splice(0);
+      queue.pending -= waiting.length;
+      for (const entry of waiting) entry.reject(failure);
+    }, this.persistTimeoutMs);
+    try {
+      return await write;
+    } finally {
+      clearTimeout(timer);
+      queue.stalled = false;
+    }
   }
 
   private async persistMessageBatch(

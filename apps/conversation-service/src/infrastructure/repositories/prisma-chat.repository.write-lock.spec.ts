@@ -145,21 +145,56 @@ describe('persist timeout', () => {
     expect(persistTimeoutMs('999999')).toBe(60_000);
   });
 
-  it('fails a write that hangs, counts it, and leaves a fast write alone', async () => {
+  it('fails a hung batch and its queue fast, but never starts a second writer', async () => {
     const recordPersistTimeout = jest.fn();
+    let finishFirst!: (value: unknown[]) => void;
+    const persistMessageBatch = jest
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<unknown[]>((resolve) => {
+            finishFirst = resolve;
+          }),
+      )
+      .mockImplementation((writes: unknown[]) =>
+        Promise.resolve(writes.map(() => ({ ok: true }))),
+      );
     const repo = Object.assign(Object.create(PrismaChatRepository.prototype), {
       persistTimeoutMs: 20,
-      metrics: { recordPersistTimeout },
+      metrics: { recordPersistTimeout, recordPhase: jest.fn() },
+      messageTransactions: new Map(),
+      timedOutBatches: new WeakSet(),
+      persistMessageBatch,
+      isClientMessageIdConflict: () => false,
     }) as unknown as {
-      withinPersistTimeout<T>(write: Promise<T>): Promise<T>;
+      enqueueMessageTransaction(id: string, write: unknown): Promise<unknown>;
     };
-    await expect(
-      repo.withinPersistTimeout(new Promise(() => undefined)),
-    ).rejects.toMatchObject({ status: 503 });
+    const write = (n: number) => ({
+      data: { conversationId: 'c', id: `0${n}` },
+    });
+
+    const first = repo.enqueueMessageTransaction('c', write(1));
+    const queued = repo.enqueueMessageTransaction('c', write(2));
+    await expect(first).rejects.toMatchObject({ status: 503 });
+    await expect(queued).rejects.toMatchObject({ status: 503 });
     expect(recordPersistTimeout).toHaveBeenCalledTimes(1);
+    // While the first write still hangs, a new message fails at once and no
+    // second writer is started for the conversation.
     await expect(
-      repo.withinPersistTimeout(Promise.resolve('ok')),
-    ).resolves.toBe('ok');
-    expect(recordPersistTimeout).toHaveBeenCalledTimes(1);
+      repo.enqueueMessageTransaction('c', write(3)),
+    ).rejects.toMatchObject({
+      status: 503,
+    });
+    expect(persistMessageBatch).toHaveBeenCalledTimes(1);
+
+    // Once the hung write settles, the conversation accepts writes again.
+    finishFirst([{ ok: true }]);
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      repo.enqueueMessageTransaction('c', write(4)),
+    ).resolves.toEqual({
+      ok: true,
+    });
+    expect(persistMessageBatch).toHaveBeenCalledTimes(2);
   });
 });

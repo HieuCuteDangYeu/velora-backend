@@ -1,5 +1,6 @@
 import {
   PrismaChatRepository,
+  persistTimeoutMs,
   writeForwardTimeoutMs,
 } from './prisma-chat.repository';
 
@@ -132,5 +133,33 @@ describe('writeForwardTimeoutMs', () => {
     expect(writeForwardTimeoutMs('1500')).toBe(1_500);
     expect(writeForwardTimeoutMs('10')).toBe(250);
     expect(writeForwardTimeoutMs('60000')).toBe(10_000);
+  });
+});
+
+describe('persist timeout', () => {
+  it('uses 8 s unless configured, clamped to 1..60 s', () => {
+    expect(persistTimeoutMs(undefined)).toBe(8_000);
+    expect(persistTimeoutMs('x')).toBe(8_000);
+    expect(persistTimeoutMs('3000')).toBe(3_000);
+    expect(persistTimeoutMs('10')).toBe(1_000);
+    expect(persistTimeoutMs('999999')).toBe(60_000);
+  });
+
+  it('fails a write that hangs, counts it, and leaves a fast write alone', async () => {
+    const recordPersistTimeout = jest.fn();
+    const repo = Object.assign(Object.create(PrismaChatRepository.prototype), {
+      persistTimeoutMs: 20,
+      metrics: { recordPersistTimeout },
+    }) as unknown as {
+      withinPersistTimeout<T>(write: Promise<T>): Promise<T>;
+    };
+    await expect(
+      repo.withinPersistTimeout(new Promise(() => undefined)),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(recordPersistTimeout).toHaveBeenCalledTimes(1);
+    await expect(
+      repo.withinPersistTimeout(Promise.resolve('ok')),
+    ).resolves.toBe('ok');
+    expect(recordPersistTimeout).toHaveBeenCalledTimes(1);
   });
 });

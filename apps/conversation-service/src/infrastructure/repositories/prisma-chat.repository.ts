@@ -121,6 +121,13 @@ type AnchorBoundary = {
   stableId: string;
 };
 
+/** CONVERSATION_PERSIST_TIMEOUT_MS, clamped to 1..60 s; anything else uses 8 s. */
+export function persistTimeoutMs(raw: string | undefined): number {
+  const value = Number(raw);
+  if (!raw || !Number.isFinite(value)) return 8_000;
+  return Math.min(60_000, Math.max(1_000, Math.round(value)));
+}
+
 /** CONVERSATION_WRITE_FORWARD_TIMEOUT_MS, clamped to 250 ms..10 s; anything else uses the default. */
 export function writeForwardTimeoutMs(raw: string | undefined): number {
   const value = Number(raw);
@@ -1690,8 +1697,8 @@ export class PrismaChatRepository implements IChatRepository {
       const entries = queue.waiting.splice(0, count);
       try {
         for (const entry of entries) entry.start();
-        const results = await this.persistMessageBatch(
-          entries.map((entry) => entry.write),
+        const results = await this.withinPersistTimeout(
+          this.persistMessageBatch(entries.map((entry) => entry.write)),
         );
         entries.forEach((entry, index) => entry.resolve(results[index]));
       } catch (error: unknown) {
@@ -1717,6 +1724,35 @@ export class PrismaChatRepository implements IChatRepository {
     }
     queue.running = false;
     this.messageTransactions.delete(conversationId);
+  }
+
+  // A write to a stopped shard waits for the driver's own timeouts, and every
+  // later message of the conversation queues behind it until the queue is full.
+  // Give up on the batch after CONVERSATION_PERSIST_TIMEOUT_MS instead: the
+  // senders get a failure at once and resend; if the abandoned write commits
+  // later, the client key turns the resend into a retry (and the fan-out ledger
+  // broadcasts it). The default is far above a healthy write (p95 < 0.4 s).
+  private readonly persistTimeoutMs = persistTimeoutMs(
+    process.env.CONVERSATION_PERSIST_TIMEOUT_MS,
+  );
+
+  private withinPersistTimeout<T>(write: Promise<T>): Promise<T> {
+    write.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    return Promise.race([
+      write,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          this.metrics?.recordPersistTimeout();
+          reject(
+            new HttpException(
+              'Message write timed out',
+              HttpStatus.SERVICE_UNAVAILABLE,
+            ),
+          );
+        }, this.persistTimeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
   }
 
   private async persistMessageBatch(

@@ -60,6 +60,9 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
     const maxAttempts = 2;
     const deadline = Date.now() + timeoutMs;
     let lastError: Error | undefined;
+    // The reason the previous reply was rejected, told to the model on the retry: the identical request
+    // at low temperature tends to repeat the same mistake, and a fallback to the local model costs ~20 s.
+    let rejection: string | undefined;
     for (let retry = 0; retry < maxAttempts; retry += 1) {
       const startedAt = Date.now();
       const state: Partial<StructuredLlmCallDiagnostics> = {
@@ -69,7 +72,13 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
         const remaining = deadline - Date.now();
         if (remaining <= 0)
           throw new OllamaStructuredCompletionTimeoutError(model, timeoutMs);
-        const payload = await this.complete(model, input, schema, remaining);
+        const payload = await this.complete(
+          model,
+          input,
+          schema,
+          remaining,
+          rejection,
+        );
         state.providerStatus = 200;
         const choice = payload.choices?.[0];
         const content = choice?.message?.content ?? '';
@@ -81,6 +90,11 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
       } catch (error: unknown) {
         lastError = this.mapError(error, model, timeoutMs);
         state.errorCode = (lastError as Error & { code?: string }).code;
+        rejection =
+          lastError instanceof OllamaStructuredCompletionInvalidJsonError ||
+          lastError instanceof OllamaStructuredCompletionSchemaError
+            ? lastError.message
+            : undefined;
         if (lastError instanceof OllamaStructuredCompletionTimeoutError)
           state.providerStatus = 'TIMEOUT';
         if (
@@ -129,6 +143,7 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
     input: GenerateStructuredObjectInput,
     schema: Record<string, unknown>,
     timeoutMs: number,
+    rejection?: string,
   ): Promise<CloudflareCompletionPayload> {
     const response = await fetch(`${this.baseUrl()}/chat/completions`, {
       method: 'POST',
@@ -140,7 +155,12 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
             role: 'system',
             content: `${input.systemPrompt}\n\nRespond with a single JSON object matching this JSON schema, and nothing else:\n${JSON.stringify(schema)}`,
           },
-          { role: 'user', content: input.userPrompt },
+          {
+            role: 'user',
+            content: rejection
+              ? `${input.userPrompt}\n\nYour previous reply was rejected (${rejection}). Reply again with one corrected JSON object that satisfies the schema exactly, with no other text.`
+              : input.userPrompt,
+          },
         ],
         temperature: input.temperature ?? 0.1,
         max_tokens: input.maxTokens ?? 1_024,

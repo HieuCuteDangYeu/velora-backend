@@ -84,6 +84,39 @@ describe('CloudflareStructuredLlmAdapter', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('tells the model why the first reply was rejected when it retries', async () => {
+    fetchMock
+      .mockResolvedValueOnce(reply('{"title":1,"tags":[]}'))
+      .mockResolvedValueOnce(reply('{"title":"a","tags":[]}'));
+    await expect(adapter.generateObject(request)).resolves.toEqual({
+      title: 'a',
+      tags: [],
+    });
+    const userContent = (call: number) =>
+      (
+        JSON.parse(
+          (fetchMock.mock.calls[call] as [string, RequestInit])[1]
+            .body as string,
+        ) as { messages: Array<{ role: string; content: string }> }
+      ).messages.find((message) => message.role === 'user')!.content;
+    expect(userContent(0)).not.toContain('previous reply was rejected');
+    expect(userContent(1)).toContain('previous reply was rejected');
+    expect(userContent(1)).toContain('schema validation');
+  });
+
+  it('does not mention a rejection when the retry follows a gateway error', async () => {
+    fetchMock
+      .mockResolvedValueOnce(reply('', 502))
+      .mockResolvedValueOnce(reply('{"title":"a","tags":[]}'));
+    await adapter.generateObject(request);
+    const body = JSON.parse(
+      (fetchMock.mock.calls[1] as [string, RequestInit])[1].body as string,
+    ) as { messages: Array<{ content: string }> };
+    expect(
+      body.messages.map((message) => message.content).join(' '),
+    ).not.toContain('previous reply was rejected');
+  });
+
   it('rejects a reply that violates the schema', async () => {
     fetchMock.mockResolvedValue(reply('{"title":1,"tags":[]}'));
     await expect(adapter.generateObject(request)).rejects.toMatchObject({

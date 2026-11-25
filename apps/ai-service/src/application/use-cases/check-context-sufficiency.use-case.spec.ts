@@ -303,7 +303,7 @@ describe('CheckContextSufficiencyUseCase', () => {
     });
 
     describe('with the reranker as a second signal', () => {
-      const flags = { AI_CONTEXT_EVIDENCE_RERANK_GUARD: 'true' };
+      const flags = {};
       const withScores = async (
         distances: number[],
         scores: Array<number | undefined>,
@@ -382,9 +382,13 @@ describe('CheckContextSufficiencyUseCase', () => {
         expect(service.generateObject).not.toHaveBeenCalled();
       });
 
-      it('does nothing unless switched on', async () => {
-        const { service } = await withScores([0.5, 0.52], [0.0, 0.0], {});
-        expect(service.generateObject).toHaveBeenCalled();
+      it('is on by default and can be switched off', async () => {
+        const off = await withScores([0.5, 0.52], [0.0, 0.0], {
+          AI_CONTEXT_EVIDENCE_RERANK_GUARD: 'false',
+        });
+        expect(off.service.generateObject).toHaveBeenCalled();
+        const on = await withScores([0.5, 0.52], [0.0, 0.0], {});
+        expect(on.service.generateObject).not.toHaveBeenCalled();
       });
     });
 

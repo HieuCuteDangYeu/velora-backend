@@ -362,7 +362,7 @@ describe('CheckContextSufficiencyUseCase', () => {
           [0.45, 0.52],
           [0.0, 0.0],
         ],
-        ['an excerpt has no rerank score', [0.5, 0.52], [0.0, undefined]],
+        ['no excerpt has a rerank score', [0.5, 0.52], [undefined, undefined]],
       ] as const)(
         'leaves the model in charge when %s',
         async (_name, distances, scores) => {
@@ -370,6 +370,17 @@ describe('CheckContextSufficiencyUseCase', () => {
           expect(service.generateObject).toHaveBeenCalled();
         },
       );
+
+      it('lets the scored excerpts decide when others carry no score', async () => {
+        const { service, result } = await withScores(
+          [0.5, 0.52, 0.53],
+          [0.0001, 0.0002, undefined],
+        );
+        expect(result.diagnostics?.decisionSource).toBe(
+          'DETERMINISTIC_EVIDENCE_DISTANCE',
+        );
+        expect(service.generateObject).not.toHaveBeenCalled();
+      });
 
       it('does nothing unless switched on', async () => {
         const { service } = await withScores([0.5, 0.52], [0.0, 0.0], {});

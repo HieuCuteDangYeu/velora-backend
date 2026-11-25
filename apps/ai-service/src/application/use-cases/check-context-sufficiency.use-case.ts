@@ -862,7 +862,7 @@ ${JSON.stringify(
    * only counts together with a distance above the soft limit (0.47; those covered ones sit at 0.39-0.47). On 79
    * covered and 40 uncovered questions, "distance > 0.47 and best rerank score < 0.01" refused all 40 uncovered
    * ones with no covered question refused beyond the two the plain distance limit already refuses. Opt-in
-   * (AI_CONTEXT_EVIDENCE_RERANK_GUARD=true); fails open when any excerpt has no rerank score.
+   * (AI_CONTEXT_EVIDENCE_RERANK_GUARD=true); only the scored excerpts count, fails open when none is scored.
    */
   private rerankerAlsoDisagrees(
     state: RagChatWorkflowState,
@@ -884,18 +884,14 @@ ${JSON.stringify(
     if (!Number.isFinite(softLimit) || !Number.isFinite(floor) || floor <= 0) {
       return false;
     }
+    // The reranker scores only its top candidates (8); the neighbouring excerpts added around them carry no
+    // score, so the scored ones decide and the rule fails open only when none is scored.
     const scores = state.rerankedChunks
       .filter((chunk) => (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT')
-      .map((chunk) => chunk.rerankScore);
-    if (
-      scores.length === 0 ||
-      scores.some((score) => typeof score !== 'number')
-    ) {
-      return false;
-    }
-    return (
-      closestDistance > softLimit && Math.max(...(scores as number[])) < floor
-    );
+      .map((chunk) => chunk.rerankScore)
+      .filter((score): score is number => typeof score === 'number');
+    if (scores.length === 0) return false;
+    return closestDistance > softLimit && Math.max(...scores) < floor;
   }
 
   private rangeTranscriptEvidenceIds(state: RagChatWorkflowState): string[] {

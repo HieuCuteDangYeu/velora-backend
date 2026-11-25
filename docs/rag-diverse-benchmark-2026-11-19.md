@@ -566,3 +566,27 @@ Opening, detail, chapter and timestamp rows across the benchmark videos (2 per v
 | timestamp (33) | 0.607 -> 0.613 | 11 -> 12 | 28 -> 25 |
 
 The gain is all in detail questions (+0.13); opening is slightly up; timestamp is flat and chapter is flat to slightly down (within noise, n=25). Four rows have no answer, all sent between 06:22 and 06:35 UTC, right after the daemon deployed bdf5d0c1 (a conversation-service restart at 06:21); ai-service was not restarted. Scout stays on. Chapter summaries remain the weakest type and are next.
+
+## Chapter summaries asked by time range: the one-sentence answers (2026-11-25, fixed in 2783b7d4)
+Chapter rows asked the way a user would ask them ("Summarize what is said from 2:11 to 3:22 in the video", `--chapter-by-interval`), Scout on ANSWER, 26 rows. Before the fix: mean 0.491, 8 correct, and many answers were a single sentence of transcript ("Now we'll make the rotis." for a 71 s range).
+
+Trace of one turn: the request was not classified as a summary (`transcriptSegmentRequestKind` needed the word "segment"), so the retrieval plan read 2 chunks (about 16 s) and capped evidence at the small default; the router could also label it `FIRST_COMPLETE_UTTERANCE` (first-sentence answer); and the small model's sufficiency verdict was `REFUSE_NO_CONTEXT`.
+
+Fix (2783b7d4): `isTimeRangeSummaryQuestion` (a summary cue + a speech word + "from X to Y", without the word "segment") makes the request a `SUMMARY` (up to 20 chunks, 3,000-char evidence), stops the first-utterance label, and `CheckContextSufficiencyUseCase` settles sufficiency from the overlapping excerpts when they hold at least 4 characters per requested second (interval capped at 120 s, so a tiny excerpt that merely spans the range does not count). Single seconds, "first words", the old "segment" wording and multi-reel comparisons are unchanged. ai-service: 90 suites, 1434 tests pass.
+
+Measured on the deployed build, same 26 rows (`.benchmarks/diverse-e2e-31-chapter-time-fix.json` against `-30-`):
+
+| | before | after |
+|---|---|---|
+| mean factual | 0.491 | **0.638** |
+| judged correct (>= 0.7) | 8 | **13** |
+| at least half right | 14 | **22** |
+| unanswered | 0 | 0 |
+| median answer | 348 chars | 424 chars |
+| range <= 2 min (8 rows) | 0.544 / 3 correct | **0.721 / 5** |
+| range 2-5 min (9 rows) | 0.563 / 3 | **0.727 / 6** |
+| range > 5 min (9 rows) | 0.371 / 2 | 0.474 / 2 |
+
+Remaining weakness is long ranges: one read returns at most 20 chunks (about 160 s of speech), so a 7-12 minute range is summarised from part of it, and two rows ended in "I found relevant shared Reel evidence, but could not verify a reliable answer" (the verification budget ran out). "Between X and Y" wording is not recognised as a range yet. Two rows fell by more than 0.25 (one is a 39 s range at 0.9 -> 0.6, within judge noise).
+
+Same trace showed Scout's ANSWER output failing local schema validation (`claims[0].evidenceIds`, minItems) twice and falling back to the local model, about 21 s lost per such turn.

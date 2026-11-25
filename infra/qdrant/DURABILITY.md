@@ -21,7 +21,7 @@ changes search behaviour.
 | `scripts/ops/test-pair-durability.cjs`, `test-pair-offsite-copy.sh` | Unit tests (`node --test scripts/ops/test-pair-durability.cjs`, `bash scripts/ops/test-pair-offsite-copy.sh`). |
 | `infra/qdrant/pair-backup/` | Config example, launchd plist and systemd unit and timer. **None is installed.** |
 | `infra/qdrant/pg-standby/` | `rehearse.sh` (disposable rehearsal) and `compose.yaml` (the standby on homelab 2). |
-| `infra/qdrant/cluster-rehearsal/rehearse.py` | Disposable two-node Qdrant rehearsal. |
+| `infra/qdrant/cluster-rehearsal/` | `rehearse.py` (two nodes) and `rehearse3.py` (three nodes with netem latency, kill matrix, permanent loss, read distribution, Raft soak): disposable Qdrant clusters. |
 
 ## Paired backup
 
@@ -211,7 +211,7 @@ so it is a decision for the owner, not part of this step.
    `SELECT pg_reload_conf()`; optionally `ALTER SYSTEM RESET max_slot_wal_keep_size` then reload.
 3. Homelab: `docker rm -f reel-indexing-pg-forwarder`; delete `secrets/replicator_idx.pw`.
 
-## Qdrant replica on homelab 2: rehearsed, not applied
+## Two-node Qdrant replica on homelab 2: rehearsed, not applied
 
 Rehearsal (`cluster-rehearsal/rehearse.py`): two disposable containers, the production image,
 config and resource caps, 11,316 synthetic points, the exact `initialize()` collection body, 13
@@ -243,6 +243,100 @@ UTC; p50 326 ms, p95 429 ms at 15:05 UTC.
 
 Alternatives: a third peer (velora-node-2 at 217 ms is too far for synchronous writes) or a
 warm copy by restoring the paired backup on homelab 2 on demand (227 s in the drill).
+
+## Three-node Qdrant rehearsal (homelab + homelab 2 + node-2): one layout passes, with conditions
+
+Rehearsed 2026-11-25/26 on disposable containers only (`cluster-rehearsal/rehearse3.py`, logs kept
+outside the repo). Nothing on any production host, and no production Qdrant, was touched.
+Setup: production image and config, `QDRANT__CLUSTER__ENABLED=true` and p2p TLS, the real
+collection body (1,024 float32 cosine, HNSW m16 ef_construct 100, 13 payload indexes, alias),
+11,316 points, caps 768 MB (h and l 1 CPU, n 0.5 CPU). netem on each node's egress, one way:
+homelab-laptop 6 ms with 3 ms jitter (RTT 12 ms), homelab-node-2 108 ms with 10 ms jitter (RTT 217 ms),
+laptop-node-2 115 ms with 10 ms jitter, 25 % correlation. All nodes are x86 here: the real homelab
+is ARM64, so snapshot transfer between ARM64 and x86_64 shards is **not** tested.
+Layouts: A replicas on all three (replication_factor 3); B replicas on homelab and laptop, node-2 a
+data-less Raft voter (replication_factor 2); C replicas on homelab and node-2, laptop a data-less
+voter (replication_factor 2).
+
+### Results
+
+| Question | Result |
+| --- | --- |
+| 1. Formation on existing storage | works in all three runs: restart 1.3-2.5 s, 11,316 points intact, `created_at` identical on every peer (fingerprint unchanged), all three peers visible at once. Replica transfer by snapshot: laptop 6-8.5 s, node-2 75 s the first time (45 MB over 217 ms RTT) and 15-20 s when re-added. Going back to single-node mode on that storage also works (count and `created_at` unchanged) |
+| 2. A data-less voter | allowed and kept: a peer with no shard replica stays in Raft, takes part in elections (it was elected leader several times) and keeps quorum. It can be removed with a plain `DELETE /cluster/peer/<id>` |
+| 3a. Search after killing any one node | answered on both survivors at every checkpoint (3, 12, 30, 60 s), 3-33 ms, in all layouts. One exception: in B, the data-less node answered in 237 ms because it forwards to a remote replica |
+| 3b. Raft after killing the leader | new leader within 3 s (term +1); consensus operations (collection alias creation) succeeded 0.5-2 s later at 12 s and 60 s in every case, because two of three voters remain |
+| 3c. Writes with `ordering=strong` (what the adapter uses), write_consistency_factor 1 | fail with HTTP 500 for as long as the replica with the **highest peer id** is down (checked 60 s, every time) even though the replica is marked Dead and Raft is healthy; they succeed when any other node is down. Consistent in all 16 three-node kill runs with wcf 1 (and wcf 2 in A) plus the two earlier two-node runs; the peer ids were recorded in the last 7 of them. `ordering=medium` and `weak` succeed in the same situation (A and B, 12 s checkpoint) |
+| 3d. Recovery after restart | ready in 3.6-26 s (the homelab node 9-26 s), replicas Active and counts equal within 0-1.3 s after that, no manual step |
+| 3e. Permanent loss | a node holding a replica: plain removal is refused ("shards on it"), `?force=true` works in 0.1-1.1 s while two voters remain, writes and search carry on at once; a data-less node: plain removal works. A removed node restarted on its old storage stays `503 not ready`; it must be wiped and rejoined as a new peer, then re-replicated (5-20 s). With one of two voters gone (earlier two-node test) none of this worked |
+| 4. Write latency, 128-point batch, `wait=true&ordering=strong`, through the homelab | A: median 1.98 s, max 4.8 s with wcf 1; median 4.6 s with wcf 2 (deadline 5 s). B: median 0.28-0.33 s, max 0.9-1.0 s (wcf 1), 0.19-0.21 s (wcf 2). C: median 0.31 s but max 9.7 s once (wcf 1), median 1.15 s (wcf 2). Read-back of every point with vectors straight after the write (the projection worker's verify): 0 batches missing points in all layouts, 30-62 ms through the homelab, 138 ms through the laptop in C |
+| 4b. wcf 2 | with two replicas (B, C) every loss of a replica holder blocks all writes (500 in 0.4-4.3 s), and in B a write failure marked the surviving, healthy replica Dead for a time. With three replicas (A) wcf 2 survives the loss of a non-highest node. Keep wcf 1 |
+| 5. Reads | a query to the homelab is answered by its local replica: 60 queries produced 0 internal requests on the other nodes. With `read_fan_out_factor` 1, 13 of 40 (A) and 21 of 40 (B) queries sent one sub-request to the laptop, none to node-2. Closed-loop exact search over a 6,000-id scope (12 threads, 12 s; node-2 pays a simulated 217 ms RTT, laptop 12 ms): A homelab only 108 qps (median 103 ms), homelab+laptop 200 qps (median 59 ms, p95 96 ms), all three 139 qps (p95 229 ms because node-2 is slow and has 0.5 CPU). B homelab only 28.5 qps, homelab+laptop 59.8 qps (2.1 times). Absolute rates varied 4 times between runs on this shared machine; the ratio near 2 is the stable result. At saturation one 1-CPU node answers in 100-417 ms, so sharing load with the laptop is what keeps the 250 ms identity/search deadline |
+| 6. Raft timing, layout A, 10 minutes, laptop link raised to 40 ms for 3 s every 30 s, 86 writes of 128 points in minutes 3-8 | 0 term changes (term 1 throughout), 0 leader changes, 0 samples without a leader, 0 send failures on 120 samples of each node; writes 0 failures, median 1.33 s, max 2.19 s. Default election and tick settings survive 217 ms RTT with jitter here. Not covered: packet loss, a real WAN, a node-2 host stall |
+
+### Verdict
+
+- **Layout A (three replicas): not safe.** Strong-ordered writes cost 2-5 s and sit on the 5 s deadline; losing the highest-id node stops indexing.
+- **Layout C (node-2 holds the second copy): not safe.** One 9.7 s write, 4.4 s medians through the laptop with wcf 2, and every write waits for a 217 ms replica.
+- **Layout B (replicas on homelab and laptop, node-2 a data-less voter): passes, under conditions.**
+  Median write 0.2-0.33 s (max about 1 s), search never interrupted, any single node loss keeps
+  quorum and topology operations, losing the laptop or node-2 does not stop writes or search,
+  permanent loss of either is recoverable in seconds, Raft was stable for 10 minutes.
+  Conditions it needs:
+  1. **The homelab must hold the highest peer id among the replica holders**, otherwise losing the
+     laptop stops indexing. IDs are random for a new peer, so re-roll the laptop (remove with
+     `?force=true`, wipe, rejoin, re-replicate, about 30 s a try) until its id is lower than the
+     homelab's, which is fixed in the existing storage (`raft_state.json`; `GET /cluster` after
+     enabling). `rehearse3.py layout B form,order` does this. Loss of the homelab itself still stops
+     strong-ordered writes (as today), but now search can be repointed to the laptop.
+  2. `write_consistency_factor` stays 1 and `replication_factor` 2. Do not use wcf 2.
+  3. Read capacity is real (about 2 times with the laptop) only if something sends queries to the
+     laptop: the adapter has one `QDRANT_URL`, and no client change was made or tested.
+  4. The rule "writes need the highest-id replica" is inferred from the consistent runs above (ids recorded in 7),
+     not from Qdrant source or documentation.
+  5. Not verified: ARM64-to-x86_64 shard transfer, real packet loss and node-2 hardware, a
+     certificate with SANs for the three tailnet addresses, publishing 6335 on the homelab, and
+     the laptop's 5 GB next to the Mongo shard that already depends on it.
+
+### Production runbook for layout B (not applied; needs approval and node-2 access)
+
+Access needed, none of which exists today: a key-based login to velora-node-2 (`100.86.68.16`, user
+that can run docker; the two keys tried got `publickey` denied) and permission to open TCP 6335
+(Raft and shard transfer) and 6333 (REST) between the three tailnet addresses (homelab
+`100.102.228.48`, laptop `100.104.227.44`, node-2 `100.86.68.16`). The Qdrant API key and CA stay
+where they are; node-2 would receive the API key, the new server certificate and key, and the CA
+certificate only.
+
+1. Before: `pair-backup.sh` (about 2 minutes), `verify-parity --list-all`, `stale-ready`,
+   `reel-search-smoke.cjs` for the latency baseline (p50 317-326 ms, p95 429-458 ms).
+2. Re-issue the server certificate from the existing CA (`qdrant-secrets/ca.key`) with SANs
+   `qdrant`, and the three tailnet IPs (or DNS names). Peers verify SANs on port 6335.
+3. Homelab overlay (outside git; the CI deploy drops it, re-apply with
+   `ensure-reel-indexing-qdrant`): add `QDRANT__CLUSTER__ENABLED=true`,
+   `QDRANT__CLUSTER__P2P__ENABLE_TLS=true`, command `--uri https://100.102.228.48:6335`, publish
+   `100.102.228.48:6335`, mount the new certificate. This recreates the Qdrant container:
+   **downtime** about 6 s in the rehearsal, budget 30-60 s in production (start period and readiness
+   check); semantic search returns no vector hits and the indexers' publication retries meanwhile.
+   Text and tag search are unaffected.
+4. Laptop and node-2: start Qdrant with the same image, config and certificate, `--bootstrap
+   https://100.102.228.48:6335 --uri https://<own tailnet IP>:6335`. Confirm `GET /cluster` shows
+   three peers and a leader.
+5. Re-roll the laptop until its peer id is below the homelab's. Then
+   `POST /collections/<c>/cluster {replicate_shard: {shard_id: 0, from_peer_id: homelab, to_peer_id: laptop, method: "snapshot"}}`,
+   wait for Active, `PATCH` the collection `replication_factor: 2` (leave `write_consistency_factor` 1).
+   Do not replicate to node-2 and never recreate the collection.
+6. After: `created_at` unchanged, counts equal, `verify-parity --list-all` (`recordsConsistent`),
+   `stale-ready`, `reel-search-smoke.cjs`, a test write batch (expect under 1 s).
+7. Rollback: `DELETE /cluster/peer/<laptop>?force=true` and `<node-2>`, then recreate the homelab
+   container from the previous overlay (cluster off). The rehearsal shows a node that was in cluster
+   mode returns to single-node mode with the collection, count and `created_at` intact (1.4 s). Not
+   rehearsed with peers that were removed first; the fallback is the paired backup restore (227 s).
+8. Add monitoring first: peer count, Raft term changes, replica state, write error rate. None exists.
+
+Decision for the owner: B gives a warm copy on the laptop and about twice the read capacity if
+queries are sent there, at the price of a cluster mode change on production, a 30-60 s search
+interruption, a new certificate, two new nodes to operate, and an unchanged single point for
+writes (the homelab). It does not give automatic write failover.
 
 ## What lives outside git on the homelab, and how to re-apply
 

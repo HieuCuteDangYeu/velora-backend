@@ -603,3 +603,25 @@ Before: of 38 Scout ANSWER calls in 3 h, 9 had an error (invalid JSON, `evidence
 | median / p90 turn | 38 s / 60 s | 41 s / 59 s |
 
 Reading it: fewer failed calls and fewer fallbacks, but the samples are small (27-38 calls) and answer quality and median turn time did not move; a turn is about 40 s and the Scout answer call is only part of it (local router about 6 s, local sufficiency about 4 s when the rules do not decide it, answer 8-13 s, citations, verification up to its budget). Turn latency, not Scout reliability, is now the larger user-visible cost.
+
+## Router on Scout is not usable yet; constrained JSON kept for the answer role (2026-11-25)
+**Router on Scout** (opt-in `query-router-agent.scope.local.integration.spec.ts`, `SCOPE_ROUTER_PROVIDER=cloudflare`, 222 scope rows plus router fixtures; the local model measured 76 of 79 off-topic caught, 0 of 143 in-scope refused):
+
+| | local e2b | Scout, prompt-only schema | Scout, `response_format` json_schema |
+|---|---|---|---|
+| off-topic caught | 76 / 79 | 49 / 79 (62%) | 64 / 79 (81%) |
+| in-scope wrongly refused | 0 / 143 | 0 / 143 | 0 / 143 |
+| router call errors | about 0 | 128 of 301 (43%) | 0 |
+| median call | about 6 s | 3.5 s | 2.6 s |
+
+The prompt-only schema was ignored on 43% of Scout calls (in a probe it wrote a poem). `AI_CLOUDFLARE_LLM_JSON_SCHEMA=true` (a0ea1ee9, off by default) sends the schema as a strict `json_schema` response format and removes the errors, but Scout still lets general advice and how-to prompts through ("Explain recursion", "Give me tips for a job interview", cover letters, workout plans), below the 85% minimum. The router stays on the local model; a Scout router needs prompt work first.
+
+**Answer role with json_schema** (live on the homelab, backup `env-before-cf-jsonschema-20261125T111216Z`), the same 32 rows run twice (`diverse-e2e-33-jsonschema.json`, `-34-jsonschema-b.json`), 30 rows judged in every run:
+
+| | mean factual | judged correct | Scout calls with an error |
+|---|---|---|---|
+| retry fix only | 0.597 | 13 | 3 of 27 |
+| json_schema, run A | 0.563 | 12 | 0 of 27 |
+| json_schema, run B | 0.611 | 16 | 0 of 24 |
+
+Two runs of the same configuration differ by 0.048 on the mean, more than the gap to the baseline, so no quality change is detectable; Scout calls no longer fail or fall back to the local model. Kept on. Median turn stays about 40 s (p90 about 59 s). Lesson for reading every earlier table: run-to-run noise on a 30-row sample is about 0.05 mean and 2-3 correct rows, so differences smaller than that are not findings.

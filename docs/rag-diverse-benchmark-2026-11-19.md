@@ -538,3 +538,18 @@ Rolled back: `AI_CLOUDFLARE_LLM_*` removed from the homelab `.env` (backups `env
 | cited the reel / hit the moment | | 33 / 33 of 34 |
 
 Reading it: quality is flat within judge noise (no row fell by more than 0.25; one rose by more than 0.25), and a turn is about 4 s faster. The one unanswered row was sent at 05:34:01, the second the deploy daemon recreated `ai-service` (the same deploy that cleared the homelab-2 outage), so it is a restart artifact. The rule is kept because it removes a model call and is what a more literal answer model needs (the Scout test refused every timestamp question while the sufficiency model could block it). It does not raise the local model's timestamp score; that is limited by the answer style, not the gate.
+
+## Scout for the ANSWER role only, left ON (2026-11-25)
+Same 32 rows (8 videos; detail, chapter, timestamp) with `AI_CLOUDFLARE_LLM_ENABLED=true`, `AI_CLOUDFLARE_LLM_MODEL=@cf/meta/llama-4-scout-17b-16e-instruct`, `AI_CLOUDFLARE_LLM_ROLES=ANSWER` on the deployed 6c87c259 build, so CONTEXT_SUFFICIENCY stays on the local model with the point-in-time rule (`.benchmarks/diverse-e2e-28-cfanswer.json`). 31 comparable rows (one unanswered):
+
+| | local e2b | Scout answer+sufficiency | Scout ANSWER only |
+|---|---|---|---|
+| mean factual | 0.512 | 0.407 | **0.600** |
+| judged correct (>= 0.7) | 12 | 11 | **15** |
+| at least half right | 18 | 14 | **21** |
+| detail (15) mean / correct | 0.614 / 9 | 0.723 / 10 | 0.728 / 10 |
+| chapter (8) mean / correct | 0.278 / 1 | 0.205 / 1 | 0.297 / 1 |
+| timestamp (8) mean / correct | 0.554 / 2 | 0.019 / 0 | **0.662 / 4** |
+
+The earlier Scout run failed on timestamps because the larger model's sufficiency verdict blocked them; with that role on the local model and the deterministic point-in-time rule, the larger answer model keeps its detail gain and answers timestamps better than the local one did. Chapter summaries are unchanged (still limited by chapter titles being metadata and the one-paragraph answer style). Free allowance was enough for this run (about 110 neurons per answer call); the account is now on Workers Paid. Left on in production with the local model as fallback on any Cloudflare failure. Env backup before the change: `env-before-cf-answer-only-20261125T054756Z`; rollback = remove the three `AI_CLOUDFLARE_LLM_*` lines, restore `env.sha256`, recreate ai-service.
+Sample is small (n=31); a wider run follows.

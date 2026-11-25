@@ -62,9 +62,30 @@ interface UserMemoryRawRecord {
 
 @Injectable()
 export class PrismaUserMemoryRepository implements IUserMemoryRepository {
+  /** The column type only changes with a migration, so a minute-old answer is safe to reuse. */
+  private static readonly dimensionsTtlMs = 60_000;
+  private dimensionsLookup?: { expiresAt: number; value: Promise<number> };
+
   constructor(private readonly prisma: PrismaService) {}
 
-  async getEmbeddingDimensions(): Promise<number> {
+  /** Every retrieval and write checks this; callers in one turn share a single catalog query. */
+  getEmbeddingDimensions(): Promise<number> {
+    const cached = this.dimensionsLookup;
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const value = this.readEmbeddingDimensions();
+    const lookup = {
+      expiresAt: Date.now() + PrismaUserMemoryRepository.dimensionsTtlMs,
+      value,
+    };
+    this.dimensionsLookup = lookup;
+    // A failed lookup is never remembered: the next call asks the database again.
+    value.catch(() => {
+      if (this.dimensionsLookup === lookup) this.dimensionsLookup = undefined;
+    });
+    return value;
+  }
+
+  private async readEmbeddingDimensions(): Promise<number> {
     const rows = await this.prisma.$queryRaw<Array<{ formattedType: string }>>`
       SELECT format_type(a.atttypid, a.atttypmod) AS "formattedType"
       FROM pg_attribute a

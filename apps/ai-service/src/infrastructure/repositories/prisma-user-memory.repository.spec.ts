@@ -68,6 +68,59 @@ describe('PrismaUserMemoryRepository', () => {
     await expect(repository.getEmbeddingDimensions()).resolves.toBe(1024);
   });
 
+  it('asks PostgreSQL for the vector dimension once per window and retries after a failure', async () => {
+    jest.useFakeTimers();
+    try {
+      const prisma = {
+        $queryRaw: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('connection reset'))
+          .mockResolvedValue([{ formattedType: 'vector(1024)' }]),
+      };
+      const repository = new PrismaUserMemoryRepository(prisma as never);
+
+      await expect(repository.getEmbeddingDimensions()).rejects.toThrow(
+        'connection reset',
+      );
+      // The failure was not remembered.
+      await expect(repository.getEmbeddingDimensions()).resolves.toBe(1024);
+      await expect(
+        Promise.all([
+          repository.getEmbeddingDimensions(),
+          repository.getEmbeddingDimensions(),
+        ]),
+      ).resolves.toEqual([1024, 1024]);
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+
+      // After the window the column is read again, so a migration is noticed without a restart.
+      jest.advanceTimersByTime(61_000);
+      await repository.getEmbeddingDimensions();
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('runs one dimension query for a similarity search instead of two', async () => {
+    const prisma = {
+      $queryRaw: jest
+        .fn()
+        .mockResolvedValueOnce([{ formattedType: 'vector(1024)' }])
+        .mockResolvedValueOnce([rawMemory]),
+    };
+    const repository = new PrismaUserMemoryRepository(prisma as never);
+
+    await repository.getEmbeddingDimensions();
+    await repository.findRelevantByUserId({
+      userId: 'user-1',
+      queryVector: Array.from({ length: 1024 }, () => 0.01),
+      limit: 5,
+    });
+
+    // One catalog read plus the similarity query.
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a mismatched query before executing similarity SQL', async () => {
     const prisma = {
       $queryRaw: jest

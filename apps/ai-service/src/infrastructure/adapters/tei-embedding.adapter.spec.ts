@@ -43,6 +43,76 @@ describe('TeiEmbeddingAdapter', () => {
     });
   });
 
+  describe('query memo', () => {
+    const vector = Array.from({ length: 1024 }, (_, index) =>
+      index === 0 ? 1 : 0,
+    );
+    const adapter = () =>
+      new TeiEmbeddingAdapter(
+        new ConfigService({
+          TEI_EMBEDDING_BASE_URL: 'http://rag-embedding:80',
+          AI_EMBEDDING_DIMENSIONS: '1024',
+          AI_EMBEDDING_OVERLOAD_RETRIES: '0',
+          AI_EMBEDDING_TIMEOUT_RETRIES: '0',
+        }),
+      );
+    const ok = () =>
+      Promise.resolve(new Response(JSON.stringify([vector]), { status: 200 }));
+
+    it('embeds the same question once when two steps ask at the same time', async () => {
+      const fetchMock = jest.spyOn(global, 'fetch').mockImplementation(ok);
+      const tei = adapter();
+
+      const [first, second] = await Promise.all([
+        tei.generateVector({
+          text: 'do you remember pasta?',
+          taskType: 'RETRIEVAL_QUERY',
+        }),
+        tei.generateVector({
+          text: ' do you remember pasta? ',
+          taskType: 'RETRIEVAL_QUERY',
+        }),
+      ]);
+      const later = await tei.generateVector({
+        text: 'do you remember pasta?',
+        taskType: 'RETRIEVAL_QUERY',
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(later.values).toEqual(vector);
+      // Each caller owns its array.
+      first.values[0] = 99;
+      expect(second.values[0]).toBe(1);
+    });
+
+    it('does not memoize documents or a failed call', async () => {
+      const fetchMock = jest
+        .spyOn(global, 'fetch')
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockImplementation(ok);
+      const tei = adapter();
+
+      await expect(
+        tei.generateVector({ text: 'question', taskType: 'RETRIEVAL_QUERY' }),
+      ).rejects.toThrow('network down');
+      await tei.generateVector({
+        text: 'question',
+        taskType: 'RETRIEVAL_QUERY',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await tei.generateVector({
+        text: 'chunk',
+        taskType: 'RETRIEVAL_DOCUMENT',
+      });
+      await tei.generateVector({
+        text: 'chunk',
+        taskType: 'RETRIEVAL_DOCUMENT',
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+  });
+
   it('fails closed on an incompatible vector dimension', async () => {
     jest.spyOn(global, 'fetch').mockResolvedValue(
       new Response(JSON.stringify([Array.from({ length: 384 }, () => 1)]), {

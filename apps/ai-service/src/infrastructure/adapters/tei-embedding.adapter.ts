@@ -6,11 +6,48 @@ import type {
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+/** A question is embedded by several steps of one turn; later steps reuse the first answer. */
+const QUERY_MEMO_TTL_MS = 60_000;
+const QUERY_MEMO_MAX_ENTRIES = 200;
+
 @Injectable()
 export class TeiEmbeddingAdapter implements IEmbeddingService {
+  /** Only RETRIEVAL_QUERY texts: documents and chunks are embedded once and would only fill it. */
+  private readonly queryMemo = new Map<
+    string,
+    { expiresAt: number; result: Promise<GenerateEmbeddingResult> }
+  >();
+
   constructor(private readonly config: ConfigService) {}
 
   async generateVector(
+    input: GenerateEmbeddingRequest,
+  ): Promise<GenerateEmbeddingResult> {
+    if (input.taskType !== 'RETRIEVAL_QUERY') return this.embed(input);
+    const key = input.text.trim();
+    const now = Date.now();
+    let entry = this.queryMemo.get(key);
+    if (!entry || entry.expiresAt <= now) {
+      const result = this.embed(input);
+      entry = { expiresAt: now + QUERY_MEMO_TTL_MS, result };
+      const created = entry;
+      this.queryMemo.delete(key);
+      this.queryMemo.set(key, created);
+      // A failed call is never remembered, so the next caller tries the service again.
+      result.catch(() => {
+        if (this.queryMemo.get(key) === created) this.queryMemo.delete(key);
+      });
+      while (this.queryMemo.size > QUERY_MEMO_MAX_ENTRIES) {
+        const oldest = this.queryMemo.keys().next().value as string;
+        this.queryMemo.delete(oldest);
+      }
+    }
+    const shared = await entry.result;
+    // Callers get their own array, so one cannot change what another reads.
+    return { ...shared, values: [...shared.values] };
+  }
+
+  private async embed(
     input: GenerateEmbeddingRequest,
   ): Promise<GenerateEmbeddingResult> {
     const text = input.text.trim();

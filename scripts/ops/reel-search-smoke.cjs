@@ -63,7 +63,9 @@ async function main() {
           with_vector: false,
         },
       );
-      sampled.push(...page.points.map((p) => ({ id: p.id, reelId: p.payload.reelId })));
+      sampled.push(
+        ...page.points.map((p) => ({ id: p.id, reelId: p.payload.reelId })),
+      );
       offset = page.next_page_offset ?? undefined;
     } while (offset !== undefined && offset !== null);
     const reels = [...new Set(sampled.map((p) => p.reelId))];
@@ -96,7 +98,13 @@ async function main() {
       } catch (caught) {
         error = caught instanceof Error ? caught.message : 'unknown';
       }
-      results.push({ ms: Date.now() - started, ok, hits, scopeReels: scope.length, error });
+      results.push({
+        ms: Date.now() - started,
+        ok,
+        hits,
+        scopeReels: scope.length,
+        error,
+      });
     }
     const times = results.map((r) => r.ms).sort((a, b) => a - b);
     process.stdout.write(
@@ -127,7 +135,10 @@ main().catch((error) => {
   console.error(
     JSON.stringify({
       error: 'Search smoke failed',
-      detail: error instanceof Error ? error.message.replace(/\S+:\/\/\S+/g, '[url]') : 'unknown',
+      detail:
+        error instanceof Error
+          ? error.message.replace(/\S+:\/\/\S+/g, '[url]')
+          : 'unknown',
     }),
   );
   process.exitCode = 1;

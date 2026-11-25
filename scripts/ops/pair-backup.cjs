@@ -214,7 +214,8 @@ async function quiesce(prisma, recentMinutes) {
     publicationsInFlight: publishing.n,
     recentProcessingAttempts: recent.n,
   };
-  result.quiet = !result.pendingProjectionTasks &&
+  result.quiet =
+    !result.pendingProjectionTasks &&
     !result.publicationsInFlight &&
     !result.recentProcessingAttempts;
   return result;
@@ -286,7 +287,9 @@ async function proof(prisma, args) {
     throw new Error('Dump file is missing or empty');
   const now = await facts(prisma);
   if (now.projectionFingerprint !== start.projectionFingerprint)
-    throw new Error('Pair fence changed: SQL projections moved during the dump');
+    throw new Error(
+      'Pair fence changed: SQL projections moved during the dump',
+    );
   const dumpSha256 = await fileSha256(dumpFile);
   const value = {
     version: 1,

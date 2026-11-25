@@ -106,7 +106,10 @@ test('pair proof binds the Qdrant snapshot to time, LSN, content hash and live S
   assert.equal(bound.lsn, '0/1A2B3C4D');
   assert.equal(bound.dumpSha256, 'a'.repeat(64));
   // Legacy proofs stay accepted unless a pair is required.
-  assert.equal(await pairBinding(prismaWith(rows), { snapshot: {} }, {}), undefined);
+  assert.equal(
+    await pairBinding(prismaWith(rows), { snapshot: {} }, {}),
+    undefined,
+  );
   await assert.rejects(
     pairBinding(prismaWith(rows), { snapshot: {} }, { 'require-pair': 'true' }),
     /paired SQL backup proof is required/,
@@ -136,7 +139,11 @@ const parityFixture = (overrides = {}) => {
   const rows = [row('ok', 1), row('missing', 1), row('drift', 1)];
   const prisma = {
     vectorCollectionState: {
-      findUnique: async () => ({ maintenance: false, fingerprint: 'f', epoch: 'e' }),
+      findUnique: async () => ({
+        maintenance: false,
+        fingerprint: 'f',
+        epoch: 'e',
+      }),
     },
     vectorProjection: { findMany: async () => rows },
     vectorProjectionTask: { count: async () => 0 },
@@ -146,8 +153,7 @@ const parityFixture = (overrides = {}) => {
     loadCandidatePoints: async (reelId) => {
       if (reelId === 'missing')
         throw new Error('Qdrant candidate point set is incomplete');
-      if (reelId === 'drift')
-        return { hash: 'other', points: [1, 2] };
+      if (reelId === 'drift') return { hash: 'other', points: [1, 2] };
       return { hash: `hash-ok-1`, points: [1, 2] };
     },
   };
@@ -172,7 +178,10 @@ test('parity stops at the first error by default and lists every mismatch in lis
     points_missing: 1,
     manifest_mismatch: 1,
   });
-  assert.deepEqual(all.failures.map((f) => f.reelId).sort(), ['drift', 'missing']);
+  assert.deepEqual(all.failures.map((f) => f.reelId).sort(), [
+    'drift',
+    'missing',
+  ]);
   assert.equal(all.manifestsVerified, 1);
   assert.equal(all.expectedPoints, 6);
   assert.equal(all.verifiedPoints, 2);
@@ -184,7 +193,9 @@ test('parity stops at the first error by default and lists every mismatch in lis
 test('list-all parity treats orphan points as informational for recordsConsistent', async () => {
   const { prisma, projection, store } = parityFixture();
   prisma.vectorProjection.findMany = async () => [row('ok', 1)];
-  const result = await verifyParity(prisma, projection, store, { listAll: true });
+  const result = await verifyParity(prisma, projection, store, {
+    listAll: true,
+  });
   assert.equal(result.complete, false);
   assert.equal(result.unaccountedQdrantPoints, 2);
   assert.equal(result.recordsConsistent, true);
@@ -194,13 +205,20 @@ test('list-all parity reports an unready record instead of throwing', async () =
   const unready = row('late', 1, { readyAt: null });
   const { prisma, projection, store } = parityFixture();
   prisma.vectorProjection.findMany = async () => [unready];
-  const result = await verifyParity(prisma, projection, store, { listAll: true });
+  const result = await verifyParity(prisma, projection, store, {
+    listAll: true,
+  });
   assert.equal(result.failures[0].reason, 'not_ready');
   assert.equal(result.complete, false);
 });
 
 test('stale-ready detector lists ready records whose points are missing and never writes', async () => {
-  const rows = [row('good', 1), row('lost', 1), row('short', 1), row('pending', 1, { readyAt: null })];
+  const rows = [
+    row('good', 1),
+    row('lost', 1),
+    row('short', 1),
+    row('pending', 1, { readyAt: null }),
+  ];
   const writes = [];
   const present = new Set([
     ...idsFor(rows[0]),
@@ -252,7 +270,12 @@ test('orphan report classifies points no current ready record accounts for', asy
   };
   const point = (id, reelId, attempt, generation, manifestHash) => ({
     id,
-    payload: { reelId, indexAttemptId: attempt, projectionGeneration: generation, manifestHash },
+    payload: {
+      reelId,
+      indexAttemptId: attempt,
+      projectionGeneration: generation,
+      manifestHash,
+    },
   });
   const pages = [
     {
@@ -294,7 +317,10 @@ test('orphan report classifies points no current ready record accounts for', asy
     unreferenced_generation: 1,
   });
   assert.equal(report.tupleCountMismatchTotal, 0);
-  assert.deepEqual(calls.map((c) => c[0]), ['POST', 'POST']);
+  assert.deepEqual(
+    calls.map((c) => c[0]),
+    ['POST', 'POST'],
+  );
   assert.equal(calls[1][2], 'next');
   // A current tuple missing a point shows up as a count mismatch too.
   call = 0;

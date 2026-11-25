@@ -1,0 +1,39 @@
+name: reel-indexing-standby
+# Hot standby of the Reel Indexing PostgreSQL for "homelab 2" (WSL2, 5 GB). NOT APPLIED:
+# no credential for that machine was available when this was written. Runbook:
+# infra/qdrant/DURABILITY.md. Same pgvector pg18 digest as production (a plain postgres image
+# cannot load the installed `vector` extension). Failover is manual (pg_promote()).
+services:
+  reel-indexing-standby:
+    image: pgvector/pgvector:pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    container_name: reel-indexing-standby
+    restart: unless-stopped
+    # Keep room for the Mongo shard and the other standby already on this machine.
+    cpus: '1.0'
+    mem_limit: 768m
+    environment:
+      PGDATA: /var/lib/postgresql/data
+    # max_connections must be at least the primary's (100). Replay may wait up to 15 minutes
+    # for a running dump instead of cancelling it.
+    command:
+      - postgres
+      - -c
+      - hot_standby=on
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - max_standby_streaming_delay=900s
+    ports:
+      - '100.104.227.44:5433:5432'
+    volumes:
+      - reel_indexing_standby_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U reel_indexing_admin -d reel_indexing']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+volumes:
+  reel_indexing_standby_data:

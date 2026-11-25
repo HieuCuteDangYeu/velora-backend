@@ -13,11 +13,13 @@ async function main() {
   if (process.env.PAIR_DRILL_DISPOSABLE !== 'yes')
     throw new Error('Refusing: not a disposable drill environment');
   const store = new QdrantReelVectorStoreAdapter(new ConfigService());
-  const count = (await store.request(
-    `/collections/${store.collection}/points/count`,
-    'POST',
-    { exact: true },
-  )).count;
+  const count = (
+    await store.request(
+      `/collections/${store.collection}/points/count`,
+      'POST',
+      { exact: true },
+    )
+  ).count;
   const page = await store.request(
     `/collections/${store.collection}/points/scroll`,
     'POST',
@@ -34,11 +36,13 @@ async function main() {
     'POST',
     { points: ids },
   );
-  const after = (await store.request(
-    `/collections/${store.collection}/points/count`,
-    'POST',
-    { exact: true },
-  )).count;
+  const after = (
+    await store.request(
+      `/collections/${store.collection}/points/count`,
+      'POST',
+      { exact: true },
+    )
+  ).count;
   console.log(JSON.stringify({ removed: ids.length, before: count, after }));
 }
 main().catch((error) => {

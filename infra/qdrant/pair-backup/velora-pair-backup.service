@@ -1,0 +1,10 @@
+[Unit]
+Description=Velora paired Reel Indexing PostgreSQL + Qdrant backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/velora/pair-backup/repo/scripts/ops/pair-backup.sh /opt/velora/pair-backup/pair-backup.env
+Nice=10
+TimeoutStartSec=1h

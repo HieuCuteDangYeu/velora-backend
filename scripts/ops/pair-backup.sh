@@ -4,20 +4,23 @@
 # snapshot under one pair ID, resumes writers, encrypts and copies both off-host, verifies
 # readback. Runbook: infra/qdrant/PAIR-BACKUP.md. Works on macOS bash 3.2 and Linux.
 #
-#   pair-backup.sh <config-file> [--dry-run] [--no-pause]
+#   pair-backup.sh <config-file> [--dry-run] [--pause-writers]
 #   pair-backup.sh <config-file> --ops <script.cjs> [args...]   (run one operator CLI)
 #
 # --dry-run   only check that writers are quiet and print the SQL facts; nothing is written
 #             off-host and no writer is touched.
-# --no-pause  skip the drain; the projection fingerprint fence (before dump, after dump,
-#             after snapshot) still rejects a pair that moved while it was taken.
+# default     no pause. Writers must be quiet at the start and the projection fingerprint fence
+#             (before dump, after dump, after snapshot) rejects a pair that moved meanwhile.
+# --pause-writers  signal both indexers first. Measured 2026-11-25: SIGUSR2 also triggers Nest's
+#             shutdown hook, so the whole process exits, query RPC (semantic search) included,
+#             and the container did not restart on its own. Search is down until resume.
 set -euo pipefail
 umask 077
 
-CONFIG="${1:?usage: pair-backup.sh <config-file> [--dry-run] [--no-pause]}"
+CONFIG="${1:?usage: pair-backup.sh <config-file> [--dry-run] [--pause-writers]}"
 shift || true
 DRY_RUN=false
-PAUSE=true
+PAUSE=false
 OPS_ONLY=false
 if [ "${1:-}" = "--ops" ]; then
   OPS_ONLY=true
@@ -26,7 +29,7 @@ else
   for flag in "$@"; do
     case "$flag" in
       --dry-run) DRY_RUN=true ;;
-      --no-pause) PAUSE=false ;;
+      --pause-writers) PAUSE=true ;;
       *) echo "unknown option: $flag" >&2; exit 64 ;;
     esac
   done
@@ -89,16 +92,25 @@ ops() {
   return "$rc"
 }
 
+# PID 1 in the indexer image is `sh -c "prisma migrate deploy && node ..."`, which swallows
+# `docker kill -s USR2`; the signal must reach the node process itself.
+signal_node() {
+  docker exec "$1" sh -c 'n=0; for d in /proc/[0-9]*; do
+      c=$(tr "\0" " " <"$d/cmdline" 2>/dev/null)
+      case "$c" in "node dist/apps/reel-indexing-service/main.js"*) kill -USR2 "${d#/proc/}" && n=$((n + 1)) ;; esac
+    done; [ "$n" -eq 1 ]' </dev/null
+}
 drain_writers() {
   local c start settled
   for c in $INDEXER_CONTAINERS; do
     start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    docker kill -s USR2 "$c" >/dev/null
+    signal_node "$c" || { log "could not signal the node process in $c"; return 1; }
     DRAINED=true
     settled=false
     local deadline=$(( $(now_s) + DRAIN_TIMEOUT ))
     while [ "$(now_s)" -lt "$deadline" ]; do
-      if docker logs --since "$start" "$c" 2>&1 | grep -q '"event":"index_job_drain","settled":true'; then settled=true; break; fi
+      if docker logs --since "$start" "$c" 2>&1 | grep -q '"event":"index_job_drain","settled":true' \
+        || [ "$(docker inspect -f '{{.State.Running}}' "$c")" = false ]; then settled=true; break; fi
       sleep 2
     done
     [ "$settled" = true ] || { log "drain of $c did not settle in ${DRAIN_TIMEOUT}s"; return 1; }
@@ -109,7 +121,10 @@ drain_writers() {
 # container also serves query RPC, so searches see a short gap while it restarts.
 resume_writers() {
   local c
-  for c in $INDEXER_CONTAINERS; do docker restart "$c" >/dev/null; log "restarted $c"; done
+  for c in $INDEXER_CONTAINERS; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$c")" = true ]; then docker restart "$c" >/dev/null; else docker start "$c" >/dev/null; fi
+    log "resumed $c"
+  done
   RESUMED=true
 }
 
@@ -121,7 +136,7 @@ fi
 
 PAIR_DIR=""
 STARTED_S="$(now_s)"
-log "pair backup starting (dry-run=$DRY_RUN pause=$PAUSE)"
+log "pair backup starting (dry-run=$DRY_RUN pause-writers=$PAUSE)"
 
 if [ "$DRY_RUN" = true ]; then
   ops /usr/src/app/scripts/ops/pair-backup.cjs quiesce --dir="/work" || { log "writers are not quiet"; exit 2; }

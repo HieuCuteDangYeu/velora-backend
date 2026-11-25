@@ -343,10 +343,28 @@ def phase_latency():
     netem("tc qdisc del dev eth0 root 2>/dev/null")
 
 
+def phase_topology():
+    """Permanent loss of the peer that leads the shard: what an operator can still do."""
+    b = peer_id("b")
+    sh("docker", "kill", "rh-b")
+    time.sleep(3)
+    write_test("a", "B dead, before any topology change", 70000)
+    status, body, ms = q("a", "DELETE", "/cluster/peer/%s" % b, timeout=25)
+    result("remove-dead-peer-without-force", status=status, body=body, ms=ms)
+    status, body, ms = q("a", "DELETE", "/cluster/peer/%s?force=true" % b, timeout=25)
+    result("remove-dead-peer-with-force", status=status, body=body, ms=ms)
+    time.sleep(5)
+    write_test("a", "after forced removal of B", 71000)
+    probes("a", "after forced removal of B")
+    status, body, ms = q("a", "POST", "/collections/aliases", {"actions": [{"create_alias": {"collection_name": COLLECTION, "alias_name": "rh_alias_after_force"}}]}, timeout=25)
+    result("consensus-op-after-force", status=status, body=body, ms=ms)
+    result("peers-after-force", cluster=cluster("a"), shards=shard_state("a"))
+
+
 def main():
     setup()
     table = {"single": phase_single, "cluster": phase_cluster, "replicate": phase_replicate,
-             "kill-b": lambda: phase_kill("b"), "kill-a": lambda: phase_kill("a"), "latency": phase_latency}
+             "kill-b": lambda: phase_kill("b"), "kill-a": lambda: phase_kill("a"), "latency": phase_latency, "topology": phase_topology}
     for phase in PHASES:
         result("phase", phase=phase)
         table[phase]()

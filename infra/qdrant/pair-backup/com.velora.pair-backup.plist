@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- NOT INSTALLED. The homelab runs launchd (like com.velora.visual-reindex). Install only after
+     the restore drill in infra/qdrant/DURABILITY.md has passed on the production host:
+       cp com.velora.pair-backup.plist ~/Library/LaunchAgents/
+       launchctl load ~/Library/LaunchAgents/com.velora.pair-backup.plist
+     Remove with `launchctl unload`. Runs do not pause writers (add --pause-writers only
+     knowing it stops the search RPC; see DURABILITY.md). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.velora.pair-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/quan/velora-operations/pair-backup/repo/scripts/ops/pair-backup.sh</string>
+    <string>/Users/quan/velora-operations/pair-backup/pair-backup.env</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>40</integer></dict>
+  <key>StandardOutPath</key><string>/Users/quan/.local/state/velora/pair-backup.log</string>
+  <key>StandardErrorPath</key><string>/Users/quan/.local/state/velora/pair-backup.log</string>
+</dict>
+</plist>

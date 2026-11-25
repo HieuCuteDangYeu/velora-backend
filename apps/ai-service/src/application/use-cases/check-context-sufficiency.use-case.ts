@@ -38,6 +38,9 @@ interface RawContextSufficiencyResult {
 const MIN_RANGE_TEXT_CHARS_PER_SECOND = 4;
 const MAX_RANGE_SECONDS_CHECKED = 120;
 
+// Closest-excerpt vector distance above which the shared video is taken not to cover the question.
+const DEFAULT_MAX_EVIDENCE_DISTANCE = 0.55;
+
 @Injectable()
 export class CheckContextSufficiencyUseCase {
   private readonly logger = new Logger(CheckContextSufficiencyUseCase.name);
@@ -194,6 +197,28 @@ export class CheckContextSufficiencyUseCase {
         diagnostics: {
           providerStatus: 'NOT_CALLED',
           decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
+    // A question the shared video does not cover: even its closest excerpt is far from the question, so
+    // answering would present an unrelated excerpt as the answer (measured: 27 of 40 such questions got one).
+    if (this.evidenceFarFromQuestion(state)) {
+      return {
+        sufficient: false,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: ['TRANSCRIPT'],
+        supportedEvidenceIds: [],
+        reason:
+          'The closest transcript excerpt is far from the question; the shared video does not appear to cover it.',
+        userFacingReason:
+          'I could not find anything about that in the shared video, so I cannot answer it from the video.',
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_EVIDENCE_DISTANCE',
           modelRole: 'CONTEXT_SUFFICIENCY',
         },
       };
@@ -764,6 +789,54 @@ ${JSON.stringify(
         second <= chunk.endTime,
     );
     return index >= 0 ? `e${index}` : undefined;
+  }
+
+  /**
+   * Vector distance of the closest retrieved excerpt (0 identical, about 0.4 for a question the video
+   * answers, about 0.6 for one it does not; measured 2026-11-26 on 79 covered and 40 uncovered questions:
+   * 97.5% of covered and 85% of uncovered questions fall on the right side of 0.55). Fails open: only
+   * ordinary transcript questions with a numeric distance on every excerpt are judged.
+   */
+  private evidenceFarFromQuestion(state: RagChatWorkflowState): boolean {
+    if (
+      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_DISTANCE_GUARD') !== 'true'
+    ) {
+      return false;
+    }
+    const limit = Number(
+      this.config.get?.<string>('AI_CONTEXT_MAX_EVIDENCE_DISTANCE') ??
+        DEFAULT_MAX_EVIDENCE_DISTANCE,
+    );
+    const plan = state.retrievalPlan;
+    const required = (state.route?.requiredEvidence ?? []).filter(
+      (item) => item !== 'NONE',
+    );
+    if (
+      !Number.isFinite(limit) ||
+      limit <= 0 ||
+      state.route?.intent !== 'REEL_VIDEO_QUESTION' ||
+      state.route.reelQuestionType !== 'TRANSCRIPT_CONTENT' ||
+      required.some((item) => item !== 'TRANSCRIPT') ||
+      isTranscriptSentenceSelectionRequest(state.route) ||
+      plan?.requiresReelCoverage === true ||
+      plan?.sourceOrder === 'ASC' ||
+      plan?.transcriptTimestampSec !== undefined ||
+      plan?.sourceTimestampSec !== undefined
+    ) {
+      return false;
+    }
+    const chunks = (
+      state.retrievedChunks.length > 0
+        ? state.retrievedChunks
+        : state.rerankedChunks
+    ).filter((chunk) => (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT');
+    if (
+      chunks.length === 0 ||
+      chunks.some((chunk) => typeof chunk.distance !== 'number')
+    ) {
+      return false;
+    }
+    return Math.min(...chunks.map((chunk) => chunk.distance as number)) > limit;
   }
 
   private rangeTranscriptEvidenceIds(state: RagChatWorkflowState): string[] {

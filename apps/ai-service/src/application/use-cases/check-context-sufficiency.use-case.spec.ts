@@ -205,6 +205,131 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  describe('a question the shared video does not cover (evidence distance guard)', () => {
+    const modelAnswer = {
+      sufficient: true,
+      confidence: 0.9,
+      availableEvidence: ['TRANSCRIPT'],
+      missingEvidence: [],
+      supportedEvidenceIds: ['e0'],
+      reason: 'ok',
+      recommendedAction: 'ANSWER',
+    };
+    const run = async (
+      distances: Array<number | null>,
+      flags: Record<string, string> = {
+        AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true',
+      },
+      overrides: Record<string, unknown> = {},
+    ) => {
+      const service = {
+        generateObject: jest.fn().mockResolvedValue(modelAnswer),
+      };
+      const guardConfig = {
+        ...config,
+        get: jest.fn((key: string) => flags[key]),
+      } as unknown as IAiApplicationConfig;
+      const useCase = new CheckContextSufficiencyUseCase(
+        service as never,
+        guardConfig,
+      );
+      const chunks = distances.map((distance, i) => ({
+        chunkId: `c${i}`,
+        reelId: 'reel-1',
+        evidenceType: 'TRANSCRIPT',
+        startTime: i * 10,
+        endTime: i * 10 + 8,
+        distance,
+        evidenceText: `Excerpt ${i} of the transcript.`,
+        chunkText: `Excerpt ${i} of the transcript.`,
+        tags: [],
+      }));
+      const state = {
+        userMessage: 'In this video, what does the speaker say about licences?',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: 'NONE',
+          needsRetrieval: true,
+          requiredEvidence: ['TRANSCRIPT'],
+          ...((overrides.route as object) ?? {}),
+        },
+        retrievalPlan: {
+          requiresReelCoverage: false,
+          ...((overrides.plan as object) ?? {}),
+        },
+        retrievedChunks: chunks,
+        rerankedChunks: chunks,
+      } as unknown as RagChatWorkflowState;
+      return { service, result: await useCase.execute(state) };
+    };
+
+    it('refuses without a model call when even the closest excerpt is far from the question', async () => {
+      const { service, result } = await run([0.62, 0.7, 0.58]);
+      expect(result).toMatchObject({
+        sufficient: false,
+        recommendedAction: 'REFUSE_NO_CONTEXT',
+        userFacingReason: expect.stringContaining('could not find'),
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_EVIDENCE_DISTANCE',
+        },
+      });
+      expect(service.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('leaves the model in charge when any excerpt is close to the question', async () => {
+      const { service } = await run([0.62, 0.41]);
+      expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    it('does nothing unless switched on', async () => {
+      const { service } = await run([0.7, 0.8], {});
+      expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    it('honours a configured limit', async () => {
+      const { service } = await run([0.62], {
+        AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true',
+        AI_CONTEXT_MAX_EVIDENCE_DISTANCE: '0.7',
+      });
+      expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    it('fails open when an excerpt has no distance (a chronological read)', async () => {
+      const { service } = await run([0.7, null]);
+      expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a named time window', { plan: { transcriptTimestampSec: 100 } }],
+      ['chronological order', { plan: { sourceOrder: 'ASC' } }],
+      ['a multi-reel comparison', { plan: { requiresReelCoverage: true } }],
+      [
+        'a visual question',
+        {
+          route: {
+            reelQuestionType: 'VISUAL_CONTENT',
+            requiredEvidence: ['VISUAL'],
+          },
+        },
+      ],
+      [
+        'a first-sentence request',
+        { route: { transcriptRequestKind: 'FIRST_COMPLETE_UTTERANCE' } },
+      ],
+    ] as const)('does not judge %s by distance', async (_name, overrides) => {
+      const { result } = await run(
+        [0.7, 0.8],
+        { AI_CONTEXT_EVIDENCE_DISTANCE_GUARD: 'true' },
+        overrides,
+      );
+      expect(result.diagnostics?.decisionSource).not.toBe(
+        'DETERMINISTIC_EVIDENCE_DISTANCE',
+      );
+    });
+  });
+
   describe('a summary of a named time range', () => {
     const run = async (
       chunks: Array<[number, number]>,

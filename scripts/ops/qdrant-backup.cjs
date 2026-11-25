@@ -9,7 +9,12 @@ const {
 const {
   PrismaVectorProjectionRepository,
 } = require('../../apps/reel-indexing-service/src/infrastructure/repositories/prisma-vector-projection.repository');
-const { argumentsFor, targetFingerprint } = require('./reel-qdrant.cjs');
+const {
+  argumentsFor,
+  currentProjections,
+  projectionSignature,
+  targetFingerprint,
+} = require('./reel-qdrant.cjs');
 const {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -186,6 +191,38 @@ async function publishOffhostR2(client, bucket, prefix, name, bytes) {
     await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: old }));
   return { key, encryptedSha256: digest(readback) };
 }
+const HEX64 = /^[a-f0-9]{64}$/;
+// A paired SQL proof ties the Qdrant snapshot to one PostgreSQL dump: same instant (fresh),
+// same content (dump hash + projection fingerprint) and a recorded WAL position.
+async function pairBinding(prisma, sqlProof, args) {
+  if (!sqlProof.pairId) {
+    if (args['require-pair'] === 'true')
+      throw new Error('A paired SQL backup proof is required');
+    return undefined;
+  }
+  const maxAge = Number(args['max-pair-age-seconds'] || 900);
+  const age = Date.now() - Date.parse(sqlProof.at);
+  if (
+    !/^[a-f0-9-]{36}$/.test(sqlProof.pairId) ||
+    !/^[0-9A-F]+\/[0-9A-F]+$/.test(sqlProof.lsn ?? '') ||
+    !HEX64.test(sqlProof.dumpSha256 ?? '') ||
+    !HEX64.test(sqlProof.projectionFingerprint ?? '') ||
+    !Number.isFinite(maxAge) ||
+    !(age >= 0 && age <= maxAge * 1000)
+  )
+    throw new Error('SQL backup pair proof is malformed or not fresh');
+  const live = projectionSignature(await currentProjections(prisma));
+  if (live !== sqlProof.projectionFingerprint)
+    throw new Error('Pair fence changed: SQL projections moved since the dump');
+  return {
+    pairId: sqlProof.pairId,
+    at: sqlProof.at,
+    lsn: sqlProof.lsn,
+    dumpSha256: sqlProof.dumpSha256,
+    projectionFingerprint: sqlProof.projectionFingerprint,
+    tableCounts: sqlProof.tableCounts,
+  };
+}
 async function backup(prisma, projection, store, args, password) {
   const remotePrefix = args['offhost-r-prefix']
     ? backupPrefix(args['offhost-r-prefix'])
@@ -236,6 +273,7 @@ async function backup(prisma, projection, store, args, password) {
       targetFingerprint(process.env.REEL_INDEXING_DATABASE_URL)
   )
     throw new Error('SQL backup provenance does not match');
+  const pair = await pairBinding(prisma, sqlProof, args);
   const identity = await store.identity();
   const existingSnapshots = await store.request(
     `/collections/${store.collection}/snapshots`,
@@ -250,6 +288,24 @@ async function backup(prisma, projection, store, args, password) {
     'POST',
   );
   const bytes = await download(store, snapshot.name);
+  if (pair) {
+    // Re-check the fence after the snapshot: writers must not have moved SQL meanwhile.
+    try {
+      await pairBinding(prisma, sqlProof, args);
+    } catch (error) {
+      await store.request(
+        `/collections/${store.collection}/snapshots/${encodeURIComponent(snapshot.name)}?wait=true`,
+        'DELETE',
+      );
+      throw error;
+    }
+    if (args['snapshot-taken-marker'])
+      await fs.writeFile(
+        args['snapshot-taken-marker'],
+        JSON.stringify({ pairId: pair.pairId, at: new Date().toISOString() }),
+        { flag: 'wx', mode: 0o600 },
+      );
+  }
   const pointCount = await store.request(
     '/collections/' + store.collection + '/points/count',
     'POST',
@@ -271,6 +327,7 @@ async function backup(prisma, projection, store, args, password) {
     ),
     sqlBackupProofHash: digest(sqlProofBytes),
     sqlSnapshot: sqlProof.snapshot,
+    pair,
     projectionWatermarks: await prisma.vectorCollectionState.findMany(),
     pendingProjectionTasks: await prisma.vectorProjectionTask.count({
       where: { completedAt: null },
@@ -317,6 +374,7 @@ async function backup(prisma, projection, store, args, password) {
   );
   return {
     name,
+    pointCount: pointCount.count,
     encryptedSha256: digest(encrypted),
     offhostLocation: offhostResult.key,
     offhostVerified: !localTest,
@@ -416,6 +474,7 @@ async function verifyRestore(args, password) {
     )
       throw new Error('Restored collection sample validation failed');
     return {
+      pair: archive.manifest.pair ?? null,
       restoredCollection: collection,
       restoredPointCount: count.count,
       sampledPoints: sample.points.length,
@@ -487,6 +546,7 @@ module.exports = {
   verifyRestore,
   rotate,
   publishOffhostR2,
+  pairBinding,
 };
 if (require.main === module)
   main().catch((error) => {

@@ -263,6 +263,8 @@ integration(
         ),
         recordNotificationOutbox: jest.fn(),
         setNotificationOutboxPending: jest.fn(),
+        // Quiet fleet: the worker drains at full concurrency.
+        messagesCreatedPerSecond: jest.fn(() => 0),
       };
       const worker = () =>
         new MessageNotificationOutboxWorker(

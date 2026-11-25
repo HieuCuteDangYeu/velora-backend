@@ -590,3 +590,16 @@ Measured on the deployed build, same 26 rows (`.benchmarks/diverse-e2e-31-chapte
 Remaining weakness is long ranges: one read returns at most 20 chunks (about 160 s of speech), so a 7-12 minute range is summarised from part of it, and two rows ended in "I found relevant shared Reel evidence, but could not verify a reliable answer" (the verification budget ran out). "Between X and Y" wording is not recognised as a range yet. Two rows fell by more than 0.25 (one is a 39 s range at 0.9 -> 0.6, within judge noise).
 
 Same trace showed Scout's ANSWER output failing local schema validation (`claims[0].evidenceIds`, minItems) twice and falling back to the local model, about 21 s lost per such turn.
+
+### Scout retry that says why the reply was rejected (828ba233, 2026-11-25)
+Before: of 38 Scout ANSWER calls in 3 h, 9 had an error (invalid JSON, `evidenceIds` min/maxItems, one timeout) and 5 fell back to the local model (about 20 s each). The retry resent the identical request. Now the second attempt carries the validation reason (gateway errors still retry unchanged). Same 32 rows on the deployed build (`.benchmarks/diverse-e2e-32-retryfix.json`, against `-28-cfanswer`):
+
+| | before | after |
+|---|---|---|
+| Scout calls with an error | 9 of 38 (24%) | 3 of 27 (11%) |
+| fell back to the local model | 5 of 38 (13%) | 1 of 27 (4%) |
+| mean factual (31 comparable) | 0.600 | 0.607 |
+| judged correct | 15 | 14 |
+| median / p90 turn | 38 s / 60 s | 41 s / 59 s |
+
+Reading it: fewer failed calls and fewer fallbacks, but the samples are small (27-38 calls) and answer quality and median turn time did not move; a turn is about 40 s and the Scout answer call is only part of it (local router about 6 s, local sufficiency about 4 s when the rules do not decide it, answer 8-13 s, citations, verification up to its budget). Turn latency, not Scout reliability, is now the larger user-visible cost.

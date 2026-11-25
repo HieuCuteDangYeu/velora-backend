@@ -33,6 +33,11 @@ interface RawContextSufficiencyResult {
   recommendedAction?: unknown;
 }
 
+// Conservative share of normal speech density (about 12-15 characters a second), and the longest
+// interval the density check asks for.
+const MIN_RANGE_TEXT_CHARS_PER_SECOND = 4;
+const MAX_RANGE_SECONDS_CHECKED = 120;
+
 @Injectable()
 export class CheckContextSufficiencyUseCase {
   private readonly logger = new Logger(CheckContextSufficiencyUseCase.name);
@@ -185,6 +190,25 @@ export class CheckContextSufficiencyUseCase {
         supportedEvidenceIds: [exactTranscriptRangeEvidenceId],
         reason:
           'An indexed transcript source exactly begins at the requested range and covers its full interval.',
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+          modelRole: 'CONTEXT_SUFFICIENCY',
+        },
+      };
+    }
+
+    // "Summarize what is said from 2:11 to 3:22": the excerpts that overlap the interval are its evidence.
+    const rangeTranscriptEvidenceIds = this.rangeTranscriptEvidenceIds(state);
+    if (rangeTranscriptEvidenceIds.length > 0) {
+      return {
+        sufficient: true,
+        confidence: 1,
+        availableEvidence,
+        missingEvidence: [],
+        supportedEvidenceIds: rangeTranscriptEvidenceIds,
+        reason: 'Indexed transcript excerpts cover the requested interval.',
         recommendedAction: 'ANSWER',
         diagnostics: {
           providerStatus: 'NOT_CALLED',
@@ -740,6 +764,44 @@ ${JSON.stringify(
         second <= chunk.endTime,
     );
     return index >= 0 ? `e${index}` : undefined;
+  }
+
+  private rangeTranscriptEvidenceIds(state: RagChatWorkflowState): string[] {
+    const plan = state.retrievalPlan;
+    const start = plan?.transcriptTimestampSec;
+    const end = plan?.transcriptTimestampEndSec;
+    if (
+      state.route?.reelQuestionType !== 'TRANSCRIPT_CONTENT' ||
+      isTranscriptSentenceSelectionRequest(state.route) ||
+      plan?.requiresReelCoverage === true ||
+      plan?.sourceOrder !== 'ASC' ||
+      typeof start !== 'number' ||
+      !Number.isFinite(start) ||
+      typeof end !== 'number' ||
+      !Number.isFinite(end) ||
+      end <= start
+    ) {
+      return [];
+    }
+    const overlapping = state.rerankedChunks.flatMap((chunk, index) => {
+      const text = (chunk.evidenceText?.trim() || chunk.chunkText.trim()) ?? '';
+      return (chunk.evidenceType ?? 'TRANSCRIPT') === 'TRANSCRIPT' &&
+        text &&
+        typeof chunk.startTime === 'number' &&
+        typeof chunk.endTime === 'number' &&
+        chunk.endTime >= start &&
+        chunk.startTime <= end
+        ? [{ id: `e${index}`, chars: text.length }]
+        : [];
+    });
+    // A short excerpt whose span merely contains the interval does not cover it: speech runs at about
+    // 12-15 characters a second, so ask for a conservative share of that, capped for long ranges
+    // because one read returns a bounded number of excerpts.
+    const wanted =
+      MIN_RANGE_TEXT_CHARS_PER_SECOND *
+      Math.min(end - start, MAX_RANGE_SECONDS_CHECKED);
+    const have = overlapping.reduce((sum, item) => sum + item.chars, 0);
+    return have >= wanted ? overlapping.map((item) => item.id) : [];
   }
 
   private exactTranscriptRangeEvidenceId(

@@ -4,6 +4,7 @@ import {
   boundEvidence,
   conversationRecallBounds,
   DEFAULT_RAG_PROMPT_BOUNDS,
+  isTimeRangeSummaryQuestion,
   preserveReelCoverage,
   selectRagAnswerEvidenceIds,
   transcriptSegmentPromptBounds,
@@ -582,5 +583,42 @@ describe('rag prompt bounds', () => {
     });
     expect(larger.maxRecentTotalChars).toBe(6_000);
     expect(DEFAULT_RAG_PROMPT_BOUNDS.maxRecentMessages).toBe(4);
+  });
+
+  describe('a summary of a time range', () => {
+    it.each([
+      'Summarize what is said from 2:11 to 3:22 in the video.',
+      'Give me a summary of the speech from 0:30 to 1:45.',
+      'What is covered from 12:00 to 14:30 in the transcript?',
+      'Summarize what the speaker says from 20 to 80 seconds.',
+    ])('treats "%s" as a summary of the range', (question) => {
+      expect(isTimeRangeSummaryQuestion(question)).toBe(true);
+      expect(
+        transcriptSegmentRequestKind(
+          question,
+          { requiredEvidence: ['TRANSCRIPT'] },
+          { requiresReelCoverage: false },
+        ),
+      ).toBe('SUMMARY');
+    });
+
+    it.each([
+      'What does the speaker say at 3:33?',
+      'Summarize what is said in the video.',
+      'What are the first words from 2:11 to 3:22?',
+      'Summarize the speech transcript segment from 2:11 to 3:22.',
+    ])('does not treat "%s" as one', (question) => {
+      expect(isTimeRangeSummaryQuestion(question)).toBe(false);
+    });
+
+    it('never applies to a multi-reel comparison', () => {
+      expect(
+        transcriptSegmentRequestKind(
+          'Compare what is said from 2:11 to 3:22 in each reel.',
+          { requiredEvidence: ['TRANSCRIPT'] },
+          { requiresReelCoverage: true },
+        ),
+      ).not.toBe('SUMMARY');
+    });
   });
 });

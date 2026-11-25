@@ -28,6 +28,7 @@ import type {
 import { Inject, Injectable, Optional, Logger } from '@nestjs/common';
 import {
   boundPromptText,
+  isTimeRangeSummaryQuestion,
   readRagPromptBounds,
   transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
@@ -884,7 +885,8 @@ ${input.message.includes(PHOTO_NOTE_MARKER) ? `${PHOTO_NOTE_GUIDANCE}\n\n` : ''}
       reelQuestionType === 'TRANSCRIPT_CONTENT' &&
       !multiReelTranscriptComparison &&
       raw.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE' &&
-      !isPointInTimeQuestion(input.message ?? '')
+      !isPointInTimeQuestion(input.message ?? '') &&
+      !isTimeRangeSummaryQuestion(input.message ?? '')
         ? 'FIRST_COMPLETE_UTTERANCE'
         : 'NONE';
     const referenceTarget: RagReferenceTarget =

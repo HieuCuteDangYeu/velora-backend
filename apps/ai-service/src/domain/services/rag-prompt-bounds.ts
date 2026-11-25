@@ -193,6 +193,30 @@ export function readRagPromptBounds(config?: RagPromptConfig): RagPromptBounds {
   return bounds;
 }
 
+const TIME = String.raw`(?:\d{1,2}(?::\d{2}){1,2}|\d+(?:\.\d+)?)`;
+const TIME_RANGE = new RegExp(
+  String.raw`\b(?:from|spanning)\s+${TIME}\s*(?:seconds?|s)?\s*(?:-|–|—|to)\s*${TIME}`,
+  'i',
+);
+const SUMMARY_CUE =
+  /\b(?:summari[sz]e|summary|overview|recap)\b|\bwhat\s+(?:is|was|are|were)\s+(?:said|covered|discussed)\b/i;
+const SPEECH_WORD =
+  /\b(?:said|say|says|speech|spoken|transcript|talk(?:s|ed|ing)?|mention(?:s|ed)?|covered|discussed)\b/i;
+
+/**
+ * "Summarize what is said from 2:11 to 3:22": a summary of a stretch of speech. The older rule below
+ * needs the word "segment"; without it the plan read two chunks (about 16 s) and the router could
+ * label the turn a first-utterance request, so a 70 s range came back as one sentence.
+ */
+export function isTimeRangeSummaryQuestion(question: string): boolean {
+  return (
+    SUMMARY_CUE.test(question) &&
+    SPEECH_WORD.test(question) &&
+    TIME_RANGE.test(question) &&
+    !/\bsegment\b/i.test(question)
+  );
+}
+
 export function transcriptSegmentRequestKind(
   question: string,
   route: Pick<RagChatRouteDecision, 'requiredEvidence'> | undefined,
@@ -210,6 +234,11 @@ export function transcriptSegmentRequestKind(
   ) {
     return 'SUMMARY';
   }
+  if (
+    plan?.requiresReelCoverage !== true &&
+    isTimeRangeSummaryQuestion(question)
+  )
+    return 'SUMMARY';
   if (
     plan?.requiresReelCoverage === true &&
     /\bcompare\b/i.test(question) &&

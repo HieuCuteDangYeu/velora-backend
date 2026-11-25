@@ -205,6 +205,133 @@ describe('CheckContextSufficiencyUseCase', () => {
     expect(service.generateObject).not.toHaveBeenCalled();
   });
 
+  describe('a summary of a named time range', () => {
+    const run = async (
+      chunks: Array<[number, number]>,
+      plan: Record<string, unknown> = {
+        transcriptTimestampSec: 131,
+        transcriptTimestampEndSec: 202,
+      },
+      kind: 'NONE' | 'FIRST_COMPLETE_UTTERANCE' = 'NONE',
+    ) => {
+      const service = { generateObject: jest.fn() };
+      const useCase = new CheckContextSufficiencyUseCase(
+        service as never,
+        config,
+      );
+      const state = {
+        userMessage: 'Summarize what is said from 2:11 to 3:22.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          transcriptRequestKind: kind,
+          needsRetrieval: true,
+          requiredEvidence: ['TRANSCRIPT'],
+        },
+        retrievalPlan: {
+          sourceOrder: 'ASC',
+          requiresReelCoverage: false,
+          ...plan,
+        },
+        retrievedChunks: chunks.map((_, i) => ({
+          chunkId: `c${i}`,
+          reelId: 'reel-1',
+        })),
+        rerankedChunks: chunks.map(([startTime, endTime], i) => ({
+          chunkId: `c${i}`,
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime,
+          endTime,
+          evidenceText: `Excerpt ${i}: ${'spoken words '.repeat(Math.ceil((endTime - startTime) * 1.2))}`,
+          chunkText: `Excerpt ${i}: ${'spoken words '.repeat(Math.ceil((endTime - startTime) * 1.2))}`,
+          tags: [],
+        })),
+      } as unknown as RagChatWorkflowState;
+      return { service, result: await useCase.execute(state) };
+    };
+
+    it('is sufficient without a model call and supports every excerpt that overlaps the interval', async () => {
+      const { service, result } = await run([
+        [100, 125],
+        [125, 160],
+        [160, 205],
+        [300, 330],
+      ]);
+      expect(result).toMatchObject({
+        sufficient: true,
+        supportedEvidenceIds: ['e1', 'e2'],
+        recommendedAction: 'ANSWER',
+        diagnostics: {
+          providerStatus: 'NOT_CALLED',
+          decisionSource: 'DETERMINISTIC_TRANSCRIPT_RANGE',
+        },
+      });
+      expect(service.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('asks the model when the overlapping excerpts hold too little text for the interval', async () => {
+      const { service, result } = await run(
+        [[131, 202]]
+          .map(([a, b]) => [a, b] as [number, number])
+          .map(([a]) => [a, a + 1] as [number, number]),
+      );
+      expect(result.sufficient).toBe(false);
+      expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    it('asks the model when nothing overlaps the interval or the request is a first-line one', async () => {
+      for (const [chunks, kind] of [
+        [[[300, 330]], 'NONE'],
+        [[[160, 205]], 'FIRST_COMPLETE_UTTERANCE'],
+      ] as const) {
+        const service = { generateObject: jest.fn() };
+        service.generateObject.mockResolvedValue({
+          sufficient: false,
+          confidence: 0.2,
+          availableEvidence: [],
+          missingEvidence: ['TRANSCRIPT'],
+          supportedEvidenceIds: [],
+          reason: 'x',
+          recommendedAction: 'REFUSE_NO_CONTEXT',
+        });
+        const useCase = new CheckContextSufficiencyUseCase(
+          service as never,
+          config,
+        );
+        const state = {
+          userMessage: 'Summarize what is said from 2:11 to 3:22.',
+          route: {
+            intent: 'REEL_VIDEO_QUESTION',
+            reelQuestionType: 'TRANSCRIPT_CONTENT',
+            transcriptRequestKind: kind,
+            needsRetrieval: true,
+            requiredEvidence: ['TRANSCRIPT'],
+          },
+          retrievalPlan: {
+            sourceOrder: 'ASC',
+            requiresReelCoverage: false,
+            transcriptTimestampSec: 131,
+            transcriptTimestampEndSec: 202,
+          },
+          retrievedChunks: [],
+          rerankedChunks: chunks.map(([startTime, endTime], i) => ({
+            chunkId: `c${i}`,
+            reelId: 'reel-1',
+            evidenceType: 'TRANSCRIPT',
+            startTime,
+            endTime,
+            evidenceText: 'x',
+            chunkText: 'x',
+            tags: [],
+          })),
+        } as unknown as RagChatWorkflowState;
+        await useCase.execute(state).catch(() => undefined);
+        expect(service.generateObject).toHaveBeenCalled();
+      }
+    });
+  });
+
   describe('a question about one named second', () => {
     const build = (
       plan: Record<string, unknown>,
@@ -268,14 +395,9 @@ describe('CheckContextSufficiencyUseCase', () => {
       expect(service.generateObject).not.toHaveBeenCalled();
     });
 
-    it('leaves the model in charge when no excerpt spans the second, for a range, and for first-line requests', async () => {
+    it('leaves the model in charge when no excerpt spans the second, and for first-line requests', async () => {
       for (const [plan, chunks, kind] of [
         [{ transcriptTimestampSec: 213 }, [[0, 40]], 'NONE'],
-        [
-          { transcriptTimestampSec: 213, transcriptTimestampEndSec: 230 },
-          [[190, 240]],
-          'NONE',
-        ],
         [
           { transcriptTimestampSec: 213 },
           [[190, 240]],

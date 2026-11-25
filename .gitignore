@@ -22,6 +22,7 @@ lerna-debug.log*
 
 # Reel integration/load-test fixtures and reports
 /test-data/reel-integration/
+/test-data/reel-latency/
 /eval/rag/.venv/
 /eval/rag/.pytest_cache/
 /eval/rag/.ruff_cache/

@@ -25,8 +25,8 @@ services:
       - shared_buffers=128MB
       - -c
       - max_standby_streaming_delay=900s
-    ports:
-      - '100.104.227.44:5433:5432'
+    ports:  # loopback only: nothing reads from it; do not publish the copy of the production credentials
+      - '127.0.0.1:5433:5432'
     volumes:
       - reel_indexing_standby_data:/var/lib/postgresql/data
     healthcheck:

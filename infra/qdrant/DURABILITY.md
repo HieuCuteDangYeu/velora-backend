@@ -20,7 +20,7 @@ changes search behaviour.
 | `scripts/ops/reel-search-smoke.cjs` | Scoped searches through the real repository (SQL scope capture, Qdrant exact search, RRF). Used for the drill and for latency before and after. |
 | `scripts/ops/test-pair-durability.cjs`, `test-pair-offsite-copy.sh` | Unit tests (`node --test scripts/ops/test-pair-durability.cjs`, `bash scripts/ops/test-pair-offsite-copy.sh`). |
 | `infra/qdrant/pair-backup/` | Config example, launchd plist and systemd unit and timer. **None is installed.** |
-| `infra/qdrant/pg-standby/rehearse.sh` | Disposable rehearsal of the PostgreSQL standby. |
+| `infra/qdrant/pg-standby/` | `rehearse.sh` (disposable rehearsal) and `compose.yaml` (the standby on homelab 2). |
 | `infra/qdrant/cluster-rehearsal/rehearse.py` | Disposable two-node Qdrant rehearsal. |
 
 ## Paired backup
@@ -141,51 +141,75 @@ these tools.
   (12 s in the rehearsal), and `identity()` requires `green`, so vector search fails while it is
   yellow.
 
-## PostgreSQL standby for the Indexing database (homelab 2): not applied
+## PostgreSQL standby for the Indexing database on homelab 2: applied 2026-11-25
 
-Blocked: no credential for homelab 2 (`windows@100.104.227.44`) or velora-node-2 was available.
-Key authentication was refused for every key reachable from this environment (the homelab's
-two keys and the development machine's three). The SSH and node-exporter ports answer, so it
-is an access problem only. I did not use a password that appears in an earlier session's log.
+Physical streaming replica of `reel-indexing-postgres`, read-only hot standby, asynchronous,
+physical slot `idx_standby`, failover manual. Nothing reads from it and search is unchanged.
+No restart of, or compose change to, the primary was needed.
 
-What was verified instead:
+### What was changed
 
-- `pg-standby/rehearse.sh` (disposable, x86 here): role, `pg_hba` line, `max_slot_wal_keep_size`,
-  base backup with slot, hot standby, row counts equal (300,000 and then 350,000),
-  `pg_stat_replication` `streaming`/`async`, replay lag 45-54 ms, write refused ("cannot execute
-  INSERT in a read-only transaction"), standby 52 MiB idle, `pg_promote()` then accepted writes.
-- Production primary facts: PostgreSQL 18, `max_connections` 100, `wal_level` replica,
-  `max_wal_senders` 10, `max_replication_slots` 10, **`max_slot_wal_keep_size = -1`** (a stuck
-  standby would keep WAL without limit; set 4GB first), 16 connections, database 402 MB, WAL
-  directory 80 MB, WAL about 7.9 KB/s (about 0.7 GB/day) measured over 18 idle minutes,
-  `pg_hba.conf` has `replication` lines for loopback only, no port published.
-- Homelab 2 memory from its node-exporter before any change: 4,921 MiB total, 3,812 MiB
-  available, 2,028 MiB swap free, load 0.38. A 768 MiB-capped standby (52 MiB idle in the
-  rehearsal) fits. The "after" figure could not be measured.
-- Physical replication from the ARM64 homelab to the x86_64 laptop: the shared database already
-  does this with `postgres:18.6` (`win_standby`), so it is not new, but I did not verify it for
-  this image.
+| Where | Change | Reversible by |
+| --- | --- | --- |
+| Primary database (online) | `CREATE ROLE replicator_idx LOGIN REPLICATION CONNECTION LIMIT 2` with a generated password; `ALTER SYSTEM SET max_slot_wal_keep_size = '4GB'` (was `-1`, unlimited); one line appended to `pg_hba.conf` in the data volume: `host replication replicator_idx 192.168.97.0/24 scram-sha-256`; `pg_reload_conf()` | `DROP ROLE`, `ALTER SYSTEM RESET max_slot_wal_keep_size`, delete the two `pg_hba` lines, reload |
+| Homelab host | container `reel-indexing-pg-forwarder` (`alpine/socat`, 0.25 CPU, 32 MB, `restart: unless-stopped`) on `microservices-net` publishing **`100.102.228.48:15432`** (the tailnet address only, the Mac's `utun9`) and forwarding to `reel-indexing-postgres:5432`. It is not part of any compose file, so a CI deploy does not touch it | `docker rm -f reel-indexing-pg-forwarder` |
+| Homelab host | password file `~/velora-operations/pair-backup/secrets/replicator_idx.pw` (mode 600) | delete it |
+| Homelab 2 (WSL, `/opt/velora/reel-indexing-standby/`) | `compose.yaml` (this folder), `replicator.pw` (mode 600), `standby-up.sh`, volume `reel-indexing-standby_reel_indexing_standby_data`, container `reel-indexing-standby` (768 MB, 1 CPU, published on `127.0.0.1:5433` only) | `docker compose down` and remove the volume |
 
-Steps to apply (all additive; nothing restarts the primary):
+Why no restart was needed: the primary's `pg_hba` and `max_slot_wal_keep_size` are reloadable, and
+the Mac already has a private route to the laptop (its tailnet address, 3 ms round trip). The
+route to the container is the forwarder, because the database container publishes no port and
+`tailscale serve` needs sudo, which is not available over ssh. The replica holds the same
+role password hashes as production, so its port is loopback only.
 
-1. Primary: `CREATE ROLE replicator_idx WITH LOGIN REPLICATION PASSWORD '<new>'`;
-   `ALTER SYSTEM SET max_slot_wal_keep_size = '4GB'`; append
-   `host replication replicator_idx <forwarder-subnet> scram-sha-256` to `pg_hba.conf`
-   (in the data volume, not the repo); `SELECT pg_reload_conf()`.
-2. Reachability: the container publishes nothing. Without recreating it, add a forwarder
-   container on `microservices-net` publishing `127.0.0.1:15432` (for example `alpine/socat`) and
-   `tailscale serve --bg --tcp 15432 tcp://localhost:15432`, as for the shared database.
-3. Homelab 2: `pg_basebackup -h <tailnet IP of homelab> -p 15432 -U replicator_idx -X stream -R -C -S idx_standby --checkpoint=fast --max-rate=10M`
-   into the standby volume (see `rehearse.sh`; `--checkpoint=fast` matters: without it the base
-   backup waited minutes for a spread checkpoint), then `docker compose up -d` with
-   `pg-standby/compose.yaml`.
-4. Verify on the primary (`pg_stat_replication`, `pg_replication_slots`) and the standby
-   (`pg_is_in_recovery()`, row counts, refused write). Read node-exporter memory again.
+The password was generated on the dev machine, copied to both hosts through ssh stdin, and the
+local copy shredded. The `CREATE ROLE` statement received it through stdin only. It is not in
+this repo, in a process argument list, or in any log.
 
-Rollback: stop and remove the standby, `SELECT pg_drop_replication_slot('idx_standby')` on the
-primary, remove the `pg_hba` line and `replicator_idx`, remove the forwarder and the
-`tailscale serve` entry, `ALTER SYSTEM RESET max_slot_wal_keep_size` if desired. Failover is
-manual: `pg_promote()`, then the post-promotion procedure above. Do not route search reads to it.
+### Measured
+
+| Item | Result |
+| --- | --- |
+| Base backup (402 MB, `--checkpoint=fast --max-rate=10M`) | 46 s |
+| `pg_stat_replication` | `walreceiver`, client 192.168.97.26 (the forwarder), `streaming`, `async`, 0 bytes behind |
+| Replay lag, 8 samples over 2 minutes plus 1 spot check | 41-50 ms (write, flush and replay all about equal); standby `now() - last replay` 173 ms once |
+| Slot | `idx_standby` active, `reserved`, 0 bytes retained |
+| Row counts, primary vs standby | equal on all seven tables checked: ReelDocument 299, ReelSection 252, ReelChunk 4,293, ReelVisualScene 6,068, VectorProjection (non-revoked) 298, IndexingAttempt 1,472, TranscriptionSegment 199,474; database size 402 MB on both |
+| Writes on the standby | refused: "cannot execute CREATE TABLE in a read-only transaction" and the same for INSERT; `pg_is_in_recovery() = t` |
+| RAM on homelab 2 (WSL, 4,921 MiB total) | before: used 1,144 MiB, available 3,776 MiB (node-exporter 3,788); after the base backup: available 3,762; with the standby running: used 1,210, available 3,710; node-exporter about 7 minutes later 3,731 MiB, swap free 2,026 of 2,048 MiB. The standby container itself uses 52 MiB of its 768 MiB cap. Net cost about 60 MiB; Mongo shard (407 MiB) and conversation services unaffected |
+| Primary | connections 16 to 17, no restart, indexers and Qdrant untouched. Scoped search smoke after the change: 24 of 24 own chunk at rank 1, p50 322 ms, p95 461 ms (baseline 317 and 458) |
+
+Cross-architecture note: the primary is ARM64 and the standby x86_64. It replayed without error
+and the counts match, but replication of text indexes across glibc builds can in principle differ;
+the image is the same digest on both sides. A `pg_dump`-based check from the standby is the way to
+see it (not run).
+
+### Not exercised
+
+Promotion was not run on the live standby: it would end the replica and require a rebuild. It was
+rehearsed on a disposable copy (`rehearse.sh`). To promote for real: stop the primary or its
+writers first, `SELECT pg_promote()` on the standby, then follow "After a PostgreSQL restore or
+promotion". The primary must not be used again without being rebuilt as a standby of the new
+one. Repointing the indexers needs an `.env` change and the deploy controller's env hash approval,
+so it is a decision for the owner, not part of this step.
+
+### Operating it
+
+- Health, on the primary: `select application_name, state, replay_lag from pg_stat_replication`
+  and `select slot_name, active, wal_status from pg_replication_slots`. A standby that stays down
+  makes the primary keep WAL up to 4 GB (about 0.7 GB/day measured when idle), after which the slot
+  is invalidated and the standby must be rebuilt with `standby-up.sh`.
+- Rebuild: `docker compose down` and remove the volume on homelab 2, `SELECT pg_drop_replication_slot('idx_standby')` on the primary, then `standby-up.sh`.
+- Dumps taken from the standby need `max_standby_streaming_delay` (already 900 s).
+- Nothing alerts on replica lag yet.
+
+### Rollback (full)
+
+1. Homelab 2: `cd /opt/velora/reel-indexing-standby && docker compose down -v`.
+2. Primary: `SELECT pg_drop_replication_slot('idx_standby')`; `DROP ROLE replicator_idx`;
+   remove the two lines at the end of `pg_hba.conf` (the comment and the `host replication` line);
+   `SELECT pg_reload_conf()`; optionally `ALTER SYSTEM RESET max_slot_wal_keep_size` then reload.
+3. Homelab: `docker rm -f reel-indexing-pg-forwarder`; delete `secrets/replicator_idx.pw`.
 
 ## Qdrant replica on homelab 2: rehearsed, not applied
 
@@ -211,7 +235,7 @@ Blockers, so it was **not** applied to production:
 2. Synchronous cross-host writes put the indexer's 5 s deadline at risk over Wi-Fi.
 3. The adapter has one `QDRANT_URL`, so failover is a manual repoint, and both nodes need
    certificates with SANs for their peer addresses (production's has SAN `qdrant` only).
-4. No access to homelab 2.
+4. (Access to homelab 2 has since been granted, but this does not change 1-3.)
 
 No before/after production latency exists for a change that was not made. Baseline (24 scoped
 queries over 8 reels, all returned their own chunk at rank 1): p50 317 ms, p95 458 ms at 13:09
@@ -231,5 +255,10 @@ warm copy by restoring the paired backup on homelab 2 on demand (227 s in the dr
   deleted anywhere.
 - Nothing in the deploy path changed: no compose file, overlay, `.env`, image, crontab or launchd
   entry. A CI deploy therefore cannot drop any of it; only the host files above must be kept.
+- Standby pieces (see the standby section): forwarder container `reel-indexing-pg-forwarder`,
+  `secrets/replicator_idx.pw`, the `replicator_idx` role, the `pg_hba` line and
+  `max_slot_wal_keep_size` on the primary, and `/opt/velora/reel-indexing-standby/` on homelab 2.
+  Re-apply from the steps in the standby section; the forwarder is not in any compose file and the
+  CI deploy does not remove it.
 - Host keys for `100.104.227.44` and `100.86.68.16` were added to the homelab user's
   `known_hosts` while probing access.

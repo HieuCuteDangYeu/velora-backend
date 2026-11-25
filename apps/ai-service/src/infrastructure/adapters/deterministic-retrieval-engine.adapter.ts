@@ -771,7 +771,9 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
    * 2-3 minutes), so "summarize what is said from 7:17 to 14:45" never saw most of the range. A long
    * summary range is therefore read as several sub-windows with a few chunks each: the evidence stays the
    * same size but covers the whole range. Ranges of a few minutes and the small reads of other
-   * questions are untouched. AI_TRANSCRIPT_RANGE_SAMPLING=false turns it off.
+   * questions are untouched. Opt-in (AI_TRANSCRIPT_RANGE_SAMPLING=true): measured on 26 chapter-by-time rows it
+   * lowered long ranges 0.47 to 0.37 and raised "could not verify" answers from 2 to 5, because the local
+   * verifier cannot tie a summary of scattered excerpts to the evidence.
    */
   private sampledRangeWindows(
     time: Pick<
@@ -783,7 +785,7 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     const start = time.sourceTimestampSec;
     const end = time.sourceTimestampEndSec;
     if (
-      this.config.get<string>('AI_TRANSCRIPT_RANGE_SAMPLING') === 'false' ||
+      this.config.get<string>('AI_TRANSCRIPT_RANGE_SAMPLING') !== 'true' ||
       start === undefined ||
       end === undefined ||
       !Number.isFinite(start) ||

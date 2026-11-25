@@ -665,3 +665,17 @@ Each language has one video and 11 reviewed rows (17 run with the default split)
 Misses: a French cooking question about the shared video was refused as off-topic; a Korean "first thing said" ended in "could not verify"; Korean detail answers were verbatim transcript excerpts instead of the asked fact; the French "Intro" chapter-by-title row cannot work without titles.
 
 The off-topic refusal was the evidence probe (`ISharedReelEvidenceProbe`, 0.48 limit calibrated on 60 English questions): that question's closest chunk was at 0.496. Re-measured on 55 non-English detail questions (vi 28, es 10, ar 6, ko 6, fr 5; own video vs an unrelated English video): own video within 0.42 / 0.48 / 0.50 / 0.55 for 64% / 89% / 95% / 100% (median 0.40); an unrelated video within 0.48 and 0.55 for 0%. The default limit is now 0.50 (English calibration: own 93% -> 97%, unrelated 2% -> 3%). Checks on the deployed build: the general-question control (6 questions: TCP vs UDP, the sky, optimistic locking, project retrospective, capital of Australia, binary search tree) was rerouted 0 of 6 on each of the English, French and Korean videos, all refused as off-topic; the French and Korean rows scored French 0.628 -> 0.632 (4 correct), Korean 0.416 -> 0.459 (3 correct), scope refusals 1 -> 0. Unchanged within noise except the refusal that is gone.
+
+## Sampling a long summary range across its whole length: worse, left OFF (2026-11-25, c001cae7)
+Cause of the weak ranges over 5 minutes (about 0.47): for one reel the engine does one chronological `searchChunks` read capped at 20 chunks, ordered by start time, so a 7-12 minute range returned only its first 2-3 minutes. Chronological reads exist only for chunks and visual scenes (not sections), and the indexer runs on a pinned image, so the change stayed in ai-service: a summary range over 150 s read as up to 8 sub-windows, a few chunks each, merged in order (same evidence size, whole-range coverage).
+
+Measured on the 26 chapter-by-time rows (`diverse-e2e-41-chapter-sampled.json` against `-31-chapter-time-fix.json`):
+
+| | before | sampled |
+|---|---|---|
+| all (26) | 0.638 / 13 correct | 0.569 / 13 |
+| range <= 5 min (17, unchanged code path) | 0.724 / 11 | 0.673 / 11 |
+| range > 5 min (9) | 0.474 / 2 | 0.372 / 2 |
+| ended in "could not verify" | 2 | 5 |
+
+The unchanged short ranges moved by 0.05, which is the noise floor, so the long-range drop (-0.10) is only just above it; the "could not verify" count (2 to 5, four of the five on sampled ranges plus a 200 s one) is the clearer signal: a summary of scattered excerpts gives the local verifier claims it cannot tie to one stretch of evidence, so it fails closed. No gain, so sampling was switched off in production (`AI_TRANSCRIPT_RANGE_SAMPLING=false`, backup `env-before-sampling-off-*`, hash gate checked) and the code default is now opt-in. A different approach would be needed for long ranges, for example summarising each sub-window separately with the answer model and combining the parts, which was not tried.

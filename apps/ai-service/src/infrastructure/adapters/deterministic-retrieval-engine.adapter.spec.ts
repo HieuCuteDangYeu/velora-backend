@@ -1214,6 +1214,7 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       NODE_ENV: 'test',
       RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
       RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+      AI_TRANSCRIPT_RANGE_SAMPLING: 'true',
     };
     const rangePlan = (
       start: number,
@@ -1296,10 +1297,11 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       expect(requests[0].limit).toBe(2);
     });
 
-    it('can be switched off', async () => {
+    it('is off unless switched on', async () => {
       const requests = await run(rangePlan(437, 885, 20), ['reel-1'], {
-        ...config,
-        AI_TRANSCRIPT_RANGE_SAMPLING: 'false',
+        NODE_ENV: 'test',
+        RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+        RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
       });
       expect(requests).toHaveLength(1);
       expect(requests[0]).toMatchObject({

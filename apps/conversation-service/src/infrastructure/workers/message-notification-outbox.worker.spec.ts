@@ -4,8 +4,12 @@ import {
   OUTBOX_BATCH_SIZE,
   OUTBOX_BUSY_CONCURRENCY,
   OUTBOX_BUSY_MESSAGES_PER_SECOND,
+  OUTBOX_CHUNK_SIZE,
   OUTBOX_CONCURRENCY,
+  OUTBOX_DEFAULT_BUSY_RATE,
+  OUTBOX_DEFAULT_BUSY_THRESHOLD,
 } from './message-notification-outbox.worker';
+import { NotificationBatchRejectedError } from '../adapters/notification-service.adapter';
 
 const NOW = new Date('2026-10-07T00:00:00.000Z');
 const makeRecord = (index = 1) => ({
@@ -45,6 +49,7 @@ const makeHarness = (records = [makeRecord()]) => {
     updatedAt: NOW,
   };
   const backlogReads = jest.fn<void, [unknown]>();
+  const readMatches = jest.fn<void, [unknown]>();
   const message = {
     findRaw: jest.fn(
       ({
@@ -90,22 +95,25 @@ const makeHarness = (records = [makeRecord()]) => {
           ).length;
           return Promise.resolve(pending > 0 ? [{ pending }] : []);
         }
-        const match = pipeline[0].$match!;
-        const record = records.find(
-          (r) =>
-            r.id === match._id.$oid &&
-            r.notificationClaimId === match.notificationClaimId,
-        );
+        const match = pipeline[0].$match! as unknown as {
+          _id: { $in: { $oid: string }[] };
+          notificationClaimId: { $in: string[] };
+        };
+        readMatches(match);
+        const ids = match._id.$in.map(({ $oid }) => $oid);
         return Promise.resolve(
-          record
-            ? [
-                {
-                  ...record,
-                  createdAt: record.createdAt.toISOString(),
-                  conversation,
-                },
-              ]
-            : [],
+          records
+            .filter(
+              (r) =>
+                ids.includes(r.id) &&
+                r.notificationClaimId !== null &&
+                match.notificationClaimId.$in.includes(r.notificationClaimId),
+            )
+            .map((record) => ({
+              ...record,
+              createdAt: record.createdAt.toISOString(),
+              conversation,
+            })),
         );
       },
     ),
@@ -129,34 +137,58 @@ const makeHarness = (records = [makeRecord()]) => {
         };
       }[];
     }) => {
-      const { q, u } = updates[0];
-      const record = records.find(
-        (r) =>
-          r.id === q._id.$oid &&
-          (!q.notificationClaimId ||
-            r.notificationClaimId === q.notificationClaimId) &&
-          (!q.notificationNextAttemptAt ||
-            (r.notificationNextAttemptAt instanceof Date &&
-              r.notificationNextAttemptAt <=
-                new Date(q.notificationNextAttemptAt.$lte.$date))),
-      );
-      if (!record) return Promise.resolve({ ok: 1, n: 0 });
-      const values = Object.fromEntries(
-        Object.entries(u.$set).map(([key, value]) => [
-          key,
-          value && typeof value === 'object' && '$date' in value
-            ? new Date((value as { $date: string }).$date)
-            : value,
-        ]),
-      );
-      Object.assign(record, values);
-      if (u.$inc)
-        record.notificationAttemptCount += u.$inc.notificationAttemptCount;
-      return Promise.resolve({ ok: 1, n: 1 });
+      let n = 0;
+      for (const { q, u } of updates) {
+        const record = records.find(
+          (r) =>
+            r.id === q._id.$oid &&
+            (!q.notificationClaimId ||
+              r.notificationClaimId === q.notificationClaimId) &&
+            (!q.notificationNextAttemptAt ||
+              (r.notificationNextAttemptAt instanceof Date &&
+                r.notificationNextAttemptAt <=
+                  new Date(q.notificationNextAttemptAt.$lte.$date))),
+        );
+        if (!record) continue;
+        const values = Object.fromEntries(
+          Object.entries(u.$set).map(([key, value]) => [
+            key,
+            value && typeof value === 'object' && '$date' in value
+              ? new Date((value as { $date: string }).$date)
+              : value,
+          ]),
+        );
+        Object.assign(record, values);
+        if (u.$inc)
+          record.notificationAttemptCount += u.$inc.notificationAttemptCount;
+        n++;
+      }
+      return Promise.resolve({ ok: 1, n });
     },
   );
   const notifications = {
     notifyNewMessage: jest.fn().mockResolvedValue(undefined),
+    // Like the adapter's 404 fallback: the batch is the single intake per item,
+    // so each test can keep asserting per-message calls.
+    notifyNewMessages: jest.fn(
+      async (
+        items: {
+          conversation: Conversation;
+          message: unknown;
+          actorUserId: string;
+        }[],
+        signal?: AbortSignal,
+      ) => {
+        for (const item of items) {
+          await notifications.notifyNewMessage(
+            item.conversation,
+            item.message,
+            item.actorUserId,
+            signal,
+          );
+        }
+      },
+    ),
   };
   const chats = {
     populateConversationParticipants: jest.fn((value: Conversation) => {
@@ -186,6 +218,7 @@ const makeHarness = (records = [makeRecord()]) => {
     records,
     message,
     backlogReads,
+    readMatches,
     runCommand,
     notifications,
     chats,
@@ -373,8 +406,8 @@ describe('Message notification outbox', () => {
         pipeline: expect.arrayContaining([
           {
             $match: {
-              _id: { $oid: h.records[0].id },
-              notificationClaimId: expect.any(String),
+              _id: { $in: [{ $oid: h.records[0].id }] },
+              notificationClaimId: { $in: [expect.any(String)] },
             },
           },
           expect.objectContaining({
@@ -567,31 +600,126 @@ describe('Message notification outbox', () => {
     expect(h.records[0].notificationNextAttemptAt).toBeNull();
   });
 
-  it('does not overlap polls and bounds intake to the configured concurrent requests', async () => {
-    const total = OUTBOX_CONCURRENCY + 2;
+  it('does not overlap polls and bounds intake to the configured chunks in flight', async () => {
+    const chunks = OUTBOX_BATCH_SIZE / OUTBOX_CHUNK_SIZE;
     const h = makeHarness(
-      Array.from({ length: total }, (_, index) => makeRecord(index + 1)),
+      Array.from({ length: OUTBOX_BATCH_SIZE }, (_, index) =>
+        makeRecord(index + 1),
+      ),
     );
-    const gates = Array.from({ length: total }, deferred);
+    const gates = Array.from({ length: chunks * 2 }, deferred);
     let started = 0;
-    h.notifications.notifyNewMessage.mockImplementation(
+    h.notifications.notifyNewMessages.mockImplementation(
       () => gates[started++].promise,
     );
     const worker = h.createWorker();
     const batch = worker.runOnce();
     expect(worker.runOnce()).toBe(batch);
     await flush();
-    expect(started).toBe(OUTBOX_CONCURRENCY);
-    gates[0].resolve();
-    gates[1].resolve();
-    await flush();
-    expect(started).toBe(total);
-    for (const gate of gates.slice(2)) gate.resolve();
+    expect(started).toBe(Math.min(chunks, OUTBOX_CONCURRENCY));
+    // One request per chunk, never one per intent.
+    expect(
+      h.notifications.notifyNewMessages.mock.calls.map(
+        (call) => call[0].length,
+      ),
+    ).toEqual(Array(started).fill(OUTBOX_CHUNK_SIZE));
+    for (const gate of gates) gate.resolve();
     await batch;
-    expect(h.message.findRaw).toHaveBeenCalledTimes(1);
     expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
       true,
     );
+  });
+
+  it('keeps a single chunk in flight while chat traffic is heavy', async () => {
+    const h = makeHarness(
+      Array.from({ length: OUTBOX_CHUNK_SIZE * 2 }, (_, index) =>
+        makeRecord(index + 1),
+      ),
+    );
+    h.metrics.messagesCreatedPerSecond.mockReturnValue(
+      OUTBOX_BUSY_MESSAGES_PER_SECOND,
+    );
+    const gates = [deferred(), deferred()];
+    let started = 0;
+    h.notifications.notifyNewMessages.mockImplementation(
+      () => gates[started++].promise,
+    );
+    const batch = h.createWorker().runOnce();
+    await flush();
+    expect(started).toBe(OUTBOX_BUSY_CONCURRENCY);
+    gates[0].resolve();
+    await flush();
+    expect(started).toBe(2);
+    gates[1].resolve();
+    await batch;
+    expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+      true,
+    );
+  });
+
+  it('claims, reads and completes a whole chunk with one command each', async () => {
+    const h = makeHarness(
+      Array.from({ length: OUTBOX_CHUNK_SIZE }, (_, index) =>
+        makeRecord(index + 1),
+      ),
+    );
+    await h.createWorker().runOnce();
+    // claim + complete; each statement keeps its own guard and claim id.
+    expect(h.runCommand).toHaveBeenCalledTimes(2);
+    const [claim, complete] = h.runCommand.mock.calls.map(
+      (call) => call[0].updates,
+    );
+    expect(claim).toHaveLength(OUTBOX_CHUNK_SIZE);
+    expect(complete).toHaveLength(OUTBOX_CHUNK_SIZE);
+    const claimIds = claim.map(
+      (statement) => statement.u.$set.notificationClaimId as string,
+    );
+    expect(new Set(claimIds).size).toBe(OUTBOX_CHUNK_SIZE);
+    expect(
+      complete.map((statement) => statement.q.notificationClaimId),
+    ).toEqual(claimIds);
+    expect(h.readMatches).toHaveBeenCalledTimes(1);
+    expect(h.notifications.notifyNewMessages).toHaveBeenCalledTimes(1);
+    expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+      true,
+    );
+  });
+
+  it('keeps the whole chunk for a later replay when the intake is unavailable', async () => {
+    const h = makeHarness([makeRecord(1), makeRecord(2), makeRecord(3)]);
+    h.notifications.notifyNewMessages.mockRejectedValueOnce(
+      new Error('HTTP 503'),
+    );
+    await h.createWorker().runOnce();
+    // No one-by-one hammering of a service that is down.
+    expect(h.notifications.notifyNewMessage).not.toHaveBeenCalled();
+    for (const record of h.records) {
+      expect(record.notificationClaimId).toBeNull();
+      expect(record.notificationNextAttemptAt!.getTime()).toBeGreaterThan(
+        NOW.getTime(),
+      );
+      expect(record.notificationRecipientIds).toEqual(['member', 'removed']);
+    }
+  });
+
+  it('isolates an intent the intake rejects as invalid and delivers the rest', async () => {
+    const h = makeHarness([makeRecord(1), makeRecord(2), makeRecord(3)]);
+    h.notifications.notifyNewMessages.mockRejectedValueOnce(
+      new NotificationBatchRejectedError(),
+    );
+    h.notifications.notifyNewMessage
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('HTTP 400'))
+      .mockResolvedValueOnce(undefined);
+    await h.createWorker().runOnce();
+    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(3);
+    expect(h.records[0].notificationNextAttemptAt).toBeNull();
+    expect(h.records[1].notificationNextAttemptAt).not.toBeNull();
+    expect(h.records[1].notificationRecipientIds).toEqual([
+      'member',
+      'removed',
+    ]);
+    expect(h.records[2].notificationNextAttemptAt).toBeNull();
   });
 
   it('aborts intake on shutdown and lets restart recover its lease', async () => {
@@ -758,8 +886,9 @@ describe('Message notification outbox', () => {
     );
     await h.createWorker().runOnce();
     expect(h.message.findRaw).toHaveBeenCalledTimes(1);
-    expect(h.notifications.notifyNewMessage).toHaveBeenCalledTimes(
-      OUTBOX_BATCH_SIZE,
+    // Every chunk of the batch is still attempted once.
+    expect(h.notifications.notifyNewMessages).toHaveBeenCalledTimes(
+      OUTBOX_BATCH_SIZE / OUTBOX_CHUNK_SIZE,
     );
     expect(h.records[0].notificationNextAttemptAt!.getTime()).toBeGreaterThan(
       NOW.getTime(),
@@ -936,4 +1065,136 @@ describe('Message notification outbox', () => {
       expect(h.records[0].notificationAttemptCount).toBe(0);
     },
   );
+
+  describe('chat first (CONVERSATION_OUTBOX_PRIORITY=chat)', () => {
+    const fleetRedis = (reports: Record<string, string>) => {
+      const exec = jest.fn().mockResolvedValue([]);
+      type Chain = { hset: jest.Mock; pexpire: jest.Mock; exec: jest.Mock };
+      const chain: Chain = { hset: jest.fn(), pexpire: jest.fn(), exec };
+      chain.hset.mockReturnValue(chain);
+      chain.pexpire.mockReturnValue(chain);
+      return {
+        eval: jest.fn().mockResolvedValue(1),
+        multi: jest.fn(() => chain),
+        hgetall: jest.fn(() => Promise.resolve(reports)),
+        hdel: jest.fn().mockResolvedValue(1),
+        chain,
+      };
+    };
+    const withChatFirst = <T>(make: () => T): T => {
+      process.env.CONVERSATION_OUTBOX_PRIORITY = 'chat';
+      try {
+        return make();
+      } finally {
+        delete process.env.CONVERSATION_OUTBOX_PRIORITY;
+      }
+    };
+    const backlog = (n: number) =>
+      Array.from({ length: n }, (_, index) => makeRecord(index + 1));
+    const fresh = (rate: number) => `${rate}:${NOW.getTime()}`;
+
+    it('only trickles notifications while the fleet is busy, even if this replica is quiet', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE));
+      // Four replicas at 30 messages/s each: busy as a fleet, quiet locally.
+      const redis = fleetRedis({
+        a: fresh(30),
+        b: fresh(30),
+        c: fresh(30),
+        d: fresh(30),
+      });
+      const worker = withChatFirst(() => h.createWorker(redis));
+      await worker.runOnce();
+      expect(h.message.findRaw).toHaveBeenCalledTimes(1);
+      expect(h.message.findRaw.mock.calls[0][0].options.limit).toBe(
+        OUTBOX_DEFAULT_BUSY_RATE,
+      );
+      expect(
+        h.records.filter((r) => r.notificationNextAttemptAt === null),
+      ).toHaveLength(OUTBOX_DEFAULT_BUSY_RATE);
+    });
+
+    it('drains at full speed once the fleet is below the threshold', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE + 10));
+      const redis = fleetRedis({ a: fresh(10), b: fresh(20) });
+      const worker = withChatFirst(() => h.createWorker(redis));
+      await worker.runOnce();
+      expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+        true,
+      );
+    });
+
+    it('ignores stale reports from replicas that went away, and prunes them', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE));
+      const old = NOW.getTime() - 60_000;
+      const redis = fleetRedis({ gone: `500:${old}`, a: fresh(10) });
+      const worker = withChatFirst(() => h.createWorker(redis));
+      await worker.runOnce();
+      expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+        true,
+      );
+      expect(redis.hdel).toHaveBeenCalledWith('chat:outbox:rates', 'gone');
+    });
+
+    it('stops a long drain as soon as traffic picks up again', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE * 3));
+      const reports: Record<string, string> = { a: fresh(0) };
+      const redis = fleetRedis(reports);
+      const worker = withChatFirst(() => h.createWorker(redis));
+      h.notifications.notifyNewMessages.mockImplementation(() => {
+        reports.a = fresh(OUTBOX_DEFAULT_BUSY_THRESHOLD);
+        return Promise.resolve();
+      });
+      await worker.runOnce();
+      const delivered = h.records.filter(
+        (r) => r.notificationNextAttemptAt === null,
+      ).length;
+      expect(delivered).toBe(OUTBOX_BATCH_SIZE + OUTBOX_DEFAULT_BUSY_RATE);
+    });
+
+    it('falls back to its own traffic when Redis cannot answer', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE));
+      const redis = fleetRedis({});
+      redis.hgetall.mockRejectedValue(new Error('down'));
+      h.metrics.messagesCreatedPerSecond.mockReturnValue(
+        OUTBOX_DEFAULT_BUSY_THRESHOLD,
+      );
+      const worker = withChatFirst(() => h.createWorker(redis));
+      await worker.runOnce();
+      expect(h.message.findRaw.mock.calls[0][0].options.limit).toBe(
+        OUTBOX_DEFAULT_BUSY_RATE,
+      );
+    });
+
+    it('reports its traffic every second even when its own outbox is off', async () => {
+      const h = makeHarness();
+      h.metrics.messagesCreatedPerSecond.mockReturnValue(42);
+      const redis = fleetRedis({});
+      process.env.CONVERSATION_NOTIFICATION_OUTBOX = 'off';
+      const worker = withChatFirst(() => h.createWorker(redis));
+      try {
+        withChatFirst(() => worker.onModuleInit());
+      } finally {
+        delete process.env.CONVERSATION_NOTIFICATION_OUTBOX;
+      }
+      jest.advanceTimersByTime(1_000);
+      await flush();
+      expect(redis.chain.hset).toHaveBeenCalledWith(
+        'chat:outbox:rates',
+        expect.any(String),
+        `42:${NOW.getTime() + 1_000}`,
+      );
+      expect(h.message.findRaw).not.toHaveBeenCalled();
+      await worker.onModuleDestroy();
+    });
+
+    it('keeps the previous behaviour when the priority is not set', async () => {
+      const h = makeHarness(backlog(OUTBOX_BATCH_SIZE));
+      const redis = fleetRedis({ a: fresh(1_000) });
+      await h.createWorker(redis).runOnce();
+      expect(redis.hgetall).not.toHaveBeenCalled();
+      expect(h.records.every((r) => r.notificationNextAttemptAt === null)).toBe(
+        true,
+      );
+    });
+  });
 });

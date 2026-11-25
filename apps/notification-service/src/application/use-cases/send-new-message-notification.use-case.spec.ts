@@ -92,4 +92,37 @@ describe('SendNewMessageNotificationUseCase', () => {
       'database unavailable',
     );
   });
+
+  it('stores the jobs of many messages in one call, reporting each message', async () => {
+    const repository = { enqueueMany: jest.fn().mockResolvedValue(3) };
+    const useCase = new SendNewMessageNotificationUseCase(repository as never);
+    const result = await useCase.executeMany([
+      input,
+      { ...input, messageId: 'second', recipientUserIds: ['member'] },
+    ]);
+    expect(repository.enqueueMany).toHaveBeenCalledTimes(1);
+    const jobs = repository.enqueueMany.mock.calls[0][0] as {
+      messageId: string;
+      recipientUserId: string;
+      idempotencyKey: string;
+    }[];
+    expect(jobs.map((job) => [job.messageId, job.recipientUserId])).toEqual([
+      ['message', 'member'],
+      ['message', 'third'],
+      ['second', 'member'],
+    ]);
+    // The same replay key as a single intake, so mixing both paths never doubles a job.
+    expect(jobs[2].idempotencyKey).toBe(
+      `new-message:${JSON.stringify(['conversation', 'second', 'member'])}`,
+    );
+    expect(result).toEqual({
+      status: 'queued',
+      createdCount: 3,
+      recipientCount: 3,
+      items: [
+        { messageId: 'message', recipientCount: 2 },
+        { messageId: 'second', recipientCount: 1 },
+      ],
+    });
+  });
 });

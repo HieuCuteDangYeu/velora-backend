@@ -14,6 +14,7 @@ export type ChatPhase =
   | 'cache_invalidation'
   | 'fanout'
   | 'notification'
+  | 'notification_batch'
   | 'outbox_candidate_read'
   | 'outbox_claim'
   | 'outbox_record_read'
@@ -79,6 +80,13 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
     WriteRouteFallbackReason,
     number
   >();
+
+  private persistTimeouts = 0;
+
+  // A message batch abandoned after CONVERSATION_PERSIST_TIMEOUT_MS.
+  recordPersistTimeout(): void {
+    this.persistTimeouts++;
+  }
 
   // A write meant for the owner replica that was written locally instead.
   recordWriteRouteFallback(reason: WriteRouteFallbackReason): void {
@@ -468,6 +476,15 @@ export class ConversationPrometheusMetricsService implements OnModuleDestroy {
         `velora_conversation_notification_outbox_total${this.labels({ service: this.serviceName, outcome })} ${this.outboxCounts.get(outcome) ?? 0}`,
       );
     }
+    this.metricHeader(
+      lines,
+      'velora_conversation_persist_timeout_total',
+      'Message write batches abandoned after CONVERSATION_PERSIST_TIMEOUT_MS (the senders were told to resend).',
+      'counter',
+    );
+    lines.push(
+      `velora_conversation_persist_timeout_total${this.labels({ service: this.serviceName })} ${this.persistTimeouts}`,
+    );
     this.metricHeader(
       lines,
       'velora_conversation_write_route_fallback_total',

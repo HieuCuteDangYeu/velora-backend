@@ -93,6 +93,47 @@ const intentSchema = z.object({
     .nullable(),
 });
 
+// $lookup of the conversation plus the projection both intent reads share.
+const INTENT_PIPELINE = [
+  {
+    $lookup: {
+      from: 'conversations',
+      localField: 'conversationId',
+      foreignField: '_id',
+      pipeline: [
+        {
+          $project: {
+            _id: 0,
+            id: { $toString: '$_id' },
+            participantIds: 1,
+            isGroup: 1,
+            name: { $ifNull: ['$name', null] },
+          },
+        },
+      ],
+      as: 'conversation',
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      id: { $toString: '$_id' },
+      conversationId: { $toString: '$conversationId' },
+      senderId: 1,
+      content: 1,
+      type: { $ifNull: ['$type', 'text'] },
+      createdAt: { $dateToString: { date: '$createdAt' } },
+      isRecalled: { $ifNull: ['$isRecalled', false] },
+      notificationRecipientIds: 1,
+      notificationClaimId: 1,
+      notificationAttemptCount: 1,
+      conversation: {
+        $ifNull: [{ $arrayElemAt: ['$conversation', 0] }, null],
+      },
+    },
+  },
+];
+
 // Read after claim, without caching membership or moving the read before the
 // lease. Prisma's include uses two commands; this indexed lookup uses one.
 // Project only notification fields and normalize BSON IDs/dates in Mongo.
@@ -104,45 +145,38 @@ export async function readNotificationIntent(
   const result = await prisma.message.aggregateRaw({
     pipeline: [
       { $match: { _id: { $oid: id }, notificationClaimId: claimId } },
-      {
-        $lookup: {
-          from: 'conversations',
-          localField: 'conversationId',
-          foreignField: '_id',
-          pipeline: [
-            {
-              $project: {
-                _id: 0,
-                id: { $toString: '$_id' },
-                participantIds: 1,
-                isGroup: 1,
-                name: { $ifNull: ['$name', null] },
-              },
-            },
-          ],
-          as: 'conversation',
-        },
-      },
-      {
-        $project: {
-          _id: 0,
-          id: { $toString: '$_id' },
-          conversationId: { $toString: '$conversationId' },
-          senderId: 1,
-          content: 1,
-          type: { $ifNull: ['$type', 'text'] },
-          createdAt: { $dateToString: { date: '$createdAt' } },
-          isRecalled: { $ifNull: ['$isRecalled', false] },
-          notificationRecipientIds: 1,
-          notificationClaimId: 1,
-          notificationAttemptCount: 1,
-          conversation: {
-            $ifNull: [{ $arrayElemAt: ['$conversation', 0] }, null],
-          },
-        },
-      },
+      ...INTENT_PIPELINE,
     ],
   });
   const records = z.array(intentSchema).max(1).parse(result);
   return records[0] ?? null;
+}
+
+/**
+ * Batched form of readNotificationIntent for one outbox chunk: one indexed
+ * lookup for every claimed intent. A record is returned only while it still
+ * carries the claim this worker wrote for it, exactly like the single read.
+ */
+export async function readNotificationIntents(
+  prisma: Pick<PrismaService, 'message'>,
+  claims: readonly { id: string; claimId: string }[],
+): Promise<z.infer<typeof intentSchema>[]> {
+  if (claims.length === 0) return [];
+  const result = await prisma.message.aggregateRaw({
+    pipeline: [
+      {
+        $match: {
+          _id: { $in: claims.map(({ id }) => ({ $oid: id })) },
+          notificationClaimId: { $in: claims.map(({ claimId }) => claimId) },
+        },
+      },
+      ...INTENT_PIPELINE,
+    ],
+  });
+  const expected = new Map(claims.map(({ id, claimId }) => [id, claimId]));
+  return z
+    .array(intentSchema)
+    .max(claims.length)
+    .parse(result)
+    .filter((record) => expected.get(record.id) === record.notificationClaimId);
 }

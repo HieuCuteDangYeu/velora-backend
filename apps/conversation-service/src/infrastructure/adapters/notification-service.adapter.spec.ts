@@ -294,3 +294,129 @@ describe('NotificationServiceAdapter message fanout', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe('NotificationServiceAdapter batched intake', () => {
+  let fetchMock: jest.Mock;
+  const originalFetch = global.fetch;
+  const direct = (id: string) => ({
+    conversation: new Conversation({
+      id: 'conversation-id',
+      creatorId: ACTOR_ID,
+      participantIds: [ACTOR_ID, MEMBER_ID, THIRD_ID],
+      participants: [{ id: ACTOR_ID, name: 'Alice' }],
+      isGroup: true,
+      name: 'Core',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }),
+    message: makeMessage({ id }),
+    actorUserId: ACTOR_ID,
+  });
+  const batchResponse = (
+    items: { messageId: string; recipientCount: number }[],
+    status = 202,
+    override: Record<string, unknown> = {},
+  ) =>
+    ({
+      status,
+      json: jest.fn().mockResolvedValue({
+        status: 'queued',
+        recipientCount: items.reduce((s, i) => s + i.recipientCount, 0),
+        createdCount: 0,
+        items,
+        ...override,
+      }),
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    }) as unknown as Response;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('sends every message in one request with the single-intake fields', async () => {
+    fetchMock.mockResolvedValue(
+      batchResponse([
+        { messageId: 'm1', recipientCount: 2 },
+        { messageId: 'm2', recipientCount: 2 },
+      ]),
+    );
+    await makeAdapter().notifyNewMessages([direct('m1'), direct('m2')]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      'http://notification-service:3015/notifications/internal/new-messages',
+    );
+    const body = JSON.parse(init.body as string) as {
+      items: Record<string, unknown>[];
+    };
+    expect(body.items).toEqual([
+      {
+        recipientUserIds: [MEMBER_ID, THIRD_ID],
+        actorUserId: ACTOR_ID,
+        conversationId: 'conversation-id',
+        messageId: 'm1',
+        title: 'Core',
+        body: 'Alice: Hello there',
+      },
+      expect.objectContaining({ messageId: 'm2' }),
+    ]);
+  });
+
+  it('fails when the receipt does not account for every message', async () => {
+    fetchMock.mockResolvedValue(
+      batchResponse([{ messageId: 'm1', recipientCount: 2 }]),
+    );
+    await expect(
+      makeAdapter().notifyNewMessages([direct('m1'), direct('m2')]),
+    ).rejects.toThrow('did not confirm');
+    fetchMock.mockResolvedValue(
+      batchResponse(
+        [
+          { messageId: 'm1', recipientCount: 2 },
+          { messageId: 'm2', recipientCount: 2 },
+        ],
+        202,
+        { createdCount: 5 },
+      ),
+    );
+    await expect(
+      makeAdapter().notifyNewMessages([direct('m1'), direct('m2')]),
+    ).rejects.toThrow('did not confirm');
+  });
+
+  it('fails on any other status, so the caller keeps the intents', async () => {
+    fetchMock.mockResolvedValue(batchResponse([], 500));
+    await expect(
+      makeAdapter().notifyNewMessages([direct('m1')]),
+    ).rejects.toThrow('HTTP 500');
+  });
+
+  it('falls back to one request per message when the endpoint does not exist yet', async () => {
+    fetchMock
+      .mockResolvedValueOnce(batchResponse([], 404))
+      .mockResolvedValue(okResponse(202, 2));
+    const adapter = makeAdapter();
+    await adapter.notifyNewMessages([direct('m1'), direct('m2')]);
+    expect(fetchMock.mock.calls.map((call) => call[0] as string)).toEqual([
+      'http://notification-service:3015/notifications/internal/new-messages',
+      'http://notification-service:3015/notifications/internal/new-message',
+      'http://notification-service:3015/notifications/internal/new-message',
+    ]);
+    // Remembered: the next batch goes straight to the single intake.
+    await adapter.notifyNewMessages([direct('m3')]);
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe(
+      'http://notification-service:3015/notifications/internal/new-message',
+    );
+  });
+
+  it('sends nothing when no message has a recipient', async () => {
+    const lonely = direct('m1');
+    lonely.conversation.participantIds = [ACTOR_ID];
+    await makeAdapter().notifyNewMessages([lonely]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

@@ -12,7 +12,11 @@ import type Redis from 'ioredis';
 import type { Prisma } from '@prisma/conversation-client';
 import { IChatRepository } from '../../domain/interfaces/chat.repository.interface';
 import type { IEncryptionRepository } from '../../domain/interfaces/encryption.repository.interface';
-import { NotificationServiceAdapter } from '../adapters/notification-service.adapter';
+import {
+  NewMessageNotification,
+  NotificationBatchRejectedError,
+  NotificationServiceAdapter,
+} from '../adapters/notification-service.adapter';
 import { ConversationPrometheusMetricsService } from '../metrics/conversation-prometheus-metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { Message } from '../../domain/entities/message.entity';
@@ -20,24 +24,44 @@ import { Conversation } from '../../domain/entities/conversation.entity';
 import {
   countPendingNotificationIntents,
   findDueNotificationIntents,
-  readNotificationIntent,
+  readNotificationIntents,
 } from '../repositories/notification-intent.reader';
 
 const POLL_MS = 1_000;
-// Five intents per pipeline, so every pipeline stays busy for the whole batch.
-export const OUTBOX_BATCH_SIZE = 60;
-// Overlap twelve bounded claim/read/intake pipelines, without changing DB pools.
-// Intake is latency-bound: at four pipelines the notification service's own database
-// gate (4 slots) was the limit; with that database local the gate no longer queues.
-export const OUTBOX_CONCURRENCY = 12;
-// While live traffic is heavy the drain yields: its Mongo writes (claim, read, complete, each
-// majority-acknowledged) compete with message inserts, and at 1000 messages/s twelve pipelines
-// roughly doubled the sender ACK time. Once traffic drops the full speed resumes.
-export const OUTBOX_BUSY_CONCURRENCY = 2;
+// Due intents read per poll, then delivered in chunks.
+export const OUTBOX_BATCH_SIZE = 200;
+// One chunk = one claim command, one read, one notification request and one
+// completion command for all of its intents. Per-intent round trips (about 78 ms
+// each) capped delivery near 150 intents/s with twelve lanes, and under chat load
+// the backlog grew by every message.
+export const OUTBOX_CHUNK_SIZE = 50;
+// Chunks in flight at once.
+export const OUTBOX_CONCURRENCY = 4;
+// While live traffic is heavy the drain keeps one chunk in flight: its Mongo
+// writes are majority-acknowledged and compete with message inserts, but a whole
+// chunk costs a handful of commands, so delivery keeps up with the traffic.
+export const OUTBOX_BUSY_CONCURRENCY = 1;
 export const OUTBOX_BUSY_MESSAGES_PER_SECOND = 50;
 const BATCH_SIZE = OUTBOX_BATCH_SIZE;
 const CONCURRENCY = OUTBOX_CONCURRENCY;
 const LEASE_MS = 30_000;
+// CONVERSATION_OUTBOX_PRIORITY=chat: while the whole fleet receives at least
+// CONVERSATION_OUTBOX_BUSY_THRESHOLD messages/s, notifications only trickle at
+// CONVERSATION_OUTBOX_BUSY_RATE intents/s and chat keeps the CPU; once traffic
+// drops the batched drain catches up at full speed. Measured on the homelab:
+// delivering every notification during a burst halved the chat throughput.
+export const OUTBOX_DEFAULT_BUSY_THRESHOLD = 100;
+export const OUTBOX_DEFAULT_BUSY_RATE = 20;
+// Each replica reports what it received; the drainer sums fresh reports.
+const RATE_KEY = 'chat:outbox:rates';
+const RATE_REPORT_MS = 1_000;
+const RATE_FRESH_MS = 3_000;
+const RATE_KEY_TTL_MS = 10_000;
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 // CONVERSATION_NOTIFICATION_OUTBOX=leader: one replica at a time drains the outbox. With several
 // replicas every worker claimed the same intents and all but one claim lost, and each claim is a
 // majority write, so the fleet doubled its Mongo writes for no extra delivery.
@@ -70,6 +94,17 @@ export class MessageNotificationOutboxWorker
   private leaderMode = false;
   private leader = false;
   private readonly instanceId = `${hostname()}-${process.pid}`;
+  private readonly chatFirst =
+    process.env.CONVERSATION_OUTBOX_PRIORITY === 'chat';
+  private readonly busyThreshold = positiveInteger(
+    process.env.CONVERSATION_OUTBOX_BUSY_THRESHOLD,
+    OUTBOX_DEFAULT_BUSY_THRESHOLD,
+  );
+  private readonly busyRate = positiveInteger(
+    process.env.CONVERSATION_OUTBOX_BUSY_RATE,
+    OUTBOX_DEFAULT_BUSY_RATE,
+  );
+  private rateTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -82,6 +117,17 @@ export class MessageNotificationOutboxWorker
   ) {}
 
   onModuleInit(): void {
+    // Every replica that receives messages reports its rate, including one whose
+    // outbox is off: the drainer decides on the traffic of the whole fleet.
+    if (this.chatFirst && this.redis) {
+      this.logger.log(
+        `Notification outbox: chat first above ${this.busyThreshold} messages/s (then ${this.busyRate} intents/s)`,
+      );
+      this.rateTimer = setInterval(() => {
+        void this.reportRate();
+      }, RATE_REPORT_MS);
+      this.rateTimer.unref();
+    }
     // The outbox is shared through Mongo, so one replica is enough to drain it.
     // A replica that has no route to notification-service (for example one on
     // another machine) must not claim intents it cannot deliver.
@@ -110,6 +156,7 @@ export class MessageNotificationOutboxWorker
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     if (this.leaderTimer) clearInterval(this.leaderTimer);
+    if (this.rateTimer) clearInterval(this.rateTimer);
     this.shutdown.abort();
     await this.running;
     if (this.leaderMode && this.leader) {
@@ -188,34 +235,96 @@ export class MessageNotificationOutboxWorker
     // contention or failures must not become a tight retry loop. Each batch awaits
     // database and network work, so a long backlog never blocks the event loop.
     while (!this.stopped) {
-      if (!(await this.drainBatch())) break;
+      if (this.chatFirst && (await this.chatIsBusy())) {
+        // One small chunk per poll: notifications keep moving, chat keeps the CPU.
+        await this.drainBatch(this.busyRate, 1);
+        return;
+      }
+      const lanes =
+        !this.chatFirst &&
+        this.metrics.messagesCreatedPerSecond() >=
+          OUTBOX_BUSY_MESSAGES_PER_SECOND
+          ? OUTBOX_BUSY_CONCURRENCY
+          : CONCURRENCY;
+      if (!(await this.drainBatch(BATCH_SIZE, lanes))) break;
       // The renewal timer keeps the lease; a long drain stops once another replica holds it.
       if (this.leaderMode && !this.leader) break;
     }
   }
 
-  private async drainBatch(): Promise<boolean> {
+  private async reportRate(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      await this.redis!.multi()
+        .hset(
+          RATE_KEY,
+          this.instanceId,
+          `${this.metrics.messagesCreatedPerSecond()}:${Date.now()}`,
+        )
+        .pexpire(RATE_KEY, RATE_KEY_TTL_MS)
+        .exec();
+    } catch {
+      // A missed report only makes the drainer see less traffic for a moment.
+    }
+  }
+
+  // Messages per second the whole fleet received, from the fresh reports. Redis
+  // trouble falls back to this replica's own traffic.
+  private async chatIsBusy(): Promise<boolean> {
+    const local = this.metrics.messagesCreatedPerSecond();
+    if (!this.redis) return local >= this.busyThreshold;
+    try {
+      const reports = await this.redis.hgetall(RATE_KEY);
+      const now = Date.now();
+      let total = 0;
+      let mine = false;
+      const stale: string[] = [];
+      for (const [instance, value] of Object.entries(reports ?? {})) {
+        const [rate, at] = value.split(':').map(Number);
+        if (!Number.isFinite(rate) || !Number.isFinite(at)) continue;
+        if (now - at > RATE_KEY_TTL_MS) stale.push(instance);
+        if (now - at > RATE_FRESH_MS) continue;
+        if (instance === this.instanceId) {
+          mine = true;
+          total += local; // fresher than the report
+        } else {
+          total += rate;
+        }
+      }
+      if (!mine) total += local;
+      if (stale.length > 0)
+        void this.redis.hdel(RATE_KEY, ...stale).catch(() => 0);
+      return total >= this.busyThreshold;
+    } catch {
+      return local >= this.busyThreshold;
+    }
+  }
+
+  private async drainBatch(limit: number, lanes: number): Promise<boolean> {
     const now = new Date();
     const candidates = await this.metrics.measurePhase(
       'outbox_candidate_read',
-      () => findDueNotificationIntents(this.prisma, now, BATCH_SIZE),
+      () => findDueNotificationIntents(this.prisma, now, limit),
     );
+    const chunks: string[][] = [];
+    for (let i = 0; i < candidates.length; i += OUTBOX_CHUNK_SIZE) {
+      chunks.push(
+        candidates.slice(i, i + OUTBOX_CHUNK_SIZE).map(({ id }) => id),
+      );
+    }
     let cursor = 0;
     let allCompleted = true;
-    const lanes =
-      this.metrics.messagesCreatedPerSecond() >= OUTBOX_BUSY_MESSAGES_PER_SECOND
-        ? OUTBOX_BUSY_CONCURRENCY
-        : CONCURRENCY;
     await Promise.all(
       Array.from({ length: lanes }, async () => {
-        while (!this.stopped && cursor < candidates.length) {
-          const candidate = candidates[cursor++];
-          if (!(await this.deliver(candidate.id))) allCompleted = false;
+        while (!this.stopped && cursor < chunks.length) {
+          if (!(await this.deliverChunk(chunks[cursor++]))) {
+            allCompleted = false;
+          }
         }
       }),
     );
     await this.sampleBacklog();
-    return !this.stopped && candidates.length === BATCH_SIZE && allCompleted;
+    return !this.stopped && candidates.length === limit && allCompleted;
   }
 
   private async sampleBacklog(): Promise<void> {
@@ -234,37 +343,72 @@ export class MessageNotificationOutboxWorker
     }
   }
 
-  private async deliver(id: string): Promise<boolean> {
-    const claimId = randomUUID();
-    let attempts = 1;
+  /**
+   * Delivers one chunk with the same guarantees as delivering each intent alone:
+   * every intent gets its own claim id, every claim and completion keeps its
+   * due/claim guard in the write itself, the record is read only after the claim,
+   * and an intent is cleared only after notification-service confirmed durable
+   * jobs for it. Returns true when every intent of the chunk was completed.
+   */
+  private async deliverChunk(ids: readonly string[]): Promise<boolean> {
+    const claimedAt = new Date();
+    const claims: { id: string; claimId: string }[] = ids.map((id) => ({
+      id,
+      claimId: randomUUID(),
+    }));
+    let claimed: number;
     try {
-      const claimed = await this.metrics.measurePhase('outbox_claim', () =>
-        this.updateIntent(
-          id,
-          {
-            notificationNextAttemptAt: {
-              $type: 'date',
-              $lte: { $date: new Date().toISOString() },
-            },
-          },
-          {
-            $set: {
-              notificationClaimId: claimId,
+      claimed = await this.metrics.measurePhase('outbox_claim', () =>
+        this.updateIntents(
+          claims.map(({ id, claimId }) => ({
+            q: {
+              _id: { $oid: id },
               notificationNextAttemptAt: {
-                $date: new Date(Date.now() + LEASE_MS).toISOString(),
+                $type: 'date',
+                $lte: { $date: claimedAt.toISOString() },
               },
             },
-            $inc: { notificationAttemptCount: 1 },
-          },
+            u: {
+              $set: {
+                notificationClaimId: claimId,
+                notificationNextAttemptAt: {
+                  $date: new Date(claimedAt.getTime() + LEASE_MS).toISOString(),
+                },
+              },
+              $inc: { notificationAttemptCount: 1 },
+            },
+          })),
         ),
       );
-      if (claimed !== 1) return false;
-      const record = await this.metrics.measurePhase('outbox_record_read', () =>
-        readNotificationIntent(this.prisma, id, claimId),
+    } catch {
+      // Nothing was confirmed as claimed; whatever was claimed expires on its own.
+      if (!this.stopped) this.metrics.recordNotificationOutbox('poll_error');
+      return false;
+    }
+    if (claimed === 0) return false;
+
+    let records: Awaited<ReturnType<typeof readNotificationIntents>>;
+    try {
+      records = await this.metrics.measurePhase('outbox_record_read', () =>
+        readNotificationIntents(this.prisma, claims),
       );
-      // Another worker may have acquired an expired lease during a slow read.
-      if (!record || record.notificationClaimId !== claimId) return false;
-      attempts = record.notificationAttemptCount;
+    } catch {
+      if (this.stopped) return false;
+      await this.reschedule(claims);
+      return false;
+    }
+    // Another worker may have acquired an expired lease during a slow read.
+    let complete = claimed === ids.length && records.length === ids.length;
+
+    const cancelled: typeof claims = [];
+    const failed: { id: string; claimId: string; attempts: number }[] = [];
+    const ready: {
+      claim: { id: string; claimId: string };
+      attempts: number;
+      notification: NewMessageNotification;
+    }[] = [];
+    for (const record of records) {
+      const claim = { id: record.id, claimId: record.notificationClaimId };
       const recipientIds = record.notificationRecipientIds.filter(
         (userId) =>
           userId !== record.senderId &&
@@ -275,7 +419,8 @@ export class MessageNotificationOutboxWorker
         !record.conversation ||
         recipientIds.length === 0
       ) {
-        return await this.complete(id, claimId, 'cancelled');
+        cancelled.push(claim);
+        continue;
       }
       // The intake adapter uses only identity, content and type, not chat history.
       const message = new Message({
@@ -287,105 +432,197 @@ export class MessageNotificationOutboxWorker
         createdAt: record.createdAt,
         isRecalled: record.isRecalled,
       });
-      message.content = this.encryption.decrypt(message.content);
-      if (
-        record.content &&
-        message.content === record.content &&
-        /^[a-f0-9]{32}:[a-f0-9]{32}:[a-f0-9]+$/i.test(record.content)
-      ) {
-        throw new Error('Notification content could not be decrypted');
+      try {
+        message.content = this.encryption.decrypt(message.content);
+        if (
+          record.content &&
+          message.content === record.content &&
+          /^[a-f0-9]{32}:[a-f0-9]{32}:[a-f0-9]+$/i.test(record.content)
+        ) {
+          throw new Error('Notification content could not be decrypted');
+        }
+      } catch {
+        failed.push({ ...claim, attempts: record.notificationAttemptCount });
+        continue;
       }
       const conversation = new Conversation(record.conversation);
       // Enrichment does not change the original recipient snapshot. Removed
       // members are excluded; newly joined members never receive older intents.
       conversation.participantIds = [record.senderId, ...recipientIds];
+      ready.push({
+        claim,
+        attempts: record.notificationAttemptCount,
+        notification: { conversation, message, actorUserId: record.senderId },
+      });
+    }
+
+    if (ready.length > 0) {
       await this.metrics.measurePhase('outbox_enrichment', () =>
-        this.chats.populateConversationParticipants(conversation),
-      );
-      if (this.stopped) return false;
-      await this.metrics.measurePhase('outbox_intake', () =>
-        this.notifications.notifyNewMessage(
-          conversation,
-          message,
-          record.senderId,
-          this.shutdown.signal,
+        Promise.all(
+          ready.map(({ notification }) =>
+            this.chats.populateConversationParticipants(
+              notification.conversation,
+            ),
+          ),
         ),
       );
-      return await this.complete(id, claimId, 'queued');
-    } catch {
-      if (this.stopped) return false; // Restart reclaims the expired lease.
-      const backoffMs = Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 8));
+    }
+    if (this.stopped) return false;
+
+    const delivered: typeof claims = [];
+    if (ready.length > 0) {
       try {
-        const rescheduled = await this.updateIntent(
-          id,
-          { notificationClaimId: claimId },
-          {
-            $set: {
-              notificationClaimId: null,
-              notificationNextAttemptAt: {
-                $date: new Date(
-                  Date.now() + backoffMs + Math.floor(Math.random() * 1_000),
-                ).toISOString(),
+        await this.metrics.measurePhase('outbox_intake', () =>
+          this.notifications.notifyNewMessages(
+            ready.map(({ notification }) => notification),
+            this.shutdown.signal,
+          ),
+        );
+        delivered.push(...ready.map(({ claim }) => claim));
+      } catch (error: unknown) {
+        if (this.stopped) return false; // Restart reclaims the expired lease.
+        if (
+          error instanceof NotificationBatchRejectedError &&
+          ready.length > 1
+        ) {
+          // One invalid intent must not hold back the rest: deliver one by one.
+          for (const item of ready) {
+            if (this.stopped) return false;
+            try {
+              await this.metrics.measurePhase('outbox_intake', () =>
+                this.notifications.notifyNewMessage(
+                  item.notification.conversation,
+                  item.notification.message,
+                  item.notification.actorUserId,
+                  this.shutdown.signal,
+                ),
+              );
+              delivered.push(item.claim);
+            } catch {
+              if (this.stopped) return false;
+              failed.push({ ...item.claim, attempts: item.attempts });
+            }
+          }
+        } else {
+          // Unavailable or ambiguous: keep every intent for a later replay, which
+          // notification-service deduplicates per message and recipient.
+          for (const item of ready) {
+            failed.push({ ...item.claim, attempts: item.attempts });
+          }
+        }
+      }
+    }
+
+    if (failed.length > 0) {
+      complete = false;
+      await this.reschedule(failed);
+    }
+    if (delivered.length + cancelled.length > 0) {
+      if (!(await this.complete(delivered, cancelled))) complete = false;
+    }
+    return complete;
+  }
+
+  // Back to pending with a backoff, but only while the claim is still ours.
+  private async reschedule(
+    claims: readonly { id: string; claimId: string; attempts?: number }[],
+  ): Promise<boolean> {
+    const now = Date.now();
+    try {
+      const rescheduled = await this.updateIntents(
+        claims.map(({ id, claimId, attempts }) => {
+          const backoffMs = Math.min(
+            300_000,
+            1_000 * 2 ** Math.min(attempts ?? 1, 8),
+          );
+          return {
+            q: { _id: { $oid: id }, notificationClaimId: claimId },
+            u: {
+              $set: {
+                notificationClaimId: null,
+                notificationNextAttemptAt: {
+                  $date: new Date(
+                    now + backoffMs + Math.floor(Math.random() * 1_000),
+                  ).toISOString(),
+                },
               },
             },
-          },
-        );
+          };
+        }),
+      );
+      for (let i = 0; i < claims.length; i++) {
         this.metrics.recordNotificationOutbox(
-          rescheduled === 1 ? 'retry' : 'lease_lost',
+          i < rescheduled ? 'retry' : 'lease_lost',
         );
-      } catch {
-        // Do not delete an intent when even rescheduling fails. The persisted
-        // lease date makes it eligible again after restart/database recovery.
-        this.metrics.recordNotificationOutbox('poll_error');
       }
+      return rescheduled === claims.length;
+    } catch {
+      // Do not delete an intent when even rescheduling fails. The persisted
+      // lease date makes it eligible again after restart/database recovery.
+      this.metrics.recordNotificationOutbox('poll_error');
       return false;
     }
   }
 
   private async complete(
-    id: string,
-    claimId: string,
-    outcome: 'queued' | 'cancelled',
+    delivered: readonly { id: string; claimId: string }[],
+    cancelled: readonly { id: string; claimId: string }[],
   ): Promise<boolean> {
-    const completed = await this.metrics.measurePhase('outbox_complete', () =>
-      this.updateIntent(
-        id,
-        { notificationClaimId: claimId },
-        {
-          $set: {
-            notificationRecipientIds: [],
-            notificationNextAttemptAt: null,
-            notificationClaimId: null,
-          },
-        },
+    const done = [...delivered, ...cancelled];
+    let completed: number;
+    try {
+      completed = await this.metrics.measurePhase('outbox_complete', () =>
+        this.updateIntents(
+          done.map(({ id, claimId }) => ({
+            q: { _id: { $oid: id }, notificationClaimId: claimId },
+            u: {
+              $set: {
+                notificationRecipientIds: [],
+                notificationNextAttemptAt: null,
+                notificationClaimId: null,
+              },
+            },
+          })),
+        ),
+      );
+    } catch {
+      // Not acknowledged: keep the intents. The jobs are durable and keyed by
+      // message and recipient, so the replay is deduplicated by notification-service.
+      await this.reschedule(done);
+      return false;
+    }
+    // Mongo reports one total; a shortfall means some leases were taken over.
+    const outcomes = [
+      ...delivered.map(() => 'queued' as const),
+      ...cancelled.map(() => 'cancelled' as const),
+    ];
+    outcomes.forEach((outcome, index) =>
+      this.metrics.recordNotificationOutbox(
+        index < completed ? outcome : 'lease_lost',
       ),
     );
-    this.metrics.recordNotificationOutbox(
-      completed === 1 ? outcome : 'lease_lost',
-    );
-    return completed === 1;
+    return completed === done.length;
   }
 
-  // Prisma updateMany reads matching IDs before its write. These single-document
-  // mutations need only an atomic predicate + update, with no read-back. Keep the
-  // due/claim guard in Mongo's actual write predicate so another worker cannot
-  // acquire or clear a lease between a preliminary read and the update.
-  private async updateIntent(
-    id: string,
-    guard: Prisma.InputJsonObject,
-    update: Prisma.InputJsonObject,
+  // Prisma updateMany reads matching IDs before its write. These are guarded
+  // single-document statements, sent together in one update command with no
+  // read-back. Keep the due/claim guard in Mongo's actual write predicate so
+  // another worker cannot acquire or clear a lease between a read and the update.
+  private async updateIntents(
+    statements: readonly {
+      q: Prisma.InputJsonObject;
+      u: Prisma.InputJsonObject;
+    }[],
   ): Promise<number> {
     const result = await this.prisma.$runCommandRaw({
       update: 'messages',
-      updates: [
-        {
-          q: { _id: { $oid: id }, ...guard },
-          u: update,
-          multi: false,
-          upsert: false,
-        },
-      ],
-      ordered: true,
+      updates: statements.map(({ q, u }) => ({
+        q,
+        u,
+        multi: false,
+        upsert: false,
+      })),
+      ordered: false,
       writeConcern: { w: 'majority' },
     });
     // Mongo can return ok:1 with a per-write error. An ambiguous/unacknowledged
@@ -394,7 +631,9 @@ export class MessageNotificationOutboxWorker
       result.ok !== 1 ||
       (Array.isArray(result.writeErrors) && result.writeErrors.length > 0) ||
       result.writeConcernError ||
-      (result.n !== 0 && result.n !== 1)
+      typeof result.n !== 'number' ||
+      result.n < 0 ||
+      result.n > statements.length
     ) {
       throw new Error('Notification intent update was not acknowledged');
     }

@@ -45,6 +45,17 @@ const newMessageNotificationSchema = z
     ),
   }));
 
+// Upper bound for one batched intake: about two notification-outbox chunks, and far
+// below PostgreSQL's bind-parameter limit even for large groups.
+export const MAX_NEW_MESSAGE_BATCH = 100;
+
+const newMessageBatchSchema = z.object({
+  items: z
+    .array(newMessageNotificationSchema)
+    .min(1)
+    .max(MAX_NEW_MESSAGE_BATCH),
+});
+
 @Controller('notifications/internal')
 export class InternalNotificationsController {
   constructor(
@@ -66,6 +77,24 @@ export class InternalNotificationsController {
     }
 
     return this.sendNewMessageNotification.execute(parsed.data);
+  }
+
+  // Same contract as new-message for many messages at once, stored atomically.
+  @Post('new-messages')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async sendNewMessages(
+    @Headers('x-internal-secret') internalSecret: string | undefined,
+    @Body() body: unknown,
+  ) {
+    this.assertInternalSecret(internalSecret);
+
+    const parsed = newMessageBatchSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.flatten());
+    }
+
+    return this.sendNewMessageNotification.executeMany(parsed.data.items);
   }
 
   private assertInternalSecret(internalSecret: string | undefined) {

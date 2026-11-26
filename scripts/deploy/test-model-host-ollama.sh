@@ -52,7 +52,7 @@ seed() {
   rm -rf "$tmp/containers" "$tmp/calls" "$tmp/warm"; mkdir -p "$tmp/containers/velora-gemma4"
   echo "sha256:olddeadbeef" >"$tmp/containers/velora-gemma4/image"
   echo true >"$tmp/containers/velora-gemma4/running"
-  printf 'OLLAMA_KEEP_ALIVE=%s\nOLLAMA_NUM_PARALLEL=1\nOLLAMA_MAX_LOADED_MODELS=1\nOLLAMA_CONTEXT_LENGTH=4096\nOLLAMA_HOST=0.0.0.0:11434\n' "$1" >"$tmp/containers/velora-gemma4/env"
+  printf 'OLLAMA_KEEP_ALIVE=%s\nOLLAMA_NUM_PARALLEL=2\nOLLAMA_MAX_LOADED_MODELS=1\nOLLAMA_CONTEXT_LENGTH=4096\nOLLAMA_HOST=0.0.0.0:11434\n' "$1" >"$tmp/containers/velora-gemma4/env"
   : >"$tmp/calls"
 }
 run() {
@@ -66,7 +66,7 @@ has() { [[ "$out" == *"$1"* ]] || fail "$2: output missing '$1' ($out)"; }
 seed 5m
 run --dry-run
 expect 0 "dry run"
-for want in "--gpus all" "--restart unless-stopped" "-p 127.0.0.1:11434:11434" "-v velora-gemma4-models:/root/.ollama" "OLLAMA_KEEP_ALIVE=-1" "OLLAMA_NUM_PARALLEL=1" "OLLAMA_MAX_LOADED_MODELS=1" "sha256:olddeadbeef"; do has "$want" "dry run"; done
+for want in "--gpus all" "--restart unless-stopped" "-p 127.0.0.1:11434:11434" "-v velora-gemma4-models:/root/.ollama" "OLLAMA_KEEP_ALIVE=-1" "OLLAMA_NUM_PARALLEL=2" "OLLAMA_MAX_LOADED_MODELS=1" "sha256:olddeadbeef"; do has "$want" "dry run"; done
 [[ "$(calls stop)" -eq 0 ]] || fail "dry run must not touch containers"
 
 seed -1

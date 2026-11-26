@@ -14,7 +14,7 @@ homelab ai-service -> host.docker.internal:11435 -> (reverse SSH tunnel) -> lapt
 |---|---|
 | Model server | Docker container `velora-gemma4` (GPU, volume `velora-gemma4-models`, port `127.0.0.1:11434`). Recreate it with `scripts/deploy/model-host-ollama`; it is idempotent, reuses the current image and rolls back if the new container does not answer. |
 | Keep-alive | `OLLAMA_KEEP_ALIVE=-1`: the model stays loaded. With the default 5 minutes, the first request after a quiet spell waited about 12 s for a reload. |
-| One model only | `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`. **Never load another model on this server** (for example to experiment): it evicts the production model and slows live users. Use a second container on another port. |
+| One model, two slots | `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=2` (see Capacity). **Never load another model on this server** (for example to experiment): it evicts the production model and slows live users. Use a second container on another port. |
 | Tunnel | User service `velora-gemma-ssh-tunnel` (`Restart=always`). Its `ExecStartPre` runs `scripts/deploy/model-host-tunnel-clean-stale`, installed as `~/.local/bin/velora-model-host-tunnel-clean-stale`. |
 | Stays up | `loginctl enable-linger $USER` so the tunnel runs without a login session; logind lid policy `HandleLidSwitch=ignore` and `HandleLidSwitchExternalPower=ignore` (`/etc/systemd/logind.conf.d/`) so closing the lid does not suspend the host. Keep it plugged in and cool. |
 
@@ -37,8 +37,17 @@ connect. Measured: an unclean kill of the tunnel now recovers in about 18 s by i
 They appear in the monitoring-service system alerts.
 
 ## Capacity and `AI_BUSY`
-The model server handles one request at a time. A warm chat turn takes about 3-4 s (measured), so very roughly 15 chat turns a
-minute across all users; reel questions make more model calls and cost more. The per-user limits do not bound the total, so the
+The model server handles two requests at a time (`OLLAMA_NUM_PARALLEL=2`; each still gets a 4,096-token context). A warm chat
+turn takes about 3-4 s; a reel question makes several model calls. Measured 2026-11-26 with 12 reel detail turns per stream
+(`.benchmarks/load*-{a-single,a-parallel,b-parallel}.json`):
+
+| | 1 slot | 2 slots |
+|---|---|---|
+| One user, median turn | 39.4 s | 26.7 s |
+| Two users at once, median turn | 51-58 s | 26-27 s |
+| Two users, combined | 2.25 turns/min | 3.64 turns/min |
+
+The second slot costs about 0.57 GB of VRAM (model 1.10 -> 1.67 GB, 2.8 of 4 GB used on the GPU). The per-user limits do not bound the total, so the
 ai-service admits a limited number of turns (`AI_MAX_CONCURRENT_TURNS`, `AI_MAX_QUEUED_TURNS`, `AI_TURN_QUEUE_WAIT_MS`; see
 `.env.example`) and answers the overflow at once with `AI_BUSY` and a `retryAfterSeconds` hint, instead of letting it queue until
 a model timeout. The client shows "Velora AI is busy right now"; see `docs/rate-limiting-and-guardrails.md`.

@@ -800,3 +800,17 @@ The regular 32-row sample on the same build (`-63-contract-regular.json`) fell t
 The capacity limit was not only the GPU: the model server was configured for one request at a time (`OLLAMA_NUM_PARALLEL=1`), so a turn's own concurrent calls and any second user's calls queued. With two slots (each still 4,096 tokens; VRAM 1.10 -> 1.67 GB, 2.8 of 4 GB used), the same load test as the capacity baseline (12 reel detail turns per stream): one user median turn **39.4 -> 26.7 s**; two users at once 51-58 -> 26-27 s per turn; combined **2.25 -> 3.64 turns/min**; answered 23/24 -> 24/24; judged quality unchanged (mean 0.635 -> 0.713, correct 23 -> 23 of 35-36). Live on the laptop model server (the production model host); `scripts/deploy/model-host-ollama` now defaults to 2 slots. Rollback: `OLLAMA_NUM_PARALLEL=1 scripts/deploy/model-host-ollama` (the old container is kept stopped as `velora-gemma4-previous-20261126T160756Z`).
 
 Chapter by title without a chapter list: the index's sections are untitled transcript spans, so a chapter title exists in Velora only when the creator writes it in the reel description, which the chapter resolution handles. The benchmark's remaining chapter rows ask about YouTube titles that were never uploaded with those reels; they are a benchmark artefact, not a product gap.
+
+### Chapter titles from the current description, and the final post-change run (2026-11-26, 9e2b98d5)
+Editing a reel's description after upload (`PATCH /content/reels/:id`) only updates the content service; the index keeps the copy from indexing time, so chapters a creator added later were never seen. The chapter lookup now reads the description through `content.get_reel` as the asking user (falling back to the indexed copy). The benchmark reels with chapter rows got their YouTube chapter lists through that same edit endpoint (17 reels; 2 already had them).
+
+Final run on the confirmed build, with every change of the day live (token-guard fix, long-range turns, probe reranker off, two model slots, live description); 185 rows, 4x the usual sample; "before" is each row's latest earlier judged result:
+
+| | rows | before | now |
+|---|---|---|---|
+| chapter by title (`-65-final-chapters.json`) | 44 paired (48 run) | 0.395, 8 correct | **0.588, 17 correct** |
+| detail | 66 | 0.707, 47 | 0.687, 45 |
+| timestamp | 41 | 0.605, 15 | 0.593, 14 |
+| opening | 30 | 0.692, 22 | 0.649, 19 |
+
+All 48 chapter questions were rewritten (48 "chapter title resolved" log lines), 0 no-replies, 2 scope refusals in 137 regular rows. The regular rows are unchanged within noise: 8 rows flipped to correct and 14 to wrong (sign test p = 0.29), most of the 14 were wrong in most earlier runs, and the four opening rows that "dropped" got word-for-word the same answer as before ("Hello, welcome.") which the judge scored 0.95 then and 0.10 now: judge variance on identical answers, which is also a reminder that single-row comparisons on this judge mean little.

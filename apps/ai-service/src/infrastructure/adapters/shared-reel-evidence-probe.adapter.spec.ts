@@ -195,6 +195,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       hits: unknown[],
       generateObject: jest.Mock,
       values: Record<string, string> = { AI_CLOUDFLARE_LLM_ENABLED: 'true' },
+      band?: number,
     ) => {
       const searchChunks = jest.fn().mockResolvedValue(hits);
       const adapter = new SharedReelEvidenceProbeAdapter(
@@ -203,6 +204,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
         { get: (key: string) => values[key] } as never,
         undefined,
         { generateObject } as never,
+        { rescueMaxDistance: () => band, answersQuestion: jest.fn() },
       );
       return { adapter, generateObject, searchChunks };
     };
@@ -224,6 +226,33 @@ describe('SharedReelEvidenceProbeAdapter', () => {
         jest.fn().mockResolvedValue({ about: 'GENERAL' }),
       );
       await expect(ask(general.adapter)).resolves.toBe(false);
+    });
+
+    it('just past the limit, reroutes only on the scope check, and never beyond the band', async () => {
+      const video = withScope(
+        [hit(0.566)],
+        jest.fn().mockResolvedValue({ about: 'VIDEO' }),
+        undefined,
+        0.6,
+      );
+      await expect(ask(video.adapter)).resolves.toBe(true);
+      const general = withScope(
+        [hit(0.566)],
+        jest.fn().mockResolvedValue({ about: 'GENERAL' }),
+        undefined,
+        0.6,
+      );
+      await expect(ask(general.adapter)).resolves.toBe(false);
+      const failing = withScope(
+        [hit(0.566)],
+        jest.fn().mockRejectedValue(new Error('down')),
+        undefined,
+        0.6,
+      );
+      await expect(ask(failing.adapter)).resolves.toBe(false);
+      const beyond = withScope([hit(0.62)], jest.fn(), undefined, 0.6);
+      await expect(ask(beyond.adapter)).resolves.toBe(false);
+      expect(beyond.generateObject).not.toHaveBeenCalled();
     });
 
     it('does not ask when nothing is near', async () => {

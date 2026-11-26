@@ -1,3 +1,4 @@
+import type { IEvidenceAnswerCheck } from '@ai/domain/interfaces/evidence-answer-check.interface';
 import type {
   RagChatWorkflowState,
   RagContextSufficiencyResult,
@@ -10,7 +11,7 @@ import type {
   StructuredLlmJsonSchema,
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import {
   boundEvidence,
   boundPromptText,
@@ -53,6 +54,9 @@ export class CheckContextSufficiencyUseCase {
     private readonly structuredLlmService: IStructuredLlmService,
     @Inject('IAiApplicationConfig')
     private readonly config: IAiApplicationConfig,
+    @Optional()
+    @Inject('IEvidenceAnswerCheck')
+    private readonly answerCheck?: IEvidenceAnswerCheck,
   ) {}
 
   async execute(
@@ -207,7 +211,7 @@ export class CheckContextSufficiencyUseCase {
 
     // A question the shared video does not cover: even its closest excerpt is far from the question, so
     // answering would present an unrelated excerpt as the answer (measured: 27 of 40 such questions got one).
-    if (this.evidenceFarFromQuestion(state)) {
+    if (await this.evidenceFarFromQuestion(state)) {
       return {
         sufficient: false,
         confidence: 1,
@@ -802,7 +806,9 @@ ${JSON.stringify(
    * at the price of about 3% of covered questions refused. Fails open: only ordinary transcript questions
    * with a numeric distance on every excerpt are judged. AI_CONTEXT_EVIDENCE_DISTANCE_GUARD=false turns it off.
    */
-  private evidenceFarFromQuestion(state: RagChatWorkflowState): boolean {
+  private async evidenceFarFromQuestion(
+    state: RagChatWorkflowState,
+  ): Promise<boolean> {
     if (
       this.config.get?.<string>('AI_CONTEXT_EVIDENCE_DISTANCE_GUARD') ===
       'false'
@@ -851,8 +857,35 @@ ${JSON.stringify(
     this.logger.debug(
       `[ContextSufficiency] evidence signals closestDistance=${closest.toFixed(3)} excerpts=${chunks.length} reranked=${state.rerankedChunks.length} rerankScored=${rerankScores.length} bestRerank=${rerankScores.length ? Math.max(...rerankScores).toFixed(4) : 'n/a'}`,
     );
-    if (closest > limit) return true;
+    if (closest > limit)
+      return !(await this.excerptsAnswer(state, chunks, closest));
     return this.rerankerAlsoDisagrees(state, closest);
+  }
+
+  /**
+   * Just past the limit, a covered question whose excerpt is phrased far from it (a Korean question at 0.566 whose
+   * closest excerpt states the answer) would be refused; the remote check lifts the refusal only when it judges that
+   * the excerpts answer the question. Uncovered questions in that band were all judged unanswered (27 of 27 at
+   * 0.55-0.65, measured offline 2026-11-27). Anything else, including a failed check, keeps the refusal.
+   */
+  private async excerptsAnswer(
+    state: RagChatWorkflowState,
+    chunks: RagChatWorkflowState['retrievedChunks'],
+    closest: number,
+  ): Promise<boolean> {
+    const band = this.answerCheck?.rescueMaxDistance();
+    if (!this.answerCheck || band === undefined || closest > band) return false;
+    const excerpts = [...chunks]
+      .sort((a, b) => (a.distance ?? 1) - (b.distance ?? 1))
+      .map((chunk) => chunk.evidenceText ?? chunk.chunkText ?? '');
+    const answered = await this.answerCheck.answersQuestion(
+      state.userMessage,
+      excerpts,
+    );
+    this.logger.debug(
+      `[ContextSufficiency] beyond the distance limit (${closest.toFixed(3)}); answer check: ${answered === undefined ? 'unknown' : answered}`,
+    );
+    return answered === true;
   }
 
   /**

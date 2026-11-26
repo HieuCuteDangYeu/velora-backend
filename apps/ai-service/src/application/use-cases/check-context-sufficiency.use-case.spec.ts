@@ -219,6 +219,7 @@ describe('CheckContextSufficiencyUseCase', () => {
       distances: Array<number | null>,
       flags: Record<string, string> = {},
       overrides: Record<string, unknown> = {},
+      answerCheck?: unknown,
     ) => {
       const service = {
         generateObject: jest.fn().mockResolvedValue(modelAnswer),
@@ -230,6 +231,7 @@ describe('CheckContextSufficiencyUseCase', () => {
       const useCase = new CheckContextSufficiencyUseCase(
         service as never,
         guardConfig,
+        answerCheck as never,
       );
       const chunks = distances.map((distance, i) => ({
         chunkId: `c${i}`,
@@ -295,6 +297,47 @@ describe('CheckContextSufficiencyUseCase', () => {
         AI_CONTEXT_MAX_EVIDENCE_DISTANCE: '0.7',
       });
       expect(service.generateObject).toHaveBeenCalled();
+    });
+
+    describe('just past the limit, with the remote answer check', () => {
+      const check = (answered: boolean | undefined, band = 0.6) => ({
+        rescueMaxDistance: jest.fn(() => band),
+        answersQuestion: jest.fn().mockResolvedValue(answered),
+      });
+
+      it('lifts the refusal only when the excerpts answer the question', async () => {
+        const yes = check(true);
+        const answered = await run([0.566, 0.62], {}, {}, yes);
+        expect(answered.service.generateObject).toHaveBeenCalled();
+        expect(yes.answersQuestion).toHaveBeenCalledWith(
+          'In this video, what does the speaker say about licences?',
+          ['Excerpt 0 of the transcript.', 'Excerpt 1 of the transcript.'],
+        );
+        for (const verdict of [false, undefined]) {
+          const kept = await run([0.566], {}, {}, check(verdict));
+          expect(kept.result.diagnostics?.decisionSource).toBe(
+            'DETERMINISTIC_EVIDENCE_DISTANCE',
+          );
+        }
+      });
+
+      it('does not ask beyond the band, or when the check is off', async () => {
+        const far = check(true);
+        const beyond = await run([0.61], {}, {}, far);
+        expect(beyond.result.diagnostics?.decisionSource).toBe(
+          'DETERMINISTIC_EVIDENCE_DISTANCE',
+        );
+        expect(far.answersQuestion).not.toHaveBeenCalled();
+        const off = {
+          rescueMaxDistance: jest.fn(() => undefined),
+          answersQuestion: jest.fn(),
+        };
+        const offResult = await run([0.566], {}, {}, off);
+        expect(offResult.result.diagnostics?.decisionSource).toBe(
+          'DETERMINISTIC_EVIDENCE_DISTANCE',
+        );
+        expect(off.answersQuestion).not.toHaveBeenCalled();
+      });
     });
 
     it('fails open when an excerpt has no distance (a chronological read)', async () => {

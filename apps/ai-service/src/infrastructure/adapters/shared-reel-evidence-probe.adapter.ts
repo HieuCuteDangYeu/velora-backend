@@ -1,4 +1,5 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
+import type { IEvidenceAnswerCheck } from '@ai/domain/interfaces/evidence-answer-check.interface';
 import type { IEmbeddingService } from '@ai/domain/interfaces/embedding.service.interface';
 import type { IRerankerService } from '@ai/domain/interfaces/reranker.service.interface';
 import type { IReelSemanticIndexService } from '@ai/domain/interfaces/reel-semantic-index.service.interface';
@@ -48,6 +49,9 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
     private readonly reranker?: IRerankerService,
     @Optional()
     private readonly scopeModel?: CloudflareStructuredLlmAdapter,
+    @Optional()
+    @Inject('IEvidenceAnswerCheck')
+    private readonly answerCheck?: IEvidenceAnswerCheck,
   ) {}
 
   async hasStrongEvidence(input: {
@@ -79,7 +83,19 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
           typeof hit.vectorDistance === 'number' &&
           hit.vectorDistance <= maxDistance,
       );
-      if (near.length === 0) return false;
+      if (near.length === 0) {
+        // Just past the limit, only the scope check may reroute; the not-covered guard then asks whether the
+        // excerpts answer the question (IEvidenceAnswerCheck), so an uncovered question is still refused there.
+        const band = this.answerCheck?.rescueMaxDistance();
+        const inBand = hits.some(
+          (hit) =>
+            typeof hit.vectorDistance === 'number' &&
+            band !== undefined &&
+            hit.vectorDistance <= band,
+        );
+        if (!inBand) return false;
+        return (await this.remoteSaysAboutVideo(input.message, hits)) === true;
+      }
       const aboutVideo = await this.remoteSaysAboutVideo(input.message, hits);
       if (aboutVideo !== undefined) return aboutVideo;
       const closest = Math.min(...near.map((hit) => hit.vectorDistance ?? 1));

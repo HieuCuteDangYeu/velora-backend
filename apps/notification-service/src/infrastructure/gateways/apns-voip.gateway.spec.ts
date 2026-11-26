@@ -25,6 +25,8 @@ describe('ApnsVoipGateway', () => {
 
   afterEach(() => {
     jest.clearAllTimers();
+    jest.useRealTimers();
+    jest.restoreAllMocks();
     jest.clearAllMocks();
     process.env = originalEnv;
     rmSync(tempDir, { force: true, recursive: true });
@@ -68,6 +70,28 @@ describe('ApnsVoipGateway', () => {
   const createGateway = () =>
     new ApnsVoipGateway({ recordApnsRequest: jest.fn() } as never);
 
+  const newRequest = () =>
+    Object.assign(new EventEmitter(), {
+      setEncoding: jest.fn(),
+      end: jest.fn(),
+    });
+
+  /** Every connect returns a fresh session so a retry can be observed. */
+  const mockFreshSessions = () => {
+    const sessions: ReturnType<typeof createSession>[] = [];
+    const requests: EventEmitter[] = [];
+    jest.mocked(http2.connect).mockImplementation(() => {
+      const request = newRequest();
+      const session = createSession(request);
+      requests.push(request);
+      sessions.push(session);
+      return session as unknown as http2.ClientHttp2Session;
+    });
+    return { sessions, requests };
+  };
+
+  const waitForRetry = () => new Promise((done) => setTimeout(done, 250));
+
   it('signs APNs provider JWT with raw ES256 signature bytes', () => {
     configureApnsCredentials();
 
@@ -107,45 +131,84 @@ describe('ApnsVoipGateway', () => {
     );
   });
 
-  it('turns a session error before a response into a transport failure', async () => {
+  it('turns session errors on both attempts into a transport failure', async () => {
     configureApnsCredentials();
-    const request = Object.assign(new EventEmitter(), {
-      setEncoding: jest.fn(),
-      end: jest.fn(),
-    });
-    const session = createSession(request);
-    jest
-      .mocked(http2.connect)
-      .mockReturnValue(session as unknown as http2.ClientHttp2Session);
+    const { sessions } = mockFreshSessions();
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
     const sending = createGateway().send(sendInput());
-    session.emit('error', new Error('connect ETIMEDOUT'));
+    sessions[0].emit(
+      'error',
+      Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    );
+    await waitForRetry();
+    sessions[1].emit('error', new Error('connect reset'));
 
     await expect(sending).rejects.toMatchObject({
       code: 'apns/transport_error',
     });
-    expect(session.destroy).toHaveBeenCalledTimes(1);
+    expect(http2.connect).toHaveBeenCalledTimes(2);
+    expect(sessions[0].destroy).toHaveBeenCalledTimes(1);
+    expect(sessions[1].destroy).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
+      expect.stringContaining(
+        '(retrying): stage=session_error cause=ETIMEDOUT',
+      ),
+      expect.stringContaining('(giving up): stage=session_error cause=none'),
+    ]);
+    expect(String(warn.mock.calls)).not.toContain('device-token');
+    warn.mockRestore();
+  });
+
+  it('retries a transport failure once on a fresh connection and succeeds', async () => {
+    configureApnsCredentials();
+    const { sessions, requests } = mockFreshSessions();
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+    const sending = createGateway().send(sendInput());
+    requests[0].emit('close');
+    await waitForRetry();
+    requests[1].emit('response', { ':status': 200 });
+    requests[1].emit('end');
+
+    await expect(sending).resolves.toBeUndefined();
+    expect(http2.connect).toHaveBeenCalledTimes(2);
+    expect(sessions[1].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an APNs rejection', async () => {
+    configureApnsCredentials();
+    const { requests } = mockFreshSessions();
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+
+    const sending = createGateway().send(sendInput());
+    requests[0].emit('response', { ':status': 400 });
+    requests[0].emit('data', JSON.stringify({ reason: 'BadDeviceToken' }));
+    requests[0].emit('end');
+
+    await expect(sending).rejects.toMatchObject({
+      code: 'apns/BadDeviceToken',
+    });
+    expect(http2.connect).toHaveBeenCalledTimes(1);
   });
 
   it('settles once when request and session fail together', async () => {
     configureApnsCredentials();
-    const request = Object.assign(new EventEmitter(), {
-      setEncoding: jest.fn(),
-      end: jest.fn(),
-    });
-    const session = createSession(request);
-    jest
-      .mocked(http2.connect)
-      .mockReturnValue(session as unknown as http2.ClientHttp2Session);
+    const { sessions, requests } = mockFreshSessions();
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
     const sending = createGateway().send(sendInput());
-    request.emit('error', new Error('stream reset'));
-    session.emit('error', new Error('connect reset'));
+    requests[0].emit('error', new Error('stream reset'));
+    sessions[0].emit('error', new Error('connect reset'));
+    await waitForRetry();
+    requests[1].emit('error', new Error('stream reset'));
+    sessions[1].emit('error', new Error('connect reset'));
 
     await expect(sending).rejects.toMatchObject({
       code: 'apns/transport_error',
     });
-    expect(session.destroy).toHaveBeenCalledTimes(1);
+    expect(sessions[0].destroy).toHaveBeenCalledTimes(1);
+    expect(sessions[1].destroy).toHaveBeenCalledTimes(1);
   });
 
   it('times out the APNs request and returns a retryable delivery failure', async () => {
@@ -172,17 +235,13 @@ describe('ApnsVoipGateway', () => {
 
   it('treats GOAWAY as a transport failure', async () => {
     configureApnsCredentials();
-    const request = Object.assign(new EventEmitter(), {
-      setEncoding: jest.fn(),
-      end: jest.fn(),
-    });
-    const session = createSession(request);
-    jest
-      .mocked(http2.connect)
-      .mockReturnValue(session as unknown as http2.ClientHttp2Session);
+    const { sessions } = mockFreshSessions();
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
     const sending = createGateway().send(sendInput());
-    session.emit('goaway');
+    sessions[0].emit('goaway');
+    await waitForRetry();
+    sessions[1].emit('goaway');
 
     await expect(sending).rejects.toMatchObject({
       code: 'apns/transport_error',

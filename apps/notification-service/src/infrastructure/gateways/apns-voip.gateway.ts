@@ -16,7 +16,19 @@ import {
 
 type ApnsError = Error & {
   code?: string;
+  /** Where a transport failure was observed, for the log only. */
+  transportStage?: string;
+  /** The Node error code behind a transport failure, for the log only. */
+  transportCause?: string;
 };
+
+/**
+ * A VoIP push matters only while the call rings, so a transport failure gets
+ * one immediate retry on a fresh connection instead of waiting for the job
+ * scheduler. Without it, a recipient with a second device whose push did get
+ * through has the job marked sent and this device never rings.
+ */
+const APNS_TRANSPORT_RETRY_DELAY_MS = 200;
 
 const DEFAULT_APNS_REQUEST_TIMEOUT_MS = 5_000;
 const MIN_APNS_REQUEST_TIMEOUT_MS = 1_000;
@@ -43,6 +55,27 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
   constructor(private readonly metrics: NotificationPrometheusMetricsService) {}
 
   async send(input: SendApnsVoipPushInput) {
+    try {
+      return await this.sendOnce(input);
+    } catch (error) {
+      const firstError = error as ApnsError;
+      if (firstError.code !== 'apns/transport_error') throw error;
+      this.logTransportFailure(firstError, input, 'retrying');
+      await new Promise((resolveDelay) =>
+        setTimeout(resolveDelay, APNS_TRANSPORT_RETRY_DELAY_MS),
+      );
+      try {
+        return await this.sendOnce(input);
+      } catch (retryError) {
+        if ((retryError as ApnsError).code === 'apns/transport_error') {
+          this.logTransportFailure(retryError as ApnsError, input, 'giving up');
+        }
+        throw retryError;
+      }
+    }
+  }
+
+  private async sendOnce(input: SendApnsVoipPushInput) {
     const jwt = this.getJwt();
     const url = APNS_HOSTS[input.deliveryEnvironment];
     const timeoutMs = this.getRequestTimeoutMs();
@@ -79,14 +112,14 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
       // A ClientHttp2Session emits `error` independently of its request
       // streams. This listener must exist before request() so a connection
       // failure can never become an unhandled EventEmitter error.
-      session.on('error', () => {
-        fail(this.buildTransportError());
+      session.on('error', (error: unknown) => {
+        fail(this.buildTransportError('session_error', error));
       });
-      session.on('goaway', () => {
-        fail(this.buildTransportError());
+      session.on('goaway', (errorCode: unknown) => {
+        fail(this.buildTransportError('goaway', errorCode));
       });
       session.on('close', () => {
-        fail(this.buildTransportError());
+        fail(this.buildTransportError('session_close'));
       });
 
       let request: http2.ClientHttp2Stream;
@@ -103,8 +136,8 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
           // to deliver later. The recipient validates the call expiry.
           'apns-expiration': '0',
         });
-      } catch {
-        fail(this.buildTransportError());
+      } catch (error) {
+        fail(this.buildTransportError('request_throw', error));
         return;
       }
 
@@ -133,10 +166,10 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         fail(this.buildApnsError(statusCode, responseBody));
       });
       request.on('close', () => {
-        fail(this.buildTransportError());
+        fail(this.buildTransportError('stream_close', request.rstCode));
       });
-      request.on('error', () => {
-        fail(this.buildTransportError());
+      request.on('error', (error: unknown) => {
+        fail(this.buildTransportError('stream_error', error));
       });
 
       timeout = setTimeout(() => {
@@ -213,10 +246,35 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     return 'http_error';
   }
 
-  private buildTransportError(): ApnsError {
+  private buildTransportError(stage: string, cause?: unknown): ApnsError {
     const transportError = new Error('APNs VoIP transport failed') as ApnsError;
     transportError.code = 'apns/transport_error';
+    transportError.transportStage = stage;
+    transportError.transportCause = this.describeTransportCause(cause);
     return transportError;
+  }
+
+  /** Only a short error code or number is kept; messages may carry hosts. */
+  private describeTransportCause(cause: unknown) {
+    const candidate =
+      typeof cause === 'number'
+        ? String(cause)
+        : cause && typeof cause === 'object' && 'code' in cause
+          ? String((cause as { code?: unknown }).code)
+          : undefined;
+    return candidate && /^[A-Za-z0-9_]{1,48}$/.test(candidate)
+      ? candidate
+      : 'none';
+  }
+
+  private logTransportFailure(
+    error: ApnsError,
+    input: SendApnsVoipPushInput,
+    action: 'retrying' | 'giving up',
+  ) {
+    this.logger.warn(
+      `APNs VoIP transport failed (${action}): stage=${error.transportStage ?? 'unknown'} cause=${error.transportCause ?? 'none'} environment=${input.deliveryEnvironment}`,
+    );
   }
 
   private getRequestTimeoutMs() {

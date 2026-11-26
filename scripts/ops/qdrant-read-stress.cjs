@@ -20,7 +20,9 @@
  *     [--narrow-reels=8] \
  *     [--limit=100] \
  *     [--timeout-ms=5000] \
- *     [--label=C2]
+ *     [--label=C2] \
+ *     [--routing=rr|least-inflight]   (default rr; least-inflight sends each query
+ *                                      to the target with the fewest outstanding requests)
  *
  * Keeps sampled query vectors in memory only; never prints API keys or vectors. */
 
@@ -584,6 +586,7 @@ async function runStage({
   warmupSeconds,
   durationSeconds,
   timeoutMs,
+  routing = 'rr',
 }) {
   const queryPath = `/collections/${collection}/points/query`;
   const reqPool = workload.requests;
@@ -592,6 +595,20 @@ async function runStage({
   const measureEnd = warmupEnd + durationSeconds * 1000;
 
   let rrIndex = 0;
+  const inflight = new Map(targets.map((t) => [t.label, 0]));
+  function pickTarget() {
+    if (routing !== 'least-inflight' || targets.length === 1) {
+      return targets[rrIndex++ % targets.length];
+    }
+    // Least outstanding requests, ties broken by rotation (like nginx least_conn).
+    const start = rrIndex++ % targets.length;
+    let best = null;
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[(start + i) % targets.length];
+      if (best === null || inflight.get(t.label) < inflight.get(best.label)) best = t;
+    }
+    return best;
+  }
   let reqSeed = 0;
   const stats = {
     requests: 0,
@@ -613,17 +630,23 @@ async function runStage({
   async function worker() {
     while (Date.now() < measureEnd) {
       const reqStart = Date.now();
-      const target = targets[rrIndex++ % targets.length];
+      const target = pickTarget();
       const bodyParts = reqPool[reqSeed++ % reqPool.length];
-      const res = await requestRaw(
-        agents,
-        target.url,
-        apiKey,
-        queryPath,
-        'POST',
-        bodyParts,
-        timeoutMs,
-      );
+      inflight.set(target.label, inflight.get(target.label) + 1);
+      let res;
+      try {
+        res = await requestRaw(
+          agents,
+          target.url,
+          apiKey,
+          queryPath,
+          'POST',
+          bodyParts,
+          timeoutMs,
+        );
+      } finally {
+        inflight.set(target.label, inflight.get(target.label) - 1);
+      }
       if (reqStart < warmupEnd) continue;
       if (actualMeasureStart === null) actualMeasureStart = reqStart;
 
@@ -709,7 +732,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     process.stdout.write(
-      'Usage: node scripts/ops/qdrant-read-stress.cjs --targets=H1=https://qdrant:6333 [--scope=wide|narrow|both] [--concurrencies=1,2,4,8,16,32,64] [--warmup-seconds=10] [--duration-seconds=45] [--api-key-file=...] [--ca-file=...] [--tuples-file=...] [--sample-url=...] [--sample-size=500] [--narrow-reels=8] [--limit=100] [--timeout-ms=5000] [--label=C1]\n',
+      'Usage: node scripts/ops/qdrant-read-stress.cjs --targets=H1=https://qdrant:6333 [--scope=wide|narrow|both] [--concurrencies=1,2,4,8,16,32,64] [--warmup-seconds=10] [--duration-seconds=45] [--api-key-file=...] [--ca-file=...] [--tuples-file=...] [--sample-url=...] [--sample-size=500] [--narrow-reels=8] [--limit=100] [--timeout-ms=5000] [--label=C1] [--routing=rr|least-inflight]\n',
     );
     return;
   }
@@ -743,6 +766,10 @@ async function main() {
   const sampleSize = Number(args['sample-size'] ?? 500);
   const narrowReels = Number(args['narrow-reels'] ?? 8);
   const limit = Number(args.limit ?? 100);
+  const routing = args.routing ?? 'rr';
+  if (!['rr', 'least-inflight'].includes(routing)) {
+    throw new Error('--routing must be rr or least-inflight');
+  }
   const timeoutMs = Number(args['timeout-ms'] ?? 5000);
 
   const agents = createAgents(targets, caFile);
@@ -764,6 +791,7 @@ async function main() {
 
     const meta = {
       label: args.label || targets.map((t) => t.label).join('+'),
+      routing,
       collection,
       targets: targets.map((t) => ({ label: t.label, url: t.url.origin })),
       totalPointsInQdrant: corpus.totalPointsInQdrant,
@@ -801,6 +829,7 @@ async function main() {
           warmupSeconds,
           durationSeconds,
           timeoutMs,
+          routing,
         });
         process.stdout.write(
           `STAGE ${JSON.stringify({ label: meta.label, ...stage })}\n`,

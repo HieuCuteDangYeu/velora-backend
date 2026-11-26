@@ -207,3 +207,103 @@ test('qdrant-read-stress runs end-to-end against mock local HTTP Qdrant nodes', 
     await fs.rm(dir, { recursive: true, force: true });
   }
 });
+
+test('least-inflight routing sends more queries to the faster target', async () => {
+  const dir = await fs.mkdtemp(join(tmpdir(), 'qdrant-stress-route-'));
+  const keyFile = join(dir, 'api-key');
+  const tuplesFile = join(dir, 'tuples.json');
+  await fs.writeFile(keyFile, 'test-secret-key\n');
+  const vec = Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0));
+  const tuples = [];
+  const points = [];
+  for (let r = 0; r < 4; r++) {
+    const tuple = {
+      reelId: `reel-${r}`,
+      indexAttemptId: `att-${r}`,
+      projectionGeneration: '1',
+      manifestHash: `mh-${r}`,
+    };
+    tuples.push(tuple);
+    points.push({
+      id: `00000000-0000-4000-8000-${String(r).padStart(12, '0')}`,
+      vector: vec,
+      payload: { kind: 'CHUNK', ...tuple },
+    });
+  }
+  await fs.writeFile(tuplesFile, JSON.stringify(tuples));
+  const hits = { fast: 0, slow: 0 };
+  const makeServer = (name, delayMs) =>
+    http.createServer((req, res) => {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const send = (code, obj) => {
+          res.writeHead(code, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(obj));
+        };
+        if (req.url === '/readyz') return send(200, {});
+        if (req.url.endsWith('/points/scroll')) {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+          return send(200, {
+            status: 'ok',
+            result: {
+              points: points.map((p) => ({
+                id: p.id,
+                payload: p.payload,
+                ...(body.with_vector ? { vector: p.vector } : {}),
+              })),
+              next_page_offset: null,
+            },
+          });
+        }
+        if (req.url.endsWith('/points/query')) {
+          hits[name]++;
+          return setTimeout(
+            () => send(200, { status: 'ok', result: { points: [] } }),
+            delayMs,
+          );
+        }
+        return send(404, {});
+      });
+    });
+  const sFast = makeServer('fast', 2);
+  const sSlow = makeServer('slow', 40);
+  await new Promise((r) => sFast.listen(0, '127.0.0.1', r));
+  await new Promise((r) => sSlow.listen(0, '127.0.0.1', r));
+  try {
+    const run = await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        [
+          join(__dirname, 'qdrant-read-stress.cjs'),
+          `--targets=F=http://127.0.0.1:${sFast.address().port},S=http://127.0.0.1:${sSlow.address().port}`,
+          '--scope=narrow',
+          '--concurrencies=4',
+          '--warmup-seconds=0',
+          '--duration-seconds=1',
+          `--api-key-file=${keyFile}`,
+          `--tuples-file=${tuplesFile}`,
+          '--sample-size=4',
+          '--narrow-reels=2',
+          '--routing=least-inflight',
+        ],
+        { env: { ...process.env, QDRANT_ALLOW_LOCAL_HTTP: 'true' } },
+      );
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => (stdout += d));
+      child.stderr.on('data', (d) => (stderr += d));
+      child.on('error', reject);
+      child.on('close', (status) => resolve({ status, stdout, stderr }));
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const meta = JSON.parse(run.stdout.split('\n')[0].replace(/^META /, ''));
+    assert.equal(meta.routing, 'least-inflight');
+    assert.ok(hits.slow > 0, 'slow target still receives some queries');
+    assert.ok(hits.fast > hits.slow * 3, `fast ${hits.fast} vs slow ${hits.slow}`);
+  } finally {
+    sFast.close();
+    sSlow.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

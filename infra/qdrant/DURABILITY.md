@@ -515,3 +515,55 @@ Key findings (rehearsal, not production):
   CI deploy does not remove it.
 - Host keys for `100.104.227.44` and `100.86.68.16` were added to the homelab user's
   `known_hosts` while probing access.
+
+## Layout D on production: tuning and read test in a quiet window (2026-11-26, 09:00 to 09:21 UTC)
+
+Done by hand after attempt 2's read test stopped early. Host quiet: load1 1.1 to 1.7 at the start,
+reel-indexing job queues empty; the run's own load1 peaked at 5.8.
+
+Diagnosis (10-15 s stages, generator on the homelab, 2 CPUs):
+
+| Target | 8-reel scans (qps, 4 and 16 clients) | Whole-index scans (qps, 1 and 4 clients) |
+| --- | --- | --- |
+| H1 (cluster) | 826, 818 | 28.0, 28.0 (single node before: 28.3) |
+| Laptop node, 1 CPU | 123, 134 | 8.6, 11.9 |
+
+H1 answered from its own replica: during 16k 8-reel queries the laptop's internal query counter
+rose by 168 (about 1%), during whole-index queries by 0. Attempt 2's 12.8 qps on H1 came from a
+long indexing job running at the same time, not from cluster mode.
+
+Changes:
+- Laptop node `qdrant-laptop` raised from 1 to 2 CPUs (`/opt/velora/qdrant-laptop/compose.yaml`,
+  backup `compose.yaml.bak-20261126T090447Z`); recreated, healthy in 14 s, replica Active, counts
+  equal. The Raft leader moved to H2 (term 3). Roll back: restore the backup and
+  `docker compose -f compose.yaml up -d --force-recreate`.
+- `scripts/ops/qdrant-read-stress.cjs`: new `--routing=least-inflight` (each query goes to the
+  target with the fewest outstanding requests, like nginx `least_conn`); default stays `rr`.
+
+Read test (`~/velora-operations/read-scaling/run-tuned.sh`, logs `tuned-stress.log`,
+`tuned-stats.log` there; 5 s warm-up, 20 s per stage; no abort, 0 errors):
+
+| Setup | 8-reel, 4/16/32 clients | Whole-index, 4/16 clients |
+| --- | --- | --- |
+| H1 only, round 1 / round 2 | 868, 861, 819 / 891, 848, 781 | 25.2, 22.4 / 24.1, 21.6 |
+| H1 + laptop, round robin | 246, 265, 268 | 30.0, 28.5 |
+| H1 + laptop, least-inflight, round 1 / round 2 | 647, 584, 562 / 552, 565, 525 | 33.0, 31.5 / 32.2, 29.7 |
+| Laptop only, 2 CPUs | 124, 134, 131 | 15.3, 13.5 |
+
+- Whole-index scans: least-inflight over both copies gave 1.31 to 1.41 times H1 alone (both
+  rounds), p50 at 4 clients 102-103 ms against 153-165 ms. H1 CPU median 96-99% of its 1-CPU
+  limit, laptop about 170% of 2 CPUs: both copies were the bottleneck. 2 CPUs raised the laptop
+  alone from 8.6-11.9 to 13.5-15.3 qps.
+- 8-reel scans: the second copy lowered throughput (least-inflight 0.62-0.75 times, round robin
+  about 0.3 times). A query to the laptop took at least 22 ms (p50) against 3 ms on H1, and the
+  laptop used about 60% of its CPU, so the Wi-Fi link and the slower CPU limit it, not CPU
+  capacity. Why H1 served fewer queries in these runs at the same CPU was not established.
+- Production searches are scoped to a few reels and one kind, i.e. the light case. Decision: keep
+  the cluster for availability, keep the indexer on `QDRANT_URL` (H1); do not route real reads to
+  the laptop. Only CPU-heavy scans would gain from it.
+
+After the test: Raft term 3 unchanged (no leader change), no peer send failures, all three nodes
+green with 11,979 points; `verify-parity --target-label=reel-indexing --list-all=true` 306/306
+manifests, 11,548/11,548 points, 0 failures, 431 known orphans; `stale-ready` 306 ready, 0 stale;
+search smoke 24/24 (p50 347 ms, p95 518 ms). Note: these commands need `--target-label` before
+`--list-all`; without it the tool exits with the redacted gate error.

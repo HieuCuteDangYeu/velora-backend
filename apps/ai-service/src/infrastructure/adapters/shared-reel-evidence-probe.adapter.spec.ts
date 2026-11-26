@@ -30,32 +30,34 @@ describe('SharedReelEvidenceProbeAdapter', () => {
     );
   });
 
-  it('is true at the calibrated limit (0.50) and false just past it', async () => {
-    await expect(ask(build([{ vectorDistance: 0.5 }]).adapter)).resolves.toBe(
+  it('is true at the calibrated limit (0.55) and false just past it', async () => {
+    await expect(ask(build([{ vectorDistance: 0.55 }]).adapter)).resolves.toBe(
       true,
     );
-    await expect(ask(build([{ vectorDistance: 0.51 }]).adapter)).resolves.toBe(
+    await expect(ask(build([{ vectorDistance: 0.56 }]).adapter)).resolves.toBe(
       false,
     );
   });
 
-  it('accepts the closest chunk of a non-English question that sat just above 0.48', async () => {
-    await expect(ask(build([{ vectorDistance: 0.496 }]).adapter)).resolves.toBe(
-      true,
-    );
+  it('accepts the closest chunk of a French or Korean question that sat at 0.52-0.54', async () => {
+    for (const distance of [0.496, 0.522, 0.536, 0.542]) {
+      await expect(
+        ask(build([{ vectorDistance: distance }]).adapter),
+      ).resolves.toBe(true);
+    }
   });
 
   it('is false when the closest chunk is unrelated', async () => {
     const { adapter } = build([
-      { vectorDistance: 0.55 },
-      { vectorDistance: 0.6 },
+      { vectorDistance: 0.58 },
+      { vectorDistance: 0.62 },
     ]);
     await expect(ask(adapter)).resolves.toBe(false);
   });
 
   it('honours the configured distance', async () => {
     await expect(
-      ask(build([{ vectorDistance: 0.55 }], '0.6').adapter),
+      ask(build([{ vectorDistance: 0.6 }], '0.65').adapter),
     ).resolves.toBe(true);
   });
 

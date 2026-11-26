@@ -9,8 +9,13 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 // 0.50 for 97%; an unrelated video is within 0.42 for 2%, 0.48 for 2% and 0.50 for 3% (its median is 0.62).
 // Re-measured 2026-11-25 on 55 non-English detail questions (vi, es, ar, ko, fr): own video within 0.48 for
 // 89%, 0.50 for 95%, 0.55 for 100% (median 0.40); an unrelated video within 0.55 for 0%. A French question
-// whose best chunk sat at 0.496 was turned away as off-topic at 0.48, so the default is 0.50.
-const DEFAULT_MAX_DISTANCE = 0.5;
+// whose best chunk sat at 0.496 was turned away as off-topic at 0.48, so the limit became 0.50. Re-measured
+// 2026-11-26 on 72 French and Korean questions over 6 videos: all 48 answered detail questions sit at or below
+// 0.496, and the 6 questions wrongly turned away as off-topic sit at 0.52-0.57 (5 of them were answered once the
+// limit was 0.55). 0.55 is also the limit of the not-covered guard (CheckContextSufficiencyUseCase), which must not
+// disagree with the probe. Known exposure at any limit above 0.48: a general question that a video happens to
+// discuss ("capital of Australia" against a Quebec history lecture, distance 0.482) is answered from the video.
+const DEFAULT_MAX_DISTANCE = 0.55;
 const MAX_REELS = 8;
 
 @Injectable()

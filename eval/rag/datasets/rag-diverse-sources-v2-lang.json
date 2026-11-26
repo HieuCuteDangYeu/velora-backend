@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "name": "rag-diverse-sources-v2-lang",
+  "note": "Extra French and Korean Creative Commons videos for per-language numbers (2026-11-26). Same schema as rag-diverse-sources-v1.",
+  "tag": "bench-diverse-v1",
+  "sources": [
+    {
+      "youtubeId": "DU7k1j5LejA",
+      "genre": "lecture-slides",
+      "language": "fr",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "koEDMDuAw0k",
+      "genre": "cooking",
+      "language": "fr",
+      "audioCondition": "clean-speech",
+      "visualType": "scene-heavy"
+    },
+    {
+      "youtubeId": "hm-THYNTNv8",
+      "genre": "lecture-slides",
+      "language": "fr",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "U6M2QDAi9T8",
+      "genre": "lecture-slides",
+      "language": "ko",
+      "audioCondition": "clean-speech",
+      "visualType": "slides"
+    },
+    {
+      "youtubeId": "ExLUKA7zbHI",
+      "genre": "news-interview",
+      "language": "ko",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    },
+    {
+      "youtubeId": "NjW5Ady12x0",
+      "genre": "podcast",
+      "language": "ko",
+      "audioCondition": "clean-speech",
+      "visualType": "talking-head"
+    }
+  ],
+  "derived": []
+}

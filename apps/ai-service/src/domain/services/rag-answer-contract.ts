@@ -286,7 +286,11 @@ export function validateRagAnswerContract(
   }
 
   if (input.evidenceRequired) {
-    const unsupported = unsupportedDistinctiveTokens(input.evidence, answer);
+    const unsupported = unsupportedDistinctiveTokens(
+      input.evidence,
+      answer,
+      input.question,
+    );
     if (unsupported.length > 0) {
       // The tokens are logged so a rejection can be told apart from a false alarm.
       return `Answer model introduced an unsupported distinctive token (${[...new Set(unsupported)].slice(0, 6).join(', ')})`;
@@ -428,20 +432,47 @@ function quantityTokens(value: string): Set<string> {
   );
 }
 
+/**
+ * Tokens of the answer that look like names, codes or numbers and that nothing supports. Measured on long-range
+ * summaries (2026-11-26), three kinds of false alarm rejected 5 of 6 drafts: the question's own time values
+ * ("from 32:58 to 44:47" -> 32, 58, 44, 47), a word the transcript has in lower case written in capitals
+ * ("like" -> LIKE), and a number range written with a hyphen that the transcript writes differently
+ * ("8~9" -> 8-9). Those are allowed; anything else still has to appear in the evidence.
+ */
 function unsupportedDistinctiveTokens(
   evidence: readonly string[],
   answer: string,
+  question = '',
 ): string[] {
   const allowed = new Set(
     evidence
-      .flatMap((value) => distinctiveTokens(value))
+      .flatMap((value) => [
+        ...distinctiveTokens(value),
+        ...(value.match(/[\p{L}\p{N}]+/gu) ?? []),
+        // digits glued to a word, as in Korean "9개월" (9 months)
+        ...(value.match(/\d+/g) ?? []),
+      ])
       .map(normalizeDistinctiveToken),
   );
+  for (const time of question.match(QUESTION_TIME_VALUE) ?? []) {
+    for (const digits of time.match(/\d+/g) ?? []) {
+      allowed.add(normalizeDistinctiveToken(digits));
+      allowed.add(normalizeDistinctiveToken(String(Number(digits))));
+    }
+  }
+  const supported = (token: string): boolean =>
+    allowed.has(normalizeDistinctiveToken(token)) ||
+    (/^\d+(?:-\d+)+$/.test(token) &&
+      token
+        .split('-')
+        .every((part) => allowed.has(normalizeDistinctiveToken(part))));
 
-  return distinctiveTokens(answer).filter(
-    (token) => !allowed.has(normalizeDistinctiveToken(token)),
-  );
+  return distinctiveTokens(answer).filter((token) => !supported(token));
 }
+
+// A clock time ("32:58", "1:02:03") or an amount of seconds ("437 seconds", "437s") the user wrote.
+const QUESTION_TIME_VALUE =
+  /\b\d{1,2}(?::\d{2}){1,2}\b|\b\d+(?:\.\d+)?\s*(?:-|–|—|to|and)\s*\d+(?:\.\d+)?\s*(?:seconds?|secs?|s)\b|\b\d+(?:\.\d+)?\s*(?:seconds?|secs?|s)\b/gi;
 
 function isQuestionVocabularyEcho(
   question: string,

@@ -249,3 +249,67 @@ describe('validateRagAnswerContract opening quote', () => {
     ).toMatch(/empty/);
   });
 });
+
+describe('validateRagAnswerContract distinctive tokens in range summaries', () => {
+  const contract = (question: string, evidence: string[], answer: string) =>
+    validateRagAnswerContract({
+      question,
+      evidence,
+      answer,
+      evidenceRequired: true,
+    });
+
+  it("allows the question's own time values in the answer", () => {
+    expect(
+      contract(
+        'Summarize what is said from 32:58 to 44:47 in the video.',
+        ['The speaker explains how the brain handles reflexes and memory.'],
+        'From 32:58 to 44:47 the speaker explains how the brain handles reflexes and memory.',
+      ),
+    ).toBeUndefined();
+    expect(
+      contract(
+        'Summarize what is said from 437 to 885 seconds in the video.',
+        ['The host describes the cooking of the meat.'],
+        'Between 437 and 885 seconds the host describes the cooking of the meat.',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('allows a word the evidence has in lower case written in capitals', () => {
+    expect(
+      contract(
+        'Summarize what is said from 34:23 to 45:58.',
+        ['you can use the like operator after select to match part of a title'],
+        'The speaker shows how to use LIKE after SELECT to match part of a title.',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('allows a hyphenated number range whose parts are in the evidence', () => {
+    expect(
+      contract(
+        'Summarize what is said from 7:17 to 14:45.',
+        ['공부한 지 8~9개월 정도 됐어요.'],
+        'The host says they have studied for about 8-9 months.',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('still rejects a name or number the evidence does not support', () => {
+    expect(
+      contract(
+        'Summarize what is said from 7:17 to 14:45.',
+        ['The host talks about learning Cantonese with Netflix.'],
+        'The host studied for 1987 hours with IBM software.',
+      ),
+    ).toMatch(/unsupported distinctive token \(1987, IBM\)/);
+    expect(
+      contract(
+        'Summarize what is said from 7:17 to 14:45.',
+        ['The host studied for 8 months.'],
+        'The host studied for 8-12 months.',
+      ),
+    ).toMatch(/unsupported distinctive token/);
+  });
+});

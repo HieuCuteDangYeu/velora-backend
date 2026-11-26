@@ -17,6 +17,7 @@ import { ConversationController } from '@gateway/conversation/conversation.contr
 import { GroupMembersV2Controller } from '@gateway/conversation/group-members-v2.controller';
 import { MessageController } from '@gateway/conversation/message.controller';
 import { FriendController } from '@gateway/friends/friend.controller';
+import { LegalController } from '@gateway/legal/legal.controller';
 import { MediaController } from '@gateway/media/media.controller';
 import { MonitoringController } from '@gateway/monitoring/monitoring.controller';
 import { NotificationController } from '@gateway/notifications/notification.controller';
@@ -77,6 +78,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     ]),
   ],
   controllers: [
+    LegalController,
     UserController,
     AuthController,
     FriendController,

@@ -6,11 +6,13 @@ import { LogoutUseCase } from '@auth/application/use-cases/logout.use-case';
 import { RefreshTokenUseCase } from '@auth/application/use-cases/refresh-token.use-case';
 import { ResendVerificationUseCase } from '@auth/application/use-cases/resend-verification.use-case';
 import { ResetPasswordUseCase } from '@auth/application/use-cases/reset-password.use-case';
+import { VerifyAppleTokenUseCase } from '@auth/application/use-cases/verify-apple-token.use-case';
 import { VerifyGoogleTokenUseCase } from '@auth/application/use-cases/verify-google-token.use-case';
 import { VerifyTokenUseCase } from '@auth/application/use-cases/verify-token.use-case';
 import { AccountBannedError } from '@auth/domain/errors/account-banned.error';
 import { AccountNotVerifiedError } from '@auth/domain/errors/account-not-verified.error';
 import { GoogleAuthNotConfiguredError } from '@auth/domain/errors/google-auth-not-configured.error';
+import { InvalidAppleTokenError } from '@auth/domain/errors/invalid-apple-token.error';
 import { InvalidCredentialsError } from '@auth/domain/errors/invalid-credentials.error';
 import { InvalidGoogleTokenError } from '@auth/domain/errors/invalid-google-token.error';
 import { InvalidResetTokenError } from '@auth/domain/errors/invalid-reset-token.error';
@@ -21,6 +23,7 @@ import { LoginDto } from '@common/auth/dtos/login.dto';
 import { RegisterDto } from '@common/auth/dtos/register.dto';
 import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto';
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
+import { VerifyAppleTokenDto } from '@common/auth/dtos/verify-apple-token.dto';
 import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto';
 import type { GoogleProfile } from '@common/auth/interfaces/google-profile.interface';
 import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
@@ -51,6 +54,8 @@ export class AuthController {
     private readonly verifyGoogleTokenUseCase: VerifyGoogleTokenUseCase,
     private readonly metrics: AuthPrometheusMetricsService,
     private readonly accessTokens: AccessTokenService,
+    // Last, so existing positional constructions in tests keep their order.
+    private readonly verifyAppleTokenUseCase: VerifyAppleTokenUseCase,
   ) {}
 
   @MessagePattern('auth.register')
@@ -281,6 +286,30 @@ export class AuthController {
     }
   }
 
+  @MessagePattern('auth.verify_apple_token')
+  async verifyAppleToken(@Payload() dto: VerifyAppleTokenDto) {
+    try {
+      return await this.observe('verify_apple_token', () =>
+        this.verifyAppleTokenUseCase.execute(dto),
+      );
+    } catch (error) {
+      if (error instanceof InvalidAppleTokenError) {
+        throw new RpcException({ statusCode: 401, message: error.message });
+      }
+      if (error instanceof AccountBannedError) {
+        throw new RpcException({ statusCode: 403, message: error.message });
+      }
+      console.error(error);
+      if (error instanceof SagaCompensationError) {
+        throw new RpcException({ statusCode: 500, message: error.message });
+      }
+      throw new RpcException({
+        statusCode: 500,
+        message: 'Internal Server Error',
+      });
+    }
+  }
+
   private async observe<T>(
     operation: AuthOperation,
     action: () => Promise<T>,
@@ -310,6 +339,7 @@ export class AuthController {
       error instanceof AccountBannedError ||
       error instanceof InvalidCredentialsError ||
       error instanceof InvalidGoogleTokenError ||
+      error instanceof InvalidAppleTokenError ||
       error instanceof InvalidResetTokenError ||
       error instanceof InvalidTokenError ||
       error instanceof UserAlreadyExistsError ||

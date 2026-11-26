@@ -7,6 +7,7 @@ import { MobileRefreshDto } from '@common/auth/dtos/mobile-refresh.dto';
 import { RegisterDto } from '@common/auth/dtos/register.dto';
 import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto';
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
+import { VerifyAppleTokenDto } from '@common/auth/dtos/verify-apple-token.dto';
 import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto';
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import { TokenResponse } from '@common/auth/interfaces/token.interface';
@@ -135,6 +136,24 @@ export class AuthController {
     return lastValueFrom(
       this.authClient
         .send<TokenResponse>('auth.verify_google_token', dto)
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
+  @Post('mobile/apple/verify')
+  @RateLimit({ policy: 'auth_apple_ip', by: 'ip' })
+  @ApiOperation({
+    summary: 'Verify a Sign in with Apple identity token for mobile clients',
+  })
+  async mobileVerifyAppleToken(
+    @Body() dto: VerifyAppleTokenDto,
+    @Res({ passthrough: true }) response: ExpressResponse,
+  ): Promise<TokenResponse> {
+    this.setNoStore(response);
+
+    return lastValueFrom(
+      this.authClient
+        .send<TokenResponse>('auth.verify_apple_token', dto)
         .pipe(catchError((error) => this.handleMicroserviceError(error))),
     );
   }

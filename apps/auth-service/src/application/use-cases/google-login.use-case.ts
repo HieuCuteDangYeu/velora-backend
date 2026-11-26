@@ -38,7 +38,7 @@ export class GoogleLoginUseCase {
           const payload: UpdateUserPayload = {
             id: user.id,
             data: {
-              provider: 'google',
+              provider: profile.provider,
               providerId: profile.providerId,
               picture: user.picture ? undefined : profile.picture,
             },
@@ -55,7 +55,7 @@ export class GoogleLoginUseCase {
           email: profile.email,
           fullName: profile.fullName,
           picture: profile.picture,
-          provider: 'google',
+          provider: profile.provider,
           providerId: profile.providerId,
           isVerified: true,
         };
@@ -103,7 +103,10 @@ export class GoogleLoginUseCase {
 
       return { accessToken, refreshToken };
     } catch (error) {
-      console.error('Google Login Saga Failed. Initiating Rollback...', error);
+      console.error(
+        `Social login (${profile.provider}) saga failed. Initiating rollback...`,
+        error,
+      );
 
       if (isNewUser && userId) {
         this.userService.rollbackUser(userId);
@@ -115,7 +118,7 @@ export class GoogleLoginUseCase {
         }
       }
 
-      throw new SagaCompensationError('Google Login failed. Please try again.');
+      throw new SagaCompensationError('Sign-in failed. Please try again.');
     }
   }
 }

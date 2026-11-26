@@ -10,6 +10,7 @@ import { LogoutUseCase } from '@auth/application/use-cases/logout.use-case';
 import { RefreshTokenUseCase } from '@auth/application/use-cases/refresh-token.use-case';
 import { ResendVerificationUseCase } from '@auth/application/use-cases/resend-verification.use-case';
 import { ResetPasswordUseCase } from '@auth/application/use-cases/reset-password.use-case';
+import { VerifyAppleTokenUseCase } from '@auth/application/use-cases/verify-apple-token.use-case';
 import { VerifyGoogleTokenUseCase } from '@auth/application/use-cases/verify-google-token.use-case';
 import { VerifyTokenUseCase } from '@auth/application/use-cases/verify-token.use-case';
 import { MailServiceAdapter } from '@auth/infrastructure/adapters/mail-service.adapter';
@@ -20,6 +21,7 @@ import { AuthPrometheusMetricsService } from '@auth/infrastructure/metrics/auth-
 import { BanListReconciler } from '@auth/infrastructure/jobs/ban-list-reconciler.service';
 import { RedisBanList } from '@auth/infrastructure/repositories/redis-ban-list.repository';
 import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
+import { AppleIdentityTokenVerifier } from '@auth/infrastructure/security/apple-identity-token.verifier';
 import { RedisVerificationCodeRepository } from '@auth/infrastructure/repositories/redis-verification-code.repository';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -100,6 +102,8 @@ import { AuthRepository } from './infrastructure/repositories/auth.repository';
     ResetPasswordUseCase,
     VerifyTokenUseCase,
     VerifyGoogleTokenUseCase,
+    VerifyAppleTokenUseCase,
+    AppleIdentityTokenVerifier,
     {
       provide: 'IAuthRepository',
       useClass: AuthRepository,

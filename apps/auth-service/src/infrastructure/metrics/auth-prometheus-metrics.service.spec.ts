@@ -22,7 +22,7 @@ describe('AuthPrometheusMetricsService', () => {
       }
     }
     expect(output.match(/^velora_auth_requests_total\{/gm)?.length).toBe(
-      11 * 3,
+      12 * 3,
     );
 
     metrics.onModuleDestroy();
@@ -46,7 +46,7 @@ describe('AuthPrometheusMetricsService', () => {
       'velora_auth_requests_total{service="auth-service",operation="login",outcome="error"} 0',
     );
     expect(output.match(/^velora_auth_requests_total\{/gm)?.length).toBe(
-      11 * 3,
+      12 * 3,
     );
 
     metrics.onModuleDestroy();

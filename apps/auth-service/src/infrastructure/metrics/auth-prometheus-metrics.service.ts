@@ -14,7 +14,8 @@ export type AuthOperation =
   | 'login_google'
   | 'forgot_password'
   | 'reset_password'
-  | 'verify_google_token';
+  | 'verify_google_token'
+  | 'verify_apple_token';
 
 export type AuthOutcome = 'success' | 'rejected' | 'error';
 
@@ -33,6 +34,7 @@ const AUTH_OPERATIONS: readonly AuthOperation[] = [
   'forgot_password',
   'reset_password',
   'verify_google_token',
+  'verify_apple_token',
 ];
 const AUTH_OUTCOMES: readonly AuthOutcome[] = ['success', 'rejected', 'error'];
 export type RefreshOutcome =

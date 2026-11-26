@@ -25,6 +25,7 @@ export const DEFAULT_RATE_LIMIT_POLICIES = {
   },
   auth_register_ip: { limit: 10, windowSeconds: HOUR, onStoreFailure: 'local' },
   auth_google_ip: { limit: 20, windowSeconds: MINUTE, onStoreFailure: 'local' },
+  auth_apple_ip: { limit: 20, windowSeconds: MINUTE, onStoreFailure: 'local' },
   auth_refresh_ip: {
     limit: 60,
     windowSeconds: MINUTE,

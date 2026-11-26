@@ -69,6 +69,26 @@ describe('matchChapterTitle', () => {
     ).toBe('Intro');
   });
 
+  it('leaves an ordinary question that mentions a title in passing alone', () => {
+    const cooking = parseDescriptionChapters(
+      '0:00 Intro\n0:38 Les ingrédients\n3:13 La cuisson\n9:00 Le dressage',
+    );
+    for (const question of [
+      'Pourquoi ajouter le gros sel dès le départ de la cuisson plutôt que le sel fin ?',
+      'Quel effet a la saisie initiale des morceaux de viande pendant la cuisson ?',
+      'What does the speaker say about les ingrédients for the sauce?',
+    ]) {
+      expect(matchChapterTitle(question, cooking)).toBeUndefined();
+    }
+    expect(
+      matchChapterTitle('Résume la partie La cuisson', cooking)?.chapter.title,
+    ).toBe('La cuisson');
+    expect(
+      matchChapterTitle('What is in the section les ingredients?', cooking)
+        ?.chapter.title,
+    ).toBe('Les ingrédients');
+  });
+
   it('returns nothing when no title appears or there are no chapters', () => {
     expect(
       matchChapterTitle('How hot should the oven be?', chapters),
@@ -81,8 +101,10 @@ describe('matchChapterTitle', () => {
       '0:00 Setup steps\n2:00 Setup steps for beginners\n5:00 End',
     );
     expect(
-      matchChapterTitle('What about the setup steps for beginners?', nested)
-        ?.chapter.startSec,
+      matchChapterTitle(
+        'What about the part on setup steps for beginners?',
+        nested,
+      )?.chapter.startSec,
     ).toBe(120);
   });
 });

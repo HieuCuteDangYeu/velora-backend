@@ -726,15 +726,16 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   /**
    * "What is covered in the part titled X?": X is a chapter the creator listed in the description ("1:05 X"), which
    * is metadata, not speech, so the transcript search cannot find it. With one shared reel the question is rewritten
-   * into the time-range summary of that chapter, which the pipeline answers well. Off unless
-   * AI_CHAPTER_TITLE_RESOLUTION=true; any failure leaves the question as it was.
+   * into the time-range summary of that chapter, which the pipeline answers well. Measured on 14 chapter-by-title rows
+   * of two chaptered videos: mean 0.15 -> 0.55, judged correct 1 -> 4; 0 of 30 ordinary questions rewritten. On by
+   * default; AI_CHAPTER_TITLE_RESOLUTION=false turns it off; any failure leaves the question as it was.
    */
   private async resolveChapterQuestion(
     message: string,
     accessibleReelIds: string[],
   ): Promise<string | undefined> {
     if (
-      this.config.get<string>('AI_CHAPTER_TITLE_RESOLUTION') !== 'true' ||
+      this.config.get<string>('AI_CHAPTER_TITLE_RESOLUTION') === 'false' ||
       !this.reelSemanticIndex ||
       accessibleReelIds.length !== 1
     ) {

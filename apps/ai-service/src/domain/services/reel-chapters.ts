@@ -51,9 +51,16 @@ export function parseDescriptionChapters(
   return chapters;
 }
 
+// The question asks about a part of the video, not about something said in it ("what does the speaker say about
+// la cuisson?" must stay a detail question). Measured 2026-11-26: without this cue, 4 of 24 ordinary questions on
+// two chaptered videos named a chapter title in passing and would have been rewritten into a chapter summary.
+const SECTION_CUE =
+  /(?<![\p{L}\p{N}])(?:part|section|chapter|segment|titled|called|named|partie|chapitre|intitul\p{L}*|parte|secci\p{L}n|cap\p{L}tulo|titulad\p{L})(?![\p{L}\p{N}])|phần|chương|đoạn|부분|챕터|파트|섹션|章|部分|段/iu;
+
 /**
- * The chapter a question names, or undefined. A title must appear in the question (accents and case ignored);
- * a short or single-word title ("Intro") only counts when it is quoted, so ordinary words do not match.
+ * The chapter a question names, or undefined. The title must appear in the question (accents and case ignored) and
+ * either be quoted or come with a word that asks about a part of the video ("the part titled X", "la partie X");
+ * a short or single-word title ("Intro") only counts when quoted.
  */
 export function matchChapterTitle(
   question: string,
@@ -71,7 +78,13 @@ export function matchChapterTitle(
     if (!title) return;
     const plain = title.length >= MIN_PLAIN_TITLE_CHARS && title.includes(' ');
     const present = normalizedQuestion.includes(` ${title} `);
-    if (!(present && (plain || quoted.includes(title)))) return;
+    if (
+      !(
+        present &&
+        (quoted.includes(title) || (plain && SECTION_CUE.test(question)))
+      )
+    )
+      return;
     if (!best || title.length > best.length)
       best = { index, length: title.length };
   });

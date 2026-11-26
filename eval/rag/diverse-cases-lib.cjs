@@ -133,7 +133,7 @@ function baseRow({ fixture, type, question, questionLanguage, gold, referenceTex
 }
 
 /** Questions that need no model: the video's opening, a clock time, a chapter. */
-function templatedRows({ fixture, windows, chapters, split, random, timestampCount = 2, chapterCount = 3 }) {
+function templatedRows({ fixture, windows, chapters, split, random, timestampCount = 2, chapterCount = Number(process.env.DIVERSE_CHAPTER_COUNT) || 3 }) {
   const rows = [];
   const usable = eligibleWindows(windows, { minChars: 80 });
   if (usable.length) {

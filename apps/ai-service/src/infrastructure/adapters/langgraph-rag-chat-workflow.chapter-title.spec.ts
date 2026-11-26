@@ -26,7 +26,7 @@ function build(
 }
 
 describe('LangGraphRagChatWorkflowAdapter chapter title resolution', () => {
-  const on = { AI_CHAPTER_TITLE_RESOLUTION: 'true' };
+  const on = {};
   const document = { description, sourceDurationMs: 400_000 };
 
   it('rewrites a question naming a chapter into that chapter time range', async () => {
@@ -40,9 +40,9 @@ describe('LangGraphRagChatWorkflowAdapter chapter title resolution', () => {
     expect(get).toHaveBeenCalledWith('reel-1');
   });
 
-  it('does nothing unless switched on, without calling the index', async () => {
+  it('does nothing when switched off, without calling the index', async () => {
     const get = jest.fn().mockResolvedValue(document);
-    const { resolver } = build({}, get);
+    const { resolver } = build({ AI_CHAPTER_TITLE_RESOLUTION: 'false' }, get);
     await expect(
       resolver.resolveChapterQuestion(question, ['reel-1']),
     ).resolves.toBeUndefined();

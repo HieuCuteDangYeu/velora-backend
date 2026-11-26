@@ -71,7 +71,7 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
       if (near.length === 0) return false;
       const closest = Math.min(...near.map((hit) => hit.vectorDistance ?? 1));
       if (closest <= this.softDistance()) return true;
-      return await this.rerankerFindsRelevant(input.message, near);
+      return await this.rerankerFindsRelevant(input.message, hits);
     } catch (error: unknown) {
       // The probe only widens routing; when it cannot answer, the router's own verdict stands.
       this.logger.warn(
@@ -88,10 +88,14 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
    * distance 0.482). The cross-encoder tells them apart: covered ones scored 0.135-0.97 (the six measured
    * 2026-11-26), general ones 0.003 median and 0.026 at most among those in range. Fails open to the distance
    * alone when the reranker is absent, errors, or returns no score. AI_ROUTER_EVIDENCE_PROBE_RERANK=true.
+   * It must see every returned hit, not only those within the distance limit: for the Quebec songwriters question
+   * the excerpt that answers it (rerank 0.34) sits at vector distance 0.575, the two hits inside 0.55 score 0.005
+   * and 0.027, and reranking only the near hits refused a covered question that the calibration (best score over all
+   * six hits) had rescued.
    */
   private async rerankerFindsRelevant(
     message: string,
-    near: SemanticIndexSearchResult[],
+    hits: SemanticIndexSearchResult[],
   ): Promise<boolean> {
     if (!this.reranker || !this.rerankEnabled()) {
       return true;
@@ -102,7 +106,7 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
     );
     if (!Number.isFinite(floor) || floor <= 0) return true;
     try {
-      const candidates = near.slice(0, MAX_RERANKED_HITS).map((hit) => {
+      const candidates = hits.slice(0, MAX_RERANKED_HITS).map((hit) => {
         const text = hit.evidenceText ?? hit.text ?? '';
         return {
           chunkId: hit.id,

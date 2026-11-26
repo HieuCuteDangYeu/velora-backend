@@ -122,6 +122,16 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       );
     });
 
+    it('reranks hits beyond the distance limit too, because the excerpt that answers a question can sit there', async () => {
+      const rerank = jest.fn().mockResolvedValue([{ rerankScore: 0.34 }]);
+      const { adapter } = withReranker(
+        [vectorHit(0.536), vectorHit(0.546), vectorHit(0.575)],
+        rerank,
+      );
+      await expect(ask(adapter)).resolves.toBe(true);
+      expect(rerank.mock.calls[0][0].candidates).toHaveLength(3);
+    });
+
     it('does not call the reranker when the closest excerpt is within the soft distance', async () => {
       const { adapter, rerank } = withReranker([vectorHit(0.44)], jest.fn());
       await expect(ask(adapter)).resolves.toBe(true);

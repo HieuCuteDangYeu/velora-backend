@@ -142,6 +142,29 @@ export class ContentServiceAdapter implements IContentService {
     }
   }
 
+  async getReelDescription(
+    reelId: string,
+    viewerId: string,
+  ): Promise<string | undefined> {
+    try {
+      const reel = await firstValueFrom(
+        this.contentClient.send<{ description?: string | null } | null>(
+          'content.get_reel',
+          { reelId, viewerId },
+        ),
+      );
+      return typeof reel?.description === 'string'
+        ? reel.description
+        : undefined;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `ContentServiceAdapter.getReelDescription failed: ${msg}. Using the indexed description.`,
+      );
+      return undefined;
+    }
+  }
+
   private normalizeReels(reels: RawContentReel[]): AiRecommendedReel[] {
     return reels
       .filter((reel) => reel.id.length > 0)

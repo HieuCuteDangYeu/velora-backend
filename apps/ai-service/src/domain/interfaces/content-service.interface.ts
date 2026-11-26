@@ -23,4 +23,13 @@ export interface IContentService {
   getRecommendedReels(
     input: RecommendedReelsInput,
   ): Promise<AiRecommendedReel[]>;
+
+  /**
+   * The reel's current description as the viewer sees it (an edit after upload does not reach the index), or
+   * undefined when the reel cannot be read.
+   */
+  getReelDescription(
+    reelId: string,
+    viewerId: string,
+  ): Promise<string | undefined>;
 }

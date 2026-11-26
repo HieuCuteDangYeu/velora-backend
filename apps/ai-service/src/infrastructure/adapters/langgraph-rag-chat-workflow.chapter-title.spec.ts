@@ -4,6 +4,7 @@ type ChapterResolver = {
   resolveChapterQuestion(
     message: string,
     accessibleReelIds: string[],
+    userId?: string,
   ): Promise<string | undefined>;
 };
 
@@ -14,6 +15,7 @@ const question =
 function build(
   flags: Record<string, string>,
   getReelDocument: jest.Mock,
+  getReelDescription: jest.Mock = jest.fn().mockResolvedValue(undefined),
 ): { resolver: ChapterResolver; logger: { warn: jest.Mock } } {
   const resolver = Object.create(
     LangGraphRagChatWorkflowAdapter.prototype,
@@ -21,6 +23,7 @@ function build(
   const logger = { debug: jest.fn(), warn: jest.fn() };
   resolver.config = { get: (key: string) => flags[key] };
   resolver.reelSemanticIndex = { getReelDocument };
+  resolver.contentService = { getReelDescription };
   resolver.logger = logger;
   return { resolver, logger };
 }
@@ -76,5 +79,39 @@ describe('LangGraphRagChatWorkflowAdapter chapter title resolution', () => {
     await expect(
       plain.resolver.resolveChapterQuestion(question, ['reel-1']),
     ).resolves.toBeUndefined();
+  });
+
+  it('uses the description as it is now, so chapters added after upload count, and the indexed copy otherwise', async () => {
+    const indexed = jest
+      .fn()
+      .mockResolvedValue({ description: 'No chapters yet.' });
+    const current = jest.fn().mockResolvedValue(description);
+    const { resolver } = build(on, indexed, current);
+    await expect(
+      resolver.resolveChapterQuestion(question, ['reel-1'], 'user-1'),
+    ).resolves.toContain('from 65 to 200 seconds');
+    expect(current).toHaveBeenCalledWith('reel-1', 'user-1');
+
+    const edited = build(
+      on,
+      jest.fn().mockResolvedValue(document),
+      jest.fn().mockResolvedValue('Chapters removed.'),
+    );
+    await expect(
+      edited.resolver.resolveChapterQuestion(question, ['reel-1'], 'user-1'),
+    ).resolves.toBeUndefined();
+
+    const unreadable = build(
+      on,
+      jest.fn().mockResolvedValue(document),
+      jest.fn().mockResolvedValue(undefined),
+    );
+    await expect(
+      unreadable.resolver.resolveChapterQuestion(
+        question,
+        ['reel-1'],
+        'user-1',
+      ),
+    ).resolves.toContain('from 65 to 200 seconds');
   });
 });

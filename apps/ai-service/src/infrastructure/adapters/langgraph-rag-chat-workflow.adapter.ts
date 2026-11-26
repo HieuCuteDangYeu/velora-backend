@@ -722,6 +722,7 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
       const chapterQuestion = await this.resolveChapterQuestion(
         state.userMessage,
         accessibleReelIds,
+        state.userId,
       );
       this.markLongRange(
         chapterQuestion ?? state.userMessage,
@@ -769,19 +770,32 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   private async resolveChapterQuestion(
     message: string,
     accessibleReelIds: string[],
+    userId?: string,
   ): Promise<string | undefined> {
     if (
       this.config.get<string>('AI_CHAPTER_TITLE_RESOLUTION') === 'false' ||
-      !this.reelSemanticIndex ||
       accessibleReelIds.length !== 1
     ) {
       return undefined;
     }
     try {
-      const document = await this.reelSemanticIndex.getReelDocument(
-        accessibleReelIds[0],
+      const reelId = accessibleReelIds[0];
+      // The description as it is now: a creator who adds chapters after upload edits it in the content service,
+      // and the index keeps the copy from indexing time, which is the fallback.
+      const [current, document] = await Promise.all([
+        userId
+          ? this.contentService.getReelDescription(reelId, userId)
+          : Promise.resolve(undefined),
+        this.reelSemanticIndex?.getReelDocument(reelId).catch((error) => {
+          this.logger.warn(
+            `Chapter title resolution: indexed reel document unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return undefined;
+        }),
+      ]);
+      const chapters = parseDescriptionChapters(
+        current ?? document?.description,
       );
-      const chapters = parseDescriptionChapters(document?.description);
       const durationSec = document?.sourceDurationMs
         ? document.sourceDurationMs / 1000
         : undefined;

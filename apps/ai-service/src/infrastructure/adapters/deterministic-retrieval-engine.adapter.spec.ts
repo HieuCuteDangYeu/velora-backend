@@ -155,6 +155,7 @@ const buildAdapter = (configValues: Record<string, string>) => {
     resolveReelContextAccess: jest.fn().mockResolvedValue(['reel-1']),
     searchPublicReels: jest.fn(),
     getRecommendedReels: jest.fn(),
+    getReelDescription: jest.fn(),
   };
   const searchChunks = jest.fn(
     (input: SemanticIndexSearchRequest): Promise<SemanticIndexSearchResult[]> =>

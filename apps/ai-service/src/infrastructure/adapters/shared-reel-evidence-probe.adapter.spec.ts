@@ -183,4 +183,74 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       await expect(ask(adapter)).resolves.toBe(true);
     });
   });
+
+  describe('with the remote scope check', () => {
+    const hit = (distance: number) => ({
+      id: 'c1',
+      reelId: 'reel-1',
+      evidenceText: 'Half a teaspoon of sugar goes into the flour.',
+      vectorDistance: distance,
+    });
+    const withScope = (
+      hits: unknown[],
+      generateObject: jest.Mock,
+      values: Record<string, string> = { AI_CLOUDFLARE_LLM_ENABLED: 'true' },
+    ) => {
+      const searchChunks = jest.fn().mockResolvedValue(hits);
+      const adapter = new SharedReelEvidenceProbeAdapter(
+        { generateVector: jest.fn().mockResolvedValue(vector) } as never,
+        { searchChunks } as never,
+        { get: (key: string) => values[key] } as never,
+        undefined,
+        { generateObject } as never,
+      );
+      return { adapter, generateObject, searchChunks };
+    };
+
+    it('reroutes a near question only when the remote model says it is about the video', async () => {
+      const video = withScope(
+        [hit(0.47)],
+        jest.fn().mockResolvedValue({ about: 'VIDEO' }),
+      );
+      await expect(ask(video.adapter)).resolves.toBe(true);
+      expect(video.searchChunks).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 6 }),
+      );
+      expect(video.generateObject.mock.calls[0][0].userPrompt).toContain(
+        'Half a teaspoon of sugar',
+      );
+      const general = withScope(
+        [hit(0.3)],
+        jest.fn().mockResolvedValue({ about: 'GENERAL' }),
+      );
+      await expect(ask(general.adapter)).resolves.toBe(false);
+    });
+
+    it('does not ask when nothing is near', async () => {
+      const far = withScope([hit(0.7)], jest.fn());
+      await expect(ask(far.adapter)).resolves.toBe(false);
+      expect(far.generateObject).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the distance when the check fails, answers nothing usable, or is off', async () => {
+      const failing = withScope(
+        [hit(0.47)],
+        jest.fn().mockRejectedValue(new Error('429')),
+      );
+      await expect(ask(failing.adapter)).resolves.toBe(true);
+      const odd = withScope([hit(0.47)], jest.fn().mockResolvedValue({}));
+      await expect(ask(odd.adapter)).resolves.toBe(true);
+      for (const values of [
+        {},
+        {
+          AI_CLOUDFLARE_LLM_ENABLED: 'true',
+          AI_ROUTER_EVIDENCE_PROBE_SCOPE_CHECK: 'false',
+        },
+      ]) {
+        const off = withScope([hit(0.47)], jest.fn(), values);
+        await expect(ask(off.adapter)).resolves.toBe(true);
+        expect(off.generateObject).not.toHaveBeenCalled();
+      }
+    });
+  });
 });

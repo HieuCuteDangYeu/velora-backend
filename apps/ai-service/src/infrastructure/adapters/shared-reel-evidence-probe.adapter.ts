@@ -4,6 +4,7 @@ import type { IRerankerService } from '@ai/domain/interfaces/reranker.service.in
 import type { IReelSemanticIndexService } from '@ai/domain/interfaces/reel-semantic-index.service.interface';
 import type { ISharedReelEvidenceProbe } from '@ai/domain/interfaces/shared-reel-evidence-probe.interface';
 import type { SemanticIndexSearchResult } from '@common/processing/interfaces/semantic-index.interface';
+import { CloudflareStructuredLlmAdapter } from '@ai/infrastructure/adapters/cloudflare-structured-llm.adapter';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 // Calibrated 2026-11-24 on 60 English detail questions, each searched inside its own video and inside an
@@ -15,8 +16,9 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 // 2026-11-26 on 72 French and Korean questions over 6 videos: all 48 answered detail questions sit at or below
 // 0.496, and the 6 questions wrongly turned away as off-topic sit at 0.52-0.57 (5 of them were answered once the
 // limit was 0.55). 0.55 is also the limit of the not-covered guard (CheckContextSufficiencyUseCase), which must not
-// disagree with the probe. Known exposure at any limit above 0.48: a general question that a video happens to
-// discuss ("capital of Australia" against a Quebec history lecture, distance 0.482) is answered from the video.
+// disagree with the probe. Distance alone cannot keep out a general question that a video happens to discuss
+// ("capital of Australia" against a Quebec history lecture, distance 0.482); the remote scope check does
+// (remoteSaysAboutVideo).
 const DEFAULT_MAX_DISTANCE = 0.55;
 const MAX_REELS = 8;
 // Opt-in second signal for the ambiguous band (see rerankerFindsRelevant): beyond this closest distance the
@@ -25,6 +27,10 @@ const DEFAULT_SOFT_DISTANCE = 0.45;
 const DEFAULT_MIN_RERANK = 0.05;
 // The calibration reranked the 6 closest excerpts; reranking only 3 refused a covered question again.
 const MAX_RERANKED_HITS = 6;
+const SCOPE_CHECK_TIMEOUT_MS = 10_000;
+const SCOPE_CHECK_EXCERPT_CHARS = 400;
+const SCOPE_CHECK_PROMPT =
+  'You decide whether a chat question is about a specific video. You get the question and excerpts of that video\'s transcript (the closest matches to the question). Answer VIDEO when the question asks about something the video shows or discusses, even if it does not name the video ("this recipe", "the speaker", or a detail like an ingredient or an event), including when the excerpts only partly answer it. Answer GENERAL when it is a general-knowledge or unrelated question that would be asked the same way without this video, even if the video happens to touch the same topic.';
 
 @Injectable()
 export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe {
@@ -40,6 +46,8 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
     @Optional()
     @Inject('IRerankerService')
     private readonly reranker?: IRerankerService,
+    @Optional()
+    private readonly scopeModel?: CloudflareStructuredLlmAdapter,
   ) {}
 
   async hasStrongEvidence(input: {
@@ -59,7 +67,10 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
         queryEmbeddingModel: embedding.model,
         queryEmbeddingVersion: embedding.version,
         filters: { reelIds },
-        limit: this.rerankEnabled() ? MAX_RERANKED_HITS : 3,
+        limit:
+          this.rerankEnabled() || this.scopeCheckEnabled()
+            ? MAX_RERANKED_HITS
+            : 3,
         candidateLimit: 24,
       });
       const maxDistance = this.maxDistance();
@@ -69,6 +80,8 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
           hit.vectorDistance <= maxDistance,
       );
       if (near.length === 0) return false;
+      const aboutVideo = await this.remoteSaysAboutVideo(input.message, hits);
+      if (aboutVideo !== undefined) return aboutVideo;
       const closest = Math.min(...near.map((hit) => hit.vectorDistance ?? 1));
       if (closest <= this.softDistance()) return true;
       return await this.rerankerFindsRelevant(input.message, hits);
@@ -140,6 +153,83 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
       );
       return true;
     }
+  }
+
+  /**
+   * Whether the question is about the shared video, asked of the large remote model with the closest excerpts. Distance
+   * cannot tell a covered question the router missed from a general question the video happens to discuss, and the
+   * cross-encoder could not either (covered 0.025-0.032 against general up to 0.026). Measured offline 2026-11-27 on
+   * 62 covered detail questions and 48 general ones (6 questions x 8 videos): 61 of 61 covered questions within the
+   * 0.55 limit answered VIDEO (the one GENERAL was at 0.556, outside it), 48 of 48 general questions GENERAL, including
+   * the 3 within the limit. On while the remote model is enabled; AI_ROUTER_EVIDENCE_PROBE_SCOPE_CHECK=false turns it
+   * off. Undefined (distance alone decides) when it is off, fails, times out or answers something else.
+   */
+  private async remoteSaysAboutVideo(
+    message: string,
+    hits: SemanticIndexSearchResult[],
+  ): Promise<boolean | undefined> {
+    if (!this.scopeModel || !this.scopeCheckEnabled()) return undefined;
+    const excerpts = hits
+      .slice(0, MAX_RERANKED_HITS)
+      .map((hit) => (hit.evidenceText ?? hit.text ?? '').trim())
+      .filter(Boolean);
+    if (excerpts.length === 0) return undefined;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const verdict = await Promise.race([
+        this.scopeModel.generateObject<{ about?: string }>({
+          systemPrompt: SCOPE_CHECK_PROMPT,
+          userPrompt: `Question: ${message}\n\nVideo excerpts:\n${excerpts
+            .map(
+              (text, index) =>
+                `[${index + 1}] ${text.slice(0, SCOPE_CHECK_EXCERPT_CHARS)}`,
+            )
+            .join('\n')}`,
+          jsonSchema: {
+            type: 'object',
+            properties: {
+              about: { type: 'string', enum: ['VIDEO', 'GENERAL'] },
+            },
+            required: ['about'],
+            additionalProperties: false,
+          },
+          temperature: 0,
+          maxTokens: 20,
+          modelRole: 'SCOPE_CHECK',
+          schemaVersion: 'probe_scope_check_v1',
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('timed out')),
+            SCOPE_CHECK_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      const about = verdict?.about?.toUpperCase();
+      this.logger.debug(`[EvidenceProbe] scope check: ${about ?? 'none'}`);
+      if (about === 'VIDEO') return true;
+      if (about === 'GENERAL') return false;
+      return undefined;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Shared reel evidence probe scope check failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private scopeCheckEnabled(): boolean {
+    return (
+      this.scopeModel !== undefined &&
+      this.config
+        .get<string>('AI_CLOUDFLARE_LLM_ENABLED')
+        ?.trim()
+        .toLowerCase() === 'true' &&
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_SCOPE_CHECK') !==
+        'false'
+    );
   }
 
   private rerankEnabled(): boolean {

@@ -1,3 +1,8 @@
+import {
+  isLongRangeTurn,
+  LONG_RANGE_EVIDENCE_CHARS,
+  LONG_RANGE_EVIDENCE_ITEMS,
+} from '@ai/domain/services/long-range-turn';
 import type { ReelContextSearchResult } from '@common/content/interfaces/reel-context-search-result.interface';
 import type {
   RagChatRouteDecision,
@@ -255,13 +260,20 @@ export function transcriptSegmentPromptBounds(
   requestKind: TranscriptSegmentRequestKind | undefined,
 ): RagPromptBounds {
   if (!requestKind) return bounds;
+  const longRange = requestKind === 'SUMMARY' && isLongRangeTurn();
   return {
     ...bounds,
+    maxEvidenceItems: longRange
+      ? Math.max(bounds.maxEvidenceItems, LONG_RANGE_EVIDENCE_ITEMS)
+      : bounds.maxEvidenceItems,
     maxEvidenceTextChars: Math.max(
       bounds.maxEvidenceTextChars,
       requestKind === 'SUMMARY' ? 3_000 : 1_000,
     ),
-    maxEvidenceTotalChars: Math.max(bounds.maxEvidenceTotalChars, 3_000),
+    maxEvidenceTotalChars: Math.max(
+      bounds.maxEvidenceTotalChars,
+      longRange ? LONG_RANGE_EVIDENCE_CHARS : 3_000,
+    ),
   };
 }
 

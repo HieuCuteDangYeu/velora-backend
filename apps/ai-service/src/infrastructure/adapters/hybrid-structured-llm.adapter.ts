@@ -1,3 +1,4 @@
+import { isLongRangeTurn } from '@ai/domain/services/long-range-turn';
 import type {
   GenerateStructuredObjectInput,
   IStructuredLlmService,
@@ -47,7 +48,13 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
   ) {}
 
   async generateObject<T>(input: GenerateStructuredObjectInput): Promise<T> {
-    if (this.cloudflare && this.useCloudflare(input.modelRole)) {
+    // A long-range turn carries more evidence than the local model's 4k context holds: every structured call of that
+    // turn goes to the large-context remote model, with the local model as the fallback.
+    if (
+      this.cloudflare &&
+      (this.useCloudflare(input.modelRole) ||
+        (isLongRangeTurn() && this.cloudflareEnabled()))
+    ) {
       try {
         return await this.cloudflare.generateObject<T>(input);
       } catch (error: unknown) {
@@ -75,15 +82,18 @@ export class HybridStructuredLlmAdapter implements IStructuredLlmService {
     }
   }
 
-  /** Opt-in per role: AI_CLOUDFLARE_LLM_ENABLED=true and AI_CLOUDFLARE_LLM_ROLES lists the role. */
-  private useCloudflare(role?: string): boolean {
-    if (
+  private cloudflareEnabled(): boolean {
+    return (
       this.config
         .get<string>('AI_CLOUDFLARE_LLM_ENABLED')
         ?.trim()
-        .toLowerCase() !== 'true'
-    )
-      return false;
+        .toLowerCase() === 'true'
+    );
+  }
+
+  /** Opt-in per role: AI_CLOUDFLARE_LLM_ENABLED=true and AI_CLOUDFLARE_LLM_ROLES lists the role. */
+  private useCloudflare(role?: string): boolean {
+    if (!this.cloudflareEnabled()) return false;
     const roles = (this.config.get<string>('AI_CLOUDFLARE_LLM_ROLES') ?? '')
       .split(',')
       .map((item) => item.trim())

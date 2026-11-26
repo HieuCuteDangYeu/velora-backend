@@ -4,6 +4,10 @@ import { CloudflareStructuredLlmAdapter } from './cloudflare-structured-llm.adap
 import { GroqStructuredLlmAdapter } from './groq-structured-llm.adapter';
 import { HybridStructuredLlmAdapter } from './hybrid-structured-llm.adapter';
 import {
+  markLongRangeTurn,
+  runTurnScope,
+} from '@ai/domain/services/long-range-turn';
+import {
   OllamaStructuredCompletionProviderError,
   OllamaStructuredLlmAdapter,
 } from './ollama-structured-llm.adapter';
@@ -166,6 +170,40 @@ describe('HybridStructuredLlmAdapter', () => {
       const req = request('ANSWER');
       await expect(adapter.generateObject(req)).resolves.toBe('ollama');
       expect(ollama.generateObject).toHaveBeenCalledWith(req);
+    });
+  });
+
+  describe('a long-range turn', () => {
+    it('sends every role to Cloudflare while Cloudflare is enabled, and only inside that turn', async () => {
+      const { adapter, cloudflare, ollama } = setup({
+        AI_CLOUDFLARE_LLM_ENABLED: 'true',
+        AI_CLOUDFLARE_LLM_ROLES: 'ANSWER',
+      });
+      await runTurnScope(async () => {
+        markLongRangeTurn();
+        await expect(adapter.generateObject(request('VERIFIER'))).resolves.toBe(
+          'cloudflare',
+        );
+        await expect(
+          adapter.generateObject(request('CITATION_ATTRIBUTION')),
+        ).resolves.toBe('cloudflare');
+      });
+      await expect(adapter.generateObject(request('VERIFIER'))).resolves.toBe(
+        'ollama',
+      );
+      expect(cloudflare.generateObject).toHaveBeenCalledTimes(2);
+      expect(ollama.generateObject).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays local when Cloudflare is not enabled', async () => {
+      const { adapter, cloudflare } = setup({});
+      await runTurnScope(async () => {
+        markLongRangeTurn();
+        await expect(adapter.generateObject(request('VERIFIER'))).resolves.toBe(
+          'ollama',
+        );
+      });
+      expect(cloudflare.generateObject).not.toHaveBeenCalled();
     });
   });
 });

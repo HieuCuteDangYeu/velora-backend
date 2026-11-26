@@ -69,6 +69,13 @@ import { asksForReelsLikePhoto } from '@ai/domain/services/rag-photo-reel-reques
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 import { scopeAccessibleReelsToReplyTarget } from '@ai/domain/services/rag-reply-reel-scope';
 import {
+  LONG_RANGE_SECONDS,
+  markLongRangeTurn,
+  runTurnScope,
+} from '@ai/domain/services/long-range-turn';
+import { isTimeRangeSummaryQuestion } from '@ai/domain/services/rag-prompt-bounds';
+import { matchTranscriptTimestamp } from '@ai/domain/services/rag-source-retrieval-plan';
+import {
   chapterRangeQuestion,
   matchChapterTitle,
   parseDescriptionChapters,
@@ -204,7 +211,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
     const productionExecutionId = randomUUID();
     const run = (root?: import('@langfuse/tracing').LangfuseSpan) =>
-      this.executeWorkflow(input, productionExecutionId, root);
+      runTurnScope(() =>
+        this.executeWorkflow(input, productionExecutionId, root),
+      );
 
     return this.langfuseTracing
       ? this.langfuseTracing.withRoot(
@@ -714,6 +723,10 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         state.userMessage,
         accessibleReelIds,
       );
+      this.markLongRange(
+        chapterQuestion ?? state.userMessage,
+        accessibleReelIds,
+      );
 
       return {
         accessibleReelIds,
@@ -730,6 +743,27 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
    * of two chaptered videos: mean 0.15 -> 0.55, judged correct 1 -> 4; 0 of 30 ordinary questions rewritten. On by
    * default; AI_CHAPTER_TITLE_RESOLUTION=false turns it off; any failure leaves the question as it was.
    */
+  /**
+   * A summary of more than LONG_RANGE_SECONDS of one shared reel does not fit the local model's context; marking the
+   * turn makes retrieval read the whole range and sends the turn's structured calls to the remote model. Opt-in
+   * (AI_LONG_RANGE_REMOTE=true), which only has an effect while the remote model is enabled.
+   */
+  private markLongRange(message: string, accessibleReelIds: string[]): void {
+    if (
+      this.config.get<string>('AI_LONG_RANGE_REMOTE') !== 'true' ||
+      accessibleReelIds.length !== 1 ||
+      !isTimeRangeSummaryQuestion(message)
+    ) {
+      return;
+    }
+    const range = matchTranscriptTimestamp(message);
+    if (!range || range[2] === undefined) return;
+    const seconds = Number(range[2]) - Number(range[1]);
+    if (!(seconds > LONG_RANGE_SECONDS)) return;
+    markLongRangeTurn();
+    this.logger.debug(`[RagGraph] long-range turn: ${Math.round(seconds)}s`);
+  }
+
   private async resolveChapterQuestion(
     message: string,
     accessibleReelIds: string[],

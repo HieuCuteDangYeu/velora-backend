@@ -1,3 +1,4 @@
+import { isLongRangeTurn } from '@ai/domain/services/long-range-turn';
 import {
   requiresReelCoverage,
   sourceRetrievalPlan,
@@ -84,6 +85,9 @@ type RetrievalTemporalPlan = Pick<
 // A summary range longer than this is read as sub-windows of about this length (see sampledRangeWindows).
 const SAMPLED_RANGE_WINDOW_SECONDS = 150;
 const MAX_SAMPLED_RANGE_WINDOWS = 8;
+// A long-range turn (see long-range-turn.ts) reads up to 8 windows of the index's 20-result maximum.
+const MAX_FULL_RANGE_WINDOWS = 8;
+const MAX_CHUNKS_PER_READ = 20;
 // Only the large reads of range summaries are sampled; the plan's read limit is 2 for other range questions.
 const MIN_SAMPLED_RANGE_READ_LIMIT = 8;
 
@@ -434,13 +438,17 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
     }
 
     try {
-      const reranked = input.plan.shouldRerank
-        ? await this.rerankerService.rerank({
-            queryText: this.getQueries(input.plan).join('\n'),
-            candidates: input.retrievedChunks,
-            limit: input.plan.rerankLimit,
-          })
-        : input.retrievedChunks.slice(0, input.plan.rerankLimit);
+      // A long-range turn keeps every chunk of its chronological read; ranking them would drop most of the range.
+      const keepAll = isLongRangeTurn() && input.plan.sourceOrder === 'ASC';
+      const reranked = keepAll
+        ? input.retrievedChunks
+        : input.plan.shouldRerank
+          ? await this.rerankerService.rerank({
+              queryText: this.getQueries(input.plan).join('\n'),
+              candidates: input.retrievedChunks,
+              limit: input.plan.rerankLimit,
+            })
+          : input.retrievedChunks.slice(0, input.plan.rerankLimit);
       const scoped = reranked.flatMap((item) => {
         const original = input.retrievedChunks.find(
           (candidate) =>
@@ -784,6 +792,26 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
   ): Array<{ start: number; end: number; limit: number }> | undefined {
     const start = time.sourceTimestampSec;
     const end = time.sourceTimestampEndSec;
+    // A long-range turn reads the whole range: contiguous windows, each as large as one read allows.
+    if (
+      isLongRangeTurn() &&
+      start !== undefined &&
+      end !== undefined &&
+      Number.isFinite(start) &&
+      Number.isFinite(end) &&
+      end - start > SAMPLED_RANGE_WINDOW_SECONDS
+    ) {
+      const count = Math.min(
+        MAX_FULL_RANGE_WINDOWS,
+        Math.ceil((end - start) / SAMPLED_RANGE_WINDOW_SECONDS),
+      );
+      const width = (end - start) / count;
+      return Array.from({ length: count }, (_, index) => ({
+        start: start + index * width,
+        end: index === count - 1 ? end : start + (index + 1) * width,
+        limit: MAX_CHUNKS_PER_READ,
+      }));
+    }
     if (
       this.config.get<string>('AI_TRANSCRIPT_RANGE_SAMPLING') !== 'true' ||
       start === undefined ||

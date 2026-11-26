@@ -19,6 +19,10 @@ import type {
 } from '@common/processing/interfaces/semantic-index.interface';
 import { ConfigService } from '@nestjs/config';
 import { DeterministicRetrievalEngineAdapter } from './deterministic-retrieval-engine.adapter';
+import {
+  markLongRangeTurn,
+  runTurnScope,
+} from '@ai/domain/services/long-range-turn';
 
 const transcriptRoute: RagChatRouteDecision = {
   intent: 'REEL_VIDEO_QUESTION',
@@ -1279,6 +1283,53 @@ describe('DeterministicRetrievalEngineAdapter', () => {
       for (const request of requests) {
         expect(request).toMatchObject({ sourceOrder: 'ASC', limit: 6 });
       }
+    });
+
+    it('reads a long range contiguously, 20 chunks per window, in a long-range turn even with sampling off', async () => {
+      const requests = await runTurnScope(async () => {
+        markLongRangeTurn();
+        return run(rangePlan(437, 885, 2), ['reel-1'], {
+          NODE_ENV: 'test',
+          RAG_HIERARCHICAL_RETRIEVAL_ENABLED: 'false',
+          RAG_HIERARCHICAL_RETRIEVAL_SHADOW_ENABLED: 'false',
+        });
+      });
+      expect(requests).toHaveLength(3);
+      expect(requests[0].sourceTimestampSec).toBe(437);
+      expect(requests[2].sourceTimestampEndSec).toBe(885);
+      for (const request of requests) expect(request.limit).toBe(20);
+    });
+
+    it('keeps every chunk of a chronological read in a long-range turn', async () => {
+      const built = buildAdapter(config);
+      const chunks = Array.from({ length: 30 }, (_, i) => ({
+        chunkId: `c${i}`,
+        reelId: 'reel-1',
+        tags: [],
+        chunkText: `chunk ${i}`,
+        evidenceText: `chunk ${i}`,
+        evidenceType: 'TRANSCRIPT' as const,
+        startTime: 437 + i * 8,
+        endTime: 445 + i * 8,
+        distance: null,
+      }));
+      const kept = await runTurnScope(async () => {
+        markLongRangeTurn();
+        return built.adapter.rerank({
+          plan: { ...rangePlan(437, 885, 20), rerankLimit: 5 },
+          retrievedChunks: chunks,
+        });
+      });
+      expect(kept.length).toBeGreaterThanOrEqual(30);
+      const normal = await built.adapter.rerank({
+        plan: {
+          ...rangePlan(437, 885, 20),
+          rerankLimit: 5,
+          shouldRerank: false,
+        },
+        retrievedChunks: chunks,
+      });
+      expect(normal.length).toBeLessThan(30);
     });
 
     it('keeps a range of a few minutes as one read', async () => {

@@ -30,6 +30,7 @@ import {
 import {
   boundEvidence,
   boundPromptText,
+  isTimeRangeSummaryQuestion,
   readRagPromptBounds,
   selectRagAnswerEvidenceIds,
   transcriptSegmentPromptBounds,
@@ -44,6 +45,7 @@ import {
   ragRequestedFactSignalScore,
   MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS,
   TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+  ragUnsupportedDistinctiveTokens,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
 
@@ -1930,20 +1932,38 @@ export class GenerateDraftAnswerUseCase {
               .join('\n'),
           ),
         );
-    const answer = suppressUnverifiedVisualTextAbsence
+    const visualChecked = suppressUnverifiedVisualTextAbsence
       ? rawAnswer
           .split(/(?<=[.!?])\s+|\n+/u)
           .filter((sentence) => !VISUAL_TEXT_ABSENCE_CLAIM.test(sentence))
           .join(' ')
           .trim()
       : rawAnswer;
+    // A summary of a time range or chapter states many facts; one sentence with a word the evidence lacks is
+    // dropped rather than refusing the whole summary (measured 2026-11-27: 3 of 48 chapter questions refused).
+    const unsupportedIn = (text: string): boolean =>
+      ragUnsupportedDistinctiveTokens(
+        authorizedEvidenceText,
+        text,
+        state.userMessage,
+      ).length > 0;
+    const evidenceRequired =
+      state.route?.intent === 'REEL_VIDEO_QUESTION' &&
+      (state.route.requiredEvidence?.length ?? 0) > 0;
+    const dropUnsupported =
+      evidenceRequired && isTimeRangeSummaryQuestion(state.userMessage);
+    const answer = dropUnsupported
+      ? visualChecked
+          .split(/(?<=[.!?])\s+|\n+/u)
+          .filter((sentence) => !unsupportedIn(sentence))
+          .join(' ')
+          .trim()
+      : visualChecked;
     const contractError = validateRagAnswerContract({
       answer,
       question: state.userMessage,
       evidence: authorizedEvidenceText,
-      evidenceRequired:
-        state.route?.intent === 'REEL_VIDEO_QUESTION' &&
-        (state.route.requiredEvidence?.length ?? 0) > 0,
+      evidenceRequired,
       verbatimOpeningQuote,
     });
     if (contractError) throw new DraftAnswerContractError(contractError);
@@ -1954,8 +1974,9 @@ export class GenerateDraftAnswerUseCase {
             .map((value) => this.normalizeClaim(value, allowedEvidenceIds))
             .filter(
               (claim) =>
-                !suppressUnverifiedVisualTextAbsence ||
-                !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim),
+                (!suppressUnverifiedVisualTextAbsence ||
+                  !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim)) &&
+                (!dropUnsupported || !unsupportedIn(claim.claim)),
             )
         : [];
     if (minimumClaimCount !== undefined && claims.length < minimumClaimCount) {

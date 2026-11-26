@@ -2714,6 +2714,47 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(service.generateObject).toHaveBeenCalledTimes(2);
   });
 
+  it('drops only the sentence with an unsupported token from a time-range summary', async () => {
+    const supported =
+      'The host explains how the alliance helps campus food banks.';
+    const service = {
+      generateObject: jest.fn().mockResolvedValue({
+        answer: `${supported} It was founded by 7 universities.`,
+        claims: [
+          { claim: supported, evidenceIds: ['e0'] },
+          { claim: 'It was founded by 7 universities.', evidenceIds: ['e0'] },
+        ],
+      }),
+    };
+    const useCase = new GenerateDraftAnswerUseCase(
+      service as never,
+      promptBuilder,
+      config,
+    );
+
+    const result = await useCase.execute({
+      ...state,
+      userMessage:
+        'Summarize what is said from 65 to 200 seconds in the video, in the part titled "Food Bank Alliance".',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        requiredEvidence: ['TRANSCRIPT'],
+      },
+      rerankedChunks: [
+        {
+          evidenceType: 'TRANSCRIPT',
+          evidenceText:
+            'the alliance helps food banks on college campuses get started',
+          chunkText:
+            'the alliance helps food banks on college campuses get started',
+          tags: [],
+        },
+      ],
+    } as unknown as RagChatWorkflowState);
+    expect(result.answer).toContain('alliance helps campus food banks');
+    expect(result.answer).not.toContain('7 universities');
+  });
+
   it('preserves a grounded summary assembled from multiple transcript chunks', async () => {
     const answer =
       "The speaker learned TypeScript during the team's move away from plain JavaScript.";

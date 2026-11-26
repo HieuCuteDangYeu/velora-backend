@@ -296,6 +296,25 @@ describe('validateRagAnswerContract distinctive tokens in range summaries', () =
     ).toBeUndefined();
   });
 
+  it('allows the words of a title the question quotes, but not other question words', () => {
+    const question =
+      'Summarize what is said from 65 to 200 seconds in the video, in the part titled "CUFBA College & University Food Bank Alliance".';
+    expect(
+      contract(
+        question,
+        ['the alliance supports food banks on campuses'],
+        'The CUFBA ALLIANCE section explains how food banks on campuses are supported.',
+      ),
+    ).toBeUndefined();
+    expect(
+      contract(
+        'Does IBM appear from 65 to 200 seconds?',
+        ['the alliance supports food banks on campuses'],
+        'IBM supports food banks.',
+      ),
+    ).toMatch(/unsupported distinctive token \(IBM\)/);
+  });
+
   it('still rejects a name or number the evidence does not support', () => {
     expect(
       contract(

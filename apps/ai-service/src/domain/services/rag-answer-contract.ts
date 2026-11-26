@@ -454,6 +454,15 @@ function unsupportedDistinctiveTokens(
       ])
       .map(normalizeDistinctiveToken),
   );
+  // A name the user quoted ("the part titled "CUFBA Alliance"") may be repeated in the answer.
+  for (const quoted of question.match(QUESTION_QUOTED_SPAN) ?? []) {
+    for (const token of [
+      ...distinctiveTokens(quoted),
+      ...(quoted.match(/[\p{L}\p{N}]+/gu) ?? []),
+    ]) {
+      allowed.add(normalizeDistinctiveToken(token));
+    }
+  }
   for (const time of question.match(QUESTION_TIME_VALUE) ?? []) {
     for (const digits of time.match(/\d+/g) ?? []) {
       allowed.add(normalizeDistinctiveToken(digits));
@@ -468,6 +477,20 @@ function unsupportedDistinctiveTokens(
         .every((part) => allowed.has(normalizeDistinctiveToken(part))));
 
   return distinctiveTokens(answer).filter((token) => !supported(token));
+}
+
+const QUESTION_QUOTED_SPAN = /["“”«»][^"“”«»]{2,120}["“”«»]/gu;
+
+/**
+ * The distinctive tokens in `answer` that neither the evidence nor the question supports, for callers that drop
+ * the sentences carrying them instead of rejecting the whole answer.
+ */
+export function ragUnsupportedDistinctiveTokens(
+  evidence: readonly string[],
+  answer: string,
+  question = '',
+): string[] {
+  return unsupportedDistinctiveTokens(evidence, answer, question);
 }
 
 // A clock time ("32:58", "1:02:03") or an amount of seconds ("437 seconds", "437s") the user wrote.

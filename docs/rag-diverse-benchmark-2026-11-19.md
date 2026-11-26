@@ -817,3 +817,18 @@ All 48 chapter questions were rewritten (48 "chapter title resolved" log lines),
 
 ### General-question exposure closed by a remote scope check (2026-11-27, b9073c84)
 When the router calls a question off-topic but the shared video has an excerpt within the probe limit, the probe now asks the remote model (Scout, `AI_CLOUDFLARE_LLM_*`) whether the question is about the video, with the 6 closest excerpts; it falls back to the distance alone if the call fails, times out (10 s) or answers something else (`AI_ROUTER_EVIDENCE_PROBE_SCOPE_CHECK=false` turns it off; it needs `AI_CLOUDFLARE_LLM_ENABLED=true`). Offline on 62 covered detail questions and 48 general questions (6 x 8 videos): 61 of 61 covered questions within the 0.55 limit VIDEO (the one GENERAL at 0.556 is outside the limit), 48 of 48 general GENERAL. Verified live on a confirmed build: general-question control **0 of 48** rerouted on 8 videos (the Quebec lecture included); French/Korean detail rows (`-67-scope-fr.json`): 1 scope refusal of 32, the Korean question at distance 0.566 that every configuration since the start refuses (outside the limit shared with the not-covered guard); regular 32-row sample (`-68-scope-regular.json`): **0 scope refusals**, both formerly refused questions answered (0.92, 1.00), mean 0.629, judged correct 16 (run 42: 0.628, 14). Log: 44 checks VIDEO, 3 GENERAL, 0 failures. The cross-encoder version (opt-in, off) is superseded.
+
+## Evidence answer check just past the distance limit (13d6aae9, 2026-11-27)
+
+When no excerpt is within 0.55 but one is within 0.60, Scout is asked whether the excerpts answer the question; only ANSWERED lifts the refusal. Live on homelab, same rows as the earlier runs:
+
+| Set | Before | After (13d6aae9) |
+|---|---|---|
+| Korean detail div-fd74e5ec61bd | refused | answered (Lumban, Laguna) |
+| fr/ko detail rows (32) | 1 scope refusal | 0 refusals, factual 0.808, 25/32 correct |
+| Absent-topic questions answered (40) | 5-6 (distance only) | 3 |
+| General questions rerouted to the video (48) | 0 | 0 |
+| Chapter rows (48), run 65 → 70 | 0.594, 19 correct, 6 refusals | 0.626, 24 correct, 4 refusals |
+| Regular rows (137), run 66 → 71 | 0.650, 78 correct, 2 scope refusals | 0.638, 75 correct, 1 scope refusal |
+
+Paired per-row change (|Δ| > 0.05): chapters 20 up / 14 down, regular 23 up / 32 down. Neither is significant (sign test p ≈ 0.39 and 0.28), so both moves are within judge noise. 0 failures in the server log; 9 answer checks (3 ANSWERED) and 102 scope checks during the regular run.

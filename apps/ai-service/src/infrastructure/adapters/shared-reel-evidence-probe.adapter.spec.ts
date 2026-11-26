@@ -72,4 +72,79 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       }),
     ).resolves.toBe(false);
   });
+
+  describe('with the reranker as a second signal for the ambiguous band', () => {
+    const vectorHit = (distance: number) => ({
+      id: 'c1',
+      reelId: 'reel-1',
+      evidenceText: 'An excerpt of the transcript.',
+      vectorDistance: distance,
+    });
+    const withReranker = (
+      hits: unknown[],
+      rerank: jest.Mock,
+      values: Record<string, string> = {
+        AI_ROUTER_EVIDENCE_PROBE_RERANK: 'true',
+      },
+    ) => {
+      const adapter = new SharedReelEvidenceProbeAdapter(
+        { generateVector: jest.fn().mockResolvedValue(vector) } as never,
+        { searchChunks: jest.fn().mockResolvedValue(hits) } as never,
+        { get: (key: string) => values[key] } as never,
+        { rerank },
+      );
+      return { adapter, rerank };
+    };
+
+    it('does not call the reranker when the closest excerpt is within the soft distance', async () => {
+      const { adapter, rerank } = withReranker([vectorHit(0.44)], jest.fn());
+      await expect(ask(adapter)).resolves.toBe(true);
+      expect(rerank).not.toHaveBeenCalled();
+    });
+
+    it('reroutes a moderately far excerpt only when the reranker finds it relevant', async () => {
+      const relevant = withReranker(
+        [vectorHit(0.52)],
+        jest.fn().mockResolvedValue([{ rerankScore: 0.6 }]),
+      );
+      await expect(ask(relevant.adapter)).resolves.toBe(true);
+      const irrelevant = withReranker(
+        [vectorHit(0.482)],
+        jest.fn().mockResolvedValue([{ rerankScore: 0.0263 }]),
+      );
+      await expect(ask(irrelevant.adapter)).resolves.toBe(false);
+    });
+
+    it('stays with the distance alone when the reranker fails, returns no score, or is switched off', async () => {
+      const failing = withReranker(
+        [vectorHit(0.5)],
+        jest.fn().mockRejectedValue(new Error('429')),
+      );
+      await expect(ask(failing.adapter)).resolves.toBe(true);
+      const unscored = withReranker(
+        [vectorHit(0.5)],
+        jest.fn().mockResolvedValue([{}]),
+      );
+      await expect(ask(unscored.adapter)).resolves.toBe(true);
+      const off = withReranker(
+        [vectorHit(0.5)],
+        jest.fn().mockResolvedValue([{ rerankScore: 0.0 }]),
+        {},
+      );
+      await expect(ask(off.adapter)).resolves.toBe(true);
+      expect(off.rerank).not.toHaveBeenCalled();
+    });
+
+    it('honours the configured floor', async () => {
+      const { adapter } = withReranker(
+        [vectorHit(0.5)],
+        jest.fn().mockResolvedValue([{ rerankScore: 0.03 }]),
+        {
+          AI_ROUTER_EVIDENCE_PROBE_RERANK: 'true',
+          AI_ROUTER_EVIDENCE_PROBE_MIN_RERANK: '0.02',
+        },
+      );
+      await expect(ask(adapter)).resolves.toBe(true);
+    });
+  });
 });

@@ -1,8 +1,10 @@
 import type { IAiApplicationConfig } from '@ai/domain/interfaces/ai-application-config.interface';
 import type { IEmbeddingService } from '@ai/domain/interfaces/embedding.service.interface';
+import type { IRerankerService } from '@ai/domain/interfaces/reranker.service.interface';
 import type { IReelSemanticIndexService } from '@ai/domain/interfaces/reel-semantic-index.service.interface';
 import type { ISharedReelEvidenceProbe } from '@ai/domain/interfaces/shared-reel-evidence-probe.interface';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { SemanticIndexSearchResult } from '@common/processing/interfaces/semantic-index.interface';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 // Calibrated 2026-11-24 on 60 English detail questions, each searched inside its own video and inside an
 // unrelated one: the closest chunk of the own video is within 0.42 for 75% of questions, 0.48 for 93% and
@@ -17,6 +19,11 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 // discuss ("capital of Australia" against a Quebec history lecture, distance 0.482) is answered from the video.
 const DEFAULT_MAX_DISTANCE = 0.55;
 const MAX_REELS = 8;
+// Opt-in second signal for the ambiguous band (see rerankerFindsRelevant): beyond this closest distance the
+// reranker must also find an excerpt relevant before a question the router called off-topic is rerouted.
+const DEFAULT_SOFT_DISTANCE = 0.45;
+const DEFAULT_MIN_RERANK = 0.05;
+const MAX_RERANKED_HITS = 3;
 
 @Injectable()
 export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe {
@@ -29,6 +36,9 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
     private readonly semanticIndex: IReelSemanticIndexService,
     @Inject('IAiApplicationConfig')
     private readonly config: IAiApplicationConfig,
+    @Optional()
+    @Inject('IRerankerService')
+    private readonly reranker?: IRerankerService,
   ) {}
 
   async hasStrongEvidence(input: {
@@ -52,11 +62,15 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
         candidateLimit: 24,
       });
       const maxDistance = this.maxDistance();
-      return hits.some(
+      const near = hits.filter(
         (hit) =>
           typeof hit.vectorDistance === 'number' &&
           hit.vectorDistance <= maxDistance,
       );
+      if (near.length === 0) return false;
+      const closest = Math.min(...near.map((hit) => hit.vectorDistance ?? 1));
+      if (closest <= this.softDistance()) return true;
+      return await this.rerankerFindsRelevant(input.message, near);
     } catch (error: unknown) {
       // The probe only widens routing; when it cannot answer, the router's own verdict stands.
       this.logger.warn(
@@ -64,6 +78,71 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
       );
       return false;
     }
+  }
+
+  /**
+   * A question the router called off-topic is rerouted to the shared video when its closest excerpt is near. Near
+   * is ambiguous between 0.45 and 0.55: covered questions in a transcript that retrieves poorly sit there, and so
+   * do general questions a video happens to discuss ("capital of Australia" against a Quebec history lecture,
+   * distance 0.482). The cross-encoder tells them apart: covered ones scored 0.135-0.97 (the six measured
+   * 2026-11-26), general ones 0.003 median and 0.026 at most among those in range. Fails open to the distance
+   * alone when the reranker is absent, errors, or returns no score. AI_ROUTER_EVIDENCE_PROBE_RERANK=true.
+   */
+  private async rerankerFindsRelevant(
+    message: string,
+    near: SemanticIndexSearchResult[],
+  ): Promise<boolean> {
+    if (
+      !this.reranker ||
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_RERANK') !== 'true'
+    ) {
+      return true;
+    }
+    const floor = Number(
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_MIN_RERANK') ??
+        DEFAULT_MIN_RERANK,
+    );
+    if (!Number.isFinite(floor) || floor <= 0) return true;
+    try {
+      const candidates = near.slice(0, MAX_RERANKED_HITS).map((hit) => {
+        const text = hit.evidenceText ?? hit.text ?? '';
+        return {
+          chunkId: hit.id,
+          reelId: hit.reelId,
+          tags: [],
+          chunkText: text,
+          evidenceText: text,
+          evidenceType: 'TRANSCRIPT' as const,
+          distance:
+            typeof hit.vectorDistance === 'number' ? hit.vectorDistance : null,
+        };
+      });
+      const ranked = await this.reranker.rerank({
+        queryText: message,
+        candidates,
+        limit: candidates.length,
+      });
+      const scores = ranked
+        .map((candidate) => candidate.rerankScore)
+        .filter((score): score is number => typeof score === 'number');
+      if (scores.length === 0) return true;
+      return Math.max(...scores) >= floor;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Shared reel evidence probe reranker failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return true;
+    }
+  }
+
+  private softDistance(): number {
+    const value = Number(
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_SOFT_DISTANCE') ??
+        DEFAULT_SOFT_DISTANCE,
+    );
+    return Number.isFinite(value) && value > 0 && value <= 2
+      ? value
+      : DEFAULT_SOFT_DISTANCE;
   }
 
   private maxDistance(): number {

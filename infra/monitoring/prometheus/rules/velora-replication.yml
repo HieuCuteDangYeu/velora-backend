@@ -1,0 +1,95 @@
+groups:
+  # Reel Indexing keeps two replicated stores: the three-node Qdrant cluster (H1 with a replica and
+  # H2 as a data-less voter on the homelab, the second replica on homelab 2) and the PostgreSQL
+  # standby of the Indexing database on homelab 2 (slot idx_standby). scripts/deploy/replication-probe
+  # reports both through node-exporter's text-file collector every 30 seconds.
+  - name: velora-replication
+    rules:
+      - alert: VeloraQdrantNodeUnreachable
+        expr: velora_qdrant_node_up == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: qdrant
+          host: '{{ if eq $labels.node "laptop" }}homelab-2{{ else }}homelab{{ end }}'
+        annotations:
+          summary: a Qdrant cluster node is unreachable
+          description: 'Qdrant node {{ $labels.node }} has not answered on its API for two minutes. Search keeps answering from the other replica, but the collection has one live copy and, if the node is H1, indexing writes stop. Check the container (H1 microservices-boilerplate-qdrant-1, H2 microservices-boilerplate-qdrant-h2-1, laptop qdrant-laptop on homelab 2) and the Tailscale link to homelab 2.'
+
+      - alert: VeloraQdrantReplicaNotActive
+        expr: |
+          min without (node) (velora_qdrant_node_active_replicas_min) < 2
+          or
+          max without (node) (velora_qdrant_node_dead_replicas) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: qdrant
+        annotations:
+          summary: a Qdrant replica of the Reel collection is not Active
+          description: Fewer than two Active replicas of a shard, or a Dead replica, for two minutes (the collection has replication_factor 2). Only one copy of the vectors is serving. Inspect /collections/velora_reel_semantic/cluster on H1 for the replica states; a replica that stays Dead or Partial after its node is back needs a shard transfer.
+
+      - alert: VeloraQdrantClusterPeerMissing
+        expr: velora_qdrant_node_peers < 3
+        for: 2m
+        labels:
+          severity: warning
+          service: qdrant
+        annotations:
+          summary: the Qdrant cluster has fewer than three peers
+          description: 'Node {{ $labels.node }} sees {{ $value }} peers instead of three for two minutes, so a peer was removed or the node left the cluster. With fewer than three voters, losing one more node stops consensus. Inspect /cluster on each node.'
+
+      - alert: VeloraIndexingStandbyNotStreaming
+        expr: velora_indexing_standby_streaming == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: reel-indexing-postgres
+          host: homelab-2
+        annotations:
+          summary: the Indexing database standby is not streaming
+          description: The primary has had no streaming walsender on slot {{ $labels.slot }} for five minutes, so the standby on homelab 2 is falling behind and the primary keeps WAL for it (up to max_slot_wal_keep_size, 4 GB, after which the standby must be rebuilt). Check the reel-indexing-standby container on homelab 2 and the reel-indexing-pg-forwarder container on the homelab.
+
+      - alert: VeloraIndexingStandbyReplayLag
+        expr: velora_indexing_standby_replay_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          service: reel-indexing-postgres
+          host: homelab-2
+        annotations:
+          summary: the Indexing database standby is replaying slowly
+          description: The standby on slot {{ $labels.slot }} has been more than 60 seconds behind the primary for five minutes, so a promotion now would lose that much indexing state. Check the standby's CPU and disk on homelab 2 and its log for replay conflicts.
+
+      - alert: VeloraIndexingSlotWalRetention
+        expr: velora_indexing_replication_slot_retained_wal_bytes > 1073741824
+        for: 5m
+        labels:
+          severity: warning
+          service: reel-indexing-postgres
+        annotations:
+          summary: the Indexing standby slot retains more than 1 GiB of WAL
+          description: Replication slot {{ $labels.slot }} has kept more than 1 GiB of WAL on the Indexing primary for five minutes. At 4 GB (max_slot_wal_keep_size) the slot is invalidated and the standby must be rebuilt with standby-up.sh. Bring the standby back or drop the slot.
+
+      - alert: VeloraReplicationProbeFailing
+        expr: velora_replication_probe_success == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: replication-probe
+        annotations:
+          summary: the replication probe cannot run a check
+          description: 'The {{ $labels.check }} check of the replication probe has failed for five minutes, so Qdrant replica or standby problems would go unnoticed. Check docker on the homelab, the Qdrant secrets directory and the velora_monitor role on the Indexing primary.'
+
+      - alert: VeloraReplicationProbeStale
+        expr: |
+          (time() - velora_replication_probe_timestamp_seconds > 300)
+          or
+          absent(velora_replication_probe_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: warning
+          service: replication-probe
+        annotations:
+          summary: the replication probe is not reporting
+          description: No replication probe result has been written for five minutes, so Qdrant replica or standby problems would go unnoticed. Check the com.velora.replication-probe LaunchAgent on the homelab.

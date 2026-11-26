@@ -1,0 +1,304 @@
+rule_files:
+  - ../rules/velora-replication.yml
+
+evaluation_interval: 5s
+
+tests:
+  - name: a healthy cluster and standby raise nothing
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_up{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '1x40'
+      - series: 'velora_qdrant_node_up{job="node-exporter",instance="node-exporter:9100",host="homelab",node="laptop"}'
+        values: '1x40'
+      - series: 'velora_qdrant_node_peers{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '3x40'
+      - series: 'velora_qdrant_node_active_replicas_min{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '2x40'
+      - series: 'velora_qdrant_node_active_replicas_min{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h2"}'
+        values: '2x40'
+      - series: 'velora_qdrant_node_dead_replicas{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '0x40'
+      - series: 'velora_indexing_standby_streaming{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '1x40'
+      - series: 'velora_indexing_standby_replay_lag_seconds{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '0.03x40'
+      - series: 'velora_indexing_replication_slot_retained_wal_bytes{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '720x40'
+      - series: 'velora_replication_probe_success{job="node-exporter",instance="node-exporter:9100",host="homelab",check="qdrant"}'
+        values: '1x40'
+      - series: 'velora_replication_probe_timestamp_seconds{job="node-exporter",instance="node-exporter:9100",host="homelab"}'
+        values: '0+30x40'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VeloraQdrantNodeUnreachable
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraQdrantReplicaNotActive
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraQdrantClusterPeerMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraIndexingStandbyNotStreaming
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraIndexingStandbyReplayLag
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraIndexingSlotWalRetention
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraReplicationProbeFailing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VeloraReplicationProbeStale
+        exp_alerts: []
+
+  - name: an unreachable laptop node fires after two minutes and points at homelab 2
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_up{job="node-exporter",instance="node-exporter:9100",host="homelab",node="laptop"}'
+        values: '1 0x10'
+      - series: 'velora_qdrant_node_up{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraQdrantNodeUnreachable
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VeloraQdrantNodeUnreachable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: qdrant
+              host: homelab-2
+              job: node-exporter
+              instance: node-exporter:9100
+              node: laptop
+            exp_annotations:
+              summary: a Qdrant cluster node is unreachable
+              description: 'Qdrant node laptop has not answered on its API for two minutes. Search keeps answering from the other replica, but the collection has one live copy and, if the node is H1, indexing writes stop. Check the container (H1 microservices-boilerplate-qdrant-1, H2 microservices-boilerplate-qdrant-h2-1, laptop qdrant-laptop on homelab 2) and the Tailscale link to homelab 2.'
+
+  - name: an unreachable homelab node keeps the homelab host
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_up{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VeloraQdrantNodeUnreachable
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: qdrant
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+              node: h1
+            exp_annotations:
+              summary: 'a Qdrant cluster node is unreachable'
+              description: 'Qdrant node h1 has not answered on its API for two minutes. Search keeps answering from the other replica, but the collection has one live copy and, if the node is H1, indexing writes stop. Check the container (H1 microservices-boilerplate-qdrant-1, H2 microservices-boilerplate-qdrant-h2-1, laptop qdrant-laptop on homelab 2) and the Tailscale link to homelab 2.'
+
+  - name: a replica that is not Active fires after two minutes
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_active_replicas_min{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '2 1x10'
+      - series: 'velora_qdrant_node_active_replicas_min{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h2"}'
+        values: '2x10'
+      - series: 'velora_qdrant_node_dead_replicas{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 1m30s
+        alertname: VeloraQdrantReplicaNotActive
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VeloraQdrantReplicaNotActive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: qdrant
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+            exp_annotations:
+              summary: a Qdrant replica of the Reel collection is not Active
+              description: Fewer than two Active replicas of a shard, or a Dead replica, for two minutes (the collection has replication_factor 2). Only one copy of the vectors is serving. Inspect /collections/velora_reel_semantic/cluster on H1 for the replica states; a replica that stays Dead or Partial after its node is back needs a shard transfer.
+
+  - name: a dead replica fires even while two replicas still count as active somewhere
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_active_replicas_min{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '2x10'
+      - series: 'velora_qdrant_node_dead_replicas{job="node-exporter",instance="node-exporter:9100",host="homelab",node="laptop"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: VeloraQdrantReplicaNotActive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: qdrant
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+            exp_annotations:
+              summary: 'a Qdrant replica of the Reel collection is not Active'
+              description: 'Fewer than two Active replicas of a shard, or a Dead replica, for two minutes (the collection has replication_factor 2). Only one copy of the vectors is serving. Inspect /collections/velora_reel_semantic/cluster on H1 for the replica states; a replica that stays Dead or Partial after its node is back needs a shard transfer.'
+
+  - name: fewer than three peers fires after two minutes
+    interval: 30s
+    input_series:
+      - series: 'velora_qdrant_node_peers{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h1"}'
+        values: '2x10'
+      - series: 'velora_qdrant_node_peers{job="node-exporter",instance="node-exporter:9100",host="homelab",node="h2"}'
+        values: '3x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: VeloraQdrantClusterPeerMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: VeloraQdrantClusterPeerMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: qdrant
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+              node: h1
+            exp_annotations:
+              summary: the Qdrant cluster has fewer than three peers
+              description: 'Node h1 sees 2 peers instead of three for two minutes, so a peer was removed or the node left the cluster. With fewer than three voters, losing one more node stops consensus. Inspect /cluster on each node.'
+
+  - name: a standby that stops streaming fires after five minutes
+    interval: 30s
+    input_series:
+      - series: 'velora_indexing_standby_streaming{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '1 0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraIndexingStandbyNotStreaming
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: VeloraIndexingStandbyNotStreaming
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-indexing-postgres
+              host: homelab-2
+              job: node-exporter
+              instance: node-exporter:9100
+              slot: idx_standby
+            exp_annotations:
+              summary: the Indexing database standby is not streaming
+              description: The primary has had no streaming walsender on slot idx_standby for five minutes, so the standby on homelab 2 is falling behind and the primary keeps WAL for it (up to max_slot_wal_keep_size, 4 GB, after which the standby must be rebuilt). Check the reel-indexing-standby container on homelab 2 and the reel-indexing-pg-forwarder container on the homelab.
+
+  - name: replay lag above 60 seconds for five minutes fires, 59 seconds does not
+    interval: 30s
+    input_series:
+      - series: 'velora_indexing_standby_replay_lag_seconds{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '0 61x20'
+      - series: 'velora_indexing_standby_replay_lag_seconds{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="other"}'
+        values: '59x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraIndexingStandbyReplayLag
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: VeloraIndexingStandbyReplayLag
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-indexing-postgres
+              host: homelab-2
+              job: node-exporter
+              instance: node-exporter:9100
+              slot: idx_standby
+            exp_annotations:
+              summary: 'the Indexing database standby is replaying slowly'
+              description: 'The standby on slot idx_standby has been more than 60 seconds behind the primary for five minutes, so a promotion now would lose that much indexing state. Check the standby''s CPU and disk on homelab 2 and its log for replay conflicts.'
+
+  - name: a slot retaining more than 1 GiB fires after five minutes
+    interval: 30s
+    input_series:
+      - series: 'velora_indexing_replication_slot_retained_wal_bytes{job="node-exporter",instance="node-exporter:9100",host="homelab",slot="idx_standby"}'
+        values: '1073741824 1073741825x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraIndexingSlotWalRetention
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: VeloraIndexingSlotWalRetention
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: reel-indexing-postgres
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+              slot: idx_standby
+            exp_annotations:
+              summary: 'the Indexing standby slot retains more than 1 GiB of WAL'
+              description: 'Replication slot idx_standby has kept more than 1 GiB of WAL on the Indexing primary for five minutes. At 4 GB (max_slot_wal_keep_size) the slot is invalidated and the standby must be rebuilt with standby-up.sh. Bring the standby back or drop the slot.'
+
+  - name: a failing check fires after five minutes
+    interval: 30s
+    input_series:
+      - series: 'velora_replication_probe_success{job="node-exporter",instance="node-exporter:9100",host="homelab",check="indexing_standby"}'
+        values: '0x20'
+      - series: 'velora_replication_probe_success{job="node-exporter",instance="node-exporter:9100",host="homelab",check="qdrant"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: VeloraReplicationProbeFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: replication-probe
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+              check: indexing_standby
+            exp_annotations:
+              summary: 'the replication probe cannot run a check'
+              description: 'The indexing_standby check of the replication probe has failed for five minutes, so Qdrant replica or standby problems would go unnoticed. Check docker on the homelab, the Qdrant secrets directory and the velora_monitor role on the Indexing primary.'
+
+  - name: a stopped probe fires as stale
+    interval: 30s
+    input_series:
+      - series: 'velora_replication_probe_timestamp_seconds{job="node-exporter",instance="node-exporter:9100",host="homelab"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: VeloraReplicationProbeStale
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: VeloraReplicationProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: replication-probe
+              host: homelab
+              job: node-exporter
+              instance: node-exporter:9100
+            exp_annotations:
+              summary: 'the replication probe is not reporting'
+              description: 'No replication probe result has been written for five minutes, so Qdrant replica or standby problems would go unnoticed. Check the com.velora.replication-probe LaunchAgent on the homelab.'
+
+  - name: a probe that never reported fires as absent
+    interval: 30s
+    input_series:
+      - series: 'up{job="node-exporter"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: VeloraReplicationProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: replication-probe
+            exp_annotations:
+              summary: 'the replication probe is not reporting'
+              description: 'No replication probe result has been written for five minutes, so Qdrant replica or standby problems would go unnoticed. Check the com.velora.replication-probe LaunchAgent on the homelab.'

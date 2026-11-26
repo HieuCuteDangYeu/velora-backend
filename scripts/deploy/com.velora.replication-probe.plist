@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Homelab LaunchAgent: reports the Qdrant cluster replicas and the Indexing PostgreSQL standby every
+  30 s through node-exporter's text-file collector (rules: infra/monitoring/prometheus/rules/velora-replication.yml).
+  Install on the homelab with
+    cp scripts/deploy/com.velora.replication-probe.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.velora.replication-probe.plist
+  Paths assume the production checkout at /Users/quan/GitHub/microservices-boilerplate. Until this
+  script is on the deployed master, the homelab runs a copy from ~/velora-operations/monitoring/.
+  Needs the velora_monitor role on the Indexing primary (see infra/qdrant/DURABILITY.md).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.velora.replication-probe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/quan/GitHub/microservices-boilerplate/scripts/deploy/replication-probe</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>30</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/quan/Library/Logs/Velora/replication-probe.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/quan/Library/Logs/Velora/replication-probe.log</string>
+</dict>
+</plist>

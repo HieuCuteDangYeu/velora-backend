@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Runs on the homelab every 30 s (LaunchAgent com.velora.replication-probe). Reports the
+# health of the two replicated stores of Reel Indexing through node-exporter's text-file
+# collector, like model-host-probe, so Prometheus alerts on them with no new service, no
+# scrape-config change and no secret inside Prometheus.
+#
+# Qdrant cluster: one short-lived curl container on the Qdrant cluster network reads /metrics
+# from every node (API key from a file, never in an argument list).
+#   velora_qdrant_node_up{node}                      1 if the node answered /metrics
+#   velora_qdrant_node_peers{node}                   cluster_peers_total seen by that node
+#   velora_qdrant_node_active_replicas_min{node}     collection_active_replicas_min
+#   velora_qdrant_node_dead_replicas{node}           collection_dead_replicas
+#
+# Indexing PostgreSQL standby, as the primary sees it (pg_stat_replication joined to the
+# physical slot). Uses a passwordless pg_monitor role over the container's local socket.
+#   velora_indexing_replication_slot_present{slot}         1 if the slot exists
+#   velora_indexing_replication_slot_active{slot}          1 if a walsender holds it
+#   velora_indexing_replication_slot_retained_wal_bytes{slot}  WAL the slot keeps on the primary
+#   velora_indexing_standby_streaming{slot}                1 if the slot's walsender is streaming
+#   velora_indexing_standby_replay_lag_seconds{slot}       replay_lag (0 when caught up); only while streaming
+#   velora_indexing_standby_replay_lag_bytes{slot}         current WAL minus replay position; only while streaming
+#
+#   velora_replication_probe_success{check}          1 if that check could run at all
+#   velora_replication_probe_timestamp_seconds       when this probe ran, to detect a stopped probe
+
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+APP_DIR="${VELORA_APP_DIR:-$HOME/GitHub/microservices-boilerplate}"
+OUT_DIR="${VELORA_REPLICATION_METRICS_DIR:-$APP_DIR/infra/monitoring/node-exporter-textfile}"
+OUT="$OUT_DIR/velora-replication.prom"
+TIMEOUT="${REPLICATION_PROBE_TIMEOUT_SECONDS:-5}"
+QDRANT_SECRETS_DIR="${QDRANT_SECRETS_DIR:-$HOME/velora-operations/qdrant-secrets}"
+QDRANT_NETWORK="${QDRANT_PROBE_NETWORK:-microservices-boilerplate_qdrant-cluster-net}"
+QDRANT_IMAGE="${QDRANT_PROBE_IMAGE:-curlimages/curl:8.11.1}"
+# name=url pairs, space separated.
+QDRANT_NODES="${QDRANT_PROBE_NODES:-h1=https://qdrant:6333 h2=https://qdrant-h2:6333 laptop=https://100.104.227.44:6333}"
+PG_CONTAINER="${INDEXING_PG_CONTAINER:-microservices-boilerplate-reel-indexing-postgres-1}"
+PG_ROLE="${INDEXING_PG_MONITOR_ROLE:-velora_monitor}"
+PG_DB="${INDEXING_PG_DB:-reel_indexing}"
+SLOT="${INDEXING_STANDBY_SLOT:-idx_standby}"
+
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || exit 0
+[[ "$SLOT" =~ ^[a-z0-9_]+$ && "$PG_ROLE" =~ ^[a-z0-9_]+$ && "$PG_DB" =~ ^[a-z0-9_]+$ ]] || exit 0
+[[ -d "$OUT_DIR" ]] || exit 0
+
+num='^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$'
+
+# --- Qdrant: prints "<node> up 1|0" and "<node> <metric> <value>" lines, then "probe-ok".
+qdrant_lines=""
+qdrant_ok=0
+if [[ -r "$QDRANT_SECRETS_DIR/api-key" && -r "$QDRANT_SECRETS_DIR/ca.crt" ]]; then
+  # shellcheck disable=SC2016 # expanded inside the container
+  qdrant_lines="$(docker run --rm --network "$QDRANT_NETWORK" -v "$QDRANT_SECRETS_DIR/api-key:/sec/api-key:ro" \
+    -v "$QDRANT_SECRETS_DIR/ca.crt:/sec/ca.crt:ro" --entrypoint sh "$QDRANT_IMAGE" -c '
+      t="$1"; shift
+      printf "api-key: %s\n" "$(cat /sec/api-key)" >/tmp/h
+      for spec in "$@"; do
+        name="${spec%%=*}"; url="${spec#*=}"
+        if body="$(curl -sf -m "$t" --cacert /sec/ca.crt -H @/tmp/h "$url/metrics")"; then
+          echo "$name up 1"
+          printf "%s\n" "$body" | sed -n -E "s/^(cluster_peers_total|collection_active_replicas_min|collection_dead_replicas) ([0-9.eE+-]+)$/$name \1 \2/p"
+        else
+          echo "$name up 0"
+        fi
+      done
+      echo probe-ok' sh "$TIMEOUT" $QDRANT_NODES 2>/dev/null)"
+  [[ "$qdrant_lines" == *probe-ok* ]] && qdrant_ok=1
+fi
+
+# --- Indexing primary: one row "present active retained streaming lag_s lag_bytes".
+pg_row=""
+pg_ok=0
+pg_row="$(docker exec -i "$PG_CONTAINER" psql -X -q -U "$PG_ROLE" -d "$PG_DB" -At -F ' ' -v ON_ERROR_STOP=1 -c "
+  select count(s.slot_name),
+         coalesce(max(s.active::int), 0),
+         coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), s.restart_lsn)), 0)::bigint,
+         coalesce(max((r.state = 'streaming')::int), 0),
+         coalesce(max(extract(epoch from r.replay_lag)), 0),
+         coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn)), 0)::bigint
+    from pg_replication_slots s left join pg_stat_replication r on r.pid = s.active_pid
+   where s.slot_name = '$SLOT'" </dev/null 2>/dev/null)"
+read -r present active retained streaming lag_s lag_b <<<"$pg_row"
+for v in "${present:-}" "${active:-}" "${retained:-}" "${streaming:-}" "${lag_s:-}" "${lag_b:-}"; do
+  [[ "$v" =~ $num ]] || { pg_row=""; break; }
+done
+[[ -n "$pg_row" ]] && pg_ok=1
+
+tmp="$(mktemp "$OUT.XXXXXX")" || exit 0
+{
+  printf '# HELP velora_replication_probe_success Whether the replication probe could run the check.\n'
+  printf '# TYPE velora_replication_probe_success gauge\n'
+  printf 'velora_replication_probe_success{check="qdrant"} %s\n' "$qdrant_ok"
+  printf 'velora_replication_probe_success{check="indexing_standby"} %s\n' "$pg_ok"
+  if ((qdrant_ok)); then
+    # One block per metric family (the text format needs each family's samples together).
+    for pair in \
+      'up|velora_qdrant_node_up|Whether the Qdrant node answered /metrics.' \
+      'cluster_peers_total|velora_qdrant_node_peers|Peers in the Qdrant cluster as seen by the node.' \
+      'collection_active_replicas_min|velora_qdrant_node_active_replicas_min|Fewest Active replicas of any shard, as seen by the node.' \
+      'collection_dead_replicas|velora_qdrant_node_dead_replicas|Dead replicas, as seen by the node.'; do
+      source_metric="${pair%%|*}"; rest="${pair#*|}"; name="${rest%%|*}"; help="${rest#*|}"
+      printf '# HELP %s %s\n# TYPE %s gauge\n' "$name" "$help" "$name"
+      while read -r node metric value; do
+        [[ "$metric" == "$source_metric" && "$node" =~ ^[a-z0-9_-]+$ && "$value" =~ $num ]] || continue
+        printf '%s{node="%s"} %s\n' "$name" "$node" "$value"
+      done <<<"$qdrant_lines"
+    done
+  fi
+  if ((pg_ok)); then
+    printf '# HELP velora_indexing_replication_slot_present Whether the standby slot exists on the Indexing primary.\n# TYPE velora_indexing_replication_slot_present gauge\n'
+    printf 'velora_indexing_replication_slot_present{slot="%s"} %s\n' "$SLOT" "$present"
+    printf '# HELP velora_indexing_replication_slot_active Whether a walsender holds the standby slot.\n# TYPE velora_indexing_replication_slot_active gauge\n'
+    printf 'velora_indexing_replication_slot_active{slot="%s"} %s\n' "$SLOT" "$active"
+    printf '# HELP velora_indexing_replication_slot_retained_wal_bytes WAL the standby slot keeps on the Indexing primary.\n# TYPE velora_indexing_replication_slot_retained_wal_bytes gauge\n'
+    printf 'velora_indexing_replication_slot_retained_wal_bytes{slot="%s"} %s\n' "$SLOT" "$retained"
+    printf '# HELP velora_indexing_standby_streaming Whether the Indexing standby is streaming from the primary.\n# TYPE velora_indexing_standby_streaming gauge\n'
+    printf 'velora_indexing_standby_streaming{slot="%s"} %s\n' "$SLOT" "$streaming"
+    if [[ "$streaming" == 1 ]]; then
+      printf '# HELP velora_indexing_standby_replay_lag_seconds Replay lag of the Indexing standby (0 when caught up).\n# TYPE velora_indexing_standby_replay_lag_seconds gauge\n'
+      printf 'velora_indexing_standby_replay_lag_seconds{slot="%s"} %s\n' "$SLOT" "$lag_s"
+      printf '# HELP velora_indexing_standby_replay_lag_bytes WAL written on the primary and not yet replayed on the standby.\n# TYPE velora_indexing_standby_replay_lag_bytes gauge\n'
+      printf 'velora_indexing_standby_replay_lag_bytes{slot="%s"} %s\n' "$SLOT" "$lag_b"
+    fi
+  fi
+  printf '# HELP velora_replication_probe_timestamp_seconds Unix time of the last replication probe.\n'
+  printf '# TYPE velora_replication_probe_timestamp_seconds gauge\n'
+  printf 'velora_replication_probe_timestamp_seconds %s\n' "$(date +%s)"
+} >"$tmp"
+# mktemp creates 0600; the node-exporter container reads the directory as another user.
+chmod 0644 "$tmp"
+mv -f "$tmp" "$OUT"

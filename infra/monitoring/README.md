@@ -254,3 +254,25 @@ The ai-service reaches its model through a reverse SSH tunnel to the developer l
 directory: `velora_model_host_up`, `velora_model_host_probe_duration_seconds`, `velora_model_host_model_resident` and
 `velora_model_host_probe_timestamp_seconds`. The `velora-model-host` rule group alerts on an unreachable server (critical,
 two minutes), a stopped probe, a model that is not loaded, and slow answers. See `docs/model-host.md`.
+
+## Replication health (Qdrant cluster and Indexing standby)
+
+`scripts/deploy/replication-probe` (LaunchAgent `com.velora.replication-probe`, every 30 s) writes
+`velora-replication.prom` into the node-exporter text-file directory, so the alerts need no scrape-config
+change and Prometheus holds no Qdrant API key:
+
+- Qdrant: one short-lived `curlimages/curl` container on `qdrant-cluster-net` reads `/metrics` from H1,
+  H2 and the laptop node (API key and CA from file mounts) and reports `velora_qdrant_node_up`,
+  `velora_qdrant_node_peers`, `velora_qdrant_node_active_replicas_min` and
+  `velora_qdrant_node_dead_replicas` per node.
+- Indexing standby, as the primary sees it: `pg_stat_replication` joined to slot `idx_standby`, read
+  through `docker exec ... psql -U velora_monitor` (a passwordless `pg_monitor` role; it can only log
+  in over the container's local socket because every TCP line in `pg_hba.conf` needs a password).
+  Reports `velora_indexing_standby_streaming`, `velora_indexing_standby_replay_lag_seconds`,
+  `velora_indexing_standby_replay_lag_bytes` and `velora_indexing_replication_slot_retained_wal_bytes`.
+
+The `velora-replication` rule group (`prometheus/rules/velora-replication.yml`, tests in
+`prometheus/tests/velora-replication.test.yml`) alerts on an unreachable Qdrant node, a replica that is
+not Active, fewer than three peers (all after two minutes), a standby that is not streaming or more than
+60 s behind, a slot retaining more than 1 GiB of WAL (after five minutes), and a failing or stopped probe.
+Test the probe with `bash scripts/deploy/test-replication-probe.sh`.

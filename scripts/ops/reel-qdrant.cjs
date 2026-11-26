@@ -18,6 +18,7 @@ const {
   makePoint,
   vectorHash,
 } = require('../../apps/reel-indexing-service/src/domain/services/reel-vector-manifest');
+const { staleReady, orphanReport } = require('./reel-qdrant-audit.cjs');
 const fs = require('node:fs/promises');
 const { join, resolve, basename } = require('node:path');
 const { createHash } = require('node:crypto');
@@ -48,6 +49,41 @@ function targetFingerprint(url) {
   return sha(
     `${target.protocol}//${target.hostname}:${target.port}${target.pathname}`,
   );
+}
+const PROJECTION_SELECT = {
+  reelId: true,
+  indexAttemptId: true,
+  generation: true,
+  manifestHash: true,
+  pointCount: true,
+  readyAt: true,
+  readyCollection: true,
+  readyFingerprint: true,
+  readyEpoch: true,
+};
+function projectionSignature(rows) {
+  return sha(
+    JSON.stringify(
+      rows.map((row) => ({
+        reelId: row.reelId,
+        attempt: row.indexAttemptId,
+        generation: row.generation.toString(),
+        manifestHash: row.manifestHash,
+        pointCount: row.pointCount,
+        readyAt: row.readyAt?.toISOString() ?? null,
+        collection: row.readyCollection,
+        fingerprint: row.readyFingerprint,
+        epoch: row.readyEpoch,
+      })),
+    ),
+  );
+}
+async function currentProjections(prisma) {
+  return prisma.vectorProjection.findMany({
+    where: { revoked: false },
+    orderBy: [{ reelId: 'asc' }, { generation: 'asc' }],
+    select: PROJECTION_SELECT,
+  });
 }
 async function verifiedArtifact(directory, entry) {
   if (
@@ -303,7 +339,33 @@ async function reconcile(projection, prisma, maxTasks) {
     complete: pending === 0 && unready[0].count === 0,
   };
 }
-async function verifyParity(prisma, projection, store) {
+// Static error text from loadCandidatePoints mapped to a stable reason code.
+function parityReason(error) {
+  const text = error instanceof Error ? error.message : '';
+  if (/point set is incomplete|point retrieval mismatch/.test(text))
+    return 'points_missing';
+  if (/provenance mismatch/.test(text)) return 'payload_mismatch';
+  if (/manifest mismatch/.test(text)) return 'manifest_mismatch';
+  if (/Invalid semantic vector/.test(text)) return 'invalid_vector';
+  if (/superseded/i.test(text) || error?.name === 'ProjectionSupersededError')
+    return 'superseded';
+  return 'verification_error';
+}
+// listAll collects every mismatch instead of throwing on the first one, so a restore or
+// promotion can see the full set of affected reels. Default behaviour is unchanged.
+async function verifyParity(prisma, projection, store, options = {}) {
+  const listAll = options.listAll === true;
+  const failures = [];
+  const fail = (message, reason, row) => {
+    if (!listAll) throw new Error(message);
+    failures.push({
+      reason,
+      reelId: row?.reelId ?? null,
+      indexAttemptId: row?.indexAttemptId ?? null,
+      generation: row?.generation?.toString() ?? null,
+      pointCount: row?.pointCount ?? null,
+    });
+  };
   const target = await store.identity();
   const collection = await prisma.vectorCollectionState.findUnique({
     where: { collection: target.collection },
@@ -314,59 +376,44 @@ async function verifyParity(prisma, projection, store) {
     collection.fingerprint !== target.fingerprint
   )
     throw new Error('Qdrant target is not certified in PostgreSQL');
-  const current = await prisma.vectorProjection.findMany({
-    where: { revoked: false },
-    orderBy: [{ reelId: 'asc' }, { generation: 'asc' }],
-    select: {
-      reelId: true,
-      indexAttemptId: true,
-      generation: true,
-      manifestHash: true,
-      pointCount: true,
-      readyAt: true,
-      readyCollection: true,
-      readyFingerprint: true,
-      readyEpoch: true,
-    },
-  });
-  const signature = (rows) =>
-    sha(
-      JSON.stringify(
-        rows.map((row) => ({
-          reelId: row.reelId,
-          attempt: row.indexAttemptId,
-          generation: row.generation.toString(),
-          manifestHash: row.manifestHash,
-          pointCount: row.pointCount,
-          readyAt: row.readyAt?.toISOString() ?? null,
-          collection: row.readyCollection,
-          fingerprint: row.readyFingerprint,
-          epoch: row.readyEpoch,
-        })),
-      ),
-    );
-  const before = signature(current);
+  const current = await currentProjections(prisma);
+  const before = projectionSignature(current);
   let points = 0;
+  let expectedPoints = 0;
   for (const row of current) {
+    expectedPoints += row.pointCount;
     if (
       !row.readyAt ||
       row.readyCollection !== target.collection ||
       row.readyFingerprint !== target.fingerprint ||
       row.readyEpoch !== collection.epoch
-    )
-      throw new Error('A current vector generation is not ready');
-    const candidate = await projection.loadCandidatePoints(
-      row.reelId,
-      row.indexAttemptId,
-      row.generation,
-    );
+    ) {
+      fail('A current vector generation is not ready', 'not_ready', row);
+      continue;
+    }
+    let candidate;
+    try {
+      candidate = await projection.loadCandidatePoints(
+        row.reelId,
+        row.indexAttemptId,
+        row.generation,
+      );
+    } catch (error) {
+      if (!listAll) throw error;
+      fail('', parityReason(error), row);
+      continue;
+    }
     if (
       candidate.hash !== row.manifestHash ||
       candidate.points.length !== row.pointCount
-    )
-      throw new Error(
+    ) {
+      fail(
         'A current vector generation failed manifest verification',
+        'manifest_mismatch',
+        row,
       );
+      continue;
+    }
     points += candidate.points.length;
   }
   const pending = await prisma.vectorProjectionTask.count({
@@ -386,36 +433,49 @@ async function verifyParity(prisma, projection, store) {
     'POST',
     { exact: true },
   );
-  const after = await prisma.vectorProjection.findMany({
-    where: { revoked: false },
-    orderBy: [{ reelId: 'asc' }, { generation: 'asc' }],
-    select: {
-      reelId: true,
-      indexAttemptId: true,
-      generation: true,
-      manifestHash: true,
-      pointCount: true,
-      readyAt: true,
-      readyCollection: true,
-      readyFingerprint: true,
-      readyEpoch: true,
-    },
-  });
+  const after = await currentProjections(prisma);
+  const stable = before === projectionSignature(after);
   const complete =
-    before === signature(after) &&
+    stable &&
+    !failures.length &&
     pending === 0 &&
     unready[0].count === 0 &&
     points === qdrant.count;
-  if (!complete) throw new Error('SQL and Qdrant vector parity is incomplete');
-  return {
+  if (!listAll && !complete)
+    throw new Error('SQL and Qdrant vector parity is incomplete');
+  const result = {
     complete,
     candidates: current.length,
-    manifestsVerified: current.length,
+    manifestsVerified: current.length - failures.length,
     qdrantPoints: qdrant.count,
     vectorTasksPending: pending,
     unreadyActiveCandidates: unready[0].count,
     projectionFingerprint: before,
   };
+  if (listAll) {
+    const byReason = {};
+    for (const failure of failures)
+      byReason[failure.reason] = (byReason[failure.reason] ?? 0) + 1;
+    Object.assign(result, {
+      listAll: true,
+      projectionStable: stable,
+      expectedPoints,
+      verifiedPoints: points,
+      // Positive: Qdrant holds points no verified manifest accounts for (orphans or extras).
+      unaccountedQdrantPoints: qdrant.count - points,
+      // Records vs points only: ignores orphans and transient DELETE churn, which make
+      // `complete` false on a healthy production database (431 orphans on 2026-11-25).
+      recordsConsistent:
+        stable &&
+        !failures.length &&
+        unready[0].count === 0 &&
+        points === expectedPoints,
+      failureCount: failures.length,
+      failuresByReason: byReason,
+      failures,
+    });
+  }
+  return result;
 }
 async function main(argv = process.argv.slice(2)) {
   const [command, ...rest] = argv;
@@ -433,10 +493,12 @@ async function main(argv = process.argv.slice(2)) {
       'status',
       'metrics',
       'verify-parity',
+      'stale-ready',
+      'orphans',
     ].includes(command)
   )
     throw new Error(
-      'Command: probe|initialize|enroll|export|import|reconcile|invalidate|status|metrics|verify-parity',
+      'Command: probe|initialize|enroll|export|import|reconcile|invalidate|status|metrics|verify-parity|stale-ready|orphans',
     );
   if (
     !args['target-label'] ||
@@ -546,8 +608,16 @@ async function main(argv = process.argv.slice(2)) {
     }
     if (command === 'reconcile')
       result = await reconcile(projection, prisma, maxTasks);
-    if (command === 'verify-parity')
-      result = await verifyParity(prisma, projection, store);
+    if (command === 'verify-parity') {
+      const listAll = args['list-all'] === 'true';
+      result = await verifyParity(prisma, projection, store, { listAll });
+      if (listAll && !result.complete) process.exitCode = 2;
+    }
+    if (command === 'stale-ready') {
+      result = await staleReady(prisma, store);
+      if (!result.consistent) process.exitCode = 2;
+    }
+    if (command === 'orphans') result = await orphanReport(prisma, store);
     if (command === 'status' || command === 'metrics') {
       const pending = await prisma.vectorProjectionTask.count({
         where: { completedAt: null },
@@ -614,6 +684,9 @@ async function main(argv = process.argv.slice(2)) {
 }
 module.exports = {
   argumentsFor,
+  projectionSignature,
+  currentProjections,
+  parityReason,
   verifiedArtifact,
   exportSnapshot,
   importSnapshot,

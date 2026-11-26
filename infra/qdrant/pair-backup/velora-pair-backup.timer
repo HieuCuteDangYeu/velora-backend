@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the paired Reel Indexing backup daily (do not enable until the restore drill passed)
+
+[Timer]
+OnCalendar=*-*-* 20:40:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

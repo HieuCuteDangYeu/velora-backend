@@ -27,6 +27,10 @@ import { BanUserUseCase } from '@user/application/use-cases/ban-user.use-case';
 import { ListBannedUserIdsUseCase } from '@user/application/use-cases/list-banned-user-ids.use-case';
 import { UnbanUserUseCase } from '@user/application/use-cases/unban-user.use-case';
 import { DeleteUserUseCase } from '@user/application/use-cases/delete-user.use-case';
+import {
+  DeleteOwnAccountUseCase,
+  type DeleteOwnAccountPayload,
+} from '@user/application/use-cases/delete-own-account.use-case';
 import { FindAllUsersUseCase } from '@user/application/use-cases/find-all-users.use-case';
 import { FindPublicUserByUsernameUseCase } from '@user/application/use-cases/find-public-user-by-username.use-case';
 import { FindPublicUsersByIdsUseCase } from '@user/application/use-cases/find-public-users-by-ids.use-case';
@@ -77,6 +81,8 @@ export class UserController {
     private readonly checkUsernameAvailabilityUseCase: CheckUsernameAvailabilityUseCase,
     private readonly getRecommendedPublicUsersUseCase: GetRecommendedPublicUsersUseCase,
     private readonly metrics: UserPrometheusMetricsService,
+    // Last, so positional constructions in tests keep their order.
+    private readonly deleteOwnAccountUseCase: DeleteOwnAccountUseCase,
   ) {}
 
   @MessagePattern('create_user')
@@ -113,6 +119,17 @@ export class UserController {
     try {
       return await this.observe('ban', () =>
         this.banUserUseCase.execute(payload),
+      );
+    } catch (error) {
+      this.handleDomainError(error);
+    }
+  }
+
+  @MessagePattern('user.delete_own_account')
+  async handleDeleteOwnAccount(@Payload() payload: DeleteOwnAccountPayload) {
+    try {
+      return await this.observe('delete', () =>
+        this.deleteOwnAccountUseCase.execute(payload),
       );
     } catch (error) {
       this.handleDomainError(error);

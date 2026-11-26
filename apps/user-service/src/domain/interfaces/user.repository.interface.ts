@@ -40,6 +40,12 @@ export interface IUserRepository {
   /** Hard delete. Only the registration rollback may use it; accounts are banned instead. */
   delete(id: string): Promise<User>;
   ban(id: string, data: { reason: string; bannedBy: string }): Promise<User>;
+  /**
+   * Deletion requested by the user: personal data is erased in place and the
+   * row stays, banned, so references from messages and calls keep resolving
+   * to "Deleted user" and the e-mail can register again.
+   */
+  eraseDeletedAccount(id: string): Promise<User>;
   unban(id: string): Promise<User>;
   findBannedIds(): Promise<string[]>;
   countUsersByIds(ids: string[]): Promise<number>;

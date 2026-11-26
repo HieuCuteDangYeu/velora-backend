@@ -4,5 +4,6 @@ export interface IMailSender {
     subject: string,
     template: string,
     context: Record<string, unknown>,
+    text?: string,
   ): Promise<void>;
 }

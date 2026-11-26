@@ -18,6 +18,7 @@ import { GroupMembersV2Controller } from '@gateway/conversation/group-members-v2
 import { MessageController } from '@gateway/conversation/message.controller';
 import { FriendController } from '@gateway/friends/friend.controller';
 import { LegalController } from '@gateway/legal/legal.controller';
+import { ReportController } from '@gateway/reports/report.controller';
 import { MediaController } from '@gateway/media/media.controller';
 import { MonitoringController } from '@gateway/monitoring/monitoring.controller';
 import { NotificationController } from '@gateway/notifications/notification.controller';
@@ -75,10 +76,12 @@ function createRmqClientRegistration(name: string, queue: string) {
       createRmqClientRegistration('FRIEND_SERVICE', 'friend_queue'),
       createRmqClientRegistration('CALL_SERVICE', 'call_queue'),
       createRmqClientRegistration('MONITORING_SERVICE', 'monitoring_queue'),
+      createRmqClientRegistration('MAIL_SERVICE', 'mail_queue'),
     ]),
   ],
   controllers: [
     LegalController,
+    ReportController,
     UserController,
     AuthController,
     FriendController,

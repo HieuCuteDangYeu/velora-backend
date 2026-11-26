@@ -35,6 +35,7 @@ import {
   HttpStatus,
   Inject,
   Param,
+  Delete,
   Patch,
   Post,
   Query,
@@ -195,6 +196,22 @@ export class UserController {
           this.handleMicroserviceError(error);
         }),
       ),
+    );
+  }
+
+  @Delete('me')
+  @Roles(Role.ADMIN, Role.USER)
+  @ApiOperation({
+    summary:
+      'Delete the signed-in account: sessions end and personal data is erased',
+  })
+  async deleteOwnAccount(@Req() request: AuthenticatedRequest) {
+    return await lastValueFrom(
+      this.userClient
+        .send<{ id: string; message: string }>('user.delete_own_account', {
+          userId: request.user!.id,
+        })
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
     );
   }
 

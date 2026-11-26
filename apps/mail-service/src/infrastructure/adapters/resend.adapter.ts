@@ -17,17 +17,23 @@ export class ResendAdapter implements IMailSender {
     subject: string,
     templateId: string,
     context: Record<string, unknown>,
+    text?: string,
   ): Promise<void> {
     try {
-      const { data, error } = await this.resend.emails.send({
-        from: this.config.getOrThrow<string>('RESEND_FROM_EMAIL'),
-        to,
-        subject,
-        template: {
-          id: templateId,
-          variables: context as Record<string, string>,
-        },
-      });
+      const from = this.config.getOrThrow<string>('RESEND_FROM_EMAIL');
+      const { data, error } = await this.resend.emails.send(
+        text
+          ? { from, to, subject, text }
+          : {
+              from,
+              to,
+              subject,
+              template: {
+                id: templateId,
+                variables: context as Record<string, string>,
+              },
+            },
+      );
 
       if (error) {
         this.logger.error('Error sending email via Resend', error);

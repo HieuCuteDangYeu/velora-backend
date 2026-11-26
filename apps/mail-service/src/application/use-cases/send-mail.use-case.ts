@@ -11,10 +11,10 @@ export class SendMailUseCase {
   ) {}
 
   async execute(dto: SendMailDto): Promise<void> {
-    const { to, subject, template, context } = dto;
+    const { to, subject, template, context, text } = dto;
 
     try {
-      await this.mailSender.send(to, subject, template, context);
+      await this.mailSender.send(to, subject, template, context, text);
 
       this.logger.log(`Email sent to ${to}`);
     } catch (error) {

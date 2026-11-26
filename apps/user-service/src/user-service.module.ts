@@ -12,6 +12,7 @@ import { BanUserUseCase } from '@user/application/use-cases/ban-user.use-case';
 import { ListBannedUserIdsUseCase } from '@user/application/use-cases/list-banned-user-ids.use-case';
 import { UnbanUserUseCase } from '@user/application/use-cases/unban-user.use-case';
 import { DeleteUserUseCase } from '@user/application/use-cases/delete-user.use-case';
+import { DeleteOwnAccountUseCase } from '@user/application/use-cases/delete-own-account.use-case';
 import { FindAllUsersUseCase } from '@user/application/use-cases/find-all-users.use-case';
 import { FindPublicUserByUsernameUseCase } from '@user/application/use-cases/find-public-user-by-username.use-case';
 import { FindPublicUsersByIdsUseCase } from '@user/application/use-cases/find-public-users-by-ids.use-case';
@@ -76,6 +77,7 @@ function createRmqClientRegistration(
     FindAllUsersUseCase,
     UpdateUserUseCase,
     DeleteUserUseCase,
+    DeleteOwnAccountUseCase,
     BanUserUseCase,
     UnbanUserUseCase,
     ListBannedUserIdsUseCase,

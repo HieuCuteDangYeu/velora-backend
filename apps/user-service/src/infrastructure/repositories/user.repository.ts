@@ -286,6 +286,27 @@ export class UserRepository implements IUserRepository {
     return this.toDomain(banned);
   }
 
+  async eraseDeletedAccount(id: string): Promise<User> {
+    const erased = await this.prisma.user.update({
+      where: { id },
+      data: {
+        email: `deleted-${id}@deleted.velora.invalid`,
+        fullName: 'Deleted user',
+        username: null,
+        password: null,
+        provider: null,
+        providerId: null,
+        avatarKey: null,
+        status: 'BANNED',
+        bannedAt: new Date(),
+        banReason: 'account_deleted',
+        bannedBy: id,
+      },
+    });
+
+    return this.toDomain(erased);
+  }
+
   async unban(id: string): Promise<User> {
     const restored = await this.prisma.user.update({
       where: { id },

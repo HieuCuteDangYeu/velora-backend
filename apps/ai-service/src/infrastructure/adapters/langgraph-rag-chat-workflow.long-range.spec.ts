@@ -28,7 +28,7 @@ const marked = (
   });
 
 describe('LangGraphRagChatWorkflowAdapter long-range marking', () => {
-  const on = { AI_LONG_RANGE_REMOTE: 'true' };
+  const on = {};
 
   it('marks a summary of more than five minutes of one reel', async () => {
     await expect(
@@ -57,7 +57,7 @@ describe('LangGraphRagChatWorkflowAdapter long-range marking', () => {
     ],
     [
       'the flag off',
-      {},
+      { AI_LONG_RANGE_REMOTE: 'false' },
       'Summarize what is said from 7:17 to 14:45 in the video.',
       ['reel-1'],
     ],

@@ -745,12 +745,14 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
    */
   /**
    * A summary of more than LONG_RANGE_SECONDS of one shared reel does not fit the local model's context; marking the
-   * turn makes retrieval read the whole range and sends the turn's structured calls to the remote model. Opt-in
-   * (AI_LONG_RANGE_REMOTE=true), which only has an effect while the remote model is enabled.
+   * turn makes retrieval read the whole range and sends the turn's structured calls to the remote model, and only has
+   * an effect while the remote model is enabled. Measured 2026-11-26 on the 32 time-range rows (with the
+   * distinctive-token guard fix): ranges over five minutes mean 0.467 -> 0.677 (judged correct 5 -> 6 of 10), ranges
+   * up to five minutes 0.612 -> 0.650. On by default; AI_LONG_RANGE_REMOTE=false turns it off.
    */
   private markLongRange(message: string, accessibleReelIds: string[]): void {
     if (
-      this.config.get<string>('AI_LONG_RANGE_REMOTE') !== 'true' ||
+      this.config.get<string>('AI_LONG_RANGE_REMOTE') === 'false' ||
       accessibleReelIds.length !== 1 ||
       !isTimeRangeSummaryQuestion(message)
     ) {

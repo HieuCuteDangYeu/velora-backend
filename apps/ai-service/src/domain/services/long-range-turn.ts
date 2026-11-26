@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * A chat turn that summarises a long stretch of one video ("Summarize what is said from 7:17 to 14:45"). The local
  * model has a 4,096-token context and ordinary calls already use up to about 3,800 tokens, so a long range cannot be
  * read in full there: the turn reads the whole range and sends its structured calls to the large-context remote
- * model instead (AI_LONG_RANGE_REMOTE=true). The flag is per turn, set once the question is known.
+ * model instead (on by default; AI_LONG_RANGE_REMOTE=false turns it off). The flag is per turn, set once the question is known.
  */
 interface TurnScope {
   longRange: boolean;

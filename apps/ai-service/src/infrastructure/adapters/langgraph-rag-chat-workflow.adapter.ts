@@ -68,6 +68,12 @@ import {
 import { asksForReelsLikePhoto } from '@ai/domain/services/rag-photo-reel-request';
 import { allowsGroundedGeneration } from '@ai/domain/services/rag-context-policy';
 import { scopeAccessibleReelsToReplyTarget } from '@ai/domain/services/rag-reply-reel-scope';
+import {
+  chapterRangeQuestion,
+  matchChapterTitle,
+  parseDescriptionChapters,
+} from '@ai/domain/services/reel-chapters';
+import type { IReelSemanticIndexService } from '@ai/domain/interfaces/reel-semantic-index.service.interface';
 import { resolveOpeningTranscriptWindow } from '@ai/domain/services/rag-transcript-sentence-selection';
 import {
   buildRagImageSearchQuery,
@@ -190,6 +196,9 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
     private readonly buildRagGuardrailSummaryUseCase?: BuildRagGuardrailSummaryUseCase,
     @Optional()
     private readonly recallConversationContextUseCase?: RecallConversationContextUseCase,
+    @Optional()
+    @Inject('IReelSemanticIndexService')
+    private readonly reelSemanticIndex?: IReelSemanticIndexService,
   ) {}
 
   async execute(input: RagChatWorkflowInput): Promise<RagChatWorkflowResult> {
@@ -701,11 +710,57 @@ export class LangGraphRagChatWorkflowAdapter implements IRagChatWorkflow {
         state.replyToReelId,
       );
 
+      const chapterQuestion = await this.resolveChapterQuestion(
+        state.userMessage,
+        accessibleReelIds,
+      );
+
       return {
         accessibleReelIds,
         hasSharedReelContext: accessibleReelIds.length > 0,
+        ...(chapterQuestion ? { userMessage: chapterQuestion } : {}),
       };
     };
+  }
+
+  /**
+   * "What is covered in the part titled X?": X is a chapter the creator listed in the description ("1:05 X"), which
+   * is metadata, not speech, so the transcript search cannot find it. With one shared reel the question is rewritten
+   * into the time-range summary of that chapter, which the pipeline answers well. Off unless
+   * AI_CHAPTER_TITLE_RESOLUTION=true; any failure leaves the question as it was.
+   */
+  private async resolveChapterQuestion(
+    message: string,
+    accessibleReelIds: string[],
+  ): Promise<string | undefined> {
+    if (
+      this.config.get<string>('AI_CHAPTER_TITLE_RESOLUTION') !== 'true' ||
+      !this.reelSemanticIndex ||
+      accessibleReelIds.length !== 1
+    ) {
+      return undefined;
+    }
+    try {
+      const document = await this.reelSemanticIndex.getReelDocument(
+        accessibleReelIds[0],
+      );
+      const chapters = parseDescriptionChapters(document?.description);
+      const durationSec = document?.sourceDurationMs
+        ? document.sourceDurationMs / 1000
+        : undefined;
+      const match = matchChapterTitle(message, chapters, durationSec);
+      if (!match) return undefined;
+      const rewritten = chapterRangeQuestion(match);
+      this.logger.debug(
+        `[RagGraph] chapter title resolved: "${match.chapter.title}" ${match.chapter.startSec}-${match.endSec}s`,
+      );
+      return rewritten;
+    } catch (error: unknown) {
+      this.logger.warn(
+        `Chapter title resolution failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
   }
 
   private createRetrievalPlannerNode(nodeTimings: Record<string, number>) {

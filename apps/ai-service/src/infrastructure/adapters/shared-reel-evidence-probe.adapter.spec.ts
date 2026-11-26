@@ -83,9 +83,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
     const withReranker = (
       hits: unknown[],
       rerank: jest.Mock,
-      values: Record<string, string> = {
-        AI_ROUTER_EVIDENCE_PROBE_RERANK: 'true',
-      },
+      values: Record<string, string> = {},
     ) => {
       const adapter = new SharedReelEvidenceProbeAdapter(
         { generateVector: jest.fn().mockResolvedValue(vector) } as never,
@@ -96,7 +94,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       return { adapter, rerank };
     };
 
-    it('searches for 6 excerpts and reranks up to 6 of them when the reranker check is on, and 3 when it is off', async () => {
+    it('searches for 6 excerpts and reranks up to 6 of them when the reranker check is on (the default), and 3 without a reranker', async () => {
       const searchOn = jest
         .fn()
         .mockResolvedValue(Array.from({ length: 6 }, () => vectorHit(0.5)));
@@ -104,10 +102,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       const on = new SharedReelEvidenceProbeAdapter(
         { generateVector: jest.fn().mockResolvedValue(vector) } as never,
         { searchChunks: searchOn } as never,
-        {
-          get: (key: string) =>
-            key === 'AI_ROUTER_EVIDENCE_PROBE_RERANK' ? 'true' : undefined,
-        } as never,
+        { get: () => undefined } as never,
         { rerank },
       );
       await ask(on);
@@ -165,7 +160,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       const off = withReranker(
         [vectorHit(0.5)],
         jest.fn().mockResolvedValue([{ rerankScore: 0.0 }]),
-        {},
+        { AI_ROUTER_EVIDENCE_PROBE_RERANK: 'false' },
       );
       await expect(ask(off.adapter)).resolves.toBe(true);
       expect(off.rerank).not.toHaveBeenCalled();
@@ -175,10 +170,7 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       const { adapter } = withReranker(
         [vectorHit(0.5)],
         jest.fn().mockResolvedValue([{ rerankScore: 0.03 }]),
-        {
-          AI_ROUTER_EVIDENCE_PROBE_RERANK: 'true',
-          AI_ROUTER_EVIDENCE_PROBE_MIN_RERANK: '0.02',
-        },
+        { AI_ROUTER_EVIDENCE_PROBE_MIN_RERANK: '0.02' },
       );
       await expect(ask(adapter)).resolves.toBe(true);
     });

@@ -87,7 +87,9 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
    * do general questions a video happens to discuss ("capital of Australia" against a Quebec history lecture,
    * distance 0.482). The cross-encoder tells them apart: covered ones scored 0.135-0.97 (the six measured
    * 2026-11-26), general ones 0.003 median and 0.026 at most among those in range. Fails open to the distance
-   * alone when the reranker is absent, errors, or returns no score. AI_ROUTER_EVIDENCE_PROBE_RERANK=true.
+   * alone when the reranker is absent, errors, or returns no score. On by default; AI_ROUTER_EVIDENCE_PROBE_RERANK=false
+   * turns it off. Verified live: 0 of 48 general questions rerouted on 8 videos (the Quebec lecture was 1 of 6 without
+   * it) and all five rescued covered questions still answered.
    * It must see every returned hit, not only those within the distance limit: for the Quebec songwriters question
    * the excerpt that answers it (rerank 0.34) sits at vector distance 0.575, the two hits inside 0.55 score 0.005
    * and 0.027, and reranking only the near hits refused a covered question that the calibration (best score over all
@@ -140,7 +142,7 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
   private rerankEnabled(): boolean {
     return (
       this.reranker !== undefined &&
-      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_RERANK') === 'true'
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_RERANK') !== 'false'
     );
   }
 

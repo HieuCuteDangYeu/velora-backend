@@ -47,6 +47,16 @@ const APNS_HOSTS: Record<PushDeliveryEnvironment, string> = {
 @Injectable()
 export class ApnsVoipGateway implements IApnsVoipGateway {
   private readonly logger = new Logger(ApnsVoipGateway.name);
+  /**
+   * One long-lived HTTP/2 connection per APNs environment. Apple asks
+   * providers to keep connections open across notifications and may refuse
+   * rapid connect/disconnect cycles; a new connection per push showed up as
+   * streams cancelled in pairs (ERR_HTTP2_STREAM_CANCEL) on 26 Nov 2026.
+   */
+  private readonly sessions = new Map<
+    PushDeliveryEnvironment,
+    http2.ClientHttp2Session
+  >();
   private cachedJwt?: {
     token: string;
     expiresAt: number;
@@ -75,11 +85,41 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
     }
   }
 
+  private getSession(environment: PushDeliveryEnvironment) {
+    const existing = this.sessions.get(environment);
+    if (existing && !existing.closed && !existing.destroyed) return existing;
+
+    const session = http2.connect(APNS_HOSTS[environment]);
+    const forget = () => {
+      if (this.sessions.get(environment) === session) {
+        this.sessions.delete(environment);
+      }
+    };
+    // Always attached: a connection error must never be unhandled, and a
+    // session that can no longer carry requests leaves the pool at once.
+    session.on('error', forget);
+    session.on('goaway', forget);
+    session.on('close', forget);
+    // An idle push connection must not keep the process alive at shutdown.
+    if (typeof session.unref === 'function') session.unref();
+    this.sessions.set(environment, session);
+    return session;
+  }
+
+  private dropSession(
+    environment: PushDeliveryEnvironment,
+    session: http2.ClientHttp2Session,
+  ) {
+    if (this.sessions.get(environment) === session) {
+      this.sessions.delete(environment);
+    }
+    session.destroy();
+  }
+
   private async sendOnce(input: SendApnsVoipPushInput) {
     const jwt = this.getJwt();
-    const url = APNS_HOSTS[input.deliveryEnvironment];
     const timeoutMs = this.getRequestTimeoutMs();
-    const session = http2.connect(url);
+    const session = this.getSession(input.deliveryEnvironment);
 
     return new Promise<void>((resolvePromise, rejectPromise) => {
       const body = JSON.stringify(input.payload);
@@ -90,6 +130,16 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
       let statusCode = 0;
       let responseBody = '';
 
+      const onSessionError = (error: unknown) => {
+        fail(this.buildTransportError('session_error', error));
+      };
+      const onSessionGoaway = (errorCode: unknown) => {
+        fail(this.buildTransportError('goaway', errorCode));
+      };
+      const onSessionClose = () => {
+        fail(this.buildTransportError('session_close'));
+      };
+
       const complete = (completion: () => void): boolean => {
         if (settled) {
           return false;
@@ -98,6 +148,10 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         if (timeout) {
           clearTimeout(timeout);
         }
+        // The session outlives this request; its per-request listeners must not.
+        session.off('error', onSessionError);
+        session.off('goaway', onSessionGoaway);
+        session.off('close', onSessionClose);
         completion();
         return true;
       };
@@ -105,22 +159,20 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
       const fail = (error: ApnsError) => {
         if (complete(() => rejectPromise(error))) {
           this.metrics.recordApnsRequest(this.apnsOutcome(error));
-          session.destroy();
+          // A transport failure or timeout means the connection is suspect,
+          // so the retry gets a new one. An APNs rejection keeps it.
+          if (
+            error.code === 'apns/transport_error' ||
+            error.code === 'apns/timeout'
+          ) {
+            this.dropSession(input.deliveryEnvironment, session);
+          }
         }
       };
 
-      // A ClientHttp2Session emits `error` independently of its request
-      // streams. This listener must exist before request() so a connection
-      // failure can never become an unhandled EventEmitter error.
-      session.on('error', (error: unknown) => {
-        fail(this.buildTransportError('session_error', error));
-      });
-      session.on('goaway', (errorCode: unknown) => {
-        fail(this.buildTransportError('goaway', errorCode));
-      });
-      session.on('close', () => {
-        fail(this.buildTransportError('session_close'));
-      });
+      session.on('error', onSessionError);
+      session.on('goaway', onSessionGoaway);
+      session.on('close', onSessionClose);
 
       let request: http2.ClientHttp2Stream;
       try {
@@ -157,7 +209,6 @@ export class ApnsVoipGateway implements IApnsVoipGateway {
         if (statusCode >= 200 && statusCode < 300) {
           if (complete(resolvePromise)) {
             this.metrics.recordApnsRequest('success');
-            session.close();
           }
           return;
         }

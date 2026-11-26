@@ -173,7 +173,57 @@ describe('ApnsVoipGateway', () => {
 
     await expect(sending).resolves.toBeUndefined();
     expect(http2.connect).toHaveBeenCalledTimes(2);
-    expect(sessions[1].close).toHaveBeenCalledTimes(1);
+    expect(sessions[0].destroy).toHaveBeenCalledTimes(1);
+    expect(sessions[1].close).not.toHaveBeenCalled();
+  });
+
+  it('reuses one connection for consecutive pushes and replaces it after a failure', async () => {
+    configureApnsCredentials();
+    const gateway = createGateway();
+    const sessions: ReturnType<typeof createSession>[] = [];
+    jest.mocked(http2.connect).mockImplementation(() => {
+      // A real session hands out one stream per request() call.
+      const session = Object.assign(new EventEmitter(), {
+        request: jest.fn(() => newRequest()),
+        close: jest.fn(),
+        destroy: jest.fn(),
+      });
+      sessions.push(session);
+      return session as unknown as http2.ClientHttp2Session;
+    });
+    const succeed = (
+      session: ReturnType<typeof createSession>,
+      call: number,
+    ) => {
+      const stream = session.request.mock.results[call].value as EventEmitter;
+      stream.emit('response', { ':status': 200 });
+      stream.emit('end');
+    };
+
+    const first = gateway.send(sendInput());
+    succeed(sessions[0], 0);
+    await first;
+    const second = gateway.send(sendInput());
+    succeed(sessions[0], 1);
+    await second;
+
+    expect(http2.connect).toHaveBeenCalledTimes(1);
+    expect(sessions[0].listenerCount('error')).toBe(1);
+
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const third = gateway.send(sendInput());
+    (sessions[0].request.mock.results[2].value as EventEmitter).emit(
+      'error',
+      Object.assign(new Error('cancelled'), {
+        code: 'ERR_HTTP2_STREAM_CANCEL',
+      }),
+    );
+    await waitForRetry();
+    succeed(sessions[1], 0);
+    await third;
+
+    expect(sessions[0].destroy).toHaveBeenCalledTimes(1);
+    expect(http2.connect).toHaveBeenCalledTimes(2);
   });
 
   it('does not retry an APNs rejection', async () => {

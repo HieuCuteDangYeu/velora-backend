@@ -285,11 +285,12 @@ export function validateRagAnswerContract(
     return 'Answer model introduced an unsupported requested label or name';
   }
 
-  if (
-    input.evidenceRequired &&
-    unsupportedDistinctiveTokens(input.evidence, answer).length > 0
-  ) {
-    return 'Answer model introduced an unsupported distinctive token';
+  if (input.evidenceRequired) {
+    const unsupported = unsupportedDistinctiveTokens(input.evidence, answer);
+    if (unsupported.length > 0) {
+      // The tokens are logged so a rejection can be told apart from a false alarm.
+      return `Answer model introduced an unsupported distinctive token (${[...new Set(unsupported)].slice(0, 6).join(', ')})`;
+    }
   }
 
   if (

@@ -96,6 +96,32 @@ describe('SharedReelEvidenceProbeAdapter', () => {
       return { adapter, rerank };
     };
 
+    it('searches for 6 excerpts and reranks up to 6 of them when the reranker check is on, and 3 when it is off', async () => {
+      const searchOn = jest
+        .fn()
+        .mockResolvedValue(Array.from({ length: 6 }, () => vectorHit(0.5)));
+      const rerank = jest.fn().mockResolvedValue([{ rerankScore: 0.5 }]);
+      const on = new SharedReelEvidenceProbeAdapter(
+        { generateVector: jest.fn().mockResolvedValue(vector) } as never,
+        { searchChunks: searchOn } as never,
+        {
+          get: (key: string) =>
+            key === 'AI_ROUTER_EVIDENCE_PROBE_RERANK' ? 'true' : undefined,
+        } as never,
+        { rerank },
+      );
+      await ask(on);
+      expect(searchOn).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 6 }),
+      );
+      expect(rerank.mock.calls[0][0].candidates).toHaveLength(6);
+      const off = build([{ vectorDistance: 0.3 }]);
+      await ask(off.adapter);
+      expect(off.searchChunks).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 3 }),
+      );
+    });
+
     it('does not call the reranker when the closest excerpt is within the soft distance', async () => {
       const { adapter, rerank } = withReranker([vectorHit(0.44)], jest.fn());
       await expect(ask(adapter)).resolves.toBe(true);

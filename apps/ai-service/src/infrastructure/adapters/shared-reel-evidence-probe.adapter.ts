@@ -23,7 +23,8 @@ const MAX_REELS = 8;
 // reranker must also find an excerpt relevant before a question the router called off-topic is rerouted.
 const DEFAULT_SOFT_DISTANCE = 0.45;
 const DEFAULT_MIN_RERANK = 0.05;
-const MAX_RERANKED_HITS = 3;
+// The calibration reranked the 6 closest excerpts; reranking only 3 refused a covered question again.
+const MAX_RERANKED_HITS = 6;
 
 @Injectable()
 export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe {
@@ -58,7 +59,7 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
         queryEmbeddingModel: embedding.model,
         queryEmbeddingVersion: embedding.version,
         filters: { reelIds },
-        limit: 3,
+        limit: this.rerankEnabled() ? MAX_RERANKED_HITS : 3,
         candidateLimit: 24,
       });
       const maxDistance = this.maxDistance();
@@ -92,10 +93,7 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
     message: string,
     near: SemanticIndexSearchResult[],
   ): Promise<boolean> {
-    if (
-      !this.reranker ||
-      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_RERANK') !== 'true'
-    ) {
+    if (!this.reranker || !this.rerankEnabled()) {
       return true;
     }
     const floor = Number(
@@ -133,6 +131,13 @@ export class SharedReelEvidenceProbeAdapter implements ISharedReelEvidenceProbe 
       );
       return true;
     }
+  }
+
+  private rerankEnabled(): boolean {
+    return (
+      this.reranker !== undefined &&
+      this.config.get<string>('AI_ROUTER_EVIDENCE_PROBE_RERANK') === 'true'
+    );
   }
 
   private softDistance(): number {

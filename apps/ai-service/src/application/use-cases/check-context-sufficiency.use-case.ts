@@ -862,14 +862,17 @@ ${JSON.stringify(
    * only counts together with a distance above the soft limit (0.47; those covered ones sit at 0.39-0.47). On 79
    * covered and 40 uncovered questions, "distance > 0.47 and best rerank score < 0.01" refused all 40 uncovered
    * ones with no covered question refused beyond the two the plain distance limit already refuses. Opt-in
-   * verified live: uncovered questions answered 4 of 40 with the distance limit alone, 2 of 40 with this signal, and no regular row newly refused. AI_CONTEXT_EVIDENCE_RERANK_GUARD=false turns it off; only the scored excerpts count, fails open when none is scored.
+   * verified live on a build containing it: uncovered questions answered 3-4 of 40 with the distance limit alone
+   * (two runs) and 0 of 40 with this signal, but covered questions are refused too (1 of 30 regular rows, and 2 of 3 in
+   * a cooking video whose transcript retrieves poorly: distance 0.47-0.49 and rerank 0.0006-0.006, indistinguishable
+   * from the uncovered ones). Opt-in (AI_CONTEXT_EVIDENCE_RERANK_GUARD=true); only the scored excerpts count, fails open when none is scored.
    */
   private rerankerAlsoDisagrees(
     state: RagChatWorkflowState,
     closestDistance: number,
   ): boolean {
     if (
-      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_RERANK_GUARD') === 'false'
+      this.config.get?.<string>('AI_CONTEXT_EVIDENCE_RERANK_GUARD') !== 'true'
     ) {
       return false;
     }

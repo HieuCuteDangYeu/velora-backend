@@ -138,5 +138,13 @@ jobs:
             prom/prometheus:latest \
             test rules /etc/prometheus/tests/velora-monitoring.test.yml
 
+          docker run --rm \
+            --entrypoint /bin/promtool \
+            -v "$PWD/infra/monitoring/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:latest \
+            test rules /etc/prometheus/tests/velora-replication.test.yml
+
+          bash scripts/deploy/test-replication-probe.sh
+
       - name: Validate Grafana dashboard JSON
         run: for f in infra/monitoring/grafana/dashboards/*.json; do jq -e . "$f" >/dev/null; done

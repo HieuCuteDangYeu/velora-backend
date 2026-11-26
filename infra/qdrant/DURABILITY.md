@@ -201,7 +201,8 @@ so it is a decision for the owner, not part of this step.
   is invalidated and the standby must be rebuilt with `standby-up.sh`.
 - Rebuild: `docker compose down` and remove the volume on homelab 2, `SELECT pg_drop_replication_slot('idx_standby')` on the primary, then `standby-up.sh`.
 - Dumps taken from the standby need `max_standby_streaming_delay` (already 900 s).
-- Nothing alerts on replica lag yet.
+- Alerts: `VeloraIndexingStandbyNotStreaming`, `VeloraIndexingStandbyReplayLag` and
+  `VeloraIndexingSlotWalRetention` (see "Backup and alerts on the three-node cluster" below).
 
 ### Rollback (full)
 
@@ -567,3 +568,49 @@ green with 11,979 points; `verify-parity --target-label=reel-indexing --list-all
 manifests, 11,548/11,548 points, 0 failures, 431 known orphans; `stale-ready` 306 ready, 0 stale;
 search smoke 24/24 (p50 347 ms, p95 518 ms). Note: these commands need `--target-label` before
 `--list-all`; without it the tool exits with the redacted gate error.
+
+## Backup and alerts on the three-node cluster (2026-11-26, 09:27 to 09:40 UTC)
+
+### Paired backup against the cluster
+
+`pair-backup.sh` needs no change for layout D. It takes the snapshot from H1 (`QDRANT_URL=https://qdrant:6333`
+on `reel-vector-net`) with the collection snapshot API, which in cluster mode contains only the node's local
+shards; H1 holds a replica of the single shard, so the snapshot holds the whole collection. Proved by the drill:
+the restore into a standalone disposable Qdrant checks the restored count against the manifest (11,979).
+
+| Item | Result |
+| --- | --- |
+| Pair `b25fc482-9b3a-4fc7-a06c-88595a8c337b` (no pause; load1 2.0, job queues empty) | 125 s end to end; `pg_dump` 25 s, 134,898,891 bytes, 141 TOC entries; Qdrant snapshot, encrypt and upload 33 s; snapshot 111,114,240 bytes (83 % of the 128 MiB cap), archive 148,155,544 bytes (78 % of 180 MiB); 11,979 points (equal to the cluster's count on all three nodes); 306 projections, 11,548 current points; WAL 1/D9F25830 before the dump, 1/D9F48F08 after; R2 readback: dump content hash and archive checksum verified |
+| Restore drill of that pair (disposable containers, 241 s) | fetch and verify 29 s; PostgreSQL start 8 s; `pg_restore` 19 s, exit 0, 0 stderr lines, 373 MB, rows equal to the manifest; Qdrant start 3 s; restore 5 s; resume 2 s; reconcile until complete 119 s (18 transient gate errors, re-run as designed); verify-parity 306/306 manifests, 11,548/11,548 points, 431 orphans, `recordsConsistent=true`; stale-ready 0; scoped search 24/24, p50 340 ms, p95 493 ms; negative test: 5 deleted points found by both detectors; all drill resources removed |
+| Production after | verify-parity 306/306, 11,548 points, 0 failures, 431 orphans; stale-ready 0; search smoke 24/24 (p50 331 ms, p95 497 ms); 3 peers, term 3, H2 leader, green on all nodes, both replicas Active |
+
+The snapshot is smaller than at 11,316 points on the single node (120.95 MB), so the cap concern in "Limits to
+watch" is less pressing; why it shrank was not investigated.
+
+### Alerts
+
+`scripts/deploy/replication-probe` and the `velora-replication` rule group (see `infra/monitoring/README.md`,
+"Replication health"). A direct Prometheus scrape of Qdrant was not used: it needs the API key and CA mounted
+into Prometheus (a compose change) and Prometheus on the Qdrant networks, and editing the tracked
+`prometheus.yml` on the homelab would make the deploy controller refuse every release
+("tracked local modifications detected").
+
+Database change: `CREATE ROLE velora_monitor LOGIN CONNECTION LIMIT 2 IN ROLE pg_monitor` (no password, no
+`pg_hba` change). It cannot read application tables or create objects, and a TCP login fails. Roll back with
+`DROP ROLE velora_monitor` after unloading the probe.
+
+### Outside git on the homelab (applied 2026-11-26)
+
+- `~/velora-operations/monitoring/replication-probe` (copy of the script) and
+  `~/Library/LaunchAgents/com.velora.replication-probe.plist` (same as the repo file, pointing at that copy);
+  log `~/Library/Logs/Velora/replication-probe.log`.
+- `infra/monitoring/node-exporter-textfile/velora-replication.prom` in the checkout (git-ignored).
+- `infra/monitoring/prometheus/rules/velora-replication-live.yml` in the checkout: an **untracked** copy of
+  `rules/velora-replication.yml` under another name, loaded by the `rules/*.yml` glob. A CI deploy keeps it
+  (`git reset --hard` leaves untracked files). It has a different name on purpose: an untracked file at a path
+  a release adds makes the deploy's `git checkout` abort, even with identical content. **When the commit with
+  `rules/velora-replication.yml` is deployed, delete the `-live` copy and send Prometheus SIGHUP**, otherwise
+  every alert in the group is evaluated twice. Then point the plist at the checkout's script.
+- Rollback: `launchctl bootout gui/$(id -u)/com.velora.replication-probe`; remove the plist, the probe copy, the
+  `.prom` file and the `-live` rules file; `docker kill -s HUP microservices-boilerplate-prometheus-1`;
+  `DROP ROLE velora_monitor` on the Indexing primary.

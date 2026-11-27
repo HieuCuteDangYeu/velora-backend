@@ -54,6 +54,9 @@ services:
       CONVERSATION_WRITE_ROUTING: owner
       CONVERSATION_WRITE_ZONE: lab2
       CONVERSATION_NOTIFICATION_OUTBOX: 'off'
+      # Same group role features as the homelab replica: both consume conversation_queue.
+      GROUP_V2_ROLE_MUTATIONS_ENABLED: 'true'
+      GROUP_V2_ADMIN_PERMISSIONS_ENABLED: 'true'
     extra_hosts:
       - 'redis:100.102.228.48'
       - 'rabbitmq:100.102.228.48'

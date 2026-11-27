@@ -59,11 +59,26 @@ export class BuildVisualFrameManifestUseCase {
       0,
       10_000,
     );
-    const maxFrames = this.getPositiveInt(
+    // At least MEDIA_VISUAL_MAX_FRAMES, and more for a long video: a flat 24 left one frame every 2.5 minutes of a
+    // one-hour video, too few to answer what is on screen at a given moment.
+    const baseMaxFrames = this.getPositiveInt(
       'MEDIA_VISUAL_MAX_FRAMES',
       24,
       1,
       120,
+    );
+    const framesPerMinute = this.getNumber(
+      'MEDIA_VISUAL_FRAMES_PER_MINUTE',
+      1,
+      0,
+      6,
+    );
+    const maxFrames = Math.min(
+      120,
+      Math.max(
+        baseMaxFrames,
+        Math.ceil((totalDurationMs / 60_000) * framesPerMinute),
+      ),
     );
     const candidates =
       totalDurationMs > 0

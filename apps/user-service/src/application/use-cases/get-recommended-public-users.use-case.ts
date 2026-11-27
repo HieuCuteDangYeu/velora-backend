@@ -28,6 +28,7 @@ export class GetRecommendedPublicUsersUseCase {
     input: GetRecommendedPublicUsersInput,
   ): Promise<RecommendedPublicUserProfile[]> {
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 30);
+    const offset = Math.min(Math.max(Math.floor(input.offset ?? 0), 0), 300);
 
     const feedSessionId = input.feedSessionId ?? globalThis.crypto.randomUUID();
 
@@ -40,10 +41,13 @@ export class GetRecommendedPublicUsersUseCase {
     const startedAt = Date.now();
 
     try {
+      // The feed is one ranked list: graph candidates, then the public fallback.
+      // Later pages read the whole graph pool so their slices line up; the graph
+      // ranking is a total order, so a smaller pool is a prefix of the larger one.
       const graphResponse =
         await this.friendDiscoveryService.getGraphRecommendations(
           input.viewerId,
-          Math.min(limit * 4, 100),
+          offset === 0 ? Math.min(limit * 4, 100) : 100,
         );
 
       const graphUsers = graphResponse.candidates.length
@@ -58,23 +62,24 @@ export class GetRecommendedPublicUsersUseCase {
           .map((user) => [user.id!, user] as const),
       );
 
-      const graphRankedUsers = graphResponse.candidates
-        .flatMap((candidate) => {
-          const user = usersById.get(candidate.userId);
+      const graphPool = graphResponse.candidates.flatMap((candidate) => {
+        const user = usersById.get(candidate.userId);
 
-          if (!user?.username) {
-            return [];
-          }
+        if (!user?.username) {
+          return [];
+        }
 
-          return [{ candidate, user }];
-        })
-        .slice(0, limit);
+        return [{ candidate, user }];
+      });
+      const graphRankedUsers = graphPool.slice(offset, offset + limit);
 
       const remaining = Math.max(0, limit - graphRankedUsers.length);
+      const fallbackSkip = Math.max(0, offset - graphPool.length);
 
       const fallbackUsers = remaining
         ? await this.userRepository.findRecommendedPublicUsers({
             limit: remaining,
+            ...(fallbackSkip ? { skip: fallbackSkip } : {}),
             excludedUserIds: [
               ...new Set([
                 ...graphResponse.excludedUserIds,
@@ -116,7 +121,7 @@ export class GetRecommendedPublicUsersUseCase {
           algorithmVersion,
           candidateSource: item.candidateSource,
           candidateSources: item.candidateSources,
-          rank: index + 1,
+          rank: offset + index + 1,
           generatedAt,
         },
       }));

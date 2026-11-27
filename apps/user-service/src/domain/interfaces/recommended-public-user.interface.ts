@@ -4,6 +4,7 @@ export interface GetRecommendedPublicUsersInput {
   viewerId: string;
   limit?: number;
   feedSessionId?: string;
+  offset?: number;
 }
 
 export interface RecommendedPublicUserProfile {

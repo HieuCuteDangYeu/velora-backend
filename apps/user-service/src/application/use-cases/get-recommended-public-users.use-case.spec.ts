@@ -265,4 +265,65 @@ describe('GetRecommendedPublicUsersUseCase', () => {
       excludedUserIds: ['viewer'],
     });
   });
+
+  describe('paging by offset', () => {
+    const build = () => {
+      const findByIds = jest
+        .fn()
+        .mockResolvedValue([user('graph-a'), user('graph-b'), user('graph-c')]);
+      const findRecommendedPublicUsers = jest
+        .fn()
+        .mockResolvedValue([user('fallback-d')]);
+      const getGraphRecommendations = jest.fn().mockResolvedValue({
+        candidates: [
+          graphCandidate('graph-a', 5, 0.9),
+          graphCandidate('graph-b', 4, 0.8),
+          graphCandidate('graph-c', 3, 0.7),
+        ],
+        excludedUserIds: ['viewer'],
+      });
+      const useCase = new GetRecommendedPublicUsersUseCase(
+        createUserRepository({ findByIds, findRecommendedPublicUsers }),
+        createFriendDiscoveryService({ getGraphRecommendations }),
+        config,
+        createTelemetryService(),
+      );
+      return {
+        useCase,
+        findRecommendedPublicUsers,
+        getGraphRecommendations,
+      };
+    };
+
+    it('continues the graph ranking, then starts the fallback at its head', async () => {
+      const { useCase, findRecommendedPublicUsers, getGraphRecommendations } =
+        build();
+
+      const result = await useCase.execute({
+        viewerId: 'viewer',
+        limit: 2,
+        offset: 2,
+      });
+
+      expect(getGraphRecommendations).toHaveBeenCalledWith('viewer', 100);
+      expect(findRecommendedPublicUsers).toHaveBeenCalledWith({
+        limit: 1,
+        excludedUserIds: ['viewer', 'graph-a', 'graph-b', 'graph-c'],
+      });
+      expect(result.map((item) => item.id)).toEqual(['graph-c', 'fallback-d']);
+      expect(result.map((item) => item.recommendation.rank)).toEqual([3, 4]);
+    });
+
+    it('skips fallback users already served once past the graph pool', async () => {
+      const { useCase, findRecommendedPublicUsers } = build();
+
+      await useCase.execute({ viewerId: 'viewer', limit: 2, offset: 5 });
+
+      expect(findRecommendedPublicUsers).toHaveBeenCalledWith({
+        limit: 2,
+        skip: 2,
+        excludedUserIds: ['viewer', 'graph-a', 'graph-b', 'graph-c'],
+      });
+    });
+  });
 });

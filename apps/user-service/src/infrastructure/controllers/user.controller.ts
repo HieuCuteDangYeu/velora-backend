@@ -261,6 +261,7 @@ export class UserController {
       viewerId: string;
       limit?: number;
       feedSessionId?: string;
+      offset?: number;
     },
   ) {
     const result = await this.observe('recommendations', () =>
@@ -268,6 +269,7 @@ export class UserController {
         viewerId: data.viewerId,
         limit: data.limit,
         feedSessionId: data.feedSessionId,
+        offset: data.offset,
       }),
     );
     this.metrics.recordRecommendationCandidates(result.length);

@@ -19,6 +19,7 @@ export interface SearchPublicUsersParams {
 export interface RecommendedPublicUsersParams {
   limit: number;
   excludedUserIds?: string[];
+  skip?: number;
 }
 
 export interface IUserRepository {

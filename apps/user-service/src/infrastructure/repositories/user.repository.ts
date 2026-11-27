@@ -211,6 +211,7 @@ export class UserRepository implements IUserRepository {
           not: null,
         },
       },
+      ...(params.skip ? { skip: params.skip } : {}),
       take: limit,
       orderBy: [
         { isVerified: 'desc' },

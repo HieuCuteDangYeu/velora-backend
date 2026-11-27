@@ -117,6 +117,7 @@ export class UserController {
           viewerId: request.user!.id,
           limit: query.limit,
           feedSessionId: query.feedSessionId,
+          offset: query.offset,
         })
         .pipe(catchError((error) => this.handleMicroserviceError(error))),
     );

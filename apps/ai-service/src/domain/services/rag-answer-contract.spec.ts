@@ -4,8 +4,10 @@ import {
   ragAnswerBudget,
   ragLacksRequestedQuantity,
   ragRequestedFactSignalScore,
+  transcriptSummaryMaxChars,
   validateRagAnswerContract,
 } from './rag-answer-contract';
+import { markLongRangeTurn, runTurnScope } from './long-range-turn';
 
 describe('ragAnswerBudget', () => {
   it('gives first-segment multi-Reel comparisons enough room for both attributed passages', () => {
@@ -330,5 +332,17 @@ describe('validateRagAnswerContract distinctive tokens in range summaries', () =
         'The host studied for 8-12 months.',
       ),
     ).toMatch(/unsupported distinctive token/);
+  });
+});
+
+describe('transcriptSummaryMaxChars', () => {
+  it('gives a long-range turn the longer summary budget', async () => {
+    expect(transcriptSummaryMaxChars('TRANSCRIPT_CONTENT')).toBe(900);
+    expect(transcriptSummaryMaxChars('MULTIMODAL_CONTENT')).toBe(1_600);
+    await runTurnScope(() => {
+      markLongRangeTurn();
+      expect(transcriptSummaryMaxChars('TRANSCRIPT_CONTENT')).toBe(1_600);
+      return Promise.resolve();
+    });
   });
 });

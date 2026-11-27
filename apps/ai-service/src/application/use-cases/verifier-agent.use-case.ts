@@ -21,10 +21,9 @@ import {
   transcriptSegmentRequestKind,
 } from '@ai/domain/services/rag-prompt-bounds';
 import {
-  MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS,
   ragAnswerBudget,
   ragAnswerDirectnessIssue,
-  TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+  transcriptSummaryMaxChars,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
 import { assessExactEvidenceProvenance } from './exact-evidence-provenance';
@@ -741,9 +740,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
               requestKind === 'MULTI_REEL_COMPARISON',
             transcriptSummaryMaxChars:
               requestKind === 'SUMMARY'
-                ? state.route?.reelQuestionType === 'MULTIMODAL_CONTENT'
-                  ? MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS
-                  : TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS
+                ? transcriptSummaryMaxChars(state.route?.reelQuestionType)
                 : undefined,
           })
         : undefined;
@@ -1354,9 +1351,7 @@ Return only compact JSON matching the schema. Keep issues, contradictions, claim
                 requestKind === 'MULTI_REEL_COMPARISON',
               transcriptSummaryMaxChars:
                 requestKind === 'SUMMARY'
-                  ? state.route?.reelQuestionType === 'MULTIMODAL_CONTENT'
-                    ? MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS
-                    : TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS
+                  ? transcriptSummaryMaxChars(state.route?.reelQuestionType)
                   : undefined,
             }),
           )

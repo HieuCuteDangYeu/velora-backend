@@ -1,3 +1,4 @@
+import { isLongRangeTurn } from './long-range-turn';
 import type {
   RagReelQuestionType,
   RagRequiredEvidence,
@@ -165,6 +166,23 @@ export interface RagAnswerBudgetOptions {
 export const MULTI_REEL_TRANSCRIPT_COMPARISON_MAX_CHARS = 1_800;
 export const TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS = 900;
 export const MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS = 1_600;
+/**
+ * A summary of more than five minutes (a long-range turn, answered by the large-context remote model). At 900
+ * characters the longest answers hit the cap and the judge marked most of them as covering only part of the range.
+ */
+export const LONG_RANGE_SUMMARY_MAX_CHARS = 1_600;
+
+/** Character budget for a transcript summary answer. */
+export function transcriptSummaryMaxChars(
+  reelQuestionType: RagReelQuestionType | undefined,
+): number {
+  if (reelQuestionType === 'MULTIMODAL_CONTENT') {
+    return MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS;
+  }
+  return isLongRangeTurn()
+    ? LONG_RANGE_SUMMARY_MAX_CHARS
+    : TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS;
+}
 
 export function ragAnswerBudget(
   reelQuestionType: RagReelQuestionType | undefined,

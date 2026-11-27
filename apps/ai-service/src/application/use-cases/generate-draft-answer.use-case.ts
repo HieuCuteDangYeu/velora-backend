@@ -43,8 +43,7 @@ import {
   ragAnswerBudget,
   ragLacksRequestedQuantity,
   ragRequestedFactSignalScore,
-  MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS,
-  TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
+  transcriptSummaryMaxChars,
   ragUnsupportedDistinctiveTokens,
   validateRagAnswerContract,
 } from '@ai/domain/services/rag-answer-contract';
@@ -162,9 +161,7 @@ export class GenerateDraftAnswerUseCase {
       multiReelTranscriptComparison: requestKind === 'MULTI_REEL_COMPARISON',
       transcriptSummaryMaxChars:
         requestKind === 'SUMMARY'
-          ? state.route?.reelQuestionType === 'MULTIMODAL_CONTENT'
-            ? MULTIMODAL_TRANSCRIPT_SUMMARY_MAX_CHARS
-            : TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS
+          ? transcriptSummaryMaxChars(state.route?.reelQuestionType)
           : undefined,
     });
   }

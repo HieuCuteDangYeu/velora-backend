@@ -2,6 +2,9 @@ import { ReelCommentsController } from './infrastructure/controllers/reel-commen
 import { ReelCommentRepository } from './infrastructure/repositories/reel-comment.repository';
 import { ReelSubtitleTrackRepository } from './infrastructure/repositories/reel-subtitle-track.repository';
 import { ReelSubtitlesController } from './infrastructure/controllers/reel-subtitles.controller';
+import { ReelAskQuestionsController } from './infrastructure/controllers/reel-ask-questions.controller';
+import { GetReelAskQuestionsUseCase } from './application/use-cases/get-reel-ask-questions.use-case';
+import { AiReelQuestionSuggestionAdapter } from './infrastructure/adapters/ai-reel-question-suggestion.adapter';
 import { ReelSubtitleTranslator } from './application/services/reel-subtitle-translator.service';
 import { PreTranslateReelSubtitlesUseCase } from './application/use-cases/pre-translate-reel-subtitles.use-case';
 import { GetReelSubtitlesUseCase } from './application/use-cases/get-reel-subtitles.use-case';
@@ -157,6 +160,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     ContentController,
     ReelCommentsController,
     ReelSubtitlesController,
+    ReelAskQuestionsController,
     IndexingAttemptGuardController,
     ReelHlsOperatorController,
   ],
@@ -172,6 +176,11 @@ function createRmqClientRegistration(name: string, queue: string) {
     },
     ReelSubtitleTranslator,
     GetReelSubtitlesUseCase,
+    {
+      provide: 'IReelQuestionSuggestionService',
+      useClass: AiReelQuestionSuggestionAdapter,
+    },
+    GetReelAskQuestionsUseCase,
     PreTranslateReelSubtitlesUseCase,
     CreateReelCommentUseCase,
     ListReelCommentsUseCase,

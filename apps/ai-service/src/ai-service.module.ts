@@ -7,6 +7,7 @@ import { ContextToolAgentUseCase } from '@ai/application/use-cases/context-tool-
 import { CountDocumentTokensUseCase } from '@ai/application/use-cases/count-document-tokens.use-case';
 import { CreateNoContextAnswerUseCase } from '@ai/application/use-cases/create-no-context-answer.use-case';
 import { ExtractReelMetadataUseCase } from '@ai/application/use-cases/extract-reel-metadata.use-case';
+import { SuggestReelQuestionsUseCase } from '@ai/application/use-cases/suggest-reel-questions.use-case';
 import { TranslateSubtitleCuesUseCase } from '@ai/application/use-cases/translate-subtitle-cues.use-case';
 import { ExtractUserMemoriesFromTurnUseCase } from '@ai/application/use-cases/extract-user-memories-from-turn.use-case';
 import { GenerateDraftAnswerUseCase } from '@ai/application/use-cases/generate-draft-answer.use-case';
@@ -228,6 +229,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
     BuildRagGuardrailSummaryUseCase,
     MemoryWriterAgentUseCase,
     ExtractReelMetadataUseCase,
+    SuggestReelQuestionsUseCase,
     TranslateSubtitleCuesUseCase,
     ReviewIndexQualityUseCase,
 

@@ -591,6 +591,29 @@ export class ContentController {
     );
   }
 
+  @Get('reels/:id/ask-questions')
+  @ApiOperation({
+    summary:
+      'Get short questions about this reel that a viewer can send to the Velora bot',
+  })
+  async getReelAskQuestions(
+    @Req() request: AuthenticatedRequest,
+    @Param('id') reelId: string,
+  ) {
+    return lastValueFrom(
+      this.contentClient
+        .send<{ reelId: string; questions: string[] }>(
+          'content.get_reel_ask_questions',
+          {
+            reelId,
+            viewerId: request.user!.id,
+            isAdmin: request.user!.roles?.includes('ADMIN') === true,
+          },
+        )
+        .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
   @Get('reels/:id/context')
   @ApiOperation({ summary: 'Get contextual profile reel feed around a reel' })
   async getReelContext(

@@ -43,6 +43,8 @@ import {
 import { RecallConversationContextUseCase } from '../../application/use-cases/recall-conversation-context.use-case';
 import { GenerateEmbeddingUseCase } from '../../application/use-cases/generate-embedding.use-case';
 import { GenerateEmbeddingBatchUseCase } from '../../application/use-cases/generate-embedding-batch.use-case';
+import { SuggestReelQuestionsUseCase } from '../../application/use-cases/suggest-reel-questions.use-case';
+import type { SuggestReelQuestionsRequest } from '@common/ai/interfaces/reel-ask-questions.interface';
 
 @Controller()
 export class AiController {
@@ -61,6 +63,9 @@ export class AiController {
     private readonly translateSubtitleCuesUseCase: TranslateSubtitleCuesUseCase,
     @Optional()
     private readonly recallConversationContextUseCase?: RecallConversationContextUseCase,
+    // Last so the positional test constructions above stay valid.
+    @Optional()
+    private readonly suggestReelQuestionsUseCase?: SuggestReelQuestionsUseCase,
   ) {}
 
   @MessagePattern('ai.generate_embedding')
@@ -369,6 +374,35 @@ export class AiController {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[ConversationTurnCompleted] ${message}`);
+    }
+  }
+
+  @MessagePattern('ai.suggest_reel_questions')
+  async handleSuggestReelQuestions(
+    @Payload() data: SuggestReelQuestionsRequest,
+  ) {
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      typeof data.transcript !== 'string' ||
+      !Array.isArray(data.tags)
+    ) {
+      throw new RpcException({
+        statusCode: 400,
+        message: 'Invalid reel question suggestion payload',
+      });
+    }
+    if (!this.suggestReelQuestionsUseCase) {
+      throw new RpcException({
+        statusCode: 503,
+        message: 'Reel question suggestions are unavailable',
+      });
+    }
+    try {
+      return await this.suggestReelQuestionsUseCase.execute(data);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RpcException({ statusCode: 502, message });
     }
   }
 

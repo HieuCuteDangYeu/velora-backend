@@ -1775,6 +1775,70 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(call.systemPrompt).not.toMatch(/write 2–4 short sentences/i);
   });
 
+  it('asks for 4–6 sentences when a chapter of two minutes or more is summarized', async () => {
+    const answer =
+      'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.';
+    const generateObject = jest.fn().mockResolvedValue({
+      answer,
+      claims: answer
+        .split(/(?<=[.!?])\s+/u)
+        .map((claim) => ({ claim, evidenceIds: ['e0'] })),
+    });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn() },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 512,
+      } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the indexed speech segment at 0.38-150 seconds.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 0.38,
+        sourceTimestampEndSec: 150,
+        transcriptTimestampSec: 0.38,
+        transcriptTimestampEndSec: 150,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        availableEvidence: ['TRANSCRIPT'],
+        missingEvidence: [],
+        supportedEvidenceIds: ['e0'],
+        recommendedAction: 'ANSWER',
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'speech-segment',
+          reelId: 'reel-1',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 0.38,
+          endTime: 150,
+          evidenceText:
+            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.',
+          chunkText:
+            'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    const call = generateObject.mock.calls[0][0];
+    expect(result.answer).toBe(answer);
+    expect(call.systemPrompt).toMatch(/usually 4–6 sentences/);
+    expect(call.systemPrompt).not.toMatch(/write 2–4 short sentences/i);
+  });
+
   it('summarizes a requested transcript interval across its main turns', async () => {
     const answer =
       'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.';

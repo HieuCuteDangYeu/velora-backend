@@ -390,6 +390,16 @@ export class GenerateDraftAnswerUseCase {
       );
     }
     const transcriptSegmentSummaryRequest = transcriptSegmentKind === 'SUMMARY';
+    // Ranges of two minutes or more hold several main points; a long-range turn (over five minutes) has the larger
+    // answer budget for more of them.
+    const summaryRangeSec =
+      (state.retrievalPlan?.transcriptTimestampEndSec ?? 0) -
+      (state.retrievalPlan?.transcriptTimestampSec ?? 0);
+    const summarySentenceRange = isLongRangeTurn()
+      ? '5–8'
+      : summaryRangeSec >= 120
+        ? '4–6'
+        : undefined;
     const multiReelTranscriptSegmentComparisonRequest =
       transcriptSegmentKind === 'MULTI_REEL_COMPARISON';
     const summaryTranscriptSpanCount = authorizedEvidence
@@ -707,10 +717,10 @@ export class GenerateDraftAnswerUseCase {
         ? [
             state.route?.reelQuestionType === 'MULTIMODAL_CONTENT'
               ? 'For this multimodal time-bounded request, format the answer as exactly two labeled sections: `Visible: ...` followed by `Spoken: ...`. Keep the Visible section to one brief observation and summarize only transcript text inside the requested interval in concise sentences proportional to the supported material. For long intervals with several distinct statements, use 4–6 concise Spoken sentences and cover the beginning, middle, and end in chronological order. Preserve actors, actions, relations, negation, causes, and key quantities; do not collapse several turns into one vague statement. Use fewer sentences only when the evidence contains fewer distinct facts; do not pad short segments. Preserve who speaks, who owns or receives something, and do not attach a reaction or thanks to a nearby event unless the transcript links them. Keep spoken questions as questions and do not infer a causal link from adjacent statements unless the transcript states one. Do not repeat the frame timestamp or transcript time window; those belong in citations. Omit trailing keyword-only fragments from visual evidence. Do not quote the transcript or summarize it sentence by sentence. Omit filler and repeated dialogue while preserving speaker changes and uncertainty. Keep each action and its object together. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and state that the indexed excerpt ends there without inferring what the speaker does next.'
-              : isLongRangeTurn()
+              : summarySentenceRange
                 ? // A range of several minutes holds many main points; 2–4 sentences left most of them out
-                  // (judged 2026-11-27: faithful summaries of 10-minute ranges failed on coverage).
-                  'For this time-bounded transcript summary of a long interval, write one short sentence per main point, in chronological order, covering the beginning, middle, and end of the interval: usually 5–8 sentences, fewer only when the transcript has fewer distinct points. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.'
+                  // (judged 2026-11-27: faithful summaries of chapters and 10-minute ranges failed on coverage).
+                  `For this time-bounded transcript summary of a long interval, write one short sentence per main point, in chronological order, covering the beginning, middle, and end of the interval: usually ${summarySentenceRange} sentences, fewer only when the transcript has fewer distinct points. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.`
                 : 'For this time-bounded transcript summary, write 2–4 short sentences with one main point per sentence. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.',
           ]
         : multiReelTranscriptSegmentComparisonRequest

@@ -832,3 +832,14 @@ When no excerpt is within 0.55 but one is within 0.60, Scout is asked whether th
 | Regular rows (137), run 66 → 71 | 0.650, 78 correct, 2 scope refusals | 0.638, 75 correct, 1 scope refusal |
 
 Paired per-row change (|Δ| > 0.05): chapters 20 up / 14 down, regular 23 up / 32 down. Neither is significant (sign test p ≈ 0.39 and 0.28), so both moves are within judge noise. 0 failures in the server log; 9 answer checks (3 ANSWERED) and 102 scope checks during the regular run.
+
+## Range and chapter summaries drop an unsupported sentence instead of refusing (1643c599, ba725d67)
+
+All 3 chapter refusals in run 70 came from the distinctive-token guard rejecting a whole summary for one word (`CC-licensed`, `CUFBA, ALLIANCE` from the chapter title itself, `7`). Now words of a title the question quotes are allowed, and a time-range or chapter summary drops only the sentence with an unsupported word (its claims too, while the summary keeps the claims it needs).
+
+| Set | Before | After |
+|---|---|---|
+| Chapter rows (48), run 65 → 70 → 72 | 0.594 / 19 correct / 4 "could not verify" | 0.645 / 25 correct / 1 |
+| Interval ranges (32), run 62 → 74 | 0.659 / 19 correct / 2 refusals | 0.617 / 14 correct / 3 refusals |
+
+Paired: chapters 65→72 23 up / 16 down; ranges 62→74 7 up / 14 down (sign test p ≈ 0.19, not significant; for scale, the same 32 ranges moved 20 up / 8 down between runs 59 and 62 with an unrelated change). Chapter summaries are at their best measured score; interval ranges are within noise of before. The remaining gap on both is partial coverage of long passages, not refusals.

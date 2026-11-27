@@ -102,12 +102,40 @@ describe('TranslateSubtitleCuesUseCase', () => {
     ]);
   });
 
-  it('fails instead of returning a partly translated track', async () => {
+  it('fails instead of returning a mostly untranslated track', async () => {
     const generateObject = jest.fn().mockResolvedValue(answer([0]));
-    await expect(build(generateObject).execute(request(2))).rejects.toThrow(
-      'did not return 1 line(s) after 3 attempts',
+    await expect(build(generateObject).execute(request(4))).rejects.toThrow(
+      'did not return 3 of 4 line(s)',
     );
-    expect(generateObject).toHaveBeenCalledTimes(3);
+    // 3 batch attempts, then one retry for each of the 3 missing lines
+    expect(generateObject).toHaveBeenCalledTimes(6);
+  });
+
+  it('retries a stubborn line on its own, then keeps its source text', async () => {
+    const all = Array.from({ length: 40 }, (_, i) => i);
+    const generateObject = jest.fn(({ userPrompt }: { userPrompt: string }) => {
+      const asked = [...userPrompt.matchAll(/^\[(\d+)\]/gm)].map((m) =>
+        Number(m[1]),
+      );
+      return Promise.resolve(answer(asked.filter((i) => i !== 5)));
+    });
+    const result = await build(generateObject).execute(request(40));
+    expect(result.cues.map((c) => c.text)).toEqual(
+      all.map((i) => (i === 5 ? 'câu 5' : `dịch ${i}`)),
+    );
+    expect(generateObject).toHaveBeenCalledTimes(2 + 2 + 1);
+  });
+
+  it('retries after a provider error instead of failing the reel', async () => {
+    const generateObject = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('Ollama structured completion failed'))
+      .mockResolvedValueOnce(answer([0, 1]));
+    const result = await build(generateObject).execute(request(2));
+    expect(result.cues).toEqual([
+      { index: 0, text: 'dịch 0' },
+      { index: 1, text: 'dịch 1' },
+    ]);
   });
 
   it('does not call the model when source and target language match', async () => {

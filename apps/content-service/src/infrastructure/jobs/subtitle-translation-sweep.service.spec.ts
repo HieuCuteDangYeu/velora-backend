@@ -20,8 +20,8 @@ describe('SubtitleTranslationSweepService', () => {
     ).sweep();
     expect(order).toEqual(['r1', 'r2']);
     // The window is a bound Date: Postgres has no make_interval(days => bigint) for a bound number.
-    const values = prisma.$queryRaw.mock.calls[0].slice(1);
-    expect(values.some((value: unknown) => value instanceof Date)).toBe(true);
+    const call = prisma.$queryRaw.mock.calls[0] as unknown[];
+    expect(call.slice(1).some((value) => value instanceof Date)).toBe(true);
   });
 
   it('does not start a second sweep while one is running', async () => {

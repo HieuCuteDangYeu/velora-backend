@@ -843,3 +843,18 @@ All 3 chapter refusals in run 70 came from the distinctive-token guard rejecting
 | Interval ranges (32), run 62 → 74 | 0.659 / 19 correct / 2 refusals | 0.617 / 14 correct / 3 refusals |
 
 Paired: chapters 65→72 23 up / 16 down; ranges 62→74 7 up / 14 down (sign test p ≈ 0.19, not significant; for scale, the same 32 ranges moved 20 up / 8 down between runs 59 and 62 with an unrelated change). Chapter summaries are at their best measured score; interval ranges are within noise of before. The remaining gap on both is partial coverage of long passages, not refusals.
+
+## Longer summaries for turns over five minutes (1a782f00)
+
+Summaries of a time range longer than 300 s may now run to 1,600 characters instead of 900. Runs 75 (chapters) and 76 (ranges) were taken with this change and judged by Haiku.
+
+| Set | Before | After | Paired up / down | Refusals |
+|---|---|---|---|---|
+| Chapters (48) | 0.645 (run 72) | 0.660 | 18 / 17 | 2 → 4 |
+| Ranges (32) | 0.617 (run 74), 0.659 (run 62) | 0.587 | 7 / 11 vs 74; 5 / 14 vs 62 | 3 → 2 |
+
+- Chapter answers got longer (593 vs 530 characters on average) and scored about the same.
+- Range answers barely changed in length (512 vs 494), so the longer budget is not what moved the range score.
+- The range score has fallen across three runs. Against run 62 the paired split is 5 up and 14 down (sign test p ≈ 0.06), which is close to a real effect.
+- The lowest range scores (0.2 to 0.4) are mostly raw transcript excerpts. These come from the extractive fallback, which runs after the answer model's summary fails the answer checks twice. About 8 of 32 range answers look like this in every run, but which cases fall back changes from run to run.
+- Until this commit the logs did not say which check rejected the summary. A warning now records the reason for each rejection, so the next range run can show which check causes the fallbacks.

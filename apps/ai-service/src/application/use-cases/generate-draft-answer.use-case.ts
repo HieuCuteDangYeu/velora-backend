@@ -14,7 +14,7 @@ import type {
 } from '@ai/domain/interfaces/structured-llm.service.interface';
 import { OFF_TOPIC_REDIRECT_MESSAGE } from '@ai/application/services/rag-off-topic-redirect';
 import { readRagScopeMode } from '@ai/domain/services/rag-scope-policy';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { sourceRetrievalPlan } from '@ai/domain/services/rag-source-retrieval-plan';
 import { ragMemoryEvidence } from '@ai/domain/services/rag-memory-evidence';
 import {
@@ -133,6 +133,8 @@ const SCOPED_CHAT_INSTRUCTION = `You only help with Velora: its Reels and videos
 
 @Injectable()
 export class GenerateDraftAnswerUseCase {
+  private readonly logger = new Logger(GenerateDraftAnswerUseCase.name);
+
   constructor(
     @Inject('IStructuredLlmService')
     private readonly structuredLlmService: IStructuredLlmService,
@@ -1046,6 +1048,8 @@ export class GenerateDraftAnswerUseCase {
       raw = await request(systemPrompt);
       return synthesized(raw);
     } catch (error: unknown) {
+      // Which check rejected the answer is otherwise lost when the extractive fallback succeeds.
+      this.logger.warn(`[DraftAnswer] answer rejected: ${errorText(error)}`);
       if (!this.isRetryableAnswerContractError(error)) {
         if (this.isTransientProviderError(error)) {
           const modelFallback = await useConfiguredModelFallback(systemPrompt);
@@ -1065,6 +1069,9 @@ export class GenerateDraftAnswerUseCase {
         raw = await request(retryPrompt);
         return synthesized(raw);
       } catch (retryError: unknown) {
+        this.logger.warn(
+          `[DraftAnswer] retried answer rejected: ${errorText(retryError)}`,
+        );
         const modelFallback = await useConfiguredModelFallback(retryPrompt);
         if (modelFallback) return modelFallback;
         const fallbackAnswer = fallback('UNUSABLE_SYNTHESIS');
@@ -2040,4 +2047,8 @@ export class GenerateDraftAnswerUseCase {
     }
     return { claim, evidenceIds };
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

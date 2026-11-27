@@ -858,3 +858,60 @@ Summaries of a time range longer than 300 s may now run to 1,600 characters inst
 - The range score has fallen across three runs. Against run 62 the paired split is 5 up and 14 down (sign test p ≈ 0.06), which is close to a real effect.
 - The lowest range scores (0.2 to 0.4) are mostly raw transcript excerpts. These come from the extractive fallback, which runs after the answer model's summary fails the answer checks twice. About 8 of 32 range answers look like this in every run, but which cases fall back changes from run to run.
 - Until this commit the logs did not say which check rejected the summary. A warning now records the reason for each rejection, so the next range run can show which check causes the fallbacks.
+
+## Final round (2026-11-27): model, summary judge, scene questions, range trim, subtitles
+
+### Noise first
+Identical code, repeated: ranges scored 0.41 / 0.59 / 0.56 correct (share of answers ≥ 0.7), chapters 0.50 / 0.57. A single run cannot resolve a change smaller than about ±0.1, so the figures below are paired on the same questions and, where reprocessing interfered, restricted to videos that were not reindexed during the run.
+
+### Long-range answer model: Llama 3.3 70B
+Cloudflare model A/B on chapters (48) and ranges (48), correct / summary-correct:
+
+| Model | Chapters | Ranges | Refusals |
+|---|---|---|---|
+| Llama 4 Scout (before) | 0.574 / 0.660 | 0.563–0.594 / 0.438–0.625 | 6% |
+| Llama 3.3 70B fp8-fast | 0.521 / 0.667 | 0.438 / 0.563 | 2–4% |
+| gpt-oss-120b | 0.375 / 0.479 | 0.500 / 0.438 | 19–21% |
+
+Within noise between Scout and Llama 70B; Llama 70B was kept for the fewest refusals. Prod `AI_CLOUDFLARE_LLM_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast` (env backups `env-backup-cf-model-*` on the homelab).
+
+### Summary-correctness judge
+`factualCorrectness` asks the answer to "preserve the accepted reference facts", which marks down any summary of a long raw-caption reference for omitting details. Chapter rows now also get `summaryCorrectness` (faithful to the transcript, covers the main points, minor details not required; `scripts/ops/rag-judge-prompts.cjs`), reported as `summaryCorrectRate`. About half of the low range scores were judged faithful on this measure.
+
+### Sentence budget by range length (0a92b58a, 0efe184c)
+Ranges over five minutes ask for 5–8 sentences, chapters of two minutes or more for 4–6, one per main point, covering beginning, middle and end. Run 84 (chapters): 0.628 correct / 0.698 summary, the best chapter run so far; run 85 (ranges): 0.457 / 0.522, no change.
+
+### Range summaries stop at the range end (a0297405)
+Index chunks overlap and run up to ~45 s, so "summarize 0:00 to 0:39" read a chunk ending at 1:02 and the answer described the next scene, which the judge scored as invented. A range read now keeps only the sentences whose estimated time falls inside the window (`transcript-window-trim.ts`).
+
+On the 34 range questions whose videos were not reprocessed during the runs:
+
+| Run | Correct | Summary correct |
+|---|---|---|
+| 81 (Llama 70B) | 0.412 | 0.559 |
+| 85 (sentence budget) | 0.353 | 0.529 |
+| 89 (trim) | **0.500** | **0.618** |
+
+Chapters on the same basis: run 84 0.545 / 0.636, run 90 0.559 / 0.500. Run 90 overlapped with subtitle re-translation of the reindexed reels on the same local model that answers chapter turns (logs show dozens of translation retries in the window, three "verification budget exhausted", and verbatim-excerpt answers), so it is being repeated on a quiet system (runs 91/92).
+
+### Scene questions: "what is on screen at 3:02" (faf5caff)
+New set `eval/rag/datasets/rag-diverse-visual-v1.jsonl`: 58 questions at 30% and 70% of each indexed video, built by `scripts/ops/run-diverse-visual.cjs build`. The reference is a Haiku description of the exact frame (ffmpeg), the judge scores `visualCorrectness` against it. Frames stay untracked.
+
+Baseline (run 86): 0.31 correct. Only 6 of 58 answers cited a frame within 45 s of the asked time. Two causes:
+1. A visual question was time-bound only when phrased "frame at N seconds"; "on screen at 3:02" fell back to topic search and described a frame minutes away. Now a clock time (`3:02`, `1:02:03`) or "at N seconds" binds a visual question, and the index returns the nearest sampled frame within 45 s.
+2. Eight reels had frames only for their first minutes (partial visual analysis); they are being reprocessed.
+
+| Run | Near frame cited | Correct | Mean score |
+|---|---|---|---|
+| 86 baseline | 6 / 58 | 0.315 | 0.372 |
+| 87b nearest frame | 51 / 58 | **0.611** | 0.556 |
+
+By length (87b): 3–10 min 0.79, 10–30 min 0.50, 30–60 min 0.75, 60–120 min 0.40 (n = 14 / 16 / 16 / 10; two reels mid-reprocess excluded from the totals). The remaining misses are refusals on 60–120 min videos, whose frames are ~3 min apart at the old 24-frame cap, and frames 10–20 s from the asked moment showing a different shot. Long videos now get about one frame a minute (2f07322a, `MEDIA_VISUAL_FRAMES_PER_MINUTE`, max 120); the long reels are being reprocessed and run 88 repeats the set afterwards.
+
+Deploy note: CD reported the reel-indexing change as deployed, but the indexers run the Qdrant overlay pin. The fix went live only after moving the pin to `velora-reel-indexing-qdrant:a0297405`; run 87 (taken before that) refused every question and is kept as `diverse-visual-87-stale-indexer.json`.
+
+### Subtitle translations (6595296e, plus the sweep)
+`CompleteReelIndexingUseCase` already starts the translation, fire-and-forget. A sweep (`SubtitleTranslationSweepService`, every 10 min, 5 reels) now retries reels indexed in the last 30 days that have a transcript but no subtitle track. Five reels kept failing because the small model skipped the same 1–4 lines; lines a batch leaves out are now retried one at a time, up to 5% may keep their source text, and a provider error on one attempt is retried. Reels missing a track: 12 → 7 → **0**.
+
+### Where this leaves the 0.85 target
+Not reached. Best measured: chapters 0.63 correct / 0.70 summary-correct (run 84), ranges 0.50 / 0.62 (run 89, clean subset), scene questions 0.61. The remaining range and chapter misses are answers that add details the transcript does not contain and coverage gaps in long passages, with the local 2B model and the 70B Cloudflare model alike.

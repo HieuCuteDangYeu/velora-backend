@@ -249,6 +249,7 @@ export class UserController {
         data.query,
         data.limit,
         data.viewerId,
+        data.cursor,
       ),
     );
   }

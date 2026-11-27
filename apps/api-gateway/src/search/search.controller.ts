@@ -83,7 +83,8 @@ export class SearchController {
             this.searchUsers({
               query: searchText,
               limit,
-              excludeUserId: request.user!.id,
+              viewerId: request.user!.id,
+              cursor: type === 'users' ? query.cursor : undefined,
             }),
           )
         : Promise.resolve([]),
@@ -111,6 +112,12 @@ export class SearchController {
     ]);
 
     const enrichedReels = await this.enrichFeedItems(reels);
+    // Users are ordered by unique username, so a full page means there may be more.
+    const lastUsername = users.at(-1)?.username;
+    const nextCursor =
+      type === 'users' && users.length === limit && lastUsername
+        ? lastUsername
+        : null;
 
     return {
       query: searchText,
@@ -123,6 +130,7 @@ export class SearchController {
         reels: enrichedReels.length,
         tags: tags.length,
       },
+      nextCursor,
     };
   }
 
@@ -201,14 +209,16 @@ export class SearchController {
   private async searchUsers(input: {
     query: string;
     limit: number;
-    excludeUserId: string;
+    viewerId: string;
+    cursor?: string | undefined;
   }): Promise<PublicUserProfile[]> {
     return await lastValueFrom(
       this.userClient
         .send<PublicUserProfile[]>('user.search_public', {
           query: input.query,
           limit: input.limit,
-          excludeUserId: input.excludeUserId,
+          viewerId: input.viewerId,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
         })
         .pipe(
           timeout(SEARCH_LEG_TIMEOUT_MS),

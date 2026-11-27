@@ -171,6 +171,7 @@ export class UserRepository implements IUserRepository {
         },
         username: {
           not: null,
+          ...(params.afterUsername ? { gt: params.afterUsername } : {}),
         },
         OR: [
           {

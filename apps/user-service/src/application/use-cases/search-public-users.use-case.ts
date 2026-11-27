@@ -17,6 +17,7 @@ export class SearchPublicUsersUseCase {
     query: string,
     limit: number,
     viewerId: string,
+    cursor?: string,
   ): Promise<PublicUserProfile[]> {
     const trimmedQuery = query.trim();
     const normalizedQuery = trimmedQuery.replace(/^@+/, '');
@@ -33,6 +34,7 @@ export class SearchPublicUsersUseCase {
       query: normalizedQuery || trimmedQuery,
       limit: Math.min(Math.max(limit, 1), 30),
       excludedUserIds,
+      ...(cursor ? { afterUsername: cursor } : {}),
     });
 
     return users.map((user) => ({

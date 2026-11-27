@@ -15,4 +15,6 @@ export interface GlobalSearchResponse {
     reels: number;
     tags: number;
   };
+  /** Next page of accounts for type=users; null when there are no more. */
+  nextCursor: string | null;
 }

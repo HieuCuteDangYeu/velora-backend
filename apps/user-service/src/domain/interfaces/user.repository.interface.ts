@@ -12,6 +12,8 @@ export interface SearchPublicUsersParams {
   query: string;
   limit: number;
   excludedUserIds?: string[];
+  /** Keyset cursor: return only usernames sorting after this one. */
+  afterUsername?: string;
 }
 
 export interface RecommendedPublicUsersParams {

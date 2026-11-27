@@ -1968,17 +1968,24 @@ export class GenerateDraftAnswerUseCase {
     });
     if (contractError) throw new DraftAnswerContractError(contractError);
 
-    const claims =
+    const mappedClaims =
       this.allowsClaims(state, allowedEvidenceIds) && Array.isArray(raw.claims)
         ? raw.claims
             .map((value) => this.normalizeClaim(value, allowedEvidenceIds))
             .filter(
               (claim) =>
-                (!suppressUnverifiedVisualTextAbsence ||
-                  !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim)) &&
-                (!dropUnsupported || !unsupportedIn(claim.claim)),
+                !suppressUnverifiedVisualTextAbsence ||
+                !VISUAL_TEXT_ABSENCE_CLAIM.test(claim.claim),
             )
         : [];
+    // Claims behind a dropped sentence go too, unless that would leave fewer than the summary needs.
+    const supportedClaims = dropUnsupported
+      ? mappedClaims.filter((claim) => !unsupportedIn(claim.claim))
+      : mappedClaims;
+    const claims =
+      supportedClaims.length >= (minimumClaimCount ?? 0)
+        ? supportedClaims
+        : mappedClaims;
     if (minimumClaimCount !== undefined && claims.length < minimumClaimCount) {
       throw new DraftAnswerContractError(
         'Transcript summary did not map enough distinct supported claims',

@@ -25,6 +25,23 @@ describe('source retrieval constraints', () => {
       searchLimit: 1,
     });
   });
+  it.each([
+    ['What is shown on screen at 3:02 in this video?', 182],
+    ['What can I see at 1:02:03?', 3723],
+    ['What is happening on screen around 95 seconds?', 95],
+  ])('reads the moment a viewer asks about in %s', (message, sec) => {
+    expect(sourceRetrievalPlan(message, visual)).toMatchObject({
+      sourceOrder: 'ASC',
+      sourceTimestampSec: sec,
+      visualTimestampSec: sec,
+      searchLimit: 1,
+    });
+  });
+  it('does not read a time of day as a moment in the video', () => {
+    expect(
+      sourceRetrievalPlan('What is shown at 2:30 pm in the vlog?', visual),
+    ).toBeUndefined();
+  });
   describe('clock-time transcript questions', () => {
     const transcript = {
       needsRetrieval: true,

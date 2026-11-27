@@ -31,6 +31,29 @@ const clockToSeconds = (clock: string): number =>
   clock.split(':').reduce((total, part) => total * 60 + Number(part), 0);
 
 /**
+ * The moment a visual question asks about, as [match, seconds]. Accepts "the frame at 95 seconds" and, from
+ * someone watching the video, "on screen at 3:02" or "at 1:02:03"; the route has already decided the
+ * question is visual, so a clock time after "at" or "around" is the moment asked about.
+ */
+function matchVisualTimestamp(message: string): [string, string] | null {
+  const frame = message.match(
+    /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
+  );
+  if (frame) return [frame[0], frame[1]];
+  const seconds = message.match(
+    /\b(?:at|around)\s+(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b/i,
+  );
+  if (seconds) return [seconds[0], seconds[1]];
+  const clock = message.match(
+    new RegExp(
+      `\\b(?:at|around)\\s+${CLOCK}(?![\\d:])(?!\\s*(?:am|pm)\\b)`,
+      'i',
+    ),
+  );
+  return clock ? [clock[0], String(clockToSeconds(clock[1]))] : null;
+}
+
+/**
  * The transcript time a question asks about, as [match, startSec, endSec?]. Accepts "at 95 seconds",
  * "at 2:02" and "from 1:05 to 1:20" next to a speech cue; a bare clock time is not enough on its own.
  */
@@ -74,9 +97,7 @@ export function sourceRetrievalPlan(
     transcriptRequired &&
     (firstIndexedTranscriptSegment ||
       route.transcriptRequestKind === 'FIRST_COMPLETE_UTTERANCE');
-  const timestamp = message.match(
-    /\b(?:frame|scene)\s+(?:(?:is|was)\s+)?at\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b/i,
-  );
+  const timestamp = matchVisualTimestamp(message);
   const transcriptTimestamp = matchTranscriptTimestamp(message);
   const multimodal = route.reelQuestionType === 'MULTIMODAL_CONTENT';
   const visualTimestampSec =

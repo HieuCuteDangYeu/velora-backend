@@ -255,7 +255,7 @@ describe('DeterministicRetrievalEngineAdapter', () => {
     const { adapter, semanticIndexService } = buildAdapter({});
     (semanticIndexService.searchVisualScenes as jest.Mock).mockResolvedValue([
       { ...visualCandidate, reelId: 'foreign', startTime: 0, endTime: 0 },
-      { ...visualCandidate, startTime: 10, endTime: 10 },
+      { ...visualCandidate, startTime: 60, endTime: 60 },
     ]);
     const plan = await adapter.plan({
       message: 'Describe the frame at 0 seconds.',
@@ -270,6 +270,28 @@ describe('DeterministicRetrievalEngineAdapter', () => {
         accessibleReelIds: ['reel-1'],
       }),
     ).resolves.toEqual([]);
+  });
+
+  it('answers a moment between sampled frames from the nearest frame', async () => {
+    const { adapter, semanticIndexService } = buildAdapter({});
+    (semanticIndexService.searchVisualScenes as jest.Mock).mockResolvedValue([
+      { ...visualCandidate, startTime: 180, endTime: 180 },
+    ]);
+    const plan = await adapter.plan({
+      message: 'What is shown on screen at 3:02 in this video?',
+      route: visualRoute,
+    });
+    const results = await adapter.retrieve({
+      userId: 'user',
+      conversationId: 'conversation',
+      route: visualRoute,
+      plan,
+      accessibleReelIds: ['reel-1'],
+    });
+    expect(semanticIndexService.searchVisualScenes).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceOrder: 'ASC', sourceTimestampSec: 182 }),
+    );
+    expect(results).toHaveLength(1);
   });
 
   it('passes both endpoints for an explicit transcript time window', async () => {

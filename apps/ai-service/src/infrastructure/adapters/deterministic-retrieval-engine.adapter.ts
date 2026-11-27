@@ -90,6 +90,8 @@ const MAX_FULL_RANGE_WINDOWS = 8;
 const MAX_CHUNKS_PER_READ = 20;
 // Only the large reads of range summaries are sampled; the plan's read limit is 2 for other range questions.
 const MIN_SAMPLED_RANGE_READ_LIMIT = 8;
+// Matches the reel-indexing nearest-frame tolerance: a moment between sampled frames reads the nearest one.
+const NEAREST_FRAME_TOLERANCE_SEC = 45;
 
 @Injectable()
 export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
@@ -291,7 +293,10 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
             (typeof scene.startTime === 'number' &&
               typeof scene.endTime === 'number' &&
               scene.startTime <= point &&
-              scene.endTime > point)
+              scene.endTime > point) ||
+            // The index returns the nearest sampled frame for a moment between frames.
+            (typeof scene.startTime === 'number' &&
+              Math.abs(scene.startTime - point) <= NEAREST_FRAME_TOLERANCE_SEC)
           )
         )
           continue;

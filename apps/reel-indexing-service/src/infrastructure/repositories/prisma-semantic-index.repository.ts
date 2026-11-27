@@ -31,6 +31,10 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/reel-indexing-client';
 import { createHash, randomUUID } from 'crypto';
 
+// A question about 3:02 is answered from the nearest sampled frame no further than this away; at one frame a
+// minute every moment has one, and a sparser older index refuses rather than describe a distant scene.
+const NEAREST_FRAME_TOLERANCE_SEC = 45;
+
 type SemanticTable =
   | 'ReelDocument'
   | 'ReelSection'
@@ -452,21 +456,31 @@ export class PrismaSemanticIndexRepository implements ISemanticIndexRepository {
         (!Number.isFinite(endPoint) || endPoint < 0 || endPoint < (point ?? 0))
       )
         return [];
+      // Frames are sampled points, so "what is on screen at 3:02" rarely names a sampled second exactly;
+      // the nearest sampled frame within the tolerance answers it.
+      const nearestFrame =
+        point !== undefined &&
+        endPoint === undefined &&
+        target === 'ReelVisualScene';
       const timeFilter =
         point === undefined
           ? Prisma.empty
           : endPoint !== undefined
             ? Prisma.sql`AND t."startTime" <= ${endPoint} AND t."endTime" >= ${point}`
-            : Prisma.sql`AND (t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}))`;
+            : nearestFrame
+              ? Prisma.sql`AND (t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}) OR ABS(t."startTime" - ${point}) <= ${NEAREST_FRAME_TOLERANCE_SEC})`
+              : Prisma.sql`AND (t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}))`;
       const timeOrder =
         endPoint !== undefined && point !== undefined
           ? Prisma.sql`ORDER BY CASE WHEN ABS(t."startTime" - ${point}) <= 0.05 AND ABS(t."endTime" - ${endPoint}) <= 0.05 THEN 0 WHEN t."startTime" >= ${point} AND t."endTime" <= ${endPoint} THEN 1 ELSE 2 END, t."startTime" ASC NULLS LAST, t."endTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
-          : point !== undefined && target === 'ReelChunk'
-            ? // "What is said at 3:33": several chunks cover the second, and the earliest one starts
-              // up to a window earlier. The chunk whose middle is nearest the asked time is the
-              // one about it.
-              Prisma.sql`ORDER BY ABS((COALESCE(t."startTime", 0) + COALESCE(t."endTime", 0)) / 2.0 - ${point}) ASC, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
-            : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
+          : nearestFrame
+            ? Prisma.sql`ORDER BY CASE WHEN t."startTime" = ${point} OR (t."startTime" <= ${point} AND t."endTime" > ${point}) THEN 0 ELSE 1 END, ABS(t."startTime" - ${point}) ASC, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
+            : point !== undefined && target === 'ReelChunk'
+              ? // "What is said at 3:33": several chunks cover the second, and the earliest one starts
+                // up to a window earlier. The chunk whose middle is nearest the asked time is the
+                // one about it.
+                Prisma.sql`ORDER BY ABS((COALESCE(t."startTime", 0) + COALESCE(t."endTime", 0)) / 2.0 - ${point}) ASC, t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`
+              : Prisma.sql`ORDER BY t."startTime" ASC NULLS LAST, t."ordinal" ASC, t."id" ASC`;
       const chronologicalTable = Prisma.raw(`"${target}"`);
       const chronologicalType =
         target === 'ReelVisualScene' ? 'VISUAL' : 'TRANSCRIPT';

@@ -57,6 +57,9 @@ services:
       # Same group role features as the homelab replica: both consume conversation_queue.
       GROUP_V2_ROLE_MUTATIONS_ENABLED: 'true'
       GROUP_V2_ADMIN_PERMISSIONS_ENABLED: 'true'
+      GROUP_V2_SYSTEM_ACTIVITIES_ENABLED: 'true'
+      GROUP_V2_CANONICAL_MEMBER_READS_ENABLED: 'true'
+      GROUP_V2_SHADOW_CONSISTENCY_ENABLED: 'true'
     extra_hosts:
       - 'redis:100.102.228.48'
       - 'rabbitmq:100.102.228.48'

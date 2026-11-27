@@ -9,6 +9,7 @@ import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
 import { VerifyAppleTokenDto } from '@common/auth/dtos/verify-apple-token.dto';
 import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto';
+import { VerifyResetCodeDto } from '@common/auth/dtos/verify-reset-code.dto';
 import type { AuthUser } from '@common/auth/interfaces/auth-user.interface';
 import { TokenResponse } from '@common/auth/interfaces/token.interface';
 import { isRpcError } from '@common/constants/rpc-error.types';
@@ -514,6 +515,20 @@ export class AuthController {
       this.authClient
         .send<{ message: string }>('auth.forgot_password', dto)
         .pipe(catchError((error) => this.handleMicroserviceError(error))),
+    );
+  }
+
+  @Post('verify-reset-code')
+  // Shares the reset bucket so checking codes here cannot widen the guessing budget.
+  @RateLimit({ policy: 'auth_reset_ip', by: 'ip' })
+  @ApiOperation({
+    summary: 'Check a password reset code before choosing a password',
+  })
+  async verifyResetCode(@Body() dto: VerifyResetCodeDto) {
+    return lastValueFrom(
+      this.authClient
+        .send<{ message: string }>('auth.verify_reset_code', dto)
+        .pipe(catchError((err) => this.handleMicroserviceError(err))),
     );
   }
 

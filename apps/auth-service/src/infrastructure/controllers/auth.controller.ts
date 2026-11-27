@@ -8,6 +8,7 @@ import { ResendVerificationUseCase } from '@auth/application/use-cases/resend-ve
 import { ResetPasswordUseCase } from '@auth/application/use-cases/reset-password.use-case';
 import { VerifyAppleTokenUseCase } from '@auth/application/use-cases/verify-apple-token.use-case';
 import { VerifyGoogleTokenUseCase } from '@auth/application/use-cases/verify-google-token.use-case';
+import { VerifyResetCodeUseCase } from '@auth/application/use-cases/verify-reset-code.use-case';
 import { VerifyTokenUseCase } from '@auth/application/use-cases/verify-token.use-case';
 import { AccountBannedError } from '@auth/domain/errors/account-banned.error';
 import { AccountNotVerifiedError } from '@auth/domain/errors/account-not-verified.error';
@@ -25,6 +26,7 @@ import { ResendVerificationDto } from '@common/auth/dtos/resend-verification.dto
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
 import { VerifyAppleTokenDto } from '@common/auth/dtos/verify-apple-token.dto';
 import { VerifyGoogleTokenDto } from '@common/auth/dtos/verify-google-token.dto';
+import { VerifyResetCodeDto } from '@common/auth/dtos/verify-reset-code.dto';
 import type { GoogleProfile } from '@common/auth/interfaces/google-profile.interface';
 import { AccessTokenService } from '@auth/infrastructure/security/access-token.service';
 import { SagaCompensationError } from '@common/domain/errors/saga.error';
@@ -56,6 +58,7 @@ export class AuthController {
     private readonly accessTokens: AccessTokenService,
     // Last, so existing positional constructions in tests keep their order.
     private readonly verifyAppleTokenUseCase: VerifyAppleTokenUseCase,
+    private readonly verifyResetCodeUseCase: VerifyResetCodeUseCase,
   ) {}
 
   @MessagePattern('auth.register')
@@ -226,6 +229,27 @@ export class AuthController {
     return await this.observe('forgot_password', () =>
       this.forgotPasswordUseCase.execute(dto),
     );
+  }
+
+  @MessagePattern('auth.verify_reset_code')
+  async handleVerifyResetCode(@Payload() dto: VerifyResetCodeDto) {
+    try {
+      return await this.observe('verify_reset_code', () =>
+        this.verifyResetCodeUseCase.execute(dto),
+      );
+    } catch (error) {
+      if (error instanceof InvalidResetTokenError) {
+        throw new RpcException({
+          statusCode: 400,
+          message: error.message,
+        });
+      }
+
+      throw new RpcException({
+        statusCode: 500,
+        message: 'Internal Server Error',
+      });
+    }
   }
 
   @MessagePattern('auth.reset_password')

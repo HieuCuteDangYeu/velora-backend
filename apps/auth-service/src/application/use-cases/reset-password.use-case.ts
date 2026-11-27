@@ -1,6 +1,6 @@
 import { InvalidResetTokenError } from '@auth/domain/errors/invalid-reset-token.error';
+import type { IPasswordResetCodeStore } from '@auth/domain/interfaces/password-reset-code.store.interface';
 import type { IUserService } from '@auth/domain/interfaces/user-service.interface';
-import type { IVerificationCodeRepository } from '@auth/domain/interfaces/verification-code.repository.interface';
 import { ResetPasswordDto } from '@common/auth/dtos/reset-password.dto';
 import { UpdateUserPayload } from '@common/user/interfaces/update-user.types';
 import { Inject, Injectable } from '@nestjs/common';
@@ -9,21 +9,22 @@ import { Inject, Injectable } from '@nestjs/common';
 export class ResetPasswordUseCase {
   constructor(
     @Inject('IUserService') private readonly userService: IUserService,
-    @Inject('IVerificationCodeRepository')
-    private readonly redisRepository: IVerificationCodeRepository,
+    @Inject('IPasswordResetCodeStore')
+    private readonly resetCodes: IPasswordResetCodeStore,
   ) {}
 
   async execute(dto: ResetPasswordDto) {
-    const userId = await this.redisRepository.consumeUserId(
-      `reset_password:${dto.token}`,
-    );
+    const user = await this.userService.findByEmail(dto.email);
+    const isValid =
+      user !== null &&
+      (await this.resetCodes.check(user.id, dto.token, { consume: true }));
 
-    if (!userId) {
+    if (!user || !isValid) {
       throw new InvalidResetTokenError();
     }
 
     const payload: UpdateUserPayload = {
-      id: userId,
+      id: user.id,
       data: {
         password: dto.newPassword,
       },

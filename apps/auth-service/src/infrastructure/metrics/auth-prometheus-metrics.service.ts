@@ -14,6 +14,7 @@ export type AuthOperation =
   | 'login_google'
   | 'forgot_password'
   | 'reset_password'
+  | 'verify_reset_code'
   | 'verify_google_token'
   | 'verify_apple_token';
 
@@ -33,6 +34,7 @@ const AUTH_OPERATIONS: readonly AuthOperation[] = [
   'login_google',
   'forgot_password',
   'reset_password',
+  'verify_reset_code',
   'verify_google_token',
   'verify_apple_token',
 ];

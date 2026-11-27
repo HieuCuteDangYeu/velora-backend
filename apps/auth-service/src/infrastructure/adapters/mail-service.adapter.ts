@@ -35,7 +35,7 @@ export class MailServiceAdapter implements IMailService {
       'RESEND_RESET_PASSWORD_TEMPLATE_ID',
     );
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?email=${encodeURIComponent(email)}&token=${token}`;
 
     this.client.emit('mail.send', {
       to: email,

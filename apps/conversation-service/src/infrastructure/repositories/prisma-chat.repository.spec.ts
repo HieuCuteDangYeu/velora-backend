@@ -662,3 +662,147 @@ describe('PrismaChatRepository unread counts', () => {
     });
   });
 });
+
+describe('PrismaChatRepository conversation search', () => {
+  type SearchHarness = {
+    findConversationsByUserId: (
+      userId: string,
+      limit?: number,
+      cursor?: string,
+      search?: string,
+    ) => Promise<Array<{ id: string }>>;
+  };
+
+  const makeConversation = (
+    id: string,
+    participantIds: string[],
+    extra: { name?: string; isGroup?: boolean } = {},
+  ) => ({
+    id,
+    creatorId: 'me',
+    participantIds,
+    name: extra.name ?? null,
+    picture: null,
+    memberJoinedAt: null,
+    lastMessage: null,
+    lastMessageAt: null,
+    isGroup: extra.isGroup ?? false,
+    updatedAt: new Date(),
+    createdAt: new Date(),
+  });
+
+  const createSearchHarness = () => {
+    const conversations = [
+      makeConversation('c-quan', ['me', 'quan']),
+      makeConversation('c-group', ['me', 'quan', 'lan'], {
+        name: 'Nhóm học pilot',
+        isGroup: true,
+      }),
+      makeConversation('c-lan', ['me', 'lan']),
+      makeConversation('c-quan-2', ['me', 'quan-2']),
+    ];
+    const prisma = {
+      conversation: { findMany: jest.fn().mockResolvedValue(conversations) },
+      message: { count: jest.fn(), findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const findUsersByIds = jest.fn().mockResolvedValue([
+      { id: 'me', fullName: 'Me' },
+      { id: 'quan', fullName: 'Lê Anh Quân' },
+      { id: 'quan-2', fullName: 'Quân Hai' },
+      { id: 'lan', fullName: 'Lan' },
+    ]);
+    const repository = new PrismaChatRepository(
+      prisma as never,
+      {} as never,
+      { decrypt: jest.fn(), encrypt: jest.fn() },
+      { findUsersByIds } as never,
+    ) as unknown as SearchHarness;
+
+    return { findUsersByIds, prisma, repository };
+  };
+
+  it('finds direct chats by the other persons name and groups by their own name, ignoring accents', async () => {
+    const { repository } = createSearchHarness();
+
+    expect(
+      (
+        await repository.findConversationsByUserId('me', 20, undefined, 'quan')
+      ).map((c) => c.id),
+    ).toEqual(['c-quan', 'c-quan-2']);
+    expect(
+      (
+        await repository.findConversationsByUserId(
+          'me',
+          20,
+          undefined,
+          'NHOM HOC',
+        )
+      ).map((c) => c.id),
+    ).toEqual(['c-group']);
+  });
+
+  it('scans a bounded set of the viewers conversations instead of the cursor index', async () => {
+    const { prisma, repository } = createSearchHarness();
+
+    await repository.findConversationsByUserId('me', 20, undefined, 'lan');
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith({
+      where: { participantIds: { has: 'me' } },
+      orderBy: { lastMessageAt: 'desc' },
+      take: 1000,
+    });
+  });
+
+  it('pages the matches by cursor and ends when the cursor no longer matches', async () => {
+    const { repository } = createSearchHarness();
+
+    expect(
+      (
+        await repository.findConversationsByUserId('me', 1, undefined, 'quan')
+      ).map((c) => c.id),
+    ).toEqual(['c-quan']);
+    expect(
+      (
+        await repository.findConversationsByUserId('me', 1, 'c-quan', 'quan')
+      ).map((c) => c.id),
+    ).toEqual(['c-quan-2']);
+    expect(
+      await repository.findConversationsByUserId('me', 1, 'c-lan', 'quan'),
+    ).toEqual([]);
+  });
+
+  it('only looks up the people a name search needs, then hydrates the page', async () => {
+    const { findUsersByIds, repository } = createSearchHarness();
+
+    expect(
+      await repository.findConversationsByUserId('me', 20, undefined, 'zzz'),
+    ).toEqual([]);
+    // One lookup for matching; the named group needs nobody, and nothing matched to hydrate.
+    expect(findUsersByIds).toHaveBeenCalledTimes(1);
+    expect(findUsersByIds.mock.calls[0][0].sort()).toEqual(
+      ['lan', 'quan', 'quan-2'].sort(),
+    );
+
+    findUsersByIds.mockClear();
+    await repository.findConversationsByUserId('me', 20, undefined, 'nhom hoc');
+    // The group matched by name alone; only the page itself is hydrated.
+    expect(findUsersByIds).toHaveBeenCalledTimes(2);
+    expect(findUsersByIds.mock.calls[1][0].sort()).toEqual(
+      ['lan', 'me', 'quan'].sort(),
+    );
+  });
+
+  it('ignores a blank search and keeps the normal cursor query', async () => {
+    const { prisma, repository } = createSearchHarness();
+
+    await repository.findConversationsByUserId('me', 20, undefined, '   ');
+
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith({
+      where: { participantIds: { has: 'me' } },
+      take: 20,
+      skip: 0,
+      cursor: undefined,
+      orderBy: { lastMessageAt: 'desc' },
+    });
+  });
+});

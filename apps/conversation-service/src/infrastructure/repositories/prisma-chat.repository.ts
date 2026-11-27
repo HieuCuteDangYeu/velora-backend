@@ -17,6 +17,11 @@ import {
   type Conversation as PrismaConversation,
 } from '@prisma/conversation-client';
 import Redis from 'ioredis';
+import {
+  conversationMatchesSearch,
+  normalizeConversationSearchText,
+  participantIdsNeededToMatch,
+} from '../../domain/conversation-search';
 import { ConversationWriteLock } from './conversation-write-lock';
 import { shardZoneOf } from './conversation-shard-zone';
 import {
@@ -95,6 +100,8 @@ type RecalledMediaCleanup = {
 };
 const REACTION_UPDATE_ATTEMPTS = 3;
 // Newest messages inspected per conversation when computing unread counts.
+/** Conversations a name search looks through, newest first. */
+const CONVERSATION_SEARCH_SCAN_LIMIT = 1000;
 export const UNREAD_COUNT_WINDOW = 100;
 const MEDIA_PROCESSING_TTL_SECONDS = 60 * 60 * 24;
 const MESSAGE_TRANSACTION_ATTEMPTS = 6;
@@ -813,15 +820,51 @@ export class PrismaChatRepository implements IChatRepository {
     userId: string,
     limit: number = 15,
     cursor?: string, // ID của conversation cuối cùng trong list hiện tại
+    search?: string,
   ): Promise<Conversation[]> {
-    // 1. Query Prisma với Cursor
-    const conversations = await this.prisma.conversation.findMany({
-      where: { participantIds: { has: userId } },
-      take: limit,
-      skip: cursor ? 1 : 0,
-      cursor: cursor ? { id: cursor } : undefined,
-      orderBy: { lastMessageAt: 'desc' }, // Sắp xếp theo tin nhắn mới nhất
-    });
+    const searchTerm = normalizeConversationSearchText(search);
+    let conversations: PrismaConversation[];
+    if (searchTerm) {
+      // A name search cannot use the cursor index: group names live on the conversation but a
+      // direct chat is named after the other person, who lives in the user service. Scan the
+      // viewer's conversations (bounded), match in memory, then page the matches.
+      const scanned = await this.prisma.conversation.findMany({
+        where: { participantIds: { has: userId } },
+        orderBy: { lastMessageAt: 'desc' },
+        take: CONVERSATION_SEARCH_SCAN_LIMIT,
+      });
+      // Named groups match on their own name, so only the people the other chats need are looked up.
+      const participantsById = await this.loadParticipantsMap([
+        ...new Set(
+          scanned.flatMap((c) => participantIdsNeededToMatch(c, userId)),
+        ),
+      ]);
+      const matches = scanned.filter((conversation) =>
+        conversationMatchesSearch({
+          conversation,
+          participantsById,
+          searchTerm,
+          viewerId: userId,
+        }),
+      );
+      const cursorIndex = cursor
+        ? matches.findIndex((conversation) => conversation.id === cursor)
+        : -1;
+      // A cursor that no longer matches (the chat moved or was renamed) ends the search paging
+      // rather than restarting it from the top.
+      if (cursor && cursorIndex < 0) return [];
+      const start = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+      conversations = matches.slice(start, start + limit);
+    } else {
+      // 1. Query Prisma với Cursor
+      conversations = await this.prisma.conversation.findMany({
+        where: { participantIds: { has: userId } },
+        take: limit,
+        skip: cursor ? 1 : 0,
+        cursor: cursor ? { id: cursor } : undefined,
+        orderBy: { lastMessageAt: 'desc' }, // Sắp xếp theo tin nhắn mới nhất
+      });
+    }
 
     if (!conversations.length) return [];
 
@@ -837,33 +880,9 @@ export class PrismaChatRepository implements IChatRepository {
     );
 
     // 2. Gom ID để Bulk Fetch User Info (Giữ nguyên logic tối ưu cũ)
-    const allParticipantIds = [
+    const usersMap = await this.loadParticipantsMap([
       ...new Set(conversations.flatMap((c) => c.participantIds)),
-    ];
-
-    const usersMap = new Map<string, ChatParticipant>();
-
-    try {
-      const response = await this.userService.findUsersByIds(allParticipantIds);
-      let usersList: ChatParticipant[] = [];
-
-      if (Array.isArray(response)) {
-        usersList = response;
-      } else if (
-        response &&
-        'users' in response &&
-        Array.isArray((response as Record<string, unknown>).users)
-      ) {
-        usersList = (response as Record<string, unknown>)
-          .users as ChatParticipant[];
-      }
-
-      usersList.forEach((u) => {
-        if (u && u.id) usersMap.set(u.id, this.normalizeChatParticipant(u));
-      });
-    } catch (error) {
-      this.logger.error('Failed to fetch user details', error);
-    }
+    ]);
 
     // 3. Map Participants
     return conversations.map((c) => {
@@ -2397,6 +2416,38 @@ export class PrismaChatRepository implements IChatRepository {
     }
 
     return 'User';
+  }
+
+  /** Participants by id; a failing user service gives an empty map, never an error. */
+  private async loadParticipantsMap(
+    participantIds: string[],
+  ): Promise<Map<string, ChatParticipant>> {
+    const usersMap = new Map<string, ChatParticipant>();
+    if (!participantIds.length) return usersMap;
+
+    try {
+      const response = await this.userService.findUsersByIds(participantIds);
+      let usersList: ChatParticipant[] = [];
+
+      if (Array.isArray(response)) {
+        usersList = response;
+      } else if (
+        response &&
+        'users' in response &&
+        Array.isArray((response as Record<string, unknown>).users)
+      ) {
+        usersList = (response as Record<string, unknown>)
+          .users as ChatParticipant[];
+      }
+
+      usersList.forEach((u) => {
+        if (u && u.id) usersMap.set(u.id, this.normalizeChatParticipant(u));
+      });
+    } catch (error) {
+      this.logger.error('Failed to fetch user details', error);
+    }
+
+    return usersMap;
   }
 
   private normalizeChatParticipant(user: ChatParticipant): ChatParticipant {

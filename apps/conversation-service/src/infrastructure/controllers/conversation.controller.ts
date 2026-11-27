@@ -485,13 +485,20 @@ export class ConversationMicroserviceController {
 
   @MessagePattern('get_user_conversations')
   async handleGetUserConversations(
-    @Payload() data: { userId: string; limit?: number; cursor?: string },
+    @Payload()
+    data: {
+      userId: string;
+      limit?: number;
+      cursor?: string;
+      search?: string;
+    },
   ) {
     try {
       return await this.getUserConversationsUseCase.execute(
         data.userId,
         Number(data.limit),
         data.cursor,
+        data.search,
       );
     } catch (err: unknown) {
       const error = err as Error;

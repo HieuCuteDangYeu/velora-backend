@@ -13,11 +13,13 @@ export class GetUserConversationsUseCase {
     userId: string,
     limit: number = 20,
     cursor?: string,
+    search?: string,
   ): Promise<Conversation[]> {
     return await this.chatRepository.findConversationsByUserId(
       userId,
       limit,
       cursor,
+      search,
     );
   }
 }

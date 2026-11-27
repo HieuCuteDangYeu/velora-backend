@@ -109,6 +109,7 @@ export abstract class IChatRepository {
     userId: string,
     limit: number,
     cursor?: string,
+    search?: string,
   ): Promise<Conversation[]>;
   abstract addReaction(
     messageId: string,

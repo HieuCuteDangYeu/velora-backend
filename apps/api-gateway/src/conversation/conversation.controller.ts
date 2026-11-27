@@ -309,15 +309,28 @@ export class ConversationController {
   @ApiOperation({ summary: 'Lấy danh sách hội thoại (Pagination)' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'cursor', required: false, type: String })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    type: String,
+    description:
+      'Only conversations whose group name or other member matches (accents and case ignored)',
+  })
   getMyConversations(
     @CurrentUser() user: AuthUser,
     @Query('limit') limit?: number,
     @Query('cursor') cursor?: string,
+    @Query('search') search?: string,
   ) {
+    const trimmedSearch =
+      typeof search === 'string' ? search.trim().slice(0, 100) : '';
+
     return this.conversationClient.send('get_user_conversations', {
       userId: user.id,
-      limit: limit ? Number(limit) : 15,
+      // Each conversation costs an unread count, so a page is capped.
+      limit: limit ? Math.min(Math.max(Number(limit) || 15, 1), 200) : 15,
       cursor,
+      ...(trimmedSearch ? { search: trimmedSearch } : {}),
     });
   }
 

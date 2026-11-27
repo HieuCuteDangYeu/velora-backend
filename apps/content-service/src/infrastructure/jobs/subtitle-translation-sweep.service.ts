@@ -28,10 +28,13 @@ export class SubtitleTranslationSweepService {
     if (this.sweeping) return;
     this.sweeping = true;
     try {
+      const since = new Date(
+        Date.now() - SWEEP_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+      );
       const rows = await this.prisma.$queryRaw<{ id: string }[]>`
         SELECT r.id
         FROM "Reel" r
-        WHERE r."indexCompletedAt" > now() - make_interval(days => ${SWEEP_WINDOW_DAYS})
+        WHERE r."indexCompletedAt" > ${since}
           AND jsonb_typeof(r."transcriptSegments") = 'array'
           AND jsonb_array_length(r."transcriptSegments") > 0
           AND NOT EXISTS (SELECT 1 FROM "ReelSubtitleTrack" t WHERE t."reelId" = r.id)

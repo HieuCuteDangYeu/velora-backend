@@ -1,4 +1,5 @@
 import { isLongRangeTurn } from '@ai/domain/services/long-range-turn';
+import { trimTranscriptToWindow } from '@ai/domain/services/transcript-window-trim';
 import {
   requiresReelCoverage,
   sourceRetrievalPlan,
@@ -353,7 +354,12 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
             candidate.reelId === reelId &&
             (!candidate.indexVersion ||
               candidate.indexVersion === document.indexVersion)
-              ? [this.toTranscriptMatch(candidate, document)]
+              ? [
+                  this.toTranscriptMatch(
+                    this.trimToTranscriptWindow(candidate, transcriptTime),
+                    document,
+                  ),
+                ]
               : [],
           );
         }),
@@ -1003,6 +1009,36 @@ export class DeterministicRetrievalEngineAdapter implements IRetrievalEngine {
         RagRetrievalExecutionDiagnostics['providerCategory']
       >;
     }
+  }
+
+  /** A range read keeps only the speech inside the asked window (see trimTranscriptToWindow). */
+  private trimToTranscriptWindow(
+    candidate: SemanticIndexSearchResult,
+    time: Pick<
+      SemanticIndexSearchRequest,
+      'sourceTimestampSec' | 'sourceTimestampEndSec'
+    >,
+  ): SemanticIndexSearchResult {
+    const start = time.sourceTimestampSec;
+    const end = time.sourceTimestampEndSec;
+    if (
+      start === undefined ||
+      end === undefined ||
+      typeof candidate.startTime !== 'number' ||
+      typeof candidate.endTime !== 'number' ||
+      !candidate.evidenceText?.trim()
+    )
+      return candidate;
+    return {
+      ...candidate,
+      evidenceText: trimTranscriptToWindow(
+        candidate.evidenceText.trim(),
+        candidate.startTime,
+        candidate.endTime,
+        start,
+        end,
+      ),
+    };
   }
 
   private toTranscriptMatch(

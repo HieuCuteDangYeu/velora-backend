@@ -85,6 +85,7 @@ import { IndexingAttemptGuardController } from '@content/infrastructure/controll
 import { CdnHlsCacheWarmerAdapter } from '@content/infrastructure/adapters/cdn-hls-cache-warmer.adapter';
 import { OutboxDispatcherService } from '@content/infrastructure/jobs/outbox-dispatcher.service';
 import { RecommendationGlobalSlateRefreshService } from '@content/infrastructure/jobs/recommendation-global-slate-refresh.service';
+import { SubtitleTranslationSweepService } from '@content/infrastructure/jobs/subtitle-translation-sweep.service';
 import { ReelMediaCleanupService } from '@content/infrastructure/jobs/reel-media-cleanup.service';
 import { PrismaService } from '@content/infrastructure/prisma/prisma.service';
 import { ContentRepository } from '@content/infrastructure/repositories/content.repository';
@@ -205,6 +206,7 @@ function createRmqClientRegistration(name: string, queue: string) {
     ReelIndexJobPublisherAdapter,
     OutboxDispatcherService,
     RecommendationGlobalSlateRefreshService,
+    SubtitleTranslationSweepService,
     ReelMediaCleanupService,
 
     CreateReelUseCase,

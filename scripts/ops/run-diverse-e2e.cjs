@@ -114,6 +114,23 @@ function judgeCommand(args) {
   const rejudgeTypes = args.rejudge ? new Set(String(args.types || '').split(',').filter(Boolean)) : new Set();
   for (const item of done.items) {
     if (rejudgeTypes.has(item.row.type)) item.judge = undefined;
+    // Chapter and range rows also get a summary score; added to rows judged before it existed.
+    if (item.judge && item.row.type === 'chapter' && typeof item.judge.summaryCorrectness !== 'number' && item.reply?.answer) {
+      const ref = referenceFor(item.row.fixtureId);
+      const referenceAnswer = div.referenceTextFor(ref.referenceSegments, item.row);
+      if (referenceAnswer) {
+        try {
+          const summary = runClaudeDimension('summaryCorrectness', buildDimensionPrompt('summaryCorrectness', { question: item.row.question, generatedAnswer: item.reply.answer, referenceAnswer }));
+          item.judge.summaryCorrectness = summary.score;
+          item.judge.summaryNote = String(summary.reasoning).slice(0, 240);
+          judgedNow += 1;
+          if (judgedNow % 5 === 0) writeAtomic(args.out, done);
+        } catch (error) {
+          item.judgeError = String(error.message).slice(0, 160);
+        }
+      }
+      continue;
+    }
     if (item.judge || !item.reply?.answer || item.score.unbound) continue;
     const ref = referenceFor(item.row.fixtureId);
     const referenceAnswer = item.row.type === 'timestamp'
@@ -128,6 +145,11 @@ function judgeCommand(args) {
       const factual = runClaudeDimension('factualCorrectness', buildDimensionPrompt('factualCorrectness', input));
       const relevancy = runClaudeDimension('responseRelevancy', buildDimensionPrompt('responseRelevancy', input));
       item.judge = { factualCorrectness: factual.score, responseRelevancy: relevancy.score, note: String(factual.reasoning).slice(0, 240), model: 'claude-haiku-5-5' };
+      if (item.row.type === 'chapter') {
+        const summary = runClaudeDimension('summaryCorrectness', buildDimensionPrompt('summaryCorrectness', input));
+        item.judge.summaryCorrectness = summary.score;
+        item.judge.summaryNote = String(summary.reasoning).slice(0, 240);
+      }
       judgedNow += 1;
     } catch (error) {
       item.judgeError = String(error.message).slice(0, 160);

@@ -36,6 +36,10 @@ const DIMENSIONS = {
     'Does the answer fulfill the task requested by the question under its task type and expected policy constraints, including answer completeness (omissions of requested facts) and correct quote selection? Use the accepted reference answer to understand the target when present, but do not reward copied wording or penalize equivalent phrasing. For first-complete-sentence quote requests, determine whether the answer gives the earliest complete utterance inside the requested interval; skip cut-off speech and bare noun phrases, and use overlapping transcript context only to identify a sentence that began before the interval. When generationEvidence is supplied, check source-specific quotes and details against it; penalize unsupported additions even when the main answer is on topic. For ABSTENTION or ACCESS_DENIAL, an accurate, clear refusal that explains the limitation and offers a safe next step can fulfill the task without revealing denied or unsupported content. For CAPABILITY_LIMIT, reward truthful limitations and useful in-chat help, and penalize false claims of external action. Generic refusals that ignore the request remain low relevance. Judge relevance independently from factual correctness.',
   contextCompleteness:
     'Does the actual generation evidence contain the accepted reference facts needed to answer the question?',
+  // For a summary of a chapter or time range. The reference is the raw transcript of the whole requested part, so
+  // "preserve every reference fact" (factualCorrectness) marks down any summary short enough to be useful.
+  summaryCorrectness:
+    'The reference is the source transcript of the requested part of the video (automatic captions, which can mishear words). Is the answer a correct summary of it? Check two things. (1) Faithfulness: every assertion is supported by the transcript, allowing equivalent wording and an evident correction of a misheard caption word; penalize contradictions, invented specifics, wrong names, numbers or speakers, and facts from outside the requested part. (2) Coverage: the answer states the main points of the part; do not penalize leaving out minor details, examples, asides or repetition. Return about 1.0 when it is faithful and covers the main points, about 0.7 when it is faithful but misses one main point, at most 0.5 when it misses most main points, and at most 0.4 when it contradicts or invents a material fact.',
 };
 function buildDimensionPrompt(dimension, input) {
   if (!DIMENSIONS[dimension]) throw new Error('Unknown judge dimension');
@@ -48,7 +52,8 @@ function buildDimensionPrompt(dimension, input) {
   if (
     dimension === 'factualCorrectness' ||
     dimension === 'responseRelevancy' ||
-    dimension === 'contextCompleteness'
+    dimension === 'contextCompleteness' ||
+    dimension === 'summaryCorrectness'
   )
     data.referenceAnswer = input.referenceAnswer;
   if (dimension === 'faithfulness' || dimension === 'contextCompleteness')

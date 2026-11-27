@@ -69,6 +69,12 @@ function summarizeCell(items) {
     factual: mean(judged.map((i) => i.judge.factualCorrectness)),
     relevancy: mean(judged.map((i) => i.judge.responseRelevancy)),
     correctRate: mean(judged.map((i) => (i.judge.factualCorrectness >= 0.7 ? 1 : 0))),
+    // Chapter and range summaries: faithful to the transcript and covering its main points (see summaryCorrectness).
+    summaryCorrectRate: mean(
+      judged
+        .filter((i) => typeof i.judge.summaryCorrectness === 'number')
+        .map((i) => (i.judge.summaryCorrectness >= 0.7 ? 1 : 0)),
+    ),
     indicative: scored.length < MIN_CELL,
   };
 }

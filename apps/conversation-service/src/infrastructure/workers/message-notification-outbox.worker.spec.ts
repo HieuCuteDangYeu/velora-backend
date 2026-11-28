@@ -8,6 +8,7 @@ import {
   OUTBOX_CONCURRENCY,
   OUTBOX_DEFAULT_BUSY_RATE,
   OUTBOX_DEFAULT_BUSY_THRESHOLD,
+  retryDelayMs,
 } from './message-notification-outbox.worker';
 import { NotificationBatchRejectedError } from '../adapters/notification-service.adapter';
 
@@ -1196,5 +1197,25 @@ describe('Message notification outbox', () => {
         true,
       );
     });
+  });
+});
+
+describe('retryDelayMs', () => {
+  it('spreads retries over the whole back-off window instead of one second', () => {
+    expect(retryDelayMs(1, () => 0)).toBe(1_000);
+    expect(retryDelayMs(1, () => 0.999999)).toBe(2_000);
+    expect(retryDelayMs(8, () => 0)).toBe(1_000);
+    expect(retryDelayMs(8, () => 0.999999)).toBe(256_000);
+  });
+
+  it('caps the ceiling at 256 seconds however many attempts were made', () => {
+    expect(retryDelayMs(50, () => 0.999999)).toBe(256_000);
+  });
+
+  it('draws different delays for intents that failed together', () => {
+    const delays = new Set(
+      Array.from({ length: 200 }, (_, i) => retryDelayMs(6, () => i / 200)),
+    );
+    expect(delays.size).toBeGreaterThan(150);
   });
 });

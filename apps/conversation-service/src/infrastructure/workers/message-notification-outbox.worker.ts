@@ -58,6 +58,26 @@ const RATE_REPORT_MS = 1_000;
 const RATE_FRESH_MS = 3_000;
 const RATE_KEY_TTL_MS = 10_000;
 
+// Exponential back-off with full jitter (Brooker, 2015): the ceiling doubles from
+// 2 s up to 256 s, and the delay is drawn at random between a one-second floor and
+// that ceiling, so intents that failed together do not retry together. The floor
+// stops an unlucky draw from retrying at once.
+export const RETRY_MIN_DELAY_MS = 1_000;
+export const RETRY_MAX_EXPONENT = 8;
+export function retryDelayMs(
+  attempts: number,
+  random: () => number = Math.random,
+): number {
+  const ceiling = Math.min(
+    300_000,
+    1_000 * 2 ** Math.min(Math.max(attempts, 1), RETRY_MAX_EXPONENT),
+  );
+  return (
+    RETRY_MIN_DELAY_MS +
+    Math.floor(random() * (ceiling - RETRY_MIN_DELAY_MS + 1))
+  );
+}
+
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -531,19 +551,14 @@ export class MessageNotificationOutboxWorker
     try {
       const rescheduled = await this.updateIntents(
         claims.map(({ id, claimId, attempts }) => {
-          const backoffMs = Math.min(
-            300_000,
-            1_000 * 2 ** Math.min(attempts ?? 1, 8),
-          );
+          const delayMs = retryDelayMs(attempts ?? 1);
           return {
             q: { _id: { $oid: id }, notificationClaimId: claimId },
             u: {
               $set: {
                 notificationClaimId: null,
                 notificationNextAttemptAt: {
-                  $date: new Date(
-                    now + backoffMs + Math.floor(Math.random() * 1_000),
-                  ).toISOString(),
+                  $date: new Date(now + delayMs).toISOString(),
                 },
               },
             },

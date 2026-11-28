@@ -404,9 +404,9 @@ export class GenerateDraftAnswerUseCase {
       (state.retrievalPlan?.transcriptTimestampEndSec ?? 0) -
       (state.retrievalPlan?.transcriptTimestampSec ?? 0);
     const summarySentenceRange = isLongRangeTurn()
-      ? '5–8'
+      ? '6–10'
       : summaryRangeSec >= 120
-        ? '4–6'
+        ? '5–8'
         : undefined;
     const multiReelTranscriptSegmentComparisonRequest =
       transcriptSegmentKind === 'MULTI_REEL_COMPARISON';
@@ -729,7 +729,7 @@ export class GenerateDraftAnswerUseCase {
                 ? // A range of several minutes holds many main points; 2–4 sentences left most of them out
                   // (judged 2026-11-27: faithful summaries of chapters and 10-minute ranges failed on coverage).
                   `For this time-bounded transcript summary of a long interval, write one short sentence per main point, in chronological order, covering the beginning, middle, and end of the interval: usually ${summarySentenceRange} sentences, fewer only when the transcript has fewer distinct points. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.`
-                : 'For this time-bounded transcript summary, write 2–4 short sentences with one main point per sentence. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.',
+                : 'For this time-bounded transcript summary, write 3–5 short sentences with one main point per sentence. Cover the distinct questions, thanks, explicit preferences or negations, and stated abilities that matter to the request. Use only transcript text inside the requested interval. Preserve who speaks, who owns or receives something, quantities, negation, conditions, speaker changes, and uncertainty. Do not attach thanks, reactions, or intentions to a nearby event unless the transcript explicitly links them. Preserve the force of direct insults instead of neutralizing them. Keep spoken questions as questions and do not add a causal link from adjacent statements unless the transcript states one. Do not quote or retell the transcript sentence by sentence. Omit a clipped transcript tail unless needed; if needed, quote only the supplied words and say the indexed excerpt ends there without claiming that the speaker stops or completes the thought.',
           ]
         : multiReelTranscriptSegmentComparisonRequest
           ? [

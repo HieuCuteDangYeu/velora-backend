@@ -1771,11 +1771,11 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
-    expect(call.systemPrompt).toMatch(/5–8 sentences/);
-    expect(call.systemPrompt).not.toMatch(/write 2–4 short sentences/i);
+    expect(call.systemPrompt).toMatch(/6–10 sentences/);
+    expect(call.systemPrompt).not.toMatch(/write 3–5 short sentences/i);
   });
 
-  it('asks for 4–6 sentences when a chapter of two minutes or more is summarized', async () => {
+  it('asks for 5–8 sentences when a chapter of two minutes or more is summarized', async () => {
     const answer =
       'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.';
     const generateObject = jest.fn().mockResolvedValue({
@@ -1835,8 +1835,8 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
-    expect(call.systemPrompt).toMatch(/usually 4–6 sentences/);
-    expect(call.systemPrompt).not.toMatch(/write 2–4 short sentences/i);
+    expect(call.systemPrompt).toMatch(/usually 5–8 sentences/);
+    expect(call.systemPrompt).not.toMatch(/write 3–5 short sentences/i);
   });
 
   it('summarizes a requested transcript interval across its main turns', async () => {
@@ -1900,7 +1900,7 @@ describe('GenerateDraftAnswerUseCase', () => {
     const call = generateObject.mock.calls[0][0];
     expect(result.answer).toBe(answer);
     expect(call.systemPrompt).toMatch(
-      /write 2–4 short sentences with one main point per sentence/i,
+      /write 3–5 short sentences with one main point per sentence/i,
     );
     expect(call.systemPrompt).toContain(
       'Do not add an unstated speaker, actor, recipient, target, or intent',
@@ -2046,7 +2046,7 @@ describe('GenerateDraftAnswerUseCase', () => {
       TRANSCRIPT_SEGMENT_SUMMARY_MAX_CHARS,
     );
     expect(request.systemPrompt).toMatch(
-      /write 2–4 short sentences[\s\S]*do not quote or retell the transcript sentence by sentence/i,
+      /write 3–5 short sentences[\s\S]*do not quote or retell the transcript sentence by sentence/i,
     );
   });
 

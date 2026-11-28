@@ -337,7 +337,7 @@ describe('validateRagAnswerContract distinctive tokens in range summaries', () =
 
 describe('transcriptSummaryMaxChars', () => {
   it('gives a long-range turn the longer summary budget', async () => {
-    expect(transcriptSummaryMaxChars('TRANSCRIPT_CONTENT')).toBe(900);
+    expect(transcriptSummaryMaxChars('TRANSCRIPT_CONTENT')).toBe(1_200);
     expect(transcriptSummaryMaxChars('MULTIMODAL_CONTENT')).toBe(1_600);
     await runTurnScope(() => {
       markLongRangeTurn();

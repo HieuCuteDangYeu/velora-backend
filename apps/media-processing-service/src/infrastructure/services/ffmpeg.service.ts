@@ -22,6 +22,7 @@ import {
   buildThumbnailArguments,
   buildTranscriptionAudioArguments,
 } from './ffmpeg-arguments';
+import { orderHlsMasterVariantsHighestFirst } from './hls-master-playlist';
 
 interface ProcessResult {
   stdout: string;
@@ -279,6 +280,15 @@ export class FfmpegService implements IVideoProcessingService, OnModuleDestroy {
         timeoutMs: options.timeoutMs ?? profile.timeoutMs,
       },
     );
+
+    const masterPath = path.join(outputDir, 'master.m3u8');
+    if (fs.existsSync(masterPath)) {
+      const master = fs.readFileSync(masterPath, 'utf8');
+      const ordered = orderHlsMasterVariantsHighestFirst(master);
+      if (ordered !== master) {
+        fs.writeFileSync(masterPath, ordered);
+      }
+    }
 
     return {
       variantCount: profile.variants.length,

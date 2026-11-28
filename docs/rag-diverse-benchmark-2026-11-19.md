@@ -931,3 +931,14 @@ All 17 reprocessed reels completed media; one (8oL03cm1kMc, 70 min) was left wit
 
 ### Where this leaves the 0.85 target
 Not reached. Best measured: chapters 0.60–0.63 correct / 0.63–0.70 summary-correct (runs 84, 91), ranges 0.38–0.56 (runs 85–92; noise of ±0.1 on identical code), scene questions 0.60–0.64. The remaining range and chapter misses are answers that add details the transcript does not contain and coverage gaps in long passages, with the local 2B model and the 70B Cloudflare model alike.
+
+### Paid stronger answer models (runs 93, 94; 2026-11-28, 290a3299)
+Same 48 chapter rows on a quiet system, Cloudflare paid catalogue, Haiku judge:
+
+| Answer model | Correct | Summary-correct | Mean factual | Fallbacks to local |
+|---|---|---|---|---|
+| Llama 3.3 70B (run 91, production) | 0.60 | 0.63 | 0.68 | — |
+| GLM-5.3, `reasoning_effort: low` (run 93) | 0.60 | 0.56 | 0.69 | 4 / 48 |
+| DeepSeek V4.1 Flash, thinking off (run 94) | 0.65 | 0.63 | 0.68 | 4 / 48 |
+
+Both are reasoning models: with thinking on they spent the 1,024-token budget reasoning, returned empty content, and every answer fell back to the local 2B model. `AI_CLOUDFLARE_LLM_EXTRA_BODY` (290a3299) passes the field that turns thinking off. DeepSeek's +0.05 is inside the ±0.1 run-to-run noise, and the mean factual score is unchanged, so a larger answer model alone does not move chapter answers toward 0.85. Production stays on Llama 3.3 70B (free tier). The misses are the same kind as before: details that are not in the transcript, and main points skipped in long chapters.

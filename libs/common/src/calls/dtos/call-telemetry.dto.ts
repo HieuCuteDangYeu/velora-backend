@@ -17,6 +17,8 @@ const audioRouteType = z.enum([
   'other',
 ]);
 
+const iceCandidateType = z.enum(['host', 'srflx', 'prflx', 'relay', 'unknown']);
+
 export const CallTelemetryEventSchema = z
   .object({
     eventId: z.string().uuid(),
@@ -58,7 +60,20 @@ export const CallTelemetryEventSchema = z
             inputRouteTypes: z.array(audioRouteType).max(4),
             forcedSpeaker: z.boolean(),
           })
-          .strict(),
+          .strict()
+          .optional(),
+        // The ICE candidate pair a transport selected: shows whether a call
+        // went direct or through the TURN relay, and over which protocol.
+        icePath: z
+          .object({
+            transport: z.enum(['send', 'recv']),
+            localCandidateType: iceCandidateType,
+            remoteCandidateType: iceCandidateType,
+            protocol: z.enum(['udp', 'tcp', 'unknown']),
+            relayProtocol: z.enum(['udp', 'tcp', 'tls', 'unknown']).nullable(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),

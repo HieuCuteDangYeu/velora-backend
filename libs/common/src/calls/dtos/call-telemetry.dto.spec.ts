@@ -37,6 +37,38 @@ describe('CallTelemetryEventSchema', () => {
     ).toMatchObject(event);
   });
 
+  it('accepts the selected ICE path of a relayed call over TLS', () => {
+    const icePath = {
+      transport: 'recv',
+      localCandidateType: 'relay',
+      remoteCandidateType: 'host',
+      protocol: 'udp',
+      relayProtocol: 'tls',
+    } as const;
+    expect(
+      CallTelemetryEventSchema.parse({ ...event, details: { icePath } })
+        .details,
+    ).toEqual({ icePath });
+  });
+
+  it('rejects an ICE path that carries an address', () => {
+    expect(
+      CallTelemetryEventSchema.safeParse({
+        ...event,
+        details: {
+          icePath: {
+            transport: 'send',
+            localCandidateType: 'srflx',
+            remoteCandidateType: 'host',
+            protocol: 'udp',
+            relayProtocol: null,
+            address: '203.0.113.7',
+          },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects a raw audio route name', () => {
     expect(() =>
       CallTelemetryEventSchema.parse({

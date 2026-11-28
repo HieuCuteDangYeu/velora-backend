@@ -2022,6 +2022,24 @@ describe('QueryRouterAgentUseCase', () => {
         expect(no.decision.intent).toBe('OFF_TOPIC');
       });
 
+      it('reroutes an OFF_TOPIC verdict for a question that names the shared video, without the probe', async () => {
+        const named = await routeWithProbe(
+          'What is covered in the part of the video titled "Methods he used to study Korean"?',
+          false,
+          true,
+          'OFF_TOPIC',
+        );
+        expect(named.decision.intent).toBe('REEL_VIDEO_QUESTION');
+        expect(named.probe.hasStrongEvidence).not.toHaveBeenCalled();
+        const unshared = await routeWithProbe(
+          'What is covered in the part of the video titled "Methods he used to study Korean"?',
+          false,
+          false,
+          'OFF_TOPIC',
+        );
+        expect(unshared.decision.intent).toBe('OFF_TOPIC');
+      });
+
       it('reroutes a non-English question the router called chat when the video has an excerpt, not otherwise', async () => {
         const korean =
           '광둥어를 공부하려고 넷플릭스 콘텐츠를 볼 때 자막은 어떻게 설정하고 있나요?';

@@ -118,6 +118,14 @@ const PHOTO_NOTE_GUIDANCE =
 const APP_OR_ASSISTANT_QUESTION =
   /\b(?:velora|app|profile|account|password|settings?|notifications?|log\s?in|sign\s?up|follow(?:ers?)?|block|report|who\s+are\s+you|what\s+are\s+you|your\s+name)\b/i;
 
+/**
+ * The message points at the shared video itself ("the part of the video titled ...", "this reel"). A video's chapter
+ * can be about anything (learning Korean, a recipe), so with a video shared such a question is about that video even
+ * when the probe finds no close excerpt, as with an English question about a Korean transcript.
+ */
+const NAMES_SHARED_VIDEO =
+  /\b(?:the|this|that)\s+(?:video|reel|clip)\b|\bvideo\s+này\b/iu;
+
 /** A question-shaped message (ends with a question mark, enough words) that is not about the app or the assistant. */
 export function looksLikeQuestion(message: string): boolean {
   const text = message.trim();
@@ -200,12 +208,14 @@ export class QueryRouterAgentUseCase {
     ) {
       return route;
     }
-    const matches = await this.evidenceProbe
-      .hasStrongEvidence({
-        message: input.message,
-        accessibleReelIds: input.accessibleReelIds,
-      })
-      .catch(() => false);
+    const matches =
+      NAMES_SHARED_VIDEO.test(input.message) ||
+      (await this.evidenceProbe
+        .hasStrongEvidence({
+          message: input.message,
+          accessibleReelIds: input.accessibleReelIds,
+        })
+        .catch(() => false));
     if (!matches) return route;
     return {
       ...this.normalize(
@@ -220,7 +230,7 @@ export class QueryRouterAgentUseCase {
           },
           tools: ['search_reel_content'],
           reason:
-            'The question was filed as plain chat, but a shared video has a close transcript excerpt for it.',
+            'The question was filed as plain chat, but it names the shared video or that video has a close transcript excerpt for it.',
         },
         {
           message: input.message,

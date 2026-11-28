@@ -2032,7 +2032,12 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(result.answer).toBe('The speaker names the blue device.');
     expect(result.finalizationMode).toBe('SYNTHESIZED');
     expect(result.claims[0].evidenceIds).toEqual(['e0']);
-    expect(generateObject).toHaveBeenCalledTimes(1);
+    // The draft, then the answer check, which returned the same answer.
+    expect(generateObject).toHaveBeenCalledTimes(2);
+    expect(generateObject.mock.calls[1][0].schemaVersion).toBe('answer-check-v1');
+    expect(
+      JSON.parse(String(generateObject.mock.calls[1][0].userPrompt)).draftAnswer.answer,
+    ).toBe('The speaker names the blue device.');
     expect(
       generateObject.mock.calls[0][0].jsonSchema.properties.claims.minItems,
     ).toBe(1);
@@ -2043,6 +2048,126 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(request.systemPrompt).toMatch(
       /write 2–4 short sentences[\s\S]*do not quote or retell the transcript sentence by sentence/i,
     );
+  });
+
+  it('uses the checked answer when the answer check corrects the draft', async () => {
+    const generateObject = jest
+      .fn()
+      .mockResolvedValueOnce({
+        answer: 'The speaker names the red device.',
+        claims: [
+          { claim: 'The speaker names the red device.', evidenceIds: ['e0'] },
+        ],
+      })
+      .mockResolvedValueOnce({
+      answer: 'The speaker names the blue device.',
+      claims: [
+        { claim: 'The speaker names the blue device.', evidenceIds: ['e0'] },
+      ],
+      });
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the transcript segment spanning 11.68-56.38 seconds of the shared Reel.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 11.68,
+        sourceTimestampEndSec: 56.38,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'c-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 11.68,
+          endTime: 56.38,
+          evidenceText: 'The speaker names the blue device.',
+          chunkText: 'The speaker names the blue device.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('The speaker names the blue device.');
+    expect(generateObject.mock.calls[1][0].systemPrompt).toMatch(
+      /draftAnswer is a first draft/,
+    );
+  });
+
+  it('keeps the draft when the answer check fails', async () => {
+    const generateObject = jest
+      .fn()
+      .mockResolvedValueOnce({
+      answer: 'The speaker names the blue device.',
+      claims: [
+        { claim: 'The speaker names the blue device.', evidenceIds: ['e0'] },
+      ],
+      })
+      .mockRejectedValueOnce(new Error('provider down'));
+    const useCase = new GenerateDraftAnswerUseCase(
+      { generateObject } as never,
+      { build: jest.fn(() => 'Grounding instructions.') },
+      {
+        model: () => 'test',
+        timeoutMs: () => 10_000,
+        maxCompletionTokens: () => 1024,
+      } as never,
+    );
+    const result = await useCase.execute({
+      userMessage:
+        'Summarize what is said in the transcript segment spanning 11.68-56.38 seconds of the shared Reel.',
+      route: {
+        intent: 'REEL_VIDEO_QUESTION',
+        reelQuestionType: 'TRANSCRIPT_CONTENT',
+        requiredEvidence: ['TRANSCRIPT'],
+        needsRetrieval: true,
+      },
+      retrievalPlan: {
+        sourceOrder: 'ASC',
+        sourceTimestampSec: 11.68,
+        sourceTimestampEndSec: 56.38,
+      },
+      contextSufficiency: {
+        sufficient: true,
+        supportedEvidenceIds: ['e0'],
+      },
+      rerankedChunks: [
+        {
+          chunkId: 'c-window',
+          reelId: 'r',
+          evidenceType: 'TRANSCRIPT',
+          startTime: 11.68,
+          endTime: 56.38,
+          evidenceText: 'The speaker names the blue device.',
+          chunkText: 'The speaker names the blue device.',
+          tags: [],
+          distance: null,
+        },
+      ],
+    } as never);
+
+    expect(result.answer).toBe('The speaker names the blue device.');
+    expect(result.finalizationMode).toBe('SYNTHESIZED');
+    expect(generateObject).toHaveBeenCalledTimes(2);
   });
 
   it('quotes a short terminal utterance directly from an exact authorized transcript window', async () => {

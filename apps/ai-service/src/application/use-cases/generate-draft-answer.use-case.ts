@@ -61,6 +61,14 @@ interface DraftAnswerRequestResult extends RawDraftAnswer {
 
 const SENTENCE_SELECTION_BATCH_SIZE = 8;
 
+const ANSWER_CHECK_INSTRUCTION = [
+  'draftAnswer is a first draft of this answer. Check it against authorizedEvidence, then return the corrected answer in the same JSON format:',
+  '1. For each sentence, find the evidence that states it. Remove or correct any detail, name, number, cause, example or opinion the evidence does not state.',
+  '2. For each point the draft keeps, restore the qualifiers the evidence attaches to it: conditions, exceptions, contrasts, reasons, who says it, and quantities. A point stated without its qualifier is wrong.',
+  '3. Add any main point of the requested interval that the draft leaves out, in chronological order.',
+  'Stay within maxAnswerChars by tightening wording, not by dropping points or qualifiers. Return the full corrected answer with its claims and evidenceIds, not a list of changes.',
+].join('\n');
+
 // Every indexed Reel's first transcript chunk starts within ~1.2 s (measured on
 // the 178 active Reels), so a line that starts later is not an opening turn.
 const OPENING_TURN_MAX_START_SECONDS = 5;
@@ -1058,10 +1066,54 @@ export class GenerateDraftAnswerUseCase {
       }
     };
 
+    // A transcript summary is checked once against the evidence before it is shown: most wrong summaries left out a
+    // qualifier or a main point, or added a detail the transcript does not state. The check keeps the same schema and
+    // contract, and a rejected check keeps the draft.
+    const answerCheck =
+      transcriptSegmentSummaryRequest &&
+      sentenceCandidateById.size === 0 &&
+      state.route?.reelQuestionType !== 'MULTIMODAL_CONTENT' &&
+      state.nextDraftSource !== 'VERIFIER_REVISION' &&
+      this.config.get?.<string>('AI_ANSWER_CHECK')?.trim() !== 'false';
+    const checked = async (
+      draft: RagDraftAnswer,
+      draftRaw: RawDraftAnswer,
+    ): Promise<RagDraftAnswer> => {
+      try {
+        const checkedRaw =
+          await this.structuredLlmService.generateObject<RawDraftAnswer>({
+            systemPrompt: `${systemPrompt}\n\n${ANSWER_CHECK_INSTRUCTION}`,
+            userPrompt: JSON.stringify({
+              ...(JSON.parse(userPrompt) as Record<string, unknown>),
+              draftAnswer: { answer: draftRaw.answer, claims: draftRaw.claims },
+            }),
+            jsonSchema: this.schema(
+              maxAnswerChars,
+              minimumSummaryClaimCount,
+              this.allowsClaims(state, allowedEvidenceIds),
+            ),
+            model: primaryModel,
+            timeoutMs: this.config.timeoutMs('ANSWER'),
+            temperature: 0,
+            maxTokens: answerMaxTokens,
+            modelRole: 'ANSWER',
+            schemaVersion: 'answer-check-v1',
+            onDiagnostics: (call) => diagnostics.push(call),
+          });
+        return synthesized(checkedRaw);
+      } catch (error: unknown) {
+        this.logger.warn(
+          `[DraftAnswer] answer check rejected; keeping the draft: ${errorText(error)}`,
+        );
+        return draft;
+      }
+    };
+
     let raw: RawDraftAnswer;
     try {
       raw = await request(systemPrompt);
-      return synthesized(raw);
+      const draft = synthesized(raw);
+      return answerCheck ? await checked(draft, raw) : draft;
     } catch (error: unknown) {
       // Which check rejected the answer is otherwise lost when the extractive fallback succeeds.
       this.logger.warn(`[DraftAnswer] answer rejected: ${errorText(error)}`);

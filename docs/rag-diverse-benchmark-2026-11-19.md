@@ -964,3 +964,17 @@ One extra pass of the answer model per transcript summary gets the draft and the
 | Ranges, with check (run 98) | 0.48 | 0.63 | 0.67 | 51 s |
 
 Ranges gain +0.19 summary-correct and +0.10 mean factual, more than the ±0.1 run-to-run spread; chapters are unchanged within noise, with no refusals left. It costs about 10 s per summary answer. Of the 20 chapter answers still below 0.7, about half score 0.6: one or two reference details left out, or a name the transcript itself misspells.
+
+### Longer summaries on top of the check (runs 99, 100; 2026-11-28, 7294f76b)
+Half of the chapter answers still wrong after the check scored 0.6 for one detail left out, and answers averaged 663 of 900 characters, so the sentence count limited them. Sentence targets went from 2–4 / 4–6 / 5–8 to 3–5 / 5–8 / 6–10 (under 2 min / 2–5 min / long range) and the segment summary cap from 900 to 1,200 characters:
+
+| Rows | Correct | Summary-correct | Mean factual | Median latency |
+|---|---|---|---|---|
+| Chapters, baseline (run 91) | 0.60 | 0.63 | 0.68 | 44 s |
+| Chapters, check (run 97) | 0.58 | 0.67 | 0.69 | 53 s |
+| Chapters, check + longer (run 99) | 0.67 | 0.71 | 0.71 | 51 s |
+| Ranges, baseline (run 92) | 0.38 | 0.44 | 0.57 | 38 s |
+| Ranges, check (run 98) | 0.48 | 0.63 | 0.67 | 51 s |
+| Ranges, check + longer (run 100) | 0.56 | 0.60 | 0.65 | 51 s |
+
+Against the baselines: chapters +0.07 correct / +0.08 summary-correct, ranges +0.18 / +0.16. Each single step is within the ±0.1 run-to-run spread, but the two steps move every measure the same way on both sets. Still below the 0.85 target and the 0.75 interim aim for chapters.

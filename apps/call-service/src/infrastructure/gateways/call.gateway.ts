@@ -1977,6 +1977,7 @@ export class CallGateway
       this.server
         .to(session.targetUserId)
         .emit('call_answered', answeredPayload);
+      this.emitAnsweredToCaller(session.initiatorId, answeredPayload);
     });
   }
 
@@ -2123,6 +2124,22 @@ export class CallGateway
     this.server
       .to(result.session.targetUserId)
       .emit('call_answered', answeredPayload);
+    this.emitAnsweredToCaller(result.session.initiatorId, answeredPayload);
+  }
+
+  /**
+   * The caller's socket joins the call room only after initiate_call returns,
+   * and that happens after the incoming-call push has gone out. A callee who
+   * answers inside that window would otherwise never be heard of: the caller
+   * keeps ringing while the callee sits in a silent call. Its user room holds
+   * the caller's socket from the moment it connected, so send it there too.
+   * The app treats a repeated call_answered as a no-op.
+   */
+  private emitAnsweredToCaller(
+    initiatorId: string,
+    answeredPayload: { callId: string; userId: string; answerActionId: string },
+  ): void {
+    this.server.to(initiatorId).emit('call_answered', answeredPayload);
   }
 
   private async acceptGroupInvitation(

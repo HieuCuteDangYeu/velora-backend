@@ -3024,6 +3024,47 @@ describe('CallGateway reconnect recovery', () => {
     });
   });
 
+  it('also tells the caller through its user room, which it joined before the call room', async () => {
+    const acceptIncomingCallUseCase = {
+      execute: jest.fn().mockResolvedValue({
+        outcome: 'accepted',
+        role: 'guest',
+        session: activeSession,
+        rtpCapabilities: { codecs: [], headerExtensions: [] },
+        activeProducers: [],
+      }),
+    };
+    const emitters = new Map<string, { emit: jest.Mock }>();
+    const gateway = createGateway({ acceptIncomingCallUseCase });
+    gateway.server = {
+      to: jest.fn().mockImplementation((roomId: string) => {
+        if (!emitters.has(roomId)) emitters.set(roomId, { emit: jest.fn() });
+        return emitters.get(roomId);
+      }),
+    } as never;
+
+    await gateway.handleAcceptIncomingCall(
+      { callId: activeSession.callId, actionId: 'callkit-answer-2' },
+      createSocket({
+        id: 'socket-2',
+        userId: activeSession.targetUserId,
+        callIds: [],
+        emit: jest.fn(),
+      }),
+    );
+
+    // The answer can land before initiate_call has put the caller's socket
+    // in the call room; only the user room reaches it then.
+    expect(emitters.get(activeSession.initiatorId)?.emit).toHaveBeenCalledWith(
+      'call_answered',
+      {
+        callId: activeSession.callId,
+        userId: activeSession.targetUserId,
+        answerActionId: 'callkit-answer-2',
+      },
+    );
+  });
+
   it('reconciles an accepted native answer when the socket drops before room attachment', async () => {
     const acceptIncomingCallUseCase = {
       execute: jest.fn().mockResolvedValue({

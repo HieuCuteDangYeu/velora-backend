@@ -142,6 +142,62 @@ describe('RedisRecommendationFeedCacheRepository', () => {
     expect(result[0].processingCompletedAt).toBeInstanceOf(Date);
   });
 
+  it('reads back the {} that older entries hold for an empty tags array as []', async () => {
+    // Redis cjson re-encoded an empty array as {}; apps crashed calling tags.map on it.
+    const raw = JSON.stringify({
+      version: 1,
+      reel: {
+        ...reel(),
+        tags: {},
+        transcriptSegments: {},
+        viewCount: { __recommendationBigInt: '42' },
+      },
+    });
+    const repository = new RedisRecommendationFeedCacheRepository({
+      mget: jest.fn().mockResolvedValue([raw]),
+    } as unknown as Redis);
+
+    const [result] = await repository.getReels(['reel-1']);
+
+    expect(result.tags).toEqual([]);
+    expect(result.transcriptSegments).toEqual([]);
+  });
+
+  it('skips a cached reel whose tags are neither an array nor empty', async () => {
+    const raw = JSON.stringify({
+      ...reel(),
+      tags: 'cache',
+      viewCount: { __recommendationBigInt: '42' },
+    });
+    const repository = new RedisRecommendationFeedCacheRepository({
+      mget: jest.fn().mockResolvedValue([raw]),
+    } as unknown as Redis);
+
+    await expect(repository.getReels(['reel-1'])).resolves.toEqual([]);
+  });
+
+  it('stores the reel JSON verbatim instead of re-encoding it through cjson', async () => {
+    const evalCommand = jest.fn();
+    const repository = new RedisRecommendationFeedCacheRepository({
+      pipeline: jest.fn().mockReturnValue({
+        eval: evalCommand,
+        exec: jest.fn().mockResolvedValue([[null, 1]]),
+      }),
+    } as unknown as Redis);
+
+    await repository.saveReels([{ ...reel(), tags: [] }], 60);
+
+    const [script, , , serializedReel] = evalCommand.mock.calls[0] as [
+      string,
+      number,
+      string,
+      string,
+    ];
+    expect(script).not.toMatch(/cjson\.encode/);
+    expect(script).toContain(`',"reel":' .. ARGV[1] .. '}'`);
+    expect(JSON.parse(serializedReel)).toMatchObject({ tags: [] });
+  });
+
   it('pipelines eligible reel entities with an expiry and invalidates by key', async () => {
     const evalCommand = jest.fn();
     const exec = jest.fn().mockResolvedValue([[null, 1]]);

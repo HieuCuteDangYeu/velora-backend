@@ -10,6 +10,9 @@ import type Redis from 'ioredis';
 const GLOBAL_SLATE_KEY = 'reels:recommended:global';
 const REEL_ENTITY_KEY_PREFIX = 'reel:entity:';
 const INVALIDATED_REEL_TTL_SECONDS = 3 * 60 * 60;
+// Array fields of a cached reel. Entries written before the save script stopped re-encoding
+// the reel through Redis cjson have empty arrays turned into `{}`; read them back as [].
+const REEL_ARRAY_FIELDS = ['tags', 'transcriptSegments'] as const;
 const REEL_DATE_FIELDS = [
   'createdAt',
   'updatedAt',
@@ -44,11 +47,12 @@ if invalidated and incomingVersion <= currentVersion then
   return 0
 end
 
-local reel = cjson.decode(ARGV[1])
+-- Wrap the reel JSON as written by Node. Decoding and re-encoding it with cjson turned every
+-- empty array (a reel without tags) into {}, and the apps crashed calling tags.map on it.
 redis.call(
   'SET',
   KEYS[1],
-  cjson.encode({ version = incomingVersion, reel = reel }),
+  '{"version":' .. string.format('%d', incomingVersion) .. ',"reel":' .. ARGV[1] .. '}',
   'EX',
   ARGV[2]
 )
@@ -277,6 +281,7 @@ export class RedisRecommendationFeedCacheRepository implements IRecommendationFe
           : parsed;
 
       restoreBigInts(reel);
+      if (!restoreArrays(reel)) return null;
 
       if (
         parsed['invalidated'] === true ||
@@ -333,6 +338,28 @@ export class RedisRecommendationFeedCacheRepository implements IRecommendationFe
   private describeError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+/**
+ * Makes every array field an array again: missing `tags` and the `{}` that older cache entries
+ * hold for an empty array become []. Returns false for any other shape, so the caller reloads
+ * the reel from the database instead of serving it.
+ */
+function restoreArrays(entity: Record<string, unknown>): boolean {
+  for (const field of REEL_ARRAY_FIELDS) {
+    const value = entity[field];
+    if (Array.isArray(value)) continue;
+    if (value === undefined || value === null) {
+      if (field === 'tags') entity[field] = [];
+      continue;
+    }
+    if (typeof value === 'object' && Object.keys(value).length === 0) {
+      entity[field] = [];
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 /** Turns the `{ __recommendationBigInt }` wrappers written by the encoder back into bigints. */

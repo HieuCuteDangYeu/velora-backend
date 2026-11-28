@@ -952,3 +952,15 @@ Run 91's 19 wrong chapter answers were mostly omissions (6 omission only, 5 omis
 | Ranges: correct / summary-correct | 0.38 / 0.44 | 0.42 / 0.40 |
 
 Chapters got worse and ranges moved within noise. The answers named every point, but at one sentence per point they lost the qualifiers inside each point, which the judge then marked as omissions. Reverted; production also has `AI_SUMMARY_MAIN_POINTS=false` (env backup `env-backup-mainpoints-off-20261128T134222Z`).
+
+### Checking each summary against the transcript (runs 97, 98; 2026-11-28, 2943240f)
+One extra pass of the answer model per transcript summary gets the draft and the same evidence, removes details the evidence does not state, restores qualifiers the draft dropped, and adds skipped main points; a rejected check keeps the draft (`AI_ANSWER_CHECK=false` turns it off). The same commit sends a question that names the shared video ("the part of the video titled ...") to the video when the router calls it off-topic: two English questions about a Korean video's chapters had been refused. Same rows, quiet system, Haiku judge, 0 rejected checks, 1 fallback to the local model per run:
+
+| Rows | Correct | Summary-correct | Mean factual | Median latency |
+|---|---|---|---|---|
+| Chapters, before (run 91) | 0.60 | 0.63 | 0.68 | 44 s |
+| Chapters, with check (run 97) | 0.58 | 0.67 | 0.69 | 53 s |
+| Ranges, before (run 92) | 0.38 | 0.44 | 0.57 | 38 s |
+| Ranges, with check (run 98) | 0.48 | 0.63 | 0.67 | 51 s |
+
+Ranges gain +0.19 summary-correct and +0.10 mean factual, more than the ±0.1 run-to-run spread; chapters are unchanged within noise, with no refusals left. It costs about 10 s per summary answer. Of the 20 chapter answers still below 0.7, about half score 0.6: one or two reference details left out, or a name the transcript itself misspells.

@@ -157,6 +157,45 @@ describe('CloudflareStructuredLlmAdapter', () => {
     });
   });
 
+  describe('model-specific fields (AI_CLOUDFLARE_LLM_EXTRA_BODY)', () => {
+    const sentBody = () =>
+      JSON.parse(
+        (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string,
+      ) as Record<string, unknown>;
+
+    afterEach(() => {
+      delete values.AI_CLOUDFLARE_LLM_EXTRA_BODY;
+    });
+
+    it('adds the configured fields to the request', async () => {
+      values.AI_CLOUDFLARE_LLM_EXTRA_BODY =
+        '{"chat_template_kwargs":{"enable_thinking":false}}';
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await adapter.generateObject(request);
+      expect(sentBody().chat_template_kwargs).toEqual({
+        enable_thinking: false,
+      });
+    });
+
+    it('cannot replace the model or the messages', async () => {
+      values.AI_CLOUDFLARE_LLM_EXTRA_BODY = '{"model":"other","messages":[]}';
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await adapter.generateObject(request);
+      expect(sentBody().model).toBe('@cf/test/big-model');
+      expect(sentBody().messages).toHaveLength(2);
+    });
+
+    it('ignores a value that is not a JSON object', async () => {
+      values.AI_CLOUDFLARE_LLM_EXTRA_BODY = 'reasoning_effort=low';
+      fetchMock.mockResolvedValue(reply('{"title":"a","tags":[]}'));
+      await expect(adapter.generateObject(request)).resolves.toEqual({
+        title: 'a',
+        tags: [],
+      });
+      expect(sentBody().reasoning_effort).toBeUndefined();
+    });
+  });
+
   it('rejects a reply that violates the schema', async () => {
     fetchMock.mockResolvedValue(reply('{"title":1,"tags":[]}'));
     await expect(adapter.generateObject(request)).rejects.toMatchObject({

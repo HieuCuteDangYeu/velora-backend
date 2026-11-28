@@ -149,6 +149,7 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify({
+        ...this.extraBody(),
         model,
         messages: [
           {
@@ -282,6 +283,28 @@ export class CloudflareStructuredLlmAdapter implements IStructuredLlmService {
         .toLowerCase() !== 'false';
     if (gatewayOn && gatewayId) headers['cf-aig-gateway-id'] = gatewayId;
     return headers;
+  }
+
+  /**
+   * Model-specific request fields from AI_CLOUDFLARE_LLM_EXTRA_BODY (a JSON object). Reasoning models spend the whole
+   * token budget thinking and return empty content, so they need their thinking switched off, and each model takes a
+   * different field: GLM-5.3 `{"reasoning_effort":"low"}`, DeepSeek V4.1 `{"chat_template_kwargs":{"enable_thinking":false}}`.
+   * Spread before the fixed fields, so it cannot replace the model, messages, budget or response format.
+   */
+  private extraBody(): Record<string, unknown> {
+    const raw = this.config.get<string>('AI_CLOUDFLARE_LLM_EXTRA_BODY')?.trim();
+    if (!raw) return {};
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        return parsed as Record<string, unknown>;
+    } catch {
+      // fall through
+    }
+    this.logger.warn(
+      'AI_CLOUDFLARE_LLM_EXTRA_BODY is not a JSON object; ignored',
+    );
+    return {};
   }
 
   private baseUrl(): string {

@@ -942,3 +942,13 @@ Same 48 chapter rows on a quiet system, Cloudflare paid catalogue, Haiku judge:
 | DeepSeek V4.1 Flash, thinking off (run 94) | 0.65 | 0.63 | 0.68 | 4 / 48 |
 
 Both are reasoning models: with thinking on they spent the 1,024-token budget reasoning, returned empty content, and every answer fell back to the local 2B model. `AI_CLOUDFLARE_LLM_EXTRA_BODY` (290a3299) passes the field that turns thinking off. DeepSeek's +0.05 is inside the ±0.1 run-to-run noise, and the mean factual score is unchanged, so a larger answer model alone does not move chapter answers toward 0.85. Production stays on Llama 3.3 70B (free tier). The misses are the same kind as before: details that are not in the transcript, and main points skipped in long chapters.
+
+### Listing main points before answering (runs 95, 96; 2026-11-28, e56d174b, reverted)
+Run 91's 19 wrong chapter answers were mostly omissions (6 omission only, 5 omission plus an added detail, 2 added detail only). e56d174b made one extra call to the answer model that listed the interval's 3–8 main points, then required the answer to cover each one in order. Same 48 + 48 rows, quiet system, Haiku judge, 0 failed main-point calls:
+
+| Rows | Before (runs 91, 92) | With main points (runs 95, 96) |
+|---|---|---|
+| Chapters: correct / summary-correct | 0.60 / 0.63 | 0.44 / 0.52 |
+| Ranges: correct / summary-correct | 0.38 / 0.44 | 0.42 / 0.40 |
+
+Chapters got worse and ranges moved within noise. The answers named every point, but at one sentence per point they lost the qualifiers inside each point, which the judge then marked as omissions. Reverted; production also has `AI_SUMMARY_MAIN_POINTS=false` (env backup `env-backup-mainpoints-off-20261128T134222Z`).

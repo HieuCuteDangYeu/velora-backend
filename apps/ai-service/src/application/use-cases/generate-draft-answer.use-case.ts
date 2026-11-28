@@ -697,7 +697,7 @@ export class GenerateDraftAnswerUseCase {
           ]
         : []),
     ];
-    let systemPrompt = [
+    const systemPrompt = [
       this.chatPromptBuilder.build(
         answerRoute ? { ...state, route: answerRoute } : state,
         {
@@ -783,24 +783,12 @@ export class GenerateDraftAnswerUseCase {
             ),
           }
         : undefined;
-    const requiredMainPoints =
-      transcriptSegmentSummaryRequest &&
-      state.route?.reelQuestionType !== 'MULTIMODAL_CONTENT' &&
-      state.nextDraftSource !== 'VERIFIER_REVISION'
-        ? await this.summaryMainPoints(promptEvidence)
-        : undefined;
-    if (requiredMainPoints) {
-      systemPrompt =
-        `${systemPrompt}\n\n` +
-        'requiredMainPoints lists the main points of the requested interval in order, taken from the same evidence. The answer must cover every one of them, one sentence each, in that order; points that are minor details may be merged. Word each sentence and its claims from the authorized evidence, not from the point text, and never add a detail the evidence does not state.';
-    }
     const userPrompt = JSON.stringify({
       currentQuestion: boundPromptText(
         state.userMessage,
         bounds.maxUserMessageChars,
       ),
       requestedTranscriptWindow,
-      ...(requiredMainPoints ? { requiredMainPoints } : {}),
       sentenceSelectionFeedback:
         sentenceCandidateById.size > 0 &&
         state.nextDraftSource === 'VERIFIER_REVISION'
@@ -1545,63 +1533,6 @@ export class GenerateDraftAnswerUseCase {
       finalizationMode: 'EXTRACTIVE_EVIDENCE_FALLBACK',
       fallbackReason: reason,
     };
-  }
-
-  /**
-   * Chapter and range summaries mostly failed on coverage, not invention: of 19 wrong chapter answers (run 91), 11
-   * left out main points of the passage and 2 only added details. A single call that both reads up to 20 excerpts and
-   * writes a grounded answer drops points, so the main points are listed first, by the same answer model, and the
-   * answer is asked to cover each one. On by default (AI_SUMMARY_MAIN_POINTS=false turns it off); any failure leaves
-   * the answer step as it was.
-   */
-  private async summaryMainPoints(
-    evidence: unknown[],
-  ): Promise<string[] | undefined> {
-    if (
-      this.config.get?.<string>('AI_SUMMARY_MAIN_POINTS')?.trim() === 'false' ||
-      evidence.length === 0
-    )
-      return undefined;
-    try {
-      const result = await this.structuredLlmService.generateObject<{
-        points?: unknown;
-      }>({
-        systemPrompt:
-          'You read transcript excerpts of one interval of a video, in time order. List the distinct main points the speakers make across the whole interval, in chronological order, so that the beginning, middle and end are all represented: one short phrase each, 3 to 8 points, fewer only when the excerpts hold fewer. Include named people, places, quantities and steps that carry a point. Use only what the excerpts say; do not add, interpret or merge in outside knowledge. Write the points in the language of the excerpts. Return only JSON matching the schema.',
-        userPrompt: JSON.stringify({ authorizedEvidence: evidence }),
-        jsonSchema: {
-          type: 'object',
-          properties: {
-            points: {
-              type: 'array',
-              items: { type: 'string', maxLength: 200 },
-              maxItems: 8,
-            },
-          },
-          required: ['points'],
-          additionalProperties: false,
-        },
-        model: this.config.model('ANSWER'),
-        timeoutMs: this.config.timeoutMs('ANSWER'),
-        temperature: 0,
-        maxTokens: 600,
-        modelRole: 'ANSWER',
-        schemaVersion: 'summary-main-points-v1',
-      });
-      const points = Array.isArray(result?.points)
-        ? result.points
-            .filter((point): point is string => typeof point === 'string')
-            .map((point) => point.trim())
-            .filter(Boolean)
-            .slice(0, 8)
-        : [];
-      return points.length >= 2 ? points : undefined;
-    } catch (error: unknown) {
-      this.logger.warn(
-        `Summary main points failed; answering without them: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return undefined;
-    }
   }
 
   private isRetryableAnswerContractError(error: unknown): boolean {

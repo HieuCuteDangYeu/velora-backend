@@ -46,6 +46,18 @@ const UPLOAD_TRANSACTION_OPTIONS = { maxWait: 20_000, timeout: 20_000 };
 
 const MEDIA_ATTEMPT_LEASE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_INLINE_EVIDENCE_FALLBACK_DELAY_MS = 10 * 60_000;
+// Progress the media step reports can arrive after the media attempt completed and overwrite MEDIA_READY. With
+// mediaStatus COMPLETED these stages are stale labels, so the evidence job may still claim the reel; without this a
+// reel whose inline evidence failed stayed at "Checking streaming files" with indexing PENDING forever.
+const STALE_MEDIA_STAGES = [
+  'DOWNLOADING',
+  'PROBING_SOURCE',
+  'VALIDATING_TRIM',
+  'TRANSCODING',
+  'UPLOADING_STREAM',
+  'GENERATING_THUMBNAIL',
+  'VALIDATING_STREAM',
+];
 import { Reel } from '../../domain/entities/reel.entity';
 import {
   FriendsReelsQuery,
@@ -954,9 +966,10 @@ export class ContentRepository
                   'BUILDING_AUDIO_MANIFEST',
                   'BUILDING_VISUAL_MANIFEST',
                   'RETRY_SCHEDULED',
+                  ...STALE_MEDIA_STAGES,
                 ],
               }
-            : { in: ['MEDIA_READY', 'RETRY_SCHEDULED'] },
+            : { in: ['MEDIA_READY', 'RETRY_SCHEDULED', ...STALE_MEDIA_STAGES] },
         }
       : {
           id: input.reelId,

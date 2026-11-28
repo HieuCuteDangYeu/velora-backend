@@ -520,6 +520,21 @@ describe('ContentRepository late media event fences', () => {
       processingStage,
     );
   });
+  it('lets the evidence job claim a completed reel whose stage a late media progress update overwrote', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
+    const repository = { reel: { updateMany } } as unknown as ContentRepository;
+    await ContentRepository.prototype.claimProcessingAttempt.call(repository, {
+      reelId: 'reel-1',
+      processingAttemptId: 'attempt-1',
+      evidenceOnly: true,
+    });
+    const where = updateMany.mock.calls[0][0].where;
+    expect(where.mediaStatus).toBe('COMPLETED');
+    expect(where.processingStage.in).toEqual(
+      expect.arrayContaining(['MEDIA_READY', 'VALIDATING_STREAM']),
+    );
+    expect(where.processingStage.in).not.toContain('EVIDENCE_PROCESSING');
+  });
   it('binds an evidence claim to the canonical owner and HLS key', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 0 });
     const repository = { reel: { updateMany } } as unknown as ContentRepository;
@@ -557,7 +572,7 @@ describe('ContentRepository upload transaction queueing', () => {
   it('lets a Reel upload lease reservation wait for the pooled connection', async () => {
     const $transaction = jest.fn().mockResolvedValue(undefined);
     await ContentRepository.prototype.reserveReelUploadLease.call(
-      { $transaction } as unknown as ContentRepository,
+      { $transaction },
       {
         userId: 'user-1',
         publishIntentId: 'intent-1',
@@ -573,9 +588,9 @@ describe('ContentRepository upload transaction queueing', () => {
     const $transaction = jest.fn().mockRejectedValue(new Error('stop'));
     await expect(
       ContentRepository.prototype.createReelWithMediaJob.call(
-        { $transaction } as unknown as ContentRepository,
+        { $transaction },
         { id: 'reel-1' },
-        {} as never,
+        {},
       ),
     ).rejects.toThrow('stop');
     expect(maxWaitOf($transaction)).toBeGreaterThanOrEqual(10_000);

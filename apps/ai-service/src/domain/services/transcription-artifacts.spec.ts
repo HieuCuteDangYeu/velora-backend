@@ -51,6 +51,45 @@ describe('removeTranscriptionArtifacts', () => {
     ).toEqual([]);
   });
 
+  it('drops the invented Vietnamese subscribe line from word items', () => {
+    const line =
+      'Hãy subscribe cho kênh Ghiền Mì Gõ Để Không Bỏ Lỡ Những Video Hấp Dẫn';
+    const result = removeTranscriptionArtifacts(
+      words('cảm', 'ơn', 'các', 'bạn.', ...line.split(' '), ...line.split(' ')),
+    );
+    expect(result.map((item) => item.text)).toEqual([
+      'cảm',
+      'ơn',
+      'các',
+      'bạn.',
+    ]);
+  });
+
+  it('drops the Vietnamese line with another channel name or spelling', () => {
+    expect(
+      stripTranscriptionArtifactsFromText(
+        'thú vị diễn ra. hãy subscribe cho kênh lalaschool để không bỏ lỡ những video hấp dẫn điều loại',
+      ),
+    ).toBe('thú vị diễn ra. điều loại');
+    expect(
+      stripTranscriptionArtifactsFromText(
+        'Hãy subcribe cho kênh Ghiền Mì Gõ để không bỏ lỡ những video hấp dẫn.',
+      ),
+    ).toBe('');
+  });
+
+  it('keeps Vietnamese and English speech that only mentions subscribing', () => {
+    const speech = [
+      'tôi đang ở trong môi trường subscribe của mình.',
+      'nhớ đăng ký kênh nhé, video sau sẽ có nhiều điều thú vị',
+      'please like and subscribe. it helps these videos find deadheads.',
+      'để không bỏ lỡ những video hấp dẫn thì các bạn theo dõi nhé',
+    ];
+    for (const text of speech) {
+      expect(stripTranscriptionArtifactsFromText(text)).toBe(text);
+    }
+  });
+
   it('collapses a word repeated eight or more times in a row', () => {
     const result = removeTranscriptionArtifacts(
       words('他', ...Array<string>(9).fill('你'), '来了'),

@@ -2,12 +2,22 @@
 // sometimes loops on one word. Neither was spoken, so neither belongs in the
 // transcript that gets chunked, embedded and quoted back to users.
 //
-// Only the credit line seen in practice is listed. Quality scores from the
+// Only the credit lines seen in practice are listed. Quality scores from the
 // model (no_speech_prob, avg_logprob) were checked and cannot be used instead:
 // no_speech_prob is 0 for these segments and avg_logprob is just as low for
 // genuine traditional-Chinese speech as for the invented text.
-const CREDIT_PHRASE =
-  /(?:请不吝|請不吝|请|請)?[点點][赞贊][订訂][阅閱][转轉][发發](?:[订訂][阅閱][转轉][发發])*(?:打[赏賞])?(?:支持)?(?:明[镜鏡])?(?:[与與][点點]{1,2})?(?:栏目|欄目)?|打[赏賞]支持明[镜鏡](?:[与與][点點]{1,2})?(?:栏目|欄目)?/gu;
+const CHINESE_CREDIT =
+  /(?:请不吝|請不吝|请|請)?[点點][赞贊][订訂][阅閱][转轉][发發](?:[订訂][阅閱][转轉][发發])*(?:打[赏賞])?(?:支持)?(?:明[镜鏡])?(?:[与與][点點]{1,2})?(?:栏目|欄目)?|打[赏賞]支持明[镜鏡](?:[与與][点點]{1,2})?(?:栏目|欄目)?/u;
+// "Hãy subscribe cho kênh Ghiền Mì Gõ để không bỏ lỡ những video hấp dẫn":
+// 8 of 311 indexed reels had it (2026-11-28), at the end of a reel or as its
+// whole transcript, once with another channel name, so the name is free.
+// Spaces are optional because word items are joined without them.
+const VIETNAMESE_CREDIT =
+  /(?:hãy\s*)?(?:subs?c?ribe|đăng\s*k[ýí])\s*(?:cho\s*)?kênh\s*\S[^.!?]{0,40}?\s*để\s*không\s*bỏ\s*lỡ\s*những\s*video\s*hấp\s*dẫn[.!]?/u;
+const CREDIT_PHRASE = new RegExp(
+  `${CHINESE_CREDIT.source}|${VIETNAMESE_CREDIT.source}`,
+  'giu',
+);
 
 const MIN_LOOP_RUN = 8;
 

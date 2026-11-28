@@ -322,6 +322,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test/test/answer',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 1024,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
         get: () => undefined,
       } as never,
     );
@@ -363,8 +365,9 @@ describe('GenerateDraftAnswerUseCase', () => {
 
     expect(result.answer).toBe('He arrived at 8 p.m.');
     expect(
-      JSON.parse(String(service.generateObject.mock.calls[0][0].userPrompt))
-        .requiredEvidenceTypes,
+      JSON.parse(
+        String(service.generateObject.mock.calls.at(-1)?.[0].userPrompt),
+      ).requiredEvidenceTypes,
     ).toEqual(['TRANSCRIPT']);
     expect(promptBuilder.build.mock.calls[0][0].route.requiredEvidence).toEqual(
       ['TRANSCRIPT'],
@@ -1724,6 +1727,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 512,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
       } as never,
     );
     const result = await runTurnScope(() => {
@@ -1791,6 +1796,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 512,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
       } as never,
     );
     const result = await useCase.execute({
@@ -1839,6 +1846,102 @@ describe('GenerateDraftAnswerUseCase', () => {
     expect(call.systemPrompt).not.toMatch(/write 2–4 short sentences/i);
   });
 
+  describe('summary main points', () => {
+    const answer =
+      'The speaker describes the plan. The other person asks for details.';
+    const draft = {
+      answer,
+      claims: answer
+        .split(/(?<=[.!?])\s+/u)
+        .map((claim) => ({ claim, evidenceIds: ['e0'] })),
+    };
+    const run = (generateObject: jest.Mock) =>
+      new GenerateDraftAnswerUseCase(
+        { generateObject } as never,
+        { build: jest.fn() },
+        {
+          model: () => 'test',
+          timeoutMs: () => 10_000,
+          maxCompletionTokens: () => 512,
+        } as never,
+      ).execute({
+        userMessage:
+          'Summarize what is said in the indexed speech segment at 0.38-150 seconds.',
+        route: {
+          intent: 'REEL_VIDEO_QUESTION',
+          reelQuestionType: 'TRANSCRIPT_CONTENT',
+          requiredEvidence: ['TRANSCRIPT'],
+          needsRetrieval: true,
+        },
+        retrievalPlan: {
+          sourceOrder: 'ASC',
+          sourceTimestampSec: 0.38,
+          sourceTimestampEndSec: 150,
+          transcriptTimestampSec: 0.38,
+          transcriptTimestampEndSec: 150,
+        },
+        contextSufficiency: {
+          sufficient: true,
+          availableEvidence: ['TRANSCRIPT'],
+          missingEvidence: [],
+          supportedEvidenceIds: ['e0'],
+          recommendedAction: 'ANSWER',
+        },
+        rerankedChunks: [
+          {
+            chunkId: 'speech-segment',
+            reelId: 'reel-1',
+            evidenceType: 'TRANSCRIPT',
+            startTime: 0.38,
+            endTime: 150,
+            evidenceText: answer,
+            chunkText: answer,
+            tags: [],
+            distance: null,
+          },
+        ],
+      } as never);
+
+    it('lists the main points first and asks the answer to cover each one', async () => {
+      const generateObject = jest
+        .fn()
+        .mockResolvedValueOnce({
+          points: ['the speaker describes the plan', 'a request for details'],
+        })
+        .mockResolvedValue(draft);
+      const result = await run(generateObject);
+
+      expect(result.answer).toBe(answer);
+      const [points, answerCall] = generateObject.mock.calls.map(
+        ([input]) => input as { systemPrompt: string; userPrompt: string },
+      );
+      expect(points.userPrompt).toContain('The speaker describes the plan.');
+      expect(JSON.parse(answerCall.userPrompt).requiredMainPoints).toEqual([
+        'the speaker describes the plan',
+        'a request for details',
+      ]);
+      expect(answerCall.systemPrompt).toMatch(/must cover every one of them/);
+    });
+
+    it('answers without main points when listing them fails', async () => {
+      const generateObject = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('provider down'))
+        .mockResolvedValue(draft);
+      const result = await run(generateObject);
+
+      expect(result.answer).toBe(answer);
+      const answerCall = generateObject.mock.calls.at(-1)?.[0] as {
+        systemPrompt: string;
+        userPrompt: string;
+      };
+      expect(
+        JSON.parse(answerCall.userPrompt).requiredMainPoints,
+      ).toBeUndefined();
+      expect(answerCall.systemPrompt).not.toMatch(/requiredMainPoints/);
+    });
+  });
+
   it('summarizes a requested transcript interval across its main turns', async () => {
     const answer =
       'The speaker describes the plan. The other person asks for details. The speaker asks the other person to leave. The segment ends with a final plan review.';
@@ -1855,6 +1958,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 512,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
       } as never,
     );
     const result = await useCase.execute({
@@ -1945,6 +2050,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 1024,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
       } as never,
     );
 
@@ -1994,6 +2101,8 @@ describe('GenerateDraftAnswerUseCase', () => {
         model: () => 'test',
         timeoutMs: () => 10_000,
         maxCompletionTokens: () => 1024,
+        get: (key: string) =>
+          key === 'AI_SUMMARY_MAIN_POINTS' ? 'false' : undefined,
       } as never,
     );
     const result = await useCase.execute({

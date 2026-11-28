@@ -913,5 +913,21 @@ Deploy note: CD reported the reel-indexing change as deployed, but the indexers 
 ### Subtitle translations (6595296e, plus the sweep)
 `CompleteReelIndexingUseCase` already starts the translation, fire-and-forget. A sweep (`SubtitleTranslationSweepService`, every 10 min, 5 reels) now retries reels indexed in the last 30 days that have a transcript but no subtitle track. Five reels kept failing because the small model skipped the same 1–4 lines; lines a batch leaves out are now retried one at a time, up to 5% may keep their source text, and a provider error on one attempt is retried. Reels missing a track: 12 → 7 → **0**.
 
+### After reprocessing (runs 88, 91, 92; 2026-11-28)
+All 17 reprocessed reels completed media; one (8oL03cm1kMc, 70 min) was left with indexing PENDING, see below.
+
+| Set | Run | Correct | Summary correct |
+|---|---|---|---|
+| Scene questions (58) | 88, after reprocessing | 0.603 (near frame cited 56 / 58) | — |
+| Chapters (48) | 91, quiet system | 0.604 | 0.625 |
+| Ranges (48) | 92, quiet system | 0.375 | 0.438 |
+
+- Scene questions held at about 0.6; the 60–120 min band rose from 0.40 to 0.50 with ~1 frame a minute, the others moved within noise (n = 10–16 per band).
+- Chapters on a quiet system are back at 0.60 / 0.63, so the run 90 dip came from the translation load, not the range trim.
+- Ranges: on the 27 questions whose videos were never reprocessed, the same code and index scored 0.48 in run 89 and 0.33 in run 92. The earlier range gain from the trim is not distinguishable from run-to-run noise; the trim stays because it removes a real error (summarizing speech outside the window), but no score gain is claimed for it.
+
+### Stuck reel: evidence job refused after a late progress update (3268e5ba)
+8oL03cm1kMc's inline evidence timed out (each ffmpeg frame pass decodes the whole 70 min video against a 180 s limit; this is independent of the frame budget). The fallback evidence job was then refused: a media progress update ("Checking streaming files") arrived after the media completed and replaced `MEDIA_READY`, and the evidence claim only accepted `MEDIA_READY` / `RETRY_SCHEDULED`. With `mediaStatus = COMPLETED` the media-step stages are stale labels, so the claim now accepts them.
+
 ### Where this leaves the 0.85 target
-Not reached. Best measured: chapters 0.63 correct / 0.70 summary-correct (run 84), ranges 0.50 / 0.62 (run 89, clean subset), scene questions 0.61. The remaining range and chapter misses are answers that add details the transcript does not contain and coverage gaps in long passages, with the local 2B model and the 70B Cloudflare model alike.
+Not reached. Best measured: chapters 0.60–0.63 correct / 0.63–0.70 summary-correct (runs 84, 91), ranges 0.38–0.56 (runs 85–92; noise of ±0.1 on identical code), scene questions 0.60–0.64. The remaining range and chapter misses are answers that add details the transcript does not contain and coverage gaps in long passages, with the local 2B model and the 70B Cloudflare model alike.
